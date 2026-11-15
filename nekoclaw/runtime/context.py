@@ -283,6 +283,41 @@ def cap_result_text(text: str, cap: int, spill: SpillStore, hint: str) -> str | 
     return f"{kept}\n\n{notice}"
 
 
+# The least a block after the first is left of the cap, when the blocks in
+# front of it have used the cap up: a line or two said after a long text (a
+# note that a picture could not be passed on) is not cut for the text's sake.
+_LATER_BLOCK_MIN_TOKENS = 256
+
+
+def cap_result_blocks(blocks: Sequence[str], cap: int, spill: SpillStore, hint: str) -> list[str] | None:
+    """Return the capped form of an oversized result of several text blocks, or ``None`` if together they fit.
+
+    The blocks share the cap from the front: one that fits in what the
+    blocks before it left stays whole, and one that does not is cut down to
+    that and saved whole, like a result of one block. Cut as one text, a
+    short block in front would lose its end to a long one behind it: the
+    host's gateway hands a group of tools over in front of the page its
+    first call opened, and the group has to arrive whole.
+
+    Blocking: tokenizes and writes the spill files.
+    """
+    if _fits("".join(blocks), cap):
+        return None
+    left = cap
+    out: list[str] = []
+    for index, block in enumerate(blocks):
+        room = left if index == 0 else max(left, _LATER_BLOCK_MIN_TOKENS)
+        kept = cap_result_text(block, room, spill, f"{hint}-{index + 1}")
+        if kept is None:
+            kept = block
+        elif block.endswith("\n"):
+            # It still ends where the block after it begins.
+            kept += "\n"
+        out.append(kept)
+        left -= _count(kept)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: pruning
 # ---------------------------------------------------------------------------
@@ -516,6 +551,20 @@ class ContextManager:
     ) -> AgentToolResult:
         if tool_name in _UNCAPPED_TOOLS:
             return result
+        blocks = [block.text for block in result.content if isinstance(block, TextContent)]
+        if len(blocks) > 1:
+            # Capped block by block, each staying where it was.
+            fitted = await asyncio.to_thread(
+                cap_result_blocks, blocks, self.policy.result_cap, self.spill, f"{tool_name}-{call_id}"
+            )
+            if fitted is None:
+                return result
+            texts_left = iter(fitted)
+            content = [
+                block.model_copy(update={"text": next(texts_left)}) if isinstance(block, TextContent) else block
+                for block in result.content
+            ]
+            return result.model_copy(update={"content": content})
         text = result.text
         capped = await asyncio.to_thread(
             cap_result_text, text, self.policy.result_cap, self.spill, f"{tool_name}-{call_id}"

@@ -1371,20 +1371,50 @@ async def test_a_group_handed_over_with_its_first_call_holds_only_what_the_model
     assert returned == {"type": "text", "text": "browser_navigate_page done"}
 
 
-async def test_a_first_call_the_user_declines_still_hands_the_group_over(builtin_host):
-    builtin_host.permissions.set_asker(Asker("deny"))
+@pytest.mark.parametrize("why", ["declined", "failed"])
+async def test_a_first_call_that_fails_is_answered_as_any_failed_call_and_hands_nothing_over(builtin_host, why):
+    builtin_host.permissions.set_asker(Asker("deny" if why == "declined" else "once"))
+    builtin_host.provider.outcome = BuiltinOutcome(
+        False, "the page never loaded", images=(BuiltinImage("QUJD", "image/jpeg"),)
+    )
     grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+    arguments = {"url": "https://example.com"}
 
-    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    result = await _call(builtin_host, grant, "browser_navigate_page", arguments)
 
-    assert result["isError"] is True
-    opening, said = result["content"]
-    assert opening["text"].startswith(LOADED_HEADER.format(name="browser"))
-    assert opening["text"].endswith("\n\nThis first call returned:")
-    assert said == {"type": "text", "text": "permission denied: the user declined"}
-    assert builtin_host.provider.calls == [] and builtin_host.leases.occupied() == {}
-    # It was handed over, so the next call needs no loading; it is asked about again.
+    # Just what the call came to. No group in front of it: a runtime keeps
+    # an error as one text, and would cut the group along with it.
+    if why == "declined":
+        said = [{"type": "text", "text": "permission denied: the user declined"}]
+        assert builtin_host.provider.calls == [] and builtin_host.leases.occupied() == {}
+    else:
+        said = [{"type": "text", "text": "the page never loaded"}, PICTURE]
+    assert result == {"content": said, "isError": True}
+    assert grant.loaded_groups == set()
+
+    # The group is still to be handed over, and comes with the first call that goes well.
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = None
+    again = await _call(builtin_host, grant, "browser_navigate_page", arguments)
+
+    assert again["isError"] is False
+    assert again["content"][0]["text"].startswith(LOADED_HEADER.format(name="browser"))
+    assert again["content"][1] == {"type": "text", "text": "browser_navigate_page done"}
     assert grant.loaded_groups == {"browser"}
+
+
+async def test_after_a_first_call_that_failed_another_tool_of_the_group_is_refused_with_the_group(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = BuiltinOutcome(False, "the page never loaded")
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    builtin_host.provider.outcome = None
+
+    refused = await _call(builtin_host, grant, CALL_TOOL, {"name": "browser_take_screenshot"})
+
+    assert refused["isError"] is True and "which were not loaded yet" in _text(refused)
+    assert BUILTIN_GROUP_GUIDANCE["browser"] in _text(refused)
+    assert [name for name, _cid, _args in builtin_host.provider.calls] == ["browser_navigate_page"]
 
 
 async def test_a_first_call_that_is_stopped_has_handed_nothing_over(builtin_host):

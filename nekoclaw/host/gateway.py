@@ -37,8 +37,10 @@ What the gateway serves:
   are from then on called by name through ``capability_call``:
   ``capability_search`` with ``group`` hands it over by itself; the group's
   first call (open a page, take a screenshot: a step that only looks) is
-  carried out and answered with the group in front of its result, so that a
-  task which starts that way spends no request on loading; any other call
+  carried out and, when it went well, answered with the group in front of
+  its result, so that a task which starts that way spends no request on
+  loading (one that failed is answered as any failed call, and the group is
+  still to be handed over); any other call
   to a tool of a group this token has not been handed is not carried out
   and is answered with the group, so that nothing but that first look is
   done before the task agent has read how the tools are used, and it can
@@ -684,6 +686,13 @@ class CapabilityGateway:
         # keeps them apart (``GatewayResult.parts``), so that when it cuts
         # old results down the group stays whole next to a long page.
         result = await self._call_capability(commission, capability, arguments)
+        if result.get("isError"):
+            # A first call that failed (declined, the browser occupied, a
+            # page that would not load) comes back as any failed call does,
+            # and the group is still to be handed over: a runtime keeps an
+            # error as one text, in which the group would be cut together
+            # with whatever the error says.
+            return result
         # Only now, with the answer on its way: a call that was stopped
         # handed nothing over.
         grant.loaded_groups.add(group)

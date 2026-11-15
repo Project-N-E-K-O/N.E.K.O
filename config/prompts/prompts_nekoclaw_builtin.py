@@ -371,9 +371,11 @@ BUILTIN_GROUP_SUMMARIES: dict[str, str] = {
 
 # The first call of each group: the step a task with the group starts with,
 # and one that only looks (it opens a page, it takes a screenshot). It is
-# carried out although the group was not loaded, and answered with the group
-# in front of its result, so that loading costs such a task no request of
-# its own. Any other call to a group that was not loaded is not carried out.
+# carried out although the group was not loaded, and when it went well it is
+# answered with the group in front of its result, so that loading costs such
+# a task no request of its own. (One that failed is answered as any failed
+# call; the group is handed over with the next call.) Any other call to a
+# group that was not loaded is not carried out.
 #
 # ``arguments`` are what the call must carry to be that step (the
 # keyboard-and-mouse tool does everything under one name; any navigation is

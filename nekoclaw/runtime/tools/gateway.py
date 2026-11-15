@@ -73,9 +73,9 @@ class GatewayResult:
     is_error: bool
     # The text as the blocks it came in, when it came in more than one;
     # ``text`` is these joined by line breaks. Kept apart because the runtime
-    # cuts an old result block by block: what has to stay whole (a group of
-    # tools handed over in front of what a call returned) is a block of its
-    # own, however long the block next to it.
+    # caps a result, and cuts an old one down, block by block: what has to
+    # stay whole (a group of tools handed over in front of what a call
+    # returned) is a block of its own, however long the block next to it.
     parts: tuple[str, ...] = ()
 
 

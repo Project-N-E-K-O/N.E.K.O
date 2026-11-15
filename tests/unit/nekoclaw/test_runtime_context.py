@@ -146,6 +146,87 @@ async def test_the_session_caps_tool_results_but_leaves_read_alone(tmp_path: Pat
         await session.close()
 
 
+def _blocks_manager(tmp_path: Path, window: int) -> ContextManager:
+    return _manager(tmp_path, ContextPolicy(window=window, max_output=1_000), [])
+
+
+async def test_a_result_of_several_blocks_is_capped_block_by_block_and_a_short_block_in_front_stays_whole(
+    tmp_path: Path,
+) -> None:
+    # A window so small that the cap on one result is three thousand tokens.
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    assert cap == 3_000
+    # What the host's gateway sends with the call that starts a group of
+    # tools: the group, then the page the call opened, then a picture.
+    group = "GROUP-START " + _words(800, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(6_000) + " PAGE-END"
+    shot = ImageContent(data="QUJD", mime_type="image/jpeg")
+    # The group is more than the half of the cap a result cut as one text
+    # keeps of its beginning, and less than the cap.
+    assert cap // 2 < count_tokens(group) < cap < count_tokens(group + page)
+    result = AgentToolResult(content=[TextContent(text=group), TextContent(text=page), shot])
+
+    capped = await manager.cap_tool_result("capability_call", "c1", result)
+
+    first, second, third = capped.content
+    # The group to the letter; the page cut down to what the group left of the cap.
+    assert first == TextContent(text=group)
+    assert second.text.startswith("PAGE-START") and texts.SPILL_GAP in second.text
+    assert "PAGE-END" in second.text and "Full formatted result stored at" in second.text
+    assert third == shot
+    # Together within the cap, give or take the path the notice names.
+    assert count_tokens(first.text) + count_tokens(second.text) <= cap + 64
+    # The page is saved whole, the group is not saved at all.
+    (saved,) = (tmp_path / "outputs").iterdir()
+    assert saved.read_text(encoding="utf-8") == page
+
+
+async def test_blocks_that_fit_together_are_left_as_they_are_and_a_short_one_behind_a_long_one_is_not_cut(
+    tmp_path: Path,
+) -> None:
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    small = AgentToolResult(content=[TextContent(text="clicked\n"), TextContent(text="the window moved")])
+    note = "[1 picture(s) of this result could not be passed on.]"
+    long = "START " + _words(6_000) + " END\n"
+    behind = AgentToolResult(content=[TextContent(text=long), TextContent(text=note)])
+
+    assert await manager.cap_tool_result("capability_call", "c1", small) is small
+    capped = await manager.cap_tool_result("capability_call", "c2", behind)
+
+    first, second = capped.content
+    # The long block alone is cut to the cap, and still ends where the next begins.
+    assert first.text.startswith("START") and texts.SPILL_GAP in first.text and first.text.endswith("\n")
+    assert count_tokens(first.text) <= cap + 64
+    # The line after it had nothing left of the cap, and is whole all the same.
+    assert second == TextContent(text=note)
+    assert [path.read_text(encoding="utf-8") for path in (tmp_path / "outputs").iterdir()] == [long]
+
+
+async def test_every_block_too_long_for_what_is_left_is_cut_and_saved_under_a_name_of_its_own(
+    tmp_path: Path,
+) -> None:
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    one = "ONE-START " + _words(3_000, "a") + " ONE-END\n"
+    two = "TWO-START " + _words(3_000, "b") + " TWO-END"
+
+    capped = await manager.cap_tool_result(
+        "capability_call", "c1", AgentToolResult(content=[TextContent(text=one), TextContent(text=two)])
+    )
+
+    first, second = capped.content
+    assert first.text.startswith("ONE-START") and second.text.startswith("TWO-START")
+    assert texts.SPILL_GAP in first.text and texts.SPILL_GAP in second.text
+    # The first took the cap; the second is left the least a later block is.
+    assert count_tokens(first.text) <= cap + 64
+    assert count_tokens(second.text) <= 256 + 64
+    saved = sorted(path.name for path in (tmp_path / "outputs").iterdir())
+    assert len(saved) == 2 and saved[0] != saved[1]
+    assert {path.read_text(encoding="utf-8") for path in (tmp_path / "outputs").iterdir()} == {one, two}
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: pruning
 # ---------------------------------------------------------------------------
