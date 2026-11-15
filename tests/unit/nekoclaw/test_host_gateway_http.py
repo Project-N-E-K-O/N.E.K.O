@@ -330,6 +330,65 @@ async def test_the_tools_handed_over_with_a_long_first_page_are_whole_after_the_
     assert count_tokens(cut.text) <= policy.prune_threshold_tokens
 
 
+@pytest.mark.parametrize("links", [3, 1500])
+async def test_the_tools_handed_over_with_a_first_page_arrive_whole_in_the_smallest_window_there_is(
+    server, hosts, tmp_path, links
+):
+    from nekoclaw.runtime.context import ContextManager, ContextPolicy
+    from nekoclaw.runtime.protocol import ModelConfig
+    from nekoclaw.runtime.tools.base import SpillStore
+    from nekoclaw.runtime.tools.gateway import build_gateway_tools
+    from utils.tokenize import count_tokens
+
+    async def no_summary(messages: Any, max_tokens: int) -> Any:
+        raise AssertionError("nothing is summarized here")
+
+    # A page of a few links, and one longer than the gateway lets a result be.
+    page = "PAGE-START " + " ".join(f'uid=1_{n} link "item {n}"' for n in range(links))
+    host = make_host(tmp_path, server, builtins=ShippedBrowser(page))
+    hosts.append(host)
+    host.permissions.set_asker(_allow_once)
+    url = await host.gateway.start()
+    commission = await _working_commission(host)
+    client = GatewayClient(url, host.gateway.issue(commission.id, supports_images=True))
+    tools = {tool.name: tool for tool in build_gateway_tools(client, await client.connect())}
+    opened = {"name": "browser_navigate_page", "arguments": {"url": "https://example.com"}}
+    # The smallest window a model may have, and the least it may be given
+    # to answer in: one result is capped at a quarter of the window, and
+    # the browser tools alone are over that.
+    model = ModelConfig(model="any", api_key="key", context_window=4_000, max_output_tokens=256)
+    policy = ContextPolicy(window=model.context_window, max_output=model.max_output_tokens)
+    saved_to = tmp_path / "saved-results"
+    manager = ContextManager(
+        policy=policy, spill=SpillStore(saved_to), summarize=no_summary, new_entry_id=lambda: "entry"
+    )
+
+    # The first call of the group, made by the runtime's own tool, and its
+    # result capped the way a session caps every result.
+    outcome = await tools["capability_call"].execute("call-1", opened)
+    capped = await manager.cap_tool_result("capability_call", "call-1", outcome)
+
+    handed_over, returned = outcome.content
+    assert policy.result_cap < count_tokens(handed_over.text) <= policy.prune_threshold_tokens
+    kept, page_kept = capped.content
+    # The tools and how they are used are there to the letter.
+    assert kept == handed_over
+    definitions = kept.text.split("\n\n")[2]
+    assert [json.loads(line)["name"] for line in definitions.splitlines()] == list(BROWSER_TOOL_NAMES)
+    assert BUILTIN_GROUP_GUIDANCE["browser"] in kept.text
+    if links == 3:
+        # A short page is whole behind them, and nothing was saved.
+        assert page_kept == returned
+        assert not saved_to.exists() or not list(saved_to.iterdir())
+    else:
+        # A long one keeps its head and tail in what the tools left of the
+        # cap, and is saved whole.
+        assert page_kept.text.startswith("PAGE-START") and texts.SPILL_GAP in page_kept.text
+        assert count_tokens(page_kept.text) < policy.result_cap
+        (saved,) = saved_to.iterdir()
+        assert saved.read_text(encoding="utf-8") == returned.text
+
+
 async def test_a_first_call_that_fails_with_a_long_error_brings_no_group_and_the_next_one_brings_it_whole(
     server, hosts, tmp_path
 ):
