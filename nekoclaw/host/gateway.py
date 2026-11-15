@@ -45,7 +45,13 @@ What the gateway serves:
   to a tool of a group this token has not been handed is not carried out
   and is answered with the group, so that nothing but that first step is
   done before the task agent has read how the tools are used, and it can
-  call again at once. A call is one small step, carried out by the
+  call again at once. Read, not just sent: a model writes all the calls
+  of one reply before any of their answers reaches it, so a group handed
+  over by one of them is in hand only from the next reply on, and the
+  calls after it in the same reply (but the first call) are not carried
+  out either. The runtime names the reply with every call
+  (``GATEWAY_REPLY_META_KEY``); a client that names none is taken to
+  have read what it was sent. A call is one small step, carried out by the
   provider the host was given; stopping the commission stops it. The
   commission occupies the desktop or the browser from its first call
   (``leases.py``), and a result may carry pictures (screenshots) next to its
@@ -167,12 +173,44 @@ class Grant:
     # how they are used and their tools' definitions. A new token starts
     # without any, as the session it is for may no longer hold them.
     loaded_groups: set[str] = field(default_factory=set)
+    # The model reply during which each of them was handed over, as the
+    # client names its replies (``GATEWAY_REPLY_META_KEY``); nothing for a
+    # group handed to a client that names none.
+    handed_in: dict[str, int | str] = field(default_factory=dict)
     calls: int = 0
     in_flight: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
 def _text(text: str, *, error: bool = False) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": error}
+
+
+def _reply_of(params: dict[str, Any]) -> int | str | None:
+    """Return the model reply a ``tools/call`` says it was written in, if it names one."""
+    from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+
+    meta = params.get("_meta")
+    reply = meta.get(GATEWAY_REPLY_META_KEY) if isinstance(meta, dict) else None
+    if isinstance(reply, bool) or not isinstance(reply, (int, str)):
+        return None
+    return reply
+
+
+def _in_hand(grant: Grant, group: str, reply: int | str | None) -> bool:
+    """Whether a call was written with a group in hand: handed over, and not in the reply the call is of."""
+    if group not in grant.loaded_groups:
+        return False
+    return reply is None or grant.handed_in.get(group) != reply
+
+
+def _hand_over(grant: Grant, group: str, reply: int | str | None) -> None:
+    """Note that a group goes back with the answer to a call of ``reply``."""
+    if group in grant.loaded_groups:
+        # Handed over before (loaded a second time): when it first was stands.
+        return
+    grant.loaded_groups.add(group)
+    if reply is not None:
+        grant.handed_in[group] = reply
 
 
 def _text_and_images(text: str, images: Any, *, error: bool = False) -> dict[str, Any]:
@@ -594,7 +632,9 @@ class CapabilityGateway:
             if not isinstance(name, str) or not name:
                 raise JsonRpcError(-32602, "tools/call needs a tool name")
             arguments = params.get("arguments")
-            return await self.call_tool(grant, name, arguments if isinstance(arguments, dict) else {})
+            return await self.call_tool(
+                grant, name, arguments if isinstance(arguments, dict) else {}, reply=_reply_of(params)
+            )
         raise JsonRpcError(-32601, f"unknown method {method}")
 
     # -- tools ------------------------------------------------------------
@@ -640,13 +680,20 @@ class CapabilityGateway:
             return capabilities
         return [item for item in capabilities if not item.needs_images]
 
-    async def call_tool(self, grant: Grant, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Carry out one ``tools/call`` and return its MCP result."""
+    async def call_tool(
+        self, grant: Grant, name: str, arguments: dict[str, Any], *, reply: int | str | None = None
+    ) -> dict[str, Any]:
+        """Carry out one ``tools/call`` and return its MCP result.
+
+        ``reply`` is the model reply the call was written in, as the client
+        names it (``GATEWAY_REPLY_META_KEY``), ``None`` for a client that
+        names none.
+        """
         grant.calls += 1
         if name == SEARCH_TOOL:
             group = arguments.get("group")
             if isinstance(group, str) and group.strip():
-                return await self._load_group(grant, group.strip())
+                return await self._load_group(grant, group.strip(), reply)
             return _text(await self._search(grant, str(arguments.get("query") or "")))
         if name == CALL_TOOL:
             target = arguments.get("name")
@@ -669,19 +716,34 @@ class CapabilityGateway:
         if commission is None or not commission.active:
             return _text("this commission is no longer under way", error=True)
         group = capability.group
-        if not group or group in grant.loaded_groups:
+        if not group or _in_hand(grant, group, reply):
             return await self._call_capability(commission, capability, arguments)
-        # A tool of a group this token has not been handed yet: how the
-        # group is used has not been read, and but for the group's first
-        # call, which the task agent was shown, the arguments were written
-        # without the tool's definition. Either way the group goes back
-        # with the answer, so the calls after this one go through.
-        from config.prompts.prompts_nekoclaw_builtin import TOOL_GROUP_FIRST_RESULT, TOOL_GROUP_NOT_LOADED
+        # A tool of a group the task agent did not have in hand when it
+        # wrote this call: how the group is used has not been read, and but
+        # for the group's first call, which the task agent was shown, the
+        # arguments were written without the tool's definition. Either way
+        # the group goes back with the answer, so the calls of the replies
+        # after this one go through.
+        from config.prompts.prompts_nekoclaw_builtin import (
+            TOOL_GROUP_FIRST_RESULT,
+            TOOL_GROUP_NOT_LOADED,
+            TOOL_GROUP_NOT_READ,
+        )
 
+        first = _is_first_call(capability, arguments)
+        if group in grant.loaded_groups:
+            # Handed over by an earlier call of this same reply (the calls
+            # of one reply are carried out one after the other): the model
+            # wrote this call before that answer reached it. The first call
+            # needs no reading; anything else waits for the next reply, and
+            # the group is not sent again.
+            if first:
+                return await self._call_capability(commission, capability, arguments)
+            return _text(TOOL_GROUP_NOT_READ.format(tool=name, name=_group_name(group)), error=True)
         handed_over = _group_text(group, [item for item in self._offered(grant, callable_now) if item.group == group])
-        if not _is_first_call(capability, arguments):
+        if not first:
             # Not carried out: nothing is asked of the user, nothing is occupied.
-            grant.loaded_groups.add(group)
+            _hand_over(grant, group, reply)
             refusal = TOOL_GROUP_NOT_LOADED.format(tool=name, name=_group_name(group))
             return _text(f"{refusal}\n\n{handed_over}", error=True)
         # The first call (going to an address, taking a screenshot) is
@@ -700,17 +762,18 @@ class CapabilityGateway:
             return result
         # Only now, with the answer on its way: a call that was stopped
         # handed nothing over.
-        grant.loaded_groups.add(group)
+        _hand_over(grant, group, reply)
         opening = {"type": "text", "text": f"{handed_over}\n\n{TOOL_GROUP_FIRST_RESULT}"}
         return {**result, "content": [opening, *result["content"]]}
 
-    async def _load_group(self, grant: Grant, asked: str) -> dict[str, Any]:
+    async def _load_group(self, grant: Grant, asked: str, reply: int | str | None = None) -> dict[str, Any]:
         """Hand a group of built-in tools over: how it is used and its tools' definitions.
 
         ``asked`` is the group as a model names it (the name the search
         tool's description gives it; the host's own name for it is taken
         too). What is handed over are the tools this commission's model can
-        make something of.
+        make something of. ``reply`` is the model reply the load was
+        written in (see ``call_tool``): the group is in hand from the next.
         """
         from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_NAMES
 
@@ -737,7 +800,7 @@ class CapabilityGateway:
                 "be used in this task. Go on without them, or report that the task needs a model that can see.",
                 error=True,
             )
-        grant.loaded_groups.add(group)
+        _hand_over(grant, group, reply)
         return _text(_group_text(group, offered))
 
     async def _search(self, grant: Grant, query: str) -> str:

@@ -480,3 +480,15 @@ TOOL_GROUP_NOT_LOADED = (
     "Nothing was done: {tool} is one of the {name} tools, which were not loaded yet. Read how "
     "they are used below, then call it again."
 )
+
+# Answered instead of carrying a call out when the tool's group was handed
+# over by an earlier call of the same model reply: the call was written
+# before the group could be read. The group is not sent a second time, it
+# is in that earlier result. (The group's first call is carried out all the
+# same: it is written from the line about the group.) Rendered with
+# str.format.
+TOOL_GROUP_NOT_READ = (
+    "Nothing was done: {tool} is one of the {name} tools, which reached you with an earlier "
+    "result of this same turn, after this call was written. Read how they are used there, then "
+    "call it again."
+)

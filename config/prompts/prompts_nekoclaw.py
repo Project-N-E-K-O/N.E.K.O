@@ -214,6 +214,15 @@ TOOL_GUIDANCE_SECTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     # here: they are not among the tools a session is offered, and how they
     # are used is handed over when their group is loaded through the host's
     # gateway (``prompts_nekoclaw_builtin.BUILTIN_GROUP_GUIDANCE``).
+    #
+    # No session is offered a tool by one of their names, so none is left
+    # without the paragraph. A session's tools are the runtime's own, which
+    # have other names, and what the gateway lists: plugin entries and tools
+    # of connected services, whose names begin with ``plugin__`` or
+    # ``mcp__``, and its search and call tools; it lists no built-in tool
+    # to anyone. tests/unit/nekoclaw/test_builtin_tool_budget.py holds all
+    # three. A runtime that lists these tools itself has to bring the
+    # paragraphs with it.
 )
 
 # The number of consecutive goal rounds named in the goal paragraph above and

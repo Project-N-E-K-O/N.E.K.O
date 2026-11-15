@@ -243,6 +243,8 @@ async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_mo
     if sees_pictures:
         assert groups == ["browser", "desktop"]
         assert not loaded.is_error and _guidance("keyboard_mouse") in loaded.text
+        # The model has read that and answers with a call.
+        client.next_reply()
         result = await client.call("capability_call", click)
         # The picture arrives as the runtime hands it to its model.
         assert result == GatewayResult("did click", (ImageContent(data="QUJD", mime_type="image/jpeg"),), False)
@@ -809,3 +811,43 @@ async def test_task_agent_that_calls_a_tool_before_loading_its_group_is_handed_t
     # The same call again went through, once.
     assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {})]
     assert llm.requests[2][-1] == {"role": "tool", "tool_call_id": "c2", "content": "heading: Opening hours"}
+
+
+async def test_task_agent_whose_reply_holds_two_calls_to_a_group_it_has_not_read_gets_neither_carried_out(
+    server, hosts, tmp_path
+):
+    snapshot = {"name": "browser_take_snapshot", "arguments": {}}
+    verbose = {"name": "browser_take_snapshot", "arguments": {"verbose": True}}
+    llm = ScriptedLLM(
+        [
+            # Two calls in one reply, both written without the group.
+            [
+                call("capability_call", snapshot, "c1"),
+                call("capability_call", verbose, "c2", index=1),
+                finish("tool_calls"),
+            ],
+            # The second of them again, now that the group was read.
+            [call("capability_call", verbose, "c3"), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "open nine to five"}, "c4"), finish("tool_calls")],
+        ]
+    )
+    desk = Desk()
+    host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
+    await host.permission_store.set_mode("browser", "allow")
+
+    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "done")
+
+    # The first came back with the group. The second was written before
+    # that answer could be read: it was not carried out either, and was
+    # told so in a line, without the group a second time.
+    first, second = _tool_result(llm.requests[1], "c1"), _tool_result(llm.requests[1], "c2")
+    assert "which were not loaded yet" in first and _guidance("browser") in first
+    assert second.endswith(
+        "Nothing was done: browser_take_snapshot is one of the browser tools, which reached you with an earlier "
+        "result of this same turn, after this call was written. Read how they are used there, then call it again."
+    )
+    assert _guidance("browser") not in second
+    # In the reply after, it went through.
+    assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {"verbose": True})]
+    assert llm.requests[2][-1] == {"role": "tool", "tool_call_id": "c3", "content": "heading: Opening hours"}

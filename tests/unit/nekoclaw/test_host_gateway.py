@@ -1476,6 +1476,128 @@ async def test_a_first_call_that_is_stopped_has_handed_nothing_over(builtin_host
     assert grant.loaded_groups == {"browser"}
 
 
+# -- a group handed over while the calls of one reply are carried out ----------
+
+NOT_READ = (
+    "Nothing was done: {tool} is one of the {name} tools, which reached you with an earlier result of this "
+    "same turn, after this call was written. Read how they are used there, then call it again."
+)
+
+
+async def _call_in(
+    host: Any, grant: Any, reply: Any, name: str, arguments: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """A call that names the model reply it was written in, as a task agent's runtime does."""
+    params = {"name": name, "arguments": arguments or {}, "_meta": {"nekoclaw/reply": reply}}
+    return (await _rpc(host, grant, "tools/call", params))["result"]
+
+
+@pytest.mark.parametrize("handed_over_by", ["a call that was refused", "loading it by its name", "its first call"])
+async def test_a_call_written_in_the_reply_a_group_was_handed_over_in_waits_for_the_next_reply(
+    builtin_host, handed_over_by
+):
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    builtin_host.provider.definitions["browser_click"] = (BUILTIN_GROUP_BROWSER, CLICK, False)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True, loaded=())
+    if handed_over_by == "a call that was refused":
+        click = {"name": "browser_click", "arguments": {"uid": "1_1"}}
+        first = await _call_in(builtin_host, grant, 7, CALL_TOOL, click)
+        assert first["isError"] is True and BUILTIN_GROUP_GUIDANCE["browser"] in _text(first)
+    elif handed_over_by == "loading it by its name":
+        first = await _call_in(builtin_host, grant, 7, SEARCH_TOOL, {"group": "browser"})
+        assert first["isError"] is False and BUILTIN_GROUP_GUIDANCE["browser"] in _text(first)
+    else:
+        first = await _call_in(builtin_host, grant, 7, "browser_navigate_page", {"url": "https://example.com"})
+        assert first["isError"] is False and BUILTIN_GROUP_GUIDANCE["browser"] in first["content"][0]["text"]
+    done, asked = list(builtin_host.provider.calls), len(asker.asked)
+    reload = {"name": "browser_navigate_page", "arguments": {"type": "reload"}}
+
+    # Two more calls of the same reply: the model wrote them before the
+    # answer with the group reached it.
+    waiting = [
+        await _call_in(builtin_host, grant, 7, CALL_TOOL, reload),
+        await _call_in(builtin_host, grant, 7, "browser_click", {"uid": "1_2"}),
+    ]
+
+    # Not carried out, and told why in a line. The group is in the earlier
+    # answer; it is not sent a second time.
+    assert waiting == [
+        _refusal(NOT_READ.format(tool="browser_navigate_page", name="browser")),
+        _refusal(NOT_READ.format(tool="browser_click", name="browser")),
+    ]
+    assert builtin_host.provider.calls == done and len(asker.asked) == asked
+
+    # In the next reply the same call is carried out.
+    again = await _call_in(builtin_host, grant, 8, CALL_TOOL, reload)
+
+    assert again == {"content": [{"type": "text", "text": "browser_navigate_page done"}], "isError": False}
+    assert builtin_host.provider.calls[len(done) :] == [("browser_navigate_page", commission.id, {"type": "reload"})]
+
+
+def _refusal(text: str) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}], "isError": True}
+
+
+async def test_the_first_call_of_a_group_is_carried_out_in_the_reply_the_group_was_handed_over_in(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True, loaded=())
+    refused = await _call_in(builtin_host, grant, 3, CALL_TOOL, {"name": "browser_take_screenshot"})
+    assert refused["isError"] is True and BUILTIN_GROUP_GUIDANCE["browser"] in _text(refused)
+    arguments = {"url": "https://example.com"}
+
+    # The step a model writes from the line about the group needs no
+    # reading. The group went back with the refusal and is not sent again.
+    opened = await _call_in(builtin_host, grant, 3, "browser_navigate_page", arguments)
+
+    assert opened == {"content": [{"type": "text", "text": "browser_navigate_page done"}], "isError": False}
+    assert builtin_host.provider.calls == [("browser_navigate_page", commission.id, arguments)]
+
+
+@pytest.mark.parametrize(
+    "meta", [None, {}, {"nekoclaw/reply": None}, {"nekoclaw/reply": True}, {"nekoclaw/reply": [7]}, {"reply": 7}, "7"]
+)
+async def test_a_client_that_names_no_reply_has_a_group_in_hand_as_soon_as_it_was_handed_over(builtin_host, meta):
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+
+    async def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        params = {"name": name, "arguments": arguments, **({} if meta is None else {"_meta": meta})}
+        return (await _rpc(builtin_host, grant, "tools/call", params))["result"]
+
+    refused = await call(CALL_TOOL, {"name": "browser_take_screenshot"})
+    again = await call("browser_take_screenshot", {})
+
+    # Any MCP client can call the gateway; one that does not say which
+    # reply a call is of is taken to have read what it was sent.
+    assert refused["isError"] is True and "which were not loaded yet" in _text(refused)
+    assert again["isError"] is False
+
+
+async def test_replies_are_told_apart_by_whatever_a_client_names_them_and_a_second_load_changes_nothing(
+    builtin_host,
+):
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+
+    loaded = await _call_in(builtin_host, grant, "reply-a", SEARCH_TOOL, {"group": "browser"})
+    waiting = await _call_in(builtin_host, grant, "reply-a", "browser_take_screenshot")
+    done = await _call_in(builtin_host, grant, "reply-b", "browser_take_screenshot")
+    # Loaded once more, in a later reply (its conversation was summarized,
+    # say): the group has been in hand since the first time.
+    again = await _call_in(builtin_host, grant, "reply-c", SEARCH_TOOL, {"group": "browser"})
+    after = await _call_in(builtin_host, grant, "reply-c", "browser_take_screenshot")
+    # And one that names no reply is carried out as well.
+    unnamed = await _call(builtin_host, grant, "browser_take_screenshot")
+
+    assert (loaded["isError"], waiting["isError"], done["isError"]) == (False, True, False)
+    assert _text(waiting) == NOT_READ.format(tool="browser_take_screenshot", name="browser")
+    assert again["isError"] is False and BUILTIN_GROUP_GUIDANCE["browser"] in _text(again)
+    assert (after["isError"], unnamed["isError"]) == (False, False)
+
+
 async def test_a_group_whose_first_call_is_not_on_offer_is_told_of_without_one(builtin_host):
     builtin_host.permissions.set_asker(Asker("once"))
     # A provider whose browser has no tool by the name of the first call.

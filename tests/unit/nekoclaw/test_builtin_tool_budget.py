@@ -50,6 +50,7 @@ from config.prompts.prompts_nekoclaw_builtin import (
     TOOL_GROUP_FIRST_RESULT,
     TOOL_GROUP_LOADED_HEADER,
     TOOL_GROUP_NOT_LOADED,
+    TOOL_GROUP_NOT_READ,
     TOOL_GROUP_POINTER,
     TOOL_GROUPS_INTRO,
 )
@@ -59,6 +60,7 @@ from nekoclaw.host.capabilities import (
     BUILTIN_GROUP_KEYBOARD_MOUSE,
     BUILTIN_GROUPS,
     builtin_tool,
+    gateway_tool_name,
 )
 from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL
 from nekoclaw.runtime.context import ContextPolicy
@@ -382,6 +384,13 @@ async def test_no_shipped_tool_has_the_name_of_a_tool_the_runtime_or_the_gateway
 
     # Called by name through the call tool, a shipped tool can be mistaken for none of them.
     assert not taken & set(NAMES)
+    # Nor for a plugin entry or a tool of a connected service, the only
+    # other tools a gateway lists: their names begin with what they are.
+    # So no session is ever offered a tool by a shipped tool's name, and
+    # how a group is used has no place in a session's system prompt.
+    assert not [name for name in NAMES if name.startswith(("plugin__", "mcp__"))]
+    assert gateway_tool_name("plugin", "browser", "click").startswith("plugin__")
+    assert gateway_tool_name("mcp", "computer", "computer").startswith("mcp__")
     # The runtime drops a gateway tool whose name it has itself: neither of
     # the two the groups are reached through is dropped.
     wrapped = build_gateway_tools(
@@ -429,6 +438,7 @@ def test_every_group_has_a_name_a_line_and_how_it_is_used():
         TOOL_GROUPS_INTRO,
         TOOL_GROUP_LOADED_HEADER,
         TOOL_GROUP_NOT_LOADED,
+        TOOL_GROUP_NOT_READ,
         TOOL_GROUP_POINTER,
     )
     for text in written:

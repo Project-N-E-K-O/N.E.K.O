@@ -188,6 +188,14 @@ GATEWAY_SEARCH_RESULTS = 8
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
 
+GATEWAY_REPLY_META_KEY = "nekoclaw/reply"
+"""Where a task agent's runtime names the model reply a ``tools/call`` was
+written in, under the request's ``_meta``: a number that changes with every
+reply. A group of built-in tools handed over while the calls of one reply
+are carried out is in hand from the next reply on, since the calls after it
+in the same reply were written before the group could be read. A client that
+names no reply has a group in hand as soon as it is handed over."""
+
 GATEWAY_TOOL_GROUP_MAX_TOKENS = 2000
 """Cap on what loading one group of built-in tools (keyboard and mouse,
 browser) hands a task agent: how the group is used, then the definitions of

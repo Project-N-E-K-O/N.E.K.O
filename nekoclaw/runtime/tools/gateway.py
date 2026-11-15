@@ -40,6 +40,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -87,6 +88,8 @@ class GatewayClient:
         self._token = token
         self._next_id = 0
         self._protocol_version: str | None = None
+        # Which reply of the model the calls being made were written in.
+        self._reply = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -156,9 +159,20 @@ class GatewayClient:
         tools = listed.get("tools") if isinstance(listed, dict) else None
         return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
 
+    def next_reply(self) -> None:
+        """Note that the model has answered: the calls made from now on were written in that reply.
+
+        Every call names its reply to the gateway. What a call's answer
+        hands the model (a group of tools and how they are used) was not
+        there to be read when the calls after it in the same reply were
+        written, and the gateway tells those apart by this.
+        """
+        self._reply += 1
+
     async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
         """Call one tool and return its text and pictures; waits as long as the tool takes."""
-        result = await self.request("tools/call", {"name": name, "arguments": arguments}, read_timeout=None)
+        params = {"name": name, "arguments": arguments, "_meta": {GATEWAY_REPLY_META_KEY: self._reply}}
+        result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
             return GatewayResult("", (), False)
         parts: list[str] = []

@@ -182,7 +182,58 @@ async def test_call_returns_text_pictures_and_the_error_flag(gateway):
         False,
         ("clicked", "the window moved"),
     )
-    assert gateway.requests[-3]["params"] == {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}
+    assert gateway.requests[-3]["params"] == {
+        "name": "plugin__weather__today",
+        "arguments": {"city": "Lyon"},
+        "_meta": {"nekoclaw/reply": 0},
+    }
+
+
+async def test_every_call_names_the_reply_of_the_model_it_was_written_in(gateway):
+    from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+
+    assert GATEWAY_REPLY_META_KEY == "nekoclaw/reply"
+    client = GatewayClient(gateway.url, TOKEN)
+    await client.connect()
+
+    await client.call("plugin__weather__today", {"city": "Lyon"})
+    client.next_reply()
+    await client.call("plugin__weather__today", {"city": "Nice"})
+    await client.call("plugin__weather__today", {"city": "Metz"})
+    client.next_reply()
+    await client.call("plugin__weather__today", {"city": "Brest"})
+
+    named = [body["params"]["_meta"] for body in gateway.requests if body["method"] == "tools/call"]
+    # The calls of one reply name the same reply, those of the next another.
+    assert named == [{"nekoclaw/reply": 0}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 2}]
+    # Nothing but the calls names one.
+    assert all("_meta" not in (body.get("params") or {}) for body in gateway.requests if body["method"] != "tools/call")
+
+
+async def test_a_session_tells_the_gateway_which_calls_were_written_in_one_reply(tmp_path, gateway):
+    llm = ScriptedLLM(
+        [
+            # Two calls in one reply, then one in the next.
+            [
+                call("plugin__weather__today", {"city": "Lyon"}, "c1"),
+                call("plugin__weather__today", {"city": "Nice"}, "c2", index=1),
+                finish("tool_calls"),
+            ],
+            [call("plugin__weather__today", {"city": "Metz"}, "c3"), finish("tool_calls")],
+            [say("Sunny everywhere."), finish()],
+        ]
+    )
+    session, events = await open_session(_spec(tmp_path, gateway), llm)
+    try:
+        session.prompt("what is the weather in Lyon, Nice and Metz")
+        await events.wait_ended()
+
+        calls = [body["params"] for body in gateway.requests if body["method"] == "tools/call"]
+        assert [params["arguments"]["city"] for params in calls] == ["Lyon", "Nice", "Metz"]
+        first, second, third = (params["_meta"]["nekoclaw/reply"] for params in calls)
+        assert first == second != third
+    finally:
+        await session.close()
 
 
 async def test_more_pictures_than_a_result_may_carry_are_dropped_and_the_text_says_how_many(gateway):
