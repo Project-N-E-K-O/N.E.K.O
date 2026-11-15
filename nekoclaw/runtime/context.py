@@ -112,7 +112,14 @@ class ContextPolicy:
 
     @property
     def result_cap(self) -> int:
-        """Per-result cap, never more than a quarter of the window."""
+        """Per-result cap: a quarter of the window, and ``result_inline_tokens`` at the most.
+
+        A session does not cap the text of a result below
+        ``prune_threshold_tokens`` whatever this says
+        (``ContextManager.cap_tool_result``), so in a window of under 8192
+        tokens, where a quarter is less than that, a result can be longer
+        than this.
+        """
         return max(500, min(self.result_inline_tokens, self.window // 4))
 
     @property
@@ -364,6 +371,11 @@ def prune_result(message: ToolResultMessage, policy: ContextPolicy) -> ToolResul
     enough stays whole however long what follows it. Cut as one text, a
     group of tools handed over in front of a long page would lose the tool
     definitions in its middle.
+
+    The price is that such a result is left longer than one of a single
+    block: up to ``prune_threshold_tokens`` of a first block that was not
+    cut, and the head and tail of the rest besides. It is bounded, and
+    only the results that come in more than one block pay it.
     """
     images = [block for block in message.content if isinstance(block, ImageContent)]
     parts = first_block_and_rest(message.content)
