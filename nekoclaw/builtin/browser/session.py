@@ -399,6 +399,9 @@ class BrowserSession:
         # (``close``) until the user agrees: with nothing of it held any
         # more, nothing else says that it was the user who closed it.
         self._closed_by_user_noted = False
+        # Whether the call the user agreed for has got as far as the browser
+        # tools (``reopen_reached``).
+        self._reopen_reached = False
         # Whether the tabs of the browser that is connected to have been
         # looked up yet: until then, none being known does not mean that
         # there is none.
@@ -935,7 +938,13 @@ class BrowserSession:
     def reopen_agreed(self) -> None:
         """The user agreed to the browser they closed being opened again. Does not block."""
         self._reopen_agreed = True
+        self._reopen_reached = False
         self._closed_by_user_noted = False
+
+    def reopen_reached(self) -> None:
+        """The call the user agreed for has its turn with the browser. Does not block."""
+        if self._reopen_agreed:
+            self._reopen_reached = True
 
     def reopen_agreement_over(self) -> None:
         """The call the user agreed for is over: an agreement that opened no browser is not kept. Does not block.
@@ -943,10 +952,11 @@ class BrowserSession:
         The call may have ended before it got to the browser (it was
         stopped, or the browser was in use by another task for too long).
         Kept, the agreement would let some later task open the browser
-        without asking. A browser that is connected to keeps it until it has
-        a tab again.
+        without asking. Only where the call did get to a browser that is
+        still connected to and has no window (it may have listed the pages
+        before opening one) is it kept, until there is a tab again.
         """
-        if self._reopen_agreed and not self.connected:
+        if self._reopen_agreed and not (self._reopen_reached and self.connected):
             self._reopen_agreed = False
             self._closed_by_user_noted = True
 

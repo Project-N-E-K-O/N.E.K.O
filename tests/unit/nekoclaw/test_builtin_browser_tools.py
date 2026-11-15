@@ -968,6 +968,21 @@ async def test_an_agreement_that_opened_no_browser_is_not_kept_for_a_later_call(
     assert len(world.connected) == 1
 
 
+async def test_an_agreement_whose_call_got_to_the_browser_and_could_not_start_it_is_not_kept(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    tools.reopen_agreed()
+    # The call had its turn with the browser tools, and no browser came of it.
+    tools.session.reopen_reached()
+    assert not tools.session.connected
+
+    tools.reopen_agreement_over()
+
+    assert tools.closed_by_user() is True
+
+
 async def test_an_agreement_that_opened_the_browser_is_used_up_and_nothing_is_left_to_end(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:
@@ -992,10 +1007,40 @@ async def test_an_agreement_for_a_browser_that_is_still_connected_to_lasts_until
     tools.reopen_agreed()
 
     # The call the user agreed for looked at the list of pages, and opened none.
+    assert (await call(tools, "list_pages")).success
     tools.reopen_agreement_over()
 
     assert tools.closed_by_user() is False
     assert (await call(tools, "new_page", url=ORDER)).success
+
+
+async def test_an_agreement_for_a_browser_that_is_still_connected_to_is_not_kept_when_its_call_never_got_there(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    tools.reopen_agreed()
+
+    # The call was stopped while it waited for the browser to come free.
+    tools.reopen_agreement_over()
+
+    assert tools.session.connected and tools.closed_by_user() is True
+    assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert world.browser.pages == {}
+
+
+async def test_what_an_earlier_agreement_reached_says_nothing_of_the_next_one(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    tools.reopen_agreed()
+    assert (await call(tools, "list_pages")).success
+    # Agreed to once more (another task asked), and that call never gets to the browser.
+    tools.reopen_agreed()
+    tools.reopen_agreement_over()
+
+    assert tools.closed_by_user() is True
 
 
 async def test_a_browser_whose_last_window_the_user_closed_is_not_given_another_until_they_agree(

@@ -166,6 +166,9 @@ class BrowserTools:
                 # The host asks the user before a call gets here; this one
                 # came without (the browser was closed after it looked).
                 return BuiltinOutcome(False, CLOSED_BY_USER)
+            # Should the user have agreed to this call opening a browser
+            # they closed: it has got here.
+            self._session.reopen_reached()
             try:
                 await self._session.start()
                 outcome = await handler(arguments)

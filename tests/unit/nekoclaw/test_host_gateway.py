@@ -2030,9 +2030,13 @@ async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_howeve
     await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
     assert builtin_host.provider.over == [1]
 
-    # The desktop is none of the browser's business.
+    # The desktop is none of the browser's business; nor is a call of a browser tool that nothing
+    # was agreed for (it must not end an agreement another call is waiting with).
     await _call(builtin_host, grant, "computer", {"action": "screenshot"})
-    assert builtin_host.provider.over == [1]
+    await _call(builtin_host, grant, "browser_take_screenshot")
+    assert builtin_host.provider.over == [1] and len(builtin_host.provider.calls) == 3
+    builtin_host.leases.release(first.id)
+    await builtin_host.leases.acquire(BUILTIN_GROUP_BROWSER, first.id, title=first.title)
 
     # Another task's call, which the user agrees to and which never gets the browser: it stays in use.
     other = await _commission(builtin_host, title="book the hotel")
@@ -2041,15 +2045,15 @@ async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_howeve
     result = await _call(builtin_host, other_grant, "browser_navigate_page", {"url": "https://example.com"})
 
     assert result["isError"] is True and "in use by another task" in _text(result)
-    assert builtin_host.provider.agreed == 2 and len(builtin_host.provider.calls) == 2
+    assert builtin_host.provider.agreed == 2 and len(builtin_host.provider.calls) == 3
     # Said to be over all the same, with nothing carried out for it.
-    assert builtin_host.provider.over == [1, 2]
+    assert builtin_host.provider.over == [1, 3]
 
     # A call that is refused before anything is agreed to is not one to end.
     builtin_host.permissions.set_asker(Asker("deny"))
     builtin_host.provider.closed_by_user = True
     await _call(builtin_host, other_grant, "browser_navigate_page", {"url": "https://example.com"})
-    assert builtin_host.provider.over == [1, 2]
+    assert builtin_host.provider.over == [1, 3]
 
 
 async def test_the_browser_forbidden_in_the_settings_while_the_user_was_asked_stays_closed(builtin_host):
