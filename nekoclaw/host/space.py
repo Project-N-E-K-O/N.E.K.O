@@ -1966,12 +1966,29 @@ def _set_aside_name(source: Path) -> Path:
 
 
 def _bring_up_to(copy: Path, original: Path) -> None:
-    """Make a copy of a directory hold what the original holds now: files written anew, and none that are gone."""
+    """Make a copy of a directory hold what the original holds now: files written anew, and none that are gone.
+
+    Raises OSError when the copy does not hold the same files in the end;
+    the original is then the only place that has them all.
+    """
+    # What is a file in the one and a directory in the other is taken out
+    # of the copy first: copied over a directory of its name, a file would
+    # land inside it.
+    for directory, directories, names in os.walk(original):
+        inside = copy / Path(directory).relative_to(original)
+        for name in names:
+            if (inside / name).is_dir() and not (inside / name).is_symlink():
+                shutil.rmtree(inside / name)
+        for name in directories:
+            if (inside / name).is_file() or (inside / name).is_symlink():
+                (inside / name).unlink()
     shutil.copytree(original, copy, dirs_exist_ok=True)
-    there = {name for name, _written, _size in _files_of(original)}
+    held = {name: size for name, _written, size in _files_of(original)}
     for name, _written, _size in _files_of(copy):
-        if name not in there:
+        if name not in held:
             (copy / name).unlink()
+    if {name: size for name, _written, size in _files_of(copy)} != held:
+        raise OSError(f"the copy of {original.name} does not hold what was saved last")
 
 
 def _files_of(root: Path) -> list[tuple[str, int, int]]:

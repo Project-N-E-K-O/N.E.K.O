@@ -2546,3 +2546,81 @@ def test_what_a_directory_holds_is_not_told_when_part_of_it_cannot_be_looked_at(
 
     with pytest.raises(OSError):
         _files_of(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The twenty-sixth review round
+# ---------------------------------------------------------------------------
+
+
+def test_a_directory_the_user_made_a_file_of_while_it_was_copied_is_that_file_at_the_target(tmp_path, monkeypatch):
+    import shutil
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "notes").mkdir(parents=True)
+    (source / "notes" / "old.md").write_text("An old note.", encoding="utf-8")
+    (source / "memory").mkdir()
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+
+    def saved() -> None:
+        # The directory is gone, a file has its name; and a file became a directory.
+        shutil.rmtree(source / "notes")
+        (source / "notes").write_text("All my notes in one file now.", encoding="utf-8")
+        (source / "memory" / "stack.md").unlink()
+        (source / "memory" / "stack.md").mkdir()
+        (source / "memory" / "stack.md" / "part.md").write_text("FastAPI.", encoding="utf-8")
+
+    _two_volumes(monkeypatch, source, target, after_the_copy=saved)
+
+    _move(source, target)
+
+    assert (target / "notes").read_text(encoding="utf-8") == "All my notes in one file now."
+    assert (target / "memory" / "stack.md" / "part.md").read_text(encoding="utf-8") == "FastAPI."
+    assert sorted(path.relative_to(target).as_posix() for path in target.rglob("*") if path.is_file()) == [
+        "memory/stack.md/part.md",
+        "notes",
+    ]
+    assert sorted(item.name for item in source.parent.iterdir()) == []
+
+
+def test_a_copy_that_does_not_hold_what_was_saved_last_does_not_let_the_original_go(tmp_path, monkeypatch):
+    import errno
+    import os
+    import shutil
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+    rename, copy = os.replace, shutil.copytree
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if Path(first).name.startswith(".removing-") and str(second) == str(source):
+            raise PermissionError(13, "something has its name by now")
+        return rename(first, second)
+
+    def copied(first, second, *args, **kwargs):
+        if kwargs.get("dirs_exist_ok"):
+            # Says it copied, and left a file out.
+            return second
+        result = copy(first, second, *args, **kwargs)
+        if Path(first) == source:
+            (source / "memory" / "export.md").write_text("CSV.", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "copytree", copied)
+
+    with pytest.raises(OSError, match="does not hold what was saved last"):
+        _move(source, target)
+
+    kept = source.parent / ".removing-Budget app"
+    assert (kept / "memory" / "export.md").read_text(encoding="utf-8") == "CSV."
+    assert (kept / ".keep").is_file()
