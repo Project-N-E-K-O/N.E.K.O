@@ -3075,8 +3075,14 @@ async def test_a_new_entry_that_could_not_be_read_back_is_kept_and_has_its_line(
 async def test_a_new_entry_that_could_not_be_written_is_not_kept_and_has_no_line(space, root, monkeypatch):
     from utils import file_utils
 
+    write = file_utils.atomic_write_text
+    entry = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+
     def refuse(path, text, *args, **kwargs):
-        raise PermissionError(13, "in use")
+        # Only the entry: its index could be written.
+        if Path(path) == entry:
+            raise PermissionError(13, "in use")
+        return write(path, text, *args, **kwargs)
 
     monkeypatch.setattr(file_utils, "atomic_write_text", refuse)
     monkeypatch.setattr("nekoclaw.host.space._WRITE_RETRY_SECONDS", 0)
@@ -3088,3 +3094,107 @@ async def test_a_new_entry_that_could_not_be_written_is_not_kept_and_has_no_line
     assert not (root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md").exists()
     index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
     assert not index.exists() or "stack.md" not in index.read_text(encoding="utf-8")
+
+
+def test_a_change_counts_as_made_when_what_the_user_saved_right_after_has_it(space, root, monkeypatch):
+    root.mkdir(parents=True)
+    path = root / "MEMORY.md"
+    path.write_text("- one\n", encoding="utf-8")
+    read = Path.read_text
+    reads: list[int] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            reads.append(len(reads) + 1)
+            if len(reads) == 2:
+                # The first look after it was replaced: the user saves it at
+                # that moment, with what was written and a line of their own.
+                with open(path, "a", encoding="utf-8") as handle:
+                    handle.write("- theirs\n")
+            if 2 <= len(reads) <= 4:
+                raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    given: list[str] = []
+
+    def change(text: str) -> str:
+        given.append(text)
+        return text if "- two" in text else text + "- two\n"
+
+    changed = space._edit_text(path, change)
+
+    monkeypatch.undo()
+    # Made again to what the user saved, where there was nothing left to do: written by this all the same.
+    assert given == ["- one\n", "- one\n- two\n- theirs\n"]
+    assert changed is True
+    assert path.read_text(encoding="utf-8") == "- one\n- two\n- theirs\n"
+
+
+# ---------------------------------------------------------------------------
+# The thirtieth review round
+# ---------------------------------------------------------------------------
+
+
+def test_the_marks_of_what_stands_in_a_text_are_those_of_its_parts_one_or_several_in_a_row():
+    from nekoclaw.host.space import _digest, _standing_marks
+
+    body = "  Intro, indented  \n\nFirst.  \nstill first\n \t\n## 2026-11-15\n\n第二段。\n\n\nLast\n"
+    lines = body.split("\n")
+    firsts = [n for n, line in enumerate(lines) if line.strip() and (n == 0 or not lines[n - 1].strip())]
+    lasts = [n for n, line in enumerate(lines) if line.strip() and (n + 1 == len(lines) or not lines[n + 1].strip())]
+    # Each as the text itself would be marked when it is filed.
+    expected = {_digest("\n".join(lines[first : last + 1])) for first in firsts for last in lasts if last >= first}
+
+    assert len(firsts) == 5 and len(expected) == 15
+    assert _standing_marks(body) == expected
+    assert _digest("First.  \nstill first\n \t\n## 2026-11-15") in expected
+    assert _standing_marks("") == set() and _standing_marks(" \n\n\t\n") == set()
+
+
+async def test_a_note_that_still_stands_with_more_written_around_it_in_the_console_is_not_added_again(space, root, clock):
+    await space.submit(_commission(id="c-1"), _lesson("Notes", "A note"))
+    await space.edit_entry("notes", DEFAULT_PROJECT, content="Introduction\n\nA note\n\nAfterword")
+    clock.now += 86400
+
+    reply = await space.submit(_commission(id="c-2"), _lesson("Notes", "A note"))
+
+    assert reply == "already in notes.md in project _daily, word for word; nothing was added"
+    assert (await space.read_entry("notes", DEFAULT_PROJECT)).content.count("A note") == 1
+    # Made part of a sentence, it is no longer what was filed: its mark goes, and it is added.
+    await space.edit_entry("notes", DEFAULT_PROJECT, content="Introduction: A note, and more")
+    assert await space.submit(_commission(id="c-3"), _lesson("Notes", "A note")) == "added to notes.md in project _daily"
+    assert (await space.read_entry("notes", DEFAULT_PROJECT)).content.count("A note") == 2
+
+
+async def test_a_note_of_several_parts_still_stands_in_what_the_console_gives_with_other_line_ends(space, root, clock):
+    # Two parts, the first with the two spaces that break a line.
+    note = "First.  \nStill first.\n\nSecond."
+    await space.submit(_commission(id="c-1"), _lesson("Notes", note))
+    given = "Introduction\n\n" + note + "\n\nAfterword"
+    await space.edit_entry("notes", DEFAULT_PROJECT, content=given.replace("\n", "\r\n"))
+    clock.now += 86400
+
+    reply = await space.submit(_commission(id="c-2"), _lesson("Notes", note))
+
+    assert reply == "already in notes.md in project _daily, word for word; nothing was added"
+    assert (await space.read_entry("notes", DEFAULT_PROJECT)).content == given
+    # And the text as a whole is known as well, as it was given.
+    reply = await space.submit(_commission(id="c-3"), _lesson("Notes", given.replace("\n", "\r\n")))
+    assert reply == "already in notes.md in project _daily, word for word; nothing was added"
+
+
+async def test_a_text_is_told_again_whatever_its_line_ends_are(space, root, clock):
+    note = "Run the tests.\r\n\r\nThen lint."
+    assert await space.submit(_commission(id="c-1"), _lesson("Checks", note)) == "kept in project _daily as checks.md"
+    clock.now += 86400
+    # More than that one text in the entry, so that it is told by its mark and its place.
+    assert await space.submit(_commission(id="c-2"), _lesson("Checks", "Other note.")) == (
+        "added to checks.md in project _daily"
+    )
+
+    for text in (note, note.replace("\r\n", "\n"), note.replace("\r\n", "\r")):
+        reply = await space.submit(_commission(id="c-3"), _lesson("Checks", text))
+        assert reply == "already in checks.md in project _daily, word for word; nothing was added"
+
+    assert (await space.read_entry("checks", DEFAULT_PROJECT)).content.count("Then lint.") == 1

@@ -224,10 +224,19 @@ def _one_line(text: Any) -> str:
     return _WHITESPACE.sub(" ", str(text or "")).strip()
 
 
+def _plain_lines(text: str) -> str:
+    """Return a text with the line ends it is kept with.
+
+    What was filed is told again by its words: the same text with other
+    line ends is the same text.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _cut(text: Any, max_tokens: int) -> str:
     from utils.tokenize import truncate_to_tokens
 
-    return truncate_to_tokens(str(text or "").strip(), max_tokens).strip()
+    return truncate_to_tokens(_plain_lines(str(text or "")).strip(), max_tokens).strip()
 
 
 def _parse_document(text: str) -> _Document:
@@ -395,20 +404,38 @@ def _lines_as_text(lines: list[str]) -> str:
 
 
 def _standing_marks(body: str) -> set[str]:
-    """Return the marks of every text that stands in an entry between dated headings: one part, or several in a row.
+    """Return the marks of every text that stands in an entry by itself: one part of it, or several in a row.
 
-    For telling which of an entry's marks still mean something once its
-    text was replaced: a mark of a text that is no longer there is dropped,
-    or the marks would grow with every change.
+    A part is what stands between blank lines, which is how
+    ``_said_already`` tells that a text is there. For telling which of an
+    entry's marks still mean something once its text was replaced: a mark
+    of a text that is no longer there is dropped, or the marks would grow
+    with every change; one of a text that still stands, with more written
+    around it, is kept, or the same text would be added once more.
     """
-    headings = [(found.start(), found.end()) for found in _DATED_HEADING.finditer(body)]
-    starts = [0, *[stop for _start, stop in headings]]
-    stops = [*[start for start, _stop in headings], len(body)]
+    lines = body.split("\n")
+    firsts = [
+        number for number, line in enumerate(lines) if line.strip() and (number == 0 or not lines[number - 1].strip())
+    ]
+    lasts = {
+        number
+        for number, line in enumerate(lines)
+        if line.strip() and (number + 1 == len(lines) or not lines[number + 1].strip())
+    }
     marks: set[str] = set()
-    for first, start in enumerate(starts):
-        for stop in stops[first:]:
-            if body[start:stop].strip():
-                marks.add(_digest(body[start:stop]))
+    for first in firsts:
+        # One pass for all that begins here, each as ``_digest`` would mark
+        # it: without the white space before it and after it.
+        running = hashlib.sha256()
+        # The white space a line ends in: part of a text only when more follows.
+        held = ""
+        for number in range(first, len(lines)):
+            line = lines[number].lstrip() if number == first else lines[number]
+            said = line.rstrip()
+            running.update((held + ("\n" if number > first else "") + said).encode("utf-8"))
+            held = line[len(said) :]
+            if number in lasts:
+                marks.add(running.copy().hexdigest()[:12])
     return marks
 
 
@@ -543,7 +570,7 @@ class TaskAgentSpace:
         from utils.file_utils import atomic_write_text
 
         # Written in text mode, which makes the line ends the platform's own.
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = _plain_lines(text)
         last: Exception | None = None
         for attempt in range(_WRITE_ATTEMPTS):
             try:
@@ -605,7 +632,7 @@ class TaskAgentSpace:
                 self._put_text(path, changed)
             except _NotAsWritten:
                 # As ``_put_text`` wrote it, which is how it is read here.
-                put = changed.replace("\r\n", "\n").replace("\r", "\n")
+                put = _plain_lines(changed)
                 continue
             return True
         raise OSError(f"{path.name} kept changing while it was being written")
@@ -1133,6 +1160,9 @@ class TaskAgentSpace:
         An entry of an archived project is named as for ``list_entries``
         and changed where it is: the project stays archived.
         """
+        if content is not None:
+            # As it is kept, so that what stands in it is told as what was filed.
+            content = _plain_lines(content)
 
         def work() -> Entry | None:
             scope = self._scope(project, archive_year)
