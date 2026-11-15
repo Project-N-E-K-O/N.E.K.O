@@ -121,7 +121,7 @@ wire-format 路径例外：provider 自家的 worker 内部（如 `gemini_tts_wo
 2. cross-cutting 文件不再随 provider 数量膨胀，符合"core 层必须是 general 接口"的代码风格规则。
 3. registry 自举（`_BUILTIN_PROVIDER_MODULES` + 模块尾部 `ensure_builtin_native_voice_providers_loaded()`）保证任何 import registry 的代码都看到 populated 表，cross-cutting caller 不可能漏 bootstrap 触发空 registry 静默 fall-through 到外部 TTS。
 
-检测方法：`grep -rnE "core_api_type ==|api_type ==" utils/config_manager/ main_routers/characters_router/ main_logic/core/ main_logic/tts_client/`（这四个都是目录，要递归搜），结果不应该出现 native voice provider 的 key（'gemini' / 'qwen' / ...）作为 RHS——除非是注册 worker resolver 那行（tts_client 注册时写字面量是必须的）。
+检测方法：`grep -rnE "core_api_type ==|api_type ==" utils/config_manager/ main_routers/characters_router/ main_logic/core/ main_logic/tts_client/`（这四个都是目录，要递归搜），结果不应该出现 native voice provider 的 key（'gemini' / 'qwen' / ...）作为 RHS——除非是注册 worker resolver 那行（tts_client 注册时写字面量是必须的）。⚠️ 这条命令现在不是零命中：`main_logic/tts_client/__init__.py` 的 `get_tts_worker` 末尾还有一串按 `core_api_type` 选默认 worker 的既有分支（`free` / `step` / `glm` / `gemini` / `openai` / `grok`），另有几处 `free`、`mimo` 相关的判断。检查的是你的改动有没有**新增**命中：对比改动前后的输出。
 
 ## 架构：单进程 + 事件循环零阻塞
 
