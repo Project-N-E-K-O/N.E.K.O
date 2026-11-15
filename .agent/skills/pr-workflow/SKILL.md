@@ -83,7 +83,7 @@ description: 维护者处理 PR 的流程和判断标准：在提交者的分支
 
 ## PR 描述
 
-- 改了 `app/`、`main_logic/`、`main_routers/`、`memory/` 下的 `*.py`，开 PR 时就把「回归报告」写进描述；计入上限的文件超过 20 个要写「不拆分理由」。规则见 `.agent/rules/neko-guide.md`，本地预验见 `references/ci-and-gates.md`。
+- 改了高风险目录（`scripts/check_pr_report.py` 的 `WATCHED_PREFIXES`）下的 `*.py`，开 PR 时就把「回归报告」写进描述；计入上限的文件超过 20 个要写「不拆分理由」。规则见 `.agent/rules/neko-guide.md`，本地预验见 `references/ci-and-gates.md`。
 - 动到模型调用的改动，描述里带改动前后的调用次数、token、延迟对比（见 `maintainer-collaboration`）。
 - 改已开 PR 的描述：先 `gh pr view <N> --json body --jq .body` 拉线上正文，在它上面改。拿开 PR 时的本地旧稿覆盖，会抹掉机器人或别人后来追加的内容。
 - 写完回读一次，确认章节标题还在，再本地跑一遍描述门禁。

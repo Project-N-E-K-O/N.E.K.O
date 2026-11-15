@@ -39,7 +39,7 @@ description: 在本仓库跑测试、写测试、写护栏测试、做变异验�
 | `tests/unit/*.test.js` | `unit-test-shards.yml` 的 frontend-contract (Node) | 按通配收集，pytest 不收集这些文件 |
 | `tests/frontend/*.cjs`、`static/*.test.cjs` | 同上那一步的**手列清单**，加 `unit-tests.yml` 里 React chat job 点名的几个、`frontend/react-neko-chat` 的 `npm test` | 另有一部分由 `tests/unit` 里的 pytest 用例调起 |
 | `frontend/react-neko-chat` 的类型检查和 vitest、`frontend/plugin-manager` 的 vitest 和启动 e2e | `unit-tests.yml` | |
-| `plugin/tests` | `plugin-tests.yml` | 只在改了 `plugin/**`、`utils/process_creation.py`、`pyproject.toml`、`uv.lock` 时触发 |
+| `plugin/tests` | `plugin-tests.yml` | 在 PR 上按路径过滤，清单见 `pr-workflow` 的 `references/ci-and-gates.md` |
 | `scripts/check_*.py` 静态门 | `analyze.yml` | |
 | `tests/unit` 随机顺序 | `random-order-tests.yml` | 定时跑，不挡 PR |
 

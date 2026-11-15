@@ -39,7 +39,7 @@ query($endCursor: String) {
 }'
 ```
 
-- `first` 是线程的根评论（回复、去重都按它的 id），`last` 是线程最后一条评论（判断处理过没有时比的是它）。
+- `first` 是线程的根评论（回复、去重都按它的 id），`last` 是线程最后一条评论（判断处理过没有时比的是它）。这个查询只给每个线程的首尾两条。回复之前把线程里的全部评论读一遍（把 `comments(first: 1)` 换成 `comments(first: 100)`，或者在 `pulls/{n}/comments` 里按 `in_reply_to_id` 筛）：评审者连发几条时，中间的只看首尾是看不到的。
 - ⚠️ 变量名必须叫 `$endCursor`，`gh` 按这个名字注入游标。写成别的名字会无限重拉第一页、不退出、白烧额度，所以外面套 `timeout`。
 - `reviewThreads(last: 100)` 或不分页的 `first: 100`，在线程超过 100 个的 PR 上会静默漏掉一批。
 - 顺带看 `totalCount`，和上次比有没有变多。

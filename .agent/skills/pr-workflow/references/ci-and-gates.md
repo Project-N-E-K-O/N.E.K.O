@@ -21,18 +21,22 @@
 
 ## 只有 base 是 main 的 PR 才会自动跑 CI
 
-`analyze.yml`、`unit-tests.yml`、`unit-test-shards.yml`、`plugin-tests.yml`、`pr-report-gate.yml` 的 `pull_request` 都限定了 `branches: [main]`。PR 叠在别的分支上时这些都不触发，PR 页面上看起来像「没有失败」。
+`analyze.yml`、`unit-tests.yml`、`unit-test-shards.yml`、`plugin-tests.yml`、`runtime-process-model.yml`、`wake-word-runtime.yml`、`pr-report-gate.yml` 这七个工作流的 `pull_request` 都限定了 `branches: [main]`。PR 叠在别的分支上时这些都不触发，PR 页面上看起来像「没有失败」。
 
-- 叠在别的分支上的 PR，开出来和每次推送后手动触发：
+- 叠在别的分支上的 PR，开出来和每次推送后手动触发。除 `pr-report-gate.yml` 外的六个都有 `workflow_dispatch`：
 
   ```bash
+  # 每次都触发
   gh workflow run analyze.yml --ref <分支>
   gh workflow run unit-tests.yml --ref <分支>
   gh workflow run unit-test-shards.yml --ref <分支>
-  gh workflow run plugin-tests.yml --ref <分支>
+  # 在 PR 上按路径过滤的三个：改动碰到各自 paths 里的任何一项才需要触发
+  gh workflow run plugin-tests.yml --ref <分支>            # plugin/**、utils/process_creation.py、pyproject.toml、uv.lock
+  gh workflow run runtime-process-model.yml --ref <分支>   # launcher.py、launcher_core/**、utils/parent_guard.py、utils/single_instance.py、utils/port_utils.py、pyproject.toml、uv.lock
+  gh workflow run wake-word-runtime.yml --ref <分支>       # main_logic/voice_input/wake_word/**、scripts/wake_word/ 下的构建脚本和补丁
   ```
 
-  这四个有 `workflow_dispatch`。`plugin-tests.yml` 在 PR 上按路径过滤，手动触发不过滤：改动碰到它 `paths` 里列的任何一项就要触发，目前是 `plugin/**`、`utils/process_creation.py`、`pyproject.toml`、`uv.lock` 和这个工作流文件自己（依赖变了也会影响插件的运行环境），以工作流文件为准。`pr-report-gate.yml` 没有 `workflow_dispatch`，只能等 base 改回 main，在那之前用下面「PR 描述门禁」一节的命令本地预验。
+  后三个手动触发时不按路径过滤，所以要自己对着各工作流文件的 `paths` 判断（上面注释里是目前的清单，以工作流文件为准；依赖清单变了也算，因为它会影响运行环境）。`pr-report-gate.yml` 没有 `workflow_dispatch`，只能等 base 改回 main，在那之前用下面「PR 描述门禁」一节的命令本地预验。
 - 手动触发时，`analyze.yml` 里和 base 比差异的几步不跑（`check_i18n_sync.py`、`check_docstring_no_cjk.py`、`check_prompt_zh_tw.py`、`check_no_nonascii_asset_names.py` 的 `--base`）。要在本地对 PR 的 base 和 `origin/main` 各跑一遍。
 - 汇报时不要把「PR 页面没有红」说成 CI 通过。写明手动触发了哪几个、结果如何。
 - 上游 PR 合并后把 base 改成 main，之后每次推送自动跑全部工作流。
@@ -56,7 +60,7 @@ gh api "repos/<owner>/<repo>/actions/runs?head_sha=<完整提交号>" --jq '.wor
 
 `.github/workflows/pr-report-gate.yml` 调 `scripts/check_pr_report.py`，检查的是 PR 描述。规则写在 `.agent/rules/neko-guide.md` 的「提交规范」一节，补充几点：
 
-- 触发「回归报告」的目录以脚本里的 `WATCHED_PREFIXES` 为准，目前是 `app/`、`main_logic/`、`main_routers/`、`memory/`。
+- 触发「回归报告」的目录以脚本里的 `WATCHED_PREFIXES` 为准。`neko-guide.md` 里抄了一份清单，两边不一致时信脚本。
 - 「不拆分理由」的 locale 豁免只认 `static/locales` 和 `frontend/plugin-manager/src/i18n/locales` 这两处。`docs/` 下的多语言 `.md` 是计入的，纯文档的多语言同步 PR 超过 20 个文件照样要写。
 - 段落按标题里的关键词定位。`不适用`、`无`、`TBD` 这类占位符在触发条件成立时算没填，HTML 注释不算内容。
 - 本地预验：
