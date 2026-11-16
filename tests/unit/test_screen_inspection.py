@@ -515,7 +515,10 @@ async def test_optional_empty_screen_fields_do_not_block_capture(empty):
     first = await m.read_screen(manager, {
         "snapshot_id": empty, "window_id": empty, "region": empty,
     })
-    assert not first["is_error"]
+    assert not first.get("is_error", False)
+    assert first["output"]["status"] == "captured"
+    assert first["output"]["kind"] == "overview"
+    assert len(first["images"]) == 1
     sid = first["output"]["snapshot_id"]
     window = await m.read_screen(manager, {
         "snapshot_id": sid, "window_id": "window:9", "region": empty,
