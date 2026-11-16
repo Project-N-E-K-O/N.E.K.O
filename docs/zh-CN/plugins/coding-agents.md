@@ -23,34 +23,114 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
 
 <CodingAgentOnboarding section="prompt" />
 
+## 怎么打开插件管理
+
+路线 A 和路线 B 都要用到插件管理。在 N.E.K.O 主界面这样打开：
+
+![在 N.E.K.O 主界面打开插件管理](/images/plugins/onboarding/neko-open-plugin-manager.png)
+
+1. 把鼠标移到猫娘身上，点出现的圆形「猫爪」按钮。
+2. 在弹出的面板里打开「猫爪总开关」和「用户插件」开关。
+3. 鼠标悬停「用户插件」那一行，点旁边出现的「管理面板」，插件管理就会在新窗口打开。
+
 ## 4. 路线 A：让 AI 从头带你做
 
-1. 用你的 Agent **打开一个空文件夹**（任意位置，专门用来放这个项目）。
+1. 用你的 Agent **打开一个空文件夹**（任意位置，专门放这个项目；具体怎么打开，看第 2 节你选的 Agent 卡片里的官方教程）。
 2. 把上面「路线 A」那段话发给它。
-3. AI 请求执行操作时点「允许」；它会自己下载、安装、配置，准备时间比较长。等它告诉你网址后打开网页，第一次按提示在界面里填一次模型 API。
-4. 在网页的插件管理里点「启动」试用你的插件；之后 AI 每次改完会自动重载。
-5. 下次想继续，对 AI 说「帮我启动 N.E.K.O」即可。
+3. AI 请求执行操作时点「允许」。它会自己下载和安装，准备时间比较长，耐心等。
+4. 打开它给你的网址。第一次要填一次模型 API（还没有 API Key 的话，可以按页面顶部提示选「免费版」）：
 
-![插件页右上角有「启动」「重载」按钮](/images/plugins/onboarding/neko-plugin-detail.png)
+   ![第一次打开网页时填写模型 API](/images/plugins/onboarding/neko-api-setup.png)
+
+   1. 选择一个核心 API 服务商。
+   2. 填入你的 API Key。
+   3. 点「保存设置」。
+
+5. 打开插件管理（方法见[怎么打开插件管理](#怎么打开插件管理)）。
+6. 在插件列表里点你的插件：
+
+   ![插件列表里点进你的插件](/images/plugins/onboarding/neko-plugin-list.png)
+
+   1. 点你的插件卡片，进入详情页。
+
+7. 点「启动」试用：
+
+   ![插件详情页的启动和重载按钮](/images/plugins/onboarding/neko-plugin-detail.png)
+
+   1. 点「启动」运行插件。
+   2. 之后 AI 改完会自动重载；没生效时再点「重载」。
+
+8. 之后直接跟 AI 说想改什么就行；下次想继续，对它说「帮我启动 N.E.K.O」。
 
 ## 5. 路线 B：用已装好的 N.E.K.O
 
-1. 先装好 Git：[官网下载页](https://git-scm.com/downloads)选你的系统，用安装包一路下一步。
-2. 打开 N.E.K.O 插件管理，左侧进「插件制作工作台」，点「新建插件」：填名称和 ID、选好父目录、点「预览项目」确认文件齐全后点「创建插件」。**记住项目文件夹的位置**。
+1. 先装好 Git（路线 B 卡片里有官网下载链接，用安装包一路下一步）。
+2. 打开插件管理（方法见[怎么打开插件管理](#怎么打开插件管理)）。
+3. 左侧点「插件制作工作台」，再点「新建插件」：
 
-   ![在插件制作工作台新建插件，预览标准文件](/images/plugins/onboarding/neko-studio-new.png)
+   ![插件制作工作台入口和新建插件按钮](/images/plugins/onboarding/neko-studio-entry.png)
 
-3. 用你的 Agent **打开这个插件项目文件夹**。
-4. 把上面「路线 B」那段话发给它。
-5. 插件页点「启动」试用，之后每次 AI 改完点「重载」刷新效果；出错就把报错原样发给 AI。
+   1. 左侧的「插件制作工作台」。
+   2. 右上角「新建插件」按钮。
 
-![插件页右上角有「启动」「重载」按钮](/images/plugins/onboarding/neko-plugin-detail.png)
+4. 填好名称和 ID，点「选择文件夹」选一个放项目的地方：
+
+   ![填写插件名称、ID 并选择文件夹](/images/plugins/onboarding/neko-studio-new.png)
+
+   1. 插件名称（随便起）。
+   2. 插件 ID（小写字母开头）。
+   3. 「选择文件夹」选项目放哪。
+
+5. 点「预览项目」确认文件齐全（能看到 AGENTS.md），再点「创建插件」：
+
+   ![预览标准项目文件后点创建插件](/images/plugins/onboarding/neko-studio-preview.png)
+
+   1. 预览里框出的 AGENTS.md 和 CLAUDE.md 就是给 AI 看的说明书。
+   2. 确认后点「创建插件」。
+
+6. 创建完成。**记住项目文件夹的位置**：
+
+   ![创建完成后的项目资料和源码目录](/images/plugins/onboarding/neko-studio-created.png)
+
+   1. 「源码目录」就是项目文件夹的位置。
+   2. 点「打开文件夹」可以直接看到里面的文件。
+   3. 点「在插件管理中打开」可以跳到插件详情页。
+
+7. 用你的 Agent **打开这个项目文件夹**，把上面「路线 B」那段话发给它。
+8. 点「在插件管理中打开」进入插件详情页，点「启动」试用；之后每次 AI 改完，点「重载」看效果：
+
+   ![插件详情页的启动和重载按钮](/images/plugins/onboarding/neko-plugin-detail.png)
+
+   1. 点「启动」运行插件。
+   2. 每次 AI 改完，点「重载」刷新效果。
+
+9. 如果出错，打开「日志」页，把报错复制下来原样发给 AI：
+
+   ![插件日志页里复制报错](/images/plugins/onboarding/neko-plugin-logs.png)
+
+   1. 点「日志」标签页。
+   2. 复制标着 ERROR 的那几行发给 AI。
 
 ## 6. 想分享给别人
 
-路线 B 在工作台点「打包下载」，路线 A 直接让 AI 帮你打包，都能得到一个 `.neko-plugin` 安装包发给朋友，对方在「插件管理」页点「导入」就能用。正式发布到插件市场需要源码版——走路线 A 的可以直接发布，看[发布插件](/zh-CN/plugins/cli)。
+**路线 B**：在工作台你的项目页面点「打包下载」：
 
-![朋友拿到 .neko-plugin 安装包后，在插件管理页点导入](/images/plugins/onboarding/neko-import-dialog.png)
+![工作台里的打包下载按钮](/images/plugins/onboarding/neko-studio-package.png)
+
+1. 点「打包下载」得到一个 `.neko-plugin` 安装包。
+
+**路线 A**：直接让 AI 帮你打包。
+
+朋友拿到 `.neko-plugin` 文件后，在插件管理点「导入」，把文件拖进去就能用：
+
+![插件管理页的导入按钮](/images/plugins/onboarding/neko-import.png)
+
+![导入对话框里拖入插件包](/images/plugins/onboarding/neko-import-dialog.png)
+
+1. 在插件管理页点「导入」。
+2. 把 `.neko-plugin` 文件拖进框里，或点击选择文件。
+
+正式发布到插件市场需要源码版——只有走路线 A 的可以直接发布，看[发布插件](/zh-CN/plugins/cli)。
 
 > 如果新建的项目里没有 AGENTS.md，说明你的 N.E.K.O 版本较旧，请先更新到最新版本再重试。
 
