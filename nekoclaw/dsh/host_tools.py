@@ -91,6 +91,10 @@ class _Offer:
     tools: dict[str, AgentTool] = field(default_factory=dict)
 
 
+# ``handle``/``call`` without an offer: what the session is offered when they run.
+_NOW: Any = object()
+
+
 def _definition(tool: AgentTool) -> dict[str, Any]:
     return {"name": tool.name, "description": tool.description, "inputSchema": dict(tool.parameters)}
 
@@ -177,16 +181,30 @@ class HostTools:
         offer = self._offers.get(session_id)
         return list(offer.tools) if offer is not None else []
 
+    def offer(self, session_id: str) -> _Offer | None:
+        """Return what a session is offered right now, for ``handle`` to keep to; see there."""
+        return self._offers.get(session_id)
+
     # -- JSON-RPC ---------------------------------------------------------
 
-    async def handle(self, session_id: str, payload: Any) -> Any:
-        """Answer one JSON-RPC message of a session, or a list of them. None for notifications."""
-        if isinstance(payload, list):
-            answers = [answer for answer in [await self._handle_one(session_id, item) for item in payload] if answer]
-            return answers or None
-        return await self._handle_one(session_id, payload)
+    async def handle(self, session_id: str, payload: Any, *, offer: _Offer | None = _NOW) -> Any:
+        """Answer one JSON-RPC message of a session, or a list of them. None for notifications.
 
-    async def _handle_one(self, session_id: str, message: Any) -> dict[str, Any] | None:
+        ``offer`` is what the session was offered when its token was looked
+        at (``offer()``), by default what it is offered now. Its tools are
+        carried out only while they are still the session's: one closed
+        meanwhile, and opened again under the same id, is another session.
+        """
+        if offer is _NOW:
+            offer = self._offers.get(session_id)
+        if isinstance(payload, list):
+            answers = [
+                answer for answer in [await self._handle_one(session_id, offer, item) for item in payload] if answer
+            ]
+            return answers or None
+        return await self._handle_one(session_id, offer, payload)
+
+    async def _handle_one(self, session_id: str, offer: _Offer | None, message: Any) -> dict[str, Any] | None:
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
             return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
         is_notification = "id" not in message
@@ -207,13 +225,16 @@ class HostTools:
         elif method == "ping":
             result = {}
         elif method == "tools/list":
-            offer = self._offers.get(session_id)
             result = {"tools": [_definition(tool) for tool in offer.tools.values()] if offer is not None else []}
         elif method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments")
             result = await self.call(
-                session_id, str(name or ""), arguments if isinstance(arguments, dict) else {}, call_id=str(request_id)
+                session_id,
+                str(name or ""),
+                arguments if isinstance(arguments, dict) else {},
+                call_id=str(request_id),
+                offer=offer,
             )
         else:
             if is_notification:
@@ -225,12 +246,18 @@ class HostTools:
             return None
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
-    async def call(self, session_id: str, name: str, arguments: dict[str, Any], *, call_id: str = "") -> dict[str, Any]:
-        """Carry out one tool call and return its MCP result."""
+    async def call(
+        self, session_id: str, name: str, arguments: dict[str, Any], *, call_id: str = "", offer: _Offer | None = _NOW
+    ) -> dict[str, Any]:
+        """Carry out one tool call and return its MCP result; see ``handle`` for ``offer``."""
         from config.nekoclaw_settings import DSH_HOST_TOOL_SECONDS
         from config.prompts.prompts_nekoclaw_dsh import DSH_TOOL_TOOK_TOO_LONG
 
-        offer = self._offers.get(session_id)
+        current = self._offers.get(session_id)
+        if offer is _NOW:
+            offer = current
+        elif offer is not current:
+            return _result("the session that made this call was closed", error=True)
         tool = offer.tools.get(name) if offer is not None else None
         if tool is None:
             return _result(f"no tool named {name}", error=True)

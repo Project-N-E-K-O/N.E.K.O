@@ -324,6 +324,68 @@ async def test_a_call_whose_token_is_revoked_while_its_body_comes_in_is_refused(
     assert answer.status_code == 401 and calls == []
 
 
+async def test_a_call_whose_session_is_opened_again_before_it_is_carried_out_is_refused(
+    endpoint, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    listener, calls = endpoint
+    tools = listener._tools
+    token = listener.issue("s1")
+    session_of = listener._session_of
+    looks: list[str | None] = []
+
+    def again() -> None:
+        # The session is closed and one of the same id opened, between the
+        # look at the token and the call being carried out.
+        listener.revoke("s1")
+        tools.close("s1")
+        _open(tools, tmp_path)
+        listener.issue("s1")
+
+    def watched(offered: str | None) -> str | None:
+        looks.append(offered)
+        if len(looks) == 2:
+            asyncio.get_running_loop().call_soon(again)
+        return session_of(offered)
+
+    monkeypatch.setattr(listener, "_session_of", watched)
+    call = _request("tools/call", {"name": "report", "arguments": {"status": "ready", "summary": "x"}})
+    async with httpx.AsyncClient(trust_env=False) as client:
+        answer = await client.post(listener.tools_url, headers={"Authorization": f"Bearer {token}"}, json=call)
+
+    assert answer.status_code == 200 and answer.json()["result"]["isError"] is True
+    assert "closed" in answer.json()["result"]["content"][0]["text"] and calls == []
+
+
+async def test_a_batch_whose_session_is_opened_again_midway_carries_out_no_more_of_it(tmp_path: Path) -> None:
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+    host = _callbacks(calls)
+    reporting, go_on = asyncio.Event(), asyncio.Event()
+
+    async def slow_report(session_id: str, payload: dict[str, Any]) -> None:
+        calls.append(("report", session_id, payload))
+        reporting.set()
+        await go_on.wait()
+
+    host.report = slow_report
+    tools = HostTools(host)
+    _open(tools, tmp_path)
+    batch = [
+        _request("tools/call", {"name": "report", "arguments": {"status": "progress", "summary": "x"}}, 1),
+        _request("tools/call", {"name": "note_lesson", "arguments": {"title": "t", "content": "c", "category": "lesson"}}, 2),
+    ]
+    handling = asyncio.ensure_future(tools.handle("s1", batch))
+    await asyncio.wait_for(reporting.wait(), 10)
+
+    # Closed, and one of the same id opened, while the first call of the batch runs.
+    tools.close("s1")
+    _open(tools, tmp_path)
+    go_on.set()
+    first, second = await asyncio.wait_for(handling, 10)
+
+    assert first["result"]["isError"] is False
+    assert second["result"]["isError"] is True and [name for name, _session, _payload in calls] == ["report"]
+
+
 async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoint) -> None:
     listener, _calls = endpoint
     one, other = listener.issue_process_token(), listener.issue_process_token()

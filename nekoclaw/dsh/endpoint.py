@@ -267,7 +267,10 @@ class LocalEndpoint:
         except (ValueError, UnicodeDecodeError):
             await respond_json(send, 400, {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
             return
-        work = asyncio.ensure_future(self._tools.handle(session_id, payload))
+        # What the session is offered as of the look at the token, nothing
+        # awaited in between: a session closed and opened again under the
+        # same id before the call is carried out is not this one.
+        work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
         gone = asyncio.ensure_future(_wait_disconnect(receive))
         try:
             await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
