@@ -384,6 +384,22 @@ async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_
     assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
 
 
+async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is(hosts, tmp_path):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    commission_id = await _dispatch(host, "sort the photos")
+    await wait_status(host, commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    # What tied it to its session in dsh was removed meanwhile (being old, say).
+    Path((await host.ledger.get(commission_id)).session_dir, DSH_SESSION_NAME).unlink()
+
+    assert await host.tell(commission_id, "it is on drive D")
+    done = await wait_status(host, commission_id, "done")
+
+    assert done.runtime == RUNTIME_DSH
+    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+
+
 def _last_user_message(messages: list[dict[str, Any]]) -> str:
     (text,) = [message["content"] for message in messages if message["role"] == "user"][-1:]
     return text if isinstance(text, str) else "".join(part.get("text", "") for part in text)
@@ -560,6 +576,39 @@ async def test_a_ruling_on_a_search_is_only_for_what_the_user_was_asked_about(ho
     with pytest.raises(RuntimeError):
         await host.task_agents._cb_web_search(commission_id, {"queries": ["cats"]})
     assert len(asked) == 3
+    release.set()
+    await wait_status(host, commission_id, "done")
+
+
+@pytest.mark.parametrize("changed", ["switch", "permission"])
+async def test_a_search_allowed_before_its_call_is_refused_when_the_settings_forbid_it_since(
+    hosts, tmp_path, monkeypatch, changed
+):
+    llm, release = _waiting_llm()
+    host = _host(hosts, tmp_path, llm, Installation())
+    await host.permission_store.set_mode("plugin_entry", "always_ask")
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(commission_id)
+        return "once"
+
+    host.permissions.set_asker(asker)
+    commission_id = await _working(host)
+    await host.task_agents._cb_permission(
+        commission_id, {"tool": "web_search", "category": "host_tool", "arguments": {"queries": ["cats"]}, "workdir": "w", "default": "allow"}
+    )
+
+    # Switched off, or denied, after the user allowed it and before the call came.
+    if changed == "switch":
+        monkeypatch.setattr(host.task_agents._registry, "plugins_enabled", lambda: False)
+    else:
+        await host.permission_store.set_mode("plugin_entry", "deny")
+    with pytest.raises(RuntimeError) as failure:
+        await host.task_agents._cb_web_search(commission_id, {"queries": ["cats"]})
+
+    expected = "plugins are switched off" if changed == "switch" else "the permission settings forbid this"
+    assert expected in str(failure.value) and len(asked) == 1
     release.set()
     await wait_status(host, commission_id, "done")
 

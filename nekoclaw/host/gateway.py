@@ -979,9 +979,22 @@ class CapabilityGateway:
         from utils.tokenize import truncate_to_tokens
 
         # Ruled on before the call was made (``clear_call``), or now.
-        permitted = self._take_cleared(commission.id, capability.id, arguments) or await self._permit(
-            commission, capability
-        )
+        permitted = self._take_cleared(commission.id, capability.id, arguments)
+        if (
+            permitted is not None
+            and permitted.refusal is None
+            and await self._permissions.forbidden(capability.permission, capability.permission_key)
+        ):
+            # Allowed a moment ago, forbidden by the settings since: a deny
+            # set meanwhile wins, as it does over an answer. Nobody is asked again.
+            if permitted.agreement is not None:
+                self._registry.browser_reopen_agreement_over(permitted.agreement)
+            await self._ledger.append_event(
+                commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
+            )
+            return _text(DENIED_BY_SETTINGS, error=True)
+        if permitted is None:
+            permitted = await self._permit(commission, capability)
         if permitted.refusal is not None:
             return permitted.refusal
 

@@ -2524,6 +2524,24 @@ async def test_a_call_refused_before_it_is_made_is_answered_as_one_refused_at_th
     assert len(denied) == 1
 
 
+async def test_a_call_allowed_before_it_is_made_is_refused_when_the_settings_forbid_it_since(host, server):
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+
+    await host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "mcp__notes__search"})
+    # Denied after the user allowed it and before the call came: the settings win.
+    await host.permission_store.set_mode("mcp_server", "deny", key="notes")
+    result = await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+
+    assert result["isError"] and "the permission settings forbid this" in _text(result)
+    assert server.calls == [] and len(asker.asked) == 1 and grant.cleared == {}
+    denied = [event for event in await host.ledger.events(commission.id) if event.type == "capability_denied"]
+    assert len(denied) == 1
+
+
 async def test_what_was_ruled_on_does_not_wait_for_its_call_for_ever(host, server, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.05)
     _mcp(server)

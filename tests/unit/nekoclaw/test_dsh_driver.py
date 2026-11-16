@@ -602,6 +602,77 @@ async def test_a_process_that_goes_while_the_note_of_a_new_session_is_written_is
     assert driver.runtime.session_ids == []
 
 
+async def test_a_start_that_failed_late_does_not_take_back_what_a_later_one_of_the_same_id_holds(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, _calls = _host()
+    driver = dsh(host)
+    write = DshRuntime._note
+    later: list[dict[str, Any]] = []
+    once: list[bool] = []
+
+    async def note_once_dsh_is_gone(self: DshRuntime, session: Any) -> None:
+        if not once:
+            once.append(True)
+            await asyncio.to_thread(session.process.connection.kill)
+            for _attempt in range(200):
+                if not self.session_ids:
+                    break
+                await asyncio.sleep(0.02)
+            # Gone with its process, unannounced: a start of the same id is not refused meanwhile.
+            later.append(await driver.started(make_spec(tmp_path / "again", "s1")))
+        await write(self, session)
+
+    (tmp_path / "again").mkdir()
+    monkeypatch.setattr(DshRuntime, "_note", note_once_dsh_is_gone)
+    await driver.runtime.start(make_spec(tmp_path))
+
+    # The second started; then the first is reported as having failed.
+    answers = [event["type"] for event in driver.events.events if event["type"] in ("started", "error")]
+    assert answers == ["started", "error"] and later[0]["type"] == "started"
+    # The first, given up after the second began, leaves the second its tools and its token.
+    assert driver.runtime.session_ids == ["s1"] and driver.runtime.endpoint._by_session.get("s1") is not None
+    await driver.run("s1", '!host report {"status": "ready", "summary": "done"}')
+    (result,) = [row["text"] for row in driver.record("service-call")]
+    assert result.startswith("report delivered (ready).")
+
+
+async def test_a_note_being_written_when_shutdown_gives_its_start_up_is_written_before_shutdown_returns(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.dsh import driver as driver_module
+
+    monkeypatch.setattr(driver_module, "_SHUTDOWN_OPENING_WAIT_SECONDS", 0.2)
+    writing, go_on = threading.Event(), threading.Event()
+    written: list[bool] = []
+    write = driver_module._write_session_file
+
+    def slow_write(*args: Any, **kwargs: Any) -> None:
+        writing.set()
+        go_on.wait(10)
+        write(*args, **kwargs)
+        written.append(True)
+
+    monkeypatch.setattr(driver_module, "_write_session_file", slow_write)
+    driver = dsh()
+    starting = asyncio.ensure_future(driver.runtime.start(make_spec(tmp_path)))
+    while not writing.is_set():
+        await asyncio.sleep(0.01)
+
+    shutting = asyncio.ensure_future(driver.runtime.shutdown())
+    await asyncio.sleep(0.5)
+    try:
+        # A note written after the start was over could replace the next one's.
+        assert not shutting.done()
+    finally:
+        go_on.set()
+    await asyncio.wait_for(shutting, 10)
+    await asyncio.wait_for(starting, 10)
+
+    assert written == [True]
+    assert [event["command"] for event in driver.events.of("error", "s1")] == ["start"]
+
+
 async def test_two_starts_that_waited_for_the_same_close_start_the_session_once(tmp_path: Path, dsh) -> None:
     driver = dsh(FAKE_DSH_CLOSE="slow")
     spec = make_spec(tmp_path)

@@ -42,6 +42,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
@@ -117,7 +118,7 @@ class AcpConnection:
     @property
     def pid(self) -> int | None:
         process = self._process
-        return process.pid if process is not None and process.poll() is None else None
+        return process.pid if process is not None and _poll(process) is None else None
 
     @property
     def alive(self) -> bool:
@@ -126,7 +127,7 @@ class AcpConnection:
     @property
     def returncode(self) -> int | None:
         process = self._process
-        return process.poll() if process is not None else None
+        return _poll(process) if process is not None else None
 
     async def open(self, argv: Sequence[str], *, cwd: str, env: Mapping[str, str]) -> None:
         """Start the agent process. Raises ``OSError`` when it cannot be started."""
@@ -153,8 +154,9 @@ class AcpConnection:
         threading.Thread(target=self._read_output, args=(loop,), name="acp-agent-output", daemon=True).start()
         threading.Thread(target=self._read_errors, args=(loop,), name="acp-agent-errors", daemon=True).start()
         threading.Thread(target=self._write_input, name="acp-agent-input", daemon=True).start()
-        # Not left to the end of its output: what it started may hold that open.
-        threading.Thread(target=_end_group_once_gone, args=(self._process,), name="acp-agent-group", daemon=True).start()
+        if sys.platform != "win32":
+            # Not left to the end of its output: what it started may hold that open.
+            threading.Thread(target=_end_group_once_gone, args=(self._process,), name="acp-agent-group", daemon=True).start()
 
     @staticmethod
     def _spawn(argv: list[str], cwd: str, env: dict[str, str]) -> "subprocess.Popen[bytes]":
@@ -358,7 +360,7 @@ class AcpConnection:
         process = self._process
         if process is None:
             return
-        if process.poll() is None:
+        if _poll(process) is None:
             self._outbox.put(_CLOSE_INPUT)
             exited = await asyncio.to_thread(_wait, process, grace)
             if not exited:
@@ -378,16 +380,26 @@ class AcpConnection:
     def kill(self) -> None:
         """Kill the process at once, with what it started. Blocking."""
         process = self._process
-        if process is not None and process.poll() is None:
+        if process is not None and _poll(process) is None:
             kill_tree(process)
 
 
 def _wait(process: "subprocess.Popen[bytes]", seconds: float) -> bool:
-    """Blocking: wait for a process; return whether it exited."""
-    try:
-        process.wait(seconds)
-    except subprocess.TimeoutExpired:
-        return False
+    """Blocking: wait for a process; return whether it exited. On POSIX its exit is collected by ``_poll``."""
+    if sys.platform == "win32":
+        try:
+            process.wait(seconds)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+    deadline = time.monotonic() + seconds
+    delay = 0.005
+    while _poll(process) is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 0.05)
     return True
 
 
@@ -404,51 +416,98 @@ def _discard(process: "subprocess.Popen[bytes]") -> None:
     _wait(process, 5.0)
 
 
-def _end_group_once_gone(process: "subprocess.Popen[bytes]") -> None:
-    """Blocking, a thread of its own: once the agent exited, kill what it left in its process group.
+def _poll(process: "subprocess.Popen[bytes]") -> int | None:
+    """``process.poll()``; on POSIX through ``_collect``, the one way the agent's exit is collected here."""
+    if sys.platform == "win32":
+        return process.poll()
+    _collect(process)
+    return process.returncode
 
-    On POSIX the exit is waited for without collecting it (``WNOWAIT``):
-    until it is collected, the agent's process id, and so its group's,
-    cannot be another process's. Nothing to kill on Windows.
+
+def _collect(process: "subprocess.Popen[bytes]") -> None:
+    """POSIX: when the process exited and its exit is not collected yet, kill what is left in its group, then collect it.
+
+    The agent was started with ``start_new_session``: its group's id is its
+    process id, which is its own until its exit is collected. So the group
+    is killed before that, never after: by then the id may be another
+    process's. Done under the lock ``Popen`` collects under, so that
+    nothing collects it in between; a caller that finds the lock taken
+    leaves it to whoever holds it.
+    """
+    lock = getattr(process, "_waitpid_lock", None)
+    if lock is not None and not lock.acquire(blocking=False):
+        return
+    try:
+        if process.returncode is not None or not _exited(process):
+            return
+        _kill_group(process)
+        try:
+            _pid, status = os.waitpid(process.pid, 0)
+        except ChildProcessError:
+            # Collected by something else after all: nothing to tell.
+            return
+        process.returncode = os.waitstatus_to_exitcode(status)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _exited(process: "subprocess.Popen[bytes]") -> bool:
+    """POSIX: whether a process exited and its exit is not collected yet (a zombie)."""
+    if hasattr(os, "waitid"):
+        try:
+            return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        except ChildProcessError:
+            return False
+    # No ``waitid`` (macOS before Python 3.13): the system's process table says.
+    import psutil
+
+    try:
+        return psutil.Process(process.pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.Error:
+        return False
+
+
+def _end_group_once_gone(process: "subprocess.Popen[bytes]") -> None:
+    """Blocking, POSIX, a thread of its own: once the agent exited, kill what it left in its group and collect its exit.
+
+    Its end is waited for without collecting it (``WNOWAIT``); where the
+    system has no way to do that it is looked for four times a second.
+    Whoever notices the end first does the same (``_collect``).
     """
     if hasattr(os, "waitid"):
         try:
             os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
         except OSError:
-            # Collected already (ChildProcessError): see ``_end_group``.
+            # Collected already, which ends the group first.
             return
-    else:
-        process.wait()
-    _end_group(process)
+    while _poll(process) is None:
+        time.sleep(0.01 if hasattr(os, "waitid") else 0.25)
+
+
+def _kill_group(process: "subprocess.Popen[bytes]") -> None:
+    """POSIX: send the process group a process leads SIGKILL. Only while its exit is not collected; see ``_collect``."""
+    import signal
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        # ProcessLookupError: nothing is left of the group.
+        pass
 
 
 def _end_group(process: "subprocess.Popen[bytes]") -> None:
-    """Blocking: on POSIX, kill the process group a process leads, with whatever is in it; nothing on Windows.
-
-    The agent was started with ``start_new_session``: its group's id is its
-    process id. That is used only while the process is not collected yet
-    (``Popen`` has not taken its exit status): until then no other process
-    can have that id. ``Popen`` collects under its lock, held here meanwhile.
-    """
-    if sys.platform == "win32":
-        return
+    """Blocking, POSIX: kill the process group of a process that is not collected yet, with whatever is in it."""
     import contextlib
-    import signal
 
     with getattr(process, "_waitpid_lock", None) or contextlib.nullcontext():
-        if process.returncode is not None:
-            # Collected: its id may be another process's by now, and is left alone.
-            return
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            # ProcessLookupError: nothing is left of the group.
-            pass
+        if process.returncode is None:
+            _kill_group(process)
 
 
 def kill_tree(process: "subprocess.Popen[bytes]") -> None:
     """Kill a process and the processes it started. Blocking."""
-    if process.poll() is not None:
+    if _poll(process) is not None:
         return
     if sys.platform == "win32":
         taskkill = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "taskkill.exe")

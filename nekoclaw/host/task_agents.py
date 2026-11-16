@@ -777,12 +777,13 @@ class TaskAgentManager:
             def first_message(runtime_name: str) -> str:
                 if prompt is None:
                     parts = [commission.dispatch_text, *carried]
-                elif begun_in is not None and begun_in != runtime_name:
+                elif begun_in != runtime_name:
                     # Taken up again where nothing of it was said: what was
                     # said is in the other runtime (began in dsh, dsh is gone
-                    # or would not take it). It starts over, told what the
-                    # commission is; a task agent started by another is told
-                    # no more than a title otherwise.
+                    # or would not take it), or nowhere any more (removed,
+                    # being old). It starts over, told what the commission
+                    # is; a task agent started by another is told no more
+                    # than a title otherwise.
                     parts = [commission.dispatch_text, *carried, prompt]
                 else:
                     parts = [*carried, prompt]
@@ -1847,6 +1848,14 @@ class TaskAgentManager:
         )
         return None if decision.allow else (decision.reason or "permission denied")
 
+    async def _search_forbidden_now(self) -> str | None:
+        """Return why the settings forbid the web search as of now, or None; nobody is asked."""
+        if not self._registry.plugins_enabled():
+            return "web search is not available: plugins are switched off"
+        if await self._permissions.forbidden("plugin_entry"):
+            return DENIED_BY_SETTINGS
+        return None
+
     async def _cb_ask_user(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         questions = list(payload.get("questions") or [])
         answer = await self._ask(session_id, {"kind": "questions", "questions": questions})
@@ -1884,6 +1893,10 @@ class TaskAgentManager:
             # user was asked then, if they had to be. Only for what they
             # were asked about: an allowance for once is not another search's.
             refusal = ruled[1]
+            if refusal is None:
+                # Settings changed since win, as they do over an answer
+                # (plugins switched off, the entry denied). Nobody is asked again.
+                refusal = await self._search_forbidden_now()
         else:
             refusal = await self._search_refusal(commission)
         if refusal is not None:

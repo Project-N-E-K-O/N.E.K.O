@@ -298,6 +298,44 @@ async def test_an_install_cancelled_while_it_unpacks_waits_for_the_unpacking(
     assert not dsh.installed()
 
 
+async def test_an_install_cancelled_before_it_downloads_is_not_left_downloading(
+    tmp_path: Path, release, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import threading
+
+    data = release(_release())
+    looked, go_on = threading.Event(), threading.Event()
+    tag = install_module.platform_tag
+    asked: list[bool] = []
+
+    def platform_first() -> Any:
+        # Asked once by ``installed()``, then by the install itself.
+        asked.append(True)
+        if len(asked) == 2:
+            looked.set()
+        return tag()
+
+    def root() -> Path:
+        # Where it goes is looked up after the platform: held there.
+        if looked.is_set():
+            go_on.wait(10)
+        return tmp_path / "dsh"
+
+    monkeypatch.setattr(install_module, "platform_tag", platform_first)
+    dsh = DshInstallation(root, transport=_serving({"first.test": data}, []))
+    installing = asyncio.ensure_future(dsh.install())
+    await _until(looked)
+    await asyncio.sleep(0.05)
+
+    installing.cancel()
+    go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await installing
+
+    assert dsh.status()["downloading"] is False
+
+
 async def test_an_uninstall_cancelled_while_it_removes_waits_for_the_removing(
     tmp_path: Path, release, monkeypatch: pytest.MonkeyPatch
 ) -> None:

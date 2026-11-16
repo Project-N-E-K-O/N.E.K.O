@@ -77,6 +77,7 @@ from nekoclaw.runtime import protocol
 from nekoclaw.runtime.host import HostBridge, NoHost
 from nekoclaw.runtime.permissions import GATEWAY_CALL_CATEGORY, HOST_TOOL_CALL_CATEGORY
 from nekoclaw.runtime.protocol import EventSink
+from utils.asyncio_executor import to_thread_through_cancellation
 
 logger = logging.getLogger(__name__)
 
@@ -723,8 +724,10 @@ class DshRuntime:
         """
         if self._sessions.get(session.id) is session:
             del self._sessions[session.id]
-        self._tools.close(session.id)
-        self._endpoint.revoke(session.id)
+            # By id: only while it is the session of that id. Given back once
+            # already, another of the same id may hold them by now.
+            self._tools.close(session.id)
+            self._endpoint.revoke(session.id)
         process = session.process
         if process is not None and session.slot >= 0:
             self._forwarder.release(process.token, profile.slot_model(session.slot))
@@ -968,7 +971,9 @@ class DshRuntime:
     async def _note(self, session: _Session) -> None:
         """Write the note that ties a session directory to its dsh session."""
         spec = session.spec
-        await asyncio.to_thread(
+        # Waited for also when this is cancelled (``shutdown`` giving up a
+        # start): a note written late would replace what came after it.
+        await to_thread_through_cancellation(
             _write_session_file,
             spec.session_dir,
             session.dsh_id,

@@ -164,78 +164,104 @@ async def test_notifications_reach_the_agent(agent, tmp_path: Path) -> None:
     assert [line.count("one") + 2 * line.count("two") for line in target.read_text().splitlines()] == [1, 2]
 
 
-async def test_what_an_agent_left_in_its_process_group_is_ended_once_it_exited(agent, monkeypatch: pytest.MonkeyPatch) -> None:
-    from nekoclaw.dsh import acp
-
-    ended: list[int | None] = []
-    monkeypatch.setattr(acp, "_end_group", lambda process: ended.append(process.returncode))
-    client = await agent()
-    # On POSIX this holds the agent's output open: its end does not come with the agent's.
-    await client.connection.request("leave", {"seconds": 3, "keep_output": True})
-
-    client.connection.notify("exit", {"code": 0})
-    for _attempt in range(250):
-        if ended:
-            break
-        await asyncio.sleep(0.02)
-
-    # What it started may outlive it in the group it led (POSIX): that is ended
-    # as soon as the agent is gone, without anyone having to close the connection,
-    # and before its exit is collected (its id cannot be another process's till then).
-    assert ended == [0 if sys.platform == "win32" else None]
+POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX's")
 
 
 def _running(pid: int) -> bool:
     """POSIX: whether a process runs (a zombie, killed and not yet collected, does not)."""
+    import psutil
+
     try:
-        with open(f"/proc/{pid}/stat", encoding="ascii") as stat:
-            return stat.read().rsplit(")", 1)[-1].split()[0] != "Z"
-    except FileNotFoundError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    except OSError:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        return True
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX's")
+async def _until_gone(pid: int) -> bool:
+    for _attempt in range(250):
+        if not _running(pid):
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+@POSIX_ONLY
 @pytest.mark.parametrize("keep_output", [True, False])
 async def test_an_agent_that_exits_takes_what_it_left_in_its_group_with_it(agent, keep_output: bool) -> None:
     client = await agent()
+    # Holding the agent's output open, or not: its end does not wait for that.
     left = await client.connection.request("leave", {"seconds": 60, "keep_output": keep_output})
     assert _running(left)
 
     client.connection.notify("exit", {"code": 0})
-    for _attempt in range(250):
-        if not _running(left):
-            break
-        await asyncio.sleep(0.02)
 
-    assert not _running(left)
+    assert await _until_gone(left)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX's")
+@POSIX_ONLY
+@pytest.mark.parametrize("noticed_by", ["returncode", "close"])
+async def test_what_an_agent_left_is_ended_whoever_notices_its_exit_first(
+    agent, monkeypatch: pytest.MonkeyPatch, noticed_by: str
+) -> None:
+    import psutil
+
+    from nekoclaw.dsh import acp
+
+    # Not the thread that waits for the exit: something else gets there first.
+    monkeypatch.setattr(acp, "_end_group_once_gone", lambda process: None)
+    killed_while_its_own: list[bool] = []
+    kill_group = os.killpg
+
+    def watched(group: int, signal: int) -> None:
+        # The group's id is the agent's own until its exit is collected: a zombie, still listed.
+        try:
+            killed_while_its_own.append(psutil.Process(group).status() == psutil.STATUS_ZOMBIE)
+        except psutil.NoSuchProcess:
+            killed_while_its_own.append(False)
+        kill_group(group, signal)
+
+    monkeypatch.setattr(os, "killpg", watched)
+    client = await agent()
+    left = await client.connection.request("leave", {"seconds": 60, "keep_output": False})
+
+    client.connection.notify("exit", {"code": 3})
+    if noticed_by == "returncode":
+        for _attempt in range(250):
+            if client.connection.returncode is not None:
+                break
+            await asyncio.sleep(0.02)
+        assert client.connection.returncode == 3
+    else:
+        await asyncio.sleep(0.3)
+        await client.connection.close(5.0)
+
+    assert await _until_gone(left)
+    assert killed_while_its_own == [True]
+
+
+@POSIX_ONLY
 @pytest.mark.parametrize("collected", [True, False])
-def test_the_group_of_a_process_is_killed_only_while_its_id_is_still_its_own(
+async def test_the_group_of_a_process_is_killed_only_while_its_id_is_still_its_own(
     monkeypatch: pytest.MonkeyPatch, collected: bool
 ) -> None:
     import subprocess
 
     from nekoclaw.dsh import acp
 
-    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    process = await asyncio.to_thread(subprocess.Popen, [sys.executable, "-c", "pass"], start_new_session=True)
+    for _attempt in range(250):
+        if acp._exited(process):
+            break
+        await asyncio.sleep(0.02)
+    assert acp._exited(process)
     if collected:
         process.wait()
-    else:
-        # Exited, its exit status not taken: its id is still its own.
-        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
     killed: list[int] = []
     monkeypatch.setattr(os, "killpg", lambda group, signal: killed.append(group))
 
     acp._end_group(process)
 
+    # Collected, its id may be another process's by now; until then it is still its own.
     assert killed == ([] if collected else [process.pid])
     process.wait()
 

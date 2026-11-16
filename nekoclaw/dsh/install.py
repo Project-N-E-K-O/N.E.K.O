@@ -330,12 +330,14 @@ class DshInstallation:
             tag = await asyncio.to_thread(platform_tag)
             if tag is None:
                 raise DshUnavailable("dsh is not released for this platform")
+            root = await asyncio.to_thread(self.root)
             wheel = DSH_WHEELS[tag]
+            # From here on it counts as downloading, till the ``finally`` below.
             self._last_error = None
             self._progress = (0, int(wheel["size"]))
             # Removed whatever comes of it: also half a file, when the disk
             # filled up or the install was cancelled in the middle.
-            archive = await asyncio.to_thread(self.root) / "download" / str(wheel["file"])
+            archive = root / "download" / str(wheel["file"])
             try:
                 await self._download(wheel, archive, on_progress)
                 # A thread is not stopped by cancelling who waits for it: this
