@@ -90,6 +90,39 @@ class _Offer:
 
     tools: dict[str, AgentTool] = field(default_factory=dict)
     running: dict[asyncio.Task[Any], _Cancelled] = field(default_factory=dict)
+    # The tasks that wait for the host on behalf of its calls; see ``_SessionHost``.
+    asking: set[asyncio.Task[Any]] = field(default_factory=set)
+    closed: bool = False
+
+
+class _SessionHost:
+    """The host as one session's tools reach it: what they ask of it is stopped with the session.
+
+    A tool's call of the host runs in a task of its own (``run_cancellable``),
+    which the call's own cancellation reaches only on its way out. One
+    woken already (its answer in) would take a step more meanwhile, after
+    the session closed: ``HostTools.close`` cancels these tasks themselves.
+    """
+
+    def __init__(self, host: HostBridge, offer: _Offer) -> None:
+        self._host = host
+        self._offer = offer
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        return self._host.capabilities
+
+    async def call(self, session_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._offer.closed:
+            raise ToolError("the session that made this call was closed")
+        task = asyncio.current_task()
+        if task is not None:
+            self._offer.asking.add(task)
+        try:
+            return await self._host.call(session_id, name, payload)
+        finally:
+            if task is not None:
+                self._offer.asking.discard(task)
 
 
 # ``handle``/``call`` without an offer: what the session is offered when they run.
@@ -135,11 +168,12 @@ class HostTools:
         from nekoclaw.runtime.tools.web import build_web_tools
 
         schemas = tool_schemas()
+        offer = _Offer()
         context = ToolContext(
             session_id=session_id,
             workdir=Path(workdir),
             spill=SpillStore(Path(session_dir) / "outputs"),
-            host=self._host,
+            host=_SessionHost(self._host, offer),
             limits=RuntimeLimits(),
             supports_images=False,
             platform=sys.platform,
@@ -171,18 +205,21 @@ class HostTools:
             tools[WAIT_TOOL] = define_tool(schemas[WAIT_TOOL], wait_agent)
 
         hidden = NOT_OFFERED | set(disabled)
-        offered = {name: tool for name, tool in sorted(tools.items()) if name not in hidden}
-        self._offers[session_id] = _Offer(offered)
-        return list(offered)
+        offer.tools = {name: tool for name, tool in sorted(tools.items()) if name not in hidden}
+        self._offers[session_id] = offer
+        return list(offer.tools)
 
     def close(self, session_id: str) -> None:
         """Take a session's tools back, and stop its calls under way (with what they asked of the host)."""
         offer = self._offers.pop(session_id, None)
         if offer is None:
             return
+        offer.closed = True
         for work, token in list(offer.running.items()):
             token.cancelled = True
             work.cancel()
+        for asking in list(offer.asking):
+            asking.cancel()
 
     def names(self, session_id: str) -> list[str]:
         offer = self._offers.get(session_id)

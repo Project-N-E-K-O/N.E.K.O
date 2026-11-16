@@ -432,6 +432,36 @@ async def test_closing_a_session_stops_its_calls_under_way_with_what_they_asked_
     assert result["isError"] is True and "closed" in result["content"][0]["text"] and stopped == [True]
 
 
+async def test_a_call_of_the_host_that_got_its_answer_just_before_its_session_closed_goes_no_further(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+    host = _callbacks(calls)
+    asking, answered = asyncio.Event(), asyncio.Event()
+    went_on: list[str] = []
+
+    async def report(session_id: str, payload: dict[str, Any]) -> None:
+        asking.set()
+        await answered.wait()
+        # What it does once it has its answer: under its id is another session by now.
+        went_on.append(session_id)
+
+    host.report = report
+    tools = HostTools(host)
+    _open(tools, tmp_path)
+    calling = asyncio.ensure_future(tools.call("s1", "report", {"status": "progress", "summary": "x"}))
+    await asyncio.wait_for(asking.wait(), 10)
+
+    # Its answer is in, and it goes on at its next step; the session is closed and opened again first.
+    answered.set()
+    tools.close("s1")
+    _open(tools, tmp_path)
+    result = await asyncio.wait_for(calling, 10)
+    await asyncio.sleep(0.05)
+
+    assert went_on == [] and result["isError"] is True and "closed" in result["content"][0]["text"]
+
+
 async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoint) -> None:
     listener, _calls = endpoint
     one, other = listener.issue_process_token(), listener.issue_process_token()
