@@ -84,6 +84,7 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
+let _customTtsDraft = null;
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
@@ -1522,6 +1523,14 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         && previousProvider !== provider) {
         modelIdInput.value = '';
     }
+    if (modelType === 'tts' && previousProvider === 'custom' && provider !== 'custom'
+        && userInitiated && !_isLoadingSavedConfig) {
+        _customTtsDraft = {
+            url: urlInput.value,
+            model: modelIdInput.value,
+            key: getRealKey(keyInput),
+        };
+    }
     // Also remember follow modes that return early below.
     sel.dataset.currentProvider = provider;
 
@@ -1638,6 +1647,15 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             setKeyReadonly(keyInput, '');
         }
         applyFixedModelProviderUi(modelType, provider);
+    } else if (modelType === 'tts' && provider === 'deepseek') {
+        // Keep the display-only endpoint out of the next custom configuration.
+        _customTtsDraft ??= { url: '', model: '', key: '' };
+        if (urlInput) {
+            urlInput.value = getTtsProviderMeta(provider)?.default_url || '';
+            urlInput.setAttribute('readonly', 'readonly');
+        }
+        setModelIdFieldHidden(modelType, true);
+        setKeyReadonly(keyInput, getEffectiveAssistKey(provider), provider);
     } else if (modelType === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
         // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
         // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
@@ -1675,7 +1693,6 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
         if (modelIdInput) modelIdInput.removeAttribute('readonly');
-        setModelIdFieldHidden(modelType, false);
         setKeyEditable(keyInput);
     } else {
         // Specific provider
@@ -1703,6 +1720,12 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
     }
     if (modelType === 'tts') {
+        if (provider === 'custom' && _customTtsDraft && !_isLoadingSavedConfig) {
+            urlInput.value = _customTtsDraft.url;
+            modelIdInput.value = _customTtsDraft.model;
+            setMaskedInput(keyInput, _customTtsDraft.key);
+            _customTtsDraft = null;
+        }
         updateTtsProviderFieldVisibility(provider);
     }
 }
@@ -1719,7 +1742,39 @@ function updateTtsProviderFieldVisibility(provider) {
     if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
     if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
     if (isGsv) updateGptSovitsTutorialLink();
+    const voiceInput = document.getElementById('ttsVoiceId');
+    if (voiceInput) {
+        const isDeepSeek = provider === 'deepseek';
+        const key = isDeepSeek ? 'api.ttsDeepSeekVoiceExamplePlaceholder' : 'api.ttsVoiceExamplePlaceholder';
+        const fallback = isDeepSeek ? 'stella / tide' : 'e.g., Chinese Female, alloy';
+        const translated = window.t?.(key);
+        voiceInput.dataset.i18nPlaceholder = key;
+        voiceInput.placeholder = translated && translated !== key ? translated : fallback;
+    }
     updateTtsProtocolHint(provider);
+    updateTtsVoiceFallbackHint();
+}
+
+/**
+ * 自定义 TTS 没填 Voice ID 时，没设音色的角色不会走自定义端点（文字和语音模式都用核心 API 自带的声音），
+ * 这里把这条规则告诉用户，避免误以为自定义 TTS 没生效。
+ */
+function updateTtsVoiceFallbackHint() {
+    const hint = document.getElementById('tts-voice-fallback-hint');
+    if (!hint) return;
+    const provider = document.getElementById('ttsModelProvider')?.value || '';
+    const voice = (document.getElementById('ttsVoiceId')?.value || '').trim();
+    if (provider !== 'custom' || voice) {
+        hint.style.display = 'none';
+        hint.textContent = '';
+        return;
+    }
+    const key = 'api.ttsCustomVoiceFallbackHint';
+    const translated = window.t ? window.t(key) : '';
+    hint.textContent = translated && translated !== key
+        ? translated
+        : 'Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。';
+    hint.style.display = 'block';
 }
 
 function updateTtsProtocolHint(provider) {
@@ -1764,6 +1819,10 @@ function updateGptSovitsTutorialLink() {
 window.addEventListener('localechange', updateGptSovitsTutorialLink);
 window.addEventListener('localechange', () => {
     updateTtsProtocolHint(document.getElementById('ttsModelProvider')?.value || '');
+    updateTtsVoiceFallbackHint();
+});
+document.addEventListener('input', (event) => {
+    if (event.target && event.target.id === 'ttsVoiceId') updateTtsVoiceFallbackHint();
 });
 
 /**
@@ -2635,6 +2694,7 @@ async function loadCurrentApiKey() {
     const assistApiSelect = document.getElementById('assistApiSelect');
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     _ttsConfigDirty = false;
+    _customTtsDraft = null;
 
     if (apiKeyInput) {
         setMaskedInput(apiKeyInput, '');
@@ -2852,7 +2912,15 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelUrl', data.ttsModelUrl);
             setInputValue('ttsModelId', data.ttsModelId);
             setSecretInputValue('ttsModelApiKey', data.ttsModelApiKey);
+            if (data.ttsModelProvider === 'deepseek') {
+                const savedUrl = (data.ttsModelUrl || '').trim();
+                // Earlier builds saved a DeepSeek endpoint into the shared custom TTS slot.
+                if (savedUrl && !/^\w+:\/\/api\.deepseek\.com(?:[/:?#]|$)/i.test(savedUrl)) {
+                    _customTtsDraft = { url: savedUrl, model: data.ttsModelId || '', key: data.ttsModelApiKey || '' };
+                }
+            }
             setInputValue('ttsVoiceId', data.ttsVoiceId);
+            updateTtsVoiceFallbackHint();
 
             // 加载 GPT-SoVITS 配置：启用状态以 ttsModelProvider 下拉为准，
             // 无下拉时回落旧 gptsovitsEnabled / localhost 启发式（兼容存量）
@@ -3335,6 +3403,7 @@ function confirmClearCustomApi() {
         onImageProviderChange();
     }
 
+    _customTtsDraft = null;
     // 清空 TTS Voice ID
     const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
     if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
@@ -3688,8 +3757,14 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
-    } else if (selectedTtsProvider === 'mimo') {
+    } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'deepseek') {
         payload.ttsProvider = selectedTtsProvider;
+        if (selectedTtsProvider === 'deepseek') {
+            // The fixed DeepSeek endpoint and Key Book entry are outside the shared TTS slot.
+            delete payload.ttsModelUrl;
+            delete payload.ttsModelApiKey;
+            delete payload.ttsModelId;
+        }
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {
@@ -3768,7 +3843,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         visited.add(visitKey);
         if (modelType === 'tts') {
             const ttsMeta = getTtsProviderMeta(providerMode);
-            if (ttsMeta && ttsMeta.editable_endpoint) return '';
+            if (providerMode === 'deepseek' || (ttsMeta && ttsMeta.editable_endpoint)) return '';
         }
 
         if (providerMode === 'follow_conversation') {

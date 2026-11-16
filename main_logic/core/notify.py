@@ -67,8 +67,6 @@ from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT,
     SESSION_INIT_PROMPT_AGENT,
-    AGENT_TASK_STATUS_RUNNING,
-    AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER,
     AGENT_TASKS_NOTICE,
     normalize_sys_prompt_locale,
@@ -230,24 +228,9 @@ class NotifyMixin:
         # prompts_sys keys: zh / zh-TW / en ... A short code would fold zh-TW into zh.
         _lang = normalize_sys_prompt_locale(self.user_language)
         if self._is_agent_enabled():
-            # Keep the current wrapper structure but revert prompt semantics:
-            # do not distinguish browser/computer/plugin in the initial capability text.
-            # Historical dynamic capability block kept for rollback:
-            # capability_parts = []
-            # if self.agent_flags.get('computer_use_enabled'):
-            #     capability_parts.append(_loc(AGENT_CAPABILITY_COMPUTER_USE, _lang))
-            # if self.agent_flags.get('browser_use_enabled'):
-            #     capability_parts.append(_loc(AGENT_CAPABILITY_BROWSER_USE, _lang))
-            # if self.agent_flags.get('user_plugin_enabled'):
-            #     capability_parts.append(_loc(AGENT_CAPABILITY_USER_PLUGIN_USE, _lang))
-            # caps_text = (
-            #     _loc(AGENT_CAPABILITY_SEPARATOR, _lang).join(capability_parts)
-            #     if capability_parts else _loc(AGENT_CAPABILITY_GENERIC, _lang)
-            # )
-            # prompt = _loc(SESSION_INIT_PROMPT_AGENT_DYNAMIC, _lang).format(
-            #     name=self.lanlan_name,
-            #     capabilities=caps_text,
-            # ) + self.lanlan_prompt
+            # The opening names no capabilities and no plugins, on purpose: a
+            # list here breaks character, and what can be done is answered by
+            # the task tools' receipts.
             prompt = (
                 _loc(SESSION_INIT_PROMPT_AGENT, _lang).format(name=self.lanlan_name)
                 + self.lanlan_prompt
@@ -258,15 +241,6 @@ class NotifyMixin:
                 + self.lanlan_prompt
             )
         if self._is_agent_enabled():
-            # Plugin summary (with plugin ids) is intentionally disabled to avoid
-            # exposing implementation identifiers in the general agent prompt.
-            # Keep method call removed here for deterministic prompt content.
-            # Historical prompt merge kept for rollback:
-            # plugin_prompt, active_tasks_prompt = await asyncio.gather(
-            #     self._fetch_plugin_summary_prompt(),
-            #     self._fetch_active_agent_tasks_prompt(),
-            # )
-            # prompt += plugin_prompt
             active_tasks_prompt = await self._fetch_active_agent_tasks_prompt()
             prompt += active_tasks_prompt
 
@@ -488,58 +462,30 @@ class NotifyMixin:
             )
 
     def _is_agent_enabled(self):
-        try:
-            gate_ok, _ = self._config_manager.is_agent_api_ready()
-        except Exception:
-            gate_ok = False
-        return (
-            gate_ok
-            and self.agent_flags["agent_enabled"]
+        """Whether NekoClaw is on for this session: the master switch and at least one capability.
+
+        This decides the opening sentence, the two task tools and the list of
+        tasks under way together, so a session never has one without the
+        others. The agent model's configuration is not asked for here:
+        plugins need none, and keyboard-and-mouse and browser control cannot
+        be switched on without it in the first place.
+        """
+        return bool(
+            self.agent_flags.get("agent_enabled", False)
             and (
-                self.agent_flags["computer_use_enabled"]
+                self.agent_flags.get("computer_use_enabled", False)
                 or self.agent_flags.get("browser_use_enabled", False)
                 or self.agent_flags.get("user_plugin_enabled", False)
-                or self.agent_flags.get("openclaw_enabled", False)
             )
         )
 
-    async def _fetch_plugin_summary_prompt(self) -> str:
-        """Plugin prompt segment is intentionally disabled for chat prompt minimalism."""
-        # This hook is kept for compatibility with older call sites.
-        # Disabled by product decision: do not include plugin IDs in agent prompt.
-        # Historical implementation kept for rollback:
-        # if not (self._is_agent_enabled() and self.agent_flags.get('user_plugin_enabled')):
-        #     return ""
-        # _lang = normalize_language_code(self.user_language, format='short')
-        # header = _loc(AGENT_PLUGINS_HEADER, _lang)
-        # count_tmpl = _loc(AGENT_PLUGINS_COUNT, _lang)
-        # try:
-        #     async with httpx.AsyncClient(timeout=httpx.Timeout(2.0, connect=1.0), proxy=None, trust_env=False) as client:
-        #         r = await client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins")
-        #         if r.status_code != 200:
-        #             return ""
-        #         data = r.json()
-        #         plugins = data.get("plugins", []) if isinstance(data, dict) else []
-        #         if not plugins:
-        #             return ""
-        #         if len(plugins) <= 5:
-        #             lines = []
-        #             for p in plugins:
-        #                 if not isinstance(p, dict):
-        #                     continue
-        #                 pid = p.get("id", "")
-        #                 if pid:
-        #                     lines.append(f"  - {pid}")
-        #             if lines:
-        #                 return header + "\n".join(lines) + "\n"
-        #         else:
-        #             return count_tmpl.format(count=len(plugins))
-        # except Exception as e:
-        #     logger.debug(f"Plugin summary retrieval failed; ignored: {e}")
-        return ""
-
     async def _fetch_active_agent_tasks_prompt(self) -> str:
-        """Query agent server for active tasks and return a prompt snippet."""
+        """Ask the agent server what is under way and return a prompt snippet.
+
+        A session is replaced every few turns and keeps no record of tasks;
+        the task brain's ledger does. Each new session is told from it what
+        she has going, including a question that still waits for the user.
+        """
         if not self._is_agent_enabled():
             return ""
         # Reuse internal_http_client singleton: agent-mode session initialization uses this path,
@@ -549,40 +495,22 @@ class NotifyMixin:
 
             client = get_internal_http_client()
             resp = await client.get(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}/tasks",
+                f"http://127.0.0.1:{TOOL_SERVER_PORT}/nekoclaw/brief",
+                params={"lanlan_name": self.lanlan_name, "language": self.user_language or ""},
                 timeout=1.5,
             )
             if resp.status_code != 200:
                 return ""
             data = resp.json()
-            tasks = data.get("tasks", [])
-            active = [t for t in tasks if t.get("status") in ("running", "queued")]
-            if not active:
+            lines = [str(line) for line in (data.get("lines") or []) if str(line).strip()]
+            if not lines:
                 return ""
             _lang = normalize_sys_prompt_locale(self.user_language)
-            lines = []
-            for t in active:
-                params = t.get("params") or {}
-                desc = (
-                    params.get("query")
-                    or params.get("instruction")
-                    or t.get("original_query")
-                    or t.get("id", "")[:8]
-                )
-                status = (
-                    _loc(AGENT_TASK_STATUS_RUNNING, _lang)
-                    if t.get("status") == "running"
-                    else _loc(AGENT_TASK_STATUS_QUEUED, _lang)
-                )
-                lines.append(f"  - [{status}] {desc}")
-            if len(lines) > 0:
-                return (
-                    _loc(AGENT_TASKS_HEADER, _lang)
-                    + "\n".join(lines)
-                    + _loc(AGENT_TASKS_NOTICE, _lang)
-                )
-            else:
-                return ""
+            return (
+                _loc(AGENT_TASKS_HEADER, _lang)
+                + "\n".join(f"  {line}" for line in lines)
+                + _loc(AGENT_TASKS_NOTICE, _lang)
+            )
         except Exception:
             return ""
 

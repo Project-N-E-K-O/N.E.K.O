@@ -67,6 +67,7 @@ Read [Getting Started with Plugin Development](./plugin-development) for the pac
 - [Publish a Plugin](/plugins/cli) — Upload to GitHub, submit for review, and publish new versions
 - [v0.9 Migration](./migration-v0.9) — Removed surfaces and exact replacements
 - [SDK Reference](./sdk-reference) — Base classes, context API, Result types
+- [Message Delivery](./push-message) — `push_message` / `finish` delivery semantics, size limits, and role placeholders
 - [Decorators](./decorators) — All available decorators
 - [Hosted UI](./hosted-ui) — Build TSX panels and Markdown guides
 - [Examples](./examples) — Complete working examples

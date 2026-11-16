@@ -17,7 +17,9 @@
 The contract tests in ``test_contract_plugin_selection.py`` state what plugin
 selection does and run against each implementation listed in
 ``SELECTION_IMPLS``. An implementation adapts its own code to the methods of
-``AnalyzerSelection`` below; the tests never look behind them.
+``NekoclawSelection`` below; the tests never look behind them. Until the
+analyzer was removed the same tests ran against it as well, which is how the
+rules were carried over unchanged.
 """
 
 from __future__ import annotations
@@ -87,93 +89,6 @@ class ScriptedSelectionModel:
             return _Reply(json.dumps(self._coarse))
         index = min(sum(1 for call in self.calls if call.stage == "fine") - 1, len(self._fine) - 1)
         return _Reply(json.dumps(self._fine[index], ensure_ascii=False))
-
-
-class AnalyzerSelection:
-    """The selection in use today: ``brain.task_executor`` and ``brain.plugin_filter``."""
-
-    name = "analyzer"
-
-    def __init__(self, monkeypatch: Any) -> None:
-        from brain.task_executor import DirectTaskExecutor
-
-        self._monkeypatch = monkeypatch
-        self._executor = object.__new__(DirectTaskExecutor)
-
-    # -- pure pieces -------------------------------------------------------
-
-    def entry_hidden(self, entry: Any) -> bool:
-        return self._executor._is_plugin_entry_agent_hidden(entry)
-
-    def visible_entries(self, plugin: Any) -> list[dict[str, Any]]:
-        return self._executor._agent_visible_plugin_entries(plugin)
-
-    def desc_lines(self, plugins: list[dict[str, Any]]) -> list[str]:
-        return self._executor._build_plugin_desc_lines(plugins)
-
-    def keyword_match(self, text: str, keywords: list[str]) -> bool:
-        from brain.plugin_filter import _match_keywords
-
-        return _match_keywords(text, keywords)
-
-    def stage1(self, text: str, plugins: list[dict[str, Any]], top_k: int = 10) -> tuple[list[str], list[str]]:
-        from brain.plugin_filter import stage1_filter
-
-        filtered, keyword_ids = stage1_filter(text, plugins, bm25_top_k=top_k)
-        return [str(item.get("id")) for item in filtered], keyword_ids
-
-    def corpus_text(self, plugin: dict[str, Any]) -> str:
-        from brain.plugin_filter import build_plugin_desc_text
-
-        return build_plugin_desc_text(plugin)
-
-    def annotate(self, plugins_desc: str, keyword_ids: list[str]) -> str:
-        from brain.plugin_filter import annotate_keyword_hits
-
-        return annotate_keyword_hits(plugins_desc, keyword_ids)
-
-    # -- the whole pass ----------------------------------------------------
-
-    async def select(
-        self,
-        user_text: str,
-        plugins: list[dict[str, Any]],
-        model: ScriptedSelectionModel,
-        *,
-        lang: str = "en",
-    ) -> SelectionRun:
-        from config.prompts.prompts_agent import USER_PLUGIN_SYSTEM_PROMPT
-        from config.prompts.prompts_sys import _loc
-
-        class _Tier:
-            def __init__(self, stage: str) -> None:
-                self._stage = stage
-
-            async def ainvoke(self, messages: list[dict[str, Any]]) -> _Reply:
-                return model.reply(self._stage, messages)
-
-        def get_llm(*, temperature: float = 0, max_completion_tokens: Any = None, tier: str = "summary") -> Any:
-            del temperature, max_completion_tokens
-            return _Tier("coarse" if tier == "emotion" else "fine")
-
-        self._monkeypatch.setattr(self._executor, "_get_llm", get_llm, raising=False)
-        conversation = f"LATEST_USER_REQUEST: {user_text}\nuser: {user_text}"
-        decision = await self._executor._assess_user_plugin(conversation, plugins, lang=lang)
-
-        fine_calls = [call for call in model.calls if call.stage == "fine"]
-        plugins_desc = ""
-        if fine_calls:
-            template = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=_SENTINEL)
-            plugins_desc = _between(fine_calls[0].system, template)
-        return SelectionRun(
-            plugins_desc=plugins_desc,
-            calls=list(model.calls),
-            plugin_id=decision.plugin_id,
-            entry_id=decision.entry_id,
-            plugin_args=decision.plugin_args,
-            executable=bool(decision.has_task and decision.can_execute),
-            reason=decision.reason,
-        )
 
 
 class NekoclawSelection:
@@ -269,6 +184,5 @@ class NekoclawSelection:
 
 
 SELECTION_IMPLS: dict[str, Any] = {
-    AnalyzerSelection.name: AnalyzerSelection,
     NekoclawSelection.name: NekoclawSelection,
 }

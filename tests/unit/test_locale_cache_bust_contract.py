@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-15-nekoclaw-browser-custom-tts-merge",
         "2026-11-13-chatgpt-review-main-merge",
         "2026-11-10-chatgpt-subscription",
         "2026-11-10-provider-cat-visit-merge",
@@ -76,6 +77,31 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-02-atlascloud-assist-provider-main-merge",
         "2026-11-10-air-basketball-shared-court",
         "2026-11-11-sync-evidence-notices",
+
+        "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
+        "2026-11-15-custom-tts-voice-fallback-hint",
+        "2026-11-14-nekoclaw-browser-theater-market-merge",
+        "2026-11-14-deepseek-tts-voice-placeholder",
+        "2026-11-13-nekoclaw-browser-not-found",
+        "2026-11-14-theater-handoff-nekoclaw-merge",
+        "2026-11-13-theater-safe-delivery",
+        "2026-11-14-theater-handoff-feedback",
+        "2026-11-14-theater-nekoclaw-main-merge",
+        "2026-11-12-nekoclaw-task-hud-statuses",
+        "2026-11-13-theater-invite-card",
+        "2026-11-13-theater-main-merge",
+        "2026-11-11-theater-sync-evidence-merge",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
+        "2026-11-03-theater-market-community-invite-merge",
+        "2026-11-11-sync-evidence-notices",
+        "2026-11-03-theater-market-news-overseas-merge",
+        "2026-11-03-theater-market-systray-labels-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
+        "2026-11-03-theater-market-chat-sync-merge",
+        "2026-11-11-air-basketball-main-merge",
+        "2026-11-02-atlascloud-assist-provider-main-merge",
+        "2026-11-10-air-basketball-shared-court",
+        "2026-11-10-cat-visit-sync-main-merge",
 
         "2026-11-09-sync-recent-file-unreadable",
         "2026-11-05-cat-visit-exit-confirmation",
@@ -107,6 +133,18 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-03-sync-archive-subject-recovery",
         "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-03-systray-intro-es-pt-labels",
+        "2026-11-03-theater-market-model-shake-merge",
+        "2026-10-28-theater-entry-social-realtime-merge",
+        "2026-10-28-theater-entry-nekoverse-merge",
+        "2026-10-28-theater-entry-social-hub-merge",
+        "2026-10-27-theater-entry-watch-together-merge",
+        "2026-10-27-theater-entry-visit-hub-merge",
+        "2026-10-27-theater-entry-stories",
+        "2026-10-27-theater-market-feedback-merge",
+        "2026-10-27-theater-market-main-merge",
+        "2026-10-26-theater-market-main-sync",
+        "2026-10-26-theater-review-fixes",
+        "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-02-model-click-shake",
         "2026-10-30-news-overseas-trends-steam",
         "2026-10-30-edge-peek-first-notice",
@@ -555,7 +593,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "d9c5adadbcf8bcfb371001980c05add451c62bcb1d68a24be81ea1dff4804d99"
+LOCALE_KEY_SIGNATURE = "536da747315787ed8bbf2b144ae246481d5972ee627c3e4a19eb12d8b0d77e27"
+
 
 
 _BUMP_INSTRUCTIONS = (

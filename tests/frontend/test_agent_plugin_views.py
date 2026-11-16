@@ -25,8 +25,7 @@ def _open_hud(page: Page, running_server: str, surface_path: str = "chat") -> No
         window._agentTaskMap = new Map();
         window._agentStatusSnapshot = {flags: {
             agent_enabled: false, computer_use_enabled: false,
-            browser_use_enabled: false, user_plugin_enabled: false,
-            openclaw_enabled: false
+            browser_use_enabled: false, user_plugin_enabled: false
         }};
         if (window.agent_ui_v2_state) window.agent_ui_v2_state.optimistic = {};
         if (window.agentStateMachine) {

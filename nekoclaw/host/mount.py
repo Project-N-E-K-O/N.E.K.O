@@ -63,6 +63,20 @@ def peek_host() -> Any:
     return _host
 
 
+def ledger_path() -> Any:
+    """Return where this process's ledger file is, or would be. Builds nothing.
+
+    The same directory the host is built with (``root`` of ``configure``, else
+    the user's data root), so asking whether the file exists answers for the
+    file the host would open.
+    """
+    from nekoclaw.host.paths import HostPaths
+
+    with _lock:
+        root = _options.get("root")
+    return HostPaths(root).ledger_db()
+
+
 def get_host() -> Any:
     """Return the process's host, building it on the first call.
 

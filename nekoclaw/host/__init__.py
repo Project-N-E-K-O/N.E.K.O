@@ -29,8 +29,11 @@ Modules:
 * ``plugin_runs``  - the plugin list and the one caller of ``/runs``.
 * ``selection``    - plugin visibility and the local half of the two-stage
   filter, ported from the analyzer.
-* ``capabilities`` - the capability list: plugin entries, built-in
-  capabilities, MCP tools.
+* ``capabilities`` - the capability list: plugin entries, built-in tools
+  (keyboard and mouse, browser), MCP tools.
+* ``leases``       - which commission is using the desktop, and which the
+  browser.
+* ``model_capabilities`` - models known not to take pictures.
 * ``decision``     - the decision model: a replaceable interface and the
   keyword / BM25 / coarse-screen / fine-selection implementation.
 * ``task_brain``   - dispatch (two rounds), query, stopping, answers.
@@ -38,8 +41,13 @@ Modules:
   Written to the outbox first; ``outbox`` sends and retries.
 * ``task_agents``    - starts and drives task agents; the host side of the
   runtime's callbacks.
+* ``space``        - the task agent space: what task agents keep for later
+  commissions (rules, indexes, entries, reviews, projects), as plain text.
+* ``space_keeper`` - the review written after a commission, and the tidying
+  of the space (archiving idle projects, removing old transcripts), in the
+  background.
 * ``gateway``      - the MCP service on the loopback address that hands
-  plugin entries and MCP tools to task agents.
+  plugin entries, MCP tools and the built-in tools to task agents.
 * ``paths``        - where the host keeps its files.
 * ``service``      - puts the parts together.
 * ``mount``        - one host per process, built on first use; the agent

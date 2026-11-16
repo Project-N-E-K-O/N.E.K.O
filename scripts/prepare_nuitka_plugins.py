@@ -10,7 +10,9 @@ requirements:
   distribution.
 
 ``prepare`` creates that filtered payload and a generated launcher containing
-Nuitka project directives for Python modules excluded by the same rules.
+Nuitka project directives for Python modules excluded by the same rules. It
+also stages the authored neko-plugin skill (``.agent/skills/neko-plugin``) into
+``plugin/neko_plugin_cli/agent_kit`` so the frozen CLI can scaffold it.
 ``install`` atomically replaces ``dist/.../plugin/plugins`` with the staged
 payload after Nuitka finishes.
 """
@@ -35,10 +37,13 @@ if str(_REPOSITORY_ROOT) not in sys.path:
 
 from plugin.core.python_dependencies import load_pyproject_toml
 from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet, load_build_rules, should_skip_path
+from plugin.neko_plugin_cli.templates.agent_kit import SKILL_IGNORE_PATTERNS
 
 
 DEFAULT_STAGE_DIR = Path("build/nuitka-plugins")
 DEFAULT_GENERATED_LAUNCHER = Path("build_nuitka_launcher.py")
+AGENT_KIT_SOURCE_DIR = Path(".agent/skills/neko-plugin")
+AGENT_KIT_STAGE_DIR = Path("plugin/neko_plugin_cli/agent_kit")
 _PRIVATE_SUFFIXES = {".db", ".log"}
 
 
@@ -219,6 +224,28 @@ def _write_generated_launcher(
     generated_launcher.write_text("\n".join(directives) + source_text, encoding="utf-8", newline="\n")
 
 
+def stage_agent_kit(*, project_root: Path) -> Path:
+    """Copy the authored agent kit into the CLI package for Nuitka data inclusion.
+
+    The staged copy is generated build output (gitignored); the authored copy
+    under ``.agent/skills/neko-plugin`` stays the single maintained source.
+    """
+    project_root = project_root.resolve()
+    source_dir = project_root / AGENT_KIT_SOURCE_DIR
+    destination_dir = project_root / AGENT_KIT_STAGE_DIR
+    if not (source_dir / "SKILL.md").is_file():
+        raise FileNotFoundError(f"agent kit source not found: {source_dir}")
+    if destination_dir.exists():
+        shutil.rmtree(destination_dir)
+    shutil.copytree(
+        source_dir,
+        destination_dir,
+        # Same selection as the scaffold snapshot (skips .DS_Store, swap files).
+        ignore=shutil.ignore_patterns(*SKILL_IGNORE_PATTERNS),
+    )
+    return destination_dir
+
+
 def prepare_plugins(
     *,
     project_root: Path,
@@ -372,6 +399,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "prepare":
+        agent_kit_dir = stage_agent_kit(project_root=args.project_root)
         result = prepare_plugins(
             project_root=args.project_root,
             plugins_root=args.plugins_root,
@@ -388,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[WARNING] Not bundled: {entry}")
         print(f"Plugin stage: {result.stage_dir}")
         print(f"Generated launcher: {result.generated_launcher}")
+        print(f"Agent kit stage: {agent_kit_dir}")
         return 0
 
     install_plugins(stage_dir=args.stage_dir, destination_dir=args.destination_dir)

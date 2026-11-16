@@ -18,9 +18,12 @@ The host runs an MCP service on the loopback address and gives every session
 its own token (``TaskAgentSpec.gateway``). When a session starts, the runtime
 asks the gateway for its tool list and offers those tools next to the built-in
 ones; a call is forwarded to the gateway and its text comes back as the tool
-result. Plugin entries, MCP tools and, later, the keyboard, mouse and browser
+result, followed by the pictures it carries (a screenshot of the desktop or
+of a page). Plugin entries, MCP tools and the keyboard, mouse and browser
 tools reach a task agent this way, so they are implemented once for every
-runtime.
+runtime. Not all of them are in the list: the gateway's own search tool finds
+the rest and loads a group of built-in tools, and its call tool calls any of
+them by name.
 
 This is a small MCP client: JSON-RPC 2.0 over HTTP POST, one request per
 message, with ``initialize``, ``tools/list`` and ``tools/call``. It reads an
@@ -34,9 +37,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
-from nekoclaw.runtime.loop.tools import AgentTool
+from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+from nekoclaw.runtime.loop.messages import ImageContent, TextContent
+from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
 
 logger = logging.getLogger(__name__)
@@ -48,8 +54,30 @@ CONNECT_TIMEOUT_SECONDS = 5.0
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 
 
+MAX_IMAGES_PER_RESULT = 4
+# About 6 MB of image; a screenshot is a few hundred kilobytes.
+MAX_IMAGE_BASE64_CHARS = 8 * 1024 * 1024
+ACCEPTED_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
 class GatewayError(Exception):
     """The gateway could not be reached or answered with an error."""
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayResult:
+    """What one tool call came back with."""
+
+    text: str
+    # Pictures the tool handed back (screenshots), in the order it gave them.
+    images: tuple[ImageContent, ...]
+    is_error: bool
+    # The text as the blocks it came in, when it came in more than one;
+    # ``text`` is these joined by line breaks. Kept apart because the runtime
+    # caps a result, and cuts an old one down, with its first block apart
+    # from the rest: what has to stay whole (a group of tools handed over in
+    # front of what a call returned) comes first, however long what follows.
+    parts: tuple[str, ...] = ()
 
 
 class GatewayClient:
@@ -60,6 +88,8 @@ class GatewayClient:
         self._token = token
         self._next_id = 0
         self._protocol_version: str | None = None
+        # Which reply of the model the calls being made were written in.
+        self._reply = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -129,17 +159,51 @@ class GatewayClient:
         tools = listed.get("tools") if isinstance(listed, dict) else None
         return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Call one tool. Returns ``(text, is_error)``; waits as long as the tool takes."""
-        result = await self.request("tools/call", {"name": name, "arguments": arguments}, read_timeout=None)
+    def next_reply(self) -> None:
+        """Note that the model has answered: the calls made from now on were written in that reply.
+
+        Every call names its reply to the gateway. What a call's answer
+        hands the model (a group of tools and how they are used) was not
+        there to be read when the calls after it in the same reply were
+        written, and the gateway tells those apart by this.
+        """
+        self._reply += 1
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
+        """Call one tool and return its text and pictures; waits as long as the tool takes."""
+        params = {"name": name, "arguments": arguments, "_meta": {GATEWAY_REPLY_META_KEY: self._reply}}
+        result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
-            return "", False
-        parts = [
-            str(item.get("text", ""))
-            for item in result.get("content") or []
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-        return "\n".join(part for part in parts if part), bool(result.get("isError"))
+            return GatewayResult("", (), False)
+        parts: list[str] = []
+        images: list[ImageContent] = []
+        dropped = 0
+        for item in result.get("content") or []:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind == "text":
+                parts.append(str(item.get("text", "")))
+            elif kind == "image":
+                data = item.get("data")
+                mime = item.get("mimeType")
+                if (
+                    isinstance(data, str)
+                    and data
+                    and len(data) <= MAX_IMAGE_BASE64_CHARS
+                    and mime in ACCEPTED_IMAGE_TYPES
+                    and len(images) < MAX_IMAGES_PER_RESULT
+                ):
+                    images.append(ImageContent(data=data, mime_type=mime))
+                else:
+                    dropped += 1
+        if dropped:
+            # Said rather than silently lost: the model may be waiting for a picture.
+            parts.append(f"[{dropped} picture(s) of this result could not be passed on.]")
+        said = tuple(part for part in parts if part)
+        return GatewayResult(
+            "\n".join(said), tuple(images), bool(result.get("isError")), said if len(said) > 1 else ()
+        )
 
     async def aclose(self) -> None:
         """Nothing to release: every request uses a connection of its own."""
@@ -199,15 +263,26 @@ def build_gateway_tools(
 
 
 def _forwarder(client: GatewayClient, name: str) -> Any:
-    async def forward(args: dict[str, Any], call: ToolCallInfo) -> str:
+    async def forward(args: dict[str, Any], call: ToolCallInfo) -> str | AgentToolResult:
         try:
             # Aborting the run drops the request; the gateway then stops the work.
-            text, is_error = await run_cancellable(client.call(name, args), call)
+            result = await run_cancellable(client.call(name, args), call)
         except GatewayError as exc:
             raise ToolError(f"{name} failed: {exc}") from exc
-        if is_error:
-            raise ToolError(text or f"{name} failed")
-        return text or "(no output)"
+        if result.is_error:
+            raise ToolError(result.text or f"{name} failed")
+        text = result.text or "(no output)"
+        if not result.images and not result.parts:
+            return text
+        if result.parts:
+            # One block for each, reading as ``text`` does when put together.
+            blocks = [TextContent(text=f"{part}\n") for part in result.parts[:-1]]
+            blocks.append(TextContent(text=result.parts[-1]))
+        else:
+            blocks = [TextContent(text=text)]
+        # The model adapter decides how the pictures travel (or leaves a
+        # placeholder for a model that cannot see them).
+        return AgentToolResult(content=[*blocks, *result.images])
 
     return forward
 

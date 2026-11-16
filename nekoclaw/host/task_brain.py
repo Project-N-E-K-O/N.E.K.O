@@ -38,6 +38,13 @@ It waits for the first round only:
 alone, and "can this be done" with the same local matching the first round
 uses, without filing anything.
 
+``check_turn`` looks at a turn in which she called no task tool (design
+section 6.4). It has no say of its own: only what she said counts. When she
+agreed to do something it is dispatched for her; when she said it cannot be
+done although it can, or that it is done although no task says so, she is
+told and puts it right herself. A turn that does not look like a request is
+not checked at all, and a checked turn costs one call of the small model.
+
 Calling a plugin entry directly keeps what the user-plugin channel does today
 with ``delivery``, ``result_kind``, ``expires_in_s``, ``llm_result_fields``,
 deferred results, ``needs_confirmation`` and ``clarify``.
@@ -60,6 +67,7 @@ from nekoclaw.host.decision import (
     commission_text,
     find_duplicate,
     is_capability_question,
+    looks_like_a_task,
 )
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
 from nekoclaw.host.permissions import PermissionStore
@@ -77,8 +85,6 @@ from nekoclaw.host.selection import find_entry, similarity, visible_entries
 
 logger = logging.getLogger(__name__)
 
-# How long closing waits for stops under way before it goes on.
-_CLOSE_STOP_WAIT_SECONDS = 15.0
 
 _DIRECT_STATUS = {"completed": "done", "blocked": "blocked", "failed": "failed"}
 BIND_TASK_ENTRY = "bind_task"
@@ -119,6 +125,34 @@ class QueryAnswer:
     model_calls: int = 0
 
 
+@dataclass(slots=True)
+class TurnCheck:
+    """What a turn check did."""
+
+    # "skipped" when the turn was not checked, else the verdict: "none",
+    # "unable", "promised" or "claimed_done".
+    verdict: str
+    # Why a turn was not checked: "disabled", "empty", "no_capability" or
+    # "gate". Or why nothing followed its verdict: "stopped", when everything
+    # was stopped while the turn was being judged.
+    skipped: str = ""
+    # What followed: "" (nothing), "corrected" (she was told and puts it right),
+    # "asked" (she said something is done right after being told what is:
+    # she is asked to put it right if she meant something else) or
+    # "dispatched" (filed for her).
+    action: str = ""
+    task: str = ""
+    receipt: Receipt | None = None
+    model_calls: int = 0
+
+
+# Receipts of a dispatch made for her that she has to act on at once.
+_RECEIPTS_TO_ACT_ON = frozenset({"no_capability", "ambiguous", "unclear_answer"})
+
+# Told about a direct plugin call's progress: ``(commission, update)``.
+ProgressListener = Callable[[Commission, dict[str, Any]], None]
+
+
 def prompt_language(lang: Any) -> str:
     """Return the key of the prompt tables for any language code (``zh-CN`` gives ``zh``)."""
     from config.prompts._locale import normalize_prompt_locale
@@ -136,6 +170,74 @@ def status_word(status: str, lang: str) -> str:
     from config.prompts.prompts_nekoclaw_brain import COMMISSION_STATUS_WORDS
 
     return _texts(COMMISSION_STATUS_WORDS, lang).get(status, status)
+
+
+def pending_question_text(commission: Commission, lang: str = "en") -> str:
+    """Return what a waiting commission asks the user, in a few words; empty if nothing."""
+    question = commission.question()
+    if not question:
+        return ""
+    if question.get("kind") == "permission":
+        # What is to be allowed and the answers on offer: the category alone
+        # ("run_command") tells the user nothing to decide by.
+        from nekoclaw.host.reports import describe_permission
+
+        return describe_permission(question, lang)
+    asked = question.get("question") or question.get("category") or ""
+    if not asked and isinstance(question.get("questions"), list) and question["questions"]:
+        first = question["questions"][0]
+        asked = first.get("question", "") if isinstance(first, dict) else str(first)
+    return str(asked or "")
+
+
+def waiting_row(head: str, commission: Commission, frame: str, lang: str) -> str:
+    """Return the line of a commission that waits for the user: ``head``, then what it asks.
+
+    ``frame`` is the words the question is put in (``{question}``). Empty
+    when the commission asks nothing that can be put in words.
+    """
+    from config.nekoclaw_settings import QUERY_PERMISSION_ROW_MAX_TOKENS, QUERY_ROW_MAX_TOKENS
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    question = commission.question() or {}
+    if question.get("kind") != "permission":
+        asked = pending_question_text(commission, lang)
+        return truncate_to_tokens(f"{head} {frame.format(question=asked)}", QUERY_ROW_MAX_TOKENS) if asked else ""
+    from nekoclaw.host.reports import describe_permission
+
+    # What is to be allowed gives way, not the answers on offer after it: the
+    # line is fitted before the cap is applied, so the cap takes nothing.
+    room = QUERY_PERMISSION_ROW_MAX_TOKENS - count_tokens(f"{head} {frame.format(question='')}") - 2
+    asked = describe_permission(question, lang, max_tokens=room)
+    return truncate_to_tokens(f"{head} {frame.format(question=asked)}", QUERY_PERMISSION_ROW_MAX_TOKENS)
+
+
+def whole_lines_within(lines: list[str], max_tokens: int, more: str) -> list[str]:
+    """Return the lines that fit in ``max_tokens`` whole, then a line saying how many are not listed.
+
+    ``more`` is that last line, with ``{count}`` for the number of commission
+    lines (those that begin with ``- ``) left out. No line is cut short: half
+    a line could be a question without the answers on offer. Lines that all
+    fit come back as they are.
+    """
+    from utils.tokenize import count_tokens
+
+    if count_tokens("\n".join(lines)) <= max_tokens:
+        return lines
+    room = max_tokens - count_tokens(more.format(count=len(lines))) - 1
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        cost = count_tokens(line) + 1
+        if used + cost > room:
+            break
+        kept.append(line)
+        used += cost
+    left_out = sum(1 for line in lines[len(kept):] if line.startswith("- "))
+    while kept and not kept[-1].startswith("- "):
+        # A heading whose lines were all left out says nothing.
+        kept.pop()
+    return [*kept, more.format(count=left_out)]
 
 
 def render_receipt(receipt: Receipt, lang: str) -> str:
@@ -176,7 +278,9 @@ class TaskBrain:
         permission_store: PermissionStore,
         task_agents: Any = None,
         enabled: Callable[[], bool] | None = None,
+        on_progress: ProgressListener | None = None,
     ) -> None:
+        self._on_progress = on_progress
         self._ledger = ledger
         self._preferences = preferences
         self._registry = registry
@@ -190,6 +294,13 @@ class TaskBrain:
         # Stops under way. Not cancelled on close like the rest: they are
         # waited for, so a stop asked for is carried out.
         self._stopping: set[asyncio.Task[Any]] = set()
+        # Raised by ``drop_pending_dispatches``; a first round that began
+        # before the raise files nothing.
+        self._dispatch_generation = 0
+        # Character -> when her question about her tasks was last answered
+        # with one that is done (ledger clock). Taken by the next turn check
+        # for her: what she says is done in that turn may be about those.
+        self._status_answered_at: dict[str, float] = {}
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
         self._deferred_timers: dict[str, asyncio.TimerHandle] = {}
@@ -210,6 +321,15 @@ class TaskBrain:
 
             task.add_done_callback(forget)
         return task
+
+    def drop_pending_dispatches(self) -> None:
+        """Make every dispatch still in its first round end without filing a commission.
+
+        Called when everything is stopped: such a dispatch has no commission
+        yet, so stopping the commissions under way would miss it, and it
+        would start its work right after the stop.
+        """
+        self._dispatch_generation += 1
 
     async def settle(self) -> None:
         """Wait for everything running in the background (second rounds, calls)."""
@@ -317,12 +437,17 @@ class TaskBrain:
         conversation_id: str | None = None,
         lang: str = "en",
         source: str = "dispatch",
+        generation: int | None = None,
     ) -> Receipt:
         """Take one sentence from her and return the receipt of the first round.
 
         ``source`` is ``dispatch`` when she called the tool herself and
         ``promised`` when the sentence is filed for her after she agreed to do
         something out loud.
+
+        ``generation`` is the count of "everything was stopped" the caller
+        saw when what led to this dispatch began; left out, it is read here.
+        A dispatch that began before a stop files nothing after it.
         """
         from config.nekoclaw_settings import (
             DISPATCH_FIRST_ROUND_SECONDS,
@@ -331,6 +456,13 @@ class TaskBrain:
         )
         from utils.tokenize import truncate_to_tokens
 
+        # A turn in which she dispatches is not checked: an answer she got
+        # in it must not carry over to the next turn's check.
+        self._status_answered_at.pop(lanlan_name, None)
+        # Read before the first round is scheduled: it only starts when the
+        # loop gets to it, and a stop in between must still reach it.
+        if generation is None:
+            generation = self._dispatch_generation
         lang = prompt_language(lang)
         if not self._is_enabled():
             return Receipt(kind="no_capability", reason="disabled")
@@ -339,7 +471,9 @@ class TaskBrain:
         if not text:
             return Receipt(kind="nothing_active")
 
-        first = self._spawn(self._first_round(text, user_text, lanlan_name, conversation_id, lang, source))
+        first = self._spawn(
+            self._first_round(text, user_text, lanlan_name, conversation_id, lang, source, generation)
+        )
         done, _pending = await asyncio.wait({first}, timeout=DISPATCH_FIRST_ROUND_SECONDS)
         if done:
             return first.result()
@@ -378,10 +512,13 @@ class TaskBrain:
         conversation_id: str | None,
         lang: str,
         source: str,
+        generation: int | None = None,
     ) -> Receipt:
         from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
+        if generation is None:
+            generation = self._dispatch_generation
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
@@ -415,6 +552,12 @@ class TaskBrain:
             return Receipt(kind="nothing_active", model_calls=calls)
         if triage.kind == "none":
             return Receipt(kind="no_capability", reason=await self._no_capability_reason(), model_calls=calls)
+        # Read again after the waits above: NekoClaw may have been switched
+        # off, or everything stopped, while this round was looking.
+        if not self._is_enabled():
+            return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+        if generation != self._dispatch_generation:
+            return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
 
         commission, created = await self._ledger.create(
             unless=lambda active: find_duplicate(text, user_text, active),
@@ -537,6 +680,11 @@ class TaskBrain:
 
         async def progress(**update: Any) -> None:
             await self._ledger.append_event(commission.id, "progress", update)
+            if self._on_progress is not None:
+                try:
+                    self._on_progress(commission, update)
+                except Exception:  # noqa: BLE001 - showing progress must not disturb the call
+                    logger.debug("a progress listener failed", exc_info=True)
 
         outcome = await self._runner.run_entry(
             commission_id=commission.id,
@@ -640,6 +788,9 @@ class TaskBrain:
             plugin_id=plugin_id,
             entry_id=BIND_TASK_ENTRY,
             args={"reminder_id": reminder_id, "agent_task_id": commission.id},
+            # Not chosen by a model: a plugin may well hide this entry from
+            # selection, and it has to be reachable all the same.
+            housekeeping=True,
         )
         if not outcome.success:
             logger.warning("binding deferred work of commission %s failed: %s", commission.id, outcome.error)
@@ -886,15 +1037,10 @@ class TaskBrain:
 
         def line(commission: Commission) -> str:
             parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
-            question = commission.question()
-            if commission.status == "waiting_user" and question:
-                asked = question.get("question") or question.get("category") or ""
-                if not asked and isinstance(question.get("questions"), list) and question["questions"]:
-                    first = question["questions"][0]
-                    asked = first.get("question", "") if isinstance(first, dict) else str(first)
-                if asked:
-                    parts.append(words["asked"].format(question=asked))
-            elif commission.result_summary:
+            asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
+            if asking:
+                return asking
+            if commission.result_summary:
                 parts.append(words["result"].format(summary=commission.result_summary))
             elif commission.status_reason and commission.status in ("failed", "blocked"):
                 parts.append(words["result"].format(summary=commission.status_reason))
@@ -904,14 +1050,182 @@ class TaskBrain:
         if active:
             lines.append(words["active"])
             lines.extend(line(item) for item in active)
+        done_lines: set[str] = set()
         if recent:
             lines.append(words["recent"])
-            lines.extend(line(item) for item in recent)
+            for item in recent:
+                lines.append(line(item))
+                if item.status == "done":
+                    done_lines.add(lines[-1])
         if not lines:
-            lines.append(words["empty"])
+            # A question that finds no task at all is often one she should
+            # have dispatched ("look up the weather"): the answer says what a
+            # query is for, so she does not take "no record" for "there is none".
+            lines.append(words["empty_asked"] if text else words["empty"])
+        # Whole lines only. The cut that follows is a backstop and takes
+        # nothing once the lines were made to fit.
+        lines = whole_lines_within(lines, QUERY_RESULT_MAX_TOKENS, words["more"])
+        # Only a done task the answer still shows once cut to size.
+        if done_lines.intersection(lines):
+            self._status_answered_at[lanlan_name] = now
+        else:
+            self._status_answered_at.pop(lanlan_name, None)
         return QueryAnswer(
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
+        )
+
+    # -- what a new session is told ---------------------------------------
+
+    async def brief(self, *, lanlan_name: str, lang: str = "en") -> list[str]:
+        """Return what is under way, one line each, for a new session's opening prompt.
+
+        Her session is replaced every few turns and forgets; this is how the
+        next one learns what she has going. Only her own commissions that are
+        queued, at work or waiting for the user, within the query's limits.
+        No model is asked.
+        """
+        from config.nekoclaw_settings import QUERY_LEDGER_ROWS, QUERY_ROW_MAX_TOKENS
+        from config.prompts.prompts_nekoclaw_brain import QUERY_TEXTS
+        from utils.tokenize import truncate_to_tokens
+
+        lang = prompt_language(lang)
+        if not self._is_enabled():
+            return []
+        await self.expire_deferred()
+        words = _texts(QUERY_TEXTS, lang)
+        rows = await self._ledger.select(
+            lanlan_name=lanlan_name, statuses={"queued", "working", "waiting_user"}, oldest_first=True
+        )
+        lines: list[str] = []
+        for commission in [item for item in rows if item.parent_id is None][:QUERY_LEDGER_ROWS]:
+            line = f"- [{status_word(commission.status, lang)}] {commission.title}"
+            asking = waiting_row(line, commission, words["asked"], lang) if commission.status == "waiting_user" else ""
+            lines.append(asking or truncate_to_tokens(line, QUERY_ROW_MAX_TOKENS))
+        return lines
+
+    # -- turn check -------------------------------------------------------
+
+    async def check_turn(
+        self,
+        *,
+        lanlan_name: str,
+        user_text: str,
+        reply_text: str,
+        conversation_id: str | None = None,
+        lang: str = "en",
+        external_intent: float | None = None,
+    ) -> TurnCheck:
+        """Check a finished turn in which she called no task tool.
+
+        ``external_intent`` is the score the input-time model gave the user's
+        sentence, or None when there is none. See the module docstring.
+        """
+        from config.nekoclaw_settings import (
+            TURN_CHECK_ENABLED,
+            TURN_CHECK_REPLY_MAX_TOKENS,
+            TURN_CHECK_USER_TEXT_MAX_TOKENS,
+        )
+        from config.prompts.prompts_nekoclaw_brain import TURN_CHECK_TEXTS
+        from utils.tokenize import truncate_to_tokens
+
+        lang = prompt_language(lang)
+        # Only this turn's check may lean on an answer given in it.
+        answered_at = self._status_answered_at.pop(lanlan_name, None)
+        if not TURN_CHECK_ENABLED or not self._is_enabled():
+            return TurnCheck("skipped", skipped="disabled")
+        # As of the turn that is being checked; see the "promised" verdict below.
+        generation = self._dispatch_generation
+        user_text = truncate_to_tokens(" ".join(str(user_text or "").split()), TURN_CHECK_USER_TEXT_MAX_TOKENS)
+        reply_text = truncate_to_tokens(" ".join(str(reply_text or "").split()), TURN_CHECK_REPLY_MAX_TOKENS)
+        if not user_text or not reply_text:
+            return TurnCheck("skipped", skipped="empty")
+        request = await self._request(user_text, "", lanlan_name, lang)
+        if not request.plugins and not request.task_agent_available:
+            # Nothing could take a task whatever she said.
+            return TurnCheck("skipped", skipped="no_capability")
+        if not looks_like_a_task(external_intent, user_text, request.plugins):
+            return TurnCheck("skipped", skipped="gate")
+
+        verdict = await self._decision.judge_turn(user_text, reply_text, lang)
+        task = verdict.task or user_text
+        result = TurnCheck(verdict.kind, task=task, model_calls=verdict.model_calls)
+        words = _texts(TURN_CHECK_TEXTS, lang)
+        if verdict.kind == "unable":
+            request.dispatch_text, request.user_text = task, user_text
+            # Local matching only, as a query does: no second model call.
+            if (await self._decision.probe(request, ask_model=False)).kind == "new":
+                await self._reporter.turn_notice(lanlan_name, reason="can_do", text=words["can_do"].format(task=task))
+                result.action = "corrected"
+        elif verdict.kind == "claimed_done":
+            from config.nekoclaw_settings import TURN_CHECK_STATUS_ANSWER_SECONDS
+
+            if not await self._has_record(lanlan_name, f"{task} {user_text}"):
+                # She had just looked her tasks up and was told of one that
+                # is done. A summary of several matches no single one, and
+                # "no record ... dispatch it" had her deny finished work or
+                # dispatch it again; nor can the words tell such a summary
+                # from a claim about something else. She is asked instead,
+                # with her next turn: woken for it, she only repeated that
+                # both were done; told with the user's next sentence, she
+                # answered that sentence alone, and a claim about something
+                # else was mostly put right then.
+                looked_up = (
+                    answered_at is not None
+                    and self._ledger._clock() - answered_at <= TURN_CHECK_STATUS_ANSWER_SECONDS
+                )
+                reason = "looked_up" if looked_up else "no_record"
+                await self._reporter.turn_notice(
+                    lanlan_name,
+                    reason=reason,
+                    text=words[reason].format(task=task),
+                    delivery_mode="passive" if looked_up else "proactive",
+                )
+                result.action = "asked" if looked_up else "corrected"
+        elif verdict.kind == "promised":
+            if generation != self._dispatch_generation:
+                # Everything was stopped while this turn was being judged. A
+                # promise from before the stop is not made into work after it.
+                result.skipped = "stopped"
+                return result
+            # Her word is what gives the order; it is filed in her name.
+            receipt = await self.dispatch(
+                task,
+                lanlan_name=lanlan_name,
+                user_text=user_text,
+                conversation_id=conversation_id,
+                lang=lang,
+                source="promised",
+                generation=generation,
+            )
+            result.receipt = receipt
+            result.action = "dispatched"
+            result.model_calls += receipt.model_calls
+            failed = receipt.kind in _RECEIPTS_TO_ACT_ON
+            reason = "promised_failed" if failed else "filed"
+            await self._reporter.turn_notice(
+                lanlan_name,
+                reason=reason,
+                text=words[reason].format(receipt=receipt.text(lang)),
+                delivery_mode="proactive" if failed else "passive",
+                commission=receipt.commissions[0] if receipt.commissions else None,
+            )
+        return result
+
+    async def _has_record(self, lanlan_name: str, text: str) -> bool:
+        """Whether any of her tasks, under way or ended lately, is about this."""
+        from config.nekoclaw_settings import QUERY_RECENT_SECONDS, SUPPLEMENT_MIN_OVERLAP
+
+        rows = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
+        rows += await self._ledger.select(
+            lanlan_name=lanlan_name,
+            statuses=ENDED_STATUSES,
+            updated_since=self._ledger._clock() - QUERY_RECENT_SECONDS,
+        )
+        return any(
+            item.parent_id is None
+            and similarity(text, f"{commission_text(item)} {item.result_summary or ''}") >= SUPPLEMENT_MIN_OVERLAP
+            for item in rows
         )
 
     # -- shutdown ---------------------------------------------------------
@@ -925,7 +1239,17 @@ class TaskBrain:
         if self._stopping:
             # A stop under way is finished first (within a bound), so its
             # plugin run is cancelled and its task agent closed.
-            await asyncio.wait(list(self._stopping), timeout=_CLOSE_STOP_WAIT_SECONDS)
+            from config.nekoclaw_settings import HOST_CLOSE_STOP_WAIT_SECONDS
+
+            await asyncio.wait(list(self._stopping), timeout=HOST_CLOSE_STOP_WAIT_SECONDS)
+            # What is still not done is ended here: the ledger and the plugin
+            # client it would go on to use are about to be closed.
+            leftover = [task for task in self._stopping if not task.done()]
+            for task in leftover:
+                task.cancel()
+            if leftover:
+                logger.warning("%d stop(s) did not finish before the host closed", len(leftover))
+                await asyncio.gather(*leftover, return_exceptions=True)
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()

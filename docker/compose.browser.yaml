@@ -1,0 +1,44 @@
+# =============================================================================
+# 浏览器控制的覆盖文件（只在用 full 镜像时需要）
+# =============================================================================
+#
+#   docker compose -f docker-compose.yml -f compose.browser.yaml up -d
+#
+# 不想每次都带 -f，就在 docker/.env 里加一行（Windows 宿主把冒号换成分号）：
+#
+#   COMPOSE_FILE=docker-compose.yml:compose.browser.yaml
+#
+# 作用：full 镜像里的 Chromium 靠自己的沙箱隔离网页，沙箱要创建用户命名空间；
+# Docker 默认的 seccomp 配置不允许，Chromium 一启动就退出，浏览器工具报告浏览器
+# 启动不了。这里给容器换上 seccomp/chromium.json：Docker 的默认配置，只多一条
+# 「没有 CAP_SYS_ADMIN 的进程也可以创建命名空间」（clone、unshare）。其余和默认
+# 配置一样，mount、sethostname 这些照旧不允许。来源和更新办法见 seccomp/README.md。
+# 另外把 /dev/shm 放大到 1GB（见下面 shm_size 一行）。
+#
+# 为什么不直接写进 docker-compose.yml：
+#   - standard 镜像没有浏览器，用不上；放开用户命名空间等于让容器里的进程多碰到
+#     一块内核功能（Docker 默认不允许它正是这个原因），没有好处就不该放开。
+#   - 只拷了 docker-compose.yml 一个文件的部署，会因为找不到 seccomp/chromium.json
+#     而起不来。
+#
+# 宿主机要求：内核允许非特权用户命名空间。Debian 11 起默认允许；被关掉的宿主机
+# （kernel.unprivileged_userns_clone=0，或 user.max_user_namespaces=0）上，这份
+# 配置放开了 Chromium 也起不来。Ubuntu 23.10 起另有一道 AppArmor 的限制
+# （kernel.apparmor_restrict_unprivileged_userns）。CI 用的 GitHub Ubuntu 运行机
+# （写这段时是 26.04）上，带着这份配置 Chromium 起得来，那台机器上这个开关的值
+# 在 CI 的日志里；别的宿主机没有试过。
+# 拿不准就在宿主机上跑 `bash seccomp/test-chromium-profile.sh --quick`，它会把
+# 这三个开关的值打出来，并试一次带着这份配置建用户命名空间。
+# =============================================================================
+
+services:
+  neko-main:
+    security_opt:
+      # 路径相对于第一个 Compose 文件所在的目录（docker/）。
+      - seccomp=./seccomp/chromium.json
+
+    # Chromium 把页面用的共享内存放在 /dev/shm，Docker 默认只给 64MB，页面大的时候
+    # 标签页会崩溃（使魔看到的是页面打不开或中途断开，很难看出和它有关）。这里给到
+    # 1GB：是在容器里跑 Chromium 时通常用的数，没有在本项目里实测过。它是上限、不是
+    # 预留，用到多少占多少内存；内存小的宿主机可以调低。
+    shm_size: "1gb"

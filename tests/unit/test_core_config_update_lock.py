@@ -876,7 +876,7 @@ def test_every_core_config_writer_goes_through_the_locked_entry_point():
 
     root = Path(json_update.__file__).resolve().parents[2]
     sources = [*root.glob("*.py")]
-    for package in ("app", "brain", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
+    for package in ("app", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
         sources.extend(path for path in (root / package).rglob("*.py") if "tests" not in path.parts)
     assert len(sources) > 100, "source scan found almost nothing; the guard would pass vacuously"
     offenders = []

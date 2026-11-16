@@ -8,7 +8,7 @@ trigger: always_on
 
 - 使用 i18n 支持国际化，目前支持 en.json、ja.json、ko.json、zh-CN.json、zh-TW.json、ru.json、es.json、pt.json 八种。每次改 i18n 字符串时必须同步更新全部 8 个 locale 文件，只改部分会被打回。
 - **后端 Python 多语言字符串一律落在 `config/prompts/prompts_*.py`**：无论是平铺 `dict[str, str]` 还是嵌套 `dict[str, dict[K, str]]`，凡键里出现 `'zh' / 'en' / 'ja' / 'ko' / 'ru'` 的语言映射，都必须放在 `config/prompts/prompts_*` 下。`scripts/check_prompt_hygiene.py` 只抓平铺结构，但规范是"加新语言时一次扫 `config/` 即可补全"——嵌套 dict 即使 lint 没抓也算技术债，需自觉搬迁。新增后端模块若有翻译需求，直接在 `config/prompts/prompts_<topic>.py` 加新模块或复用已有模块（如 `prompts_activity.py`、`prompts_proactive.py`、`prompts_memory.py`）。
-- 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（<3.13），uv 会自动选择合适版本并管理虚拟环境。
+- 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（3.11），uv 会自动选择合适版本并管理虚拟环境。
 - 任何涉及用户隐私（原始对话）的 log 只能用 `print` 输出，不得使用 `logger`。
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
 - **辅助 LLM 调用约定（memory/ + utils/）**：
@@ -24,14 +24,14 @@ trigger: always_on
 
 两条硬性规范，CI 在 PR 上校验（`scripts/check_pr_report.py`，由独立 workflow `.github/workflows/pr-report-gate.yml` 驱动），报告写在 **PR 描述**里（模板 `.github/pull_request_template.md`）：
 
-1. **回归报告**：凡是改动了 `app/`、`main_logic/`、`memory/` 任一目录下的 `*.py`，PR 描述必须有非空的「回归报告」一节，逐项说明——**改动**、**理由 / 必要性**、**前后表现对比**、**潜在回归点**。这三个是项目最高风险模块（会话编排、记忆管线、服务入口）。
+1. **回归报告**：凡是改动了 `app/`、`main_logic/`、`main_routers/`、`memory/` 任一目录下的 `*.py`（以 `scripts/check_pr_report.py` 的 `WATCHED_PREFIXES` 为准），PR 描述必须有非空的「回归报告」一节，逐项说明——**改动**、**理由 / 必要性**、**前后表现对比**、**潜在回归点**。这几个是项目最高风险模块（会话编排、记忆管线、服务入口）。
 2. **不拆分理由**：单个 PR 改动计入上限的文件 > 20 个，PR 描述必须有非空的「不拆分理由」一节，说明为什么不拆成更小的 PR。新增文件、i18n locale 文件（`static/locales/` 与 plugin-manager locale 组）和测试文件（主目录或 `plugin/` 下，按目录 `tests/`、`__tests__/` 或 `test_*.py` / `*_test.py` / `*.test.*` / `*.spec.*` 命名识别）不计入。
 
 要点：
 - CI 只验「区块存在且非空」，**判不了报告质量**——质量由维护者 review 兜底（`app/`、`main_logic/`、`memory/` 经 `.github/CODEOWNERS` 强制指派维护者评审）。所以写报告别糊弄占位符（`不适用` / `无` / `TBD` 在触发条件成立时会被判失败）。
 - 未触发的那一节写「不适用」或删除即可。
 - 维护者可对纯重命名、批量格式化、生成代码等打 `report-exempt` 标签豁免整条门禁。
-- AI agent 在改这三个模块或一次性铺开 >20 个计入上限的文件时，**主动**在 PR 描述里产出对应报告，不要等门禁红了再补。
+- AI agent 在改上面这几个目录或一次性铺开 >20 个计入上限的文件时，**主动**在 PR 描述里产出对应报告，不要等门禁红了再补。
 
 ## API URL 末尾不带斜杠（前后端硬性要求）
 
@@ -55,7 +55,7 @@ CI 守门：
 ## 代码风格
 
 - **对偶性（symmetry）是硬性要求**：如果 MiniMax 拆了单独文件，Qwen 也必须拆；如果有三个 provider，它们的处理路径必须结构对称。不对偶的代码会被直接打回。
-- **core 层必须是 general 接口**：不能在 core.py 里出现 provider-specific 的 import / 常量 / 逻辑。所有差异必须在 tts_client 层或更下层分歧。core 只调 `get_tts_worker` 拿 worker，不关心 worker 内部是什么 provider。
+- **core 层必须是 general 接口**：不能在 `main_logic/core/` 里出现 provider-specific 的 import / 常量 / 逻辑。所有差异必须在 tts_client 层或更下层分歧。core 只调 `get_tts_worker` 拿 worker，不关心 worker 内部是什么 provider。
 - **绝对不要加数字后缀（如 `_2`）**：如果两处代码需要相同逻辑，抽方法。
 - **push 前必须确认目标分支**：特别是在 worktree 里工作时，不要把无关 commit 推到 PR 分支。
 
@@ -99,29 +99,29 @@ CI 守门：
 
 ## 架构：core API native voice 走 native_voice_registry
 
-每个 core API 自带的 native TTS voice catalog（Gemini Puck/Leda、未来的 OpenAI/Qwen native voices 等）必须通过 `utils/native_voice_registry.py` 注册和查询。**禁止**在 cross-cutting 文件里新增 `if core_api_type == 'X'` 分支——这是 PR #1262 把 4 处 Gemini 专属分支抽成 registry 的直接动机，再加分支等于把 refactor 撤回。
+每个 core API 自带的 native TTS voice catalog（Gemini Puck/Leda、未来的 OpenAI/Qwen native voices 等）必须通过 `utils/tts/native_voice_registry.py` 注册和查询（`utils/native_voice_registry.py` 只是兼容别名）。**禁止**在 cross-cutting 文件里新增 `if core_api_type == 'X'` 分支——这是 PR #1262 把 4 处 Gemini 专属分支抽成 registry 的直接动机，再加分支等于把 refactor 撤回。
 
-加新 native voice provider 只动 3 处：
+加新 native voice provider 只动 3 处（第 3 处外加一行导入）：
 
-1. **新建 adapter `utils/<provider>_tts_voices.py`**：定义 catalog（canonical voice → gender）、aliases（casefolded 用户输入 → canonical）、default_voice / default_male_voice，构造 `NativeVoiceProvider(key=..., catalog=..., ...)` 并 `register_provider(...)`。`key` 必须等于 codebase 已有的 `core_api_type` / realtime `api_type` 字符串（'gemini' / 'qwen' / ...），registry 按这个 key 路由。可选保留 `normalize_<provider>_tts_voice` / `is_<provider>_tts_voice` thin wrapper 给该 provider 自己的 wire-format 路径用。
-2. **`utils/native_voice_registry.py` 的 `_BUILTIN_PROVIDER_MODULES` tuple 加一行**：写新 adapter 模块的 dotted 名。registry 在自己 import 末尾自举把这些 provider 加载进来，cross-cutting 文件不需要 side-effect import。
-3. **`main_logic/tts_client.py` 注册 worker resolver**：定义 `<provider>_tts_worker(...)` 后，写一个 `_resolve_<provider>_native_tts_worker(cm)` 返回 `(worker, api_key)`，调用 `register_tts_worker_resolver('<key>', _resolve_<provider>_native_tts_worker)`。两阶段注册：metadata 在轻量 adapter 里注册，worker callable（带 httpx/soxr 等重依赖）在 tts_client 里注册，避免循环 import。
+1. **新建 adapter `utils/tts/providers/<provider>.py`**：定义 catalog（canonical voice → gender）、aliases（casefolded 用户输入 → canonical）、default_voice / default_male_voice，构造 `NativeVoiceProvider(key=..., catalog=..., ...)` 并 `register_provider(...)`。`key` 必须等于 codebase 已有的 `core_api_type` / realtime `api_type` 字符串（'gemini' / 'qwen' / ...），registry 按这个 key 路由。可选保留 `normalize_<provider>_tts_voice` / `is_<provider>_tts_voice` thin wrapper 给该 provider 自己的 wire-format 路径用。
+2. **`utils/tts/native_voice_registry.py` 的 `_BUILTIN_PROVIDER_MODULES` tuple 加一行**：写新 adapter 模块的 dotted 名。registry 在自己 import 末尾自举把这些 provider 加载进来，cross-cutting 文件不需要 side-effect import。
+3. **新建 `main_logic/tts_client/workers/<provider>.py` 并注册 worker resolver**：定义 `<provider>_tts_worker(...)` 后调用 `register_tts_worker_resolver('<key>', ...)`，resolver 返回 `(worker, api_key)`，现成的写法是 `make_native_tts_resolver(<provider>_tts_worker, 'core_api_key')`（照 `workers/gemini.py`）。⚠️ 注册发生在这个模块被导入的时候，而 `workers/__init__.py` 不会自动加载新文件：必须在 `main_logic/tts_client/__init__.py` 里和其它 worker 一样显式导入它。漏了这一步，音色目录查得到，worker 却没注册，`get_native_tts_worker` 返回 `None`，悄悄走外部 TTS。两阶段注册：metadata 在轻量 adapter 里注册，worker callable（带 httpx/soxr 等重依赖）在 tts_client 里注册，避免循环 import。
 
-不该动的 cross-cutting 文件：
+不该动的 cross-cutting 代码（这几个模块都已拆成包，括号里是函数目前所在的文件）：
 
-- `utils/config_manager.py` 的 `validate_voice_id` / `validate_voice_id_for_api_key`：用 `get_active_realtime_native_provider(self) + is_native_voice(voice_id, provider)`，自动认识新 provider
-- `main_routers/characters_router.py` 的 `get_voices` endpoint：用 `get_active_realtime_native_provider + get_native_voice_catalog_for_ui`
-- `main_logic/core.py` 的 `_has_custom_tts` / `_resolve_session_use_tts` / `_resolve_realtime_voice` 三处：用 `resolve_native_voice_for_routing(core_api_type, voice_id, voice_id_exists)`，generic
-- `main_logic/tts_client.py` 的 `get_tts_worker` dispatcher：用 `get_native_tts_worker(core_api_type, cm, voice_id)` 短路
+- `utils/config_manager/`（`voice_storage.py`）的 `validate_voice_id` / `validate_voice_id_for_api_key`：用 `get_active_realtime_native_provider(self) + is_native_voice(voice_id, provider)`，自动认识新 provider
+- `main_routers/characters_router/`（`voice_preview.py`）的 `get_voices` endpoint：用 `get_active_realtime_native_provider + get_native_voice_catalog_for_ui`
+- `main_logic/core/`（`tts_runtime.py`）的 `_has_custom_tts` / `_resolve_session_use_tts` / `_resolve_realtime_voice` 三处：用 `resolve_native_voice_for_routing(core_api_type, voice_id, voice_id_exists)`，generic
+- `main_logic/tts_client/`（`__init__.py`）的 `get_tts_worker` dispatcher：用 `get_native_tts_worker(core_api_type, cm, voice_id)` 短路
 
-wire-format 路径例外：provider 自家的 worker 内部（如 `gemini_tts_worker` 调 `normalize_gemini_tts_voice`）和该 provider 的 realtime client 内部（如 `omni_realtime_client.py:869` 调 `normalize_gemini_tts_voice` 拼 `speech_config`）继续直接调 provider 的 normalize 函数 OK——那些代码本来就 provider-bound，绕 registry 是 purity for purity's sake。
+wire-format 路径例外：provider 自家的 worker 内部（如 `gemini_tts_worker` 调 `normalize_gemini_tts_voice`）和该 provider 的 realtime client 内部（如 `main_logic/omni_realtime_client/_gemini_support.py` 调 `normalize_gemini_tts_voice` 拼 `speech_config`）继续直接调 provider 的 normalize 函数 OK——那些代码本来就 provider-bound，绕 registry 是 purity for purity's sake。
 
 理由：
-1. 把"加 native voice provider"的 cost 从"改 5 个文件 + 4 处 if-branch"降到"加 3 处（全是新增，不改既有逻辑）"。
+1. 把"加 native voice provider"的 cost 从"改 5 个文件 + 4 处 if-branch"降到"加 3 处和一行导入（全是新增，不改既有逻辑）"。
 2. cross-cutting 文件不再随 provider 数量膨胀，符合"core 层必须是 general 接口"的代码风格规则。
 3. registry 自举（`_BUILTIN_PROVIDER_MODULES` + 模块尾部 `ensure_builtin_native_voice_providers_loaded()`）保证任何 import registry 的代码都看到 populated 表，cross-cutting caller 不可能漏 bootstrap 触发空 registry 静默 fall-through 到外部 TTS。
 
-检测方法：在 `utils/config_manager.py` / `main_routers/characters_router.py` / `main_logic/core.py` / `main_logic/tts_client.py` 里 grep `core_api_type ==` 或 `api_type ==`，结果不应该出现 native voice provider 的 key（'gemini' / 'qwen' / ...）作为 RHS——除非是注册 worker resolver 那行（tts_client 注册时写字面量是必须的）。
+检测方法：`grep -rnE "core_api_type ==|api_type ==" utils/config_manager/ main_routers/characters_router/ main_logic/core/ main_logic/tts_client/`（这四个都是目录，要递归搜），结果不应该出现 native voice provider 的 key（'gemini' / 'qwen' / ...）作为 RHS——除非是注册 worker resolver 那行（tts_client 注册时写字面量是必须的）。⚠️ 这条命令现在不是零命中：`main_logic/tts_client/__init__.py` 的 `get_tts_worker` 末尾还有一串按 `core_api_type` 选默认 worker 的既有分支（`free` / `step` / `glm` / `gemini` / `openai` / `grok`），另有几处 `free`、`mimo` 相关的判断。检查的是你的改动有没有**新增**命中：对比改动前后的输出。
 
 ## 架构：单进程 + 事件循环零阻塞
 
@@ -151,3 +151,29 @@ NekoClaw（猫爪，`nekoclaw/`）里同一样东西，界面和代码用不同�
 - 「使魔」只出现在界面文案（八种语言）和她说给用户的话里，比如回执「可以交给使魔」、认用户说「告诉使魔」的词表。后端代码、注释、日志、协议和发给模型的提示词里不写 familiar，写 task agent。
 - 不用裸 `agent`：仓库里已有 agent 进程、agent 模型槽、旧的 `brain/`、`agent_task_id` 等，容易撞名。
 - 详见 `docs/design/nekoclaw-rewrite.md` 开头的术语对照和第 3 节。
+
+## 经验文档索引（`.agent/skills/`）
+
+下面这些 skill 记的是实际开发中踩过的坑、读代码不容易看出来的不变式，以及维护者已经定下的取舍。动到对应的地方之前先读那一份的 `SKILL.md`，再按里面的索引读 `references/`。上面的规则是硬性要求；skill 是背景和细节，两者冲突时以上面的规则和当前代码为准。
+
+| skill | 什么时候读 |
+|---|---|
+| `pr-workflow` | 开 PR、往 PR 分支推送、处理评审意见、评审别人的 PR |
+| `maintainer-collaboration` | 要让维护者做决定、写设计方案或 PR 描述、汇报结果 |
+| `testing-pitfalls` | 跑 pytest、写测试、写源码守卫、做变异验证、说「测试通过」之前 |
+| `local-env-pitfalls` | 在 worktree 里干活、借用别的检出的环境、在 Windows 上写 shell 命令、用脚本批量改文件 |
+| `packaging-pitfalls` | 改 Nuitka 参数、打包和校验脚本、构建工作流、内置资源、依赖、`docs/` 站点 |
+| `package-split-contracts` | 改已经拆成包的后端大文件（`main_logic/core`、`app/memory_server`、`utils/config_manager` 等），或要再拆别的大文件 |
+| `frontend-architecture` | 改 `static/`、`templates/`、`frontend/react-neko-chat/`，或排查「网页正常、桌面端不对」 |
+| `avatar-rendering` | 改 Live2D / VRM / MMD 渲染、帧率、形象周边的弹窗和点击穿透、内置模型和动作文件 |
+| `voice-realtime-tts` | 改语音会话启停、热切换、realtime 客户端、外部 TTS、独立 ASR |
+| `llm-providers-and-prompts` | 改厂商参数、接入新的 provider 或网关、写或翻译提示词、改反套话改写 |
+| `memory-system` | 改 `memory/`、`app/memory_server/`、记忆类提示词、记忆落盘和同步、`/new_dialog` 开场链路 |
+| `proactive-chat` | 改主动搭话、防复读、用户禁令、截图授权、开屏问候、凝神，或动隐私模式和首启实验分支 |
+| `plugin-host-pitfalls` | 改插件宿主和插件框架（写插件本身看 `neko-plugin`） |
+| `nekoclaw` | 改 `nekoclaw/`、`app/agent_server/`、主对话的派发和查询工具、键鼠和浏览器工具 |
+| `catgirl-visit` | 改串门相关代码，或处理串门相关的评审意见 |
+| `i18n-pitfalls` | 改 `static/locales`、`config/prompts` 的多语言表、按语言分支的后端代码（前端硬编码中文的替换看 `i18n`） |
+| `feature-notes` | 改区域判定、遥测、版本问卷、角色配置、小游戏、小剧场、卡片锻造、屏幕分享等功能 |
+
+这些文档是对照写入时的代码核对过的。发现和代码对不上时以代码为准，并顺手把文档改掉。

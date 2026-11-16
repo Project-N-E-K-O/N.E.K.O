@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from openai import AsyncOpenAI, OpenAI
-from pydantic import BaseModel
 
 from utils.chatgpt_auth import ChatGPTAuthError
 from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTOutputLimitError, ChatGPTResponseError, ResponseState
@@ -140,165 +139,68 @@ async def test_connection_probe_accepts_reasoning_only_budget_limit(monkeypatch)
     (ChatGPTResponseError('limit', status_code=429), 'AGENT_QUOTA_EXCEEDED'),
     (ChatGPTOutputLimitError('budget'), '')])
 def test_agent_probe_does_not_retry_terminal_or_budget_response(error, expected, monkeypatch):
-    from brain import computer_use as cu
+    from app.agent_server.model_probe import AgentModelProbe
     client = MagicMock()
     client.invoke_raw.side_effect = error
-    monkeypatch.setattr(cu, 'create_chat_llm', lambda **kw: client)
-    adapter = object.__new__(cu.ComputerUseAdapter)
+    monkeypatch.setattr('utils.llm_client.create_chat_llm', lambda **kw: client)
+    adapter = object.__new__(AgentModelProbe)
     adapter._config_manager = MagicMock()
     adapter._config_manager.get_model_api_config.return_value = {
         'model': 'selected', 'base_url': 'https://api.openai.com/v1', 'api_key': '', 'provider_type': 'chatgpt'}
-    adapter._llm_client = adapter._llm_client_sig = None
+    adapter._client = adapter._client_sig = None
     assert adapter.check_connectivity(_retries=2) == (not bool(expected), expected)
     assert client.invoke_raw.call_count == 1
 
-
-@pytest.mark.parametrize('error', [ChatGPTAuthError('sign in'), ChatGPTResponseError('limit')])
-def test_cua_call_terminal_failure_escapes_retry_and_action_loop(error):
-    from brain.computer_use import ComputerUseAdapter
-    adapter = object.__new__(ComputerUseAdapter)
-    adapter._cancelled = False
-    adapter._agent_model_cfg = {'model': 'test', 'base_url': 'https://api.openai.com/v1'}
-    adapter.max_completion_tokens = 6000
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.consume_agent_daily_quota.return_value = (True, {})
-    adapter._llm_client = MagicMock()
-    adapter._llm_client.invoke_raw.side_effect = error
-    with pytest.raises(type(error)):
-        adapter._call_llm([])
-    assert adapter._llm_client.invoke_raw.call_count == 1
+    from config import OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+    assert client.invoke_raw.call_args.kwargs["max_completion_tokens"] == OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
 
 
-class BrowserAction(BaseModel):
-    url: str
-
-
-@pytest.mark.parametrize('mode', ['schema', 'text'])
+@pytest.mark.parametrize('outcome', ['complete', 'truncated', 'auth', 'quota'])
 @pytest.mark.asyncio
-async def test_browser_adapter_oauth_responses_schema_and_images(mode, credential_store, monkeypatch):
-    from browser_use.llm.messages import SystemMessage, UserMessage
-    from brain.browser_use_adapter import BrowserUseAdapter
-    from brain import browser_use_chatgpt as bu
+async def test_nekoclaw_responses_tools_and_terminal_errors(outcome, credential_store, monkeypatch):
+    """Exercise the current task-agent path through the real Responses parser."""
+    from nekoclaw.runtime.loop.messages import UserMessage
+    from nekoclaw.runtime.loop.provider_events import AssistantDoneEvent, AssistantErrorEvent
+    from nekoclaw.runtime.model import LLMClientProvider
+    from nekoclaw.runtime.protocol import ModelConfig
+
     requests = []
     def handler(request):
         requests.append(request)
-        event = terminal(text='{"url":"https://example.test"}')
-        event['type'] = 'response.completed'
-        event['response']['status'] = 'completed'
-        event['response']['output'] = event['response']['output'][:1]
-        return httpx.Response(200, headers={'content-type': 'text/event-stream'}, text='data: ' + json.dumps(event) + '\n\n')
-    real_client = bu.ChatChatGPT
-    def factory(**kw):
-        client = real_client(**kw)
-        client.close()
-        client._aclient = AsyncOpenAI(api_key='unused', max_retries=0, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-        return client
-    monkeypatch.setattr(bu, 'ChatChatGPT', factory)
-    adapter = object.__new__(BrowserUseAdapter)
-    adapter._config_manager = SimpleNamespace(get_model_api_config=lambda _: {
-        'model': 'selected', 'base_url': 'https://api.openai.com/v1', 'provider_type': 'chatgpt', 'api_key': ''})
-    llm = adapter._build_llm(mode)
-    llm.credential_store = credential_store
-    messages = [SystemMessage(content='Return JSON'), UserMessage(content=[
-        {'type': 'text', 'text': 'Inspect this page'},
-        {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AAAA'}},
-    ])]
-    result = await llm.ainvoke(messages, BrowserAction)
-    assert result.completion.url == 'https://example.test'
-    assert result.usage.total_tokens == 19
-    body = json.loads(requests[0].content)
-    assert body['model'] == 'selected' and body['store'] is False and body['stream'] is True
-    assert body['max_output_tokens'] == 6000
-    assert body['text']['format']['type'] == ('json_schema' if mode == 'schema' else 'json_object')
-    assert body['input'][-1]['content'][-1]['type'] == 'input_image'
-    assert requests[0].headers['authorization'] == 'Bearer fixture-token'
-    assert requests[0].url.path == '/v1/responses'
+        if outcome in ('auth', 'quota'):
+            return httpx.Response(401 if outcome == 'auth' else 429, json={'error': {'message': outcome}})
+        event = terminal(text='Inspect the screen')
+        if outcome == 'complete':
+            event['type'] = 'response.completed'
+            event['response']['status'] = 'completed'
+            event['response'].pop('incomplete_details')
+        return httpx.Response(200, headers={'content-type': 'text/event-stream'},
+                              text='data: ' + json.dumps(event) + '\n\n')
 
-
-@pytest.mark.asyncio
-async def test_browser_terminal_error_prevents_later_requests(credential_store, monkeypatch):
-    from brain import browser_use_chatgpt as bu
-    from browser_use.llm.exceptions import ModelProviderError
-    client = SimpleNamespace(ainvoke_raw=AsyncMock(side_effect=ChatGPTResponseError('quota', status_code=429)), aclose=AsyncMock())
-    monkeypatch.setattr(bu, 'ChatChatGPT', lambda **kw: client)
-    llm = bu.NekoChatChatGPT(model='selected', credential_store=credential_store)
-    with pytest.raises(ModelProviderError):
-        await llm.ainvoke([])
-    with pytest.raises(ChatGPTResponseError):
-        await llm.ainvoke([])
-    with pytest.raises(ChatGPTResponseError):
-        llm.raise_terminal_error()
-    assert client.ainvoke_raw.await_count == client.aclose.await_count == 1
-
-
-@pytest.mark.parametrize('error_type', [ChatGPTAuthError, ChatGPTResponseError])
-@pytest.mark.parametrize('callback', [True, False])
-@pytest.mark.asyncio
-async def test_browser_task_does_not_fallback_after_terminal_error(monkeypatch, callback, error_type):
-    import browser_use
-    from brain import browser_use_adapter as bu
-    adapter = object.__new__(bu.BrowserUseAdapter)
-    adapter._config_manager = SimpleNamespace(aconsume_agent_daily_quota=AsyncMock(return_value=(True, {})))
-    adapter.is_available = lambda: {'ready': True}
-    adapter._get_browser_session = AsyncMock(return_value=object())
-    adapter._current_api_signature = lambda: 'test'
-    monkeypatch.setattr(bu, '_API_MODE_CACHE', {})
-    adapter._start_overlay = MagicMock()
-    adapter._remove_overlay = AsyncMock()
-    adapter._close_browser = AsyncMock()
-    adapter._get_ip_info = AsyncMock(return_value=(None, None))
-    monkeypatch.setattr(bu, '_find_bundled_chromium', lambda: '/fixture/chrome')
-    monkeypatch.setattr(bu, '_find_system_chrome_path', lambda: None)
-    error = error_type('plan limit')
-    def fail():
-        raise error
-    llm = SimpleNamespace(provider='chatgpt', raise_terminal_error=fail)
-    adapter._build_llm = MagicMock(return_value=llm)
-    class FakeAgent:
-        def __init__(self, **kw):
-            pass
-        async def run(self, **kw):
-            if callback:
-                await kw['on_step_end'](self)
-            # browser-use may return an unsuccessful history instead of raising.
-            return SimpleNamespace(is_successful=lambda: False)
-    monkeypatch.setattr(browser_use, 'Agent', FakeAgent)
-    for _ in range(2):
-        result = await adapter.run_instruction('fixture task')
-        assert not result['success']
-        assert result['error'] == 'plan limit'
-        assert set(adapter._get_mode_order('test')) == {'schema', 'text'}
-    assert adapter._build_llm.call_count == 2
-    assert adapter._remove_overlay.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_browser_rejects_truncated_but_parseable_action(credential_store, monkeypatch):
-    from brain import browser_use_chatgpt as bu
-    from browser_use.llm.exceptions import ModelProviderError
-    state = ResponseState()
-    state.feed(terminal(text='{"url":"https://example.test"}'))
-    client = SimpleNamespace(ainvoke_raw=AsyncMock(return_value=state.raw('test')), aclose=AsyncMock())
-    monkeypatch.setattr(bu, 'ChatChatGPT', lambda **kw: client)
-    llm = bu.NekoChatChatGPT(model='selected', credential_store=credential_store)
-    with pytest.raises(ModelProviderError, match='truncated'):
-        await llm.ainvoke([], BrowserAction)
-    with pytest.raises(ChatGPTResponseError):
-        llm.raise_terminal_error()
-
-
-def test_cua_rejects_truncated_parseable_action():
-    from brain.computer_use import ComputerUseAdapter
-    adapter = object.__new__(ComputerUseAdapter)
-    adapter._cancelled = False
-    adapter._agent_model_cfg = {'model': 'test', 'provider_type': 'chatgpt', 'base_url': 'https://api.openai.com/v1'}
-    adapter.max_completion_tokens = 6000
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.consume_agent_daily_quota.return_value = (True, {})
-    state = ResponseState()
-    state.feed(terminal(text='```python\ncomputer.click(1, 2)\n```'))
-    adapter._llm_client = MagicMock()
-    adapter._llm_client.invoke_raw.return_value = state.raw('test')
-    with pytest.raises(ChatGPTResponseError, match='truncated'):
-        adapter._call_llm([])
-    assert adapter._llm_client.invoke_raw.call_count == 1
+    client = ChatChatGPT(model='selected', credential_store=credential_store, max_completion_tokens=1024, timeout=5)
+    await client.aclose()
+    client._aclient = AsyncOpenAI(api_key='unused', max_retries=0,
+                                http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    factory = AsyncMock(return_value=client)
+    monkeypatch.setattr('utils.llm_client.create_chat_llm_async', factory)
+    provider = LLMClientProvider(ModelConfig(model='selected', base_url='https://api.openai.com/v1',
+                                            provider_type='chatgpt', max_output_tokens=1024))
+    try:
+        events = [event async for event in provider.stream_response(
+            model='selected', system='Inspect safely', messages=[UserMessage(content='look')], tools=[])]
+        assert factory.call_args.kwargs['provider_type'] == 'chatgpt'
+        assert len(requests) == 1
+        assert requests[0].headers['authorization'] == 'Bearer fixture-token'
+        assert requests[0].url.path == '/v1/responses'
+        if outcome in ('auth', 'quota'):
+            assert isinstance(events[-1], AssistantErrorEvent)
+        else:
+            assert isinstance(events[-1], AssistantDoneEvent)
+            calls = events[-1].message.tool_calls
+            if outcome == 'complete':
+                assert len(calls) == 1 and calls[0].name == 'click'
+            else:
+                assert events[-1].reason == 'length'
+                assert not calls
+    finally:
+        await provider.aclose()

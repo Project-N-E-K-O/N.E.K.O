@@ -4043,11 +4043,35 @@ PROACTIVE_SOURCE_LABELS = {
 # proactive_chat shortcuts to game invitations, skipping Phase 1/2. Keep one lightweight sentence,
 # never presume acceptance; use actual master_name rather than objectifying owner labels. One-hour-plus-ten-chat
 # cooldown belongs to main_routers.system_router, independent of wording.
-#
+
+# Last-resort theater invite for packages without an author invitation, or for a
+# locale the author's line is not written in. It stays inside the fiction: no
+# "script", "act" or "theater" wording; the invite card says what accepting does.
+THEATER_STORY_INVITE_LINES: dict[str, str] = {
+    "zh": "{master_name}，有个叫《{story_title}》的故事在等我们……要不要跟我一起去看看？",
+    "zh-TW": "{master_name}，有個叫《{story_title}》的故事在等我們……要不要跟我一起去看看？",
+    "en": "{master_name}, there's a story called “{story_title}” waiting for us… want to step into it with me?",
+    "ja": "{master_name}、『{story_title}』っていうお話が私たちを待ってるよ……一緒に入ってみない？",
+    "ko": "{master_name}, ‘{story_title}’라는 이야기가 우리를 기다리고 있어… 같이 들어가 볼래?",
+    "ru": "{master_name}, нас ждёт история «{story_title}»… Заглянем в неё вместе?",
+    "es": "{master_name}, nos espera una historia llamada «{story_title}»… ¿Vamos a verla?",
+    "pt": "{master_name}, tem uma história chamada “{story_title}” esperando por nós… Vamos lá ver?",
+}
+
 # Multigame contract: outer game_type keys match config.MINI_GAME_INVITE_AVAILABLE_GAMES,
 # inner keys hold supported-locale lines. New games require another outer
 # key only, without shortcut-dispatch changes.
 MINI_GAME_INVITE_LINES_BY_GAME: dict[str, dict[str, str]] = {
+    "theater": {
+        "zh": "{master_name}，有个故事在等我们……要不要跟我一起去看看？",
+        "zh-TW": "{master_name}，有個故事在等我們……要不要跟我一起去看看？",
+        "en": "{master_name}, there's a story waiting for us… want to step into it with me?",
+        "ja": "{master_name}、私たちを待ってるお話があるの……一緒に入ってみない？",
+        "ko": "{master_name}, 우리를 기다리는 이야기가 있어… 같이 들어가 볼래?",
+        "ru": "{master_name}, нас ждёт одна история… Заглянем в неё вместе?",
+        "es": "{master_name}, nos espera una historia… ¿Vamos a verla?",
+        "pt": "{master_name}, tem uma história esperando por nós… Vamos lá ver?",
+    },
     "watch-together": {
         "zh": "{master_name}，要不要选个视频和我一起看？",
         "zh-TW": "{master_name}，要不要選個影片和我一起看？",
@@ -4153,6 +4177,17 @@ MINI_GAME_INVITE_OPTION_LABELS: dict[str, dict[str, str]] = {
 # Per-game wording layered over MINI_GAME_INVITE_OPTION_LABELS for invitations that
 # are not a game round. Same locale keys; a missing option keeps the shared label.
 MINI_GAME_INVITE_OPTION_LABEL_OVERRIDES: dict[str, dict[str, dict[str, str]]] = {
+    # Accepting a theater invite steps into the story, not into a game round.
+    "theater": {
+        "zh": {"accept": "好，走吧", "decline": "这次先不了"},
+        "zh-TW": {"accept": "好，走吧", "decline": "這次先不了"},
+        "en": {"accept": "Let's go", "decline": "Not this time"},
+        "ja": {"accept": "行こう", "decline": "今回はやめとく"},
+        "ko": {"accept": "좋아, 가자", "decline": "이번엔 패스"},
+        "ru": {"accept": "Пойдём", "decline": "Не в этот раз"},
+        "es": {"accept": "Vamos", "decline": "Esta vez no"},
+        "pt": {"accept": "Vamos", "decline": "Dessa vez não"},
+    },
     "watch-together": {
         "zh": {"accept": "一起看！", "decline": "现在不想看"},
         "zh-TW": {"accept": "一起看！", "decline": "現在不想看"},
