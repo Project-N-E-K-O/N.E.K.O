@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Catgirl visit pure-logic layer (docs/design/visit-infrastructure.md PR-06)."""
+"""Neko visit pure-logic layer (docs/design/visit-infrastructure.md PR-06)."""
 
 from .forget import ForgetPlan, RevocationLog, plan_forget_person, run_revocation
 from .identity import (

@@ -24,34 +24,50 @@ def shutdown_fixture(tmp_path, monkeypatch):
     events = []
     stopped = threading.Event()
 
-    def stop(name):
-        events.append(name)
-        stopped.set()
-
     async def phase(name):
         events.append(name)
+        if name == "host":
+            stopped.set()
 
     modules = SimpleNamespace(
-        computer_use=SimpleNamespace(cancel_running=lambda: stop("computer-stop"), wait_for_completion=lambda timeout: stopped.wait(timeout)),
-        browser_use=SimpleNamespace(cancel_running=lambda: stop("browser-stop")),
-        task_executor=SimpleNamespace(router=SimpleNamespace(aclose=lambda: phase("router"))),
         agent_bridge=SimpleNamespace(stop=lambda: phase("bridge")),
-        _persistent_tasks=set(), _background_tasks=set(), active_computer_use_async_task=None,
+        _persistent_tasks=set(), _background_tasks=set(),
     )
     monkeypatch.setattr(api_runtime, "Modules", modules)
+    provider = SimpleNamespace(
+        shut_down=lambda: events.append("tools-stop"),
+        browser_unclosed=lambda: False,
+        kill_browser=lambda: events.append("browser-killed"),
+        release_keys=lambda: phase("keys"),
+    )
+    monkeypatch.setattr(api_runtime, "builtin_provider", provider)
+    monkeypatch.setattr(api_runtime, "_loop_stall_watchdog", SimpleNamespace(stop=lambda: events.append("watchdog-stop")))
+    timers = []
+
+    def timer(seconds, callback):
+        current = threading.Timer(seconds, callback)
+        timers.append(current)
+        return current
+
+    monkeypatch.setattr(api_runtime, "threading", SimpleNamespace(Timer=timer))
     for name, label in [
+        ("shutdown_nekoclaw_host", "host"),
         ("_ensure_plugin_lifecycle_stopped", "plugin"),
         ("_stop_embedded_user_plugin_server", "embedded"),
-        ("_close_browser_use_adapter", "browser"),
+        ("_close_browser", "browser"),
         ("_emit_agent_status_update", "status"),
     ]:
         monkeypatch.setattr(api_runtime, name, lambda label=label: phase(label))
-    return SimpleNamespace(api=api_runtime, tracker=tracker, events=events, stopped=stopped, modules=modules)
+    fixture = SimpleNamespace(api=api_runtime, tracker=tracker, events=events, stopped=stopped, modules=modules, timers=timers)
+    yield fixture
+    for current in timers:
+        current.cancel()
+        current.join(2)
 
 
 def assert_cleaned(fixture):
-    assert fixture.events[:2] == ["computer-stop", "browser-stop"]
-    assert set(fixture.events) >= {"plugin", "embedded", "router", "bridge", "browser", "status"}
+    assert fixture.events[:2] == ["tools-stop", "watchdog-stop"]
+    assert set(fixture.events) >= {"host", "plugin", "embedded", "bridge", "browser", "keys", "status"}
     assert fixture.modules.agent_bridge is None
     assert not fixture.modules._persistent_tasks
     assert not fixture.modules._background_tasks
@@ -104,8 +120,8 @@ async def test_file_lock_and_repeated_cancellation_preserve_cleanup_and_disk(shu
                 while tracker._dirty:
                     await asyncio.sleep(.01)
             assert not task.done()
-            assert fixture.events[:2] == ["computer-stop", "browser-stop"]
-            assert set(fixture.events) >= {"plugin", "embedded", "router", "bridge", "browser"}
+            assert fixture.events[:2] == ["tools-stop", "watchdog-stop"]
+            assert set(fixture.events) >= {"host", "plugin", "embedded", "bridge", "browser", "keys"}
             task.cancel("first")
             await asyncio.sleep(.02)
             task.cancel("second")
@@ -128,7 +144,7 @@ async def test_file_lock_and_repeated_cancellation_preserve_cleanup_and_disk(shu
         await tracker.asave()
 
 
-@pytest.mark.parametrize("name", ["_ensure_plugin_lifecycle_stopped", "_close_browser_use_adapter"])
+@pytest.mark.parametrize("name", ["shutdown_nekoclaw_host", "_ensure_plugin_lifecycle_stopped", "_close_browser"])
 @pytest.mark.asyncio
 async def test_cancellation_during_cleanup_still_runs_later_steps(shutdown_fixture, monkeypatch, name):
     fixture = shutdown_fixture
@@ -167,4 +183,37 @@ async def test_cancellation_during_cleanup_still_runs_later_steps(shutdown_fixtu
         task.cancel()
         worker.cancel()
         await asyncio.gather(task, worker, return_exceptions=True)
+        await fixture.tracker.asave()
+
+
+@pytest.mark.asyncio
+async def test_browser_last_resort_survives_slow_host_cleanup(shutdown_fixture, monkeypatch):
+    from config import nekoclaw_settings
+
+    fixture = shutdown_fixture
+    entered, release = asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(nekoclaw_settings, "BROWSER_KILL_AT_SHUTDOWN_SECONDS", .05)
+
+    async def host():
+        entered.set()
+        await release.wait()
+        fixture.events.append("host")
+
+    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    task = asyncio.create_task(fixture.api.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        async with asyncio.timeout(2):
+            while "browser-killed" not in fixture.events:
+                await asyncio.sleep(.01)
+        assert not task.done(), "the host must still be blocked when the timer fires"
+        release.set()
+        await asyncio.wait_for(task, 2)
+        assert "browser" not in fixture.events, "do not reopen/close a browser after its kill deadline"
+        assert "keys" in fixture.events and "status" in fixture.events
+        assert fixture.tracker._storage_path.exists()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await fixture.tracker.asave()

@@ -15,10 +15,12 @@ from main_logic.voice_identity_service.wake_word_bundle import (  # noqa: E402,F
 
 def _validate_bundle(path: Path) -> None:
     from config.voice_wake_word import DEFAULT_WAKE_WORD_KEYWORDS
+    from main_logic.voice_identity_service.runtime_installation import runtime_cache_root
     from main_logic.voice_input.wake_word.sherpa_backend import (
         SherpaWakeWordConfig, validate_wake_word_resources,
     )
-    validate_wake_word_resources(SherpaWakeWordConfig(model_dir=str(path), keywords=DEFAULT_WAKE_WORD_KEYWORDS))
+    validate_wake_word_resources(SherpaWakeWordConfig(model_dir=str(path), keywords=DEFAULT_WAKE_WORD_KEYWORDS,
+                                                   runtime_cache_dir=str(runtime_cache_root())))
 
 
 def provision(destination: Path, archive: Path | None = None) -> None:

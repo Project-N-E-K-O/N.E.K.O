@@ -12,7 +12,7 @@
 
 按 [Docker 部署](./docker) 完成安装，Compose 文件就是 `docker/docker-compose.yml`。低配机器上建议：
 
-- **使用 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，首次启动不用在容器里下载安装浏览器，代价是多占约 1GB 磁盘。
+- **要用浏览器操控就选 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，代价是多占约 1GB 磁盘。standard 镜像不带浏览器，应用自己也不下载，所以在 standard 镜像里浏览器操控会报告找不到可用的浏览器。Chromium 的沙箱需要用户命名空间，要连同 `docker/compose.browser.yaml` 一起启动才起得来：在 `docker/.env` 里再设 `COMPOSE_FILE=docker-compose.yml:compose.browser.yaml`（已经有 `COMPOSE_FILE` 时把 `compose.browser.yaml` 接在后面），说明见 `docker/README_Docker.md`。
 - **固定版本**：`latest`、`latest-full` 是滚动标签。上线前用 `NEKO_IMAGE` 固定经过验证的 tag 或 digest，并确认镜像包含实例授权（#3289）与 HTTP 配对（#3299）。
 - **自有域名**：在 `docker/.env` 配置，官方 Compose 会把它们传入容器：
 
@@ -53,6 +53,8 @@ services:
 ```dotenv
 COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
 ```
+
+`COMPOSE_FILE` 是完整的文件列表，新写的值会整个替换旧的：之前已经写进去的覆盖文件要留在里面。比如第 1 节里为 full 镜像加过 `compose.browser.yaml`，这里要写成 `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml:compose.browser.yaml`，否则下次重建容器时浏览器的 seccomp 配置会被去掉，Chromium 起不来。
 
 `!override` 需要 Docker Compose **2.24.4 及以上**。每次重建前用 `docker compose config` 核对最终端口绑定。
 
@@ -270,13 +272,12 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
 
    旧部署的覆盖文件里如果还有 `mem_limit`、`read_only`、`cap_drop`、`tmpfs`、`extra_hosts`、`devices`、`ulimits` 等非环境变量设置，也一并写进 `docker/compose.local.yaml` 的 `neko-main` 下。快照没有覆盖的选项（如 `devices`、`ulimits`）要对照旧覆盖文件人工核对。
 
-   注意：官方 Compose 只透传固定的几个变量（见 `docker/CONFIG_REFERENCE.md`），`DISABLE_SSL` 等其他变量写进 `.env` 也不会进入容器。快照里有这类变量时，把它们写进 `docker/compose.local.yaml`（已被 `.gitignore` 忽略），并加入 `COMPOSE_FILE`：
+   注意：官方 Compose 用 `env_file:` 注入整份 `docker/.env`，所以 `DISABLE_SSL` 这类变量**直接写进 `.env` 就会生效**，不再需要覆盖文件。（旧版 compose 是固定白名单，那时才需要下面这种写法。）只有非环境变量的设置（`mem_limit`、`devices` 等）才需要 `docker/compose.local.yaml`：
 
    ```yaml
    services:
      neko-main:
-       environment:
-         - DISABLE_SSL=${DISABLE_SSL:-}
+       mem_limit: 2g
    ```
 
    ```dotenv
@@ -286,7 +287,9 @@ Docker 使用 iptables 后端时，按 [CrowdSec 文档](https://docs.crowdsec.n
    启动前在 `docker/` 列出将传入容器的变量名（只显示名字，不显示值），确认快照里的应用变量都在其中：
 
    ```bash
-   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   # 变量名直接取自 .env（env_file 会整份注入），不依赖 compose 版本如何处理 config 的输出。
+   # 权威核对放在第 6 步：起容器后用 docker inspect 看真实的 .Config.Env。
+   grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=' | sort
    ```
 6. 在 `docker/` 执行 `docker compose config` 核对挂载来源和端口后 `docker compose up -d`，确认实例凭证、角色和记忆都在。再回到仓库根目录，把新容器的有效配置和第 2 步的快照比对（先删掉上一次留下的新快照，采集失败时比对会报 `COMPARE FAILED`，不会拿旧文件得出 `identical`）：
 

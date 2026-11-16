@@ -132,8 +132,10 @@ def _serve_fixture(result_path, scenario):
 
 @pytest.mark.parametrize("scenario", ["idle", "connection", "stuck_lifespan"])
 def test_merged_shutdown_drains_connections_and_starts_its_budget(tmp_path, scenario):
+    from tests.process_isolation import child_process_env
+
     result_path = tmp_path / "result.json"
-    env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2]), PYTHONUTF8="1")
+    env = child_process_env(tmp_path / "runtime", dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[2]), PYTHONUTF8="1"))
     try:
         process = subprocess.run(
             [sys.executable, __file__, "--serve", str(result_path), scenario],

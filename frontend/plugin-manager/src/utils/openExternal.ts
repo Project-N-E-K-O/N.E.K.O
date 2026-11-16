@@ -49,6 +49,13 @@ function externalShell(): { openExternal: (u: string) => void | Promise<unknown>
     : null
 }
 
+/** Keep native anchor navigation in browsers; route Electron clicks to its system browser. */
+export function handleExternalLinkClick(event: MouseEvent, url: string): void {
+  if (!externalShell()) return
+  event.preventDefault()
+  openExternalUrl(url)
+}
+
 export function openExternalUrl(url: string): void {
   const href = normalizeExternalUrl(url)
   if (!href) return

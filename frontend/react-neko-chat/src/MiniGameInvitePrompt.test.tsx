@@ -83,4 +83,13 @@ describe('mini-game invitation surfaces', () => {
     expect(document.body.querySelector('.mini-game-invite')).toHaveAttribute('aria-label', 'Game invitation');
     expect(document.body.querySelector('.mini-game-invite-icon svg rect')).toBeNull();
   });
+
+  it.each(['full', 'compact'] as const)('titles a theater invitation as the theater in %s', mode => {
+    render(<App chatSurfaceMode={mode} messages={[]} choicePrompt={{ ...prompt, gameType: 'theater' }} />);
+    const invite = document.body.querySelector('.mini-game-invite');
+    // The spoken line stays in the story, so the card says what accepting opens.
+    expect(invite).toHaveAttribute('aria-label', 'Theater');
+    expect(invite).toHaveTextContent('Accepting opens the theater; you can leave any time.');
+    expect(invite).not.toHaveTextContent('Shall we play together?');
+  });
 });

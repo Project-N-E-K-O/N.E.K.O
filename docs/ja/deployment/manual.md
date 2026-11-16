@@ -6,9 +6,9 @@ cd N.E.K.O
 uv sync
 ```
 
-Python は 3.11 固定です。すべての Python module/script/test/temporary command は `uv run` 経由です。
+Python は 3.11 固定です。すべての Python module/script/test/temporary command は `uv run` 経由です。Frontend の再 build には Node.js `^22.12.0 || >=24.0.0` が必要です（両 frontend の `engines` の共通範囲。CI は Node 22）。
 
-Frontend は repository root で `.\build_frontend.bat` または `./build_frontend.sh`。内蔵 Live2D asset（Yui Lolita / Yui Origin）を確認し、`npm ci` で plugin manager と shared React chat bundle を生成します。
+Frontend は repository root で `.\build_frontend.bat` または `./build_frontend.sh`。内蔵 PNGTuber pack を展開し、内蔵 Live2D asset（Yui Lolita / Yui Origin）を確認し、`npm ci` で plugin manager と shared React chat bundle を生成します。
 
 通常の起動:
 

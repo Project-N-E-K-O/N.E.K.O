@@ -491,8 +491,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             Used to intercept the scenario where "a same-named .chara.json on disk
             drags an innocent local character into the candidates and wrongly blocks
-            the current catgirl from unsubscribing": only block when the current
-            catgirl genuinely originates from this Workshop item.
+            the current neko from unsubscribing": only block when the current
+            neko genuinely originates from this Workshop item.
             """
             if not isinstance(snapshot, dict):
                 return False
@@ -520,7 +520,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 asset_source == 'steam_workshop' and asset_source_id == target_item_id_str
             )
 
-        # Precheck: candidates include current catgirl → block unsubscribe and prompt character switch.
+        # Precheck: candidates include current neko → block unsubscribe and prompt character switch.
         try:
             current_characters = await config_mgr.aload_characters()
         except Exception as exc:
@@ -535,7 +535,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             )
             current_characters = {}
         current_catgirl = str(current_characters.get('当前猫娘', '') or '')
-        # Block only if current catgirl is genuinely bound to this Workshop item; name-only disk
+        # Block only if current neko is genuinely bound to this Workshop item; name-only disk
         # matches (another same-name .chara.json) must not block unrelated local characters.
         if (
             current_catgirl
@@ -694,7 +694,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             # Recheck: user may switch to candidate between precheck and cleanup;
             # continue alone skips character deletion but still unsubscribes/deletes folders,
             # leaving current configuration pointing to missing assets. Abort instead.
-            # Reuse _is_confirmed_workshop_character: block only when current catgirl genuinely binds
+            # Reuse _is_confirmed_workshop_character: block only when current neko genuinely binds
             # this item_id, avoiding same-name disk false positives.
             if (
                 current_catgirl_now
@@ -780,7 +780,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             for name in candidate_names:
                 if not name:
                     continue
-                # Extra protection: never delete current catgirl (already prechecked, fallback here).
+                # Extra protection: never delete current neko (already prechecked, fallback here).
                 if name == current_catgirl_now:
                     logger.warning(
                         f"取消订阅同步清理: 跳过当前猫娘 '{name}'（保护性双保险）"

@@ -2163,6 +2163,17 @@
         // ----------------------------------------------------------------
         micButton.addEventListener('click', async function () {
             if (micButton.disabled || S.isRecording) return;
+            // 邀请等待也已占用串门输入通道，在修改启动状态或结束文本会话前直接提示。
+            if (typeof window.isNekoVisitVoiceBlocked === 'function' && window.isNekoVisitVoiceBlocked()) {
+                var visitVoiceBlockReason = window.getNekoVisitVoiceBlockReason();
+                window.showStatusToast(
+                    window.t ? window.t('visit.status.' + visitVoiceBlockReason)
+                        : (visitVoiceBlockReason === 'VISIT_INPUT_REFUSED_NOT_READY'
+                            ? '客人还没到等等再聊吧' : '当前串门状态下无法开启语音，请先取消邀请或结束串门。'),
+                    3500
+                );
+                return;
+            }
             // 浮动麦克风仍可能位于胶囊之外（Electron 下在 Pet 窗口，剧场在聊天窗口）；
             // 在任何语音 Session 状态写入前阻止任一窗口剧场期间启动。
             if (window.nekoTheaterRuntime

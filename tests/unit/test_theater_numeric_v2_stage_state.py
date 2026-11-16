@@ -2,11 +2,13 @@
 
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 from services.theater.numeric_v2_actor import _opening_messages, _suggestion_fill_messages, _turn_messages
 from services.theater.numeric_v2_evaluator import _build_messages, _build_transition_judge_messages
 from services.theater.numeric_v2_runtime import TurnRequestV2
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
+from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 
@@ -27,12 +29,12 @@ def test_formal_transition_keeps_stage_scope_and_actual_state_for_both_consumers
         actor_performance=candidate, route_changed=True, transition_outcome=outcome)[0]
     for messages in (actor, review):
         assert '放在工作台上' in messages[1].content
-        assert '不得损坏样品' in messages[1].content
+        assert '不得损坏样品' in ''.join(message.content for message in messages)
         assert '有阶段限定的来源禁令不延伸到目标段' in messages[0].content
     assert '工作台' not in actor[0].content  # General rules must not include props or locations specific to this counterexample.
-    data = json.loads(review[1].content.split('：', 1)[1])
-    assert source['must_not_happen'] == data['current_scene']['hard_boundaries']
-    assert target['must_not_happen'] == data['target_scene']['hard_boundaries']
+    data = prompt_payload(review[1].content)
+    assert [f'禁止发生的剧情：{rule}' for rule in source['must_not_happen']] == data['current_scene']['hard_boundaries']
+    assert [f'禁止发生的剧情：{rule}' for rule in target['must_not_happen']] == data['target_scene']['hard_boundaries']
 
 
 def test_acceptance_still_checks_actual_exit_in_evaluator_contract():
@@ -46,10 +48,11 @@ def test_acceptance_still_checks_actual_exit_in_evaluator_contract():
             'performance': '要一起去展示室吗？',
         },))
     messages = _build_messages(engine, session, '好，去刚才说的展示室。')
-    assert 'accept 同样须核对原邀请与实际出口的地点、时段和行动' in messages[0].content
-    assert '不相符时判 unclear' in messages[0].content
+    assert "accept须与出口的地点、时段、行动相符" in messages[0].content
+    assert "否则unclear并保留原意" in messages[0].content
     assert '没有 pending_transition 时，若此前已上路而节点未切换' in messages[0].content
-    assert '同方向的下一步是 accept，不判 initiate' in messages[0].content
+    assert "亲自开始同一安排填accept而非initiate" in messages[0].content
+    assert '明确去别处时' in messages[0].content
 
 
 def test_player_fact_rule_reaches_all_suggestion_generation_paths():
@@ -61,16 +64,28 @@ def test_player_fact_rule_reaches_all_suggestion_generation_paths():
     ordinary = engine.resolve_turn(session, TurnRequestV2('one', 0, message), (), scene_complete=False)
     transition = engine.resolve_turn(session, TurnRequestV2('two', 0, '按约定办。'), (),
         scene_complete=True, natural_ending_ready=True)
+    terminal = _turn_messages(engine, session, transition, '按约定办。', '温和。', '测试猫娘', '哥哥')
+    assert 'suggested_inputs 必须为空数组。' in terminal[0].content
+    assert '不编造玩家姓名、联系方式、职业、技能、经历、既有关系与行程' not in terminal[0].content
+    case = initiation_case(message='现在带我去阅览室。')
+    scene_engine, scene_session = case['engine'], case['session']
+    scene_engine.nodes['ending_leave'].update(type='scene', terminal=False)
+    scene_transition = scene_engine.resolve_turn(scene_session,
+        TurnRequestV2('three', scene_session.revision, case['message']), (), transition_intent='initiate')
+    assert scene_transition.session.current_node_id == 'ending_leave'
+    assert scene_transition.session.status == 'active'
+    transition_prompt = _turn_messages(scene_engine, scene_session, scene_transition, case['message'],
+                                       '温和。', '测试猫娘', '哥哥')
     messages = [
         _turn_messages(engine, session, ordinary, message, '温和。', '测试猫娘', '哥哥'),
-        _turn_messages(engine, session, transition, '按约定办。', '温和。', '测试猫娘', '哥哥'),
+        transition_prompt,
         _opening_messages(engine, '温和。', '测试猫娘', '哥哥'),
         _suggestion_fill_messages(catgirl_name='测试猫娘', player_input=message,
             performance={'performance': '需要登记姓名和擅长的手工类型。'}, max_tokens=1800),
     ]
     for prompt in messages:
-        assert '不得编造玩家姓名、联系方式、职业、技能或既往经历' in prompt[0].content
-        assert '不能用假名、示例号码或占位符填空' in prompt[0].content
+        assert '不编造玩家姓名、联系方式、职业、技能、经历、既有关系与行程' in prompt[0].content
+        assert '未知资料留给玩家输入，不填假名、示例或占位符' in prompt[0].content
     for outcome in (None, transition):
         review = _build_transition_judge_messages(engine, session, player_input=message,
             actor_performance={'performance': '请问需要登记哪些信息？', 'suggested_inputs': ['（填写）我叫林风，擅长竹编。']},

@@ -32,7 +32,7 @@ from PIL import Image
 
 from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.agent_event_bus import notify_turn_check_ack
 from main_logic.reply_tail import bind_image_validation
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
@@ -66,9 +66,10 @@ _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 2
 # event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
 # timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
 #
-# The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
-# already advertises to plugin authors ("at most 8 images per message, totaling
-# 8 MiB, injected into the model"). One push is one turn's worth, so share the constants with the
+# The 8 images / 8 MiB figures are the contract docs/plugins/push-message.md
+# (and its zh-CN / ja translations) already advertises to plugin authors ("At
+# most 8 images totaling 8 MiB are injected into the model per message"); all
+# three locales are pinned by tests/unit/test_plugin_image_delivery.py. One push is one turn's worth, so share the constants with the
 # per-turn budget in proactive_delivery rather than keeping a second spelling.
 _PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
 _PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES
@@ -639,7 +640,7 @@ class _SyncMessageQueue(asyncio.Queue):
 
 @dataclass
 class RoleState:
-    """Per-k runtime state container for a single catgirl.
+    """Per-k runtime state container for a single neko.
 
     Merges what used to be 6 parallel module-global dicts (sync_message_queue /
     sync_shutdown_event / session_id / sync_process / websocket_locks /
@@ -919,13 +920,13 @@ async def _handle_agent_event(event: dict):
             await deliver_plugin_card(event, dict(_iter_session_managers()), default_name)
             return
 
-        if event_type == "analyze_ack":
-            logger.info(
-                "[EventBus] analyze_ack received on main: event_id=%s lanlan=%s",
+        if event_type == "turn_check_ack":
+            logger.debug(
+                "[EventBus] turn_check_ack received on main: event_id=%s lanlan=%s",
                 event.get("event_id"),
                 lanlan,
             )
-            notify_analyze_ack(str(event.get("event_id") or ""))
+            notify_turn_check_ack(str(event.get("event_id") or ""))
             return
 
         if event_type == "voice_bridge_result":
@@ -933,6 +934,18 @@ async def _handle_agent_event(event: dict):
             logger.debug(
                 "[EventBus] ignored voice_bridge_result: event_id=%s", event_id
             )
+            return
+
+        # A task agent began or stopped using the keyboard and mouse or the
+        # browser. The banner that shows it is drawn over the desktop or the
+        # browser window, whichever character's page is open, so every
+        # connected session is told (docs/design/nekoclaw-rewrite.md, 11.8).
+        if event_type == "builtin_activity":
+            activity = event.get("activity")
+            if isinstance(activity, dict):
+                await _broadcast_to_all_connected(
+                    {"type": "agent_builtin_activity", "activity": activity}
+                )
             return
 
         # Agent status updates may be broadcast (lanlan_name omitted).
@@ -1464,10 +1477,11 @@ async def _handle_agent_event(event: dict):
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
-                            from services.chat_sync.source import mark_turn_origin
                             await mgr.rotate_speech_id_for_response_done()
                             direct_reply_sid = mgr.current_speech_id
-                            mark_turn_origin(mgr, direct_reply_sid, 'agent')
+                            # The reply's turn as it was before the send:
+                            # a user turn begun during it is not this one's.
+                            direct_reply_engaged = getattr(mgr, "last_user_engagement_time", None)
                             delivered = bool(
                                 await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
                                                               expected_speech_id=direct_reply_sid)
@@ -1478,7 +1492,10 @@ async def _handle_agent_event(event: dict):
                             )
                     if delivered and hasattr(mgr, "handle_proactive_complete"):
                         try:
-                            await mgr.handle_proactive_complete()
+                            await mgr.handle_proactive_complete(
+                                expected_speech_id=direct_reply_sid,
+                                expected_user_engagement_time=direct_reply_engaged,
+                            )
                         except Exception as e:
                             logger.warning(
                                 "[EventBus] direct task_result turn_end failed: %s", e
@@ -1796,7 +1813,7 @@ async def _refresh_character_globals():
 
 
 def _ensure_character_slots(k: str) -> bool:
-    """Prepare the per-k sync resource slot for a single catgirl. Returns whether this is a newly created character (which decides whether to force-start the task afterwards).
+    """Prepare the per-k sync resource slot for a single neko. Returns whether this is a newly created character (which decides whether to force-start the task afterwards).
 
     A purely in-memory atomic operation: either role_state[k] already exists (do
     nothing), or both the queue and websocket_lock are filled in at once. This avoids
@@ -1820,7 +1837,7 @@ def _ensure_character_slots(k: str) -> bool:
 
 
 async def _init_character_resources(k: str, is_new_character: bool):
-    """Complete the session_manager update + sync connector task check/restart for a single catgirl.
+    """Complete the session_manager update + sync connector task check/restart for a single neko.
 
     Depends on module globals: master_name, lanlan_prompt, lanlan_basic_config (the caller must refresh them first).
     Writes the per-k slots: role_state[k].session_manager / sync_task — no state is
@@ -2039,7 +2056,7 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
 
 async def _stop_character_thread(k: str):
-    """Stop a single catgirl's sync connector task (waiting up to 3s for cleanup). Dict cleanup is left to the caller to do in order.
+    """Stop a single neko's sync connector task (waiting up to 3s for cleanup). Dict cleanup is left to the caller to do in order.
 
     The ``_thread`` suffix in the name is kept to avoid touching the many call sites; the underlying mechanism is now an ``asyncio.Task``.
     """
@@ -2067,7 +2084,7 @@ async def _stop_character_thread(k: str):
 
 
 def _cleanup_character_dicts(k: str):
-    """Synchronously clean up a single catgirl's per-k slot. Make sure the corresponding task has stopped or timed out before calling."""
+    """Synchronously clean up a single neko's per-k slot. Make sure the corresponding task has stopped or timed out before calling."""
     rs = role_state.get(k)
     if rs is None:
         return
@@ -2122,9 +2139,9 @@ async def _unregister_and_cleanup_character_slot(k: str) -> None:
 
 
 async def initialize_character_data():
-    """Full refresh: load config + run per-k init for every catgirl + clean up deleted ones.
+    """Full refresh: load config + run per-k init for every neko + clean up deleted ones.
 
-    Cold path (startup / master-name edit / large bulk import). For per-catgirl edits
+    Cold path (startup / master-name edit / large bulk import). For per-neko edits
     use the fast paths: init_one_catgirl / remove_one_catgirl / switch_current_catgirl_fast.
     """
     logger.info("正在加载角色配置...")
@@ -2140,7 +2157,7 @@ async def initialize_character_data():
     # Load the latest character data off-thread to avoid blocking the loop with synchronous I/O + deepcopy.
     await _refresh_character_globals()
 
-    # Prepare per-k synchronization resource slots for every catgirl.
+    # Prepare per-k synchronization resource slots for every neko.
     is_new_map: dict[str, bool] = {k: _ensure_character_slots(k) for k in catgirl_names}
 
     # Character initialization is independent: shared prompt / master_name are read-only; per-key slots are separate.
@@ -2175,25 +2192,27 @@ async def initialize_character_data():
 
 
 # ─────────────────────────────────────────────────────────────
-# Fast-path helpers: handle only the affected catgirl without scanning all characters.
+# Fast-path helpers: handle only the affected neko without scanning all characters.
 # ─────────────────────────────────────────────────────────────
 
 
 async def switch_current_catgirl_fast():
-    """Dedicated fast path for switching the current catgirl (change of the `current catgirl` field).
+    """Dedicated fast path for switching the current neko (change of the current-neko field).
 
     Key premise: the switch only affects the single global `her_name`; per-k prompt /
     voice_id / thread state is completely unchanged. So this **only refreshes
     globals** and does no per-k work at all.
 
-    Wall clock: one aget_character_data (~a few ms) and that's everything.
+    Refresh globals and signal an existing sync host; network work remains outside this call.
     """
     await _refresh_character_globals()
+    from services.chat_sync.runtime import wake_desktop_chat_sync_scheduler
+    wake_desktop_chat_sync_scheduler(_config_manager)
     logger.info(f"[fast-switch] 已刷新 globals，当前猫娘: {her_name}")
 
 
 async def init_one_catgirl(name: str, *, is_new: bool = False):
-    """Fast path for adding / editing a single catgirl.
+    """Fast path for adding / editing a single neko.
 
     - is_new=True: addition; force-starts the sync connector thread
     - is_new=False: edit (prompt / voice_id etc.) — only refreshes the session_manager's
@@ -2208,7 +2227,7 @@ async def init_one_catgirl(name: str, *, is_new: bool = False):
 
 
 async def remove_one_catgirl(name: str):
-    """Fast path for deleting a single catgirl: stop the character's thread + clear dicts + refresh globals."""
+    """Fast path for deleting a single neko: stop the character's thread + clear dicts + refresh globals."""
     await _unregister_and_cleanup_character_slot(name)
     # The caller already wrote the config; refresh globals so catgirl_names etc. reflect the deletion.
     await _refresh_character_globals()

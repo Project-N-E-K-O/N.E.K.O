@@ -265,6 +265,17 @@ function prepareConfiguration(f) {
         suppressInitialIdle: true, preferences: { parameters: { ParamAngleX: 2 } } };
 }
 
+test('cold load honors an explicit empty snapshot over a stale directory mirror', () => withMao(async f => {
+    const options = prepareConfiguration(f);
+    options.preferences = { parameters: {}, parameters_mode: 'replace' };
+    f.manager._loadModelDirectoryParameters = async () => ({ ParamAngleX: 12 });
+    await f.manager._configureLoadedModel(f.model, f.manager._lastLoadedModelPath, options, 0);
+    assert.equal(f.manager._modelLoadState, 'ready');
+    assert.equal(f.manager.savedModelParameters, null);
+    assert.equal(f.manager._shouldApplySavedParams, false);
+    assert.equal(f.value('ParamAngleX'), 0);
+}));
+
 test('accepting a new load invalidates parameter tickets before its asynchronous model factory completes', () => withMao(async f => {
     const options = prepareConfiguration(f), gate = deferred(), entered = deferred();
     const other = createMao(f.runtime);

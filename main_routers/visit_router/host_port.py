@@ -67,7 +67,7 @@ class VisitHost(Protocol):
     def is_current(self) -> bool:
         """False once the character's manager was replaced (``manager_replaced``)."""
 
-    def precondition_failure(self) -> Optional[str]:
+    def precondition_failure(self, *, allow_goodbye_silent: bool = False) -> Optional[str]:
         """Why a visit cannot start now (``voice_session_active`` / ``goodbye_silent`` / ``busy``), or None."""
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
@@ -124,6 +124,9 @@ class VisitHost(Protocol):
         marker (TTS start / enqueue error, no worker, turn taken over).
         """
 
+    async def warm_speech(self) -> None:
+        """Start the TTS worker before the first line opens a stream (it can take seconds); never raises."""
+
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         """Record the family's visit line in the sync stream (never in private chat history)."""
 
@@ -179,14 +182,16 @@ class ManagerHost:
         except Exception:  # noqa: BLE001 - Treat unreadable state as replaced: fail closed.
             return False
 
-    def precondition_failure(self) -> Optional[str]:
+    def precondition_failure(self, *, allow_goodbye_silent: bool = False) -> Optional[str]:
         mgr = self._mgr
         try:
             if mgr._is_voice_session_active_or_starting():
                 return "voice_session_active"
         except Exception:  # noqa: BLE001
             return "busy"
-        if getattr(mgr, "is_goodbye_silent", None) and mgr.is_goodbye_silent():
+        if (not allow_goodbye_silent
+                and getattr(mgr, "is_goodbye_silent", None)
+                and mgr.is_goodbye_silent()):
             return "goodbye_silent"
         if getattr(mgr, "is_hot_swap_imminent", False) or getattr(mgr, "_starting_session_count", 0) > 0:
             return "busy"
@@ -339,13 +344,22 @@ class ManagerHost:
             return None
         return opener(metadata=metadata, request_id=request_id, on_enqueued=on_enqueued, on_failed=on_failed)
 
+    async def warm_speech(self) -> None:
+        warm = getattr(self._mgr, "ensure_tts_pipeline_alive", None)
+        if not callable(warm):
+            return
+        try:
+            await warm()
+        except Exception as exc:  # noqa: BLE001 - The first line starts it again and falls back on its own.
+            logger.warning("visit: TTS warm-up failed: %s", type(exc).__name__)
+
     async def mirror_user_input(self, text: str, *, metadata: dict, request_id: Optional[str]) -> None:
         await self._mgr.mirror_user_input(text, metadata=metadata, request_id=request_id, send_to_frontend=False)
 
     async def mirror_assistant_output(
         self, text: str, *, metadata: dict, request_id: str, finalize_turn: bool = False,
     ) -> None:
-        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary catgirl speech, spoken aloud and entering sync normally.
+        # Do not filter by visit_bind (section 4.5 covers only visit_* frames/chips): the homecoming summary is ordinary neko speech, spoken aloud and entering sync normally.
         # Bound this wait: finalization archives files and unregisters afterward, so a stuck page must not block them too.
         try:
             await asyncio.wait_for(

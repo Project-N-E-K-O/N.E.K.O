@@ -138,9 +138,14 @@ async def test_failed_start_revokes_launch_credential(host_factory, failure):
         }[failure]
 
     expected = asyncio.CancelledError if failure == "cancel" else Exception
+    # Every failure here is injected and fires immediately, so the deadline
+    # never needs to expire. A tight one lets a slow scheduler hit
+    # ProcessCreationTimeout before Process.start runs, testing a different path.
     with pytest.raises(expected):
-        await plugin_host.start(startup_timeout=0.01, startup_failure="fail")
+        await plugin_host.start(startup_timeout=30, startup_failure="fail")
 
+    if failure in ("startup_error", "timeout", "cancel"):
+        plugin_host.comm_manager.wait_for_startup.assert_awaited_once()
     assert host_factory.revoked == [plugin_host.process.launched_options["token"]]
     assert plugin_host._model_gateway_token == ""
     assert plugin_host._model_gateway_options == {}

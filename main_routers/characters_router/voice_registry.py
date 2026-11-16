@@ -115,7 +115,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
     set_reserved(characters['猫娘'][name], 'voice_id', _config_manager.voice_id_to_storage_value(voice_id))
     await _config_manager.asave_characters(characters)
 
-    # If this is the currently active catgirl, notify the frontend first, then close the session.
+    # If this is the currently active neko, notify the frontend first, then close the session.
     is_current_catgirl = (name == characters.get('当前猫娘', ''))
     session_ended = False
 
@@ -207,7 +207,7 @@ async def get_catgirl_voice_mode_status(name: str):
 
 @router.post('/catgirl/{name}/unregister_voice')
 async def unregister_voice(name: str):
-    """Unregister the catgirl's voice."""
+    """Unregister the neko's voice."""
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -227,7 +227,7 @@ async def unregister_voice(name: str):
         set_reserved(characters['猫娘'][name], 'voice_id', '')
         await _config_manager.asave_characters(characters)
 
-        # If this is the currently active catgirl, notify the frontend first, then close the session.
+        # If this is the currently active neko, notify the frontend first, then close the session.
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
         session_ended = False
 
@@ -269,7 +269,7 @@ async def clear_voice_ids():
         characters = await _config_manager.aload_characters()
         cleared_count = 0
 
-        # Clear voice_id for all catgirls.
+        # Clear voice_id for all nekos.
         if '猫娘' in characters:
             for name in characters['猫娘']:
                 if read_legacy_voice_id(get_reserved(characters['猫娘'][name], 'voice_id', default='', legacy_keys=('voice_id',))):

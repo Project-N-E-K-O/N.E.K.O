@@ -73,7 +73,7 @@ def _fn_body(src: str, header: str) -> str:
 
 
 def test_visit_voice_tap_reads_the_analyser_output_before_speaker_volume():
-    # OD-15 v4: the peer hears this catgirl's TTS (after per-speech gain) regardless of the local speaker volume.
+    # OD-15 v4: the peer hears this neko's TTS (after per-speech gain) regardless of the local speaker volume.
     src = _src()
     body = _fn_body(src, "async function openAssistantVoiceTap()")
     assert "initializeGlobalAnalyser();" in body

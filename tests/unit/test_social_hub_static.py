@@ -32,15 +32,26 @@ def test_hub_has_targeted_friend_flow_without_invite_code_entry():
     styles = (ROOT / "static" / "css" / "social-hub.css").read_text(encoding="utf-8")
     assert "/api/community/visit-hub" in source
     assert "/api/community/visit-invitations" in source
-    assert "bridge.createDirectInvite(friend.id)" in source
-    assert "visit.createDirectInvitation(friend.id)" in source
+    assert "bridge.createDirectInvite(friend.id, requestedMode)" in source
+    assert "visit.createDirectInvitation(friend.id, requestedMode)" in source
+    assert "visit_mode: actualMode" in source
+    assert "actualMode !== requestedMode" in source
+    assert "visit.socialHub.modeMismatch" in source
+    assert "tr('visit.socialHub.modeMismatch', '串门创建失败，请重试')" in source
+    assert "inviteFriend(friend.id, 'model')" in source
+    assert "inviteFriend(friend.id, 'cat')" not in source
+    assert "visit.socialHub.modelVisit" not in source
+    assert "visit.socialHub.catVisit" not in source
+    assert "neko-social-hub-mode-actions" not in source
+    assert "neko-social-hub-mode-actions" not in styles
     assert "visit_id: visitId" in source
     assert "invite_code: code" not in source
     assert "在线好友" in source
     assert "离线好友" in source
     assert "friend.online" in source
     assert "上次在线 " in source
-    assert "if (view || friend.online)" in source
+    assert "if (social() && view)" in source
+    assert "else if (social() && friend.online)" in source
     assert "setInterval(function () { refresh(true); }, 60000)" in source
     assert "controller.abort()" in source
     assert "}, 8000)" in source
@@ -99,13 +110,15 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
 
     assert "DIRECT_INVITE_ACTION = 'visit_direct_invite_decision'" in chat
     assert "/question?catgirl=" in chat
-    assert "barAction('direct_accept', t('visit.directInvite.accept'" in chat
+    assert "barAction('direct_accept', isCatInvite" in chat
+    assert "t('visit.directInvite.acceptCat'" in chat
+    assert "t('visit.directInvite.accept'" in chat
     assert "barAction('direct_decline', t('visit.directInvite.decline'" in chat
     assert "barAction('invite'," not in chat
     assert "barAction('go'," not in chat
     assert "barAction('cancel'," not in chat
     assert "barAction('copy'," not in chat
-    assert "joinDirect(visitId, true)" in chat
+    assert "joinDirect(visitId, true, payload.visit_mode)" in chat
     assert "presentDirectInvitation: presentDirectInvitation" in chat
     assert "pollDirectInvitations: pollDirectInvitations" in chat
     assert "action.action === DIRECT_INVITE_ACTION" in chat
@@ -128,17 +141,24 @@ def test_incoming_friend_invitation_is_asked_by_the_current_catgirl_in_chat():
     )]
     assert "refreshCompactGeometry();" in present_direct
     assert "type: 'buttons'" not in present_direct
-    assert "'/deliver-question'" in present_direct
+    deliver_legacy = chat[chat.index("async function deliverLegacyInvitationQuestion") : chat.index("async function presentDirectInvitation")]
+    assert "'/deliver-question'" in deliver_legacy
+    assert "await deliverLegacyInvitationQuestion(presentation, visitId, catgirl)" in present_direct
     assert "host.appendMessage({" not in present_direct
     assert "host.updateMessage(" not in present_direct
     assert "host.openWindow()" not in present_direct
     assert "messageId: messageId, payload: payload, busy: false, questionDelivered: false" in present_direct
     assert "catgirl: catgirl" in present_direct
     assert "currentCatgirl() !== catgirl" in present_direct
-    assert present_direct.index("/question?catgirl=") < present_direct.rindex("/deliver-question")
+    assert present_direct.index("/question?catgirl=") < present_direct.rindex("await deliverLegacyInvitationQuestion(presentation")
     assert "directInvitationExpired(payload)" in direct_action
-    assert "result.status === 404 || result.status === 410" in direct_action
-    assert "try {\n            result = await joinDirect(visitId, true);" in direct_action
+    assert "connectInvitationInvalid(result)" in direct_action
+    invalid_result = chat.split("function connectInvitationInvalid(result)", 1)[1].split(
+        "async function decideDirectInvitation", 1
+    )[0]
+    assert "result.status === 404 || result.status === 410" in invalid_result
+    assert "'invite_invalid', 'invite_expired', 'invite_expiring'" in invalid_result
+    assert "try {\n            result = await joinDirect(visitId, true, payload.visit_mode);" in direct_action
     assert "pending.busy = false" in direct_action
     assert "resolvedDirectInvitationIds.has(notificationId)" in present_direct
     assert "!releaseEnabled || !userSwitchOn()" in present_direct
@@ -250,8 +270,9 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     assert "if (accountChanged) {" in source
     assert "dismissedRecommendationIds.clear()" in source
     assert "replaceRecommendationsRequested = replaceRecommendationsRequested === true" in source
-    assert "var shouldReplaceRecommendations = replaceRecommendationsRequested || !silent || accountChanged" in source
-    assert "if (shouldReplaceRecommendations) applyRecommendationSnapshot" in source
+    assert "var shouldReplaceRecommendations = requestRecommendations && (replaceRecommendationsRequested || !silent || accountChanged)" in source
+    assert "if (shouldReplaceRecommendations) {" in source
+    assert "applyRecommendationSnapshot(body, refreshRevision)" in source
     assert "var refreshGeneration = openGeneration" in source
     assert "var refreshRevision = ++hubRefreshRevision" in source
     assert "var appliedRefreshRevision = 0" in source
@@ -266,7 +287,8 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
         "async function refresh", 1
     )[0]
     assert "state.recommendationBusy.clear()" not in recommendation_snapshot
-    account_change = source.split("if (accountChanged) {", 1)[1].split("}", 1)[0]
+    refresh_source = source.split("async function refresh(silent, replaceRecommendationsRequested)", 1)[1]
+    account_change = refresh_source.split("if (accountChanged) {", 1)[1].split("}", 1)[0]
     assert "state.recommendationBusy.clear()" in account_change
     assert "refreshRevision === loadingRefreshRevision" in source
     assert "var presenceRevisionAtStart = presencePushRevision" in source
@@ -329,13 +351,15 @@ def test_social_hub_renders_three_followable_recommendations_without_auto_rotati
     open_source = source.split("function open()", 1)[1].split("function close()", 1)[0]
     assert "if (state.open && panel && !standalone) return true" in open_source
     assert "layer.hidden = true" in open_source
-    assert "state.recommendations = []" in open_source
-    assert "var loadingRevealTimer = setTimeout" in open_source
-    assert "}, 300)" in open_source
-    assert "clearTimeout(loadingRevealTimer)" in open_source
-    assert "refresh().finally(function ()" in open_source
-    assert "if (layer.hidden) revealOpenPanel(generation)" in open_source
-    assert open_source.index("layer.hidden = true") < open_source.index("refresh().finally")
+    assert "if (!realtimeInvitations()) state.recommendations = []" in open_source
+    assert "refreshOpenPanel(generation)" in open_source
+    assert open_source.index("layer.hidden = true") < open_source.index("refreshOpenPanel(generation)")
+    refresh_open_source = source.split("function refreshOpenPanel(generation)", 1)[1].split("function open()", 1)[0]
+    assert "var loadingRevealTimer = setTimeout" in refresh_open_source
+    assert "}, 300)" in refresh_open_source
+    assert "clearTimeout(loadingRevealTimer)" in refresh_open_source
+    assert "refresh().finally(function ()" in refresh_open_source
+    assert "if (layer.hidden) revealOpenPanel(generation)" in refresh_open_source
     reveal_source = source.split("function revealOpenPanel(generation)", 1)[1].split(
         "function open()", 1
     )[0]

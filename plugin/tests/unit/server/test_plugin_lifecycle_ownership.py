@@ -200,11 +200,10 @@ def test_only_the_standalone_entry_point_claims_the_lifecycle() -> None:
 def test_the_lifecycle_decision_no_longer_reads_the_environment() -> None:
     """The import-time constant must not creep back onto the decision.
 
-    ``_EMBEDDED_BY_AGENT`` still exists and is still fine for choosing a logger
-    namespace — getting *that* wrong only misfiles log lines. What must never
-    return is its use around ``lifecycle_startup`` / ``lifecycle_shutdown``,
-    because that is the one place where an import-order accident is silent and
-    expensive.
+    Startup ownership is explicit. Environment-based logging selection has
+    also been removed; neither decision should depend on an import-time flag.
+    Guarding ``lifecycle_startup`` / ``lifecycle_shutdown`` with such a flag
+    would silently restore the expensive import-order dependency.
 
     Mutation: guard either lifecycle call with ``_EMBEDDED_BY_AGENT`` again.
     """

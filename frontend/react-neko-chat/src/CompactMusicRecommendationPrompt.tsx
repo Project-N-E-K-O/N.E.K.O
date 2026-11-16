@@ -1,15 +1,20 @@
 import MessageBlockView from './MessageBlockView';
-import { hasProactiveRecommendationContent } from './message-schema';
+import { useChatScreenVisibility } from './ChatScreenVisibility';
+import { hasProactiveRecommendationContent, isDirectScreenObservation } from './message-schema';
 import type { ChatMessage, MessageAction } from './message-schema';
 
 export default function CompactMusicRecommendationPrompt({ messages, onAction }: {
   messages: ChatMessage[];
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 }) {
+  const { hiddenMessageIds } = useChatScreenVisibility();
   const pending = messages.flatMap((message, index) => message.blocks
     .filter(block => {
+      // Keep the complete history below for expiry, but never revive a hidden card.
+      if (hiddenMessageIds.has(message.id)) return false;
       if (block.type !== 'music_recommendation' && block.type !== 'proactive_recommendation') return false;
       if (block.type === 'proactive_recommendation' && !hasProactiveRecommendationContent(block)) return false;
+      if (isDirectScreenObservation(block)) return false;
       if (block.type === 'proactive_recommendation' && block.directDelivery) {
         return !block.dismissed && !['skipped', 'unavailable'].includes(block.state)
           && !messages.slice(index + 1).some(next => next.role === 'user' || (next.role === 'assistant' && next.turnId && next.turnId !== message.turnId

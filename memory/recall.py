@@ -62,6 +62,8 @@ from __future__ import annotations
 import logging
 import re
 
+from memory.introspection import is_permanently_suppressed
+
 try:
     from memory.embeddings import (
         decode_embedding,
@@ -243,7 +245,8 @@ class MemoryRecallReranker:
 
           * ``score < 0`` — evidence net-negative; user has been
             disputing this more than confirming it.
-          * suppressed — explicit "AI is over-mentioning this" gate.
+          * suppressed — explicit "AI is over-mentioning this" gate, and
+            ``permanent_suppression`` — retired by weekly introspection.
           * truly-dead reflection (denied / archived / merged /
             promote_blocked) — these are dead-letter or already
             consumed, can't generate fresh signals.  ``promoted`` is
@@ -273,6 +276,8 @@ class MemoryRecallReranker:
                 if score is not None and score < 0:
                     continue
                 if o.get('suppress') or o.get('suppressed'):
+                    continue
+                if is_permanently_suppressed(o):
                     continue
                 if o.get('protected'):
                     continue

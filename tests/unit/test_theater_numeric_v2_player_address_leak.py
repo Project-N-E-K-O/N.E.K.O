@@ -1,4 +1,4 @@
-"""The unknown-address leak check only fires on the catgirl directly using the configured nickname as a standalone word."""
+"""The unknown-address leak check only fires on the neko directly using the configured nickname as a standalone word."""
 
 import pytest
 

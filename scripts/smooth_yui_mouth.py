@@ -41,6 +41,8 @@ import json
 import math
 from pathlib import Path
 
+from slim_live2d_motions import dump_motion
+
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "static" / "yui-origin"
 
 TARGET_IDS = ("ParamMouthForm", "ParamMouthOpenY")
@@ -208,7 +210,7 @@ def process(path: Path):
     meta["TotalSegmentCount"] = seg_total
     meta["TotalPointCount"] = pts_total
 
-    path.write_text(json.dumps(data, indent=4, ensure_ascii=False), encoding="utf-8")
+    path.write_text(dump_motion(data), encoding="utf-8")
     return stats
 
 

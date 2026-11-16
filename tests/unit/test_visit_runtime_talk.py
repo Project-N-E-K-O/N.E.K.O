@@ -115,6 +115,30 @@ async def test_tts_chars_and_requests_are_recorded_as_usage(tmp_path, monkeypatc
         await teardown(host, guest, wire=wire, clock=clock)
 
 
+async def test_both_sides_warm_tts_on_activation_before_the_first_line_opens_a_stream(tmp_path, monkeypatch):
+    # The first line's start timeout counts from its first push, TTS cold start included: activation starts the worker first.
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            await wait_for(lambda side=side: "warm_speech" in side.host.events)
+            assert side.host.streams == []
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_off_does_not_warm_tts(tmp_path, monkeypatch):
+    host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch, settings={"visitVoiceEnabled": False})
+    try:
+        await settle()
+        assert "warm_speech" not in host.host.events and "warm_speech" not in guest.host.events
+    finally:
+        hgate.set()
+        ggate.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
 async def test_family_line_order_reserve_room_persist_enqueue_mirror(tmp_path, monkeypatch):
     host, guest, wire, clock, hgate, ggate = await _gated(tmp_path, monkeypatch)
     rt = host.rt
@@ -413,7 +437,7 @@ async def test_peer_text_flood_is_acked_dropped_and_ends_the_visit(tmp_path, mon
     try:
         for i in range(200):
             seq += 1
-            # Peer human lines do not count toward the 80-catgirl-line violation guard, only text buckets and visit totals.
+            # Peer human lines do not count toward the 80-neko-line violation guard, only text buckets and visit totals.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": f"g:{100 + i}", "lp": 10 + i, "seq": seq, "sp": "h", "ad": "gh",
                 "rt": "", "wu": False, "final": True, "txt": f"第{i}条", "truncated": False, "i_done": 0},
@@ -789,7 +813,7 @@ async def test_repeated_line_meta_mismatches_end_the_visit(tmp_path, monkeypatch
                 "ad": "hc", "rt": "", "wu": False}, nbytes=200)
         for i in range(n):
             ln, lp = f"g:{400 + i}", 400 + i
-            # Closing as catgirl contradicts the same line's type; discard as protocol error and end on repeated violations.
+            # Closing as neko contradicts the same line's type; discard as protocol error and end on repeated violations.
             await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
                 "t": "text", "v": 1, "ln": ln, "lp": lp, "seq": rt.sequencer.contiguous_seq + 1, "sp": "c",
                 "ad": "hc", "rt": "", "wu": False, "final": True, "txt": "嗯", "truncated": False, "i_done": 1,
@@ -2148,14 +2172,42 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
     rt.record_line = slow_record
     rt.journal.seal = slow_seal
     monkeypatch.setattr(rtm, "_SEAL_MAX_S", 1.0)
+    # Record the timeout each actual wait runs with rather than timing the whole
+    # call: a stalled runner stretches wall time, never the timeouts themselves.
+    budgets: dict[str, float] = {}
+    real_start_seal = rt._start_seal
+    real_wait = asyncio.wait
+    sealings: list[asyncio.Future] = []
+
+    def start_seal(*args, **kwargs):
+        sealings.append(real_start_seal(*args, **kwargs))
+        return sealings[-1]
+
+    async def wait(fs, *args, **kwargs):
+        # Only timed waits, first one each: once the seal times out, the
+        # background finish waits on it with no timeout, and may get there first.
+        if "timeout" in kwargs:
+            family = {id(f) for f in rt.family_records}
+            if any(id(f) in family for f in fs):
+                budgets.setdefault("family", kwargs["timeout"])
+            elif sealings and sealings[-1] in fs:
+                budgets.setdefault("seal", kwargs["timeout"])
+        return await real_wait(fs, *args, **kwargs)
+
+    rt._start_seal = start_seal
+    monkeypatch.setattr(rtm.asyncio, "wait", wait)
     try:
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "卡住的一句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
-        loop = asyncio.get_running_loop()
-        started = loop.time()
+        # A header still being written makes the call hand the seal to the
+        # background without the timed wait; this test is about the seal path.
+        await wait_for(lambda: rt._journal_opening is not None and rt._journal_opening.done())
         assert await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 5) is False
-        assert loop.time() - started < 1.6                    # Combined waits must not exceed one _SEAL_MAX_S.
+        assert set(budgets) == {"family", "seal"}, budgets
+        # Combined waits must not exceed one _SEAL_MAX_S; the slack covers an
+        # asyncio timer firing up to one clock tick early.
+        assert budgets["family"] + budgets["seal"] <= 1.0 + 0.1, budgets
         sending.cancel()
     finally:
         stuck.set()

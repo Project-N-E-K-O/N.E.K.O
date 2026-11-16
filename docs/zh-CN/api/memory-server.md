@@ -97,7 +97,11 @@
 
 ### `GET /new_dialog/{lanlan_name}`
 
-返回用于新模型会话的 `text/plain` 上下文。对合法角色，它会渲染 persona、活动的 pending/confirmed 反思、动态内心活动、近期历史、聊天间隔提示和节假日上下文。它会等待同角色正在执行的 `/renew` 或 `/settle`。未知角色返回空字符串。
+返回用于新模型会话的 `text/plain` 上下文。对合法角色，它会渲染 persona、活动的 pending/confirmed 反思、动态内心活动、近期历史、聊天间隔提示和节假日上下文。它会等待同角色正在执行的 `/renew` 或 `/settle`。带 `preempt_summary=true` 时（开会话、交接到 Offline VLM 等对话在等这次响应的场景）则不等，而是让该角色正在跑的摘要 LLM 调用中断，交给后台压缩。未知角色返回空字符串。
+
+### `POST /preempt_summary/{lanlan_name}`
+
+让该角色的摘要 LLM 调用（`/renew`、`/settle`、`/process`）中断并交给后台压缩，范围是正在跑的，以及之后 10 秒内（或带 `preempt_summary=true` 的 `/new_dialog` 结束前）开始的。主服务在冷启动前调用它，尽量让排在摘要后面的自身记忆写入在 `/new_dialog` 读取近期历史之前送达。这是尽力而为：主服务最多等这些写入 1.5 秒，之后照常请求 `/new_dialog`，届时仍在排队的写入会在读取之后才送达。返回 `{"status":"ok"}`。
 
 该端点不会执行语义事实召回。语义或时间召回由模型的 `recall_memory` 工具另行通过 `/query_memory` 请求。
 
@@ -194,18 +198,20 @@
 返回主动聊天话题候选，但不把它们标记为已展示：
 
 ```json
-{ "topics": [] }
+{ "topics": [], "commitment": null }
 ```
 
-调用方必须把实际使用的 reflection ID 提交给 `/record_surfaced`。
+`commitment` 是常驻区里角色两天内最早到期的未兑现承诺，形如 `{"id": "pin_...", "text": "...", "due": "YYYY-MM-DD"}`，没有时为 `null`。没有日期的承诺、12 小时内交出过的承诺、她最近提过的承诺都不会返回。
+
+调用方必须把实际使用的 reflection ID，以及模型已经拿到的承诺 ID，提交给 `/record_surfaced`。
 
 ### `POST /record_surfaced/{lanlan_name}`
 
 ```json
-{ "reflection_ids": ["reflection_..."] }
+{ "reflection_ids": ["reflection_..."], "commitment_ids": ["pin_..."] }
 ```
 
-记录主动聊天已展示的反思并刷新冷却时间。列表为空或缺失时是 no-op。稳定响应为 `{"ok":true}`；持久化失败只记录日志，不让调用方失败。
+记录主动聊天已展示的反思并刷新冷却时间。列表为空或缺失时是 no-op。响应为 `{"ok":true}`；`commitment_ids` 非空时另带 `commitments_recorded`，只有常驻区确实写入了这次提供才为 `true`，调用方据此判断要不要再提交一次该承诺。其余持久化失败只记录日志，不让调用方失败。
 
 ### `POST /cancel_correction/{lanlan_name}`
 
@@ -251,6 +257,9 @@
 ```
 
 时间非法或 `since > until` 时返回 `400`。
+
+计数只覆盖日志里仍然保留的事件。已应用的历史会在后台修剪（默认保留最近 7 天、
+最多 256 KiB），因此覆盖更早时间的窗口会少计。
 
 ## 存储后端
 

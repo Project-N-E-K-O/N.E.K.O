@@ -20,6 +20,11 @@ from plugin.core.rpc import (
     request_scope,
 )
 
+# Budgets here are (monotonic() + budget) - monotonic(). When both reads land on
+# the same coarse Windows clock tick, float rounding can still overshoot budget by a
+# few ulps (e.g. 10.000000000000057), so upper bounds on them need this slack.
+_FLOAT_SLACK = 1e-6
+
 
 async def test_replies_are_correlated_even_when_reversed() -> None:
     sent: asyncio.Queue = asyncio.Queue()
@@ -88,7 +93,7 @@ async def test_background_request_uses_its_own_budget_after_entry_scope_ends(out
         assert request["_rpc_parent_request_id"] is None
         assert request["_rpc_trace_id"] == request["request_id"]
         assert request["_rpc_depth"] == 0
-        assert 0.5 < budget <= 1
+        assert 0.5 < budget <= 1 + _FLOAT_SLACK
     finally:
         await peer.aclose()
 
@@ -177,7 +182,7 @@ async def test_gather_children_keep_the_active_parent_deadline_and_trace():
             assert request["_rpc_parent_request_id"] == "active-entry"
             assert request["_rpc_trace_id"] == "trace"
             assert request["_rpc_depth"] == 3
-            assert 0 < budget <= 0.03
+            assert 0 < budget <= 0.03 + _FLOAT_SLACK
     finally:
         await peer.aclose()
 
@@ -556,7 +561,7 @@ async def test_handler_receives_normalized_context():
     assert reply["error"] is None
     (ctx,) = seen
     assert (ctx.from_plugin, ctx.request_id, ctx.depth) == ("p1", "r1", 0)
-    assert 0 < ctx.remaining() <= 1.5
+    assert 0 < ctx.remaining() <= 1.5 + _FLOAT_SLACK
 
 
 @pytest.mark.parametrize(
@@ -583,4 +588,4 @@ async def test_unusable_timeout_falls_back_instead_of_rejecting(timeout, budget)
     )
     assert reply["error"] is None
     (remaining,) = seen
-    assert budget - 1 < remaining <= budget
+    assert budget - 1 < remaining <= budget + _FLOAT_SLACK

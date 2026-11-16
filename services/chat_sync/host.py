@@ -48,6 +48,20 @@ _get_init_one_catgirl: Callable[[], Callable[..., Awaitable[Any]]] | None = None
 _conversation_busy: Callable[[Any], bool] | None = None
 _rename_character: Callable[..., Awaitable[Any]] | None = None
 _delete_character: Callable[..., Awaitable[Any]] | None = None
+_resolve_model_file: Callable[..., Any] | None = None
+
+
+def install_model_file_resolver(resolver) -> None:
+    global _resolve_model_file
+    _resolve_model_file = _callable(resolver, "resolve_model_file")
+
+
+def resolve_model_file(path, config):
+    return _installed(_resolve_model_file, "resolve_model_file")(path, config)
+
+
+
+
 
 
 def _callable(value, name: str):

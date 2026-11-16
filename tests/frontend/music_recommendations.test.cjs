@@ -27,6 +27,8 @@ function surface(t, options={}) {
         updateMessage(id, patch) { Object.assign(messages.get(id),patch); }
     };
     w.fetch = async (url, init) => {
+        // Card choices feeding the backend music cooldown are not evidence events.
+        if (url === '/api/proactive/music_card_decision') return {ok:true, status:200, json:async()=>({success:true})};
         const event = JSON.parse(init.body); calls.push(event);
         const result = options.respond ? await options.respond(event) : {success:true, applied:true, state:event.kind, playback_grant:event.kind==='accepted'};
         return {ok:result.success, status:result.success?200:409, json:async()=>result};

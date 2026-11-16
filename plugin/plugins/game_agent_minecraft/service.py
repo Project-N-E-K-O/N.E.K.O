@@ -802,7 +802,7 @@ class GameAgentService:
     def current_task_text(self) -> Optional[str]:
         """Return the text of the currently-pending task, or ``None`` if idle.
         Lock-free snapshot read for the facade's "busy" reply — the facade
-        needs to tell the dialog LLM what task is in flight so the catgirl can
+        needs to tell the dialog LLM what task is in flight so the neko can
         narrate it correctly instead of dispatching a new conflicting task.
         """
         pending = self._pending
@@ -1480,7 +1480,7 @@ class GameAgentService:
         nudge tick. ``cause`` (when mc-agent could infer one — nearby
         hostile, lava, fall, etc.) is rendered as a hint inside the cue
         so the character can narrate the actual reason instead of
-        inventing one (the historical UX problem: the catgirl saw HP drop and
+        inventing one (the historical UX problem: the neko saw HP drop and
         made up "a monster hit me" with no evidence).
         """
         severity = str(data.get("severity") or "warn").lower()
@@ -1620,7 +1620,7 @@ class GameAgentService:
         #      re-labels (see ``text_signals_blocked``). Without this second
         #      check the retroactive cue would say "it actually finished (result ok)" while
         #      its own feedback line shows "could not find path" — re-telling
-        #      telling the catgirl about a success that never happened.
+        #      telling the neko about a success that never happened.
         # ``.strip().lower()`` so a whitespace-padded "ok " still reads as ok.
         is_genuine_ok = (
             status.strip().lower() == "ok" and not text_signals_blocked(text)
@@ -1713,7 +1713,7 @@ class GameAgentService:
             #   (b) echoed in dispatched history → retroactive cue
             #       (an earlier task — usually one we overwrote — really
             #       finished on mc-agent, surface that to the dialog LLM
-            #       so the catgirl knows the prior action actually completed)
+            #       so the neko knows the prior action actually completed)
             #   (c) no task_id or unknown id, but ``_pending`` is set →
             #       FIFO fallback: treat as completion of current pending
             #       (covers legacy mc-agent builds that don't echo id)

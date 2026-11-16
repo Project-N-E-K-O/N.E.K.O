@@ -190,6 +190,9 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane :label="$t('pluginConsent.title')" name="permissions">
+          <PluginPermissions v-if="activeTab === 'permissions'" :key="pluginId" :plugin-id="pluginId" />
+        </el-tab-pane>
         <el-tab-pane :label="$t('plugins.entries')" name="entries">
           <div data-yui-guide-id="plugin-detail-entries">
             <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
@@ -233,6 +236,7 @@ import PluginAutoStartSwitch from '@/components/plugin/PluginAutoStartSwitch.vue
 import EntryList from '@/components/plugin/EntryList.vue'
 import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
+import PluginPermissions from '@/components/plugin/PluginPermissions.vue'
 import PluginModelBindings from '@/components/plugin/PluginModelBindings.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -248,6 +252,8 @@ import {
 } from '@/views/pluginDetailHostedPanelRefresh'
 import { PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { useWorkspaceFocusOwner } from '@/composables/useWorkspaceFocus'
+import { providePluginDisplayPage } from '@/composables/usePluginDisplay'
+import { usePluginDisplayDialog } from '@/composables/usePluginDisplayDialog'
 import {
   pickPrimaryPanelSurface,
   renderablePanelSurfaces as selectRenderablePanelSurfaces,
@@ -282,20 +288,22 @@ const surfaceActivationRevisions = ref<Record<string, number>>({})
 // 被压到一屏后，.el-card 默认的 overflow:hidden 会把内容直接裁掉而不是让它滚动。
 const fillTabs = new Set(['panel', 'guide', 'logs'])
 const isFillTab = computed(() => fillTabs.has(activeTab.value))
-const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
+const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs', 'permissions'])
 // Focus mode belongs to the panel tab: leaving it (e.g. a surface opening the
 // logs tab) also ends focus, so coming back starts with the normal chrome.
 const focusRequested = ref(false)
+providePluginDisplayPage(focusRequested, () => pluginDisplayText.value.name || pluginId.value)
+const { visible: displayDialogVisible } = usePluginDisplayDialog()
 const focusActive = computed(() => focusRequested.value && activeTab.value === 'panel')
 const focusAvailable = computed(() => activeTab.value === 'panel' && !focusActive.value)
 useWorkspaceFocusOwner(focusActive)
 watch(activeTab, (tab) => {
   if (tab !== 'panel') focusRequested.value = false
 })
-// Keys typed inside a surface iframe stay in that document, so a game keeps
-// its own Esc; this only fires when focus is on the host page.
+// Iframe clients forward unhandled Esc through display.exit; this listener
+// handles Esc while focus is on the host page.
 function exitFocusOnEscape(event: KeyboardEvent) {
-  if (event.key === 'Escape' && focusActive.value && !event.defaultPrevented) focusRequested.value = false
+  if (event.key === 'Escape' && focusActive.value && !event.defaultPrevented && !displayDialogVisible.value) focusRequested.value = false
 }
 let currentSurfaceLoadId = 0
 let surfaceController: AbortController | null = null

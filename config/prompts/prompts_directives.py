@@ -168,7 +168,7 @@ _TRIM_TRAIL_TOKENS_ANY = ("please", "porfa", "porfavor")
 
 
 def _norm_lang(lang: str) -> str:
-    """Normalize a lang code (``zh-CN`` → ``zh``, ``pt-BR`` → ``pt``, etc.).
+    """Normalize a lang code to a template key (``zh-CN`` → ``zh``, ``zh-TW`` → ``zh-TW``, ``pt-BR`` → ``pt``).
 
     The render functions in this module resolve templates by exact dict key; if the
     upstream passes ``user_language`` through unchanged (with a region suffix),
@@ -182,6 +182,14 @@ def _norm_lang(lang: str) -> str:
     render functions fall back to English); when the resolver is unbound, degrade to
     a local split fallback.
 
+    Traditional Chinese branches off *before* that short normalization, same as
+    ``utils.slop_filter._resolve_slop_lang_key``: ``format='short'`` collapses
+    zh-TW / zh-Hant / zh-HK / tchinese to ``zh``, which handed Traditional users the
+    Simplified templates and left every ``'zh-TW'`` row in this module unreachable.
+    Only that branch is special-cased; every other input keeps the original path.
+    The script has to survive until it gets here, so callers pass a full locale or a
+    prompt key — a short ``zh`` from upstream has already lost it.
+
     ⚠️ This helper serves the i18n **template rendering** path (unknown → en). If you
     need an "unknown → Chinese" fallback (e.g. the contract of
     ``scan_negative_keywords``), do not reuse this helper; write a local strip — see
@@ -189,6 +197,8 @@ def _norm_lang(lang: str) -> str:
     """
     if not lang:
         return 'en'
+    if normalize_prompt_locale(lang) == 'zh-TW':
+        return 'zh-TW'
     try:
         from config._runtime import normalize_language_code as _nlc
         out = _nlc(lang, format='short') or lang
@@ -2268,7 +2278,7 @@ def render_directives_block(terms: List[str], lang: str) -> str:
     """Render the active term list into a system-prompt block (with leading newlines).
 
     Empty list → returns "" (callers concat directly, no emptiness check needed).
-    ``lang`` accepts full locales (``zh-CN`` etc.), normalized internally to a short code.
+    ``lang`` accepts full locales (``zh-CN`` / ``zh-TW`` etc.), normalized internally to a template key.
     """
     if not terms:
         return ""
@@ -2348,6 +2358,82 @@ def render_recent_topics_block(terms: List[str], lang: str) -> str:
     template = RECENT_TOPIC_HINT_PROMPT_BLOCK.get(short) or RECENT_TOPIC_HINT_PROMPT_BLOCK['en']
     items = "\n".join(f"- {t}" for t in terms)
     return template.format(items=items, n=len(terms))
+
+
+# ---------------------------------------------------------------------------
+# Habitual-phrase avoid list: wording she keeps reusing across sessions.
+# ---------------------------------------------------------------------------
+# Source: memory.habitual_phrases.HabitualPhraseStore.prompt_phrases, a file the
+# memory server recomputes in the background without any model call. Injected
+# right after RECENT_TOPIC_HINT_PROMPT_BLOCK at session start only: realtime
+# voice swallows a mid-session system injection (see notify.py).
+#
+# Topics are WHAT she talks about; these are HOW she says it. The closing line
+# asks for different wording, never a different meaning, and deliberately
+# offers no sample replacement: a model handed an example line repeats the
+# example instead.
+
+HABITUAL_PHRASE_AVOID_PROMPT_BLOCK = {
+    'zh': (
+        "\n\n[你最近在好几次对话里反复用到的说法（{n}项）]\n"
+        "{items}\n"
+        "这些说法最近用得太多了，想表达同样的意思时换种说法。"
+    ),
+    'zh-TW': (
+        "\n\n[你最近在好幾次對話裡反覆用到的說法（{n}項）]\n"
+        "{items}\n"
+        "這些說法最近用得太多了，想表達同樣的意思時換個說法。"
+    ),
+    'en': (
+        "\n\n[Phrases you've reused across several recent conversations ({n})]\n"
+        "{items}\n"
+        "These phrases have been used too much lately; when you mean the same "
+        "thing, say it a different way."
+    ),
+    'ja': (
+        "\n\n[最近いくつもの会話で繰り返し使っている言い回し（{n}件）]\n"
+        "{items}\n"
+        "これらの言い回しは最近使いすぎています。同じことを伝えるときは、"
+        "別の言い方で表現してください。"
+    ),
+    'ko': (
+        "\n\n[최근 여러 대화에서 반복해서 쓴 표현 ({n}개)]\n"
+        "{items}\n"
+        "이 표현들은 최근에 너무 자주 썼습니다. 같은 뜻을 전할 때는 "
+        "다른 말로 표현해 보세요."
+    ),
+    'ru': (
+        "\n\n[Фразы, которые вы повторяли в нескольких недавних разговорах "
+        "({n} шт.)]\n"
+        "{items}\n"
+        "В последнее время эти фразы звучат слишком часто; когда хотите "
+        "сказать то же самое, выразите это по-другому."
+    ),
+    'es': (
+        "\n\n[Expresiones que repetiste en varias conversaciones recientes "
+        "({n} elemento(s))]\n"
+        "{items}\n"
+        "Últimamente usas demasiado estas expresiones; cuando quieras decir "
+        "lo mismo, dilo de otra manera."
+    ),
+    'pt': (
+        "\n\n[Expressões que você repetiu em várias conversas recentes "
+        "({n} item(ns))]\n"
+        "{items}\n"
+        "Essas expressões têm sido usadas demais ultimamente; quando quiser "
+        "dizer a mesma coisa, diga de outro jeito."
+    ),
+}
+
+
+def render_habitual_phrases_block(phrases: List[str], lang: str) -> str:
+    """Render the habitual-phrase avoid list into a system-prompt fragment; empty list → ""."""
+    if not phrases:
+        return ""
+    short = _norm_lang(lang)
+    template = HABITUAL_PHRASE_AVOID_PROMPT_BLOCK.get(short) or HABITUAL_PHRASE_AVOID_PROMPT_BLOCK['en']
+    items = "\n".join(f"- {p}" for p in phrases)
+    return template.format(items=items, n=len(phrases))
 
 
 # ---------------------------------------------------------------------------
@@ -2453,9 +2539,10 @@ def render_regen_avoid_instruction(terms: List[str], lang: str, master_name: str
     short = _norm_lang(lang)
     template = PROACTIVE_REGEN_AVOID_INSTRUCTION.get(short) or PROACTIVE_REGEN_AVOID_INSTRUCTION['en']
     # Bracket words individually, clearly separating avoided terms (「」 for CJK, double quotes elsewhere),
-    # then join using locale-specific list separators.
-    lq, rq = ("「", "」") if short in ("zh", "ja") else ('"', '"')
-    sep = "、" if short in ("zh", "ja") else ", "
+    # then join using locale-specific list separators. Traditional Chinese uses 「」 and 、 natively too.
+    cjk_quotes = short in ("zh", "zh-TW", "ja")
+    lq, rq = ("「", "」") if cjk_quotes else ('"', '"')
+    sep = "、" if cjk_quotes else ", "
     quoted_terms = sep.join(f"{lq}{t}{rq}" for t in terms)
     return template.format(
         terms=quoted_terms,
@@ -2717,7 +2804,9 @@ Retorne JSON válido. Se não houver alvo específico, retorne {"targets": []}. 
 
 
 def get_negative_target_check_prompt(lang: str = "zh") -> str:
-    return _loc(NEGATIVE_TARGET_CHECK_PROMPT, lang)
+    # Through _norm_lang like the render functions above: a bare _loc only matches exact keys,
+    # so zh-Hant / zh-HK fell back to the Simplified row and zh-CN warned on every call.
+    return _loc(NEGATIVE_TARGET_CHECK_PROMPT, _norm_lang(lang))
 
 
 # =====================================================================

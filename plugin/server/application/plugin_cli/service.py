@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.logging_config import get_logger
@@ -41,6 +42,7 @@ from plugin.server.infrastructure.runtime_overrides import (
     set_runtime_auto_start_override,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.project_sources import ProjectSourceFailure
 from plugin.server.application.plugin_cli.install_plan import (
     REPLACEMENT_ACTIONS,
     PluginInstallPlan,
@@ -87,6 +89,10 @@ _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 # Maximum upload size (500 MiB)
 _UPLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
+
+from plugin.server.application.plugins.capability_analysis_service import (
+    notify_install_committed,
+)
 
 logger = get_logger("server.application.plugin_cli")
 plugin_registry_service = PluginRegistryService()
@@ -232,9 +238,6 @@ class PluginCliService:
         plugins: list[str] | None = None,
         plugin_ref: dict[str, Any] | None = None,
         plugin_refs: list[dict[str, Any]] | None = None,
-        development_ref: dict[str, Any] | None = None,
-        development_refs: list[dict[str, Any]] | None = None,
-        allow_development: bool = True,
         out: str | None = None,
         target_dir: str | None = None,
         keep_staging: bool = False,
@@ -252,9 +255,6 @@ class PluginCliService:
                 plugins=plugins,
                 plugin_ref=plugin_ref,
                 plugin_refs=plugin_refs,
-                development_ref=development_ref,
-                development_refs=development_refs,
-                allow_development=allow_development,
                 cancelled=cancelled,
                 out=out,
                 target_dir=target_dir,
@@ -305,6 +305,7 @@ class PluginCliService:
         confirmation_token: str | None = None,
         _allow_external_profiles_root: bool = False,
         _preserve_autostart_plugin_id: str | None = None,
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         install_source_manager = get_install_source_manager()
         reload_install_source = getattr(install_source_manager, "load", None)
@@ -508,11 +509,14 @@ class PluginCliService:
                     "could not record as awaiting approval: "
                     + ", ".join(sorted(unrecorded))
                 )
-            return await self._record_requested_install_source(
+            result = await self._record_requested_install_source(
                 install_result=result,
                 package=package,
                 source=install_source,
             )
+            if _analyze_after_commit:
+                notify_install_committed(result)
+            return result
 
         if action == "override_builtin":
             raise ServerDomainError(
@@ -782,13 +786,15 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is not None:
-            return response
-        return await self._record_requested_install_source(
-            install_result=response,
-            package=package,
-            source=install_source,
-        )
+        if manual_manager is None:
+            response = await self._record_requested_install_source(
+                install_result=response,
+                package=package,
+                source=install_source,
+            )
+        if _analyze_after_commit:
+            notify_install_committed(response)
+        return response
 
     @serialized_plugin_operation
     async def install_builtin_override(
@@ -796,6 +802,7 @@ class PluginCliService:
         *,
         package: str,
         market_override: dict[str, Any],
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         """Install one verified Market package as the effective user source."""
 
@@ -1024,6 +1031,8 @@ class PluginCliService:
                 "install_source_warning": "; ".join(lock_warnings) if lock_warnings else None,
             }
         )
+        if _analyze_after_commit:
+            notify_install_committed(staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(
@@ -1218,6 +1227,7 @@ class PluginCliService:
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
         _preserve_autostart_plugin_id: str | None = None,
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
 
@@ -1310,6 +1320,7 @@ class PluginCliService:
                     on_conflict=on_conflict,
                     use_staging=True,
                     _allow_external_profiles_root=_allow_external_profiles_root,
+                    _analyze_after_commit=False,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 warning = await self._record_install_source_best_effort(
@@ -1324,6 +1335,8 @@ class PluginCliService:
                 }
                 if warning is not None:
                     payload["install_source_warning"] = warning
+                if _analyze_after_commit:
+                    notify_install_committed(payload)
                 return payload
             except Exception:
                 self._cleanup_after_failure(
@@ -1377,6 +1390,7 @@ class PluginCliService:
                 unpack_result = await self.install_builtin_override(
                     package=saved_path,
                     market_override=install_source_override,
+                    _analyze_after_commit=False,
                 )
                 # The source-switch transaction has committed and owns its
                 # rollback. Do not let the outer upload cleanup delete the
@@ -1393,12 +1407,15 @@ class PluginCliService:
                     "previous_version": unpack_result.get("previous_version"),
                 }
                 warning = unpack_result.get("install_source_warning")
-                return self._compose_install_result(
+                result = self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
                     install_dict=install_dict,
                     warnings=[str(warning)] if warning else [],
                 )
+                if _analyze_after_commit:
+                    notify_install_committed(result)
+                return result
             forced_directory_name = install_source_override.get("directory_name")
             use_staging = install_mode == "install" or isinstance(
                 forced_directory_name,
@@ -1444,6 +1461,7 @@ class PluginCliService:
                     ),
                     _allow_external_profiles_root=_allow_external_profiles_root,
                     _preserve_autostart_plugin_id=_preserve_autostart_plugin_id,
+                    _analyze_after_commit=False,
                 )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
@@ -1475,12 +1493,15 @@ class PluginCliService:
                     )
                     if refresh_warning is not None:
                         warnings.append(refresh_warning)
-                return self._compose_install_result(
+                result = self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
                     install_dict=install_dict,
                     warnings=warnings,
                 )
+                if _analyze_after_commit:
+                    notify_install_committed(result)
+                return result
 
             # Step 4b — plugin identity consistency check.
             # When Market tells us "this is plugin X" by passing
@@ -1613,12 +1634,15 @@ class PluginCliService:
                     }
                 )
 
-            return self._compose_install_result(
+            result = self._compose_install_result(
                 saved=saved,
                 unpack_result=unpack_result,
                 install_dict=install_dict,
                 warnings=warnings,
             )
+            if _analyze_after_commit:
+                notify_install_committed(result)
+            return result
 
         except InstallSourceError:
             # Lock write failed — fs cleanup still runs, but propagate the
@@ -1942,38 +1966,14 @@ class PluginCliService:
         package_name: str | None,
         package_description: str | None,
         version: str | None,
-        development_ref: dict[str, Any] | None = None,
-        development_refs: list[dict[str, Any]] | None = None,
-        allow_development: bool = True,
         cancelled: threading.Event | None = None,
     ) -> dict[str, object]:
-        from plugin.neko_plugin_cli.core.build import build_bundle, build_plugin
+        from plugin.neko_plugin_cli.core.build import PluginBuilder
 
         try:
             policy = self._path_policy()
             target_root = policy.package_artifacts_root
-            from .development_build import build_development_sources, resolve_development_sources
-
-            development = resolve_development_sources(mode, development_ref, development_refs or []) if allow_development else []
-            if development:
-                if mode == "single" and (plugin or plugin_ref):
-                    raise ValueError("A single build accepts exactly one source")
-                ordinary = (
-                    self._resolver().list_plugins() if mode == "all" else
-                    self._resolve_plugin_sources(
-                        mode=mode, plugin=plugin, plugins=plugins or [],
-                        plugin_ref=plugin_ref, plugin_refs=plugin_refs or [],
-                    ) if plugin or plugin_ref or plugins or plugin_refs else []
-                )
-                return build_development_sources(
-                    development=development, ordinary=ordinary, mode=mode,
-                    target_root=target_root, target_dir=target_dir, out=out,
-                    keep_staging=keep_staging, bundle_id=bundle_id,
-                    package_name=package_name, package_description=package_description,
-                    version=version,
-                    cancelled=cancelled,
-                )
-            sources = self._resolve_plugin_sources(
+            sources, source_failures = self._resolve_plugin_sources(
                 mode=mode,
                 plugin=plugin,
                 plugins=plugins or [],
@@ -1981,6 +1981,13 @@ class PluginCliService:
                 plugin_refs=plugin_refs or [],
             )
             plugin_dirs = [source.plugin_dir for source in sources]
+            # Workbench projects live outside the plugin roots, so metadata probing
+            # imports them from their own directory, as the runtime does.
+            builder = PluginBuilder(
+                source_only_roots=tuple(
+                    source.plugin_dir for source in sources if source.root_id == "project"
+                )
+            )
             resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else target_root
             _require_within(resolved_target_dir, target_root, field="target_dir")
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
@@ -1999,7 +2006,7 @@ class PluginCliService:
                         field="out",
                     )
                 )
-                result = build_bundle(
+                result = builder.build_bundle(
                     plugin_dirs,
                     output_path,
                     bundle_id=resolved_bundle_id,
@@ -2018,7 +2025,13 @@ class PluginCliService:
                 }
 
             built: list[dict[str, object]] = []
-            failed: list[dict[str, object]] = []
+            failed: list[dict[str, object]] = [
+                {
+                    "plugin": f"project/{failure.source_dir.name}",
+                    "error": f"Project {failure.project_id} ({failure.source_dir}): {failure.error}",
+                }
+                for failure in source_failures
+            ]
             output_stems = self._output_stems_for_sources(sources)
             for source, plugin_dir in zip(sources, plugin_dirs, strict=True):
                 output_path = (
@@ -2027,7 +2040,7 @@ class PluginCliService:
                     else resolved_target_dir / f"{output_stems[source]}.neko-plugin"
                 )
                 try:
-                    result = build_plugin(
+                    result = builder.build_plugin(
                         plugin_dir,
                         output_path,
                         keep_staging=keep_staging,
@@ -2094,23 +2107,33 @@ class PluginCliService:
                 package_path=package_path,
                 target_root=target_root,
             )
-            from plugin.server.application.plugins.development import list_registration_records_sync
+            from plugin.server.application.plugins.project_sources import list_project_sources_sync
             incoming_ids = set(getattr(plan, "bundle_plugin_ids", ()) or (plan.plugin_id,))
             try:
-                registrations = list_registration_records_sync()
-            except ServerDomainError as exc:
-                if exc.code != "DEVELOPMENT_STORE_INVALID":
-                    raise
+                projects, failures = list_project_sources_sync()
+            except ServerDomainError:
                 # Like managed discovery, installation does not depend on a
-                # readable optional development store. Preserve it for repair;
-                # all package, target and installed-identity checks still apply.
-                logger.warning("Ignoring invalid optional development registry during managed install planning")
-                registrations = []
-            conflicts = [item for item in registrations if item.plugin_id in incoming_ids]
+                # readable workbench store. Preserve it for repair; all package,
+                # target and installed-identity checks still apply.
+                logger.warning("Ignoring unreadable workbench store during managed install planning")
+                projects, failures = [], []
+            conflicts = [item.source_dir for item in projects if item.plugin_id in incoming_ids]
+            # Registered directories reserve their ID even while their source is invalid.
+            # Their manifest is unreadable, so the directory name is all we have: match it
+            # with the loader's rule instead of an exact string compare, or a broken
+            # `foo-bar/` project would stop reserving `foo_bar` (#3724).
+            conflicts.extend(
+                item.source_dir
+                for item in failures
+                if any(
+                    plugin_package_matches_directory(incoming_id, item.source_dir.name)
+                    for incoming_id in incoming_ids
+                )
+            )
             if conflicts:
-                plan = replace(plan, action="blocked", confirmation_token="", reason="development_registration_conflict")
+                plan = replace(plan, action="blocked", confirmation_token="", reason="project_source_conflict")
                 result = asdict(plan)
-                result["development_sources"] = [str(item.source_dir) for item in conflicts]
+                result["project_sources"] = [str(path) for path in conflicts]
                 return result
             return asdict(plan)
         except Exception as exc:
@@ -2550,27 +2573,27 @@ class PluginCliService:
         plugins: list[str],
         plugin_ref: dict[str, Any] | None,
         plugin_refs: list[dict[str, Any]],
-    ) -> list[ResolvedPluginSource]:
+    ) -> tuple[list[ResolvedPluginSource], list[ProjectSourceFailure]]:
         resolver = self._resolver()
         if mode == "all":
-            sources = resolver.list_plugins()
-            if not sources:
+            sources, failures = resolver.list_plugins_with_failures()
+            if not sources and not failures:
                 roots = ", ".join(f"{root_id}={root}" for root_id, root in self._path_policy().build_source_roots)
                 raise FileNotFoundError(f"No plugin.toml files found under builtin or user plugin roots ({roots})")
-            return sources
+            return sources, failures
 
         if mode == "single":
             if plugin_ref is not None:
-                return [resolver.resolve_plugin_ref(plugin_ref)]
+                return [resolver.resolve_plugin_ref(plugin_ref)], []
             if plugin:
-                return [resolver.resolve_string(plugin)]
+                return [resolver.resolve_string(plugin)], []
             raise ValueError("Please provide plugin_ref or plugin when mode=single")
 
         if mode in {"selected", "bundle"}:
             if plugin_refs:
-                return [resolver.resolve_plugin_ref(item) for item in plugin_refs]
+                return [resolver.resolve_plugin_ref(item) for item in plugin_refs], []
             if plugins:
-                return [resolver.resolve_string(item) for item in plugins]
+                return [resolver.resolve_string(item) for item in plugins], []
             raise ValueError(f"Please provide plugin_refs or plugins when mode={mode}")
 
         raise ValueError("Unsupported build mode")

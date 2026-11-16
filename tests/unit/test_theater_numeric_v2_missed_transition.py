@@ -1,6 +1,7 @@
 """Recover only the current uncommitted candidate, still requiring source verification, formal review and one atomic commit."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -58,7 +59,7 @@ def test_numbered_evidence_excludes_player_and_candidate(player_input):
         case["engine"], case["session"], player_input=player_input,
         actor_performance={"performance": "新秘密房间已经开放。", "suggested_inputs": []},
         check_missed_initiation=True)
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     recovery_check = data["missed_initiation_check"]
     assert set(recovery_check) == {"public_destination_evidence"}
     assert data["player_input"] == player_input
@@ -71,7 +72,10 @@ def test_numbered_evidence_excludes_player_and_candidate(player_input):
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
     assert "顶层 player_input" in messages[0].content
     assert "顶层 next_scene_direction" in messages[0].content
-    assert "保留原八字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
+    system = messages[0].content
+    assert set(json.JSONDecoder().raw_decode(system[system.index("{"):])[0]) >= {
+        "player_request_quote", "missed_initiation", "public_destination_index",
+    }
 
 
 def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparation():
@@ -83,7 +87,7 @@ def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparat
         actor_performance={"performance": "（点头）登记信息确认好了。", "suggested_inputs": []},
         check_missed_initiation=True,
     )
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     required = data["next_scene_direction"]
     # Follow-up checks trigger expensive official enactment; first observe the location and phase actually reached after acceptance.
     assert required["direction"] == "一起确认登记信息后继续下一步。"
@@ -102,7 +106,7 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
     def build_with_another_prefix(*args, **kwargs):
         messages, evidence = build_messages(*args, **kwargs)
         # The display prefix is outside the recovery protocol; obtain the ID from evidence packed in the same operation.
-        data = json.loads(messages[1].content.split("：", 1)[1])
+        data = prompt_payload(messages[1].content)
         assert evidence == tuple(data["missed_initiation_check"]["public_destination_evidence"])
         messages[1] = type(messages[1])(content="Review data\n" + json.dumps(data, ensure_ascii=False))
         sent_evidence.extend(evidence)
@@ -180,12 +184,12 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
                   turn=TurnRequestV2("go", 0, case["message"]), ensure_current_binding=lambda _: _binding())
-    if formal_failure == "timeout":
+    if formal_failure in {"timeout", "body"}:
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_(review_failed|fact_boundary)"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session("recover") == current
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
         assert result.stored.session.current_node_id == "ending_leave"
         assert result.diagnostics["missed_initiation_recoveries"] == 1
@@ -198,7 +202,7 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     assert actor_nodes == (["start", "start", "ending_leave"] if recover_after_rewrite
                            else ["start", "ending_leave", "ending_leave"] if formal_failure == "body"
                            else ["start", "ending_leave"])
-    assert len(reviews) == (4 if formal_failure == "body" or recover_after_rewrite else 2)
+    assert len(reviews) == (4 if formal_failure == "body" else 3 if recover_after_rewrite else 2)
 
 
 @pytest.mark.parametrize("request_quote,allowed", [

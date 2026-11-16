@@ -2236,6 +2236,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (!hasMoved && clickDuration < CLICK_THRESHOLD_TIME) {
                 // 这是一个点击
                 console.log(`[Interaction] 检测到点击（时长: ${clickDuration}ms）`);
+                // 即时反馈：先原地颤一下，不等下面 300ms 后的动作/表情
+                window.NekoAvatarClickShake?.play(this.pixi_app?.view);
                 // 只在教程模式下，通过点击检测触发随机动画
                 // 非教程模式下，通过 hit 事件处理
                 await new Promise(resolve => setTimeout(resolve, 300));

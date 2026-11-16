@@ -22,6 +22,7 @@
             <PluginAutoStartBadge v-if="plugin.autoStart === true" />
             <SourceTag
               :source="plugin.install_source?.source"
+              :registry-source="plugin.source"
               :has-update="hasUpdate"
             />
           </div>

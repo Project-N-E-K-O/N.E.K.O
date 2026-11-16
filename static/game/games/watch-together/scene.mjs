@@ -329,7 +329,7 @@ export async function run(game, character, ui = {}) {
         const response = await startRuntime();
         if(stale())return;
         if (!response.ok || response.data?.ok === false) throw Error(response.data?.reason || 'Scene start failed');
-        watchStarting = game.media.request('watch',{action:'start',job:selected.id,version:selected.version})
+        watchStarting = game.media.request('watch',{action:'start',job:selected.id,version:selected.version,automatic:automatic.enabled})
           .then(started=>{watch=started.id;});
         try { await watchStarting; } finally { watchStarting=null; }
         if(stale())return;

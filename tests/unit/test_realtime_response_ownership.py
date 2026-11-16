@@ -338,7 +338,7 @@ async def test_transport_ignores_retired_created_before_exposing_successor():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_transport_records_but_does_not_finalize_idless_orphan_terminal():
+async def test_transport_records_but_does_not_finalize_idless_orphan_terminal(monkeypatch):
     client = OmniRealtimeClient(
         "wss://example.invalid/realtime",
         "test-key",
@@ -355,10 +355,22 @@ async def test_transport_records_but_does_not_finalize_idless_orphan_terminal():
     client._notify_turn_finished = AsyncMock()
     client._current_response_id = "resp-owner"
     client._is_responding = True
+    client._realtime_conversation_observation = {
+        "reply_id": "owner-reply", "started": True, "closed": False,
+        "lifecycle": "realtime", "origin": None,
+    }
+    from main_logic.omni_realtime_client import _transport
+    observations = []
+    monkeypatch.setattr(
+        _transport, "schedule_conversation_fact_observed_best_effort",
+        lambda *args, **kwargs: observations.append(kwargs),
+    )
 
     try:
         await client.handle_messages()
 
+        assert observations == []
+        assert client._realtime_conversation_observation["closed"] is False
         assert client._response_done_total == 1
         assert client._current_response_id == "resp-owner"
         assert client._is_responding is True

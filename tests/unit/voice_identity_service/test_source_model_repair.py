@@ -38,6 +38,10 @@ def assets(tmp_path, monkeypatch):
     requested = []
 
     class Response(io.BytesIO):
+        def __init__(self, data):
+            super().__init__(data)
+            self.headers = {"Content-Length": str(len(data))}
+
         def geturl(self):
             return "https://assets.invalid/verified"
 
@@ -62,6 +66,23 @@ def test_repair_downloads_and_verifies_only_missing_enrollment_models(assets):
     assert not (silero / "smart_turn_v3.onnx").exists()
     repair.repair_source_models()
     assert len(requested) == 2, "already verified assets must not be downloaded again"
+
+
+def test_checked_source_preparers_forward_both_model_transfers_and_skip_cached_downloads(assets):
+    camp, silero, pinned, camp_bytes, silero_bytes, requested = assets
+    events = []
+    repair.repair_source_models(on_progress=events.append)
+    for resource, size in (("campp", len(camp_bytes)), ("silero", len(silero_bytes))):
+        transfers = [event for event in events if event["resource"] == resource and event["phase"] == "downloading"]
+        assert transfers[0]["downloaded_bytes"] == 0
+        assert transfers[-1]["downloaded_bytes"] == transfers[-1]["total_bytes"] == size
+        assert any(event["phase"] == "verifying" and event["resource"] == resource for event in events)
+    assert (camp / pinned.filename).read_bytes() == camp_bytes
+    assert (silero / "silero_vad.onnx").read_bytes() == silero_bytes
+    cached_events = []
+    repair.repair_source_models(on_progress=cached_events.append)
+    assert len(requested) == 2
+    assert [event["phase"] for event in cached_events] == ["checking", "checking"]
 
 
 def test_corrupt_transfer_never_replaces_an_existing_model(assets, monkeypatch):
@@ -129,7 +150,7 @@ def test_worker_reports_model_download_failure_without_publishing_ready(monkeypa
     from main_logic.voice_identity_service import resource_manager
     from utils import audio_processor
     monkeypatch.setattr(audio_processor, "DEBUG_SAVE_AUDIO", False)
-    def fail():
+    def fail(**_kwargs):
         raise speaker.CampPlusAssetError("asset_missing")
     monkeypatch.setattr(repair, "repair_source_models", fail)
     class Connection:
@@ -384,7 +405,7 @@ async def test_worker_preserves_unavailable_reason_when_installation_changes_aft
 @pytest.mark.parametrize("message", ["resource_repair_unavailable", "unexpected runtime failure"])
 def test_worker_does_not_reclassify_unrelated_runtime_errors(monkeypatch, message):
     from main_logic.voice_identity_service import resource_manager
-    def fail():
+    def fail(**_kwargs):
         raise RuntimeError(message)
     monkeypatch.setattr(repair, "repair_source_models", fail)
     messages, closed = [], []

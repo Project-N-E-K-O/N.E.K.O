@@ -19,7 +19,8 @@ def run_script(assertions: str) -> None:
         const fs = require('node:fs');
         const vm = require('node:vm');
         const assert = require('node:assert/strict');
-        const documentEvents = {}, windowEvents = {}, intervals = [];
+        // Like a real document, a load event with no registered listener does nothing.
+        const documentEvents = {DOMContentLoaded(){}}, windowEvents = {}, intervals = [], dispatchedEvents = [];
         function element() {
             return {children:[],events:{},dataset:{},open:false, setAttribute(){},
                 appendChild(child){this.children.push(child);}, addEventListener(name,callback){this.events[name]=callback;},
@@ -33,12 +34,13 @@ def run_script(assertions: str) -> None:
                 showModal(){this.open=true;},close(){this.open=false;}};
         }
         const headerButton=element(), body=element();
-        global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, confirm(){return true;},
+        global.window = { addEventListener(name,callback) {windowEvents[name]=callback;}, dispatchEvent(event){dispatchedEvents.push(event);return true;}, confirm(){return true;},
             setInterval(callback,delay){intervals.push({callback,delay});return intervals.length;},clearInterval(){},
             lanlan_config: { lanlan_name: 'Neko' }, t(key,values) { return values && values.name ? key+':'+values.name
                 :values && typeof values.count==='number'?key+':'+values.count:key; } };
         global.document = { addEventListener(name,callback) {documentEvents[name]=callback;},
-            getElementById(){return headerButton;},createElement:element,body };
+            getElementById(){return headerButton;},createElement:element,body,
+            dispatchEvent(event){if(documentEvents[event.type])documentEvents[event.type](event);} };
         global.fetch = () => { throw new Error('Unexpected chat-history request'); };
         vm.runInThisContext(fs.readFileSync(process.argv[1], 'utf8'));
         const id = 'a'.repeat(32), other = 'b'.repeat(32);
@@ -50,12 +52,301 @@ def run_script(assertions: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_media_extension_does_not_restore_or_reorder_capsule_history():
+    run_script(r"""(async()=>{
+        const messages=[{id:'live',role:'user',blocks:[{type:'image',url:'local-image'}]}];
+        window.reactChatWindowHost={getState:()=>({messages}),setMessages(){throw new Error('No archive injection');}};
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.equal(window.nekoChatSync.mergeHistory,undefined);
+        assert.equal(messages[0].blocks[0].url,'local-image');
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('failure', ['configuration', 'not_ready', 'receipt', 'none'])
+@pytest.mark.parametrize('restoration', ['success', 'silent_failure', 'exception', 'role_changed'])
+def test_cloud_model_failure_is_visible_after_restoration_without_false_admission(failure, restoration):
+    run_script(r"""(async()=>{
+        const failure=FAILURE,restoration=RESTORATION,reloads=[],receipts=[],toasts=[];
+        const candidate={token:'candidate-token',path:'/user_live2d/candidate/model.model3.json',name:'Neko'};
+        window.live2dManager={currentModel:{},getCurrentModel(){return this.currentModel;}};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.handleModelReload=async(name,options)=>{
+            reloads.push({name,options});
+            if(options.temporaryConfig){
+                assert.equal(options.preservePreviousUntilLoaded,true);
+                assert.equal(options.throwOnError,true);
+                if(failure==='configuration'){
+                    window.live2dManager.currentModel=null;
+                    throw new Error('private provider details');
+                }
+                window.live2dManager._lastLoadedModelPath=candidate.path;
+                window.live2dManager._modelLoadState=failure==='not_ready'?'idle':'ready';
+                return true;
+            }
+            if(restoration==='role_changed')window.lanlan_config.lanlan_name='Other';
+            if(restoration==='exception')throw new Error('private restoration details');
+            return restoration==='silent_failure'?undefined:true;
+        };
+        global.fetch=async(path,options)=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            if(path.endsWith('/model-sync'))return{candidate};
+            assert(path.endsWith('/model-sync/'+candidate.token));
+            receipts.push(JSON.parse(options.body));
+            return{applied:failure==='none'};
+        }});
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.deepEqual(receipts[0],{loaded:failure!=='configuration'&&failure!=='not_ready'});
+        if(failure==='configuration'||failure==='not_ready')assert(receipts.every(receipt=>!receipt.loaded));
+        if(failure==='none'){
+            assert.equal(reloads.length,1);
+            assert.deepEqual(toasts,[]);
+        }else{
+            assert(reloads.length>=2);
+            assert(reloads.slice(1).every(reload=>reload.name==='Neko'&&!reload.options.temporaryConfig));
+            assert.deepEqual(toasts,restoration==='role_changed'?[]:[['app.modelSwitchFailed',3000]]);
+        }
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('FAILURE', json.dumps(failure)).replace('RESTORATION', json.dumps(restoration)))
+
+
+@pytest.mark.parametrize('first_result', ['success', 'empty', 'error', 'role_changed', 'switching', 'switch_finished'])
+def test_candidate_fetch_has_one_flight_and_releases_every_early_exit(first_result):
+    run_script(r"""(async()=>{
+        let release, reads=0, receipts=0, reloads=0;
+        const toasts=[],candidate={token:'candidate-token',path:'/user_live2d/new/model.model3.json',name:'Neko'};
+        window.live2dManager={getCurrentModel(){return{};},_modelLoadState:'ready'};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.handleModelReload=async(name,options)=>{reloads++;window.live2dManager._lastLoadedModelPath=options.temporaryConfig.model_path;};
+        global.fetch=async(path)=>{
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]})};
+            if(path.endsWith('/model-sync')){
+                reads++;
+                if(reads===1)return await new Promise(resolve=>{release=resolve;});
+                return{ok:true,json:async()=>({})};
+            }
+            receipts++;
+            return{ok:true,json:async()=>({applied:receipts===1})};
+        };
+        const first=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        const second=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(reads,1);
+        if(RESULT==='role_changed')window.lanlan_config.lanlan_name='Other';
+        if(RESULT==='switching'||RESULT==='switch_finished')window.appState={
+            isSwitchingCatgirl:RESULT==='switching',_switchAttemptCounter:1};
+        release({ok:RESULT!=='error',json:async()=>RESULT==='error'?{detail:'chat_sync_unavailable'}:RESULT==='empty'?{}:{candidate}});
+        await Promise.all([first,second]);
+        assert.equal(receipts,RESULT==='success'?1:0);
+        assert.equal(reloads,RESULT==='success'?1:0);
+        assert.deepEqual(toasts,[]);
+        window.lanlan_config.lanlan_name='Neko';
+        if(window.appState)window.appState.isSwitchingCatgirl=false;
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.equal(reads,2);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('RESULT', json.dumps(first_result)))
+
+
+@pytest.mark.parametrize('failed', [False, True])
+@pytest.mark.parametrize('switch_finished', [False, True])
+def test_switch_during_candidate_load_does_not_confirm_fail_or_restore_the_old_role(failed, switch_finished):
+    run_script(r"""(async()=>{
+        let release;
+        const reloads=[],receipts=[],toasts=[];
+        const candidate={token:'candidate-token',path:'/candidate.model3.json',name:'Neko'};
+        window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.live2dManager={getCurrentModel(){return{};},_modelLoadState:'ready',_lastLoadedModelPath:candidate.path};
+        window.handleModelReload=async(name,options)=>{
+            reloads.push(options);
+            await new Promise(resolve=>{release=resolve;});
+            if(FAILED)throw new Error('model_role_changed');
+        };
+        global.fetch=async(path,options)=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            if(path.endsWith('/model-sync'))return{candidate};
+            receipts.push(options.body);return{applied:false};
+        }});
+        const pending=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(typeof release,'function');
+        window.appState._switchAttemptCounter++;
+        window.appState.isSwitchingCatgirl=!FINISHED;
+        release();await pending;
+        assert.equal(reloads.length,1);
+        assert.deepEqual(receipts,[]);
+        assert.deepEqual(toasts,[]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('FAILED', json.dumps(failed)).replace('FINISHED', json.dumps(switch_finished)))
+
+
+def test_switch_while_reporting_a_real_load_failure_cannot_restore_the_old_role():
+    run_script(r"""(async()=>{
+        let release, reloads=0;
+        const candidate={token:'candidate-token',path:'/candidate.model3.json',name:'Neko'},toasts=[],receipts=[];
+        window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
+        window.live2dManager={};
+        window.showStatusToast=(...args)=>toasts.push(args);
+        window.handleModelReload=async()=>{reloads++;throw new Error('load_failed');};
+        global.fetch=async(path,options)=>({ok:true,json:async()=>{
+            if(path.endsWith('/status'))return{characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            if(path.endsWith('/model-sync'))return{candidate};
+            receipts.push(JSON.parse(options.body));
+            return await new Promise(resolve=>{release=resolve;});
+        }});
+        const pending=window.nekoChatSync.notifyMediaChanged();
+        await new Promise(resolve=>setImmediate(resolve));
+        window.appState.isSwitchingCatgirl=true;
+        window.appState._switchAttemptCounter++;
+        release({applied:false});await pending;
+        assert.equal(reloads,1);
+        assert.deepEqual(receipts,[{loaded:false}]);
+        assert.deepEqual(toasts,[]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('action', ['cloud', 'local', 'retry'])
+@pytest.mark.parametrize('context', ['same', 'role_changed', 'closed'])
+def test_model_action_failure_is_visible_only_in_its_current_dialog(action, context):
+    run_script(r"""(async()=>{
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        const create=document.createElement;
+        document.createElement=()=>{
+            const node=create(),query=node.querySelector.bind(node);
+            node.querySelector=selector=>selector==='[data-sync-model]'?node.children.find(child=>'syncModel' in child.dataset):query(selector);
+            return node;
+        };
+        let reject;
+        global.fetch=async(path)=>{
+            if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,binding:{enabled:true}}]})};
+            if(path.endsWith('/model-sync'))return{ok:true,json:async()=>ACTION==='retry'?{failed:true}:{conflict:true}};
+            return await new Promise((resolve,fail)=>{reject=fail;});
+        };
+        await window.nekoChatSync.openSettings();
+        const modal=body.children[0],panel=modal.querySelector('[data-sync-model]');
+        const button=panel.children.find(child=>child.textContent.startsWith('cloudModel.'+({cloud:'useCloud',local:'keepLocal',retry:'retry'}[ACTION])));
+        const status=modal.children.find(child=>child.className==='chat-sync-status'), before=status.textContent;
+        const pending=button.events.click();
+        assert.equal(button.disabled,true);
+        if(CONTEXT==='role_changed')window.lanlan_config.lanlan_name='Other';
+        if(CONTEXT==='closed')modal.close();
+        reject(new Error('chat_sync_unavailable'));
+        await pending;
+        assert.equal(button.disabled,false);
+        if(CONTEXT==='same')assert(status.textContent.includes('chatSync.errorNetwork')&&status.textContent.includes('chat_sync_unavailable'));
+        else assert.equal(status.textContent,before);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('ACTION', json.dumps(action)).replace('CONTEXT', json.dumps(context)))
+
+
+@pytest.mark.parametrize('lost_confirmation', ['before_commit', 'after_commit'])
+def test_model_confirmation_transport_loss_keeps_renderer_success_retryable(lost_confirmation):
+    run_script(r"""(async()=>{
+        const loss=LOSS,receipts=[],reloads=[];
+        let candidate={token:'candidate-token',path:'/user_live2d/candidate/model.model3.json',name:'Neko'};
+        const candidatePath=candidate.path;
+        let saved='/user_live2d/original/model.model3.json',lost=false,failed=false;
+        window.live2dManager={currentModel:{},_lastLoadedModelPath:saved,_modelLoadState:'ready',
+            getCurrentModel(){return this.currentModel;}};
+        window.showStatusToast=()=>{};
+        window.handleModelReload=async(name,options)=>{
+            assert.equal(name,'Neko');
+            const path=options.temporaryConfig?options.temporaryConfig.model_path:saved;
+            reloads.push(path);
+            window.live2dManager._lastLoadedModelPath=path;
+        };
+        global.fetch=async(path,options)=>{
+            let value;
+            if(path.endsWith('/status'))value={characters:[{displayName:'Neko',characterSyncId:original.characterSyncId}]};
+            else if(path.endsWith('/model-sync'))value=candidate?{candidate}:{failed};
+            else{
+                const receipt=JSON.parse(options.body);receipts.push(receipt);
+                if(!lost){
+                    lost=true;
+                    if(loss==='after_commit'){saved=candidatePath;candidate=null;}
+                    throw new Error('chat_sync_unavailable');
+                }
+                if(!receipt.loaded){failed=true;candidate=null;}
+                else{saved=candidatePath;candidate=null;}
+                value={applied:receipt.loaded};
+            }
+            return{ok:true,json:async()=>value};
+        };
+        await window.nekoChatSync.notifyMediaChanged();
+        assert.deepEqual(receipts,[{loaded:true}]);
+        assert.equal(failed,false);
+        assert.equal(window.live2dManager._lastLoadedModelPath,saved);
+        assert.deepEqual(reloads,[candidatePath,saved]);
+        assert.equal(Boolean(candidate),loss==='before_commit');
+        await window.nekoChatSync.notifyMediaChanged();
+        assert(receipts.every(receipt=>receipt.loaded));
+        assert.equal(receipts.length,loss==='before_commit'?2:1);
+        assert.equal(candidate,null);
+        assert.equal(window.live2dManager._lastLoadedModelPath,candidatePath);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('LOSS', json.dumps(lost_confirmation)))
+
+
+def test_model_flight_and_action_error_in_a_real_chromium_page():
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.set_content('<div id="live2d-container"></div>')
+        page.evaluate(r"""() => {
+            window.lanlan_config={lanlan_name:'Neko'};
+            window.t=(key,values={})=>key==='chatSync.errorDetail'?values.message+':'+values.code:key;
+            window.calls={reads:0,receipts:0,reloads:0,toasts:[]};
+            window.live2dManager={_modelLoadState:'ready',getCurrentModel(){return{};}};
+            window.showStatusToast=(...args)=>calls.toasts.push(args);
+            window.handleModelReload=async(name,options)=>{calls.reloads++;live2dManager._lastLoadedModelPath=options.temporaryConfig.model_path;};
+            window.fetch=async(path)=>{
+                if(path.endsWith('/status'))return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:'a'.repeat(32),binding:{enabled:true}}]})};
+                if(path.endsWith('/model-sync')){
+                    calls.reads++;
+                    if(calls.reads===1)return await new Promise(resolve=>{window.releaseModel=resolve;});
+                    return{ok:true,json:async()=>({conflict:true})};
+                }
+                if(path.endsWith('/model-sync-action'))return{ok:false,json:async()=>({detail:'chat_sync_unavailable'})};
+                calls.receipts++;
+                return{ok:true,json:async()=>({applied:calls.receipts===1})};
+            };
+        }""")
+        page.add_script_tag(path=str(SCRIPT))
+        result = page.evaluate(r"""async() => {
+            const first=nekoChatSync.notifyMediaChanged();
+            while(!window.releaseModel)await new Promise(resolve=>setTimeout(resolve,0));
+            const second=nekoChatSync.notifyMediaChanged();
+            await new Promise(resolve=>setTimeout(resolve,0));
+            const reads=calls.reads;
+            releaseModel({ok:true,json:async()=>({candidate:{token:'candidate-token',path:'/new.model3.json',name:'Neko'}})});
+            await Promise.all([first,second]);
+            return{reads,...calls};
+        }""")
+        assert result == {'reads': 1, 'receipts': 1, 'reloads': 1, 'toasts': []}
+        page.evaluate('nekoChatSync.openSettings()')
+        page.get_by_role('button', name='cloudModel.useCloud', exact=True).click()
+        page.locator('.chat-sync-status').filter(has_text='chat_sync_unavailable').wait_for()
+        assert page.get_by_role('button', name='cloudModel.useCloud', exact=True).is_enabled()
+        assert not errors
+        browser.close()
+
+
 @pytest.mark.parametrize('code,key', [
     ('chat_sync_account_mismatch', 'errorAccountMismatch'),
     ('chat_sync_writer_recovery_required', 'errorWriterRecovery'),
     ('chat_sync_unavailable', 'errorNetwork'),
     ('chat_sync_retry_later', 'errorRetryLater'),
     ('chat_sync_session_changed', 'errorSessionChanged'),
+    ('long_term_archive_subject_unavailable', 'errorArchiveSubject'),
+    ('recent_write_receipt_conflict', 'errorRecentWriteUnconfirmed'),
+    ('invalid_recent_write_receipt', 'errorRecentWriteUnconfirmed'),
+    ('recent_memory_file_unreadable', 'errorRecentFileUnreadable'),
     ('private token from an unknown error', 'errorUnknown'),
 ])
 def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
@@ -75,7 +366,6 @@ def test_recovery_failure_explains_the_actual_error_and_next_step(code, key):
         assert(shown.includes(labels[key]));
         if(key==='errorUnknown')assert(!shown.includes(code));
         else assert(shown.includes(code));
-        assert.notEqual(shown,labels.failed);
         assert.equal(recover.disabled,false);
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """.replace('LABELS', json.dumps(labels)).replace('CODE', json.dumps(code)).replace('KEY', json.dumps(key)))
@@ -100,20 +390,158 @@ def test_opening_sync_settings_shows_the_retained_failure_without_retrying(sourc
     """.replace('SOURCE', json.dumps(source)))
 
 
-def test_sync_settings_reports_pending_and_local_only_work():
+def test_sync_settings_reports_pending_work():
     run_script(r"""(async()=>{
         window.t=(key,values={})=>key+JSON.stringify(values);
         global.fetch=async()=>({ok:true,json:async()=>({characters:[{
             displayName:'Neko',characterSyncId:original.characterSyncId,binding:{pendingOriginals:3,
-                pendingDeletions:2,localOnlyOriginals:1,historyBackfill:{awaitingRegistration:4}}
+                pendingDeletions:2}
         }]})});
         await window.nekoChatSync.openSettings();
         const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
         assert(shown.includes('chatSync.pending')&&shown.includes('"originals":3')&&shown.includes('"deletions":2'));
-        assert(shown.includes('chatSync.oversizedLocalOnly')&&shown.includes('"count":1'));
-        assert(shown.includes('chatSync.historyAwaitingRegistration')&&shown.includes('"count":4'));
     })().catch(error=>{console.error(error);process.exitCode=1;});
     """)
+
+
+@pytest.mark.parametrize('transport_error', [None, 'chat_sync_login_required', 'chat_sync_unavailable'])
+def test_sync_settings_explains_memory_diagnostics_alongside_transport_errors_without_retrying(transport_error):
+    run_script(r"""(async()=>{
+        const requests=[];
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async(path)=>{requests.push(path);return{ok:true,json:async()=>({characters:[{
+            displayName:'Neko',characterSyncId:original.characterSyncId,
+            binding:{lastSyncError:TRANSPORT||'long_term_memory_capacity_exceeded',localMemoryDiagnostics:[
+                'long_term_memory_capacity_exceeded','long_term_memory_incoming_pending',
+                'long_term_memory_evidence_capacity_exceeded','long_term_memory_evidence_trimmed']}
+        }]})};};
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('chatSync.errorLongTermCapacity'));
+        assert(shown.includes('chatSync.errorLongTermEvidenceCapacity'));
+        assert(shown.includes('long_term_memory_evidence_capacity_exceeded'));
+        // A notice is shown as its own text: not as an error, and without its code.
+        assert(shown.includes('chatSync.noticeLongTermEvidenceTrimmed{}'));
+        assert(!shown.includes('long_term_memory_evidence_trimmed'));
+        assert.equal(shown.split('chatSync.errorDetail').length,TRANSPORT?5:4);
+        assert(shown.includes('long_term_memory_capacity_exceeded'));
+        assert(shown.includes('chatSync.errorLongTermPending'));
+        assert.equal(shown.split('chatSync.errorLongTermCapacity').length,2);
+        if(TRANSPORT)assert(shown.includes(TRANSPORT));
+        assert(!shown.includes('errorUnknown'));
+        assert.deepEqual(requests,['/api/chat-sync/status']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('TRANSPORT', json.dumps(transport_error)))
+
+
+def test_new_role_login_diagnostic_is_visible_before_a_binding_exists():
+    run_script(r"""(async()=>{
+        const requests=[];
+        window.t=(key,values={})=>key+JSON.stringify(values);
+        global.fetch=async path=>{
+            requests.push(path);
+            return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:original.characterSyncId,
+                syncSetupDiagnostic:'chat_sync_login_required'}]})};
+        };
+        await window.nekoChatSync.openSettings();
+        const shown=body.children[0].querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(shown.includes('chatSync.loginRequired'));
+        assert(shown.includes('chat_sync_login_required'));
+        assert(!shown.includes('chatSync.recoveryNotRequired'));
+        assert.deepEqual(requests,['/api/chat-sync/status']);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """)
+
+
+def test_all_memory_diagnostics_and_login_error_are_visible_together_in_chromium():
+    from playwright.sync_api import sync_playwright
+    labels = json.loads((ROOT / 'static/locales/en.json').read_text(encoding='utf-8'))['chatSync']
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content('<html><body></body></html>')
+        page.add_style_tag(path=str(ROOT / 'static/css/chat_sync.css'))
+        page.evaluate(r"""labels => {
+            window.lanlan_config={lanlan_name:'Neko'};
+            window.t=(key,values={})=>(labels[key.replace('chatSync.','')]||key)
+                .replace(/\{\{(.*?)\}\}/g,(_,name)=>values[name]);
+            window.requests=[];
+            window.fetch=async path=>{
+                requests.push(path);
+                return{ok:true,json:async()=>({characters:[{displayName:'Neko',characterSyncId:'c'.repeat(32),
+                    binding:{lastSyncError:'chat_sync_login_required',localMemoryDiagnostics:[
+                        'long_term_memory_capacity_exceeded','long_term_memory_incoming_pending']}}]})};
+            };
+        }""", labels)
+        page.add_script_tag(path=str(SCRIPT))
+        page.evaluate('nekoChatSync.openSettings()')
+        status = page.locator('.chat-sync-status')
+        assert status.is_visible()
+        shown = status.inner_text()
+        for key in ('loginRequired', 'errorLongTermCapacity', 'errorLongTermPending'):
+            assert labels[key] in shown
+        assert status.evaluate("node=>getComputedStyle(node).whiteSpace") == 'pre-line'
+        assert page.evaluate('requests') == ['/api/chat-sync/status']
+        assert page.locator('[data-sync-model] button').count() == 0
+        browser.close()
+
+
+@pytest.mark.parametrize('preference_error', [False, True])
+@pytest.mark.parametrize('old_type', ['vrm', 'pngtuber'])
+@pytest.mark.parametrize('change', ['name', 'switching', 'returned'])
+def test_late_candidate_role_change_preserves_the_new_role_model_in_chromium(preference_error, old_type, change):
+    from playwright.sync_api import sync_playwright
+    source = (ROOT / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js').read_text(encoding='utf-8')
+    start = source.index('await _waitForLive2DManagerIdle(30000);', source.index('// Ensure PIXI app is initialised'))
+    end = source.index('preparedLive2DModel = null;', start) + len('preparedLive2DModel = null;')
+    rollback = source.index('            // 回滚提前写入的 config')
+    rollback_body = source[rollback:source.index('            if (!suppressToast) {', rollback)]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content('<canvas id="live2d-canvas"></canvas>')
+        page.evaluate(r"""oldType => {
+            window.reloadOptions={preservePreviousUntilLoaded:true};
+            window.currentLanlanName='Neko';
+            window.currentSwitchAttempt=1;
+            window.appState={isSwitchingCatgirl:false,_switchAttemptCounter:1};
+            window.lanlan_config={lanlan_name:'Neko',model_type:'live2d',live3d_sub_type:'',pngtuber:{}};
+            window.typeChanged=true;
+            window.oldModelType=oldType;
+            window.oldLive3dSubType='mmd';
+            window.pngRestores=0;
+            window.loadPNGTuberAvatar=async()=>{pngRestores++;};
+            window.newModelPath='/candidate.model3.json';
+            window.preparedLive2DModel={id:'candidate'};
+            window.skipIdleRestore=false;
+            window.skipPersistentExpressions=false;
+            window._waitForLive2DManagerIdle=async()=>{};
+            window.loads=[];
+            window.live2dManager={
+                currentModel:'original-role-model',
+                loadUserPreferences:()=>new Promise((resolve,reject)=>{window.preferencesReady={resolve,reject};}),
+                loadModel:async(path)=>{loads.push(path);live2dManager.currentModel='candidate';}
+            };
+        }""", old_type)
+        page.add_script_tag(content='window.commitCandidate=async function(){try{' + source[start:end] +
+                            '}catch(error){' + rollback_body + 'throw error;}};')
+        page.evaluate('window.result=commitCandidate().then(()=>"loaded",error=>error.message); void 0')
+        page.wait_for_function('!!window.preferencesReady')
+        page.evaluate(r"""([failed,change]) => {
+            if(change==='switching')window.appState={isSwitchingCatgirl:true};
+            else if(change==='returned')window.appState._switchAttemptCounter+=2;
+            else lanlan_config.lanlan_name='Other';
+            live2dManager.currentModel='new-role-model';
+            if(failed)preferencesReady.reject(new Error('preferences unavailable'));
+            else preferencesReady.resolve([]);
+        }""", [preference_error, change])
+        assert page.evaluate('result') == 'model_role_changed'
+        assert page.evaluate('loads') == []
+        assert page.evaluate('live2dManager.currentModel') == 'new-role-model'
+        assert page.evaluate('lanlan_config.model_type') == 'live2d'
+        assert page.evaluate('lanlan_config.live3d_sub_type') == ''
+        assert page.evaluate('pngRestores') == 0
+        browser.close()
 
 
 def test_current_socket_refreshes_recent_memory_without_backfilling_capsule_history():
@@ -124,17 +552,49 @@ def test_current_socket_refreshes_recent_memory_without_backfilling_capsule_hist
     body = _block_after(source, "S.socket.onmessage = function (event) {")
     run_script(r"""
         const calls=[], broadcasts=[], socket={}, S={socket}, _thisSocket=socket;
-        window.appInterpage={handleMemoryEdited:async name=>{calls.push(name);}};
+        window.appInterpage={handleMemoryEdited:async (name,options)=>{calls.push({name,options});}};
         global.BroadcastChannel=class {postMessage(data){broadcasts.push(data);}close(){}};
-        window.reactChatWindowHost={setMessages(){throw new Error('Capsule history must remain unchanged');}};
+        window.reactChatWindowHost={getState:()=>({messages:[]}),setMessages(){throw new Error('Capsule history must remain unchanged');}};
         function onmessage(event){BODY}
         const hint={type:'chat_sync_history_changed',characterSyncId:original.characterSyncId,memoryEditedName:'Neko'};
         onmessage({data:JSON.stringify(hint)});
-        assert.deepEqual(calls,['Neko']);
+        assert.deepEqual(calls,[{name:'Neko',options:{silent:true}}]);
         assert.deepEqual(broadcasts,[{action:'recent_memory_changed',catgirl_name:'Neko'}]);
         S.socket={};onmessage({data:JSON.stringify(hint)});
-        assert.deepEqual(calls,['Neko']);
+        assert.deepEqual(calls,[{name:'Neko',options:{silent:true}}]);
     """.replace("BODY", body))
+
+
+@pytest.mark.parametrize('silent', [False, True])
+@pytest.mark.parametrize('recording', [False, True])
+def test_memory_refresh_keeps_context_reset_and_manual_notices(silent, recording):
+    """Automatic sync stays quiet while manual edits retain their existing feedback."""
+    interpage = ROOT / 'static/app/app-interpage/bootstrap-resources-and-model-reload.js'
+    run_script(r"""(async()=>{
+        const silent=SILENT,recording=RECORDING,toasts=[],sent=[];
+        let stopped=0,cleared=0,reconnected=0;
+        global.WebSocket={OPEN:1};
+        global.setTimeout=callback=>{callback();};
+        window.appState={isRecording:recording,isTextSessionActive:true,
+            socket:{readyState:1,send:data=>sent.push(JSON.parse(data))}};
+        window.stopMicCapture=options=>{assert.deepEqual(options,{normalEnd:false});stopped++;};
+        window.clearAudioQueue=async()=>{cleared++;};
+        window.showStatusToast=(message,duration)=>toasts.push({message,duration});
+        document.getElementById=id=>id==='micButton'?{click(){reconnected++;}}:null;
+        vm.runInThisContext(fs.readFileSync(INTERPAGE,'utf8'));
+        const handler=window.__appInterpageParts.handleMemoryEdited;
+        if(silent)await handler('Neko',{silent:true});
+        else await handler('Neko');
+        assert.deepEqual(sent,[{action:'end_session'}]);
+        assert.equal(window.appState.isTextSessionActive,false);
+        assert.equal(cleared,1);
+        assert.equal(stopped,recording?1:0);
+        assert.equal(reconnected,recording?1:0);
+        assert.deepEqual(toasts,silent?[]:[{message:recording?'memory.refreshingContext':'memory.refreshed',
+            duration:recording?3000:4000}]);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('SILENT', json.dumps(silent)).replace('RECORDING', json.dumps(recording))
+        .replace('INTERPAGE', json.dumps(str(interpage))))
 
 
 def test_pc_pet_ipc_bridge_delivers_hint_without_backfilling_full_chat_history():
@@ -205,7 +665,7 @@ def test_pc_pet_ipc_bridge_delivers_hint_without_backfilling_full_chat_history()
 
 
 def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
-    """Old local test setup must not make a user's recovery request fail API validation."""
+    """A legacy saved origin never reaches recovery; the backend owns the built-in service."""
     run_script(r"""(async()=>{
         const uid='c'.repeat(32),requests=[];let needsRecovery=true;
         global.fetch=async(path,options)=>({ok:true,async json(){
@@ -215,16 +675,14 @@ def test_recovery_uses_builtin_service_instead_of_legacy_saved_origin():
                 characters:[{displayName:'Neko',characterSyncId:uid,binding:null}]};
             if(path.endsWith('/recovery/preview')){
                 needsRecovery=false;
-                return {history:{taskId:'f'.repeat(32),characterSyncId:uid,localName:'Neko',
-                    cloudName:'Cloud Neko',count:0,unverifiedCount:null,status:'preview'},deletions:{count:0}};
+                return {deletions:{count:0}};
             }
             if(path.endsWith('/history'))return {originals:[]};
             throw new Error('Unexpected request '+path);
         }});
         await window.nekoChatSync.openSettings();
         await body.children[0].querySelector('[data-sync-action="recover"]').events.click();
-        assert.deepEqual(requests.filter(item=>item.path.endsWith('/recovery/preview')).map(item=>JSON.parse(item.body)),
-            [{serviceUrl:'https://sync.nekotech.cn'}]);
+        assert.deepEqual(requests.filter(item=>item.path.endsWith('/recovery/preview')).map(item=>item.body),[undefined]);
         assert.equal(requests.filter(item=>item.path.endsWith('/history/approve')
             || item.path.endsWith('/recovery/deletions/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -246,7 +704,7 @@ def test_foreground_wake_coalesces_visibility_and_pageshow_without_manual_sync()
                 return {ok:true,json:async()=>({characters:[]})};
             };
             documentEvents.DOMContentLoaded();
-            assert.equal(intervals.length,0);
+            assert.deepEqual(intervals.map(item=>item.delay),[30000]);
             document.visibilityState='hidden';
             await documentEvents.visibilitychange();
             assert.equal(wakeCount,0);
@@ -267,32 +725,45 @@ def test_sync_locale_namespace_is_complete(locale):
     assert actual.keys() == baseline.keys()
     assert "{{originals}}" in actual["pending"]
     assert "{{deletions}}" in actual["pending"]
+    assert "{{count}}" in actual["recoveryCloudCopiesKept"]
 
 
-@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end'])
-def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger):
+@pytest.mark.parametrize('trigger', ['connect', 'foreground', 'turn_end', 'history_changed',
+                                     'poll', 'queue_idle', 'playback', 'voice_end'])
+@pytest.mark.parametrize('cleared', [False, True])
+def test_capsule_history_is_not_restored_or_reordered_by_sync_events(trigger, cleared):
     run_script(r"""(async()=>{
         const trigger=TRIGGER,requests=[];
-        const current=[{id:'live-user',role:'user',createdAt:3,blocks:[{type:'text',text:'same'}]},
-            {id:'live-assistant',role:'assistant',status:'streaming',turnId:'live-turn',createdAt:1,
+        const current=CLEARED?[]:[{id:'live-user',role:'user',createdAt:3,sortKey:0,blocks:[{type:'text',text:'same'}]},
+            {id:'live-assistant',role:'assistant',status:'sent',createdAt:1,sortKey:1,
                 blocks:[{type:'text',text:'split reply'},{type:'image',url:'local-image'}]}];
         const before=JSON.stringify(current);
+        let replacements=0;
+        document.visibilityState='visible';
         window.reactChatWindowHost={getState:()=>({messages:current}),
-            setMessages(){throw new Error('Sync cannot replace chat history');},
+            setMessages(){replacements++;},
             appendMessage(){throw new Error('Sync cannot replay chat bubbles');}};
         global.fetch=async(path,options)=>{
-            requests.push(path);assert.equal(path,'/api/chat-sync/wake');assert.equal(options.method,'POST');
-            return {ok:true,json:async()=>({scheduled:true})};
+            requests.push(path);
+            if(path.endsWith('/wake'))assert.equal(options.method,'POST');
+            return {ok:true,json:async()=>({scheduled:true,characters:[{displayName:'Neko',
+                characterSyncId:original.characterSyncId,binding:{enabled:true}}],originals:[original]})};
         };
         documentEvents.DOMContentLoaded();
-        assert.equal(intervals.length,0);
-        if(trigger==='foreground')await windowEvents.pageshow();
-        else if(trigger==='connect'&&windowEvents['voice-input-socket-open'])await windowEvents['voice-input-socket-open']();
-        else if(trigger==='turn_end'&&windowEvents['neko-assistant-turn-end'])await windowEvents['neko-assistant-turn-end']({detail:{turnId:'live-turn'}});
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.deepEqual(intervals.map(item=>item.delay),[30000]);
+        const events={connect:'voice-input-socket-open',turn_end:'neko-assistant-turn-end',
+            queue_idle:'neko-realistic-queue-idle',playback:'neko-speech-playback-state',voice_end:'voice-input-lifecycle-changed'};
+        if(trigger==='foreground')await Promise.all([documentEvents.visibilitychange(),windowEvents.pageshow()]);
+        else if(trigger==='history_changed')await documentEvents['neko:chat-sync-history-changed']();
+        else if(trigger==='poll')intervals.forEach(item=>item.callback());
+        else await windowEvents[events[trigger]]();
+        await new Promise(resolve=>setImmediate(resolve));
         assert.deepEqual(requests,trigger==='foreground'?['/api/chat-sync/wake']:[]);
+        assert.equal(replacements,0);
         assert.equal(JSON.stringify(current),before);
     })().catch(error=>{console.error(error);process.exitCode=1;});
-    """.replace('TRIGGER', json.dumps(trigger)))
+    """.replace('TRIGGER', json.dumps(trigger)).replace('CLEARED', json.dumps(cleared)))
 
 
 @pytest.mark.parametrize('original_id', [None, 'a' * 32])
@@ -343,8 +814,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             # This disposable page never reaches the running backend or user data.
             page.route("**/*", lambda route: route.abort())
             page.set_content(('<body class="electron-chat-window subtitle-web-host yui-guide-chat-buttons-disabled">' if kind == 'chat' else '<body>') +
-                             '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div>'
-                             '<button id="chatSyncButton">Sync</button></body>')
+                             '<div id="react-chat-window-shell"><button id="tutorial-control">Tutorial</button></div></body>')
             for href in stylesheets:
                 built = ROOT / href.lstrip("/")
                 if href.startswith("/static/react/") and not built.is_file():
@@ -368,8 +838,7 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
             }""")
             if kind == "chat":
                 page.add_script_tag(path=str(SCRIPT))
-                page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
-                page.locator("#chatSyncButton").click()
+                page.evaluate("async () => await window.nekoChatSync.openSettings()")
                 modal = page.locator("#chat-sync-dialog")
             else:
                 page.add_script_tag(path=str(ROOT / "static/app/app-character-profile-sync.js"))
@@ -398,10 +867,10 @@ def test_sync_dialogs_accept_pointer_input_without_releasing_chat_passthrough(ki
 
 @pytest.mark.parametrize("change", ["closed", "role", "uid"])
 def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
-    """An old recovery result cannot prompt deletion for a newly opened character."""
+    """An old recovery result cannot report its outcome for a newly opened character."""
     run_script(r"""(async()=>{
-        const uid='c'.repeat(32),requests=[];let release,changed=false;
-        window.confirm=()=>{throw new Error('Stale recovery requested deletion consent');};
+        const uid='c'.repeat(32),requests=[],prompts=[];let release,changed=false;
+        window.confirm=message=>{prompts.push(message);return true;};
         global.fetch=async(path,options)=>({ok:true,async json(){
             requests.push({path,body:options.body});
             if(path.endsWith('/status'))return {writerRecoveryRequired:true,characters:[{
@@ -419,8 +888,11 @@ def test_recovery_ignores_late_results_after_its_dialog_context_changes(change):
         changed=true;
         if(CHANGE==='closed')modal.close();
         else if(CHANGE==='role')await window.nekoChatSync.openSettings('Other');
-        release({history:{localName:'Neko',cloudName:'Cloud Neko'},deletions:{count:1,taskId:'e'.repeat(32)}});
+        release({deletions:{count:1}});
         await pending;
+        const shown=modal.querySelectorAll('*').find(node=>node.className==='chat-sync-status').textContent;
+        assert(!shown.includes('recoveryChecked')&&!shown.includes('recoveryCloudCopiesKept'),shown);
+        assert.deepEqual(prompts,[]);
         assert.equal(requests.filter(item=>item.path.endsWith('/recovery/deletions/approve')
             ||item.path.endsWith('/history/approve')).length,0);
     })().catch(error=>{console.error(error);process.exitCode=1;});
@@ -473,10 +945,9 @@ def test_recovery_panel_tooltip_is_accessible_and_fits_the_viewport(theme, langu
             browser.close()
 
 
-@pytest.mark.parametrize("approve_deletions", [False, True])
-@pytest.mark.parametrize("history_available", [False, True])
-def test_writer_recovery_keeps_separate_deletion_consent_without_history_controls(approve_deletions, history_available):
-    """The compact recovery panel cannot publish history or copied deletes by opening it."""
+@pytest.mark.parametrize("kept", [0, 2])
+def test_writer_recovery_reports_kept_deletions_without_prompting_or_history_controls(kept):
+    """Recovery shows its result without a confirmation dialog, an approval request or history controls."""
     from playwright.sync_api import sync_playwright
 
     labels = json.loads((ROOT / "static/locales/en.json").read_text(encoding="utf-8"))["chatSync"]
@@ -485,8 +956,9 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
         try:
             page = browser.new_page()
             page.route("**/*", lambda route: route.abort())
-            page.set_content('<button id="chatSyncButton">Sync</button>')
-            page.evaluate("""({labels, historyAvailable}) => {
+            page.set_content('<body></body>')
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
+            page.evaluate("""({labels, kept}) => {
                 window.t = (key, values = {}) => labels[key.replace('chatSync.', '')]
                     .replace(/{{(.*?)}}/g, (_, name) => values[name]);
                 window.setInterval = () => 1;
@@ -501,39 +973,91 @@ def test_writer_recovery_keeps_separate_deletion_consent_without_history_control
                                 ownerId: 'owner', bindingId: 'binding', generation: 1}}]};
                         if (path.endsWith('/recovery/preview')) {
                             window.needsRecovery = false;
-                            return {history: historyAvailable ? {localName: 'Synthetic', cloudName: 'Cloud Neko', count: 3} : null,
-                                historyError: historyAvailable ? null : 'chat_sync_unavailable',
-                                deletions: {taskId: 'e'.repeat(32), count: 2, localName: 'Synthetic', cloudName: 'Cloud Neko'}};
+                            return {deletions: {count: kept}};
                         }
-                        if (path.endsWith('/recovery/deletions/approve')) return {status: 'registered'};
                         if (path.endsWith('/history')) return {originals: []};
                         throw new Error('Unexpected request: ' + path);
                     }};
                 };
-            }""", {"labels": labels, "historyAvailable": history_available})
+            }""", {"labels": labels, "kept": kept})
             page.add_script_tag(path=str(SCRIPT))
-            page.evaluate("document.dispatchEvent(new Event('DOMContentLoaded'))")
-            page.locator("#chatSyncButton").click()
+            page.evaluate("async () => await window.nekoChatSync.openSettings()")
             modal = page.locator("#chat-sync-dialog")
             assert modal.locator('[data-sync-action]').count() == 1
             assert modal.locator('[data-sync-action="recover"]').is_enabled()
             assert modal.locator('[data-history-action], details').count() == 0
             assert page.evaluate("window.requests.every(item => item.body === undefined)")
-            messages = []
+            dialogs = []
 
-            def consent(dialog):
-                messages.append(dialog.message)
-                dialog.accept() if approve_deletions else dialog.dismiss()
+            def record(dialog):
+                dialogs.append(dialog.message)
+                dialog.dismiss()
 
-            page.on("dialog", consent)
+            page.on("dialog", record)
             modal.get_by_role("button", name=labels["recoverWriter"], exact=True).click()
             modal.get_by_role("status").filter(has_text=labels["recoveryChecked"]).wait_for()
-            if not history_available:
-                assert labels['initialHistoryFailed'] in modal.get_by_role('status').inner_text()
-            assert messages and "2" in messages[0] and "Synthetic" in messages[0] and "Cloud Neko" in messages[0]
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => JSON.parse(item.body))") == [{"serviceUrl": "https://sync.nekotech.cn"}]
-            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/deletions/approve')).map(item => JSON.parse(item.body))") == ([{"taskId": "e" * 32}] if approve_deletions else [])
+            expected = labels["recoveryChecked"]
+            if kept:
+                expected += "\n" + labels["recoveryCloudCopiesKept"].replace("{{count}}", str(kept))
+            assert modal.get_by_role("status").text_content() == expected
+            # The stylesheet keeps each status sentence on its own rendered line.
+            assert modal.get_by_role("status").inner_text() == expected
+            assert dialogs == []
+            assert page.evaluate("window.requests.filter(item => item.path.endsWith('/recovery/preview')).map(item => item.body === undefined)") == [True]
+            assert page.evaluate("window.requests.some(item => item.path.endsWith('/approve'))") is False
             assert page.evaluate("window.requests.some(item => ['/history/approve','/sync-choice','/enable','/sync'].some(suffix => item.path.endsWith(suffix)))") is False
             assert modal.locator('[data-sync-action="recover"]').is_disabled()
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('busy', ['text', 'queue', 'audio'])
+def test_received_memory_refresh_waits_for_existing_turn_and_playback(busy):
+    run_script(r"""(async()=>{
+        let refreshed=0;
+        window.appState={assistantTurnId:'turn',assistantTurnCompletedId:'turn'};
+        window.appInterpage={handleMemoryEdited:async(name,options)=>{
+            assert.equal(name,'Neko');assert.equal(options.silent,true);refreshed++;
+        }};
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        if(BUSY==='text')window.appState.assistantTurnAwaitingBubble=true;
+        if(BUSY==='queue')window._isProcessingRealisticQueue=true;
+        if(BUSY==='audio')window.NekoSpeechPlaybackState={active:true};
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        assert.equal(refreshed,0);
+        windowEvents['neko-assistant-turn-end']();
+        assert.equal(refreshed,0);
+        window.appState.assistantTurnAwaitingBubble=false;
+        window._isProcessingRealisticQueue=false;
+        window.NekoSpeechPlaybackState={active:false};
+        windowEvents[BUSY==='audio'?'neko-speech-playback-state':'neko-realistic-queue-idle']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(refreshed,1);
+        window.nekoChatSync.requestMemoryRefresh('Other');
+        assert.equal(refreshed,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('BUSY', json.dumps(busy)))
+
+
+@pytest.mark.parametrize('busy', ['isRecording', 'voiceChatActive', 'voiceStartPending', 'isMicStarting'])
+def test_received_memory_refresh_waits_for_the_voice_session_to_end(busy):
+    run_script(r"""(async()=>{
+        let refreshed=0;
+        window.appState={userRecentSpeechTime:Date.now()-800};
+        if(BUSY==='isMicStarting')window.isMicStarting=true;
+        else window.appState[BUSY]=true;
+        window.reactChatWindowHost={getState:()=>({messages:[]})};
+        window.appInterpage={handleMemoryEdited:async()=>{refreshed++;}};
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        window.nekoChatSync.requestMemoryRefresh('Neko');
+        windowEvents['voice-input-lifecycle-changed']();
+        assert.equal(refreshed,0);
+        window.isMicStarting=false;
+        window.appState.isRecording=false;
+        window.appState.voiceChatActive=false;
+        window.appState.voiceStartPending=false;
+        windowEvents['voice-input-lifecycle-changed']();
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.equal(refreshed,1);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    """.replace('BUSY', json.dumps(busy)))

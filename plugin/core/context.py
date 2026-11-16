@@ -217,6 +217,12 @@ class _BusHub:
         return ConversationClient(self._ctx)
 
     @functools.cached_property
+    def conversations_v2(self):
+        from plugin.core.bus.conversations import ConversationV2Client
+
+        return ConversationV2Client(self._ctx)
+
+    @functools.cached_property
     def frames(self) -> "FrameClient":
         from plugin.core.bus.frames import FrameClient
 
@@ -258,6 +264,7 @@ class PluginContext:
     _plugin_comm_queue: Optional[Any] = None  # Inter-plugin communication queue (provided by the main process)
     _rpc_peer: Optional[RpcPeer] = field(default=None, init=False, repr=False)
     _rpc_closed: bool = field(default=False, init=False, repr=False)
+    _conversation_watchers: Dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _runtime_lock: Any = field(
         default_factory=threading.Lock,
         init=False,
@@ -395,15 +402,42 @@ class PluginContext:
 
     def close(self) -> None:
         """Close this context and terminate all its outstanding requests."""
+        from plugin.core.bus.rev import _watcher_pop
+
         self._model_gateway_closed = True
         with self._runtime_lock:
             self._rpc_closed = True
             peer = self._rpc_peer
+            watchers = tuple(self._conversation_watchers.items())
+            self._conversation_watchers.clear()
+        for sid, watcher in watchers:
+            _watcher_pop(sid)
+            try:
+                watcher._on_host_closed()
+            except Exception:
+                pass
         if peer is not None:
             peer.close()
         models = getattr(self, "_models", None)
         if models is not None:
             models.close()
+
+    def _register_conversation_watcher(self, sub_id: str, watcher: object) -> None:
+        from plugin.core.bus.rev import _watcher_set
+
+        with self._runtime_lock:
+            if self._rpc_closed:
+                raise RuntimeError("Plugin context is closed")
+            _watcher_set(sub_id, watcher)
+            self._conversation_watchers[sub_id] = watcher
+
+    def _unregister_conversation_watcher(self, sub_id: str) -> None:
+        from plugin.core.bus.rev import _watcher_pop
+
+        with self._runtime_lock:
+            if sub_id in self._conversation_watchers:
+                self._conversation_watchers.pop(sub_id)
+                _watcher_pop(sub_id)
 
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:

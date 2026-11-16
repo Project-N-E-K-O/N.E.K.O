@@ -66,8 +66,10 @@ jobs:
           plugin/tests/unit/server/test_autostart_concurrency.py
           plugin/tests/unit/core/test_host_model_gateway.py
           plugin/tests/unit/core/test_host_socket_inheritance.py
+          plugin/tests/unit/core/test_control_ingress.py
           plugin/tests/unit/server/test_plugin_operation_lock.py
           plugin/tests/integration/test_lifecycle_control_rpc.py
+          plugin/tests/integration/test_user_context_delivery.py
           plugin/tests/integration/test_concurrent_plugin_startup.py
           -q
 

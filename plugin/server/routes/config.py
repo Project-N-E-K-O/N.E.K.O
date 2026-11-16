@@ -7,7 +7,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from plugin.logging_config import get_logger
@@ -19,9 +19,8 @@ from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.config_paths import get_plugin_config_path
 from plugin.server.infrastructure.config_access import ConfigAccessSnapshot, bind_config_access
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
-from plugin.server.infrastructure.development_access import require_development_access
 from plugin.server.infrastructure.mutation_auth import PluginPageMutationGuardedRoute
-from plugin.server.application.plugins.development import registration_for_plugin_sync
+from plugin.server.application.plugins.project_sources import project_source_dir
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy, bounded_operation_wait, serialized_plugin_operation,
@@ -35,13 +34,15 @@ mutation_router = APIRouter(route_class=PluginPageMutationGuardedRoute)
 logger = get_logger("server.routes.config")
 config_query_service = ConfigQueryService()
 config_command_service = ConfigCommandService()
+_OPERATION_WAIT_BUDGET_SECONDS = env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)
 
 
-def _ordinary_config_snapshot_sync(plugin_id: str) -> ConfigAccessSnapshot | None:
-    if registration_for_plugin_sync(plugin_id) is not None:
-        return None
+def _config_snapshot_sync(plugin_id: str) -> ConfigAccessSnapshot | None:
     path = get_plugin_config_path(plugin_id).resolve()
-    if not any(path.parent.parent == Path(root).resolve() for root in settings.PLUGIN_CONFIG_ROOTS):
+    with state.acquire_plugins_read_lock():
+        project_dir = project_source_dir(state.plugins.get(plugin_id))
+    managed = any(path.parent.parent == Path(root).resolve() for root in settings.PLUGIN_CONFIG_ROOTS)
+    if not managed and (project_dir is None or path != (project_dir / "plugin.toml").resolve()):
         return None
     with state.acquire_plugin_hosts_read_lock():
         host = state.plugin_hosts.get(plugin_id)
@@ -50,42 +51,31 @@ def _ordinary_config_snapshot_sync(plugin_id: str) -> ConfigAccessSnapshot | Non
     return ConfigAccessSnapshot(plugin_id=plugin_id, manifest_path=path, host=host)
 
 
-@serialized_plugin_operation
-async def _dispatch_config_locked(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
-                                  *, plugin_id: str, **kwargs: object) -> dict[str, object]:
-    # Fence source selection and the complete operation against rebinding,
-    # including config writers that finish in a worker after cancellation.
-    registration = await asyncio.to_thread(registration_for_plugin_sync, plugin_id)
-    supplied_id = request.query_params.get("registration_id")
-    require_development_access(request)
-    if (registration is None or registration.registration_id != supplied_id
-            or str(registration.revision) != request.query_params.get("revision")):
-        raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
-            message="Development registration changed; refresh and retry")
-    source_matches = await asyncio.to_thread(
-        lambda: get_plugin_config_path(plugin_id) == (registration.source_dir / "plugin.toml").resolve()
-    )
-    if not source_matches:
-        raise ServerDomainError(code="DEVELOPMENT_STALE", status_code=409,
-            message="Development metadata changed; refresh and retry")
-    return await action(plugin_id=plugin_id, **kwargs)
-
-
-async def _dispatch_config(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
+async def _dispatch_config_access(request: Request, action: Callable[..., Awaitable[dict[str, object]]],
                            *, plugin_id: str, **kwargs: object) -> dict[str, object]:
-    if request.query_params.get("registration_id") is None:
-        snapshot = await asyncio.to_thread(_ordinary_config_snapshot_sync, plugin_id)
-        if snapshot is not None:
-            # Keep every worker on this managed source/host even if an uninstall
-            # and development registration reuse the ID across an await.
-            with bind_config_access(snapshot):
-                return await action(plugin_id=plugin_id, **kwargs)
-    try:
-        with bounded_operation_wait(env_seconds("NEKO_PLUGIN_OPERATION_WAIT_BUDGET", 20.0)):
-            return await _dispatch_config_locked(request, action, plugin_id=plugin_id, **kwargs)
-    except PluginOperationBusy as exc:
-        raise HTTPException(409, "Another plugin operation is in progress; retry shortly",
-                            headers={"X-Error-Code": "PLUGIN_OPERATION_BUSY"}) from exc
+    snapshot = await asyncio.to_thread(_config_snapshot_sync, plugin_id)
+    if snapshot is None:
+        raise ServerDomainError(code="PLUGIN_SOURCE_CHANGED", status_code=409,
+            message="Plugin source changed; refresh and retry")
+    # Keep every worker on this source/host even if an uninstall or a
+    # workbench change reuses the ID across an await.
+    with bind_config_access(snapshot):
+        return await action(plugin_id=plugin_id, **kwargs)
+
+
+@serialized_plugin_operation
+async def _dispatch_config_write(request: Request, action, *, plugin_id: str, **kwargs):
+    return await _dispatch_config_access(request, action, plugin_id=plugin_id, **kwargs)
+
+
+async def _dispatch_config(request: Request, action, *, plugin_id: str, **kwargs):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        try:
+            with bounded_operation_wait(_OPERATION_WAIT_BUDGET_SECONDS):
+                return await _dispatch_config_write(request, action, plugin_id=plugin_id, **kwargs)
+        except PluginOperationBusy as exc:
+            raise ServerDomainError(code="PLUGIN_OPERATION_BUSY", message=str(exc), status_code=409) from exc
+    return await _dispatch_config_access(request, action, plugin_id=plugin_id, **kwargs)
 
 
 class ConfigUpdateRequest(BaseModel):

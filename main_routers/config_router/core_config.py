@@ -48,6 +48,8 @@ CORE_CONFIG_ASSIST_API_KEY_FIELDS = (
     'assistApiKeyClaude', 'assistApiKeyKimiCode', 'assistApiKeyOpenrouter',
     'assistApiKeyOrcarouter',
     'assistApiKeyRequesty',
+    'assistApiKeyOpper',
+    'assistApiKeyAtlascloud',
 )
 
 CORE_CONFIG_MODEL_API_KEY_FIELDS = tuple(
@@ -227,7 +229,12 @@ async def get_core_config_api():
         except Exception:
             logger.warning('Unable to probe local ASR availability', exc_info=True)
             _local_asr_available = False
-        _fallback_providers = {_core_api_provider, _assist_api_provider}
+        # Assist-only providers never borrow coreApiKey, matching get_core_config().
+        from utils.config_manager import get_core_api_profiles
+        _core_capable_providers = set(await asyncio.to_thread(get_core_api_profiles))
+        _fallback_providers = (
+            {_core_api_provider, _assist_api_provider} & _core_capable_providers
+        )
         _doubao_tts_shared_key = ''
         if str(core_cfg.get('ttsModelProvider') or '').strip() == 'doubao_tts':
             _doubao_tts_shared_key = core_cfg.get('ttsModelApiKey', '')
@@ -274,6 +281,8 @@ async def get_core_config_api():
             "assistApiKeyOpenrouter": core_cfg.get('assistApiKeyOpenrouter', '') or _fb('openrouter'),
             "assistApiKeyOrcarouter": core_cfg.get('assistApiKeyOrcarouter', '') or _fb('orcarouter'),
             "assistApiKeyRequesty": core_cfg.get('assistApiKeyRequesty', ''),
+            "assistApiKeyOpper": core_cfg.get('assistApiKeyOpper', ''),
+            "assistApiKeyAtlascloud": core_cfg.get('assistApiKeyAtlascloud', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),
             "openclawUrl": core_cfg.get('openclawUrl'),
             "openclawTimeout": core_cfg.get('openclawTimeout'),
@@ -674,9 +683,15 @@ async def update_core_config(request: Request):
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
 
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
+
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
+                if mt == 'tts' and suffix != 'Provider' and _effective_tts_provider == 'deepseek':
+                    # Older clients may submit DeepSeek's display-only URL or credentials.
+                    continue
                 field = f'{mt}Model{suffix}'
                 if field in data:
                     if suffix == 'ApiKey':
@@ -689,7 +704,6 @@ async def update_core_config(request: Request):
         # other ttsModelProvider means an explicit user switch; set the leftover old flag False,
         # or get_core_config's follow_* fallback resurrects old true and even follow_assist cannot
         # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
-        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
         if _incoming_tts_provider == 'doubao_tts':

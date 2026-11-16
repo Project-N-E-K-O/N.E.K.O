@@ -6,6 +6,8 @@ import hashlib
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+from config import REFLECTION_COVERED_FACT_IDS_MAX
+
 
 REFLECTION_ARCHIVE_DAYS = 30
 
@@ -17,6 +19,31 @@ def reflection_id_from_facts(source_fact_ids: list[str]) -> str:
         digest.update(fact_id.encode("utf-8"))
         digest.update(b"\x00")
     return f"ref_{digest.hexdigest()[:16]}"
+
+
+def merge_covered_fact_ids(entry: dict, fact_ids: list[str]) -> bool:
+    """Append fact ids to ``entry['covered_fact_ids']``; True when it changed.
+
+    Shared by reflections and persona entries. The list is an audit trail of
+    batches that synthesis skipped as already covered by this entry, so it
+    keeps first-seen order, drops duplicates, and keeps only the newest
+    ``REFLECTION_COVERED_FACT_IDS_MAX`` ids. It never touches evidence.
+    """
+    existing = [
+        fid for fid in (entry.get("covered_fact_ids") or [])
+        if isinstance(fid, str)
+    ]
+    seen = set(existing)
+    merged = list(existing)
+    for fid in fact_ids:
+        if isinstance(fid, str) and fid and fid not in seen:
+            merged.append(fid)
+            seen.add(fid)
+    merged = merged[-REFLECTION_COVERED_FACT_IDS_MAX:]
+    if merged == (entry.get("covered_fact_ids") or []):
+        return False
+    entry["covered_fact_ids"] = merged
+    return True
 
 
 def refine_reflection_id(text: str, *, now: datetime | None = None) -> str:
@@ -35,6 +62,7 @@ def normalize_reflection(entry: dict) -> dict:
         "sub_zero_days": 0,
         "sub_zero_last_increment_date": None,
         "user_fact_reinforce_count": 0,
+        "user_confirm_count": 0,
         "absorbed_into": None,
         "last_promote_attempt_at": None,
         "promote_attempt_count": 0,

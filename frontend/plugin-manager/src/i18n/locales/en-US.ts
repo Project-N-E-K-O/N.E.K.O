@@ -1,51 +1,16 @@
+import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { authoringMessages } from '../authoring'
 
 /**
  * English language pack
  */
 export default {
+  pluginConsent: pluginConsentMessages['en-US'],
+  authoring: authoringMessages['en-US'],
   modelApi: modelApiMessages['en-US'],
   modelBindings: modelBindingsMessages['en-US'],
-  development: {
-    guidePurpose: "This interface does not develop plugins for you in one click. It helps developers package existing source code into importable plugins with one click and continue development.",
-    navTitle: "Development plugins",
-    guideButton: "Usage guide",
-    guideTitle: "Start developing your plugin",
-    guideIntro: "Link your own source folder to develop, debug and package plugins without cloning the N.E.K.O main repository.",
-    guideLoadTitle: "Load a source folder",
-    guideLoadBody: "Enable developer mode, choose a folder containing plugin.toml, validate it, then load. Paths entered in a browser refer to the backend machine.",
-    guideReloadTitle: "Edit and reload",
-    guideReloadBody: "Save changes in your editor, then click Reload. The entry list shows updated descriptions. After restarting the app, start development plugins manually.",
-    guideBuildTitle: "Package and share",
-    guideBuildBody: "Build a .neko-plugin package, even while the plugin is stopped. Import and verify it in another environment before sharing.",
-    guideData: "Remove association stops the plugin and removes its registration, keeping source files and runtime data. Disabling developer mode stops plugins but keeps folder associations.",
-    guideReopen: "You can reopen this guide anytime using Usage guide at the top right of this page.",
-    guideDismiss: "Got it",
-    sourcePlaceholder: "Choose a plugin folder containing plugin.toml",
-    previewHint: "Validate the folder to preview the plugin details before loading.",
-    title: "Developer mode",
-    load: "Load unpacked plugin",
-    hint: "Load your plugin source after development, then package and import the plugin or continue developing.",
-    badge: "Development",
-    entry: "Entry point",
-    openSource: "Open source folder",
-    start: "Start",
-    stop: "Stop",
-    reload: "Reload",
-    logs: "Logs",
-    build: "Build package",
-    rebind: "Change folder",
-    remove: "Remove association",
-    pathHint: "Enter a source directory on the machine running the N.E.K.O backend. Browser folder uploads are not supported.",
-    path: "Source directory",
-    choose: "Choose folder",
-    valid: "Validation passed",
-    validate: "Validate",
-    failed: "Operation failed",
-    built: "Package built. Functional testing and market review are separate.",
-    removeHint: "Stop this plugin and remove its association? Source files and runtime data will be kept.",
-  },
   common: {
     chooseLanguage: "Choose language",
     surfaceLanguagePending: "App language changed. This panel keeps its language to preserve unsaved work.",
@@ -531,6 +496,16 @@ export default {
     actualSources: 'Downloading from {sources}',
   },
   plugins: {
+    display: {
+      fullscreenTitle: "Enter fullscreen?",
+      focusTitle: "Enter focus mode?",
+      fullscreenBody: "Plugin “{plugin}” requests fullscreen for this panel. Use the exit button or Esc to return.",
+      focusBody: "Plugin “{plugin}” requests more space for this panel by hiding the sidebar and page controls.",
+      enterFullscreen: "Enter fullscreen",
+      enterFocus: "Enter focus mode",
+      exit: "Exit expanded display",
+    },
+
     listLoadFailed: "Could not load the plugin list. Please retry.",
     noMatches: "No matching plugins",
     clearFilters: "Clear filters",
@@ -581,6 +556,7 @@ export default {
         manual: 'Manual',
         imported: 'Imported',
         market: 'Market',
+        project: 'Workbench',
         unknown: 'Unknown',
       },
       // v2: Market release channel values displayed on SourceDetailRow.
@@ -643,7 +619,7 @@ export default {
     autoStartHint: 'Start automatically when N.E.K.O launches. Starting or stopping manually does not change this.',
     autoStartDisabledHint: 'This plugin is disabled. Turning on auto-start will also enable it for the next launch, without starting it now.',
     autoStartBlockedHint: 'The preference is on, but this plugin is disabled or awaiting approval and will not start at launch. Turn off and on again to enable and approve auto-start.',
-    autoStartUnsupportedDevelopment: 'Development plugins are not started automatically. Start them manually.',
+    autoStartUnsupportedProject: 'Workbench projects never start automatically. Start them manually.',
     fetchFailed: 'Failed to fetch plugins',
     pluginType: 'Type',
     pluginTypeNormal: 'Plugin',
@@ -942,6 +918,9 @@ export default {
     connected: 'Connected',
     disconnected: 'Disconnected',
     connectionFailed: 'Log stream connection failed',
+    readFailed: 'Could not read log files. Check the log directory permissions.',
+    invalidPluginId: 'The plugin ID is invalid.',
+    invalidQuery: 'The log query is invalid.',
     exportLog: 'Export Logs Archive',
     openLogDirectory: 'Open Log Directory',
     exportSuccess: 'Log exported successfully',
@@ -1129,7 +1108,7 @@ export default {
         skipChat: 'Not now',
         sayHello: 'Hello',
       },
-      controlBanner: 'The catgirl is controlling the mouse',
+      controlBanner: 'The neko is controlling the mouse',
       lines: {
         introActivationHint: "Hang on a moment, I'll start talking soon, nyan~!",
         introGreetingReply:  "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",

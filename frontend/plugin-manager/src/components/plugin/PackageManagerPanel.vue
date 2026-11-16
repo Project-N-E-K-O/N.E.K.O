@@ -131,7 +131,7 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="检查 / 校验" name="inspect">
+            <el-tab-pane label="检查 / 校验" name="inspect" lazy>
               <el-form label-position="top">
                 <el-form-item label="包路径或 target 中的包名">
                   <el-input v-model="packageRef.package" placeholder="例如 qq_auto_reply.neko-plugin" />
@@ -146,7 +146,7 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="安装" name="install">
+            <el-tab-pane label="安装" name="install" lazy>
               <el-form label-position="top">
                 <el-form-item label="包路径">
                   <el-input v-model="installForm.package" placeholder="例如 qq_auto_reply.neko-plugin" />
@@ -172,7 +172,7 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="整合包分析" name="analyze">
+            <el-tab-pane label="整合包分析" name="analyze" lazy>
               <el-form label-position="top">
                 <el-form-item label="插件列表">
                   <el-select

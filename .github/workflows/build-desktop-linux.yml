@@ -54,18 +54,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          filter: blob:none
 
       - name: Calculate version
         id: calc
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
             VERSION="${DATE}-${COMMIT_SHORT}"
+          fi
+          # Tag / manual versions end up in package.json, and electron-builder
+          # only accepts semver (X.Y.Z[-pre][+build]). Reject anything else here
+          # so a typo like "0.9.1.0" fails in seconds, not after the 2h backend build.
+          if [[ "$GITHUB_REF" == refs/tags/v* || -n "$INPUT_VERSION" ]]; then
+            # semver.org grammar: no leading zeros in numeric parts, no empty identifiers.
+            NUM='(0|[1-9][0-9]*)'
+            PRE_ID='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+            BUILD_ID='[0-9A-Za-z-]+'
+            SEMVER_RE="^${NUM}\.${NUM}\.${NUM}(-${PRE_ID}(\.${PRE_ID})*)?(\+${BUILD_ID}(\.${BUILD_ID})*)?$"
+            # Validate the exact value written to the output (only a leading "v" is
+            # dropped), so newlines or shell syntax can never reach later steps.
+            VERSION="${VERSION#v}"
+            if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
+              # %q keeps a hostile value from injecting workflow commands via newlines.
+              echo "::error::Version $(printf '%q' "$VERSION") is not semver (expected X.Y.Z or X.Y.Z-pre, e.g. 0.9.1 / 1.0.0-beta.1)"
+              exit 1
+            fi
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Resolved version: $VERSION"
@@ -73,6 +94,7 @@ jobs:
   # ──────────────────────────────────────────────
   # Step 1: Build Python backend with Nuitka (Linux only)
   # ──────────────────────────────────────────────
+  # Match the pinned Linux x64 build image in build-desktop.yml (backend and Electron).
   build-python:
     if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     needs: version
@@ -80,7 +102,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
             artifact_name: python-backend-linux
             output_binary: projectneko_server
@@ -142,42 +164,24 @@ jobs:
                 json.dump(data, f, ensure_ascii=False, indent=2)
               print(f'Created {path}')
           "
-          # Copy browser_use prompt .md templates from installed package
-          mkdir -p data/browser_use_prompts
-          .venv/bin/python -c "
-          import shutil
-          from pathlib import Path
-          import browser_use.agent.system_prompts as sp
-          src = Path(sp.__file__).parent
-          dst = Path('data/browser_use_prompts')
-          dst.mkdir(parents=True, exist_ok=True)
-          for md in src.glob('*.md'):
-              shutil.copy2(md, dst / md.name)
-              print(f'Copied {md.name}')
-          "
-          echo "=== browser_use_prompts ==="
-          ls -la data/browser_use_prompts/
-          echo "Default config files and directories ready."
+          echo "Default config files ready."
 
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
         run: |
-          sudo apt-get update
+          # The hosted image could not resolve the Canonical archive hosts.
+          # Keep Ubuntu's signed mirror mechanism, with a kernel.org mirror fallback.
+          if [ "$(uname -m)" = x86_64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' https://mirrors.kernel.org/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
+              | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             pkg-config \
             portaudio19-dev \
             patchelf \
             ccache
-
-      # --- Pre-install Playwright Chromium for bundle ---
-      - name: Install Playwright Chromium
-        shell: bash
-        run: |
-          mkdir -p playwright_browsers
-          PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" \
-            .venv/bin/python -m playwright install chromium || \
-            echo "[WARNING] Playwright Chromium install failed; will download on first run."
 
       # --- Prepare local embedding model assets ---
       # Mirrors the upstream Hugging Face repo at a pinned revision into the
@@ -277,7 +281,10 @@ jobs:
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
+          # Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
+          # CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/templates/agent_guides=plugin/neko_plugin_cli/templates/agent_guides"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
@@ -286,7 +293,6 @@ jobs:
           fi
           # Built-in plugin data is installed from the filtered stage after
           # compilation. Nuitka intentionally refuses to treat .py as data.
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
           if [ -d "data/tiktoken_cache" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/tiktoken_cache=data/tiktoken_cache"
           fi
@@ -296,9 +302,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=main_logic/asr_client/endpointing/models=main_logic/asr_client/endpointing/models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=main_logic/asr_client/speaker_shadow/models=main_logic/asr_client/speaker_shadow/models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
-          # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
-          # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=docs/zh-CN/guide=docs/zh-CN/guide"
 
           # Packages
           # PyAV wheel 里部分扩展模块旁带同名的 Cython 纯 Python 模式 .py 源码（含 import cython）；
@@ -319,17 +322,15 @@ jobs:
           # The generated launcher carries selective --nofollow-import-to
           # directives derived from each plugin's [tool.neko.build] rules.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=services.theater_workshop"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=memory"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=knowledge"
+          NUITKA_OPTS="$NUITKA_OPTS --include-package=nekoclaw"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use_sdk"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=playwright"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
@@ -344,10 +345,6 @@ jobs:
           # Package data
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=pyrnnoise"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=browser_use"
-          # NOTE: do NOT use --include-package-data=playwright here,
-          # Nuitka's built-in playwright plugin handles driver/node automatically
-          # and adding package-data would conflict with the exe at the same path.
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=certifi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
@@ -357,6 +354,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
+          # Playwright is a test dependency: plugin/tests/e2e imports it and the
+          # build environment installs it with the dev group. Keep it out of the bundle.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=playwright"
 
           # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
@@ -507,7 +507,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: linux
             python_artifact: python-backend-linux
             electron_args: '--linux'
@@ -556,11 +556,13 @@ jobs:
 
       - name: Update version in package.json
         working-directory: electron-app
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '${{ needs.version.outputs.version }}'.replace(/^[^0-9]*/, '');
+            pkg.version = process.env.RELEASE_VERSION.replace(/^[^0-9]*/, '');
             if (!/^\d+\.\d+\.\d+/.test(pkg.version)) {
               pkg.version = '0.0.0-' + pkg.version;
             }
@@ -570,7 +572,13 @@ jobs:
 
       - name: Install Linux build dependencies
         run: |
-          sudo apt-get update
+          # The hosted image could not resolve the Canonical archive hosts.
+          # Keep Ubuntu's signed mirror mechanism, with a kernel.org mirror fallback.
+          if [ "$(uname -m)" = x86_64 ] && [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' https://mirrors.kernel.org/ubuntu/ https://archive.ubuntu.com/ubuntu/ https://security.ubuntu.com/ubuntu/ \
+              | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends \
             dpkg \
             fakeroot

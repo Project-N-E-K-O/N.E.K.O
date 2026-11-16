@@ -14,6 +14,187 @@ pytestmark = pytest.mark.plugin_unit
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_detail_reads_reprobe_retained_service_without_starting_plane(monkeypatch, cancel_first):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from plugin.server.application.conversations import ConversationService
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    service = module.ServerLifecycleService()
+    retained = ConversationService(lambda _: None)
+    retained.accept_fact("reply.closed", {"reply_id": "r", "character": "YUI", "text": "kept", "close_reason": "completed"})
+    service._conversation_service = retained
+    monkeypatch.setattr(module, "_service", service)
+    monkeypatch.setattr(service, "ensure_delivery_path_started", AsyncMock(side_effect=AssertionError("reads must not start delivery")))
+    entered, release = asyncio.Event(), asyncio.Event()
+    probes = []
+    alive = True
+
+    async def health_check_async(**_):
+        probes.append(True)
+        entered.set()
+        await release.wait()
+        await asyncio.sleep(0)
+        return True
+
+    service._message_plane_runner = SimpleNamespace(is_alive=lambda: alive, health_check_async=health_check_async)
+    if cancel_first:
+        first = asyncio.create_task(handlers.handle_conversation_reply_get(None, {"reply_id": "r"}))
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        finally:
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+    release.set()
+    results = await asyncio.gather(
+        handlers.handle_conversation_reply_get(None, {"reply_id": "r"}),
+        handlers.handle_conversation_interaction_get(None, {"input_id": "missing"}),
+        handlers.handle_conversation_reply_get(None, {"reply_id": "r"}),
+    )
+    assert len(probes) == 1 + int(cancel_first)
+    assert results[0]["text"] == results[2]["text"] == "kept" and results[1] is None
+    assert service.conversation_service() is retained
+    assert service._delivery_path_started is False
+    alive = False
+    with pytest.raises(ServerDomainError) as not_ready:
+        await handlers.handle_conversation_reply_get(None, {"reply_id": "r"})
+    assert not_ready.value.code == "CONVERSATIONS_NOT_READY"
+    assert len(probes) == 1 + int(cancel_first)
+    alive = True
+    assert (await handlers.handle_conversation_reply_get(None, {"reply_id": "r"}))["text"] == "kept"
+    assert len(probes) == 2 + int(cancel_first)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_name,key", [
+    ("handle_conversation_reply_get", "reply_id"),
+    ("handle_conversation_interaction_get", "input_id"),
+])
+@pytest.mark.parametrize("identity", [None, "", " ", "bad\n", "x" * 257],
+                         ids=["missing", "empty", "whitespace", "control-character", "too-long"])
+async def test_invalid_detail_identity_does_not_probe_readiness(monkeypatch, handler_name, key, identity):
+    from unittest.mock import AsyncMock
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    lookup = AsyncMock(side_effect=AssertionError("invalid IDs must not probe readiness"))
+    monkeypatch.setattr(handlers, "_service", lookup)
+    with pytest.raises(ServerDomainError) as invalid:
+        await getattr(handlers, handler_name)(None, {} if identity is None else {key: identity})
+    assert invalid.value.code == "INVALID_ARGUMENT"
+    lookup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_hides_details_before_stopping_fact_dispatch(monkeypatch):
+    from unittest.mock import Mock
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    service = module.ServerLifecycleService()
+    retained = Mock()
+    service._conversation_service = retained
+    service._conversation_service_ready = True
+    monkeypatch.setattr(module, "_service", service)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def shutdown_internal():
+        entered.set()
+        await release.wait()
+        return module._ShutdownResult(had_errors=False)
+
+    monkeypatch.setattr(service, "_shutdown_internal", shutdown_internal)
+    task = asyncio.create_task(service.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        with pytest.raises(ServerDomainError) as not_ready:
+            await handlers.handle_conversation_reply_get(None, {"reply_id": "r"})
+        assert not_ready.value.code == "CONVERSATIONS_NOT_READY"
+    finally:
+        release.set()
+        await task
+    retained.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("invalidation failed"), asyncio.CancelledError()])
+async def test_retire_stops_plane_and_bridges_when_invalidation_fails(monkeypatch, failure):
+    from unittest.mock import AsyncMock, Mock
+
+    service = module.ServerLifecycleService()
+    runner, conversations = Mock(), Mock()
+    service._message_plane_runner = runner
+    service._conversation_service = conversations
+    stopped = []
+    monkeypatch.setattr(module.bus_subscription_manager, "invalidate_conversations", AsyncMock(side_effect=failure))
+    monkeypatch.setattr(module.bus_subscription_manager, "set_conversation_observers", Mock())
+    monkeypatch.setattr(module, "stop_bridge", lambda: stopped.append("message"))
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: stopped.append("proactive"))
+
+    async def on_loop(operation):
+        return await operation
+
+    monkeypatch.setattr(module, "_on_subscription_loop", on_loop)
+    with pytest.raises(type(failure)):
+        await service._retire_message_plane()
+    runner.stop.assert_called_once()
+    conversations.close.assert_called_once()
+    assert stopped == ["message", "proactive"]
+    assert service._message_plane_runner is None and service.conversation_service() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_at", ["build", "start"])
+async def test_plane_start_failure_retires_conversation_service(monkeypatch, failure_at):
+    from unittest.mock import AsyncMock, Mock
+
+    service = module.ServerLifecycleService()
+    conversations = Mock()
+    service._conversation_service = conversations
+    runner = Mock()
+    runner.start.side_effect = RuntimeError("start failed")
+
+    def build(**_):
+        if failure_at == "build":
+            raise RuntimeError("build failed")
+        return runner
+
+    async def on_loop(operation):
+        return await operation
+
+    monkeypatch.setattr(module, "build_message_plane_runner", build)
+    monkeypatch.setattr(module.bus_subscription_manager, "invalidate_conversations", AsyncMock())
+    monkeypatch.setattr(module.bus_subscription_manager, "set_conversation_observers", Mock())
+    monkeypatch.setattr(module, "_on_subscription_loop", on_loop)
+    monkeypatch.setattr(module, "stop_bridge", lambda: None)
+    monkeypatch.setattr(module, "stop_proactive_bridge", lambda: None)
+    with pytest.raises(RuntimeError):
+        await service._start_message_plane()
+    assert service.conversation_service() is None and service._message_plane_runner is None
+    conversations.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_closes_conversation_service(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    service = module.ServerLifecycleService()
+    conversations = Mock()
+    service._conversation_service = conversations
+    monkeypatch.setattr(service, "_shutdown_internal", AsyncMock(side_effect=asyncio.TimeoutError()))
+    monkeypatch.setattr(module.state, "close_plugin_resources", lambda: None)
+    monkeypatch.setattr(module.bus_subscription_manager, "set_conversation_observers", Mock())
+    await service.shutdown()
+    conversations.close.assert_called_once()
+    assert service.conversation_service() is None
+
+
+@pytest.mark.asyncio
 async def test_shutdown_reserves_host_budget_and_keeps_registration_gate_closed(monkeypatch):
     from plugin.server.application.plugins import lifecycle_service
 
@@ -510,7 +691,7 @@ async def test_partial_retry_reuses_the_running_plane_instead_of_building_a_seco
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -562,7 +743,7 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return healthy
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -590,18 +771,39 @@ async def test_reuse_reprobes_health_and_refuses_an_unhealthy_plane(
     assert service._delivery_path_started is False, "an unverified plane was latched"
     assert service._message_plane_runner is not None, "the runner was discarded"
     assert len(built) == 1
+    assert service.conversation_service() is None
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.messaging.handlers import conversations as handlers
+
+    monkeypatch.setattr(module, "_service", service)
+    for handler, request in (
+        (handlers.handle_conversation_reply_get, {"reply_id": "missing"}),
+        (handlers.handle_conversation_interaction_get, {"input_id": "missing"}),
+    ):
+        with pytest.raises(ServerDomainError) as not_ready:
+            await handler(None, request)
+        assert not_ready.value.code == "CONVERSATIONS_NOT_READY"
 
     # Still unhealthy on the next entry: reuse branch re-probes, still refuses,
     # and does not rebuild (rebuilding would hand its ports to a second runner).
     assert await service.ensure_delivery_path_started() is False
     assert service._delivery_path_started is False
     assert len(built) == 1, "the unhealthy plane was rebuilt, splitting its ports"
+    assert service.conversation_service() is None
 
     # It comes up late: the next retry re-probes, sees it, and latches.
     healthy = True
     await service.ensure_delivery_path_started()
     assert service._delivery_path_started is True
     assert len(built) == 1
+    conversations = service.conversation_service()
+    assert conversations is not None
+    healthy = False
+    assert await service._check_message_plane_health() is False
+    assert service.conversation_service() is None
+    healthy = True
+    assert await service._check_message_plane_health() is True
+    assert service.conversation_service() is conversations
 
 
 @pytest.mark.asyncio
@@ -621,7 +823,7 @@ async def test_a_plane_that_failed_to_start_is_rebuilt_on_retry(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -823,7 +1025,7 @@ async def test_a_half_dead_plane_is_not_healthy_even_when_its_probe_answers(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True  # the RPC endpoint answers either way
 
-    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token: _Runner())
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token, on_record_accepted=None: _Runner())
     monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
     monkeypatch.setattr(module, "start_bridge", lambda: None)
@@ -904,7 +1106,7 @@ async def test_an_unhealthy_plane_is_eventually_retired_and_rebuilt(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return healthy
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -969,7 +1171,7 @@ async def test_a_latched_path_is_revalidated_not_trusted(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return plane_alive
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner
@@ -1069,7 +1271,7 @@ async def test_retiring_the_plane_also_retires_both_bridges(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return False
 
-    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token: _Runner())
+    monkeypatch.setattr(module, "build_message_plane_runner", lambda *, auth_token, on_record_accepted=None: _Runner())
     monkeypatch.setattr(module, "ingest_auth_token", lambda: "token")
     monkeypatch.setattr(module, "refresh_ingest_endpoint", lambda: None)
     monkeypatch.setattr(module, "start_bridge", lambda: None)
@@ -1243,7 +1445,7 @@ async def test_a_dead_message_bridge_unlatches_the_path(
         async def health_check_async(self, *, timeout_s: float = 1.0) -> bool:
             return True
 
-    def _build(*, auth_token: str) -> object:
+    def _build(*, auth_token: str, on_record_accepted=None) -> object:
         runner = _Runner()
         built.append(runner)
         return runner

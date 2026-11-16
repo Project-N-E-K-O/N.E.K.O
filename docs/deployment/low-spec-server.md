@@ -12,7 +12,7 @@ Commands assume an Ubuntu-family host and have not been verified on every cloud 
 
 Install as described in [Docker Deployment](./docker); the Compose file is `docker/docker-compose.yml`. On small hosts:
 
-- **Use the full image**: set `NEKO_IMAGE_VERSION=latest-full` in `docker/.env`. It ships Chromium, so first start does not download a browser inside the container, at the cost of about 1 GB more disk.
+- **Use the full image if you want browser control**: set `NEKO_IMAGE_VERSION=latest-full` in `docker/.env`. It includes Chromium, at the cost of about 1 GB more disk. The standard image has no browser and the application downloads none, so browser control there reports that no usable browser was found. Chromium's sandbox needs user namespaces, so it only starts when the container is brought up together with `docker/compose.browser.yaml`: also set `COMPOSE_FILE=docker-compose.yml:compose.browser.yaml` in `docker/.env` (append `compose.browser.yaml` if `COMPOSE_FILE` is already set). See `docker/README_Docker.md`.
 - **Pin a version**: `latest` and `latest-full` are rolling tags. Pin a verified tag or digest with `NEKO_IMAGE`, and confirm it includes instance authorization (#3289) and HTTP pairing (#3299).
 - **Own domain**: set these in `docker/.env`; the official Compose file passes them to the container:
 
@@ -53,6 +53,8 @@ Persist the file set in `docker/.env` so every `docker compose` command without 
 ```dotenv
 COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
 ```
+
+`COMPOSE_FILE` is the whole list of files and a new value replaces the old one, so keep every override file already in it. If you added `compose.browser.yaml` for the full image in section 1, write `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml:compose.browser.yaml` here; otherwise the next recreate drops the browser's seccomp profile and Chromium no longer starts.
 
 `!override` requires Docker Compose **2.24.4 or newer**. Check the final port bindings with `docker compose config` before each recreate. Set both `NEKO_INSTANCE_PUBLIC_ORIGIN` and `NEKO_TRUSTED_ORIGINS` to the public origin browsers actually use (for example `https://your-domain.example`). The gateway must keep Host and a correct `X-Forwarded-For` chain, proxy WebSockets, and either close public HTTP or redirect it to HTTPS. See [Community remote access](/design/security/community-remote-access).
 
@@ -193,13 +195,12 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
 
    If the old override also set non-environment options such as `mem_limit`, `read_only`, `cap_drop`, `tmpfs`, `extra_hosts`, `devices`, or `ulimits`, carry them into `docker/compose.local.yaml` under `neko-main` as well. Options the snapshot does not record (such as `devices` and `ulimits`) must be checked by hand against the old override file.
 
-   Note that the official Compose file passes through only a fixed list of variables (see `docker/CONFIG_REFERENCE.md`); others such as `DISABLE_SSL` do not reach the container from `.env`. If the snapshot has such variables, put them in `docker/compose.local.yaml` (ignored by git) and add it to `COMPOSE_FILE`:
+   The official Compose file injects the whole `docker/.env` via `env_file:`, so variables such as `DISABLE_SSL` **work directly from `.env`** — no override file needed. (Older compose files used a fixed whitelist, which is why this step used to be necessary.) Only non-environment settings (`mem_limit`, `devices`, ...) still belong in `docker/compose.local.yaml`:
 
    ```yaml
    services:
      neko-main:
-       environment:
-         - DISABLE_SSL=${DISABLE_SSL:-}
+       mem_limit: 2g
    ```
 
    ```dotenv
@@ -209,7 +210,10 @@ If you deployed with the former `docker/community-2c2g/` files, the Compose file
    Before starting, list the variable names that will reach the container from `docker/` (names only, no values) and confirm every application variable from the snapshot is present:
 
    ```bash
-   docker compose config --format json | python3 -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin)["services"]["neko-main"]["environment"])))'
+   # Names come straight from .env (env_file injects the whole file), so this does not
+   # depend on how a given compose version renders env_file entries in "config" output.
+   # The authoritative check happens in step 6, via docker inspect on .Config.Env.
+   grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '=' | sort
    ```
 6. From `docker/`, check mounts and ports with `docker compose config`, then `docker compose up -d` and confirm credentials, characters, and memories are intact. Back at the repository root, compare the new container's effective configuration with the step 2 snapshot (the previous new-container snapshot is removed first, so a failed collection makes the comparison print `COMPARE FAILED` instead of `identical` from a stale file):
 

@@ -118,6 +118,54 @@ it('slides a start panel in from offscreen when it was display none', async () =
   expect(animate.mock.calls[0]?.[0]).toEqual([{ transform: 'translateX(-300px)' }, { transform: 'none' }])
 })
 
+it('holds a contained group at its final width and restores authored sizing on finish', async () => {
+  const scope = scopeOf()
+  const group = document.createElement('div')
+  group.dataset.motionGroup = ''
+  group.style.width = '80%'
+  const button = document.createElement('button')
+  button.dataset.motion = 'resize'
+  group.append(button)
+  scope.append(group)
+  place(group, 0, 0, 100, 40)
+  place(button, 0, 0, 100, 40)
+  const { animations } = animatable(button)
+
+  await transitionLayout(scope, () => {
+    place(group, 0, 0, 60, 40)
+    place(button, 0, 0, 60, 40)
+  })
+  expect(group.style.width).toBe('60px')
+  animations[0]!.end()
+  await flush()
+  expect(group.style.width).toBe('80%')
+})
+
+it('releases the previous group width before measuring a reversed layout', async () => {
+  const scope = scopeOf()
+  const group = document.createElement('div')
+  group.dataset.motionGroup = ''
+  const button = document.createElement('button')
+  button.dataset.motion = 'move'
+  group.append(button)
+  scope.append(group)
+  place(group, 0, 0, 100, 40)
+  place(button, 100, 0, 40, 40)
+  const { animations } = animatable(button)
+  await transitionLayout(scope, () => { place(button, 20, 0, 40, 40) })
+  expect(group.style.width).toBe('100px')
+
+  await transitionLayout(scope, () => {
+    expect(group.style.width).toBe('')
+    place(group, 0, 0, 120, 40)
+    place(button, 100, 0, 40, 40)
+  })
+  expect(group.style.width).toBe('120px')
+  animations[1]!.end()
+  await flush()
+  expect(group.style.width).toBe('')
+})
+
 it('slides an end panel in from the right edge of the scope', async () => {
   const scope = scopeOf()
   const panel = document.createElement('aside')

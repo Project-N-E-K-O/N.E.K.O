@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ChatScreenVisibilityProvider, ClearChatScreenButton } from './ChatScreenVisibility';
 import CompactMusicRecommendationPrompt from './CompactMusicRecommendationPrompt';
 import { parseChatMessage } from './message-schema';
 
@@ -21,7 +22,8 @@ const content = (category: 'meme' | 'vision') => parseChatMessage({
 describe('compact recommendation priority', () => {
   afterEach(() => vi.useRealTimers());
 
-  it.each(['meme', 'vision'] as const)('keeps countdown choices visible when a %s arrives, then displays it after a decision', category => {
+  it('keeps countdown choices visible when a meme arrives, then displays it after a decision', () => {
+    const category = 'meme';
     vi.useFakeTimers();
     const message = music();
     const onAction = vi.fn();
@@ -48,9 +50,49 @@ describe('compact recommendation priority', () => {
     { error: true },
     { state: 'accepted' },
   ])('preserves latest-content selection when music has no active countdown: %j', fields => {
-    const view = render(<CompactMusicRecommendationPrompt messages={[music(fields), content('vision')]} />);
-    expect(screen.getByText('New direct content')).toBeInTheDocument();
+    const view = render(<CompactMusicRecommendationPrompt messages={[music(fields), content('meme')]} />);
+    expect(view.container.querySelector('[data-proactive-category="meme"]')).not.toBeNull();
     expect(screen.queryByText('Countdown song')).toBeNull();
     view.unmount();
   });
+
+  it('never prompts a direct screen observation, which repeats the spoken line', () => {
+    const view = render(<CompactMusicRecommendationPrompt messages={[content('vision')]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+    view.rerender(<CompactMusicRecommendationPrompt messages={[music({ state: 'skipped' }), content('vision')]} />);
+    expect(view.container.querySelector('.compact-proactive-recommendation-prompt')).toBeNull();
+    view.unmount();
+  });
+  it('keeps cleared cards hidden when the prompt remounts and retains expiry context', () => {
+    const messages = [music(), content('meme')];
+    const view = render(<ChatScreenVisibilityProvider messages={messages}>
+      <ClearChatScreenButton /><CompactMusicRecommendationPrompt messages={messages} />
+    </ChatScreenVisibilityProvider>);
+    expect(screen.getByText('Countdown song')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    view.rerender(<ChatScreenVisibilityProvider messages={messages}><ClearChatScreenButton /></ChatScreenVisibilityProvider>);
+    view.rerender(<ChatScreenVisibilityProvider messages={messages}>
+      <ClearChatScreenButton /><CompactMusicRecommendationPrompt messages={messages} />
+    </ChatScreenVisibilityProvider>);
+    expect(view.container.querySelector('aside')).toBeNull();
+    const fresh = {...music(), id:'new-music'};
+    view.rerender(<ChatScreenVisibilityProvider messages={[...messages, fresh]}>
+      <CompactMusicRecommendationPrompt messages={[...messages, fresh]} />
+    </ChatScreenVisibilityProvider>);
+    expect(screen.getByText('Countdown song')).toBeInTheDocument();
+  });
+
+  it('uses hidden later user messages to expire visible direct recommendations', () => {
+    const user = parseChatMessage({id:'user',role:'user',author:'Me',time:'',blocks:[{type:'text',text:'Next topic'}]});
+    const view = render(<ChatScreenVisibilityProvider messages={[user]}>
+      <ClearChatScreenButton />
+    </ChatScreenVisibilityProvider>);
+    fireEvent.click(screen.getByRole('button', {name:'Clear screen'}));
+    const messages = [content('meme'), user];
+    view.rerender(<ChatScreenVisibilityProvider messages={messages}>
+      <CompactMusicRecommendationPrompt messages={messages} />
+    </ChatScreenVisibilityProvider>);
+    expect(view.container.querySelector('aside')).toBeNull();
+  });
+
 });

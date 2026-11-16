@@ -18,6 +18,7 @@
   var SUB_RETRY_MAX_MS = 30000;
   var SUPERSEDED_DISCONNECT_MS = 15000;   // 拆掉后兜底断开旧房间对象的延迟（留给接替的页面入房顶号）
   var CLEANUP_BOUND_MS = 8000;            // 兜底断开最多等这么久（父页按 2 + 15 + 8 s 再留余量保留 iframe）
+  var SAMPLE_BOUND_MS = 3000;             // 单路入站取样的上限：短于控制器每拍 4 s，一路卡住不拖掉另一路
 
   /** 等退房 / 断开做完，但最多 CLEANUP_BOUND_MS：网络坏着时它可能一直不落定（失败也算完）。 */
   function boundCleanup(p) {
@@ -93,7 +94,7 @@
     var remotePublication = null;
     var remoteIdentity = null;   // remotePublication 属于谁（核验出对端后据此丢掉不匹配的候选）
     var remoteTrack = null;
-    var rxMark = null;
+    var rxMarks = { video: null, audio: null };   // 入站统计的差分基准：视频 / 语音各一份（接收端码率自保要分轨算）
     var txMark = null;
     var statsEpoch = 0;   // 收发统计基准的代号：重置后，之前发出、迟到回来的取样不能把旧基准写回去
     var localQuality = null;
@@ -177,6 +178,7 @@
       remoteAudioPublication = null;
       remoteAudioIdentity = null;
       remoteAudioTrack = null;
+      rxMarks.audio = null;
       handlers.onRemoteAudio(null);
     }
 
@@ -206,6 +208,51 @@
         pub.setSubscribed(false);
         pub.setSubscribed(true);
       }, delay);
+    }
+
+    /**
+     * 一条订阅轨的入站取样（getStats 差分，基准存 rxMarks[kind]）：{ track, epoch, rttS, kbps?, lossPct? }。
+     * 取样期间基准被重置、轨被换掉、比当前基准还旧、或 SAMPLE_BOUND_MS 内没回来时给 null（迟到的不动基准）。
+     */
+    function sampleInbound(kind, currentTrack, nowMs) {
+      var track = currentTrack();
+      var receiver = track && track.receiver;
+      if (!receiver || typeof receiver.getStats !== 'function') return Promise.resolve(null);
+      var epoch = statsEpoch;
+      var expired = false;   // 超过上限这拍已按没测到交出：迟到的报告也不写基准，下一拍仍按上一个有效取样差分
+      var bound = new Promise(function (resolve) {
+        setTimeout(function () { expired = true; resolve(null); }, SAMPLE_BOUND_MS);
+      });
+      return Promise.race([bound, receiver.getStats().then(function (report) {
+        if (expired || epoch !== statsEpoch || currentTrack() !== track) return null;
+        var inbound = null;
+        var rttS = null;
+        report.forEach(function (r) {
+          if (r.type === 'inbound-rtp' && r.kind === kind) inbound = r;
+          if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded') && typeof r.currentRoundTripTime === 'number') rttS = r.currentRoundTripTime;
+        });
+        if (!inbound) return null;
+        // 差分的时间用报告自己的 timestamp（getStats 完成时间参差时按发起时间算会把码率算偏）；没有才退回调用时刻
+        var at = typeof inbound.timestamp === 'number' && isFinite(inbound.timestamp) ? inbound.timestamp : nowMs;
+        var mark = { at: at, bytes: inbound.bytesReceived || 0, lost: inbound.packetsLost || 0, recv: inbound.packetsReceived || 0 };
+        var prev = rxMarks[kind];
+        // 慢回来的旧取样（比当前基准还早）不覆盖基准
+        if (prev && !(mark.at > prev.at)) return null;
+        rxMarks[kind] = mark;
+        var out = { track: track, epoch: epoch, rttS: rttS };
+        if (prev) {
+          out.kbps = Math.max(0, Math.round((mark.bytes - prev.bytes) * 8 / (mark.at - prev.at)));
+          var lost = Math.max(0, mark.lost - prev.lost);
+          var got = Math.max(0, mark.recv - prev.recv);
+          out.lossPct = lost + got > 0 ? lost * 100 / (lost + got) : 0;
+        }
+        return out;
+      }).catch(function () { return null; })]);
+    }
+
+    /** 等另一路取样期间这一路已过期（基准重置 / 换了轨）：丢掉，不拿旧轨的码率接着计时。 */
+    function stillCurrent(sample, track) {
+      return !!sample && sample.epoch === statsEpoch && sample.track === track;
     }
 
     function bind() {
@@ -246,6 +293,7 @@
           audioSubRetries = 0;
           clearAudioSubRetry();
           remoteAudioTrack = track;
+          rxMarks.audio = null;
           handlers.onRemoteAudio(track.mediaStreamTrack);
           return;
         }
@@ -255,7 +303,7 @@
         subRetries = 0;
         clearSubRetry();
         remoteTrack = track;
-        rxMark = null;
+        rxMarks.video = null;
         handlers.onRemoteTrack(track.mediaStreamTrack);
       });
       room.on(E.TrackUnsubscribed, function (track) {
@@ -501,6 +549,7 @@
         if (remoteAudioPublication) remoteAudioPublication.setSubscribed(audioSubscribeWanted);
         if (!audioSubscribeWanted) {
           remoteAudioTrack = null;
+          rxMarks.audio = null;
           handlers.onRemoteAudio(null);
         }
         return Promise.resolve();
@@ -526,7 +575,7 @@
         remotePublication = null;
         remoteIdentity = null;
         remoteTrack = null;
-        rxMark = null;
+        rxMarks.video = null;
         clearSubRetry();
         try {
           stale.setSubscribed(false);
@@ -559,7 +608,7 @@
         remoteAudioTrack = null;
         remotePublication = null;
         remoteTrack = null;
-        rxMark = null;
+        rxMarks = { video: null, audio: null };
         txMark = null;
         statsEpoch += 1;
         localQuality = null;
@@ -593,13 +642,15 @@
       remoteVideoAvailable: function () {
         return !!remotePublication;
       },
+      // LiveKit 没有服务端单轨码率上限：控制器按 receiverStats 做接收端码率自保（TRTC 由 Servers 用量核对执行）
+      rxGuard: true,
       stats: function () {
         return {};
       },
       /** 断线 / 重连：收发统计的差分基准作废。 */
       resetStats: function () {
         statsEpoch += 1;
-        rxMark = null;
+        rxMarks = { video: null, audio: null };
         txMark = null;
       },
       /** 当前连接质量换算的丢包样本（poor / lost 视同超阈值）；未知返回 undefined。 */
@@ -609,38 +660,29 @@
         if (localQuality === 'excellent' || localQuality === 'good') return 0;
         return undefined;
       },
-      /** host 侧接收统计（rx_kbps / loss_pct / rtt_ms），取自订阅轨的 RTCRtpReceiver；后端要字段齐全才转给对端。 */
+      /**
+       * 接收统计，取自订阅轨的 RTCRtpReceiver：对端视频（host）给 rx_kbps / loss_pct / rtt_ms（后端要字段齐全才转给对端），
+       * 对端语音给 rx_audio_kbps。两路分开差分，控制器据此分别做接收端码率自保（checkRxGuard）。
+       */
       receiverStats: function (nowMs) {
-        var receiver = remoteTrack && remoteTrack.receiver;
-        if (!receiver || typeof receiver.getStats !== 'function') return Promise.resolve(null);
-        var epoch = statsEpoch;
-        var sampled = remoteTrack;
-        return receiver.getStats().then(function (report) {
-          if (epoch !== statsEpoch || remoteTrack !== sampled) return null;
-          var inbound = null;
-          var rttS = null;
-          report.forEach(function (r) {
-            if (r.type === 'inbound-rtp' && r.kind === 'video') inbound = r;
-            if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded') && typeof r.currentRoundTripTime === 'number') rttS = r.currentRoundTripTime;
-          });
-          if (!inbound) return null;
-          // 差分的时间用报告自己的 timestamp（getStats 完成时间参差时按发起时间算会把码率算偏）；没有才退回调用时刻
-          var at = typeof inbound.timestamp === 'number' && isFinite(inbound.timestamp) ? inbound.timestamp : nowMs;
-          var mark = { at: at, bytes: inbound.bytesReceived || 0, lost: inbound.packetsLost || 0, recv: inbound.packetsReceived || 0 };
-          var prev = rxMark;
-          // 慢回来的旧取样（比当前基准还早）不覆盖基准
-          if (prev && !(mark.at > prev.at)) return null;
-          rxMark = mark;
+        return Promise.all([
+          sampleInbound('video', function () { return remoteTrack; }, nowMs),
+          sampleInbound('audio', function () { return remoteAudioTrack; }, nowMs),
+        ]).then(function (res) {
+          var video = stillCurrent(res[0], remoteTrack) ? res[0] : null;
+          var audio = stillCurrent(res[1], remoteAudioTrack) ? res[1] : null;
+          if (!video && !audio) return null;
           var out = {};
-          if (rttS !== null) out.rtt_ms = Math.round(rttS * 1000);
-          if (prev && mark.at > prev.at) {
-            out.rx_kbps = Math.max(0, Math.round((mark.bytes - prev.bytes) * 8 / (mark.at - prev.at)));
-            var lost = Math.max(0, mark.lost - prev.lost);
-            var got = Math.max(0, mark.recv - prev.recv);
-            out.loss_pct = lost + got > 0 ? lost * 100 / (lost + got) : 0;
+          if (video) {
+            if (video.rttS !== null) out.rtt_ms = Math.round(video.rttS * 1000);
+            if (typeof video.kbps === 'number') {
+              out.rx_kbps = video.kbps;
+              out.loss_pct = video.lossPct;
+            }
           }
+          if (audio && typeof audio.kbps === 'number') out.rx_audio_kbps = audio.kbps;
           return out;
-        }).catch(function () { return null; });
+        });
       },
       senderStats: function () {
         var track = publication && publication.track;

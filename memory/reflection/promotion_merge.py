@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 
-
+import asyncio
 
 
 from datetime import datetime
@@ -31,6 +31,7 @@ from config import (
 )
 
 from memory.evidence import evidence_score
+from memory.introspection import is_permanently_suppressed
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
@@ -56,6 +57,21 @@ from memory._reflection.transitions import (
 from ._shared import (
     logger,
 )
+from .similarity import ascore_against_queries
+
+
+def _fit_pool_lines(lines: list[str], max_tokens: int) -> list[str]:
+    """Best-ranked whole lines of the merge pool that fit ``max_tokens``.
+
+    A line that alone exceeds the budget is dropped wherever it ranks: first,
+    take_lines_within_token_budget would keep it past the budget; further
+    down, its prefix cut would stop there and hide every smaller line behind
+    it. Dropped rather than truncated, because merge_into rewrites its target
+    from the text shown in the pool and a cut-off copy would lose the rest.
+    """
+    from utils.tokenize import count_tokens, take_lines_within_token_budget
+    lines = [line for line in lines if count_tokens(line) <= max_tokens]
+    return take_lines_within_token_budget(lines, max_tokens)[0]
 
 
 def _detect_promotion_prompt_language(text: str) -> str:
@@ -343,6 +359,31 @@ class PromotionMergeMixin:
             reason=reason,
         )
 
+    @staticmethod
+    async def _arank_promotion_pool(
+        R: dict, pool_rows: list[tuple[str, dict]], now: datetime,
+    ) -> list[tuple[str, dict]]:
+        """Order the merge pool so the token cut keeps the rows that matter.
+
+        Primary key is vector similarity to ``R``; rows without a usable
+        vector follow, by evidence_score DESC. When vectors are unusable the
+        whole pool is ordered by evidence_score DESC. Ties keep pool order.
+        """
+        scores = await ascore_against_queries([R], [e for _, e in pool_rows])
+        if scores is None:
+            scores = [None] * len(pool_rows)
+        evidence = [evidence_score(e, now) for _, e in pool_rows]
+        order = sorted(
+            range(len(pool_rows)),
+            key=lambda i: (
+                scores[i] is not None,
+                scores[i] if scores[i] is not None else 0.0,
+                evidence[i],
+            ),
+            reverse=True,
+        )
+        return [pool_rows[i] for i in order]
+
     async def _allm_call_promotion_merge(
         self, R: dict, persona_pool: list[tuple[str, dict]],
         reflection_pool: list[dict], lanlan_name: str, master_name: str,
@@ -356,34 +397,28 @@ class PromotionMergeMixin:
         from config.prompts.prompts_memory import get_promotion_merge_prompt
 
         now = datetime.now()
-        # Build the impression pool block with stable ordering — protected
-        # persona entries first, then non-protected by score DESC, then
-        # confirmed/promoted reflections by score DESC.
-        pool_rows: list[tuple[str, str, int]] = []
+        pool_rows: list[tuple[str, dict]] = []
         for ek, e in persona_pool:
-            raw_text = str(e.get('text', '') or '')
-            prefix = f"[persona.{ek}.{e.get('id')}] \""
-            line = (
-                f"{prefix}{raw_text}\""
-                f" (evidence_score={evidence_score(e, now):.2f})"
-            )
-            pool_rows.append((line, raw_text, len(prefix)))
+            pool_rows.append((f"persona.{ek}.{e.get('id')}", e))
         for r in reflection_pool:
-            raw_text = str(r.get('text', '') or '')
-            prefix = f"[reflection.{r.get('id')}] \""
-            line = (
-                f"{prefix}{raw_text}\""
-                f" (evidence_score={evidence_score(r, now):.2f})"
-            )
-            pool_rows.append((line, raw_text, len(prefix)))
-        pool_lines = [line for line, _raw_text, _text_offset in pool_rows]
-        pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
-        # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
-        # Accumulated entities can grow the persona+reflection pool beyond 8k tokens;
-        # truncate the tail, already sorted by score DESC, discarding lower-scored entries.
+            pool_rows.append((f"reflection.{r.get('id')}", r))
+        pool_lines = [
+            f"[{key}] \"{str(e.get('text', '') or '')}\""
+            f" (evidence_score={evidence_score(e, now):.2f})"
+            for key, e in await self._arank_promotion_pool(R, pool_rows, now)
+        ]
+        # A long-lived entity's pool grows far past PERSONA_MERGE_POOL_MAX_TOKENS
+        # (protected entries are already excluded upstream). Keep the
+        # best-ranked whole lines: aadd_fact appends, so a head cut in file
+        # order would only ever show the oldest entries and hide the recent
+        # near-duplicates that merge_into exists to catch.
         from config import PERSONA_MERGE_POOL_MAX_TOKENS
-        from utils.tokenize import truncate_to_tokens
-        pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
+        # Counting tokens for a pool of thousands of rows would stall the
+        # event loop, so the fit runs on a worker thread.
+        pool_lines = await asyncio.to_thread(
+            _fit_pool_lines, pool_lines, PERSONA_MERGE_POOL_MAX_TOKENS,
+        )
+        pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
 
         prompt = get_promotion_merge_prompt(
             _detect_promotion_prompt_language(
@@ -479,6 +514,14 @@ class PromotionMergeMixin:
                     f"skip"
                 )
                 return 'no_longer_eligible'
+            if (await self._aretired_from_promotion(lanlan_name))(current):
+                # Promoting it would write its text back into persona as a
+                # fresh, unflagged entry — undoing the suppression.
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: retired by "
+                    f"introspection (itself or its persona line); skip"
+                )
+                return 'no_longer_eligible'
             if evidence_score(current, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 logger.info(
                     f"[Promote] {lanlan_name}/{R['id']}: evidence_score "
@@ -544,6 +587,7 @@ class PromotionMergeMixin:
                     if (
                         isinstance(e, dict)
                         and not e.get('protected')
+                        and not is_permanently_suppressed(e)
                         and entry_matches_subject(e, memory_subject)
                     ):
                         # A section can contain entries from multiple scopes (section keys omit
@@ -558,6 +602,9 @@ class PromotionMergeMixin:
             and entry_matches_subject(r, memory_subject)
             and r.get('status') in ('confirmed', 'promoted')
             and r.get('id') != R.get('id')
+            # Retired entries are neither merge targets nor evidence that
+            # R is already covered.
+            and not is_permanently_suppressed(r)
         ]
 
         try:
@@ -601,6 +648,16 @@ class PromotionMergeMixin:
                     f"during LLM await (now "
                     f"{current2.get('status') if current2 else 'gone'!r}); "
                     f"discarding LLM decision={action!r} without persona write"
+                )
+                return 'no_longer_eligible'
+            if (await self._aretired_from_promotion(lanlan_name))(current2):
+                # Introspection retired it (or its persona line) during the
+                # LLM await; suppression changes neither status nor score,
+                # so the checks around this one cannot see it.
+                logger.info(
+                    f"[Promote] {lanlan_name}/{R['id']}: retired by "
+                    f"introspection during LLM await; discarding LLM "
+                    f"decision={action!r}"
                 )
                 return 'no_longer_eligible'
             if (
@@ -648,6 +705,9 @@ class PromotionMergeMixin:
                 if (
                     current3 is None
                     or current3.get('status') != 'confirmed'
+                    # Introspection may retire it (or its persona line) while
+                    # the LLM was thinking; neither status nor score changes.
+                    or (await self._aretired_from_promotion(lanlan_name))(current3)
                     or (
                         memory_subject is not None
                         and (
@@ -661,12 +721,18 @@ class PromotionMergeMixin:
                     )
                 ):
                     return 'no_longer_eligible'
+                counts_kwargs = (
+                    {'fact_source_counts': current3['fact_source_counts']}
+                    if isinstance(current3.get('fact_source_counts'), dict)
+                    else {}
+                )
                 result = await self._persona_manager.aadd_fact(
                     lanlan_name, current3.get('text', ''),
                     entity=target_entity or 'master',
                     source='reflection', source_id=current3['id'],
                     speaker_provenance=current3,
                     **promote_kwargs,
+                    **counts_kwargs,
                 )
             if result == self._persona_manager.FACT_ADDED:
                 await self._arecord_state_change(
@@ -747,6 +813,13 @@ class PromotionMergeMixin:
                     f"{target_entry_id} not found in persona; skip"
                 )
                 return 'invalid_target'
+            if is_permanently_suppressed(target_entry):
+                # Merging into a retired entry would hide R's content with it.
+                logger.warning(
+                    f"[Promote] {lanlan_name}/{R['id']}: merge target "
+                    f"{target_entry_id} is permanently suppressed; refuse"
+                )
+                return 'invalid_target'
             if not entry_matches_subject(target_entry, memory_subject):
                 # The LLM may hallucinate an entry ID in another domain because global lookup is unbounded; merging
                 # would overwrite that entry with this domain's text across isolation boundaries, so revalidate and reject it.
@@ -763,6 +836,9 @@ class PromotionMergeMixin:
                 if (
                     current3 is None
                     or current3.get('status') != 'confirmed'
+                    # Introspection may retire it (or its persona line) while
+                    # the LLM was thinking; neither status nor score changes.
+                    or (await self._aretired_from_promotion(lanlan_name))(current3)
                     or (
                         memory_subject is not None
                         and (

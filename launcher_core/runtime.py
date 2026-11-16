@@ -302,33 +302,6 @@ def _reload_runtime_config_from_env() -> None:
     )
 
 
-def _install_logging_brace_compat() -> None:
-    if getattr(logging, "_neko_brace_compat_installed", False):
-        return
-
-    original_get_message = logging.LogRecord.getMessage
-
-    def _compat_get_message(record: logging.LogRecord) -> str:
-        try:
-            return original_get_message(record)
-        except TypeError:
-            msg = str(record.msg)
-            args = record.args
-            if not args or "%" in msg or "{" not in msg or "}" not in msg:
-                raise
-            try:
-                if isinstance(args, dict):
-                    return msg.format(**args)
-                if not isinstance(args, tuple):
-                    args = (args,)
-                return msg.format(*args)
-            except Exception:
-                return f"{msg} | args={record.args!r}"
-
-    logging.LogRecord.getMessage = _compat_get_message
-    logging._neko_brace_compat_installed = True
-
-
 def _patch_http_user_agents() -> None:
     """Globally patch HTTP clients' default User-Agent to prevent CF blocking custom APIs."""
     try:
@@ -369,7 +342,8 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
         sys.path.insert(0, project_dir)
     os.chdir(project_dir)
     _configure_multiprocessing_executable(project_dir)
-    _install_logging_brace_compat()
+    from utils.logger_config import install_message_formatting
+    install_message_formatting()
     _initialize_launcher_context()
     # Globally patch requests' default User-Agent to avoid CF blocking.
     _patch_http_user_agents()
@@ -3122,66 +3096,6 @@ def register_shutdown_hooks():
                 exc,
             )
 
-def _ensure_playwright_browsers():
-    """Auto-install Playwright Chromium if missing (needed by browser-use).
-
-    Uses playwright's bundled driver binary directly, so it works inside
-    a Nuitka standalone build where ``python -m playwright`` is unavailable.
-    The ``install chromium`` command is idempotent – if the browser already
-    exists it returns almost instantly.
-
-    When running frozen (Nuitka/PyInstaller), PLAYWRIGHT_BROWSERS_PATH is set
-    to the bundled ``playwright_browsers`` dir so that build-time cached
-    Chromium is used and no on-site download is needed.
-    """
-    try:
-        from playwright._impl._driver import compute_driver_executable, get_driver_env
-    except ImportError:
-        return
-
-    try:
-        if IS_FROZEN:
-            if hasattr(sys, "_MEIPASS"):
-                _bundle = sys._MEIPASS
-            else:
-                _bundle = os.path.dirname(os.path.abspath(__file__))
-            _bundled_browsers = os.path.join(_bundle, "playwright_browsers")
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bundled_browsers
-
-            if os.path.isdir(_bundled_browsers) and os.listdir(_bundled_browsers):
-                print("[Launcher] ✓ Playwright Chromium ready (bundled)", flush=True)
-                emit_frontend_event("playwright_check", {"status": "ready"})
-                return
-
-        driver = str(compute_driver_executable())
-        env = get_driver_env()
-        print("[Launcher] Checking Playwright Chromium browser...", flush=True)
-        emit_frontend_event("playwright_check", {"status": "checking"})
-
-        result = subprocess.run(
-            [driver, "install", "chromium"],
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-        )
-
-        if result.returncode == 0:
-            print("[Launcher] ✓ Playwright Chromium ready", flush=True)
-            emit_frontend_event("playwright_check", {"status": "ready"})
-        else:
-            msg = (result.stderr or "").strip()[:300]
-            logging.getLogger(__name__).info("[Launcher] Playwright install warning: %s", msg)
-            emit_frontend_event("playwright_check", {"status": "warning", "message": msg})
-    except subprocess.TimeoutExpired:
-        logging.getLogger(__name__).info("[Launcher] Playwright browser install timed out (300s)")
-        emit_frontend_event("playwright_check", {"status": "timeout"})
-    except Exception as e:
-        logging.getLogger(__name__).info("[Launcher] Playwright browser check skipped: %s", e)
-        emit_frontend_event("playwright_check", {"status": "skipped", "message": str(e)})
-
 
 def _should_use_merged_mode() -> bool:
     """Choose merged vs multi-process mode from env override + runtime shape."""
@@ -3352,9 +3266,6 @@ def main():
                 f"{e}",
                 flush=True,
             )
-
-        # Automatically install Playwright Chromium for browser-use.
-        _ensure_playwright_browsers()
 
         print("=" * 60, flush=True)
         print("N.E.K.O. 服务器启动器", flush=True)

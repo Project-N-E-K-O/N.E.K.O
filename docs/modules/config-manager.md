@@ -44,7 +44,7 @@ current = config.get_character_data()
 current_async = await config.aget_character_data()
 ```
 
-`get_character_data()` does not return the raw character dictionary. It resolves the current master and catgirl, effective persona payloads and prompts, name mapping, and per-character memory paths, then returns them as a nine-item tuple. Use `load_characters()` when the raw persisted mapping is required.
+`get_character_data()` does not return the raw character dictionary. It resolves the current master and neko, effective persona payloads and prompts, name mapping, and per-character memory paths, then returns them as a nine-item tuple. Use `load_characters()` when the raw persisted mapping is required.
 
 The character cache is guarded by locks and checked against the file modification time. A damaged current-character selection may be corrected to the first valid character and written back.
 

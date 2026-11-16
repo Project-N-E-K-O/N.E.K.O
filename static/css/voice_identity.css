@@ -390,6 +390,11 @@
     margin-top: 4px;
 }
 
+#voice-identity-resource-message,
+#voice-identity-resource-complete-help {
+    white-space: pre-line;
+}
+
 :root {
     --voice-page: #f4f8fc;
     --voice-panel-soft: #f0f7fc;
@@ -927,14 +932,6 @@ input:focus-visible,
     line-height: 1;
 }
 
-.verification-score-help {
-    max-width: 480px;
-    margin: 2px 0 0;
-    color: var(--voice-muted);
-    font-size: 0.86rem;
-    line-height: 1.55;
-}
-
 .verification-result-status {
     width: 100%;
     margin: 8px 0 0;
@@ -1042,15 +1039,6 @@ input:focus-visible,
     line-height: 1.7;
 }
 
-.voice-prompt::before {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--voice-blue-dark);
-    content: "“";
-    font-size: 1.7em;
-    line-height: 0.65;
-}
-
 .capture-status {
     position: relative;
     z-index: 1;
@@ -1136,6 +1124,10 @@ input:focus-visible,
 
 .enrollment-message.error {
     color: var(--voice-danger);
+}
+
+.enrollment-card:has(.verification-result:not([hidden])) .enrollment-message:not(.error) {
+    display: none;
 }
 
 .profile-card {
@@ -1267,6 +1259,54 @@ input:focus-visible,
 .resource-summary.is-next {
     color: var(--voice-success-text);
     border-inline-start-color: var(--voice-success-text);
+}
+
+.resource-progress-panel {
+    margin-top: 14px;
+    padding: 14px 16px;
+    border: 1px solid var(--voice-border);
+    border-radius: 14px;
+    background: var(--voice-panel-soft);
+}
+
+.resource-progress-panel[hidden] {
+    display: none;
+}
+
+.resource-progress-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--voice-ink);
+    font-size: 0.85rem;
+    font-weight: 700;
+}
+
+.resource-progress-step {
+    flex-shrink: 0;
+    padding: 4px 9px;
+    border-radius: 999px;
+    background: var(--voice-panel);
+    color: var(--voice-blue-dark);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.resource-progress-targets {
+    margin: 10px 0 0;
+    color: var(--voice-muted);
+    font-size: 0.82rem;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+}
+
+.resource-download-info {
+    margin: 8px 0 0;
+    color: var(--voice-blue-dark);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
 }
 
 #voice-identity-resource-progress {

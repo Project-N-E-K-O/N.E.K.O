@@ -1,0 +1,218 @@
+{
+  "valid": {
+    "schemaVersion": 2,
+    "completedAt": 2000,
+    "entries": [
+      {
+        "kind": "fact",
+        "subject": "master",
+        "id": "f1",
+        "text": "synthetic fact",
+        "metadata": {
+          "source": "user_observation",
+          "sourceCreatedAt": 0,
+          "eventWhen": {
+            "start": {
+              "offset": -1,
+              "unit": "day"
+            },
+            "end": null
+          },
+          "eventStartAt": -1000,
+          "eventEndAt": null,
+          "signalFactIds": [
+            "f0"
+          ],
+          "versionHistory": [
+            {
+              "text": "old",
+              "replacedAt": 1000,
+              "reason": "correction"
+            }
+          ]
+        }
+      }
+    ],
+    "evidence": {
+      "retirements": [
+        {
+          "id": "old",
+          "subject": "master",
+          "text": "old fact",
+          "sourceMessageIds": [
+            "source-1"
+          ],
+          "retiredThroughAt": 1000
+        }
+      ],
+      "confirmations": [
+        {
+          "fingerprint": "1:2:3",
+          "factId": "f1"
+        }
+      ]
+    }
+  },
+  "invalid": [
+    {
+      "schemaVersion": "1",
+      "completedAt": 2000,
+      "entries": []
+    },
+    {
+      "schemaVersion": 1,
+      "completedAt": 9007199254740991,
+      "entries": []
+    },
+    {
+      "schemaVersion": 2,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": " ",
+          "text": "synthetic fact",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "eventWhen": {
+              "start": {
+                "offset": -1,
+                "unit": "day"
+              },
+              "end": null
+            },
+            "eventStartAt": -1000,
+            "eventEndAt": null,
+            "signalFactIds": [
+              "f0"
+            ],
+            "versionHistory": [
+              {
+                "text": "old",
+                "replacedAt": 1000,
+                "reason": "correction"
+              }
+            ]
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      }
+    },
+    {
+      "schemaVersion": 2,
+      "completedAt": 2000,
+      "entries": [
+        {
+          "kind": "fact",
+          "subject": "master",
+          "id": "f1",
+          "text": " \n",
+          "metadata": {
+            "source": "user_observation",
+            "sourceCreatedAt": 0,
+            "eventWhen": {
+              "start": {
+                "offset": -1,
+                "unit": "day"
+              },
+              "end": null
+            },
+            "eventStartAt": -1000,
+            "eventEndAt": null,
+            "signalFactIds": [
+              "f0"
+            ],
+            "versionHistory": [
+              {
+                "text": "old",
+                "replacedAt": 1000,
+                "reason": "correction"
+              }
+            ]
+          }
+        }
+      ],
+      "evidence": {
+        "retirements": [
+          {
+            "id": "old",
+            "subject": "master",
+            "text": "old fact",
+            "sourceMessageIds": [
+              "source-1"
+            ],
+            "retiredThroughAt": 1000
+          }
+        ],
+        "confirmations": [
+          {
+            "fingerprint": "1:2:3",
+            "factId": "f1"
+          }
+        ]
+      }
+    }
+  ],
+  "invalidMetadata": [
+    {
+      "source": [
+        "chat"
+      ]
+    },
+    {
+      "archiveReason": [
+        "age"
+      ]
+    },
+    {
+      "eventWhen": {
+        "start": {
+          "offset": 1,
+          "unit": [
+            "day"
+          ]
+        },
+        "end": null
+      }
+    },
+    {
+      "versionHistory": [
+        {
+          "text": "x",
+          "replacedAt": 1000,
+          "reason": [
+            "correction"
+          ]
+        }
+      ]
+    },
+    {
+      "updatedAt": 9007199254740991
+    },
+    {
+      "sourceMessageIds": [
+        " "
+      ]
+    }
+  ]
+}

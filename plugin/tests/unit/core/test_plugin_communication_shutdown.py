@@ -312,6 +312,8 @@ async def test_route_comm_overwrites_the_plugin_supplied_identity(
     )
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     monkeypatch.setattr(state, "_plugin_comm_queue", queue)
+    from plugin.core.control_ingress import ControlIngress
+    monkeypatch.setattr(state, "plugin_control_ingress", ControlIngress(queue, lambda _: None))
 
     await manager._route_comm(
         {
@@ -340,6 +342,8 @@ async def test_route_comm_does_not_expose_the_raw_uplink_token(
     )
     queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
     monkeypatch.setattr(state, "_plugin_comm_queue", queue)
+    from plugin.core.control_ingress import ControlIngress
+    monkeypatch.setattr(state, "plugin_control_ingress", ControlIngress(queue, lambda _: None))
 
     await manager._route_comm({"type": "PLUGIN_QUERY"})
 
@@ -780,6 +784,37 @@ async def test_an_authenticated_batch_over_the_item_limit_is_refused(monkeypatch
     assert routed == [], "越限的批次仍被逐条路由了"
 
 
+@pytest.mark.asyncio
+async def test_forward_log_privacy_preserves_content_deduplication(monkeypatch):
+    from plugin.core import communication
+
+    logged, stored, published = [], [], []
+
+    class Capture:
+        def info(self, template, *args):
+            logged.append(template.format(*args))
+
+    monkeypatch.setattr(communication, "PLUGIN_LOG_MESSAGE_FORWARD", True)
+    monkeypatch.setattr(communication, "PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS", 60)
+    monkeypatch.setattr(state, "append_message_record", stored.append)
+    manager = PluginCommunicationResourceManager("review", _Transport(), Capture())
+    manager._publish_message_to_plane = published.append
+    body, description = "SYNTHETIC_PRIVATE_BODY", "SYNTHETIC_PRIVATE_DESCRIPTION"
+    message = {"content": body, "description": description, "source": "review"}
+
+    await manager._forward_message(message)
+    await manager._forward_message(message)
+    assert stored[0]["message_id"] != stored[1]["message_id"]
+    assert len(logged) == 1
+    assert manager._last_forward_log_repeat_count == 1
+
+    await manager._forward_message({**message, "content": "SYNTHETIC_DIFFERENT_BODY"})
+    assert len(stored) == len(published) == 3
+    assert len(logged) == 3
+    assert "suppressed 1 duplicates" in logged[1]
+    assert all(body not in line and description not in line and "SYNTHETIC_DIFFERENT_BODY" not in line for line in logged)
+
+
 def _inspect_source(module, needle: str) -> str:
     """Read the module's source so the guard fails when the check is deleted.
 
@@ -792,3 +827,26 @@ def _inspect_source(module, needle: str) -> str:
     text = Path(module.__file__).read_text(encoding="utf-8")
     assert needle in text, f"{needle} 不在 {module.__name__} 里"
     return text
+
+
+async def test_message_forwarding_preserves_delivery_but_logs_only_metadata(monkeypatch):
+    from types import SimpleNamespace
+
+    from plugin.core import communication
+    from plugin.core.state import state
+    stored, published, logged = ([], [], [])
+
+    class Capture(_Logger):
+
+        def info(self, template, *args, **kwargs):
+            logged.append(template.format(*args))
+    monkeypatch.setattr(communication, 'PLUGIN_LOG_MESSAGE_FORWARD', True)
+    monkeypatch.setattr(state, 'append_message_record', lambda msg: stored.append(msg))
+    manager = communication.PluginCommunicationResourceManager('research', SimpleNamespace(), Capture())
+    manager._publish_message_to_plane = lambda msg: published.append(msg)
+    body, description = ('SYNTHETIC_PRIVATE_BODY', 'SYNTHETIC_PRIVATE_DESCRIPTION')
+    await manager._forward_message({'content': body, 'description': description, 'source': 'review'})
+    assert stored[0]['content'] == body
+    assert published[0]['content'] == body
+    assert logged
+    assert all((body not in line and description not in line for line in logged))

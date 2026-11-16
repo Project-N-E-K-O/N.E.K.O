@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# L0 —— 进程 / HTTP 全局层
+#
+# 渲染目标：/etc/nginx/nginx.conf
+# 渲染器：  docker/nginx/render.sh :: render_nginx_configuration()
+#
+# 本文件不含端口/路径类占位符；保留 .template 后缀是为了让 docker/nginx/ 下所有
+# 文件遵循同一套渲染流程（见 README.md「为什么全部是模板」）。
+#
+# 注意：nginx 自身的 $变量 在这里是字面量。占位符统一用双 @ 包裹的大写名
+# （见 README.md 的占位符表），这样就不必再像之前的 heredoc 那样逐行写 \$http_host。
+# ─────────────────────────────────────────────────────────────────────────────
+worker_processes auto;
+error_log /var/log/nginx/error.log notice;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    tcp_nopush on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+
+    # 站点配置（server 块）由 entrypoint 渲染到 conf.d/
+    include @@NGINX_CONF_D_DIR@@/*.conf;
+}

@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import type { ReactNode } from 'react';
 import { i18n } from './i18n';
 import MessageBlockView, { isGuideMessage } from './MessageBlockView';
 import MessageReactions from './MessageReactions';
@@ -13,6 +14,7 @@ type MessageBubbleProps = {
   isGroupedWithPrevious?: boolean;
   failedStatusLabel?: string;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
+  exposure?: ReactNode;
 };
 
 function getAvatarLabel(message: ChatMessage) {
@@ -50,6 +52,7 @@ export default function MessageBubble({
   isGroupedWithPrevious = false,
   failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   onAction,
+  exposure,
 }: MessageBubbleProps) {
   const bubbleClassName = getBubbleClassName(message);
   const rowClassName = getRowClassName(message);
@@ -133,6 +136,7 @@ export default function MessageBubble({
               onAction={onAction}
             />
           ))}
+          {exposure}
         </div>
         <MessageReactions message={message} />
         {message.actions && message.actions.length > 0 ? (

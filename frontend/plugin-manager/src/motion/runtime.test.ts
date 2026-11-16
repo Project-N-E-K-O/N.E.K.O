@@ -296,8 +296,8 @@ it('glides grid items to their new slot when the column count changes', () => {
 
   const frames = (animate: unknown) => (vi.mocked(animate as HTMLElement['animate']).mock.calls[0] as unknown as [Keyframe[]])[0]
   expect(frames(item.animate)[0]).toEqual({ transform: 'translate(0px, -216px)' })
-  expect(frames(surfaceAnimate)[0]).toEqual({ transform: 'scale(0.5, 1)', borderRadius: '24px / 12px' })
-  expect(frames(contentAnimate)[0]).toEqual({ clipPath: 'inset(0 401px 1px 0 round 12px)' })
+  expect(frames(surfaceAnimate)[0]).toEqual({ transform: 'scale(0.5, 1)' })
+  expect(frames(contentAnimate)[0]).toEqual({ clipPath: 'inset(0 401px 1px 0)' })
   app.unmount()
 })
 
@@ -314,6 +314,39 @@ it('glides a width step that keeps the column count, such as a drawer opening', 
   const [frames] = vi.mocked(surfaceAnimate).mock.calls[0] as unknown as [Keyframe[]]
   expect(item.animate).toHaveBeenCalledOnce()
   expect(frames[0]).toMatchObject({ transform: 'scale(1.3333333333333333, 1)' })
+  app.unmount()
+})
+
+it('reads all target card boxes before launching any reflow effects', () => {
+  const { controller, app } = mountGridController()
+  let columns = 2
+  const first = reflowGrid(() => columns)
+  const second = reflowGrid(() => columns)
+  first.grid.append(second.item)
+  vi.mocked(window.getComputedStyle).mockImplementation(element => ({
+    gridTemplateColumns: element === first.grid ? Array(columns).fill('100px').join(' ') : '',
+    borderTopLeftRadius: '12px', borderRightWidth: '1px',
+  }) as CSSStyleDeclaration)
+  controller.reflowColumns(first.grid)
+  columns = 1
+  first.place(new DOMRect(0, 0, 800, 200))
+  second.place(new DOMRect(0, 216, 800, 200))
+  const events: string[] = []
+  for (const item of [first, second]) {
+    const surface = item.item.querySelector<HTMLElement>('[data-reflow="surface"]')!
+    const read = vi.mocked(surface.getBoundingClientRect).getMockImplementation()!
+    vi.spyOn(surface, 'getBoundingClientRect').mockImplementation(() => {
+      events.push('read')
+      return read.call(surface)
+    })
+    vi.mocked(item.item.animate).mockImplementation(() => {
+      events.push('animate')
+      return item.itemAnimation as unknown as Animation
+    })
+  }
+  controller.reflowColumns(first.grid)
+  expect(events).toContain('animate')
+  expect(events.lastIndexOf('read')).toBeLessThan(events.indexOf('animate'))
   app.unmount()
 })
 

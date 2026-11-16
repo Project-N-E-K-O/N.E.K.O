@@ -607,7 +607,7 @@ async def test_unbound_socket_gets_no_visit_downlink_until_it_binds(monkeypatch)
              "metadata": {"source": "system", "source_name": NAME, "passthrough": True}}
     # Write chip to exact validated connection (render_chat_blocks frame shape), never reread websocket via manager.
     assert a.sent == [INVITE, chips] and b.sent == []
-    # Return-home brief is ordinary catgirl speech (spoken and synced too); §4.5 requires no bind filter.
+    # Return-home brief is ordinary neko speech (spoken and synced too); §4.5 requires no bind filter.
     assert mgr.blocks == [] and mgr.outputs == [("简述", False), ("简述2", False)]
 
 

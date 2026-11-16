@@ -46,7 +46,7 @@
             :class="{ 'workbench-header--compact': headerActionsCompact }"
           >
             <!-- 左：市场相关入口；右：模式 │ 面板 │ 视图选项 │ 数据操作。窄头部只保留图标。 -->
-            <div ref="headerMarketRef" class="workbench-header__market">
+            <div ref="headerMarketRef" class="workbench-header__market" data-motion-group>
               <button
                 v-if="marketUrl"
                 class="market-trigger"
@@ -167,7 +167,7 @@
             </div>
 
             <!-- 三级：导入是唯一主按钮；其余为描边次按钮，开关态用浅底；低频视图选项和全部重载收进“更多”。 -->
-            <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions">
+            <div ref="headerActionsRef" class="header-actions" data-testid="plugin-list-header-actions" data-motion-group>
               <el-button
                 data-motion="resize"
                 :type="multiSelectEnabled ? 'primary' : 'default'"
@@ -520,6 +520,8 @@ import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { usePluginStartGate } from '@/composables/usePluginStartGate'
+import { usePluginConsentNotices } from '@/composables/pluginConsentNotices'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
@@ -555,7 +557,7 @@ import { transitionLayout, holdLeave, cancelLeave } from '@/motion/scheduler'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
-import { findDuplicatePluginDisplayNameIds, isOrdinaryPlugin } from '@/utils/pluginDisplay'
+import { findDuplicatePluginDisplayNameIds } from '@/utils/pluginDisplay'
 import { openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
@@ -649,7 +651,12 @@ const dangerDialogMessage = computed(() => {
   )
 })
 
-const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
+const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus)
+
+// Each time this page is opened, list running plugins that still have
+// unconfirmed capabilities; dismissing the notice decides nothing, so it
+// reappears on the next open.
+usePluginConsentNotices()
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
@@ -1253,11 +1260,26 @@ function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
 
+const startGate = usePluginStartGate()
 const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refreshAfterPluginChange)
 
 async function handleBatchStart() {
+  const ids = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled').map((p) => p.id)
+  let allowed: string[] = []
+  let consentConfirmed = false
+  if (ids.length) {
+    try {
+      const prepared = await startGate.prepareBatchStart(ids)
+      allowed = prepared.allowed
+      consentConfirmed = prepared.confirmed
+    } catch {
+      ElMessage.error(t('pluginConsent.loadFailed'))
+      return
+    }
+  }
   await runBatch({
-    filter: (p) => p.status !== 'running' && p.status !== 'disabled',
+    skipConfirm: consentConfirmed,
+    filter: (p) => allowed.includes(p.id),
     action: (p) => pluginStore.start(p.id, { refresh: false }),
     noItemsKey: 'plugins.batchNoStartable',
     confirmKey: 'plugins.batchStartConfirm',
@@ -1586,6 +1608,7 @@ onUnmounted(() => {
 
 /* 头部内边距与 el-card 默认一致；底边不用 border，改由绝对定位的 rule 画在同一位置。 */
 .plugin-list-shell__header {
+  contain: layout;
   padding: 18px 20px 19px;
   box-sizing: border-box;
 }
@@ -1618,6 +1641,7 @@ onUnmounted(() => {
 
 .workbench-header__market,
 .header-actions {
+  contain: layout;
   display: flex;
   align-items: center;
   min-width: 0;

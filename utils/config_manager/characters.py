@@ -67,7 +67,7 @@ def _characters_file_signature(path):
 
 
 def _catgirl_character_ids(characters) -> dict[str, str]:
-    """Map each catgirl name to its valid ``character_id`` in a characters payload."""
+    """Map each neko name to its valid ``character_id`` in a characters payload."""
     catgirl_map = characters.get("猫娘") if isinstance(characters, dict) else None
     if not isinstance(catgirl_map, dict):
         return {}
@@ -487,7 +487,7 @@ class CharactersMixin:
                     her_name,
                 )
                 character_data['当前猫娘'] = her_name
-                # Rare path (corrupt configuration / deleted catgirl only): persist synchronously so the fix survives restart.
+                # Rare path (corrupt configuration / deleted neko only): persist synchronously so the fix survives restart.
                 # save_characters refreshes the cache internally; no manual synchronization is needed here.
                 try:
                     self.save_characters(character_data)
@@ -567,5 +567,5 @@ class CharactersMixin:
 
     async def aload_characters(self, character_json_path=None):
         """Async wrapper for load_characters: even a cache hit deepcopies the whole dict;
-        with N catgirls the copy can take several ms — offload to avoid blocking the event loop."""
+        with N nekos the copy can take several ms — offload to avoid blocking the event loop."""
         return await asyncio.to_thread(self.load_characters, character_json_path)

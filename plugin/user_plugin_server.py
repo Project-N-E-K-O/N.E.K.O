@@ -45,48 +45,15 @@ from config import USER_PLUGIN_SERVER_PORT
 #  Lint guard: scripts/check_no_loguru.py (CI: .github/workflows/analyze.yml)
 # ──────────────────────────────────────────────────────────────────────────
 
-# -- Unified stdlib logger, same as agent_server / memory_server --
-try:
-    from utils.logger_config import setup_logging
-except ModuleNotFoundError:
-    import importlib.util
+# Dedicated process owns stdlib root; embedded hosting uses the same explicit
+# identity with namespace-only ownership in app.agent_server.plugin_host.
+from plugin.logging_config import setup_plugin_logging
 
-    _logger_config_path = _PROJECT_ROOT / "utils" / "logger_config.py"
-    _spec = importlib.util.spec_from_file_location("utils.logger_config", _logger_config_path)
-    if _spec is None or _spec.loader is None:
-        raise ModuleNotFoundError(f"failed to load logger config from {_logger_config_path}")
+logger, _log_config = setup_plugin_logging("PluginServer", own_root=True)
 
-    _module = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_module)
-    setup_logging = getattr(_module, "setup_logging")
+from plugin._logging_runtime import configure_uvicorn_collection
 
-# Set the service_name for the main PluginServer process early — plugin.logging_config.get_logger()
-# uses NEKO_PLUGIN_SERVICE_NAME to determine the logger parent (N.E.K.O.<service>.<comp>).
-# Without it, the fallback is "Plugin", causing logs from message_plane / runs / config and other modules
-# to go to N.E.K.O_Plugin_*.log, separate from PluginServer's N.E.K.O_PluginServer_*.log.
-#
-# Use ``=`` instead of ``setdefault``: if the parent process (Electron / launcher script) accidentally carries
-# an old ``Plugin_<id>`` environment (for example, by reusing a debug shell), setdefault would preserve the old value,
-# and then ``setup_logging("PluginServer")`` and ``get_logger()`` below would route to two
-# different namespaces, splitting logs again. Force the value here.
-os.environ["NEKO_PLUGIN_SERVICE_NAME"] = "PluginServer"
-
-logger, _log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
-
-# Side-effect import: triggers the top-level
-# _install_logging_brace_compat() in plugin/logging_config.py, so all plugin/* submodules share brace-format
-# compatibility (logger.info("msg {}", x) does not raise TypeError). This module itself does not need an alias.
-import plugin.logging_config  # noqa: E402,F401  -- side-effect only
-
-# -- uvicorn logging bridge --
-def _configure_uvicorn_logging_bridge() -> None:
-    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        uv_logger = logging.getLogger(logger_name)
-        uv_logger.handlers.clear()
-        uv_logger.propagate = True
-
-
-_configure_uvicorn_logging_bridge()
+configure_uvicorn_collection()
 
 # Must run before any event loop gets created on Windows.
 def _configure_windows_event_loop_policy() -> None:
@@ -122,8 +89,7 @@ def _enable_fault_handler_dump_file() -> IO[str] | None:
     # The path comes from the main app's RobustLoggerConfig (five levels of writable-directory fallback, safe with AppImage squashfs).
     # Never use Path(__file__).parent / "log" again — that is a read-only squashfs path and will crash.
     try:
-        from utils.logger_config import RobustLoggerConfig
-        dump_dir = Path(RobustLoggerConfig(service_name="PluginServer").get_log_directory_path())
+        dump_dir = _log_config.log_dir
     except Exception as exc:
         logger.warning("failed to resolve log dir for faulthandler, fallback to tempdir: %s", exc)
         import tempfile

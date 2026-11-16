@@ -26,8 +26,10 @@
             '/static/vrm/vrm-expression.js',
             '/static/vrm/vrm-lipsync-formant.js',
             '/static/vrm/vrm-animation.js',
+            '/static/vrm/vrm-physics-profile.js',
             ...(!lightweightEmbed ? [
                 '/static/avatar/avatar-touch-gestures.js',
+                '/static/avatar/avatar-click-shake.js',
                 '/static/vrm/vrm-interaction.js',
                 '/static/vrm/vrm-cursor-follow.js'
             ] : []),

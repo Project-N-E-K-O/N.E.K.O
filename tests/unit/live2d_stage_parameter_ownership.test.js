@@ -83,7 +83,7 @@ test('a newer bridge emotion supersedes the already entered manager request befo
         gate.resolve();
         await first;
         await latest;
-        assert.deepEqual(motions, ['sad']);
+        assert.deepEqual(motions, [], 'the replacement expression excludes motion admission');
         assert.equal(f.manager.currentEmotion, 'sad');
         assert.equal(f.manager.isEmotionChanging, false);
     } finally { f.release(); }
@@ -118,7 +118,7 @@ test('ordinary emotion calls also fence Core replacement after the real expressi
     } finally { f.release(); next.release(); }
 });
 
-test('a live ordinary emotion retains expression, motion and persistent reapply behavior', async () => {
+test('a live ordinary emotion applies its expression and residents without admitting a motion', async () => {
     const f = await fixture();
     try {
         const motions = []; let persistentCalls = 0;
@@ -131,7 +131,7 @@ test('a live ordinary emotion retains expression, motion and persistent reapply 
         f.runtime.context.fetch = async () => ({ ok: true,
             json: async () => ({ Parameters: [{ Id: 'ParamAngleX', Value: 3 }] }) });
         assert.notEqual(await f.manager.setEmotion('happy'), false);
-        assert.deepEqual(motions, ['happy']);
+        assert.deepEqual(motions, []);
         // Existing behavior reapplies once in _playExpressionNow and once in setEmotion.
         assert.equal(persistentCalls, 2);
         assert.equal(f.model.internalModel.events.listenerCount('beforeModelUpdate'), 1);
@@ -248,6 +248,7 @@ async function fixture(options = {}) {
     vm.runInContext(read('static/tutorial/yui-guide/director/emotion-bridge.js'), runtime.context,
         { filename: sourcePath('static/tutorial/yui-guide/director/emotion-bridge.js') });
     const f = createMao(runtime);
+    f.motionManager.state.currentPriority = 0;
     // Runtime shell emits the same event API as Pixi's internal model; SDK/Core
     // and all parameter/default operations remain real bundled implementations.
     const emitter = new EventEmitter();
@@ -285,17 +286,11 @@ async function runInnerCancellation({ standalone = false, native = false, succes
         f.runtime.context.fetch = async () => ({ ok: true, json: async () => ({
             Parameters: [{ Id: 'ParamAngleX', Value: 7 }], Meta: { Duration: 1 }, Curves: []
         }) });
-        const reset = f.manager.resetTransientMotionAndExpressionState;
-        let preparingMotion = false;
-        f.manager.resetTransientMotionAndExpressionState = async function(...args) {
-            preparingMotion = true;
-            try { return await reset.apply(this, args); } finally { preparingMotion = false; }
-        };
         const persistent = f.manager.applyPersistentExpressionsNative;
         let blocked = false;
         f.manager.applyPersistentExpressionsNative = async function(...args) {
             const result = await persistent.apply(this, args);
-            if (!blocked && (standalone || preparingMotion)) { blocked = true; entered.resolve(); await gate.promise; }
+            if (!blocked && this._activeTransientExpression) { blocked = true; entered.resolve(); await gate.promise; }
             return result;
         };
         const old = f.stage.acquire('inner-wait');
@@ -330,7 +325,7 @@ async function runInnerCancellation({ standalone = false, native = false, succes
     } finally { gate.resolve(); f.release(); }
 }
 
-test('cancel after expression install during real motion preparation cleans its listener and admits no action', async () => {
+test('cancel after expression install during resident reapply cleans its listener and admits no action', async () => {
     assert.deepEqual(await runInnerCancellation(), { admissions: 0, removedAtRelease: true });
 });
 
@@ -342,14 +337,14 @@ test('independent native expression publishes ownership before its resident-expr
     assert.deepEqual(await runInnerCancellation({ standalone: true, native: true }), { admissions: 0, removedAtRelease: true });
 });
 
-test('retired combined emotion leaves a successor expression installed while its motion preparation settles', async () => {
+test('retired combined emotion leaves a successor expression installed while resident reapply settles', async () => {
     assert.deepEqual(await runInnerCancellation({ successorExpression: true }), { admissions: 0, removedAtRelease: true });
 });
 
-test('operation cancellation also protects motion admission after an inner continuation callback is removed', async () => {
+test('operation cancellation protects expression ownership after its continuation callback is removed', async () => {
     const result = await runInnerCancellation({ transformEmotion(source) {
-        const begin = source.indexOf('Live2DManager.prototype.playMotion =');
-        const end = source.indexOf('Live2DManager.prototype.playSimpleMotion', begin);
+        const begin = source.indexOf('Live2DManager.prototype._playExpressionNow =');
+        const end = source.indexOf('Live2DManager.prototype.playMotion', begin);
         const section = source.slice(begin, end);
         const guard = "&& (typeof options.isCurrent !== 'function' || options.isCurrent())";
         assert.ok(section.includes(guard));
@@ -894,8 +889,10 @@ test('editing and unavailable defaults never fall back to stale parameters or in
         f.apply({ ParamAngleX: 2 });
         const next = f.stage.acquire('pose');
         f.stage.setTemporaryParam('ParamAngleX', 9);
-        f.apply({});
+        // The default must already be unavailable when the override is released;
+        // a valid default is now restored during parameter publication itself.
         f.manager._getCoreParameterDefaultValue = () => undefined;
+        f.apply({});
         f.stage.release(next.id);
         assert.equal(f.value('ParamAngleX'), 9);
         assert.equal(f.runtime.warnings.filter(args => String(args[0]).includes('unavailable defaults')).length, 1);

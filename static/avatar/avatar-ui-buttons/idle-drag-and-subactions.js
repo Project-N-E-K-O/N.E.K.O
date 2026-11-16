@@ -360,16 +360,68 @@ function _getNekoIdleGifDurationMs(src) {
     return durationPromise;
 }
 
+function _getNekoIdleAnimationDurationMs(src) {
+    const registeredDurationMs = typeof _getNekoCatAppearanceDurationMs === 'function'
+        ? _getNekoCatAppearanceDurationMs(src)
+        : 0;
+    return registeredDurationMs > 0
+        ? Promise.resolve(registeredDurationMs)
+        : _getNekoIdleGifDurationMs(src);
+}
+
+function _buildNekoIdleAnimationRestartUrl(src, playbackToken) {
+    if (!src || !playbackToken) return src || '';
+    try {
+        const url = new URL(src, window.location.href);
+        if (!/\/static\/assets\/cat-resources\/appearance\/.+\.(?:gif|webp)$/i.test(url.pathname)) {
+            return src;
+        }
+        url.searchParams.set('entry', String(playbackToken));
+        return url.href;
+    } catch (_) {
+        return src;
+    }
+}
+
+function _isNekoIdleAnimationRestartUrlForSource(candidateSrc, baseSrc, playbackToken = null) {
+    if (!candidateSrc || !baseSrc) return false;
+    try {
+        const candidate = new URL(candidateSrc, window.location.href);
+        const base = new URL(baseSrc, window.location.href);
+        if (playbackToken !== null && playbackToken !== undefined &&
+            candidate.searchParams.get('entry') !== String(playbackToken)) {
+            return false;
+        }
+        candidate.searchParams.delete('entry');
+        base.searchParams.delete('entry');
+        return candidate.href === base.href;
+    } catch (_) {
+        return playbackToken === null || playbackToken === undefined
+            ? candidateSrc === baseSrc
+            : candidateSrc === _buildNekoIdleAnimationRestartUrl(baseSrc, playbackToken);
+    }
+}
+
 function _cleanupNekoIdleArtTransition(art) {
     if (!art) return;
     if (art.__nekoIdleTransitionTimer) {
         clearTimeout(art.__nekoIdleTransitionTimer);
         art.__nekoIdleTransitionTimer = 0;
     }
+    if (typeof art.__nekoIdleTransitionPreloadCancel === 'function') {
+        try { art.__nekoIdleTransitionPreloadCancel(); } catch (_) {}
+    }
+    art.__nekoIdleTransitionPreloadCancel = null;
+    if (art.__nekoIdleTransitionPreload) {
+        art.__nekoIdleTransitionPreload.onload = null;
+        art.__nekoIdleTransitionPreload.onerror = null;
+        try { art.__nekoIdleTransitionPreload.removeAttribute('src'); } catch (_) {}
+    }
+    art.__nekoIdleTransitionPreload = null;
     if (art.__nekoIdleTransitionNext) {
-        // 丢弃过渡临时 <img> 前先清空 src，让 Blink 立即释放该动画 GIF 的解码帧缓存
+        // 丢弃过渡临时 <img> 前先清空 src，让 Blink 立即释放动画资源的解码帧缓存
         // （MEM_MAPPED 共享内存）。否则每次 idle 美术过渡都 createElement 一个新 <img>
-        // 播 cat-idle GIF，removeChild 后解码缓冲不及时回收，长期累积撑高 committed。
+        // 播 cat-idle 动画时，removeChild 后解码缓冲不及时回收，长期累积撑高 committed。
         try { art.__nekoIdleTransitionNext.removeAttribute('src'); } catch (_) {}
         if (art.__nekoIdleTransitionNext.parentNode) {
             art.__nekoIdleTransitionNext.parentNode.removeChild(art.__nekoIdleTransitionNext);
@@ -401,6 +453,7 @@ function _clearNekoIdleHoverPlayback(art) {
     art.__nekoIdleHoverSrc = '';
     art.__nekoIdleHoverTier = '';
     art.__nekoIdleHoverStartedAt = 0;
+    art.__nekoIdleHoverPausedJourney = false;
 }
 
 function _applyNekoIdleGifPlaybackRate(art, baseSrc, rate) {
@@ -438,7 +491,13 @@ function _getNekoIdleReturnCurrentArtUrl(button, tier) {
         return _NEKO_IDLE_CAT1_PLAY_ASSET_URL;
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EatActionActive(button)) {
-        return _NEKO_IDLE_CAT1_EAT_ASSET_URL;
+        return _getNekoIdleCat1EatActionAssetUrl(button);
+    }
+    if (_isNekoIdleCat1VisualActionActive(button)) {
+        const visualProfile = _getNekoIdleCat1ActiveVisualActionProfile(button);
+        if (visualProfile && _getNekoIdleVisualActionTier(visualProfile) === normalizedTier) {
+            return _getNekoIdleCat1VisualActionAssetUrl(button);
+        }
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1StretchActionActive(button)) {
         return _getNekoIdleCat1StretchAssetUrl();
@@ -993,6 +1052,10 @@ function _startNekoIdleReturnDragActionForContainer(container) {
         restoreArt: false,
         reason: 'return-ball-drag-active'
     });
+    _cancelNekoIdleCat1VisualAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
     _cancelNekoIdleCat1StretchAction(button, {
         restoreArt: false,
         reason: 'return-ball-drag-active'
@@ -1130,6 +1193,9 @@ function _getNekoIdleCat1Journey(button) {
 
 function _getNekoIdleCat1ArtSource(button) {
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    if (_isNekoIdleCat1VisualActionActive(button)) {
+        return _getNekoIdleCat1VisualActionAssetUrl(button);
+    }
     if (_isNekoIdleCat1StretchActionActive(button)) {
         return _getNekoIdleCat1StretchAssetUrl();
     }
@@ -1322,7 +1388,20 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
     const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect);
     const catRect = _getNekoDesktopVirtualElementRect(container);
     if (!surfaceScreenRect || !catRect || catRect.width <= 0 || catRect.height <= 0) return false;
-    const assetUrl = options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1);
+    const activeArt = button && typeof button.querySelector === 'function'
+        ? button.querySelector('.neko-idle-return-art')
+        : null;
+    const currentArtUrl = activeArt && typeof activeArt.getAttribute === 'function'
+        ? activeArt.getAttribute('src') || ''
+        : '';
+    const assetUrl = options.assetUrl || currentArtUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1);
+    const buttonArtLayout = button && typeof button.getAttribute === 'function'
+        ? button.getAttribute('data-neko-cat1-visual-layout') || ''
+        : '';
+    const requestedArtLayout = options.artLayout || buttonArtLayout;
+    const artLayout = requestedArtLayout === 'wide-centered' || requestedArtLayout === 'tall-bottom'
+        ? requestedArtLayout
+        : '';
     const target = options.target || null;
     const anchorRatio = target && Number.isFinite(Number(target.anchorRatio))
         ? Math.max(0, Math.min(1, Number(target.anchorRatio)))
@@ -1342,7 +1421,9 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
         overlapPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX,
         sidePaddingPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
         assetUrl,
-        wideArt: _isNekoCatAppearanceWideArtUrl('action.cat1.play_yarn', assetUrl),
+        artLayout,
+        wideArt: artLayout === 'wide-centered' ||
+            _isNekoCatAppearanceWideArtUrl('action.cat1.play_yarn', assetUrl),
         facingRight: !!(state && state.facingRight)
     });
     if (!posted) return false;

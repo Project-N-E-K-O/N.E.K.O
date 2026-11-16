@@ -246,6 +246,7 @@ def retire_character_runtime_caches(*character_names: str) -> None:
 
 LEGACY_CHARACTER_MEMORY_FILE_MAP = {
     "recent_{name}.json": "recent.json",
+    ".recent_{name}.json.write-receipts.json": ".recent.json.write-receipts.json",
     "settings_{name}.json": "settings.json",
     "facts_{name}.json": "facts.json",
     "facts_archive_{name}.json": "facts_archive.json",

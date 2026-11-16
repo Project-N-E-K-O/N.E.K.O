@@ -1195,8 +1195,12 @@ async def test_run_post_turn_signals_keeps_stage1_when_powerful_memory_off():
          patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
-    # OFF mode disables the batch loop, so retain per-turn Stage-1 fallback.
-    fake_fact_store.extract_facts.assert_awaited_once()
+    # OFF mode disables the batch loop, so retain per-turn Stage-1 fallback,
+    # fed the user's messages only (the basic prompt stores every fact as the
+    # user's, so the AI's reply must not go in).
+    fake_fact_store.extract_facts.assert_awaited_once_with(
+        [payload_messages[0]], "测试角色", conversation_at=None,
+    )
     # Repetition sniffing still runs per turn, matching ON mode.
     fake_persona_manager.arecord_mentions.assert_awaited()
     fake_reflection_engine.arecord_mentions.assert_awaited()
@@ -1240,17 +1244,20 @@ async def test_run_post_turn_signals_excludes_theater_from_reality_signals():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_post_turn_signals_off_mode_keeps_stage1_for_ai_only_ordinary_batch():
+async def test_run_post_turn_signals_off_mode_skips_stage1_for_ai_only_ordinary_batch():
     """OFF mode: an AI-only ordinary batch (proactive message, no user reply)
-    still runs per-turn Stage-1 like before theater existed; theater messages in
-    the same batch are filtered out of the extraction input.
+    extracts nothing. The basic prompt stores every fact as the user's, and
+    what the user never engaged with does not become memory; repetition
+    sniffing still runs on the AI's line.
     """
     from app import memory_server
-    from utils.llm_client import AIMessage
+    from utils.llm_client import AIMessage, HumanMessage
 
     theater_metadata = {"source": "theater_numeric_v2", "session_id": "theater_session"}
     ordinary = AIMessage(content="早上好呀，今天也要元气满满哦")
     payload_messages = [
+        # A theater user line is no user message of the real chat.
+        HumanMessage(content="我在虚构剧情里住 302。", metadata=theater_metadata),
         AIMessage(content="这是我们的剧本住处。", metadata=theater_metadata),
         ordinary,
     ]
@@ -1270,7 +1277,8 @@ async def test_run_post_turn_signals_off_mode_keeps_stage1_for_ai_only_ordinary_
          patch.object(memory_server.gates, "_ais_powerful_memory_enabled", AsyncMock(return_value=False)):
         await memory_server._run_post_turn_signals(payload_messages, "测试角色")
 
-    fake_fact_store.extract_facts.assert_awaited_once_with([ordinary], "测试角色")
+    fake_fact_store.extract_facts.assert_not_awaited()
+    fake_persona_manager.arecord_mentions.assert_awaited()
     # No user utterance: the signal-extraction turn counter stays untouched.
     record_turn.assert_not_called()
 

@@ -88,8 +88,6 @@ class VRMInteraction {
         this.enableFaceCamera = true;
 
         // 浮动按钮鼠标跟踪缓存（用于性能优化）
-        this._cachedBox = null;
-        this._cachedCorners = null;
         this._cachedScreenBounds = null; // { minX, maxX, minY, maxY }
         this._floatingButtonsPendingFrame = null; // RAF ID，用于取消
         this._lastModelUpdateTime = 0;
@@ -887,6 +885,7 @@ class VRMInteraction {
                 this._cancelGuidedMovement({ invalidateInteraction: true });
                 this.isDragging = true;
                 this.dragMode = 'pan';
+                this._clickShakeTap = window.NekoAvatarClickShake?.tapStart(e) || null;
                 // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
                 if (typeof this.manager._boostInteractiveFPS === 'function') this.manager._boostInteractiveFPS();
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -903,6 +902,7 @@ class VRMInteraction {
                 this._cancelGuidedMovement({ invalidateInteraction: true });
                 this.isDragging = true;
                 this.dragMode = 'orbit';
+                this._clickShakeTap = null;
                 if (typeof this.manager._boostInteractiveFPS === 'function') this.manager._boostInteractiveFPS();
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'crosshair';
@@ -966,6 +966,10 @@ class VRMInteraction {
                 this._rememberPanDragPointer(e);
                 this._rememberDragHintPanPointer(e);
                 void this._recordDragHintPointerEdgeApproach('vrm');
+                // 一旦拖出点击范围就不再算点击，拖回原处松手也不颤
+                if (this._clickShakeTap && !window.NekoAvatarClickShake?.isTap(this._clickShakeTap, e)) {
+                    this._clickShakeTap = null;
+                }
             }
 
             if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
@@ -1042,9 +1046,15 @@ class VRMInteraction {
             if (this.isDragging) {
                 e.preventDefault();
                 e.stopPropagation();
+                const clickShakeTap = this._clickShakeTap;
+                this._clickShakeTap = null;
                 if (this.dragMode === 'pan') {
                     this._rememberPanDragPointer(e);
                     this._rememberDragHintPanPointer(e);
+                    // 点一下（没拖动）给个原地颤动的即时反馈
+                    if (window.NekoAvatarClickShake?.isTap(clickShakeTap, e)) {
+                        window.NekoAvatarClickShake.play(canvas);
+                    }
                 }
                 await this._endDrag();
             }
@@ -1498,10 +1508,28 @@ class VRMInteraction {
             let modelMinX = Infinity, modelMaxX = -Infinity;
             let modelMinY = Infinity, modelMaxY = -Infinity;
 
-            corners.forEach(corner => {
-                const projected = corner.clone().project(camera);
+            camera.updateMatrixWorld(true);
+            const cameraCorners = corners.map(corner => corner.clone().applyMatrix4(camera.matrixWorldInverse));
+            const near = Math.max(camera.near, 0.0001);
+            const visibleCorners = cameraCorners.filter(corner => corner.z <= -near);
+            // 大模型可能穿过近裁剪面；加入盒边与裁剪面的交点，排除相机后方的反向投影。
+            for (let i = 0; i < cameraCorners.length; i++) {
+                for (const axisBit of [1, 2, 4]) {
+                    const j = i ^ axisBit;
+                    if (j <= i) continue;
+                    const a = cameraCorners[i], b = cameraCorners[j];
+                    if ((a.z <= -near) !== (b.z <= -near)) {
+                        visibleCorners.push(a.clone().lerp(b, (-near - a.z) / (b.z - a.z)));
+                    }
+                }
+            }
+            if (!visibleCorners.length) return position;
+            const projectedCorners = [];
+            visibleCorners.forEach(corner => {
+                const projected = corner.clone().applyMatrix4(camera.projectionMatrix);
                 const screenX = (projected.x * 0.5 + 0.5) * screenWidth;
                 const screenY = (-projected.y * 0.5 + 0.5) * screenHeight;
+                projectedCorners.push({ x: screenX, y: screenY, depth: -corner.z });
                 modelMinX = Math.min(modelMinX, screenX);
                 modelMaxX = Math.max(modelMaxX, screenX);
                 modelMinY = Math.min(modelMinY, screenY);
@@ -1527,47 +1555,33 @@ class VRMInteraction {
                 return position;
             }
 
-            // 6. 可见区域太小，需要将模型拉回
-            const modelCenterX = (modelMinX + modelMaxX) / 2;
-            const modelCenterY = (modelMinY + modelMaxY) / 2;
-            const screenCenterX = screenWidth / 2;
-            const screenCenterY = screenHeight / 2;
-
-            // 仅校正需要拉回的维度
+            // 按各顶点的真实投影深度求最小回移量，避免离相机很远的模型原点放大回弹距离。
+            const pixelToWorldX = 2 / (camera.projectionMatrix.elements[0] * screenWidth);
+            const pixelToWorldY = 2 / (camera.projectionMatrix.elements[5] * screenHeight);
             let moveX = 0, moveY = 0;
-
             if (needsClampH) {
                 if (modelMaxX < effectiveMinX) {
-                    moveX = effectiveMinX - modelMaxX;
+                    moveX = Math.min(...projectedCorners.map(p => (effectiveMinX - p.x) * p.depth * pixelToWorldX));
                 } else if (modelMinX > screenWidth - effectiveMinX) {
-                    moveX = (screenWidth - effectiveMinX) - modelMinX;
+                    moveX = Math.max(...projectedCorners.map(p => (screenWidth - effectiveMinX - p.x) * p.depth * pixelToWorldX));
                 }
             }
 
             if (needsClampV) {
                 if (modelMaxY < effectiveMinY) {
-                    moveY = effectiveMinY - modelMaxY;
+                    moveY = Math.min(...projectedCorners.map(p => (effectiveMinY - p.y) * p.depth * pixelToWorldY));
                 } else if (modelMinY > screenHeight - effectiveMinY) {
-                    moveY = (screenHeight - effectiveMinY) - modelMinY;
+                    moveY = Math.max(...projectedCorners.map(p => (screenHeight - effectiveMinY - p.y) * p.depth * pixelToWorldY));
                 }
             }
 
-            // 7. 将屏幕像素移动距离转换为世界空间距离
-            const modelCenter = position.clone();
-            const cameraDistance = camera.position.distanceTo(modelCenter);
-            const fov = camera.fov * (Math.PI / 180);
-            const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-            const worldWidth = worldHeight * (screenWidth / screenHeight);
-
-            const pixelToWorldX = worldWidth / screenWidth;
-            const pixelToWorldY = worldHeight / screenHeight;
-
-            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
+            const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+            const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize();
             const correctedPos = position.clone();
-            correctedPos.add(right.multiplyScalar(moveX * pixelToWorldX));
-            correctedPos.add(up.multiplyScalar(-moveY * pixelToWorldY)); // Y 轴反向
+            if (vrm.scene.parent) vrm.scene.parent.localToWorld(correctedPos);
+            correctedPos.addScaledVector(right, moveX);
+            correctedPos.addScaledVector(up, -moveY);
+            if (vrm.scene.parent) vrm.scene.parent.worldToLocal(correctedPos);
 
             return correctedPos;
 
@@ -1913,53 +1927,28 @@ class VRMInteraction {
     }
 
     /**
-     * 更新模型包围盒和屏幕边界缓存（在模型或骨骼更新时调用）
+     * 更新模型屏幕边界缓存（在模型或骨骼更新时调用）
      * 这个方法应该被外部调用，例如在模型加载、动画更新或骨骼变化时
      */
     updateModelBoundsCache() {
         if (!this.manager.currentModel?.vrm || !this.manager.camera || !this.manager.renderer || !THREE) {
-            this._cachedBox = null;
-            this._cachedCorners = null;
             this._cachedScreenBounds = null;
             return;
         }
 
         try {
-            const vrm = this.manager.currentModel.vrm;
             const camera = this.manager.camera;
             const renderer = this.manager.renderer;
-
-            // 计算模型在屏幕上的包围盒
-            this._cachedBox = new THREE.Box3().setFromObject(vrm.scene);
-            this._cachedCorners = [
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.min.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.min.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.max.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.max.y, this._cachedBox.min.z),
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.min.y, this._cachedBox.max.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.min.y, this._cachedBox.max.z),
-                new THREE.Vector3(this._cachedBox.min.x, this._cachedBox.max.y, this._cachedBox.max.z),
-                new THREE.Vector3(this._cachedBox.max.x, this._cachedBox.max.y, this._cachedBox.max.z),
-            ];
-
-            // 投影到屏幕空间并计算边界
-            const canvasRect = renderer.domElement.getBoundingClientRect();
-            let minX = Infinity, maxX = -Infinity;
-            let minY = Infinity, maxY = -Infinity;
-
-            this._cachedCorners.forEach(corner => {
-                const worldPos = corner.clone();
-                worldPos.project(camera);
-                const screenX = (worldPos.x * 0.5 + 0.5) * canvasRect.width + canvasRect.left;
-                const screenY = (-worldPos.y * 0.5 + 0.5) * canvasRect.height + canvasRect.top;
-                minX = Math.min(minX, screenX);
-                maxX = Math.max(maxX, screenX);
-                minY = Math.min(minY, screenY);
-                maxY = Math.max(maxY, screenY);
-            });
-
-            this._cachedScreenBounds = { minX, maxX, minY, maxY };
+            // 命中缓存与悬浮 UI 共用经过近裁剪的投影，避免放大后两套判定分叉。
+            const bounds = this.manager.getModelScreenBounds();
+            this._cachedScreenBounds = bounds ? {
+                minX: bounds.left, maxX: bounds.right,
+                minY: bounds.top, maxY: bounds.bottom
+            } : null;
             this._lastModelUpdateTime = Date.now();
+            if (!bounds) return;
+            const { left: minX, right: maxX, top: minY, bottom: maxY } = bounds;
+            const canvasRect = renderer.domElement.getBoundingClientRect();
 
             // Hit testing/hover still need fresh bounds in embedded views, but
             // desktop safe framing must not override the host's stable fit or
@@ -2008,8 +1997,6 @@ class VRMInteraction {
             }
         } catch (error) {
             console.warn('[VRM Interaction] 更新模型边界缓存失败:', error);
-            this._cachedBox = null;
-            this._cachedCorners = null;
             this._cachedScreenBounds = null;
         }
     }

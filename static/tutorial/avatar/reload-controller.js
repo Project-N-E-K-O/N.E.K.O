@@ -120,7 +120,7 @@
                 const currentName = await this.resolveCurrentName();
                 ensureOverrideActive();
                 if (!currentName) {
-                    throw new Error('current tutorial catgirl name unavailable');
+                    throw new Error('current tutorial neko name unavailable');
                 }
 
                 const characters = await this.fetchCharacters();
@@ -128,7 +128,7 @@
                 const catgirls = (characters && characters['猫娘']) || {};
                 const currentConfig = catgirls[currentName];
                 if (!currentConfig) {
-                    throw new Error(`current catgirl config not found: ${currentName}`);
+                    throw new Error(`current neko config not found: ${currentName}`);
                 }
 
                 const snapshotPayload = this.buildSnapshotPayload(currentConfig);

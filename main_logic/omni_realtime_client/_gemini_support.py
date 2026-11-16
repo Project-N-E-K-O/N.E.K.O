@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
+
 from ._shared import (
     GEMINI_CANCELLED_TERMINAL_TTL_SECONDS,
     GEMINI_TURN_IMAGE_MIME,
@@ -514,16 +516,9 @@ class _GeminiMixin:
             if r.call_id:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
-        source = (owner, object()) if owner is not None else None
-        if source is not None:
-            # Install before the SDK await: model output can arrive before the
-            # send returns. A new user/connection still invalidates this owner.
-            self._gemini_tool_response_source = source
         try:
             await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
-            # A failed SDK await does not prove that no bytes reached Gemini.
-            # Any resulting reply remains local until its provider terminal.
             logger.error("Gemini send_tool_response failed: %s", e)
 
     async def _close_gemini(self) -> None:
@@ -847,6 +842,18 @@ class _GeminiMixin:
                 if outcome_token is not None:
                     self._settle_gemini_external_turn(outcome_token)
 
+    def _begin_gemini_conversation_observation(self, proactive_token=None):
+        self._close_realtime_conversation_observation("unknown")
+        self._realtime_conversation_observation = {
+            "reply_id": uuid.uuid4().hex,
+            # The UI's time-window boundary and a pending request token do not
+            # prove which request owns an ID-less provider frame.
+            "origin": None,
+            "started": False, "closed": False, "lifecycle": "realtime",
+            "allow_text_continuations": True,
+            "_proactive_token": proactive_token,
+        }
+
     async def _process_gemini_response(
         self,
         response,
@@ -868,12 +875,6 @@ class _GeminiMixin:
             "_gemini_external_outcome_token",
             None,
         )
-        tool_response_source = getattr(self, "_gemini_tool_response_source", None)
-        server_content = getattr(response, "server_content", None)
-        source_terminal = bool(server_content and (
-            getattr(server_content, "turn_complete", False)
-            or getattr(server_content, "interrupted", False)
-        ))
         try:
             # Handle tool calls: dispatch every function_calls entry to
             # ``on_tool_call`` and return all results together via ``send_tool_response``
@@ -946,9 +947,6 @@ class _GeminiMixin:
                         connection_generation=connection_generation,
                     )
                     self._start_gemini_tool_batch(calls, owner)
-                    # Also own this frame's dispatch token if a compatible
-                    # transport combines the call and terminal in one frame.
-                    tool_response_source = self._gemini_tool_response_source
 
             cancellation = getattr(response, 'tool_call_cancellation', None)
             if cancellation:
@@ -976,6 +974,15 @@ class _GeminiMixin:
                     server_content.model_turn or 
                     (hasattr(server_content, 'output_transcription') and server_content.output_transcription)
                 )
+                proactive_owner = getattr(self, "_gemini_proactive_outcome_owner", None)
+                proactive_token = None
+                if (
+                    proactive_owner is not None
+                    and proactive_owner[0] == connection_generation
+                    and proactive_owner[1] is session
+                    and (len(proactive_owner) <= 4 or proactive_owner[4] == getattr(self, "_tool_scope_generation", 0))
+                ):
+                    proactive_token = proactive_owner[2]
 
                 # Warning: detect turn start whichever arrives first, model_turn or output_transcription.
                 if has_ai_content and not self._is_responding:
@@ -1085,6 +1092,7 @@ class _GeminiMixin:
                             if not event_owner_is_current():
                                 return
                             self._gemini_user_transcript = ""  # Clear accumulation.
+                        self._begin_gemini_conversation_observation(proactive_token)
                         self._gemini_user_transcript_after_interrupt = False
                         self._is_first_text_chunk = True  # Reset the first-chunk flag.
                         self._gemini_current_transcript = ""  # Clear accumulation.
@@ -1098,6 +1106,15 @@ class _GeminiMixin:
                             # turn, so keep their ownership snapshot aligned.
                             self._current_turn_host_id = self._read_host_turn_id()
                     else:
+                        observation = getattr(self, "_realtime_conversation_observation", None)
+                        if proactive_token is not None and (
+                            observation is None or observation.get("_proactive_token") != proactive_token
+                        ):
+                            # The pending inject proves a new request, not which
+                            # request owns these ID-less late frames. Do not
+                            # correct the previous reply or guess a new owner.
+                            self._close_realtime_conversation_observation("unknown")
+                            self._realtime_conversation_observation = None
                         logger.debug(
                             "Gemini: late content after premature turn_complete/interruption (%.2fs ago), treating as continuation",
                             time.time() - self._ai_recent_activity_time,
@@ -1113,7 +1130,7 @@ class _GeminiMixin:
                         self._gemini_current_transcript += text
                         if not self._skip_until_next_response and not self._interrupted and self.on_text_delta:
                             self._ai_recent_activity_time = time.time()
-                            await self.on_text_delta(text, self._is_first_text_chunk)
+                            await self._observed_text_callback(self.on_text_delta, text, self._is_first_text_chunk)
                             if not event_owner_is_current():
                                 return
                             self._is_first_text_chunk = False
@@ -1198,6 +1215,8 @@ class _GeminiMixin:
                         self._note_voice_handoff_input_boundary(
                             expected_sequence=handoff_input_sequence,
                         )
+                    if not _owed_to_cancelled and event_owner_is_current() and not self._skip_until_next_response:
+                        self._close_realtime_conversation_observation("cancelled" if was_interrupted else "completed")
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")
@@ -1208,6 +1227,8 @@ class _GeminiMixin:
 
                 # Check for interruption.
                 if was_interrupted:
+                    if not _owed_to_cancelled and event_owner_is_current():
+                        self._close_realtime_conversation_observation("cancelled")
                     if (
                         not _owed_to_cancelled
                         and external_outcome_token is not None
@@ -1238,10 +1259,3 @@ class _GeminiMixin:
 
         except Exception as e:
             logger.error(f"Error processing Gemini response: {e}")
-        finally:
-            # A terminal only closes the tool response it observed. A result
-            # sent during an awaited callback may already own a new token.
-            # Do not use the tool scope here: SERVER_VAD can keep that scope
-            # unchanged across many independent ordinary voice responses.
-            if source_terminal and getattr(self, "_gemini_tool_response_source", None) is tool_response_source:
-                self._gemini_tool_response_source = None

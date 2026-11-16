@@ -22,7 +22,7 @@ from plugin._types.isolated_metadata import (
     IsolatedPluginMetadata,
     handler_key_belongs_to_plugin as _handler_key_belongs_to_plugin,
 )
-from plugin.server.application.plugins import development as development_store
+from plugin.server.application.plugins.project_sources import preflight_source, project_source_dir
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
@@ -41,6 +41,8 @@ from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.domain.normalization import is_valid_plugin_id
+from plugin.server.application.plugins.consent_service import denied_plugin_ids
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -166,7 +168,6 @@ async def clear_plugin_llm_tools(
     return await clear_plugin_tools(plugin_id, timeout=timeout)
 
 
-_PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 # Minimum time a step receives after compression by the whole-pass budget.
 #
@@ -216,10 +217,32 @@ def active_startup_timeout(plugin_id: str) -> float | None:
     return _active_startup_timeouts.get(plugin_id)
 
 
+def _project_source_dir_sync(plugin_id: str) -> Path | None:
+    with state.acquire_plugins_read_lock():
+        return project_source_dir(state.plugins.get(plugin_id))
+
+
+async def _preflight_project_source(plugin_id: str) -> None:
+    """Reject a reload whose project source would fail, without importing it."""
+    source_dir = await asyncio.to_thread(_project_source_dir_sync, plugin_id)
+    if source_dir is None:
+        return
+    try:
+        await asyncio.to_thread(preflight_source, source_dir, plugin_id)
+    except ValueError as exc:
+        raise _to_domain_error(
+            code="PLUGIN_SOURCE_INVALID",
+            message=str(exc),
+            status_code=400,
+            plugin_id=plugin_id,
+            error_type="SourcePreflightFailed",
+        ) from exc
+
+
 def revoke_hot_reload_recovery(plugin_id: str) -> None:
     """Drop the recovery permission when the plugin's source is replaced.
 
-    Uninstallation, overwrite installation, and removing/rebinding development links may bypass stop_plugin (never
+    Uninstallation, overwrite installation, and removing workbench projects may bypass stop_plugin (never
     called when the plugin is stopped), leaving permission attached to the ID for different source installed later
     (a restored built-in plugin or reinstalled package) to inherit, starting a plugin the user never started merely after editing a file.
     All callers hold the operation lock.
@@ -704,7 +727,7 @@ def _set_plugin_runtime_metadata_sync(
 
 def _get_plugin_config_path(plugin_id: str) -> Path | None:
     normalized_plugin_id = plugin_id.strip()
-    if not _PLUGIN_ID_PATTERN.fullmatch(normalized_plugin_id):
+    if not is_valid_plugin_id(normalized_plugin_id):
         return None
 
     for root in PLUGIN_CONFIG_ROOTS:
@@ -1058,9 +1081,7 @@ class PluginLifecycleService:
         original_plugin_id = plugin_id
         current_plugin_id = plugin_id
         resolved_plugin_ids = [plugin_id]
-        development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
-        if development_snapshot is not None:
-            await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
+        # Workbench projects are imported only from their own source directory.
 
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
@@ -1117,6 +1138,7 @@ class PluginLifecycleService:
                         error_type=str(exc.details.get("error_type", "RegistryRefreshFailed")) if isinstance(exc.details, dict) else "RegistryRefreshFailed",
                     ) from exc
 
+        project_dir = await asyncio.to_thread(_project_source_dir_sync, current_plugin_id)
         registered_meta = await asyncio.to_thread(_get_plugin_meta_sync, current_plugin_id)
         config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, registered_meta)
         if config_path is None:
@@ -1335,7 +1357,7 @@ class PluginLifecycleService:
                 plugin_id=current_plugin_id,
                 entry_point=entry,
                 config_path=config_path,
-                **({"source_only": True} if development_snapshot is not None else {}),
+                **({"source_only": True} if project_dir is not None else {}),
             )
             if not isinstance(created_host, PluginHostContract):
                 raise _to_domain_error(
@@ -1372,7 +1394,7 @@ class PluginLifecycleService:
             # Narrow the limit to the remaining budget: scanning has its own 10s ceiling, so constraining only host startup lets
             # one cold scan exceed the entire reload's wall-clock budget (CodeRabbit).
             module_path, class_name = entry.split(":", 1)
-            isolated_metadata = None if development_snapshot is not None else await asyncio.to_thread(
+            isolated_metadata = None if project_dir is not None else await asyncio.to_thread(
                 partial(
                     _read_packaged_isolated_metadata,
                     config_path,
@@ -1404,7 +1426,7 @@ class PluginLifecycleService:
                         conf=conf,
                         pdata=pdata,
                     )
-                    if start_deadline is None and development_snapshot is None
+                    if start_deadline is None and project_dir is None
                     else None
                 )
                 isolated_metadata = await asyncio.to_thread(
@@ -1417,7 +1439,7 @@ class PluginLifecycleService:
                     pdata=pdata,
                     python_requirement_paths=python_requirement_paths,
                     timeout=scan_timeout,
-                    **({"source_only": True} if development_snapshot is not None else {}),
+                    **({"source_only": True} if project_dir is not None else {}),
                 )
                 await asyncio.to_thread(
                     _refresh_scanned_packaged_metadata,
@@ -1451,8 +1473,6 @@ class PluginLifecycleService:
                     floor=_MIN_CLAMPED_START_TIMEOUT,
                 )
 
-            if development_snapshot is not None:
-                await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
             startup_result = await _start_host_with_timeout(
                 plugin_id=current_plugin_id,
                 host_obj=host_obj,
@@ -1595,9 +1615,9 @@ class PluginLifecycleService:
         """Start independent plugins concurrently, then dependents in order.
 
         Each concurrent wave excludes external mutations until its active
-        starts finish, then yields the operation lock to queued callers. Child
-        tasks use the undecorated implementation inside that scope. Serial
-        starts use the public entry point's cancellation-safe per-plugin lock.
+        starts finish, then yields the operation lock to queued callers. Both
+        wave members and serial starts check consent and start within their
+        existing operation lock scope.
         """
         limit = (
             PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
@@ -1605,12 +1625,35 @@ class PluginLifecycleService:
         limit = max(1, limit)
         started: list[str] = []
         failed: list[str] = []
+        skipped_denied: list[str] = []
+
+        async def _skip_denied(plugin_id: str) -> bool:
+            try:
+                denied = await asyncio.to_thread(denied_plugin_ids, (plugin_id,))
+            except Exception as error:
+                logger.warning(
+                    "could not read plugin consent decision; autostart continues: err_type={}",
+                    type(error).__name__,
+                )
+                return False
+            if denied:
+                skipped_denied.append(plugin_id)
+            return bool(denied)
+
+        @serialized_plugin_operation
+        async def _start_serial(plugin_id: str) -> bool:
+            if await _skip_denied(plugin_id):
+                return False
+            await self._start_plugin_under_lock(plugin_id, refresh_registry=refresh_registry)
+            return True
 
         async def _start_one(
             plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None
         ) -> None:
             try:
                 if operation_scope is not None:
+                    if await _skip_denied(plugin_id):
+                        return
                     # Drain every active start before releasing the wave lock.
                     # A spawned host must register or finish its cleanup.
                     operation = asyncio.create_task(
@@ -1621,12 +1664,8 @@ class PluginLifecycleService:
                         )
                     )
                     await await_cancellation_safe(operation)
-                else:
-                    # This primitive also cancels an unstarted lock waiter.
-                    # Shielding it again would prevent that cancellation.
-                    await self.start_plugin(
-                        plugin_id, refresh_registry=refresh_registry
-                    )
+                elif not await _start_serial(plugin_id):
+                    return
             except Exception as error:
                 failed.append(plugin_id)
                 logger.error(
@@ -1701,7 +1740,7 @@ class PluginLifecycleService:
             len(failed),
             limit,
         )
-        return {"started": started, "failed": failed}
+        return {"started": started, "failed": failed, **({"skipped_denied": sorted(skipped_denied)} if skipped_denied else {})}
 
     @serialized_plugin_operation
     async def stop_plugin(
@@ -1750,12 +1789,14 @@ class PluginLifecycleService:
                 )
             )
             if (
-                await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id) is not None
-                and host_obj.is_alive()
+                await asyncio.to_thread(_project_source_dir_sync, plugin_id) is not None
+                and await asyncio.to_thread(host_obj.is_alive)
             ):
-                raise _to_domain_error(code="PLUGIN_STOP_FAILED",
-                    message="Development plugin process is still running; association was retained",
-                    status_code=409, plugin_id=plugin_id, error_type="PluginStillRunning")
+                raise _to_domain_error(
+                    code="PLUGIN_STOP_FAILED",
+                    message="Project plugin process is still running; registration was retained",
+                    status_code=409, plugin_id=plugin_id, error_type="PluginStillRunning",
+                )
             await asyncio.to_thread(_pop_plugin_host_sync, plugin_id)
             await asyncio.to_thread(_remove_event_handlers_sync, plugin_id)
             # Clear any LLM tools the plugin had registered with
@@ -1990,10 +2031,8 @@ class PluginLifecycleService:
         if not only_if_running:
             _hot_reload_failed.discard(plugin_id)
 
-        development_snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
-        if development_snapshot is not None:
-            from plugin.server.application.plugins.development_service import preflight_development_sync
-            await asyncio.to_thread(preflight_development_sync, development_snapshot)
+        # Keep a running project instance when its edited source cannot load.
+        await _preflight_project_source(plugin_id)
 
         is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
         if is_running:
@@ -2016,8 +2055,6 @@ class PluginLifecycleService:
         # Manual reload persists runtime intent like Start; neither action
         # approves a pending plugin for future automatic launches.
         try:
-            if development_snapshot is not None:
-                await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
             result = await self.start_plugin(plugin_id, persist_user_intent=not only_if_running)
         except BaseException:
             # start_plugin already dropped the permission on entry; restore it
@@ -2026,6 +2063,9 @@ class PluginLifecycleService:
                 _hot_reload_failed.add(plugin_id)
             raise
         _hot_reload_failed.discard(plugin_id)
+        from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
+
+        await asyncio.to_thread(schedule_analysis, plugin_id)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 
@@ -2068,7 +2108,6 @@ class PluginLifecycleService:
         # A sequential loop makes the code reflect its actual behavior and also allows intermediate
         # budget checks that gather cannot provide.
         stop_outcomes = []
-        development_snapshots: dict[str, development_store.DevelopmentSnapshot] = {}
         skipped_over_budget: list[str] = []
         stop_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for index, plugin_id in enumerate(running_plugin_ids):
@@ -2084,13 +2123,9 @@ class PluginLifecycleService:
                 )
                 break
             try:
-                snapshot = await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id)
-                if snapshot is not None:
-                    from plugin.server.application.plugins.development_service import preflight_development_sync
-                    await asyncio.to_thread(preflight_development_sync, snapshot)
-                    development_snapshots[plugin_id] = snapshot
+                await _preflight_project_source(plugin_id)
             except ServerDomainError as exc:
-                # Keep the last working development instance when edits are
+                # Keep the last working project instance when edits are
                 # invalid, just like the single-plugin reload path.
                 stop_outcomes.append(_ReloadOutcome(plugin_id=plugin_id, success=False, error=exc.message))
                 continue
@@ -2129,10 +2164,7 @@ class PluginLifecycleService:
             remaining = max(0.0, stop_deadline - time_module.monotonic())
             with bounded_operation_wait(remaining):
                 stop_outcomes.append(
-                    await self._safe_stop_for_reload(
-                        plugin_id, stop_deadline=stop_deadline,
-                        development_snapshot=development_snapshots.get(plugin_id),
-                    )
+                    await self._safe_stop_for_reload(plugin_id, stop_deadline=stop_deadline)
                 )
 
         plugins_to_start: list[str] = []
@@ -2179,13 +2211,6 @@ class PluginLifecycleService:
         # rather than a hard budget. Healthy paths never reach it; measured startup is fast and leaves budget unused.
         start_deadline = time_module.monotonic() + _RELOAD_ALL_BUDGET_SECONDS
         for plugin_id in ordered_plugin_ids:
-            snapshot = development_snapshots.get(plugin_id)
-            if snapshot is not None:
-                try:
-                    await asyncio.to_thread(development_store.validate_development_snapshot_sync, snapshot)
-                except ServerDomainError as exc:
-                    failed.append({"plugin_id": plugin_id, "error": exc.message})
-                    continue
             # Startup likewise bounds both lock waiting and startup itself by remaining budget, symmetrically with stop
             # above; otherwise only one of the two phases would be constrained.
             #
@@ -2236,9 +2261,10 @@ class PluginLifecycleService:
     @serialized_plugin_operation
     async def delete_plugin(self, plugin_id: str) -> dict[str, object]:
         """Invoke the uninstall transaction and preserve the public response."""
-        if await asyncio.to_thread(development_store.registration_for_plugin_sync, plugin_id) is not None:
-            raise ServerDomainError(code="DEVELOPMENT_REMOVE_ASSOCIATION_REQUIRED",
-                message="Use Remove association for a development plugin; its source and data are retained", status_code=409)
+        if await asyncio.to_thread(_project_source_dir_sync, plugin_id) is not None:
+            # Uninstalling deletes plugin code; a project's source belongs to the user.
+            raise ServerDomainError(code="PLUGIN_PROJECT_REMOVE_REQUIRED",
+                message="Remove the project from the plugin workbench; its source is kept", status_code=409)
         try:
             result = await uninstall_plugin(plugin_id)
         except UninstallPluginError as exc:
@@ -2299,11 +2325,8 @@ class PluginLifecycleService:
 
     async def _safe_stop_for_reload(
         self, plugin_id: str, *, stop_deadline: float | None = None,
-        development_snapshot: development_store.DevelopmentSnapshot | None = None,
     ) -> _ReloadOutcome:
         try:
-            if development_snapshot is not None:
-                await asyncio.to_thread(development_store.validate_development_snapshot_sync, development_snapshot)
             await self.stop_plugin(plugin_id, stop_deadline=stop_deadline)
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except PluginOperationBusy as error:

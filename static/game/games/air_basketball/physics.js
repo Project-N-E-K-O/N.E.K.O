@@ -1,6 +1,12 @@
 export const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const assetVersion = new URL(import.meta.url).search;
+const {drawBallLook} = await import(new URL(`./rolling-ball.js${assetVersion}`, import.meta.url).href);
 const versionedAsset = path => new URL(`${path}${assetVersion}`, import.meta.url).href;
+const BALL_SPRITE_DIAMETER = 236 / 256;
+// The rim sprite's inner span is about 85% of its outer width.
+const SHARED_RIM_INNER_HALF = .425;
+const SPATIAL_FULL_POWER_DRAG = 360;
+const SPATIAL_MAX_LAUNCH_SPEED = 900;
 
 const STAGE_RULES = [
   { rimScale: 1, moveX: 0, moveY: 0, speed: 0 },
@@ -23,6 +29,7 @@ export class ShotLane {
     this.particles = [];
     this.guests = [];
     this.aim = null;
+    this.heldBall = null;
     this.stage = 1;
     this.stageClock = Math.random() * 4;
     this.hoopOffset = 0;
@@ -30,6 +37,9 @@ export class ShotLane {
     this.backgroundImage = new Image();
     this.backgroundImage.decoding = 'async';
     this.backgroundImage.src = versionedAsset('./assets/neko-arcade-lane-v2.webp');
+    this.sharedBackgroundImage = new Image();
+    this.sharedBackgroundImage.decoding = 'async';
+    this.sharedBackgroundImage.src = versionedAsset('./assets/neko-stage-four-court.webp');
     this.ballImage = new Image();
     this.ballImage.decoding = 'async';
     this.ballImage.src = versionedAsset('./assets/neko-basketball.png');
@@ -48,6 +58,12 @@ export class ShotLane {
     this.dpr = Math.min(2, window.devicePixelRatio || 1);
     this.width = Math.max(240, rect.width);
     this.height = Math.max(360, rect.height);
+    // Pointer positions use logical court coordinates. Strength uses the
+    // corresponding screen distance, including below the minimum canvas size.
+    this.inputScale = {
+      x:rect.width > 0 ? rect.width / this.width : 1,
+      y:rect.height > 0 ? rect.height / this.height : 1
+    };
     this.canvas.width = this.width * this.dpr;
     this.canvas.height = this.height * this.dpr;
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -69,9 +85,22 @@ export class ShotLane {
         ball.vx *= scaleX;
         ball.vy *= scaleY;
         ball.r *= scaleX;
+        if (ball.flight) ball.flight.projected = null;
+        if (ball.returnStart) {
+          ball.returnStart.x *= scaleX;
+          ball.returnStart.y *= scaleY;
+          if (ball.returnStart.r !== undefined) ball.returnStart.r *= scaleX;
+        }
+        if (ball.readyPosition) {
+          ball.readyPosition.x *= scaleX;
+          ball.readyPosition.y *= scaleY;
+        }
       };
-      if (this.ball?.flying || this.ball?.inTransit) scaleBall(this.ball);
-      this.guests.forEach(scaleBall);
+      if (this.ballPool) this.ballPool.forEach(scaleBall);
+      else {
+        if (this.ball?.flying || this.ball?.inTransit) scaleBall(this.ball);
+        this.guests.forEach(scaleBall);
+      }
       this.particles.forEach(particle => {
         particle.x *= scaleX;
         particle.y *= scaleY;
@@ -83,12 +112,18 @@ export class ShotLane {
         this.aim.x *= scaleX;
         this.aim.y *= scaleY;
       }
+      if (this.aimStart) {
+        this.aimStart.x *= scaleX;
+        this.aimStart.y *= scaleY;
+      }
+      this.aimMotion = null;
       this.hoopOffset *= scaleX;
       this.hoopVelocity *= scaleX;
     }
     // Re-seat the resting ball only when the court actually changed size, and keep
     // a held (already rescaled) aim: a resize mid-drag must not drop the shot.
-    if (sizeChanged && !this.ball?.flying && !this.ball?.inTransit) {
+    if (sizeChanged && this.ballPool) this.positionReadyBalls(1);
+    else if (sizeChanged && !this.ball?.flying && !this.ball?.inTransit) {
       const aim = this.aim;
       this.resetBall();
       this.aim = aim;
@@ -102,7 +137,8 @@ export class ShotLane {
 
   setFever(active) { this.fever = active; }
 
-  getHoopPoseAt(clock = this.stageClock) {
+  getHoopPoseAt(clock = this.sharedCourt?.clock ?? this.stageClock) {
+    if (this.sharedCourt) return this.sharedCourt.hoopPose(this);
     const rule = STAGE_RULES[this.stage - 1];
     const moveX = Math.sin(clock * rule.speed) * this.hoop.baseRimW * rule.moveX;
     const moveY = Math.sin(clock * rule.speed * .73 + 1.2) * this.height * rule.moveY;
@@ -117,6 +153,8 @@ export class ShotLane {
   getHoopPose() { return this.getHoopPoseAt(); }
 
   resetBall() {
+    if (this.ballPool) return this.resetBallPool();
+    this.cancelAim();
     this.ball = {
       x: this.width * .5,
       y: this.height * .82,
@@ -134,16 +172,202 @@ export class ShotLane {
     this.aim = null;
   }
 
-  clearGuests() { this.guests = []; }
+  clearGuests() {
+    if (this.ballPool) this.selectReadyBall();
+    else this.guests = [];
+  }
+
+  // Inventories hold the balls currently collected on that side, independently
+  // of who launched them or last owned their score.
+  enableBallPool(total = 3) {
+    this.poolCapacity = total;
+    this.emptyBall = { x:0, y:0, r:0, vx:0, vy:0, flying:false, inTransit:true, placeholder:true };
+    this.ballPool = Array.from({ length:total }, (_, index) => ({ id:`${this.side}-${index}` }));
+    this.resetBallPool();
+    this.sharedCourt?.captureBallPool();
+  }
+
+  resetBallPool() {
+    this.cancelAim();
+    for (const [slot, ball] of this.ballPool.entries()) {
+      for (const key of Object.keys(ball)) if (key !== 'id') delete ball[key];
+      Object.assign(ball, {
+        x:this.width * .5, y:this.height * .82, r:this.sharedCourt?.ballRadius ?? clamp(this.width * .06, 17, 25),
+        vx:0, vy:0, owner:this.side, flying:false, inTransit:false,
+        scored:false, hitRim:false, rotation:[0, -.62, .84, .38][slot] ?? 0, life:0, poolState:'ready', poolSlot:slot
+      });
+    }
+    this.ball = this.ballPool[0] || this.emptyBall;
+    this.aim = null;
+    this.selectReadyBall();
+    this.positionReadyBalls(1);
+  }
+
+  isReadyBall(ball) {
+    return ball && !ball.flying && !ball.inTransit && !ball.expired
+      && (!this.ballPool || ball.poolState === 'ready');
+  }
+
+  isHeldBall(ball) { return Boolean(ball?.held || ball?.dragged); }
+
+  cancelAim() {
+    if (this.heldBall) this.heldBall.held = false;
+    this.heldBall = null;
+    this.aim = null;
+    this.aimStart = null;
+    this.aimMotion = null;
+  }
+
+  selectReadyBall() {
+    if (this.heldBall && this.ballPool.includes(this.heldBall) && this.isReadyBall(this.heldBall)) {
+      this.ball = this.heldBall;
+    }
+    if (!this.ballPool.includes(this.ball) || !this.isReadyBall(this.ball) || this.ball.dragged) {
+      this.cancelAim();
+      this.ball = this.ballPool.find(ball => this.isReadyBall(ball) && !this.isHeldBall(ball)) || this.ballPool[0] || this.emptyBall;
+    }
+    this.guests = this.ballPool.filter(ball => ball !== this.ball);
+  }
+
+  readyBallTarget(ball) {
+    if (ball.readyPosition) return ball.readyPosition;
+    if (this.sharedCourt) return this.sharedCourt.readyPosition(this, ball.poolSlot ?? 0);
+    const positions = [.5, .27, .73];
+    return { x:this.width * positions[ball.poolSlot ?? 0], y:this.height * .82 };
+  }
+
+  positionReadyBalls(blend) {
+    for (const ball of this.ballPool) if (this.isReadyBall(ball)) {
+      if (this.isHeldBall(ball) || ball.roll) continue;
+      const target = this.readyBallTarget(ball);
+      ball.x += (target.x - ball.x) * blend;
+      ball.y += (target.y - ball.y) * blend;
+    }
+  }
+
+  poolSnapshot() {
+    return this.ballPool?.map(ball => ({
+      id:ball.id, supply:this.side, owner:ball.owner,
+      state:ball.poolState, x:ball.x, y:ball.y, vx:ball.vx, vy:ball.vy,
+      r:ball.r, depth:ball.flight?.depth ?? ball.roll?.depth ?? 0,
+      height:ball.flight?.height ?? ball.roll?.height ?? null
+    })) || [];
+  }
+
+  readyForLaunch() {
+    const available = ball => this.isReadyBall(ball) && !this.isHeldBall(ball);
+    if (available(this.ball)) return this.ball;
+    return this.ballPool?.find(available) || null;
+  }
+
+  launchPoolBall(vx, vy, {
+    nativeShot = false, owner = this.side, fever = this.fever,
+    spatial = null, ball = this.readyForLaunch(), shotBy = null
+  } = {}) {
+    if (!this.ballPool?.includes(ball) || !this.isReadyBall(ball) || this.isHeldBall(ball)) return null;
+    delete ball.roll;
+    Object.assign(ball, {
+      vx, vy, owner, fever, flying:true, inTransit:false, life:0,
+      scored:false, hitRim:false, clashed:false, avatarHit:false,
+      nativeShot, shotBy, allowOuterExit:false, poolState:'flying', poolSlot:null, readyPosition:null
+    });
+    if (spatial && this.sharedCourt) this.sharedCourt.startFlight(this, ball, spatial);
+    if (!this.heldBall) this.aim = null;
+    this.selectReadyBall();
+    return ball;
+  }
+
+  beginBallReturn(ball) {
+    if (this.isHeldBall(ball)) return;
+    // A collision can change possession without changing who took the shot.
+    const { shotBy } = ball;
+    ball.shotBy = null;
+    if (shotBy && !ball.scored) this.onMiss?.({ owner:shotBy });
+    if (this.sharedCourt) {
+      this.sharedCourt.beginReturn(this, ball);
+      this.selectReadyBall();
+      return;
+    }
+    Object.assign(ball, {
+      poolState:'returning', flying:false, inTransit:false, pageOverlay:false,
+      allowOuterExit:false, vx:0, vy:0, returnElapsed:0, poolSlot:null, readyPosition:null,
+      returnStart:{ x:clamp(ball.x, ball.r, this.width - ball.r), y:this.poolLandingY(ball) }
+    });
+    ball.x = ball.returnStart.x;
+    ball.y = ball.returnStart.y;
+    if (this.ball === ball) this.aim = null;
+    this.selectReadyBall();
+  }
+
+  poolLandingY(ball) {
+    return this.height * (this.sharedCourt ? .95 : .90) - ball.r;
+  }
+
+  liftPoolBall(ball, other) {
+    delete ball.roll;
+    Object.assign(ball, { flying:true, poolState:'flying', life:0, scored:false, shotBy:null });
+    if (other.flight) this.sharedCourt.startFlight(this, ball);
+  }
+
+  updateBallPool(dt) {
+    for (const ball of this.ballPool) {
+      if (ball.flying && !ball.inTransit) {
+        ball.poolState = 'flying';
+        const court = this.sharedCourt;
+        const score = data => this.onScore?.(data, ball);
+        if (ball.flight) {
+          const segments = court.advanceFlight(this, ball, dt);
+          if (ball.poolState === 'wedged') continue;
+          const flight = ball.flight;
+          if (!ball.scored && court.crossesHoop(this, ball, segments)) {
+            this.scoreBall(ball, score);
+          }
+          if ((flight.vHeight <= 0 && flight.height <= flight.radius) || ball.life > 6) {
+            if (flight.height < flight.radius) ball.y = court.floorY(this, flight.depth) - ball.r;
+            this.beginBallReturn(ball);
+          }
+        } else {
+          const previousY = this.advanceBall(ball, dt);
+          this.containGuestEdges(ball);
+          this.collideWithCourt(ball, previousY, score);
+          if ((ball.vy > 0 && ball.y >= this.poolLandingY(ball)) || ball.life > 6) this.beginBallReturn(ball);
+        }
+      } else if (!this.sharedCourt && ball.poolState === 'returning') {
+        ball.returnElapsed += dt;
+        const progress = clamp(ball.returnElapsed / .75, 0, 1);
+        const eased = progress * progress * (3 - 2 * progress);
+        const target = this.readyBallTarget(ball);
+        ball.x = ball.returnStart.x + (target.x - ball.returnStart.x) * eased;
+        ball.y = ball.returnStart.y + (target.y - ball.returnStart.y) * eased;
+        ball.rotation += dt * 4;
+        if (progress === 1) Object.assign(ball, { poolState:'ready', owner:this.side, scored:false, life:0 });
+      }
+    }
+    this.selectReadyBall();
+    this.positionReadyBalls(1 - Math.exp(-dt * 18));
+    const contacts = this.ballPool.filter(ball => !ball.expired && !ball.inTransit
+      && (ball.flying || this.isReadyBall(ball) && (this.sharedCourt || ball === this.ball || ball.dragged)));
+    for (let i = 0; i < contacts.length; i++) for (let j = i + 1; j < contacts.length; j++) {
+      const a = contacts[i], b = contacts[j];
+      if (!a.flying && !b.flying) continue;
+      if (this.sharedCourt) {
+        this.sharedCourt.collidePair(this, a, this, b);
+      } else if (this.collideBalls(a, b)) {
+        if (!a.flying) this.liftPoolBall(a, b);
+        if (!b.flying) this.liftPoolBall(b, a);
+      }
+    }
+    this.selectReadyBall();
+  }
 
   countActiveGuestBalls({ owner = null, nativeShot = null } = {}) {
-    return this.guests.filter(ball => !ball.expired
+    return this.guests.filter(ball => !ball.expired && (!this.ballPool || ball.flying || ball.inTransit)
       && (owner === null || ball.owner === owner)
       && (nativeShot === null || ball.nativeShot === nativeShot)).length;
   }
 
   countActiveBalls({ owner = null, nativeShot = null } = {}) {
-    const nativeBallActive = (this.ball.flying || this.ball.inTransit)
+    const nativeBallActive = !this.ball.placeholder && (this.ball.flying || this.ball.inTransit)
       && (owner === null || this.ball.owner === owner)
       && nativeShot !== true;
     return Number(nativeBallActive) + this.countActiveGuestBalls({ owner, nativeShot });
@@ -176,56 +400,171 @@ export class ShotLane {
     return ball;
   }
 
-  beginAim(point) {
+  beginAim(point, time) {
+    if (this.heldBall) return false;
+    if (this.ballPool) {
+      const nearby = this.ballPool.filter(ball => this.isReadyBall(ball)
+        && Math.hypot(point.x - ball.x, point.y - ball.y) <= ball.r * 2.5);
+      const direct = nearby.filter(ball => Math.hypot(point.x - ball.x, point.y - ball.y) <= ball.r);
+      // A pile can project several spheres over the same area. Pick the
+      // visible front sphere; nearby misses retain the familiar grab aid.
+      const picked = (direct.length ? direct : nearby).sort((a, b) =>
+        (direct.length ? (a.roll?.depth ?? 0) - (b.roll?.depth ?? 0) : 0)
+        || Math.hypot(point.x - a.x, point.y - a.y) - Math.hypot(point.x - b.x, point.y - b.y))[0];
+      if (!picked) return false;
+      this.ball = picked;
+      this.selectReadyBall();
+    }
     if (this.ball.flying || this.ball.inTransit || Math.hypot(point.x - this.ball.x, point.y - this.ball.y) > this.ball.r * 2.5) return false;
     this.aim = point;
+    this.aimStart = { x:point.x, y:point.y };
+    this.aimMotion = Number.isFinite(time) ? { start:time, samples:[{ ...point, time }] } : null;
+    this.heldBall = this.ball;
+    this.ball.held = true;
     return true;
   }
 
-  moveAim(point) { if (this.aim) this.aim = point; }
+  moveAim(point, time) {
+    if (!this.aim) return;
+    this.aim = point;
+    const motion = this.aimMotion;
+    if (!motion || !Number.isFinite(time)) return;
+    const last = motion.samples.at(-1);
+    if (time < last.time) { this.aimMotion = null; return; }
+    if (time === last.time) motion.samples.pop();
+    motion.samples.push({ ...point, time });
+    motion.samples = motion.samples.filter(sample => time - sample.time <= 120).slice(-96);
+  }
+
+  quickAimTurn(dx, dy, length) {
+    const motion = this.aimMotion;
+    if (!motion || length < 40 || length > 200 || dy >= 0) return 0;
+    const angle = Math.atan2(dx, -dy);
+    if (Math.abs(angle) > 20 * Math.PI / 180) return 0;
+    const released = motion.samples.at(-1);
+    const duration = released.time - motion.start;
+    if (duration > 180) return 0;
+    // Mouse-up can arrive shortly after the last motion. Anchor the tail at
+    // that motion, while a held/stopped gesture still loses its flick weight.
+    let last = motion.samples.length - 1;
+    while (last > 0 && Math.hypot((motion.samples[last - 1].x - released.x) * this.inputScale.x,
+      (motion.samples[last - 1].y - released.y) * this.inputScale.y) < 1) last--;
+    const end = motion.samples[last];
+    const fresh = clamp((55 - (released.time - end.time)) / 20, 0, 1);
+    if (!fresh) return 0;
+    const samples = motion.samples.slice(0, last + 1).filter(sample => end.time - sample.time <= 65);
+    if (samples.length < 3 || end.time - samples[0].time < 12) return 0;
+    const sx = this.inputScale.x, sy = this.inputScale.y;
+    const tx = (end.x - samples[0].x) * sx, ty = (end.y - samples[0].y) * sy;
+    const travel = Math.hypot(tx, ty);
+    if (ty >= -8 || Math.abs(tx) < 14 || travel <= 20) return 0;
+    let path = 0, moves = 0;
+    for (let index = 1; index < samples.length; index++) {
+      const step = Math.hypot((samples[index].x - samples[index - 1].x) * sx,
+        (samples[index].y - samples[index - 1].y) * sy);
+      path += step;
+      if (step >= 2) moves++;
+    }
+    if (moves < 2 || travel < path * .96) return 0;
+    const delta = Math.atan2(tx, -ty) - angle;
+    const degrees = Math.PI / 180;
+    const blend = clamp((Math.abs(delta) / degrees - 12) / 12, 0, 1) * clamp((travel - 20) / 20, 0, 1);
+    const quick = clamp((180 - duration) / 60, 0, 1) * clamp((length - 40) / 20, 0, 1)
+      * clamp((200 - length) / 40, 0, 1) * clamp((20 - Math.abs(angle) / degrees) / 8, 0, 1);
+    // Only soften a clear late sideways finish on a short, nearly-forward
+    // flick. Keep the original drag length for power, and never aim at a slot
+    // or the hoop. Straight drags and slow adjustments take the original path.
+    return clamp(delta * .35 * blend * quick * fresh, -12 * degrees, 12 * degrees);
+  }
 
   getAimTelemetry(point = this.aim) {
     if (!point) return { power: 0, angle: 0 };
-    const dx = point.x - this.ball.x;
-    const dy = point.y - this.ball.y;
-    const length = Math.hypot(dx, dy);
-    const power = Math.round(clamp((length - 18) / 192, 0, 1) * 100);
+    if (this.ballPool) {
+      const shot = this.shotVector(point);
+      if (!shot) return { power:0, angle:0 };
+      return { power:Math.round(shot.power * 100), angle:Math.round(Math.atan2(-shot.vy, Math.abs(shot.vx)) * 180 / Math.PI) };
+    }
+    const dx = point.x - this.ball.x, dy = point.y - this.ball.y;
+    const power = Math.round(clamp((Math.hypot(dx, dy) - 18) / 192, 0, 1) * 100);
     const angle = Math.round(clamp(Math.atan2(-dy, Math.abs(dx) || .001) * 180 / Math.PI, 0, 90));
     return { power, angle };
   }
 
   shotVector(point = this.aim) {
     if (!point) return null;
-    const dx = point.x - this.ball.x;
-    const dy = point.y - this.ball.y;
+    const start = this.ballPool && this.aimStart || this.ball;
+    let dx = point.x - start.x;
+    let dy = point.y - start.y;
+    const spatial = this.ballPool && this.sharedCourt;
+    if (spatial) {
+      dx *= this.inputScale.x;
+      dy *= this.inputScale.y;
+    }
+    if (this.ballPool && this.sharedCourt && dy > 0) {
+      // Below the grab point, only a deliberate sideways throw can launch.
+      if (Math.abs(dx) < dy) return null;
+      dy = 0;
+    }
     const length = Math.hypot(dx, dy);
-    if (length < 18) return null;
-    // Neko auto-shots use their own solver. This boost applies only to the
-    // player's drag-and-release throw so it can cross the second cabinet and
-    // still carry enough momentum to reach the character standing outside it.
-    const speed = clamp(length, 30, 220) * (this.side === 'player' ? 4.15 : 3.55);
-    return { vx: dx / length * speed, vy: dy / length * speed };
+    if (length < (this.ballPool ? 4 : 18)) return null;
+    const turn = spatial ? this.quickAimTurn(dx, dy, length) : 0;
+    if (turn) {
+      const angle = Math.atan2(dx, -dy) + turn;
+      dx = Math.sin(angle) * length;
+      dy = -Math.cos(angle) * length;
+    }
+    const fullPowerDrag = spatial ? SPATIAL_FULL_POWER_DRAG : 220;
+    const drag = clamp(length, 30, fullPowerDrag);
+    const speed = spatial ? drag / fullPowerDrag * SPATIAL_MAX_LAUNCH_SPEED
+      : drag * (this.ballPool || this.side === 'player' ? 4.15 : 3.55);
+    const vector = { vx:dx / length * speed, vy:dy / length * speed };
+    return this.ballPool ? { ...vector, power:drag / fullPowerDrag } : vector;
   }
 
-  releaseAim() {
+  releaseAim(owner = this.side) {
     const vector = this.shotVector();
-    this.aim = null;
-    return vector ? this.shoot(vector.vx, vector.vy) : false;
+    this.cancelAim();
+    if (vector && this.ballPool && this.sharedCourt) {
+      return Boolean(this.launchPoolBall(vector.vx, vector.vy, { owner, shotBy:owner, spatial:vector }));
+    }
+    return vector ? this.shoot(vector.vx, vector.vy, owner) : false;
   }
 
-  shoot(vx, vy) {
+  shoot(vx, vy, owner = this.side) {
+    if (this.ballPool) return Boolean(this.launchPoolBall(vx, vy, { owner, shotBy:owner }));
     if (this.ball.flying || this.ball.inTransit) return false;
-    Object.assign(this.ball, { vx, vy, owner:this.side, flying:true, inTransit:false, life:0, scored:false, hitRim:false });
+    Object.assign(this.ball, { vx, vy, owner, flying:true, inTransit:false, life:0, scored:false, hitRim:false });
     return true;
   }
 
-  releaseAutoShot(difficulty = .72) {
-    const flight = .98 + Math.random() * .06;
-    const hoop = this.getHoopPoseAt(this.stageClock + flight);
-    const dx = hoop.x - this.ball.x;
-    const dy = hoop.rimY - this.ball.y;
+  releaseAutoShot(difficulty = .72, {
+    ball = this.ballPool ? this.readyForLaunch() : this.ball,
+    owner = this.side, fever = this.fever, stage = this.stage
+  } = {}) {
+    if (!ball) return null;
+    if (this.sharedCourt && this.ballPool) {
+      const error = (Math.random() - .5) * ((1 - difficulty) * 360 + (stage - 1) * 7);
+      const seconds = 1.32 + Math.random() * .12;
+      return this.launchPoolBall(0, 0, { ball, owner, fever, nativeShot:true, shotBy:owner, spatial:{ auto:true, seconds, error } });
+    }
+    let flight = .98 + Math.random() * .06;
+    const clock = this.sharedCourt?.clock ?? this.stageClock;
+    if (this.sharedCourt) {
+      // The shared target is now diagonal from each ready ball. Retain the
+      // original aim/error solver, but give its arc room to clear the near lip
+      // on ascent instead of aiming straight through that physical contact.
+      const clearance = 2 * (ball.r + 5);
+      for (let i = 0; i < 2; i++) {
+        const target = this.getHoopPoseAt(clock + flight);
+        const rise = Math.max(0, ball.y - target.rimY) + clearance;
+        flight = Math.max(flight, (Math.sqrt(2 * 720 * rise) + Math.sqrt(2 * 720 * clearance)) / 720);
+      }
+    }
+    const hoop = this.getHoopPoseAt(clock + flight);
+    const dx = hoop.x - ball.x;
+    const dy = hoop.rimY - ball.y;
     const gravity = 720;
-    const stagePenalty = (this.stage - 1) * 7;
+    const stagePenalty = (stage - 1) * 7;
     const error = (Math.random() - .5) * ((1 - difficulty) * 360 + stagePenalty);
     // Account for the court's existing horizontal damping so the automatic
     // shot reaches the hoop pose it aimed at instead of consistently landing
@@ -236,20 +575,21 @@ export class ShotLane {
     // Semi-implicit gravity advances velocity before position. A small visual
     // clearance makes the ball cross the rim downward at ordinary frame rates
     // instead of peaking a few pixels below the scoring sensor.
-    const rimClearance = Math.min(10, this.ball.r * .5);
+    const rimClearance = Math.min(10, ball.r * .5);
     const vy = (dy - rimClearance - .5 * gravity * flight * flight) / flight;
+    if (this.ballPool) return this.launchPoolBall(vx, vy, { ball, owner, fever, nativeShot:true, shotBy:owner });
     return this.receiveGuestBall({
-      x:this.ball.x, y:this.ball.y, r:this.ball.r, vx, vy,
-      owner:this.side, fever:this.fever, nativeShot:true
+      x:ball.x, y:ball.y, r:ball.r, vx, vy, owner, fever, nativeShot:true
     });
   }
 
-  interfere(dx, dy, point) {
+  interfere(dx, dy, point, selectedBall = null) {
     const strength = clamp(Math.hypot(dx, dy), 0, 34);
     if (strength < 1) return false;
-    const b = this.ball;
+    const b = selectedBall || this.ball;
     const flyingBalls = [b, ...this.guests].filter(ball => ball.flying && !ball.expired);
-    const target = point && flyingBalls.length
+    let target = selectedBall?.flying ? selectedBall : null;
+    if (!selectedBall) target = point && flyingBalls.length
       ? flyingBalls.reduce((nearest, ball) => Math.hypot(point.x - ball.x, point.y - ball.y) < Math.hypot(point.x - nearest.x, point.y - nearest.y) ? ball : nearest)
       : b.flying ? b : null;
     if (target) {
@@ -261,20 +601,22 @@ export class ShotLane {
         target.vy += dy * 7 * influence;
         target.hitRim = true;
       }
-    } else if (!b.inTransit) {
+    } else if (this.isReadyBall(b) && (!this.isHeldBall(b) || b.dragged)) {
       b.x = clamp(b.x + dx * .7, b.r + 10, this.width - b.r - 10);
       b.y = clamp(b.y + dy * .35, this.height * .7, this.height * .88);
+      if (selectedBall) b.readyPosition = { x:b.x, y:b.y };
     }
     if (!point || point.y < this.height * .58) this.hoopVelocity += dx * .42;
+    this.disruptionPoint = { x:point?.x ?? b.x, y:point?.y ?? b.y };
     this.disruption = .28;
     return true;
   }
 
-  collideRim(b, px, py) {
+  collideRim(b, px, py, rimThickness = 5) {
     const dx = b.x - px;
     const dy = b.y - py;
     const distance = Math.hypot(dx, dy);
-    const radius = b.r + 5;
+    const radius = b.r + rimThickness;
     if (distance >= radius || !distance) return;
     const nx = dx / distance;
     const ny = dy / distance;
@@ -291,11 +633,10 @@ export class ShotLane {
     this.particles.forEach(p => { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 260 * dt; });
     this.particles = this.particles.filter(p => p.life > 0);
     if (active) this.stageClock += dt;
-    this.hoopVelocity += (-this.hoopOffset * 34 - this.hoopVelocity * 8) * dt;
-    this.hoopOffset += this.hoopVelocity * dt;
-    this.hoopOffset = clamp(this.hoopOffset, -this.hoop.baseRimW * .34, this.hoop.baseRimW * .34);
+    if (!this.sharedCourt) this.advanceHoop(dt);
     this.disruption = Math.max(0, this.disruption - dt);
     if (!active) return;
+    if (this.ballPool) return this.updateBallPool(dt);
     const b = this.ball;
     if (b.flying) this.updateNativeBall(b, dt);
     this.guests.forEach(guest => this.updateGuestBall(guest, dt));
@@ -313,6 +654,12 @@ export class ShotLane {
       for (let j = i + 1; j < this.guests.length; j++) this.collideBalls(this.guests[i], this.guests[j]);
     }
     this.guests = this.guests.filter(guest => !guest.expired);
+  }
+
+  advanceHoop(dt) {
+    this.hoopVelocity += (-this.hoopOffset * 34 - this.hoopVelocity * 8) * dt;
+    this.hoopOffset += this.hoopVelocity * dt;
+    this.hoopOffset = clamp(this.hoopOffset, -this.hoop.baseRimW * .34, this.hoop.baseRimW * .34);
   }
 
   advanceBall(b, dt) {
@@ -334,6 +681,10 @@ export class ShotLane {
   }
 
   containOuterEdge(b) {
+    if (this.sharedCourt) {
+      this.containSharedEdges(b, b.allowOuterExit);
+      return;
+    }
     if (this.side === 'player' && b.x - b.r < 0) {
       b.x = b.r;
       if (b.vx < 0) b.vx = Math.abs(b.vx) * .76;
@@ -347,6 +698,10 @@ export class ShotLane {
 
   containGuestEdges(b) {
     this.containTopEdge(b);
+    if (this.sharedCourt) {
+      this.containSharedEdges(b, b.allowOuterExit);
+      return;
+    }
     if (b.x - b.r < 0) {
       b.x = b.r;
       if (b.vx < 0) b.vx = Math.abs(b.vx) * .76;
@@ -358,29 +713,58 @@ export class ShotLane {
     }
   }
 
-  collideWithCourt(b, previousY, onScore) {
+  containSharedEdges(b, allowOuterExit = false) {
+    const { left, right } = this.sharedCourt.bounds(this);
+    if (b.x - b.r < left) {
+      b.x = left + b.r;
+      if (b.vx < 0) b.vx = Math.abs(b.vx) * .76;
+      b.hitRim = true;
+    } else if (!allowOuterExit && b.x + b.r > right) {
+      if (this.sharedCourt.canExitRight(b)) {
+        b.allowOuterExit = true;
+        this.sharedCourt.onExit?.(b, this);
+      } else {
+        b.x = right - b.r;
+        if (b.vx > 0) b.vx = -Math.abs(b.vx) * .76;
+        b.hitRim = true;
+      }
+    }
+  }
+
+  scoreBall(b, onScore) {
+    b.scored = true;
+    if (b.flight) b.flight.vDepth *= .16;
+    this.burst(b.x, b.y, b.fever || this.fever ? 34 : 18);
+    onScore({ clean:!b.hitRim, owner:b.owner });
+  }
+
+  collideWithCourt(b, previousY, onScore, allowScore = true) {
     const hoop = this.getHoopPose();
-    this.collideRim(b, hoop.x - hoop.rimW / 2, hoop.rimY);
-    this.collideRim(b, hoop.x + hoop.rimW / 2, hoop.rimY);
-    const boardX = hoop.x + hoop.rimW / 2 + 13;
-    const boardTop = hoop.y - hoop.rimW * .62;
+    const rimThickness = this.sharedCourt ? hoop.rimW * (.5 - SHARED_RIM_INNER_HALF) : 5;
+    this.collideRim(b, hoop.x - hoop.rimW / 2, hoop.rimY, rimThickness);
+    this.collideRim(b, hoop.x + hoop.rimW / 2, hoop.rimY, rimThickness);
+    const boardRimW = hoop.boardRimW ?? hoop.rimW;
+    const boardX = hoop.x + boardRimW / 2 + 13;
+    const boardTop = hoop.y - boardRimW * .62;
     if (b.x + b.r > boardX && b.x - b.r < boardX + 7 && b.y > boardTop && b.y < hoop.rimY + 15 && b.vx > 0) {
       b.x = boardX - b.r;
       b.vx *= -.7;
       b.hitRim = true;
     }
-    if (!b.scored && b.vy > 0 && previousY < hoop.rimY && b.y >= hoop.rimY && Math.abs(b.x - hoop.x) < hoop.rimW * .38) {
-      b.scored = true;
-      this.burst(b.x, b.y, b.fever || this.fever ? 34 : 18);
-      onScore({ clean:!b.hitRim, owner:b.owner });
+    const scoringHalfWidth = this.sharedCourt ? hoop.rimW * SHARED_RIM_INNER_HALF - b.r : hoop.rimW * .38;
+    if (allowScore && !b.scored && b.vy > 0 && previousY < hoop.rimY && b.y >= hoop.rimY && Math.abs(b.x - hoop.x) < scoringHalfWidth) {
+      this.scoreBall(b, onScore);
     }
   }
 
   updateNativeBall(b, dt) {
     const nextX = b.x + b.vx * dt;
-    const crossingEdge = this.side === 'player' && nextX > this.width ? 'right'
-      : this.side === 'neko' && nextX < 0 ? 'left' : null;
-    const boundaryX = crossingEdge === 'right' ? this.width : 0;
+    const bounds = this.sharedCourt?.bounds(this);
+    const crossingEdge = bounds
+      ? null
+      : this.side === 'player' && nextX > this.width ? 'right'
+        : this.side === 'neko' && nextX < 0 ? 'left' : null;
+    const boundaryX = crossingEdge === 'right' ? (bounds?.right ?? this.width) : 0;
     const crossingRatio = crossingEdge
       ? clamp((boundaryX - b.x) / (nextX - b.x), 0, 1)
       : 1;
@@ -422,6 +806,11 @@ export class ShotLane {
 
   collideBalls(a, b) {
     if (a.expired || b.expired) return false;
+    // The spatial wedge impact already resolved this pair. Let the balls
+    // separate in depth before using the usual projected-ball collision.
+    if ((a.flight?.wedgePartner && a.flight.wedgePartner === b.id && a.life < .18)
+        || (b.flight?.wedgePartner && b.flight.wedgePartner === a.id && b.life < .18)) return false;
+    if (Math.abs((a.flight?.depth ?? a.roll?.depth ?? 0) - (b.flight?.depth ?? b.roll?.depth ?? 0)) > .075) return false;
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const distance = Math.hypot(dx, dy);
@@ -431,11 +820,19 @@ export class ShotLane {
     const ny = dy / distance;
     const aSpeed = Math.hypot(a.vx, a.vy);
     const bSpeed = Math.hypot(b.vx, b.vy);
+    const relativeSpeed = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+    // Collectors cannot take a held ball. An actual incoming impact can still
+    // knock it loose; an overlap without an approaching contact cannot.
+    if (relativeSpeed >= 0 && (this.isHeldBall(a) || this.isHeldBall(b))) return false;
     const overlap = minDistance - distance;
     a.x -= nx * overlap * .5; a.y -= ny * overlap * .5;
     b.x += nx * overlap * .5; b.y += ny * overlap * .5;
-    const relativeSpeed = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
     if (relativeSpeed < 0) {
+      for (const ball of [a, b]) if (this.isHeldBall(ball)) {
+        const holder = (this.sharedCourt?.lanes || [this]).find(lane => lane.heldBall === ball);
+        holder?.cancelAim();
+        ball.dragged = false;
+      }
       const impulse = -(1 + .86) * relativeSpeed / 2;
       a.vx -= impulse * nx; a.vy -= impulse * ny;
       b.vx += impulse * nx; b.vy += impulse * ny;
@@ -470,28 +867,34 @@ export class ShotLane {
     }
   }
 
-  draw() {
+  draw(aimAllowed = true) {
+    if (this.sharedCourt) return this.sharedCourt.draw(this, aimAllowed);
+    this.drawCourt();
+    this.drawBalls(this.ctx);
+    this.drawEffects(this.ctx);
+  }
+
+  drawCourt(worldWidth = this.width, worldOrigin = 0) {
     const c = this.ctx;
     const w = this.width;
     const h = this.height;
-    const b = this.ball;
     const hoop = this.getHoopPose();
-    const playerSide = this.side === 'player';
+    const playerSide = this.sharedCourt || this.side === 'player';
     const accent = playerSide ? '#67bce2' : '#e596bb';
     const deepAccent = playerSide ? '#397b9b' : '#c481a2';
     c.fillStyle = playerSide ? '#eaf5f8' : '#f8eef3';
     c.fillRect(0, 0, w, h);
-    if (this.backgroundImage.complete && this.backgroundImage.naturalWidth) {
-      const image = this.backgroundImage;
-      const scale = Math.max(w / image.naturalWidth, h / image.naturalHeight);
-      const sourceW = w / scale;
-      const sourceH = h / scale;
+    const image = this.sharedCourt ? this.sharedBackgroundImage : this.backgroundImage;
+    if (image.complete && image.naturalWidth) {
+      const scale = Math.max(worldWidth / image.naturalWidth, h / image.naturalHeight);
+      const sourceW = this.sharedCourt ? image.naturalWidth : worldWidth / scale;
+      const sourceH = this.sharedCourt ? image.naturalHeight : h / scale;
       const sourceX = (image.naturalWidth - sourceW) / 2;
       const sourceY = Math.max(0, (image.naturalHeight - sourceH) * .42);
       c.save();
-      c.globalAlpha = playerSide ? .94 : .82;
-      c.drawImage(image, sourceX, sourceY, sourceW, sourceH, 0, 0, w, h);
-      c.fillStyle = playerSide ? 'rgba(218,242,250,.06)' : 'rgba(255,226,240,.28)';
+      c.globalAlpha = this.sharedCourt ? 1 : playerSide ? .94 : .82;
+      c.drawImage(image, sourceX, sourceY, sourceW, sourceH, -worldOrigin, 0, worldWidth, h);
+      c.fillStyle = this.sharedCourt ? 'rgba(0,0,0,0)' : playerSide ? 'rgba(218,242,250,.06)' : 'rgba(255,226,240,.28)';
       c.fillRect(0, 0, w, h);
       c.restore();
     }
@@ -501,14 +904,19 @@ export class ShotLane {
     laneShade.addColorStop(0, 'rgba(255,255,255,0)');
     laneShade.addColorStop(1, playerSide ? 'rgba(38,102,131,.13)' : 'rgba(225,151,187,.11)');
     c.fillStyle = laneShade;
-    c.fillRect(0, h * .46, w, h * .54);
+    if (!this.sharedCourt) c.fillRect(0, h * .46, w, h * .54);
 
-    if (this.showAvatarPlaceholder) this.drawNeko(c, w * .23, h * .72, Math.min(w * .11, 34));
+    if (this.showAvatarPlaceholder && !this.sharedCourt) this.drawNeko(c, w * .23, h * .72, Math.min(w * .11, 34));
+
+    if (this.sharedCourt) {
+      for (const layer of this.sharedCourt.boxLayers) this.sharedCourt.drawLayer(this, layer);
+      return;
+    }
 
     if (this.hoopImage.complete && this.hoopImage.naturalWidth) {
       const assemblySize = hoop.rimW * 1.84;
       c.save();
-      c.shadowColor = this.fever
+      c.shadowColor = (this.sharedCourt ? this.sharedCourt.lanes.some(lane => lane.fever) : this.fever)
         ? 'rgba(248,188,89,.72)'
         : playerSide ? 'rgba(64,126,158,.28)' : 'rgba(229,157,192,.28)';
       c.shadowBlur = this.fever ? 17 : 9;
@@ -535,40 +943,52 @@ export class ShotLane {
       c.beginPath(); c.ellipse(hoop.x, hoop.rimY, hoop.rimW / 2, 7, 0, 0, Math.PI * 2); c.stroke();
       c.restore();
     }
-    if (!b.inTransit) {
+  }
+
+  drawBalls(c, include = () => true, aimAllowed = true) {
+    const b = this.ball;
+    if (!b.inTransit && include(b)) {
       this.drawMotionBlur(c, b);
-      this.drawAimFeedback(c, b);
+      this.drawAimFeedback(c, b, aimAllowed);
       if (b.pageOverlay) {
-        // Player-owned balls are mirrored by a page-level overlay so they stay
-        // above both cabinets, HUDs and the character for their whole life.
-      } else if (this.aim && !b.flying) {
-        const power = this.getAimTelemetry().power / 100;
-        const angle = Math.atan2(this.aim.y - b.y, this.aim.x - b.x);
-        c.save();
-        c.translate(b.x, b.y);
-        c.rotate(angle);
-        c.scale(1 + power * .06, 1 - power * .045);
-        this.drawBall(c, 0, 0, b.r);
-        c.restore();
+        // A page-level sprite draws this same ball while it is outside the
+        // illustrated court, so it can remain visible beside the character.
       } else {
-        this.drawBall(c, b.x, b.y, b.r, this.fever, b.rotation || 0);
+        this.drawBall(c, b.x, b.y - (b.roll?.drawLift || 0), b.r, this.fever, b.rotation || 0, b.rollLook);
       }
       if (b.flying && b.owner !== this.side) this.drawOwnershipMarker(c, b);
     }
     this.guests.forEach(guest => {
-      if (guest.pageOverlay) return;
+      if (guest.expired || guest.inTransit || guest.pageOverlay || !include(guest)) return;
       c.save();
       c.shadowColor = guest.owner === 'player' ? '#5db9e6' : '#ef9fc3';
       c.shadowBlur = 14;
       this.drawMotionBlur(c, guest);
-      this.drawBall(c, guest.x, guest.y, guest.r, guest.fever, guest.rotation || 0);
-      this.drawOwnershipMarker(c, guest);
+      this.drawBall(c, guest.x, guest.y - (guest.roll?.drawLift || 0), guest.r, guest.fever, guest.rotation || 0, guest.rollLook);
+      if (guest.flying) this.drawOwnershipMarker(c, guest);
       c.restore();
     });
 
+  }
+
+  drawEffects(c) {
     if (this.disruption > 0) {
-      c.fillStyle = this.side === 'player' ? `rgba(88,190,229,${this.disruption * .55})` : `rgba(235,137,181,${this.disruption * .55})`;
-      c.fillRect(0, 0, w, h);
+      if (this.sharedCourt) {
+        // The old full-lane tint revealed a rectangular pink half-machine
+        // behind the shared art. Keep feedback local to the actual contact.
+        const point = this.disruptionPoint || this.ball;
+        const progress = 1 - clamp(this.disruption / .28, 0, 1);
+        c.save();
+        c.strokeStyle = `rgba(89,166,201,${(1 - progress) * .65})`;
+        c.lineWidth = 2;
+        c.beginPath();
+        c.arc(point.x, point.y, 16 + progress * 32, 0, Math.PI * 2);
+        c.stroke();
+        c.restore();
+      } else {
+        c.fillStyle = this.side === 'player' ? `rgba(88,190,229,${this.disruption * .55})` : `rgba(235,137,181,${this.disruption * .55})`;
+        c.fillRect(0, 0, this.width, this.height);
+      }
     }
 
     this.particles.forEach((p, index) => {
@@ -578,19 +998,32 @@ export class ShotLane {
     c.globalAlpha = 1;
   }
 
-  drawAimFeedback(c, ball) {
+  drawAimFeedback(c, ball, aimAllowed) {
     if (!this.aim || ball.flying) return;
-    const power = this.getAimTelemetry().power / 100;
-    const radius = ball.r + 10;
+    const shot = aimAllowed ? this.shotVector() : null;
+    const radius = ball.r + 8;
     c.save();
     c.lineCap = 'round';
     c.lineWidth = 4;
-    c.strokeStyle = 'rgba(255,255,255,.42)';
+    c.strokeStyle = 'rgba(255,255,255,.60)';
     c.beginPath(); c.arc(ball.x, ball.y, radius, 0, Math.PI * 2); c.stroke();
-    c.strokeStyle = power > .88 ? '#ef807b' : this.side === 'player' ? '#5db9e6' : '#ef9fc3';
-    c.shadowColor = c.strokeStyle;
-    c.shadowBlur = 10;
-    c.beginPath(); c.arc(ball.x, ball.y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * power); c.stroke();
+    if (shot) {
+      const power = shot.power ?? this.getAimTelemetry().power / 100;
+      const accent = this.side === 'player' ? '#287ca8' : '#a64b7c';
+      c.strokeStyle = accent;
+      c.beginPath(); c.arc(ball.x, ball.y, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * power); c.stroke();
+      c.translate(ball.x, ball.y);
+      c.rotate(Math.atan2(shot.vy, shot.vx));
+      c.beginPath();
+      c.moveTo(radius + 14, 0);
+      c.lineTo(radius + 3, -5);
+      c.lineTo(radius + 3, 5);
+      c.closePath();
+      c.fillStyle = accent;
+      c.strokeStyle = '#fff';
+      c.lineWidth = 2;
+      c.stroke(); c.fill();
+    }
     c.restore();
   }
 
@@ -621,7 +1054,13 @@ export class ShotLane {
     c.restore();
   }
 
-  drawBall(c, x, y, r, fever = this.fever, rotation = 0) {
+  ballSpriteSize(radius) {
+    return this.sharedCourt ? radius * 2 / BALL_SPRITE_DIAMETER : radius * 2.46;
+  }
+
+  drawBall(c, x, y, r, fever = this.fever, rotation = 0, look = null) {
+    if (this.sharedCourt && look
+        && drawBallLook(c, x, y, r, fever, rotation, look, this.ballImage, BALL_SPRITE_DIAMETER)) return;
     if (this.ballImage.complete && this.ballImage.naturalWidth) {
       c.save();
       c.translate(x, y);
@@ -633,7 +1072,7 @@ export class ShotLane {
         c.shadowColor = 'rgba(45,77,99,.24)';
         c.shadowBlur = Math.max(4, r * .32);
       }
-      const size = r * 2.46;
+      const size = this.ballSpriteSize(r);
       c.drawImage(this.ballImage, -size / 2, -size / 2, size, size);
       c.restore();
       return;
