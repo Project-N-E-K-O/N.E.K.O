@@ -104,6 +104,17 @@ async def dsh(tmp_path: Path):
         await item.runtime.shutdown()
 
 
+async def _until_started_on(event: threading.Event, starting: asyncio.Future[Any], events: Recorder) -> None:
+    """Wait, a bounded while, for a start to reach the point a test holds it at; fail when it ended first."""
+    for _attempt in range(1000):
+        if event.is_set():
+            return
+        if starting.done():
+            raise AssertionError(f"the start was over before it got there: {events.events}")
+        await asyncio.sleep(0.01)
+    raise AssertionError("the start never got there")
+
+
 def _texts(events: Recorder, session_id: str = "s1") -> str:
     return "".join(event["delta"] for event in events.of("text", session_id))
 
@@ -656,12 +667,10 @@ async def test_a_note_being_written_when_shutdown_gives_its_start_up_is_written_
     monkeypatch.setattr(driver_module, "_write_session_file", slow_write)
     driver = dsh()
     starting = asyncio.ensure_future(driver.runtime.start(make_spec(tmp_path)))
-    while not writing.is_set():
-        await asyncio.sleep(0.01)
-
-    shutting = asyncio.ensure_future(driver.runtime.shutdown())
-    await asyncio.sleep(0.5)
     try:
+        await _until_started_on(writing, starting, driver.events)
+        shutting = asyncio.ensure_future(driver.runtime.shutdown())
+        await asyncio.sleep(0.5)
         # A note written after the start was over could replace the next one's.
         assert not shutting.done()
     finally:
@@ -705,10 +714,8 @@ async def test_shutdown_gives_up_a_start_that_takes_too_long_and_nothing_starts_
     monkeypatch.setattr(driver_module, "_read_session_file", slow_read)
     driver = dsh()
     starting = asyncio.ensure_future(driver.runtime.start(make_spec(tmp_path)))
-    while not reading.is_set():
-        await asyncio.sleep(0.01)
-
     try:
+        await _until_started_on(reading, starting, driver.events)
         await asyncio.wait_for(driver.runtime.shutdown(), 5)
         # The start was over before shutting down went on: what it said came first,
         # and the session was not taken for one to close.
