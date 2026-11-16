@@ -756,11 +756,17 @@ test('return button art retries a failed load of the same source, then gives up'
   art.complete = false;
   timers.shift().fn();
   assert.equal(assigned.length, 3);
-  // Once it is broken again (complete === true) the next failure retries.
+  // Once it is broken again (complete === true) failures retry, and the
+  // skipped retry did not use up any of the three attempts.
   art.complete = true;
+  for (let i = 0; i < 3; i += 1) {
+    fire('error');
+    assert.equal(timers.length, 1, 'a skipped retry must not use up the retry budget');
+    timers.shift().fn();
+  }
+  assert.equal(assigned.length, 6);
   fire('error');
-  timers.shift().fn();
-  assert.equal(assigned.length, 4);
+  assert.equal(timers.length, 0);
   assert.ok(warnings.length >= 5);
 });
 

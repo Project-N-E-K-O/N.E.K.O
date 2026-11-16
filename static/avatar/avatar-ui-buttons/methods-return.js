@@ -230,8 +230,12 @@ function _installNekoIdleReturnArtLoadRetry(art) {
             if (art.isConnected === false) return;
             // The same source was re-assigned meanwhile and is still loading
             // (a broken image reports complete === true); do not interrupt that
-            // download. If it fails too, its error event schedules the next try.
-            if (art.complete === false) return;
+            // download. If it fails too, its error event schedules the next try,
+            // so give back the attempt this skipped retry did not use.
+            if (art.complete === false) {
+                art.__nekoIdleReturnArtRetryCount = Math.max(0, art.__nekoIdleReturnArtRetryCount - 1);
+                return;
+            }
             // Re-assigning an identical value is not guaranteed to restart the
             // fetch, so drop the attribute first.
             art.removeAttribute('src');
