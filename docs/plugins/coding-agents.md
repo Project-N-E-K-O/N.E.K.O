@@ -136,7 +136,7 @@ A friend who gets the `.neko-plugin` file clicks "Import" in Plugin Manager and 
 1. Click "Import" on the Plugins page.
 2. Drop the `.neko-plugin` file into the box, or click to choose it.
 
-Publishing to the Market needs a source build — only Route A can publish directly; see [Publish a Plugin](/plugins/cli).
+Publishing to the Market works on both routes and needs a GitHub account: let the AI upload the project to GitHub and release a version; the first review submission is a few clicks on the [Market upload page](https://market.project-neko.cn/#/upload). See [Publish a Plugin](/plugins/cli) for the full flow. On Route B, the studio’s one-click publish isn’t available in the Steam / desktop build, so just hand it to the AI.
 
 > If the new project has no AGENTS.md, your N.E.K.O version is too old — update to the latest version and try again.
 

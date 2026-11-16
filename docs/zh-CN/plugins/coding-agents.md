@@ -136,7 +136,7 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
 1. 在插件管理页点「导入」。
 2. 把 `.neko-plugin` 文件拖进框里，或点击选择文件。
 
-正式发布到插件市场需要源码版——只有走路线 A 的可以直接发布，看[发布插件](/zh-CN/plugins/cli)。
+想正式发布到插件市场，两条路线都可以，需要一个 GitHub 账号：让 AI 把项目上传到 GitHub 并发布版本；第一次投稿审核在[插件市场投稿页](https://market.project-neko.cn/#/upload)上点几下就行，完整流程见[发布插件](/zh-CN/plugins/cli)。路线 B 工作台里的一键发布在 Steam / 桌面版里用不了，交给 AI 做即可。
 
 > 如果新建的项目里没有 AGENTS.md，说明你的 N.E.K.O 版本较旧，请先更新到最新版本再重试。
 
