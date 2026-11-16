@@ -262,7 +262,15 @@ class HostTools:
         if tool is None:
             return _result(f"no tool named {name}", error=True)
         token = _Cancelled()
-        work = asyncio.ensure_future(tool.execute(call_id or name, arguments, token, None))
+
+        async def carried_out() -> Any:
+            # Looked at again where the tool starts, nothing awaited in between:
+            # the session may have been closed and opened again since.
+            if offer is not None and self._offers.get(session_id) is not offer:
+                raise ToolError("the session that made this call was closed")
+            return await tool.execute(call_id or name, arguments, token, None)
+
+        work = asyncio.ensure_future(carried_out())
         try:
             # Shielded: when the wait is given up below, the work is told to
             # stop through its token and then cancelled, in that order.

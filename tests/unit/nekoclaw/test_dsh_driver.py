@@ -648,6 +648,21 @@ async def test_a_start_that_failed_late_does_not_take_back_what_a_later_one_of_t
     assert result.startswith("report delivered (ready).")
 
 
+async def test_a_report_from_a_session_that_is_gone_is_not_taken_for_the_next_ones(tmp_path: Path, dsh) -> None:
+    driver = dsh()
+    spec = make_spec(tmp_path)
+    await driver.started(spec)
+    gone = driver.runtime._sessions["s1"]
+    await driver.closed("s1")
+    await driver.started(spec)
+
+    # A call the closed session made, finishing late: under its id is another session now.
+    driver.runtime._on_report(gone, {"status": "ready", "summary": "from the one before"})
+    driver.runtime._on_report(driver.runtime._sessions["s1"], {"status": "progress", "summary": "its own"})
+
+    assert [event["summary"] for event in driver.events.of("report")] == ["its own"]
+
+
 async def test_a_note_being_written_when_shutdown_gives_its_start_up_is_written_before_shutdown_returns(
     tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -359,6 +359,10 @@ class DshRuntime:
             session.local_reply_due = True
 
     def _on_report(self, session: _Session, payload: dict[str, Any]) -> None:
+        if self._sessions.get(session.id) is not session:
+            # From a call of a session that is gone: under its id there may be
+            # another session by now, whose report this is not.
+            return
         self._emit(
             session,
             protocol.ReportEvent(

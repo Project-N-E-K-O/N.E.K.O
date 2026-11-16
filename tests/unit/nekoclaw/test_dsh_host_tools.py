@@ -386,6 +386,22 @@ async def test_a_batch_whose_session_is_opened_again_midway_carries_out_no_more_
     assert second["result"]["isError"] is True and [name for name, _session, _payload in calls] == ["report"]
 
 
+async def test_a_call_whose_session_is_opened_again_before_its_tool_starts_is_not_carried_out(tmp_path: Path) -> None:
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+    tools = HostTools(_callbacks(calls))
+    _open(tools, tmp_path)
+
+    def again() -> None:
+        tools.close("s1")
+        _open(tools, tmp_path)
+
+    # Due before the tool's first step: between the look at the session and the tool starting.
+    asyncio.get_running_loop().call_soon(again)
+    result = await tools.call("s1", "report", {"status": "ready", "summary": "x"}, offer=tools.offer("s1"))
+
+    assert result["isError"] is True and "closed" in result["content"][0]["text"] and calls == []
+
+
 async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoint) -> None:
     listener, _calls = endpoint
     one, other = listener.issue_process_token(), listener.issue_process_token()
