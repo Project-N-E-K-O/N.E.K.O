@@ -350,11 +350,41 @@
             if (!/\/static\/assets\/cat-resources\/appearance\/.+\.(?:gif|webp)$/i.test(url.pathname)) {
                 return src;
             }
-            url.searchParams.set('reveal', String(playbackToken || Date.now()));
+            url.searchParams.set('reveal', String(playbackToken));
             return url.href;
         } catch (_) {
             return src;
         }
+    }
+
+    // Chromium shares an animated-image timeline across elements using the same
+    // URL, so a restart needs a URL that no other return-button art (including
+    // this one, or a hidden button of another model) is showing right now.
+    // Pick the smallest free token instead of counting up: an ever-new URL
+    // misses the immutable HTTP cache (re-downloading a multi-MB cat animation
+    // on every reveal) and leaves one more decoded image in the memory cache
+    // each time. With one button this alternates between reveal=1 and reveal=2.
+    function nextNekoModelCatRevealPlaybackUrl(src) {
+        const resolve = (value) => {
+            try {
+                return new URL(value, window.location.href).href;
+            } catch (_) {
+                return value;
+            }
+        };
+        const inUse = new Set();
+        document.querySelectorAll('img.neko-idle-return-art').forEach((img) => {
+            const value = img.getAttribute('src');
+            if (value) inUse.add(resolve(value));
+        });
+        // Among inUse.size + 1 tokens at least one is free.
+        for (let token = 1; token <= inUse.size + 1; token += 1) {
+            const candidate = buildNekoModelCatRevealPlaybackUrl(src, token);
+            if (!inUse.has(resolve(candidate))) return candidate;
+        }
+        // Not a cat-resource animation: buildNekoModelCatRevealPlaybackUrl
+        // leaves it unchanged, so restart it in place as before.
+        return src;
     }
 
     I.restartNekoModelCatRevealArt = function restartNekoModelCatRevealArt(container) {
@@ -364,10 +394,7 @@
         if (!art) return false;
         const currentSrc = art.getAttribute('src') || art.currentSrc || '';
         if (!currentSrc) return false;
-        const nextSrc = buildNekoModelCatRevealPlaybackUrl(
-            currentSrc,
-            ++I.nekoModelCatRevealPlaybackToken
-        );
+        const nextSrc = nextNekoModelCatRevealPlaybackUrl(currentSrc);
         art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
         art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
         art.removeAttribute('src');

@@ -180,6 +180,70 @@ function _handleNekoIdleCat1VisualActionRandomContextMenu(button, event) {
     return true;
 }
 
+const _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS = Object.freeze([500, 1500, 4000]);
+
+// The return button art is reassigned from many places and most of them do not
+// watch for load failures. One failed load (a dropped connection, a truncated
+// multi-MB animation) would otherwise leave Chromium's broken-image icon with
+// the alt text until some later action happens to change the source. Retry the
+// same source a few times; give up as soon as anything else changes it.
+function _installNekoIdleReturnArtLoadRetry(art) {
+    if (!art || typeof art.addEventListener !== 'function' || art.__nekoIdleReturnArtRetryInstalled) return;
+    art.__nekoIdleReturnArtRetryInstalled = true;
+    art.__nekoIdleReturnArtRetrySrc = '';
+    art.__nekoIdleReturnArtRetryCount = 0;
+    art.__nekoIdleReturnArtRetryTimer = 0;
+    art.addEventListener('load', () => {
+        // Something else may have re-assigned the failed source and it loaded
+        // fine; a still-queued retry would then reload a healthy image and
+        // restart its animation.
+        if (art.__nekoIdleReturnArtRetryTimer) {
+            clearTimeout(art.__nekoIdleReturnArtRetryTimer);
+            art.__nekoIdleReturnArtRetryTimer = 0;
+        }
+        art.__nekoIdleReturnArtRetrySrc = '';
+        art.__nekoIdleReturnArtRetryCount = 0;
+    });
+    art.addEventListener('error', () => {
+        const failedSrc = art.getAttribute('src') || '';
+        if (!failedSrc) return;
+        if (art.__nekoIdleReturnArtRetrySrc !== failedSrc) {
+            art.__nekoIdleReturnArtRetrySrc = failedSrc;
+            art.__nekoIdleReturnArtRetryCount = 0;
+        }
+        const attempt = art.__nekoIdleReturnArtRetryCount;
+        const maxAttempts = _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS.length;
+        if (attempt >= maxAttempts) {
+            console.warn('[NekoIdle] return button art still fails to load after retries:', failedSrc);
+            return;
+        }
+        art.__nekoIdleReturnArtRetryCount = attempt + 1;
+        console.warn(`[NekoIdle] return button art failed to load, retry ${attempt + 1}/${maxAttempts}:`, failedSrc);
+        if (art.__nekoIdleReturnArtRetryTimer) {
+            clearTimeout(art.__nekoIdleReturnArtRetryTimer);
+        }
+        art.__nekoIdleReturnArtRetryTimer = setTimeout(() => {
+            art.__nekoIdleReturnArtRetryTimer = 0;
+            if ((art.getAttribute('src') || '') !== failedSrc) return;
+            // The button was torn down meanwhile; do not download for a
+            // detached image.
+            if (art.isConnected === false) return;
+            // The same source was re-assigned meanwhile and is still loading
+            // (a broken image reports complete === true); do not interrupt that
+            // download. If it fails too, its error event schedules the next try,
+            // so give back the attempt this skipped retry did not use.
+            if (art.complete === false) {
+                art.__nekoIdleReturnArtRetryCount = Math.max(0, art.__nekoIdleReturnArtRetryCount - 1);
+                return;
+            }
+            // Re-assigning an identical value is not guaranteed to restart the
+            // fetch, so drop the attribute first.
+            art.removeAttribute('src');
+            art.src = failedSrc;
+        }, _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS[attempt]);
+    });
+}
+
 Object.assign(AvatarButtonMixin.methods, {
     returnButton(ManagerPrototype, prefix, options) {
         ManagerPrototype.createReturnButton = function() {
@@ -209,6 +273,7 @@ Object.assign(AvatarButtonMixin.methods, {
 
             const returnArt = document.createElement('img');
             returnArt.className = 'neko-idle-return-art';
+            _installNekoIdleReturnArtLoadRetry(returnArt);
             const initialReturnArtUrl = _getNekoIdleReturnAssetUrl(currentTier);
             if (initialReturnArtUrl) returnArt.src = initialReturnArtUrl;
             returnArt.alt = window.t ? window.t('buttons.return') : '请她回来';
