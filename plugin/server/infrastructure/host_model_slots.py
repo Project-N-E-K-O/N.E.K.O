@@ -19,6 +19,22 @@ def _host_model_type(slot: ModelSlot) -> str:
     return _HOST_API_MODEL_TYPES[slot.host_api or "assist"]
 
 
+def host_protocol(config: dict[str, Any]) -> str:
+    """Pick the wire protocol exactly as the main app's client factory does.
+
+    The main app also recognizes Anthropic / Kimi Code endpoints by URL, so a
+    custom API at such an address keeps ``provider_type='openai_compatible'``
+    yet is called with the Messages API; diverging here would send OpenAI JSON
+    to an endpoint that only speaks Anthropic.
+    """
+    from utils.llm_client.anthropic_client import _is_anthropic_endpoint
+
+    base_url = str(config.get("base_url") or "").strip()
+    if _is_anthropic_endpoint(base_url, config.get("provider_type")):
+        return "anthropic_messages"
+    return "openai_chat"
+
+
 def resolve_host_slot(slot: ModelSlot) -> ModelSlot:
     """Return an executable manual-shaped snapshot of a host-follow slot."""
     if slot.source != "host_follow":
@@ -47,7 +63,7 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
             "The selected main app API is not an HTTP chat endpoint (realtime providers use WebSocket)",
             409, "model",
         )
-    protocol = "anthropic_messages" if config.get("provider_type") == "anthropic" else "openai_chat"
+    protocol = host_protocol(config)
     # Temperature compatibility is judged on the effective request value in
     # prepare_chat_request: an explicit valid override must not be rejected
     # because of an unused (legacy) saved default.
@@ -84,6 +100,6 @@ def host_slot_status(slot: ModelSlot) -> dict[str, Any]:
     return {
         "configured": True,
         "model": str(config.get("model") or ""),
-        "protocol": "anthropic_messages" if config.get("provider_type") == "anthropic" else "openai_chat",
+        "protocol": host_protocol(config),
         "free": is_free_host_config(config),
     }

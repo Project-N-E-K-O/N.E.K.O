@@ -335,14 +335,17 @@ class ModelConfigService:
             return {"version": current, "slot_id": config.bindings.get(plugin_id, {}).get(usage_id)}
         return self.store.update(change)
 
-    def ensure_host_follow_binding(self, plugin_id: str) -> dict:
+    def ensure_host_follow_binding(self, plugin_id: str, *, requirements: Requirements | None = None) -> dict:
         """Bind still-unbound declared usages to a shared host-follow slot.
 
         Called after a committed install so a fresh plugin works against the
         main app's assist API without manual setup. Existing bindings are never
         touched; usages the shared slot cannot serve stay unbound for the user.
+        ``requirements`` lets the caller read the manifest under the plugin
+        operation lock and write the binding after releasing it.
         """
-        requirements = self.requirements_loader(plugin_id)
+        if requirements is None:
+            requirements = self.requirements_loader(plugin_id)
         if not requirements:
             return {"bound": [], "slot_id": None}
 

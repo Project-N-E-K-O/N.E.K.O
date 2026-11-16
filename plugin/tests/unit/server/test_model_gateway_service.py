@@ -850,3 +850,27 @@ async def test_stream_options_retry_rejected_when_quota_exhausted():
         _ = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
     assert error.value.code == "agent_quota_exceeded"
     assert len(bodies) == 1  # only the first send happened
+
+
+@pytest.mark.parametrize("base_url,user_agent", [
+    ("https://api.kimi.com/coding", "claude-code/0.1.0"),
+    ("https://api.kimi.com/coding/", "claude-code/0.1.0"),
+    ("https://api.anthropic.com", None),
+])
+def test_anthropic_headers_match_main_app_user_agent(base_url, user_agent):
+    from plugin.server.application.model_gateway_service import _headers
+
+    headers = _headers(make_slot("anthropic_messages", base_url=base_url))
+    if user_agent is None:
+        assert headers["User-Agent"] != "claude-code/0.1.0"
+    else:
+        # Kimi Code rejects other clients; the main app sends the same UA.
+        assert headers["User-Agent"] == user_agent
+    assert headers["x-api-key"] == SECRET
+
+
+def test_openai_headers_never_borrow_the_kimi_code_user_agent():
+    from plugin.server.application.model_gateway_service import _headers
+
+    headers = _headers(make_slot(base_url="https://api.kimi.com/coding"))
+    assert headers["User-Agent"] != "claude-code/0.1.0"

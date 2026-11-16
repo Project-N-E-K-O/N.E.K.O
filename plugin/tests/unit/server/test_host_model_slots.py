@@ -46,6 +46,25 @@ def test_materialize_anthropic_config():
     assert resolved.protocol == "anthropic_messages"
 
 
+@pytest.mark.parametrize("base_url", [
+    "https://api.anthropic.com/v1",
+    "https://api.kimi.com/coding",
+])
+def test_materialize_detects_anthropic_endpoints_by_url_like_the_main_app(base_url, monkeypatch):
+    import utils.config_manager as config_manager
+
+    config = {"model": "m", "base_url": base_url, "api_key": "k", "provider_type": "openai_compatible"}
+    resolved = materialize_host_slot(host_slot(), config)
+    assert resolved.protocol == "anthropic_messages"
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return config
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    assert host_slot_status(host_slot())["protocol"] == "anthropic_messages"
+
+
 @pytest.mark.parametrize("config,code", [
     ({}, "host_api_not_configured"),
     ({"model": "m", "base_url": ""}, "host_api_not_configured"),

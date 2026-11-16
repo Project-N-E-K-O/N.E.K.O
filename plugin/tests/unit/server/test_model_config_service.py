@@ -600,17 +600,74 @@ def test_explicit_unbind_survives_reinstall_auto_bind(config_env):
     assert service.get_bindings("beta")["bindings"] == {}
 
 
-@pytest.mark.host_model_autobind
-def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch):
-    import threading
-
+@pytest.fixture
+def autobind_env(monkeypatch, tmp_path):
+    """Isolate the operation file lock and stub registry-based manifest reads."""
     from plugin.server.application.plugins import capability_analysis_service as module
 
+    monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operation.lock"))
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    return module
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_reads_manifest_under_operation_lock(monkeypatch, tmp_path, autobind_env):
+    import threading
+    from contextlib import contextmanager
+
+    module = autobind_env
+    events: list[str] = []
+    done = threading.Event()
+
+    @contextmanager
+    def fake_lock(stop):
+        events.append("lock")
+        try:
+            yield
+        finally:
+            events.append("unlock")
+
+    def fake_load(plugin_id):
+        events.append("read")
+        return {"analysis": object()}
+
+    def fake_bind(plugin_id, requirements):
+        events.append("bind")
+        done.set()
+
+    monkeypatch.setattr(module, "hold_plugin_operation_file_lock", fake_lock)
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", fake_load)
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "probe"}]},
+    })
+    assert done.wait(5)
+    # The manifest is read inside the lock; the config write happens after it.
+    assert events == ["lock", "read", "unlock", "bind"]
+
+
+def test_ensure_host_follow_binding_uses_preloaded_requirements(config_env):
+    _, service, declarations = config_env
+    preloaded = declarations["beta"]
+    calls = []
+    service.requirements_loader = lambda plugin_id: calls.append(plugin_id) or {}
+    # Preloaded declarations (read under the operation lock) skip the loader.
+    result = service.ensure_host_follow_binding("beta", requirements=preloaded)
+    assert calls == []
+    assert result["bound"] == ["analysis"]
+
+
+@pytest.mark.host_model_autobind
+def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch, autobind_env):
+    import threading
+
+    module = autobind_env
     caller_thread = threading.get_ident()
     seen: dict[str, int] = {}
     done = threading.Event()
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", lambda plugin_id: {})
 
-    def fake_bind(plugin_id):
+    def fake_bind(plugin_id, requirements):
         seen[plugin_id] = threading.get_ident()
         done.set()
 
@@ -624,14 +681,14 @@ def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch):
 
 
 @pytest.mark.host_model_autobind
-def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch):
+def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch, autobind_env):
     import threading
 
-    from plugin.server.application.plugins import capability_analysis_service as module
-
+    module = autobind_env
     done = threading.Event()
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", lambda plugin_id: {})
 
-    def boom(plugin_id):
+    def boom(plugin_id, requirements):
         done.set()
         raise RuntimeError("bind failed")
 
@@ -689,21 +746,19 @@ def test_legacy_high_temperature_document_stays_readable_and_updatable(config_en
 
 
 @pytest.mark.host_model_autobind
-def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch, tmp_path):
+def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch, tmp_path, autobind_env):
     import threading
 
-    from plugin.server.application.plugins import capability_analysis_service as module
-
+    module = autobind_env
     (tmp_path / "plugin.toml").write_text('[plugin]\nid = "declared_id"\n', encoding="utf-8")
     seen: dict[str, str] = {}
     done = threading.Event()
 
-    def fake_bind(plugin_id):
+    def fake_bind(plugin_id, requirements):
         seen["id"] = plugin_id
         done.set()
 
     monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
-    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
     module.notify_install_committed({
         "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "directory_name"}]},
     })
@@ -712,20 +767,19 @@ def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch
 
 
 @pytest.mark.host_model_autobind
-def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monkeypatch, tmp_path):
+def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monkeypatch, tmp_path, autobind_env):
     import threading
 
-    from plugin.server.application.plugins import capability_analysis_service as module
-
+    module = autobind_env
     seen: dict[str, str] = {}
     done = threading.Event()
+    monkeypatch.setattr(module, "_load_auto_bind_requirements", lambda plugin_id: {})
 
-    def fake_bind(plugin_id):
+    def fake_bind(plugin_id, requirements):
         seen["id"] = plugin_id
         done.set()
 
     monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
-    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
     module.notify_install_committed({
         "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "directory_name"}]},
     })
@@ -734,11 +788,10 @@ def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monk
 
 
 @pytest.mark.host_model_autobind
-def test_install_hook_auto_bind_pins_installed_manifest_for_unregistered_plugin(monkeypatch, tmp_path):
+def test_install_hook_auto_bind_pins_installed_manifest_for_unregistered_plugin(monkeypatch, tmp_path, autobind_env):
     import threading
 
-    from plugin.server.application.plugins import capability_analysis_service as module
-    from plugin.server.infrastructure.config_paths import get_plugin_manifest_path
+    module = autobind_env
 
     # Directory name differs from the manifest id, and the registry does not
     # know this install: only the pinned manifest path can resolve it.
@@ -750,16 +803,16 @@ def test_install_hook_auto_bind_pins_installed_manifest_for_unregistered_plugin(
     seen: dict[str, object] = {}
     done = threading.Event()
 
-    def fake_bind(plugin_id):
+    def fake_bind(plugin_id, requirements):
         seen["id"] = plugin_id
-        seen["manifest"] = get_plugin_manifest_path(plugin_id)
+        seen["usages"] = sorted(requirements)
         done.set()
 
     monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
-    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
     module.notify_install_committed({
         "install": {"installed_plugins": [{"target_dir": str(install_dir), "target_plugin_id": "demo_custom"}]},
     })
     assert done.wait(5)
     assert seen["id"] == "demo"
-    assert seen["manifest"] == install_dir / "plugin.toml"
+    # Declarations come from the pinned manifest, read in the locked phase.
+    assert seen["usages"] == ["analysis"]
