@@ -98,7 +98,7 @@ def _normalize_timeout_value(value: Any) -> float | None | object:
         return None
     try:
         timeout_value = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _TIMEOUT_UNSET
     return timeout_value if timeout_value > 0 else None
 
@@ -2468,9 +2468,9 @@ class DirectTaskExecutor:
                 safe_args = {}
             try:
                 # Build _ctx with lanlan_name and conversation_id.
-                ctx_obj = safe_args.get("_ctx")
-                if not isinstance(ctx_obj, dict):
-                    ctx_obj = {}
+                ctx_obj = safe_args.pop("_ctx", None)
+                ctx_obj = dict(ctx_obj) if isinstance(ctx_obj, dict) else {}
+                safe_args["_ctx"] = ctx_obj
                 if lanlan_name and "lanlan_name" not in ctx_obj:
                     ctx_obj["lanlan_name"] = lanlan_name
                 # Add conversation_id to connect trigger events and dialogue context.

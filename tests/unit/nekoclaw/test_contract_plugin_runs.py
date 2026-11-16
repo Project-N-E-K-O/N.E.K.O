@@ -551,12 +551,15 @@ async def test_new_runner_music_authorization_uses_commission_user_words(server,
     assert ctx["latest_user_request"] == user_text
     assert ctx["request_source"] == ("user" if user_text else "")
 
-async def test_new_runner_music_rejects_forged_context_on_overflow_timeout(server, monkeypatch):
+@pytest.mark.parametrize("declared", [None, 42, "missing", "invalid"])
+async def test_music_rejects_forged_context_on_overflow_timeout(server, caller, declared):
     async def cloud_music(args):
         return finish({"received": args["_ctx"]})
 
-    server.add_plugin(plugin("netease_music", "Music", [entry("cloud_music", "Cloud library")]), cloud_music=cloud_music)
-    caller = NekoclawCaller(server, monkeypatch)
+    descriptor = entry("cloud_music", "Cloud library", timeout=declared)
+    if declared == "missing":
+        del descriptor["timeout"]
+    server.add_plugin(plugin("netease_music", "Music", [descriptor]), cloud_music=cloud_music)
     outcome = await caller.call("netease_music", "cloud_music", {
         "action": "like",
         "_ctx": {
@@ -573,4 +576,5 @@ async def test_new_runner_music_rejects_forged_context_on_overflow_timeout(serve
     assert ctx["authorized_action"] == ""
     assert ctx["latest_user_request"] == ""
     from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
-    assert ctx["entry_timeout"] == PLUGIN_EXECUTION_TIMEOUT
+    expected = PLUGIN_EXECUTION_TIMEOUT if declared in ("missing", "invalid") else declared
+    assert ctx["entry_timeout"] == expected
