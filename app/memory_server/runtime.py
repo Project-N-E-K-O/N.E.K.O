@@ -1280,13 +1280,6 @@ async def shutdown_event_handler():
     if _recent_sync_wake_task is not None:
         _recent_sync_wake_task.cancel()
         await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
-    try:
-        from utils.token_tracker import TokenTracker
-        await TokenTracker.get_instance().asave(report_timeout=1.0)
-    except Exception:
-        # Best-effort final flush — the shutdown path must never fail on
-        # tracker IO, and the periodic save loop already persisted recent data.
-        pass
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.
@@ -1338,6 +1331,13 @@ async def shutdown_event_handler():
         await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
+    # Persistence cannot delay worker stop or embedding/SQLite cleanup.
+    try:
+        from utils.token_tracker import TokenTracker
+        await TokenTracker.get_instance().asave(report_timeout=1.0)
+    except Exception:
+        # Best-effort final flush; atexit retries any unpersisted deltas.
+        pass
     logger.info("Memory server已关闭")
 
 

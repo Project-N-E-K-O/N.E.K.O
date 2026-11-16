@@ -121,3 +121,31 @@ async def test_async_save_does_not_block_on_a_real_slow_http_endpoint(tracker_fa
         await asyncio.to_thread(server.shutdown)
         server.server_close()
         await asyncio.to_thread(thread.join, 2)
+
+
+@pytest.mark.asyncio
+async def test_final_save_runs_when_default_executor_is_full(tracker_factory, monkeypatch):
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tracker_factory()
+    tracker.record("test-model", 2, 1, 3)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lambda: None)
+    count = loop._default_executor._max_workers
+    entered = threading.Barrier(count + 1)
+    release = threading.Event()
+
+    def work():
+        entered.wait(5)
+        release.wait(5)
+
+    workers = [loop.run_in_executor(None, work) for _ in range(count)]
+    try:
+        entered.wait(5)
+        await asyncio.wait_for(tracker.asave(report_timeout=1), 2)
+        assert not release.is_set(), "the default pool must remain occupied"
+        assert json.loads(tracker._storage_path.read_text())["recent_records"][0]["tt"] == 3
+    finally:
+        release.set()
+        await asyncio.gather(*workers)

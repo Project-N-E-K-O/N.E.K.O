@@ -25,7 +25,9 @@ import secrets
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from utils.file_utils import atomic_write_json
 
@@ -54,6 +56,11 @@ _TELEMETRY_REPORT_INTERVAL = 60
 _TELEMETRY_TIMEOUT = 10  # Seconds.
 
 _TELEMETRY_GZIP_THRESHOLD = 1024
+
+# Final saves must not queue behind work whose stop signal is issued by
+# shutdown. One shared worker also serializes periodic and shutdown saves.
+# The executor is lazy and joins running IO before the atexit safety net.
+_SAVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-save")
 
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
     """Compute the HMAC-SHA256 signature for telemetry reporting."""
@@ -286,8 +293,11 @@ class ReportingMixin:
             logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
 
     async def asave(self, *, report_timeout: float | None = None):
-        """Save outside the event loop, optionally bounding the remote attempt."""
-        await asyncio.to_thread(self.save, report_timeout=report_timeout)
+        """Save independently of application workers; cancellation cannot stop IO."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            _SAVE_EXECUTOR, partial(self.save, report_timeout=report_timeout),
+        )
 
     def save(self, *, report_timeout: float | None = None):
         """Persist incremental data to disk. Multi-process safe.
@@ -612,7 +622,7 @@ class ReportingMixin:
                     # import failures fall through, skipping this cycle and retrying next.
                     pass
             if need_save:
-                await asyncio.to_thread(self.save)
+                await self.asave()
             # Also persist sparse event_logger buffers and run retention cleanup.
             # Even without token_tracker dirty state, event_logger may hold
             # session/crash events. Do not gate on self._dirty, or frontend-only

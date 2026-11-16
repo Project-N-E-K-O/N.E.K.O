@@ -17,6 +17,8 @@
 
 import math
 
+from utils.shutdown_steps import ShutdownCancellationBudget, run_shutdown_step
+
 from .api_shared import (  # noqa: F401
     AGENT_HISTORY_TURNS,
     AGENT_PROACTIVE_ANALYZE_ENABLED,
@@ -926,19 +928,16 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
 
-    try:
-        from utils.token_tracker import TokenTracker
-        await TokenTracker.get_instance().asave(report_timeout=1.0)
-    except Exception:
-        pass
-
-    if Modules.computer_use:
-        Modules.computer_use.cancel_running()
-    if Modules.browser_use:
+    # Stop work before the first await. Neither tracker IO nor a busy executor
+    # may prevent its workers from receiving the signal that releases them.
+    for name in ("computer_use", "browser_use"):
+        module = getattr(Modules, name, None)
+        if module is None:
+            continue
         try:
-            Modules.browser_use.cancel_running()
-        except Exception:
-            pass
+            module.cancel_running()
+        except Exception as exc:
+            logger.warning("[Agent] %s stop notification failed: %s", name, exc)
 
     for t in list(Modules._persistent_tasks):
         if not t.done():
@@ -946,15 +945,25 @@ async def shutdown():
     if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
         Modules.active_computer_use_async_task.cancel()
 
-    try:
-        await _ensure_plugin_lifecycle_stopped()
-    except Exception as e:
-        logger.warning(f"[Agent] Plugin lifecycle cleanup error: {e}")
+    cancellation = None
+    # Agent is last in the 20 + 12 + 8 s merged sequence. Leave margin below
+    # its 45 s watchdog when cancellation arrives at the service deadline.
+    cancellation_budget = ShutdownCancellationBudget(3.0)
 
-    try:
-        await _stop_embedded_user_plugin_server()
-    except Exception as e:
-        logger.warning(f"[Agent] Embedded user plugin server cleanup error: {e}")
+    async def step(factory, what):
+        nonlocal cancellation
+        cancellation = await run_shutdown_step(
+            factory,
+            what=what,
+            deadline_monotonic=None,
+            pending_cancellation=cancellation,
+            cancelled_budget_seconds=3.0,
+            cancellation_budget=cancellation_budget,
+            logger=logger,
+        )
+
+    await step(_ensure_plugin_lifecycle_stopped, "Agent plugin lifecycle cleanup")
+    await step(_stop_embedded_user_plugin_server, "Agent embedded plugin server cleanup")
 
     logger.info("[Agent] 正在清理 AsyncClient 资源...")
 
@@ -973,7 +982,7 @@ async def shutdown():
             except Exception as e:
                 logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
 
-    try:
+    async def close_routers():
         _shutdown_coros = []
         for _name, _attr_name in [("DirectTaskExecutor", "task_executor")]:
             _mod = getattr(Modules, _attr_name, None)
@@ -984,48 +993,56 @@ async def shutdown():
                 asyncio.gather(*_shutdown_coros, return_exceptions=True),
                 timeout=5.0,
             )
-    except asyncio.TimeoutError:
-        logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
+    await step(close_routers, "Agent router cleanup")
 
     bridge = Modules.agent_bridge
     if bridge is not None:
-        try:
+        async def stop_bridge():
             await bridge.stop()
             Modules.agent_bridge = None
             logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
-        except Exception as e:
-            logger.warning("[Agent] ⚠️ ZMQ event bridge cleanup error: %s", e)
+        await step(stop_bridge, "Agent ZMQ event bridge cleanup")
 
     all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
     tasks_to_await = [t for t in all_tasks if not t.done()]
     for t in tasks_to_await:
         t.cancel()
     if tasks_to_await:
-        try:
+        async def drain_tasks():
             await asyncio.wait_for(
                 asyncio.gather(*tasks_to_await, return_exceptions=True),
                 timeout=5.0,
             )
-        except asyncio.TimeoutError:
-            logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
+        await step(drain_tasks, "Agent background task cleanup")
     Modules._persistent_tasks.clear()
     Modules._background_tasks.clear()
 
     # BrowserSession.keep_alive keeps Chromium running between tasks; closing
     # the adapter is therefore required at service shutdown, not just task
     # cancellation, to reap the browser subprocess tree.
-    await _close_browser_use_adapter()
+    await step(_close_browser_use_adapter, "Agent browser cleanup")
 
     cu = Modules.computer_use
     if cu is not None and hasattr(cu, "wait_for_completion"):
-        loop = asyncio.get_running_loop()
-        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
-        if not finished:
-            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+        async def drain_computer_use():
+            loop = asyncio.get_running_loop()
+            finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
+            if not finished:
+                logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+        await step(drain_computer_use, "Agent CUA thread cleanup")
+
+    async def save_stats():
+        from utils.token_tracker import TokenTracker
+        await TokenTracker.get_instance().asave(report_timeout=1.0)
+
+    # Final persistence follows resource cleanup, including on cancellation.
+    await step(save_stats, "Agent token usage save")
 
     logger.info("[Agent] ✅ AsyncClient 资源清理完成")
     logger.info("[Agent] Shutdown cleanup complete")
-    await _emit_agent_status_update()
+    await step(_emit_agent_status_update, "Agent final status")
+    if cancellation is not None:
+        raise cancellation
 
 
 @app.get("/health")
