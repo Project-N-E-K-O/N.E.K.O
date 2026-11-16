@@ -1,0 +1,260 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""The host's own tools, served to dsh sessions as tools of an MCP service.
+
+In the built-in runtime ``report``, ``note_lesson``, ``web_search`` and the
+subagent tools are tools of the runtime that call back into the host
+(``nekoclaw.runtime.tools.host_tools``). dsh has no place for them, but it
+calls the tools of any service a session is handed, so the driver serves
+them: the same definitions and the same implementations, each call going to
+the same host callback. dsh shows them to the model as ``mcp__host__<name>``.
+
+``web_fetch`` is served the same way, though it calls nothing of the host
+and dsh has a tool of that name: dsh's reaches every address, the loopback
+interface and private networks included, where the built-in runtime's
+(``nekoclaw.runtime.tools.web``) reaches public addresses only. dsh's is
+switched off (``profile.build_patch``) and the built-in runtime's is the one
+a task agent has, in either runtime.
+
+What differs from the built-in runtime, and why:
+
+* ``ask_user_question`` is not offered. dsh ends a call of such a tool after
+  a minute and cannot be told otherwise, and a person answers when they
+  answer. A question is a ``waiting`` report here; the host hands the answer
+  to the session as its next work.
+* ``wait_agent`` hands over what arrived as its result. dsh takes no text in
+  the middle of a turn, so what a subagent's result or the user would add
+  waits for the turn to end; a session that waits for it gets it at once.
+  It waits for less than dsh's minute at a time.
+* Every other call that takes longer than dsh allows is given up and
+  reported as failed.
+
+Transport as in the host's gateway: HTTP POST with JSON answers,
+``initialize``, ``ping``, ``tools/list`` and ``tools/call``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import sys
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from nekoclaw.runtime.host import HostBridge
+from nekoclaw.runtime.loop.tools import AgentTool
+from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolCallInfo, ToolContext, ToolError, define_tool
+
+logger = logging.getLogger(__name__)
+
+SERVER_NAME = "nekoclaw-host-tools"
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+# Left out on dsh; see the module docstring.
+NOT_OFFERED = frozenset({"ask_user_question"})
+WAIT_TOOL = "wait_agent"
+
+# Returns the texts that arrived for a session, waiting up to so many seconds
+# for the first; an empty list when none came. What it returns counts as
+# handed to the session.
+TakeInput = Callable[[float], Awaitable[list[str]]]
+
+
+class _Cancelled:
+    """Cancellation token of one call: set when dsh gives the call up."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+
+@dataclass(slots=True)
+class _Offer:
+    """What one session is offered."""
+
+    tools: dict[str, AgentTool] = field(default_factory=dict)
+
+
+def _definition(tool: AgentTool) -> dict[str, Any]:
+    return {"name": tool.name, "description": tool.description, "inputSchema": dict(tool.parameters)}
+
+
+def _result(text: str, *, error: bool = False) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}], "isError": error}
+
+
+class HostTools:
+    """Builds and carries out the host's tools for the sessions of a dsh driver."""
+
+    def __init__(self, host: HostBridge) -> None:
+        self._host = host
+        self._offers: dict[str, _Offer] = {}
+
+    def open(
+        self,
+        session_id: str,
+        *,
+        workdir: str,
+        session_dir: str,
+        top_level: bool,
+        disabled: tuple[str, ...],
+        take_input: TakeInput,
+        emit_report: Callable[[dict[str, Any]], None],
+    ) -> list[str]:
+        """Build a session's tools and return their names, as the built-in runtime names them."""
+        from nekoclaw.runtime.host import offers_subagents
+        from nekoclaw.runtime.protocol import RuntimeLimits
+        from nekoclaw.runtime.tools import tool_schemas
+        from nekoclaw.runtime.tools.host_tools import (
+            WAIT_AGENT_DEFAULT_MS,
+            WAIT_AGENT_MAX_MS,
+            WAIT_AGENT_MIN_MS,
+            build_host_tools,
+        )
+        from nekoclaw.runtime.tools.web import build_web_tools
+
+        schemas = tool_schemas()
+        context = ToolContext(
+            session_id=session_id,
+            workdir=Path(workdir),
+            spill=SpillStore(Path(session_dir) / "outputs"),
+            host=self._host,
+            limits=RuntimeLimits(),
+            supports_images=False,
+            platform=sys.platform,
+            # Only ``wait_agent`` reads it, and that tool is replaced below.
+            inbox=SessionInbox(),
+            jobs=None,  # type: ignore[arg-type]  # the tools built here use none of the three
+            todos=None,  # type: ignore[arg-type]
+            goals=None,  # type: ignore[arg-type]
+            emit_report=emit_report,
+            top_level=top_level,
+        )
+        built = [*build_host_tools(context, schemas), *build_web_tools(context, schemas)]
+        tools = {tool.name: tool for tool in built}
+
+        if offers_subagents(self._host.capabilities):
+
+            async def wait_agent(args: dict[str, Any], call: ToolCallInfo) -> str:
+                from config.nekoclaw_settings import DSH_HOST_TOOL_SECONDS
+
+                del call
+                timeout_ms = int(args.get("timeout_ms", WAIT_AGENT_DEFAULT_MS))
+                if not WAIT_AGENT_MIN_MS <= timeout_ms <= WAIT_AGENT_MAX_MS:
+                    raise ToolError(f"timeout_ms must be from {WAIT_AGENT_MIN_MS} through {WAIT_AGENT_MAX_MS}")
+                # Inside the time dsh gives a call; a longer wait is asked for again.
+                arrived = await take_input(min(timeout_ms / 1000, DSH_HOST_TOOL_SECONDS - 5.0))
+                state = json.dumps({"timedOut": not arrived}, separators=(",", ":"))
+                return "\n\n".join([state, *arrived])
+
+            tools[WAIT_TOOL] = define_tool(schemas[WAIT_TOOL], wait_agent)
+
+        hidden = NOT_OFFERED | set(disabled)
+        offered = {name: tool for name, tool in sorted(tools.items()) if name not in hidden}
+        self._offers[session_id] = _Offer(offered)
+        return list(offered)
+
+    def close(self, session_id: str) -> None:
+        self._offers.pop(session_id, None)
+
+    def names(self, session_id: str) -> list[str]:
+        offer = self._offers.get(session_id)
+        return list(offer.tools) if offer is not None else []
+
+    # -- JSON-RPC ---------------------------------------------------------
+
+    async def handle(self, session_id: str, payload: Any) -> Any:
+        """Answer one JSON-RPC message of a session, or a list of them. None for notifications."""
+        if isinstance(payload, list):
+            answers = [answer for answer in [await self._handle_one(session_id, item) for item in payload] if answer]
+            return answers or None
+        return await self._handle_one(session_id, payload)
+
+    async def _handle_one(self, session_id: str, message: Any) -> dict[str, Any] | None:
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
+            return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "invalid request"}}
+        is_notification = "id" not in message
+        request_id = message.get("id")
+        params = message.get("params")
+        params = params if isinstance(params, dict) else {}
+        method = message["method"]
+        if method.startswith("notifications/"):
+            return None
+        if method == "initialize":
+            requested = params.get("protocolVersion")
+            version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else SUPPORTED_PROTOCOL_VERSIONS[0]
+            result: Any = {
+                "protocolVersion": version,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": SERVER_NAME, "version": "1"},
+            }
+        elif method == "ping":
+            result = {}
+        elif method == "tools/list":
+            offer = self._offers.get(session_id)
+            result = {"tools": [_definition(tool) for tool in offer.tools.values()] if offer is not None else []}
+        elif method == "tools/call":
+            name = params.get("name")
+            arguments = params.get("arguments")
+            result = await self.call(
+                session_id, str(name or ""), arguments if isinstance(arguments, dict) else {}, call_id=str(request_id)
+            )
+        else:
+            if is_notification:
+                return None
+            # Also what dsh's client gets for the probe of a newer protocol
+            # it sends first; it then goes on with ``initialize``.
+            return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": f"unknown method {method}"}}
+        if is_notification:
+            return None
+        return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+    async def call(self, session_id: str, name: str, arguments: dict[str, Any], *, call_id: str = "") -> dict[str, Any]:
+        """Carry out one tool call and return its MCP result."""
+        from config.nekoclaw_settings import DSH_HOST_TOOL_SECONDS
+        from config.prompts.prompts_nekoclaw_dsh import DSH_TOOL_TOOK_TOO_LONG
+
+        offer = self._offers.get(session_id)
+        tool = offer.tools.get(name) if offer is not None else None
+        if tool is None:
+            return _result(f"no tool named {name}", error=True)
+        token = _Cancelled()
+        work = asyncio.ensure_future(tool.execute(call_id or name, arguments, token, None))
+        try:
+            # Shielded: when the wait is given up below, the work is told to
+            # stop through its token and then cancelled, in that order.
+            outcome = await asyncio.wait_for(asyncio.shield(work), DSH_HOST_TOOL_SECONDS)
+        except asyncio.TimeoutError:
+            token.cancelled = True
+            work.cancel()
+            await asyncio.gather(work, return_exceptions=True)
+            return _result(DSH_TOOL_TOOK_TOO_LONG, error=True)
+        except asyncio.CancelledError:
+            # dsh gave the call up (its turn was stopped): so does the host.
+            token.cancelled = True
+            work.cancel()
+            await asyncio.gather(work, return_exceptions=True)
+            raise
+        except ToolError as exc:
+            return _result(str(exc), error=True)
+        except Exception as exc:  # noqa: BLE001 - reported to the model, never raised into the listener
+            logger.exception("the host tool %s failed", name)
+            return _result(f"{name} failed: {type(exc).__name__}: {exc}", error=True)
+        text = "".join(str(getattr(part, "text", "") or "") for part in outcome.content)
+        return _result(text or "(empty result)")
