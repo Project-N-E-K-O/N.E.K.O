@@ -29,6 +29,9 @@ export interface OnboardingCopy {
   routesHeading: string
   routeCards: RouteCard[]
   routeStatusText: string
+  routeStatusLink: string
+  routeCurrentTag: string
+  routeSwitchText: string
   tabHeading: string
   tabHint: string
   downloadLabel: string
@@ -691,7 +694,10 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
         ],
       },
     ],
-    routeStatusText: '当前：{route} — 步骤见下方对应路线',
+    routeStatusText: '当前：{route} — ',
+    routeStatusLink: '步骤在下方「3. 跟着做」',
+    routeCurrentTag: '当前路线',
+    routeSwitchText: '改走{route}',
     tabHeading: '选择你使用的 Coding Agent',
     tabHint: '不局限于以下工具，任意能读写文件并执行操作的 AI 编程工具均可',
     downloadLabel: '官网下载',
@@ -738,7 +744,10 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
         ],
       },
     ],
-    routeStatusText: 'Selected: {route} — follow the matching route steps below',
+    routeStatusText: 'Selected: {route} — ',
+    routeStatusLink: 'steps are in “3. Follow the steps” below',
+    routeCurrentTag: 'Current route',
+    routeSwitchText: 'Switch to {route}',
     tabHeading: 'Choose your coding agent',
     tabHint: 'Any AI coding tool that can edit files and run actions on your computer works',
     downloadLabel: 'Official site',
@@ -785,7 +794,10 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
         ],
       },
     ],
-    routeStatusText: '選択中：{route} — 下の該当ルートの手順に進んでください',
+    routeStatusText: '選択中：{route} — ',
+    routeStatusLink: '手順は下の「3. 手順どおりに進める」へ',
+    routeCurrentTag: '選択中',
+    routeSwitchText: '{route}に切り替え',
     tabHeading: '使用する Coding Agent を選択',
     tabHint: 'この一覧以外でも、ファイル編集と操作の実行ができる AI ツールなら使えます',
     downloadLabel: '公式サイト',

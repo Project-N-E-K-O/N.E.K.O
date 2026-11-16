@@ -14,7 +14,7 @@ import {
 } from './coding-agents-data'
 
 const props = withDefaults(
-  defineProps<{ section?: 'agent' | 'prompt' | 'routes' }>(),
+  defineProps<{ section?: 'agent' | 'prompt' | 'routes'; route?: 'A' | 'B' }>(),
   {
     section: 'agent',
   },
@@ -38,7 +38,7 @@ const activeAgent = computed(() => {
 })
 
 const generatedPrompt = computed(() =>
-  buildSetupPrompt(locale.value, pluginIdea.value, selectedRoute.value),
+  buildSetupPrompt(locale.value, pluginIdea.value, props.route ?? selectedRoute.value),
 )
 
 const GIT_URL = 'https://git-scm.com/downloads'
@@ -158,6 +158,10 @@ onBeforeUnmount(() => {
         </span>
       </div>
     </div>
+    <div class="NekoRoutePicker-status">
+      {{ routeStatusLine
+      }}<a :href="`#neko-route-${selectedRoute.toLowerCase()}`">{{ copy.routeStatusLink }}</a>
+    </div>
   </div>
 
   <div v-else-if="section === 'agent'" class="NekoAgentOnboarding">
@@ -270,27 +274,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div class="NekoAgentOnboarding-routeSwitch" role="group">
-        <button
-          type="button"
-          class="NekoAgentOnboarding-routeBtn"
-          :class="{ 'is-active': selectedRoute === 'A' }"
-          :aria-pressed="selectedRoute === 'A'"
-          @click="selectedRoute = 'A'"
-        >
-          {{ copy.routeALabel }}
-        </button>
-        <button
-          type="button"
-          class="NekoAgentOnboarding-routeBtn"
-          :class="{ 'is-active': selectedRoute === 'B' }"
-          :aria-pressed="selectedRoute === 'B'"
-          @click="selectedRoute = 'B'"
-        >
-          {{ copy.routeBLabel }}
-        </button>
-      </div>
-
       <label class="NekoAgentOnboarding-ideaField">
         <span class="NekoAgentOnboarding-ideaLabel">{{ copy.ideaLabel }}</span>
         <input
@@ -314,7 +297,6 @@ onBeforeUnmount(() => {
 
       <pre v-if="promptExpanded" class="NekoAgentOnboarding-promptPre"><code>{{ generatedPrompt }}</code></pre>
     </div>
-    <div class="NekoAgentPrompt-routeStatus">{{ routeStatusLine }}</div>
   </div>
 </template>
 
@@ -642,38 +624,6 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
-.NekoAgentOnboarding-routeSwitch {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.NekoAgentOnboarding-routeBtn {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 14px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 999px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-1);
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.3;
-  cursor: pointer;
-  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
-}
-
-.NekoAgentOnboarding-routeBtn:hover {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1);
-}
-
-.NekoAgentOnboarding-routeBtn.is-active {
-  border-color: var(--vp-c-brand-1);
-  background: var(--vp-c-brand-soft);
-  color: var(--vp-c-brand-1);
-}
 </style>
 
 <style>
@@ -748,10 +698,19 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
-.NekoAgentPrompt-routeStatus {
-  margin-top: 8px;
+.NekoRoutePicker-status {
+  margin-top: 10px;
   color: var(--vp-c-text-2);
-  font-size: 12.5px;
+  font-size: 13px;
+}
+
+.NekoRoutePicker-status a {
+  color: var(--vp-c-brand-1);
+  text-decoration: none;
+}
+
+.NekoRoutePicker-status a:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 720px) {

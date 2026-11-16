@@ -17,26 +17,15 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
 
 <CodingAgentOnboarding section="agent" />
 
-## 3. 复制这段话发给 AI
+## 3. 跟着做
 
-先在卡片上选好路线（A 或 B），再复制。
-
-<CodingAgentOnboarding section="prompt" />
-
-## 怎么打开插件管理
-
-路线 A 和路线 B 都要用到插件管理。在 N.E.K.O 主界面这样打开：
-
-![在 N.E.K.O 主界面打开插件管理](/images/plugins/onboarding/neko-open-plugin-manager.png)
-
-1. 把鼠标移到猫娘身上，点出现的圆形「猫爪」按钮。
-2. 在弹出的面板里打开「猫爪总开关」和「用户插件」开关。
-3. 鼠标悬停「用户插件」那一行，点旁边出现的「管理面板」，插件管理就会在新窗口打开。
-
-## 4. 路线 A：让 AI 从头带你做
+<CodingAgentRoute route="A">
 
 1. 用你的 Agent **打开一个空文件夹**（任意位置，专门放这个项目；具体怎么打开，看第 2 节你选的 Agent 卡片里的官方教程）。
-2. 把上面「路线 A」那段话发给它。
+2. 把这段话发给它：
+
+   <CodingAgentOnboarding section="prompt" route="A" />
+
 3. AI 请求执行操作时点「允许」。它会自己下载和安装，准备时间比较长，耐心等。
 4. 打开它给你的网址。第一次要填一次模型 API（还没有 API Key 的话，可以按页面顶部提示选「免费版」）：
 
@@ -62,7 +51,9 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
 
 8. 之后直接跟 AI 说想改什么就行；下次想继续，对它说「帮我启动 N.E.K.O」。
 
-## 5. 路线 B：用已装好的 N.E.K.O
+</CodingAgentRoute>
+
+<CodingAgentRoute route="B">
 
 1. 先装好 Git（路线 B 卡片里有官网下载链接，用安装包一路下一步）。
 2. 打开插件管理（方法见[怎么打开插件管理](#怎么打开插件管理)）。
@@ -96,7 +87,10 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
    2. 点「打开文件夹」可以直接看到里面的文件。
    3. 点「在插件管理中打开」可以跳到插件详情页。
 
-7. 用你的 Agent **打开这个项目文件夹**，把上面「路线 B」那段话发给它。
+7. 用你的 Agent **打开这个项目文件夹**，把这段话发给它：
+
+   <CodingAgentOnboarding section="prompt" route="B" />
+
 8. 点「在插件管理中打开」进入插件详情页，点「启动」试用；之后每次 AI 改完，点「重载」看效果：
 
    ![插件详情页的启动和重载按钮](/images/plugins/onboarding/neko-plugin-detail.png)
@@ -111,7 +105,19 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
    1. 点「日志」标签页。
    2. 复制标着 ERROR 的那几行发给 AI。
 
-## 6. 想分享给别人
+</CodingAgentRoute>
+
+## 怎么打开插件管理
+
+路线 A 和路线 B 都要用到插件管理。在 N.E.K.O 主界面这样打开：
+
+![在 N.E.K.O 主界面打开插件管理](/images/plugins/onboarding/neko-open-plugin-manager.png)
+
+1. 把鼠标移到猫娘身上，点出现的圆形「猫爪」按钮。
+2. 在弹出的面板里打开「猫爪总开关」和「用户插件」开关。
+3. 鼠标悬停「用户插件」那一行，点旁边出现的「管理面板」，插件管理就会在新窗口打开。
+
+## 4. 想分享给别人
 
 **路线 B**：在工作台你的项目页面点「打包下载」：
 
