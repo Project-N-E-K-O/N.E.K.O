@@ -473,6 +473,7 @@ def _remove(path: Path, *, strict: bool = False) -> None:
         else:
             path.unlink()
     except FileNotFoundError:
+        # Gone already: that is what was asked for.
         pass
     except OSError:
         if strict:

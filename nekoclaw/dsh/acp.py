@@ -153,6 +153,8 @@ class AcpConnection:
         threading.Thread(target=self._read_output, args=(loop,), name="acp-agent-output", daemon=True).start()
         threading.Thread(target=self._read_errors, args=(loop,), name="acp-agent-errors", daemon=True).start()
         threading.Thread(target=self._write_input, name="acp-agent-input", daemon=True).start()
+        # Not left to the end of its output: what it started may hold that open.
+        threading.Thread(target=_end_group_once_gone, args=(self._process,), name="acp-agent-group", daemon=True).start()
 
     @staticmethod
     def _spawn(argv: list[str], cwd: str, env: dict[str, str]) -> "subprocess.Popen[bytes]":
@@ -186,7 +188,7 @@ class AcpConnection:
                 try:
                     loop.call_soon_threadsafe(self._on_line, line)
                 except RuntimeError:
-                    break
+                    return
         except (OSError, ValueError):
             # The pipe was closed under the reader: the end is told below all the same.
             pass
@@ -195,11 +197,6 @@ class AcpConnection:
         except RuntimeError:
             # The event loop is closed: nobody is left to tell.
             pass
-        # What the agent started may outlive it, in the process group it led
-        # (POSIX). That is ended the moment the agent is gone, before its
-        # process id can be another process's.
-        process.wait()
-        _end_group(process)
 
     def _read_errors(self, loop: asyncio.AbstractEventLoop) -> None:
         process = self._process
@@ -407,21 +404,46 @@ def _discard(process: "subprocess.Popen[bytes]") -> None:
     _wait(process, 5.0)
 
 
+def _end_group_once_gone(process: "subprocess.Popen[bytes]") -> None:
+    """Blocking, a thread of its own: once the agent exited, kill what it left in its process group.
+
+    On POSIX the exit is waited for without collecting it (``WNOWAIT``):
+    until it is collected, the agent's process id, and so its group's,
+    cannot be another process's. Nothing to kill on Windows.
+    """
+    if hasattr(os, "waitid"):
+        try:
+            os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+        except OSError:
+            # Collected already (ChildProcessError): see ``_end_group``.
+            return
+    else:
+        process.wait()
+    _end_group(process)
+
+
 def _end_group(process: "subprocess.Popen[bytes]") -> None:
-    """Blocking: on POSIX, kill what is left of the process group an exited agent led; nothing on Windows.
+    """Blocking: on POSIX, kill the process group a process leads, with whatever is in it; nothing on Windows.
 
     The agent was started with ``start_new_session``: its group's id is its
-    process id, which no new process gets while the group has members.
+    process id. That is used only while the process is not collected yet
+    (``Popen`` has not taken its exit status): until then no other process
+    can have that id. ``Popen`` collects under its lock, held here meanwhile.
     """
     if sys.platform == "win32":
         return
+    import contextlib
     import signal
 
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except OSError:
-        # ProcessLookupError: nothing is left of the group.
-        pass
+    with getattr(process, "_waitpid_lock", None) or contextlib.nullcontext():
+        if process.returncode is not None:
+            # Collected: its id may be another process's by now, and is left alone.
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            # ProcessLookupError: nothing is left of the group.
+            pass
 
 
 def kill_tree(process: "subprocess.Popen[bytes]") -> None:

@@ -53,6 +53,16 @@ for line in sys.stdin:
         sys.exit(int(message["params"]["code"]))
     elif method == "said":
         open(message["params"]["path"], "a").write(json.dumps(message["params"]) + "\n")
+    elif method == "leave":
+        # Start something that outlives the agent, in its process group; holding its output open, or not.
+        import subprocess
+        params = message["params"]
+        left = subprocess.Popen(
+            [sys.executable, "-c", f"import time; time.sleep({params['seconds']})"],
+            stdin=subprocess.DEVNULL,
+            stdout=None if params["keep_output"] else subprocess.DEVNULL,
+        )
+        send({"jsonrpc": "2.0", "id": message["id"], "result": left.pid})
 if "--linger" in sys.argv:
     time.sleep(60)
 '''
@@ -160,6 +170,8 @@ async def test_what_an_agent_left_in_its_process_group_is_ended_once_it_exited(a
     ended: list[int | None] = []
     monkeypatch.setattr(acp, "_end_group", lambda process: ended.append(process.returncode))
     client = await agent()
+    # On POSIX this holds the agent's output open: its end does not come with the agent's.
+    await client.connection.request("leave", {"seconds": 3, "keep_output": True})
 
     client.connection.notify("exit", {"code": 0})
     for _attempt in range(250):
@@ -168,8 +180,64 @@ async def test_what_an_agent_left_in_its_process_group_is_ended_once_it_exited(a
         await asyncio.sleep(0.02)
 
     # What it started may outlive it in the group it led (POSIX): that is ended
-    # as soon as the agent is gone, without anyone having to close the connection.
-    assert ended == [0]
+    # as soon as the agent is gone, without anyone having to close the connection,
+    # and before its exit is collected (its id cannot be another process's till then).
+    assert ended == [0 if sys.platform == "win32" else None]
+
+
+def _running(pid: int) -> bool:
+    """POSIX: whether a process runs (a zombie, killed and not yet collected, does not)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii") as stat:
+            return stat.read().rsplit(")", 1)[-1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX's")
+@pytest.mark.parametrize("keep_output", [True, False])
+async def test_an_agent_that_exits_takes_what_it_left_in_its_group_with_it(agent, keep_output: bool) -> None:
+    client = await agent()
+    left = await client.connection.request("leave", {"seconds": 60, "keep_output": keep_output})
+    assert _running(left)
+
+    client.connection.notify("exit", {"code": 0})
+    for _attempt in range(250):
+        if not _running(left):
+            break
+        await asyncio.sleep(0.02)
+
+    assert not _running(left)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX's")
+@pytest.mark.parametrize("collected", [True, False])
+def test_the_group_of_a_process_is_killed_only_while_its_id_is_still_its_own(
+    monkeypatch: pytest.MonkeyPatch, collected: bool
+) -> None:
+    import subprocess
+
+    from nekoclaw.dsh import acp
+
+    process = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    if collected:
+        process.wait()
+    else:
+        # Exited, its exit status not taken: its id is still its own.
+        os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
+    killed: list[int] = []
+    monkeypatch.setattr(os, "killpg", lambda group, signal: killed.append(group))
+
+    acp._end_group(process)
+
+    assert killed == ([] if collected else [process.pid])
+    process.wait()
 
 
 async def test_an_agent_that_exits_fails_what_was_waiting_and_is_reported_once(agent) -> None:
