@@ -225,6 +225,9 @@ function _installNekoIdleReturnArtLoadRetry(art) {
         art.__nekoIdleReturnArtRetryTimer = setTimeout(() => {
             art.__nekoIdleReturnArtRetryTimer = 0;
             if ((art.getAttribute('src') || '') !== failedSrc) return;
+            // The button was torn down meanwhile; do not download for a
+            // detached image.
+            if (art.isConnected === false) return;
             // Re-assigning an identical value is not guaranteed to restart the
             // fetch, so drop the attribute first.
             art.removeAttribute('src');

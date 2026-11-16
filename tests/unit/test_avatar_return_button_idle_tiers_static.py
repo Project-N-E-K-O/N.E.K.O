@@ -993,7 +993,7 @@ def test_model_cat_transition_contract_is_present():
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
     # Reveal restarts alternate two URLs so they stay in the HTTP cache.
     assert "nekoModelCatRevealPlaybackToken" not in source
-    assert "function nextNekoModelCatRevealPlaybackToken(src)" in source
+    assert "function nextNekoModelCatRevealPlaybackUrl(src)" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
     assert "url.searchParams.set('reveal'" in source
     assert "function restartNekoModelCatRevealArt(container)" in source

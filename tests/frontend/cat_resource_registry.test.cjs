@@ -638,25 +638,49 @@ test('return transition restarts canonical cat animations and preserves their ve
     '/user_pngtuber/custom.gif');
 });
 
-test('return transition alternates two reveal URLs so restarts stay cacheable', () => {
+test('return transition reuses a few reveal URLs and never one another return art shows', () => {
   const source = fs.readFileSync(path.join(PROJECT_ROOT,
     'static/app/app-ui/return-transitions.js'), 'utf8');
   const start = source.indexOf('function buildNekoModelCatRevealPlaybackUrl(');
   const end = source.indexOf('I.restartNekoModelCatRevealArt =', start);
-  const context = vm.createContext({ URL, window: { location: { href: 'http://localhost/' } } });
+  const arts = [];
+  const makeArt = (src) => {
+    const art = { attrs: { src }, getAttribute(name) { return this.attrs[name] ?? null; } };
+    arts.push(art);
+    return art;
+  };
+  const context = vm.createContext({
+    URL,
+    window: { location: { href: 'http://localhost/' } },
+    document: { querySelectorAll: () => arts },
+  });
   vm.runInContext(source.slice(start, end), context);
   const src = loadRegistry().getAppearance('idle.cat1', { random: false }).url;
+  const tokenOf = (value) => new URL(value, 'http://localhost/').searchParams.get('reveal');
+
+  // A single return button alternates between two cacheable URLs.
+  const active = makeArt(`${src}?v=123`);
   const seen = new Set();
-  let current = `${src}?v=123`;
   for (let i = 0; i < 6; i += 1) {
-    const next = context.buildNekoModelCatRevealPlaybackUrl(
-      current, context.nextNekoModelCatRevealPlaybackToken(current));
+    const current = active.attrs.src;
+    const next = context.nextNekoModelCatRevealPlaybackUrl(current);
     assert.notEqual(next, current, 'each reveal must change the URL to restart playback');
     assert.equal(new URL(next).searchParams.get('v'), '123');
     seen.add(next);
-    current = next;
+    active.attrs.src = next;
   }
   assert.equal(seen.size, 2);
+
+  // A hidden return button of another model still shows reveal=2 while the
+  // active one shows reveal=1: neither may be reused, or the two images would
+  // share one animation timeline.
+  active.attrs.src = `${src}?v=123&reveal=1`;
+  makeArt(`${src}?v=123&reveal=2`);
+  assert.equal(tokenOf(context.nextNekoModelCatRevealPlaybackUrl(active.attrs.src)), '3');
+
+  // Non cat-resource art is left as is (restarted in place).
+  assert.equal(context.nextNekoModelCatRevealPlaybackUrl('/user_pngtuber/custom.gif'),
+    '/user_pngtuber/custom.gif');
 });
 
 test('return button art retries a failed load of the same source, then gives up', () => {
@@ -713,6 +737,14 @@ test('return button art retries a failed load of the same source, then gives up'
 
   // Something else changed the source meanwhile: leave it alone.
   art.attrs.src = 'drag.webp';
+  timers.shift().fn();
+  assert.equal(assigned.length, 3);
+
+  // The button was torn down before the retry fired: no download for a
+  // detached image.
+  fire('load');
+  fire('error');
+  art.isConnected = false;
   timers.shift().fn();
   assert.equal(assigned.length, 3);
   assert.ok(warnings.length >= 5);
