@@ -58,7 +58,8 @@ _TELEMETRY_GZIP_THRESHOLD = 1024
 
 # Final saves must not queue behind work whose stop signal is issued by
 # shutdown. One shared worker also serializes periodic and shutdown saves.
-# The executor is lazy and joins running IO before the atexit safety net.
+# The executor is lazy. Normal interpreter shutdown joins its IO before atexit;
+# os._exit (including merged-mode exit) skips both, so pending saves may be lost.
 _SAVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-save")
 
 def _compute_telemetry_signature(payload_json: str, timestamp: float) -> str:
@@ -375,8 +376,10 @@ class ReportingMixin:
         """Queue a save even when shutdown has no asynchronous wait budget left.
 
         Submission is synchronous, but disk/network IO runs on the independent
-        worker. The concurrent future owns queued work without an event loop;
-        the executor joins it before the atexit safety net runs.
+        worker. The concurrent future owns queued work without an event loop.
+        Normal interpreter shutdown joins the executor before atexit. Merged
+        mode and owner-death exits use os._exit, bypassing both; saves that
+        shutdown stopped waiting for are best effort and may be lost.
         """
         return _SAVE_EXECUTOR.submit(self.save, report_timeout=report_timeout)
 
