@@ -960,6 +960,10 @@ class BrowserUseAdapter:
                             break
                         raise
                     except Exception as e:
+                        from utils.chatgpt_auth import ChatGPTAuthError
+                        from utils.llm_client.chatgpt_client import ChatGPTResponseError
+                        if isinstance(e, (ChatGPTAuthError, ChatGPTResponseError)):
+                            raise
                         last_err = e
                         self._mark_mode_result(api_sig, mode, ok=False)
                         if (self._is_response_format_error(e)

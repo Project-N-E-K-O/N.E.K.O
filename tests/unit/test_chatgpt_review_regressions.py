@@ -231,9 +231,10 @@ async def test_browser_terminal_error_prevents_later_requests(credential_store, 
     assert client.ainvoke_raw.await_count == client.aclose.await_count == 1
 
 
+@pytest.mark.parametrize('error_type', [ChatGPTAuthError, ChatGPTResponseError])
 @pytest.mark.parametrize('callback', [True, False])
 @pytest.mark.asyncio
-async def test_browser_task_does_not_fallback_after_terminal_error(monkeypatch, callback):
+async def test_browser_task_does_not_fallback_after_terminal_error(monkeypatch, callback, error_type):
     import browser_use
     from brain import browser_use_adapter as bu
     adapter = object.__new__(bu.BrowserUseAdapter)
@@ -241,15 +242,14 @@ async def test_browser_task_does_not_fallback_after_terminal_error(monkeypatch, 
     adapter.is_available = lambda: {'ready': True}
     adapter._get_browser_session = AsyncMock(return_value=object())
     adapter._current_api_signature = lambda: 'test'
-    adapter._get_mode_order = lambda _: ['schema', 'text']
-    adapter._mark_mode_result = MagicMock()
+    monkeypatch.setattr(bu, '_API_MODE_CACHE', {})
     adapter._start_overlay = MagicMock()
     adapter._remove_overlay = AsyncMock()
     adapter._close_browser = AsyncMock()
     adapter._get_ip_info = AsyncMock(return_value=(None, None))
     monkeypatch.setattr(bu, '_find_bundled_chromium', lambda: '/fixture/chrome')
     monkeypatch.setattr(bu, '_find_system_chrome_path', lambda: None)
-    error = ChatGPTResponseError('plan limit', status_code=429)
+    error = error_type('plan limit')
     def fail():
         raise error
     llm = SimpleNamespace(provider='chatgpt', raise_terminal_error=fail)
@@ -263,11 +263,13 @@ async def test_browser_task_does_not_fallback_after_terminal_error(monkeypatch, 
             # browser-use may return an unsuccessful history instead of raising.
             return SimpleNamespace(is_successful=lambda: False)
     monkeypatch.setattr(browser_use, 'Agent', FakeAgent)
-    result = await adapter.run_instruction('fixture task')
-    assert not result['success']
-    assert result['error'] == 'plan limit'
-    assert adapter._build_llm.call_count == 1
-    adapter._remove_overlay.assert_awaited_once()
+    for _ in range(2):
+        result = await adapter.run_instruction('fixture task')
+        assert not result['success']
+        assert result['error'] == 'plan limit'
+        assert set(adapter._get_mode_order('test')) == {'schema', 'text'}
+    assert adapter._build_llm.call_count == 2
+    assert adapter._remove_overlay.await_count == 2
 
 
 @pytest.mark.asyncio

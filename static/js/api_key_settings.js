@@ -3940,7 +3940,9 @@ async function saveApiKey(params) {
                     });
                 }
             } else {
-                const errorMsg = result.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const errorMsg = result.error_code === 'chatgptManagedSettings' && window.t
+                    ? window.t('api.chatgpt.managedSettings')
+                    : result.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 showStatus(window.t ? window.t('api.saveFailed', { error: errorMsg }) : '保存失败: ' + errorMsg, 'error');
             }
         } else {

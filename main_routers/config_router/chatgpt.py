@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from utils.chatgpt_auth import ChatGPTAuthError, get_store
 from utils.chatgpt_auth.login import LoginAttempt
@@ -85,7 +85,9 @@ async def chatgpt_login(body: AccountRequest):
             _attempt = LoginAttempt(get_store(), body.account_id)
             return {"url": _attempt.url}
 
-    return await _safe_call(start)
+    from .core_config import _core_api_save_lock
+    async with _core_api_save_lock:
+        return await _safe_call(start)
 
 
 def _change_account(action, account_id):
@@ -103,11 +105,108 @@ def _change_account(action, account_id):
 
 @router.post("/chatgpt/select", dependencies=[Depends(local_settings)])
 async def chatgpt_select(body: AccountRequest):
-    await _safe_call(_change_account, "select", body.account_id)
+    from .core_config import _core_api_save_lock
+    async with _core_api_save_lock:
+        await _safe_call(_change_account, "select", body.account_id)
     return {"success": True}
 
 
 @router.post("/chatgpt/logout", dependencies=[Depends(local_settings)])
 async def chatgpt_logout(body: AccountRequest):
-    confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
-    return {"success": True, "revocation_confirmed": confirmed}
+    from copy import deepcopy
+    from .core_config import _core_api_save_lock, reload_api_configuration
+    from utils.config_manager import get_config_manager
+    from utils.chatgpt_subscription import disable
+    restored = False
+    config = None
+    async with _core_api_save_lock:
+        if _attempt and not _attempt.done.is_set():
+            raise HTTPException(400, 'Complete the pending ChatGPT sign-in before changing accounts.')
+        accounts = await _safe_call(get_store().status)
+        if not any(a['id'] == body.account_id for a in accounts['accounts']):
+            raise HTTPException(400, 'signInRequired')
+        remaining = [a for a in accounts['accounts']
+                     if a['id'] != body.account_id and a.get('connected')]
+        if not remaining:
+            def restore(value):
+                nonlocal restored
+                restored = disable(value)
+                return deepcopy(value)
+            config = await get_config_manager().aupdate_json_config('core_config.json', restore)
+        confirmed = await _safe_call(_change_account, "sign_out", body.account_id)
+    result = await reload_api_configuration(config) if restored else {'success': True}
+    return {**result, "revocation_confirmed": confirmed, "subscription_restored": restored}
+
+
+class SubscriptionRequest(BaseModel):
+    enabled: StrictBool
+    revision: str = ''
+
+
+@router.get('/chatgpt/subscription', dependencies=[Depends(local_settings)])
+async def chatgpt_subscription_preview(verify_authorization: bool = False):
+    from utils.config_manager import get_config_manager
+    from utils.config_manager.json_update import load_json_config_snapshot
+    from utils.chatgpt_subscription import preview, supported_slots
+    manager = get_config_manager()
+    config, slots = await asyncio.gather(
+        asyncio.to_thread(load_json_config_snapshot, manager, 'core_config.json'),
+        asyncio.to_thread(supported_slots),
+    )
+    result = preview(config, slots)
+    result['authorization_required'] = False
+    if result['enabled'] and verify_authorization:
+        try:
+            await asyncio.to_thread(get_store().access_token)
+        except (ChatGPTAuthError, httpx.HTTPError, OSError):
+            result['authorization_required'] = True
+    return result
+
+
+@router.post('/chatgpt/subscription', dependencies=[Depends(local_settings)])
+async def chatgpt_subscription_update(body: SubscriptionRequest):
+    from utils.config_manager import get_config_manager
+    from utils.chatgpt_subscription import enable, disable, preview, supported_slots
+    from .core_config import _core_api_save_lock, reload_api_configuration
+    from utils.llm_client.chatgpt_client import ChatChatGPT
+    from copy import deepcopy
+
+    manager = get_config_manager()
+    async with _core_api_save_lock:
+        slots = await asyncio.to_thread(supported_slots)
+        model = ''
+        if body.enabled:
+            if _attempt and not _attempt.done.is_set():
+                raise HTTPException(400, 'pending')
+            before = await _safe_call(get_store().status)
+            if not before['active']:
+                raise HTTPException(400, 'signInRequired')
+            client = await _safe_call(lambda: ChatChatGPT(timeout=20))  # noqa: LLM_OUTPUT_BUDGET # Model catalog only.
+            try:
+                models = await client.alist_models()
+            except ChatGPTAuthError:
+                raise HTTPException(400, 'signInRequired') from None
+            except httpx.HTTPError:
+                raise HTTPException(503, 'failed') from None
+            finally:
+                await client.aclose()
+            ids = sorted({item['id'] for item in models if isinstance(item.get('id'), str) and item['id']})
+            if not ids:
+                raise HTTPException(400, 'noModels')
+            # Stable selection independent of upstream catalog ordering; no guessed model IDs.
+            model = ids[0]
+            if (await _safe_call(get_store().status))['active'] != before['active']:
+                raise HTTPException(409, 'accountChanged')
+
+        def apply(config):
+            if body.enabled:
+                enable(config, slots, model, body.revision)
+            else:
+                disable(config)
+            return deepcopy(config)
+        try:
+            config = await manager.aupdate_json_config('core_config.json', apply)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+    result = await reload_api_configuration(config)
+    return {**result, 'subscription': preview(config, slots)}

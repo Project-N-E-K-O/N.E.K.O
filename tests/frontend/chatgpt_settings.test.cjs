@@ -5,26 +5,29 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function surface(initial, respond = () => ({}), browser = false) {
-    const nodes = Object.fromEntries(['account', 'status', 'login', 'add', 'logout', 'authorization'].map(id => [id, {
+    const nodes = Object.fromEntries(['account', 'status', 'login', 'add', 'logout', 'authorization', 'enabled', 'toggle-btn', 'options'].map(id => [id, {
         value: '', options: [], disabled: false, textContent: '', listeners: {},
-        hidden: true, removeAttribute(name) { delete this[name]; },
+        hidden: true, checked: false, classList: {toggle() {}},
+        setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; },
         replaceChildren() { this.options = []; },
         appendChild(option) { this.options.push(option); },
         addEventListener(event, fn) { this.listeners[event] = fn; }
     }]));
     let state = initial;
+    let subscription = { enabled: false, slots: ['conversation'], overwritten: ['conversation'], revision: 'fixture' };
+    let reloads = 0;
     let invalidations = 0;
     let opened = '';
     let timer;
     const calls = [];
     const window = {
         listeners: {}, addEventListener(name, fn) { this.listeners[name] = fn; },
-        open: () => null,
+        open: () => null, confirm: () => true,
         electronShell: { openExternal: async url => { opened = url; } }
     };
     if (browser) delete window.electronShell;
     const context = {
-        window, URL,
+        window, URL, loadCurrentApiKey: async () => { reloads++; },
         document: {
             getElementById: id => nodes[id.replace('chatgpt-', '')],
             createElement: () => ({value: '', textContent: ''})
@@ -38,12 +41,16 @@ function surface(initial, respond = () => ({}), browser = false) {
                 if (typeof state === 'function') return state();
                 return {ok: true, json: async () => state};
             }
+            if (url.split('?')[0].endsWith('/subscription') && options.method === 'GET') {
+                return {ok: true, json: async () => subscription};
+            }
             const data = respond(url, JSON.parse(options.body));
             return {ok: !data.detail, json: async () => data};
         }
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../static/js/chatgpt_settings.js'), 'utf8'), context);
     return {nodes, calls, window, setState: value => { state = value; },
+        setSubscription: value => { subscription = {...subscription, ...value}; }, get reloads() { return reloads; },
         get opened() { return opened; }, get timer() { return timer; },
         get invalidations() { return invalidations; }};
 }
@@ -185,4 +192,69 @@ test('named subscription probes carry the model and separate model results', asy
     assert.deepEqual(calls.map(c => c.model), ['conversation-model', 'vision-model']);
     await manager.testKey({provider_key: 'openai', provider_scope: 'assist', model: 'ignored', api_key: 'test'});
     assert.equal('model' in calls[2], false);
+});
+
+
+test('disclosure starts collapsed and exposes its expanded state', async () => {
+    const ui = surface(signedIn);
+    await flush();
+    assert.equal(ui.nodes.options.hidden, true);
+    ui.nodes['toggle-btn'].listeners.click();
+    assert.equal(ui.nodes.options.hidden, false);
+    assert.equal(ui.nodes['toggle-btn']['aria-expanded'], 'true');
+    ui.nodes['toggle-btn'].listeners.click();
+    assert.equal(ui.nodes.options.hidden, true);
+});
+
+test('subscription requires login; cancellation never saves', async () => {
+    const ui = surface({...signedIn, active: null, accounts: []});
+    await flush();
+    assert.equal(ui.nodes.enabled.disabled, true);
+    ui.setState(signedIn);
+    ui.window.listeners.pageshow();
+    await flush();
+    assert.equal(ui.nodes.enabled.disabled, false);
+    ui.window.confirm = () => false;
+    ui.nodes.enabled.checked = true;
+    await ui.nodes.enabled.listeners.change();
+    assert.equal(ui.nodes.enabled.checked, false);
+    assert.equal(ui.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('toggle confirms affected slots, saves once, reloads and reflects persisted state', async () => {
+    let ui;
+    ui = surface(signedIn, (url, body) => {
+        assert.ok(url.endsWith('/subscription'));
+        assert.equal(body.revision, 'fixture');
+        ui.setSubscription({enabled: body.enabled, model: 'available-model'});
+        return {success: true};
+    });
+    let message;
+    ui.window.confirm = text => { message = text; return true; };
+    await flush();
+    ui.nodes.enabled.checked = true;
+    await ui.nodes.enabled.listeners.change();
+    assert.match(message, /conversation/);
+    assert.equal(ui.nodes.enabled.checked, true);
+    assert.match(ui.nodes.status.textContent, /available-model/);
+    assert.equal(ui.reloads, 1);
+    ui.nodes.enabled.checked = false;
+    await ui.nodes.enabled.listeners.change();
+    assert.equal(ui.nodes.enabled.checked, false);
+    assert.equal(ui.reloads, 2);
+});
+
+test('failed toggle reconciles persisted state and authorization warning keeps off available', async () => {
+    const ui = surface(signedIn, () => ({detail: 'save failed'}));
+    await flush();
+    ui.nodes.enabled.checked = true;
+    await ui.nodes.enabled.listeners.change();
+    assert.equal(ui.nodes.enabled.checked, false);
+    assert.match(ui.nodes.status.textContent, /save failed/);
+    ui.setState({...signedIn, active: null, accounts: []});
+    ui.setSubscription({enabled: true, authorization_required: true});
+    ui.window.listeners.pageshow();
+    await flush();
+    assert.equal(ui.nodes.enabled.disabled, false);
+    assert.match(ui.nodes.status.textContent, /restore/);
 });

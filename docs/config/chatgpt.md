@@ -5,9 +5,12 @@ N.E.K.O. can use eligible ChatGPT plan usage through **Continue with ChatGPT**, 
 ## Setup
 
 1. Open API settings on the machine running N.E.K.O., using `localhost` or `127.0.0.1`.
-2. In **ChatGPT / Codex**, click **Continue with ChatGPT**. Complete sign-in and grant ChatGPT plan usage in the system browser. Use **Add account** for a separate registration; the account selector shows the active registration with a check mark.
-3. Expand **Custom API configuration** and enable it. For a text or vision model slot, select **ChatGPT (subscription)**.
-4. Use **Fetch models** to select a model available to the active account. Save settings. No API key is needed in this slot.
+2. Expand **ChatGPT / Codex**, between **API Key Book** and **Custom API configuration**, and click **Continue with ChatGPT**. Complete sign-in and grant ChatGPT plan usage in the system browser. Use **Add account** for a separate registration; the account selector shows the active registration with a check mark.
+3. Turn on **Use ChatGPT subscription**. The confirmation lists existing slots that will be replaced. Confirm to enable custom API, configure every supported text/vision slot and save immediately.
+4. The default model is the lexicographically first nonempty model ID returned by the active account's catalog, sorted independently of upstream ordering. An empty or failed catalog leaves configuration unchanged. Model IDs can subsequently be adjusted in custom settings.
+5. Turn the switch off to restore the previous custom-API flag and all affected slot fields, including original credentials and absent fields. The snapshot is stored on the server and survives page refreshes and application restarts. Other saved settings remain unchanged. The confirmation also warns that reloading settings discards unsaved page edits.
+
+Signing out of the last connected account restores the snapshot before removing credentials. While enabled, settings checks authorization periodically; expired authorization expands the section with a warning to sign in again or turn the switch off to restore. Temporary connection failures do not silently switch providers. A stale settings tab cannot overwrite managed providers while the switch remains on.
 
 The provider supports conversation, summary, correction, emotion, vision, agent and game text-model slots. Function calls use Neko's existing tool execution. Speech recognition, realtime audio, speech synthesis and image generation keep their own providers. Keep the existing core/assist configuration for these services.
 
