@@ -46,14 +46,15 @@ def test_materialize_anthropic_config():
     assert resolved.protocol == "anthropic_messages"
 
 
-@pytest.mark.parametrize("base_url", [
+@pytest.mark.parametrize("endpoint", [
     "https://api.anthropic.com/v1",
     "https://api.kimi.com/coding",
 ])
-def test_materialize_detects_anthropic_endpoints_by_url_like_the_main_app(base_url, monkeypatch):
+def test_materialize_detects_anthropic_endpoints_by_url_like_the_main_app(endpoint, monkeypatch):
+    # Not named base_url: that collides with pytest-base-url's session fixture.
     import utils.config_manager as config_manager
 
-    config = {"model": "m", "base_url": base_url, "api_key": "k", "provider_type": "openai_compatible"}
+    config = {"model": "m", "base_url": endpoint, "api_key": "k", "provider_type": "openai_compatible"}
     resolved = materialize_host_slot(host_slot(), config)
     assert resolved.protocol == "anthropic_messages"
 

@@ -1153,15 +1153,30 @@ async def test_anthropic_host_legacy_default_rejected_only_when_effective(http_c
     assert ok.status_code == 200, ok.text
     assert consumed == ["plugin:alpha:analysis"]
     # Omitting temperature falls back to the legacy default and is rejected
-    # before any upstream request. (Quota is reserved before request
-    # preparation, so the rejected attempt still consumes one unit — the same
-    # reserve-before-send semantics as any upstream failure.)
+    # before any upstream request. Quota is reserved only after validation,
+    # so the locally rejected request does not consume the shared allowance.
     calls_before = len(setup_gateway.calls)
     bad = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
     assert bad.status_code == 400
     assert bad.json()["error"]["code"] == "model_defaults_incompatible"
     assert len(setup_gateway.calls) == calls_before
-    assert consumed == ["plugin:alpha:analysis", "plugin:alpha:analysis"]
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_free_host_invalid_request_does_not_consume_quota(http_client, setup_gateway, monkeypatch, stream):
+    bind_host_slot(setup_gateway)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+    # Declared usage alias, but an empty message list fails request validation.
+    response = await http_client.post(
+        PREFIX + "/chat/completions", headers=auth(setup_gateway),
+        json=body(messages=[], stream=stream),
+    )
+    assert response.status_code == 400
+    assert setup_gateway.calls == []
+    assert consumed == []
 
 
 async def test_legacy_high_default_document_reads_and_explicit_temperature_calls(http_client, setup_gateway, monkeypatch):

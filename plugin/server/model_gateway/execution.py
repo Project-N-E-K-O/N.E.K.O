@@ -35,8 +35,8 @@ class ResolvedModelCall:
 
     ``fallback_slot`` may be an unresolved host-follow slot: it is materialized
     lazily so a misconfigured backup cannot reject a healthy primary.
-    ``before_attempt`` runs after an attempt's slot is executable and before any
-    upstream request (quota reservation); its errors follow the normal fallback
+    ``before_attempt`` runs after the attempt's request passed validation and
+    before each real upstream send (quota reservation); its errors follow the normal fallback
     rules — quota exhaustion on the primary can switch to a configured backup.
     """
 
@@ -389,18 +389,19 @@ class ModelExecutor:
         try:
             try:
                 async with budget:
-                    if call_before_attempt is not None:
-                        # Reservation runs before this send; exhaustion follows
-                        # the fallback rules like other pre-output rejections.
-                        await call_before_attempt(slot_id, slot)
-                    if stream is None:
-                        return await self.gateway.complete(slot, body, observation=observation)
                     before_send = None
                     if call_before_attempt is not None:
                         async def before_send() -> None:
-                            # Covers internal re-sends (stream_options retry):
-                            # every real upstream send reserves quota again.
+                            # The gateway calls this after request validation and
+                            # before every real upstream send (including the
+                            # stream_options retry), so locally rejected requests
+                            # never reserve quota. Exhaustion follows the
+                            # fallback rules like other pre-output rejections.
                             await call_before_attempt(slot_id, slot)
+                    if stream is None:
+                        return await self.gateway.complete(
+                            slot, body, observation=observation, before_send=before_send,
+                        )
                     upstream = self.gateway.stream(slot, body, observation=observation, before_send=before_send)
                     try:
                         async for chunk in upstream:

@@ -93,9 +93,11 @@ primary. Fallback resolution errors are final and never cascade further.
 
 When an attempt resolves to the built-in free credentials (`free-access`), it
 consumes one unit of the shared free daily quota with source
-`plugin:<plugin_id>:<usage_id>` immediately before its upstream request —
-primary attempts, host-follow fallback attempts and connection-test probes
-alike, each judged on the exact credential snapshot it will send. Exhaustion
+`plugin:<plugin_id>:<usage_id>` immediately before each upstream send —
+primary attempts, host-follow fallback attempts, internal stream re-sends and
+connection-test probes alike, each judged on the exact credential snapshot it
+will send. The reservation runs only after the request passed validation, so a
+locally rejected request (HTTP 400, no upstream send) consumes nothing. Exhaustion
 returns `agent_quota_exceeded` (429); because the attempt was rejected before
 any content reached the plugin, a configured fallback slot (for example the
 user's paid manual slot) still serves the call. This metering is independent

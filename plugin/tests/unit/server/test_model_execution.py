@@ -60,8 +60,10 @@ class Gateway:
         self.started = asyncio.Event()
         self.closed = asyncio.Event()
 
-    async def complete(self, model_slot, request, *, observation):
+    async def complete(self, model_slot, request, *, observation, before_send=None):
         prepare_chat_request(model_slot, request)
+        if before_send is not None:
+            await before_send()
         self.calls.append(model_slot.model)
         observation.upstream_started = True
         self.started.set()
@@ -75,6 +77,8 @@ class Gateway:
 
     async def stream(self, model_slot, request, *, observation, before_send=None):
         prepare_chat_request(model_slot, request)
+        if before_send is not None:
+            await before_send()
         self.calls.append(model_slot.model)
         observation.upstream_started = True
         self.started.set()

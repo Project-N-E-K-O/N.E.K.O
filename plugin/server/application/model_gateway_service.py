@@ -161,10 +161,17 @@ class ModelGatewayService:
                 finally:
                     await client.aclose()
 
-    async def complete(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> dict:
+    async def complete(
+        self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ) -> dict:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         model_alias, payload, headers, _ = await asyncio.to_thread(_prepare, slot, body, streaming=False)
+        if before_send is not None:
+            # Only a validated request that is about to be sent reserves quota;
+            # locally rejected requests must not consume the shared allowance.
+            await before_send()
         try:
             async with self._request(slot, payload, headers, observation) as response:
                 result = await read_json_response(response)
@@ -198,6 +205,9 @@ class ModelGatewayService:
         can_retry_without_options = not is_anthropic and not include_usage and not options_unsupported
         saw_done = False
         completed = False
+        if before_send is not None:
+            # Reserve only after validation succeeded, right before the send.
+            await before_send()
         try:
             for retrying in (False, True):
                 connected = False
