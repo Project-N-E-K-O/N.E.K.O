@@ -107,8 +107,17 @@ UsageMeter = Callable[[str], Awaitable[bool]]
 
 
 def _search_queries(arguments: dict[str, Any]) -> tuple[str, ...]:
-    """Return the queries of a call of the web search, the way the search takes them."""
-    return tuple(str(query) for query in arguments.get("queries") or [] if str(query).strip())
+    """Return the queries of a call of the web search as the search tool hands them on: blank ones dropped, each once.
+
+    See ``runtime.tools.web._clean_queries``: what was ruled on before a call
+    is compared with what the call then brings.
+    """
+    queries: list[str] = []
+    for query in arguments.get("queries") or []:
+        text = str(query)
+        if text.strip() and text not in queries:
+            queries.append(text)
+    return tuple(queries)
 
 
 class LessonSink(Protocol):

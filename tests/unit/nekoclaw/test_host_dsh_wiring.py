@@ -552,6 +552,14 @@ async def test_a_ruling_on_a_search_is_only_for_what_the_user_was_asked_about(ho
     with pytest.raises(RuntimeError):
         await host.task_agents._cb_web_search(commission_id, {"queries": ["dogs"]})
     assert len(asked) == 2
+
+    # The same search as the search tool hands it on (a query given twice, once) is what was allowed.
+    await host.task_agents._cb_permission(
+        commission_id, {"tool": "web_search", "category": "host_tool", "arguments": {"queries": ["cats", "cats"]}, "workdir": "w", "default": "allow"}
+    )
+    with pytest.raises(RuntimeError):
+        await host.task_agents._cb_web_search(commission_id, {"queries": ["cats"]})
+    assert len(asked) == 3
     release.set()
     await wait_status(host, commission_id, "done")
 
