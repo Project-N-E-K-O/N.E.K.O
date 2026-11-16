@@ -1,3 +1,4 @@
+import { inBrowser } from 'vitepress'
 import { ref } from 'vue'
 
 // Shared between the <CodingAgentOnboarding section="..."> instances on the
@@ -12,7 +13,7 @@ export const selectedRoute = ref<'A' | 'B'>('A')
 // markup and causes hydration mismatches. Always reset to the deterministic
 // defaults on the server; client-side navigation keeps the user's choice.
 export function resetSharedStateForSSR() {
-  if (import.meta.env.SSR) {
+  if (!inBrowser) {
     selectedAgentId.value = ''
     selectedRoute.value = 'A'
   }
