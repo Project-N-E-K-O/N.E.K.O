@@ -235,3 +235,58 @@ Final local result: **904 passed**, with four existing deprecation warnings, on
 macOS. Ruff and the repository's prompt hygiene, async blocking, module layering,
 LLM budget, core contract, i18n synchronization, Traditional Chinese coverage,
 docstring and documentation-path checks passed, as did `git diff --check`.
+
+
+## Electron socket ownership follow-up (2026-11-16)
+
+The independent Electron chat renderers share the Pet renderer's backend socket.
+If `request_screen_inspection` is mirrored to each renderer, a chat renderer
+without a native capture provider can send `unsupported_capture` before the Pet
+renderer finishes its valid native capture. The first response settles the
+request, so a working native provider alone does not make chat inspection work.
+
+The companion shell must keep `request_screen_inspection` in
+`PET_ONLY_CAPTURE_BRIDGE_REQUEST_TYPES` and `screen_inspection_response` in
+`PET_ONLY_CAPTURE_BRIDGE_PROXY_ACTIONS`. The Pet renderer still receives requests
+and sends its own receipts. Compact/full chat proxies receive ordinary messages
+but cannot submit either success or failure inspection receipts. Existing Pet
+permission, source scope, timeout and connection ownership checks remain in force.
+Do not expose a second native capture provider to chat to work around this race.
+
+The shell lives in the separate `N.E.K.O.-PC` checkout. This backend PR includes
+[the companion patch](patches/screen-inspection-owner.patch) and a regression
+harness loading the shell's actual Pet/chat bridges, lifecycle and IPC channels;
+it does not automatically change an installed shell. Apply and test against the
+matching shell revision (Node 22 or newer):
+
+```sh
+# From this repository, with a matching companion shell checkout:
+export NEKO_DESKTOP_SOURCE=/path/to/N.E.K.O.-PC
+git -C "$NEKO_DESKTOP_SOURCE" apply --check "$PWD/docs/design/patches/screen-inspection-owner.patch"
+git -C "$NEKO_DESKTOP_SOURCE" apply "$PWD/docs/design/patches/screen-inspection-owner.patch"
+node --test tests/desktop/screen_inspection_owner.test.cjs
+```
+
+If the patch does not apply, inspect the current bridge instead of replacing it
+with an older copy. If the entries already exist, run the harness without
+reapplying. Missing source is an error; backend Unit Tests do not substitute for
+this companion-shell test. Native OS capture and transport are mocked in the
+harness. Its seven cases cover delayed owner capture versus immediate follower
+failure, receipt injection from both chat proxies, owner refusal, ordinary chat,
+and replaced sockets. Region cropping is backend-local and uses the captured
+window image; it is covered by the backend/frontend inspection tests.
+
+**Validation.** All seven cases fail against the unpatched shell and pass against
+the patched and installed shell. Related local validation: 14 outer shell tests
+(including these seven and an existing nested startup suite), 246 Python tests,
+16 frontend scenarios and the frontend permission regression suite. These are
+local results, not a GitHub Windows Unit Tests result.
+
+**Native macOS acceptance.** A real independent chat window requested a synthetic
+Chrome window by title, without including the answers in its prompt. It returned
+`TASK_ID = 73916` and `STATUS = READY`. A second request returned the boxed line
+`ROUTE = alpha | screen-owner | omega`. Backend evidence recorded overview →
+window → region, with a 956×77 original region. The shell was backed up before
+activation; after acceptance the app was restarted normally and the temporary
+debug port closed. This validates the installed macOS shell, not Windows, Linux
+or Tauri native capture.
