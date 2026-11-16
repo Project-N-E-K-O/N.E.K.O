@@ -194,6 +194,13 @@ function _installNekoIdleReturnArtLoadRetry(art) {
     art.__nekoIdleReturnArtRetryCount = 0;
     art.__nekoIdleReturnArtRetryTimer = 0;
     art.addEventListener('load', () => {
+        // Something else may have re-assigned the failed source and it loaded
+        // fine; a still-queued retry would then reload a healthy image and
+        // restart its animation.
+        if (art.__nekoIdleReturnArtRetryTimer) {
+            clearTimeout(art.__nekoIdleReturnArtRetryTimer);
+            art.__nekoIdleReturnArtRetryTimer = 0;
+        }
         art.__nekoIdleReturnArtRetrySrc = '';
         art.__nekoIdleReturnArtRetryCount = 0;
     });

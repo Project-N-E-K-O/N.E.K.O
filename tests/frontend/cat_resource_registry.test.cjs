@@ -665,13 +665,14 @@ test('return button art retries a failed load of the same source, then gives up'
   const start = source.indexOf('const _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS');
   const end = source.indexOf('Object.assign(AvatarButtonMixin.methods', start);
   assert.ok(start >= 0 && end > start);
-  const timers = [];
+  let timers = [];
+  let nextTimerId = 0;
   const warnings = [];
   const context = vm.createContext({
     Object,
     console: { warn: (...args) => warnings.push(args) },
-    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
-    clearTimeout: () => {},
+    setTimeout: (fn, ms) => { nextTimerId += 1; timers.push({ id: nextTimerId, fn, ms }); return nextTimerId; },
+    clearTimeout: (id) => { timers = timers.filter((timer) => timer.id !== id); },
   });
   vm.runInContext(`${source.slice(start, end)};this.install = _installNekoIdleReturnArtLoadRetry;`, context);
 
@@ -699,6 +700,14 @@ test('return button art retries a failed load of the same source, then gives up'
 
   // A successful load resets the budget.
   fire('load');
+  fire('error');
+  assert.equal(timers.length, 1);
+
+  // The same source was re-assigned elsewhere and loaded while the retry was
+  // queued: the retry must not reload (and restart) the healthy image.
+  fire('load');
+  assert.equal(timers.length, 0, 'a successful load cancels the queued retry');
+  assert.equal(assigned.length, 3);
   fire('error');
   assert.equal(timers.length, 1);
 
