@@ -188,10 +188,12 @@ class AcpConnection:
                 except RuntimeError:
                     return
         except (OSError, ValueError):
+            # The pipe was closed under the reader: the end is told below all the same.
             pass
         try:
             loop.call_soon_threadsafe(self._on_end)
         except RuntimeError:
+            # The event loop is closed: nobody is left to tell.
             pass
 
     def _read_errors(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -207,6 +209,7 @@ class AcpConnection:
                 except RuntimeError:
                     return
         except (OSError, ValueError):
+            # The pipe was closed under the reader; the end is told by the output's reader.
             pass
 
     def _write_input(self) -> None:

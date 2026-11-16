@@ -2525,9 +2525,7 @@ async def test_a_call_refused_before_it_is_made_is_answered_as_one_refused_at_th
 
 
 async def test_what_was_ruled_on_does_not_wait_for_its_call_for_ever(host, server, monkeypatch):
-    import config.nekoclaw_settings as settings
-
-    monkeypatch.setattr(settings, "GATEWAY_CLEARED_CALL_SECONDS", 0.05)
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.05)
     _mcp(server)
     asker = Asker("once")
     host.permissions.set_asker(asker)
@@ -2678,9 +2676,7 @@ async def test_an_agreement_given_before_a_call_that_never_comes_ends(builtin_ho
 
 
 async def test_an_agreement_whose_call_never_comes_ends_when_its_time_is_up(builtin_host, monkeypatch):
-    import config.nekoclaw_settings as settings
-
-    monkeypatch.setattr(settings, "GATEWAY_CLEARED_CALL_SECONDS", 0.05)
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.05)
     await builtin_host.permission_store.set_mode("browser", "allow")
     asker = Asker("once")
     builtin_host.permissions.set_asker(asker)
@@ -2700,9 +2696,7 @@ async def test_an_agreement_whose_call_never_comes_ends_when_its_time_is_up(buil
 
 
 async def test_a_ruling_that_was_taken_or_replaced_is_not_dropped_again_when_its_time_is_up(builtin_host, monkeypatch):
-    import config.nekoclaw_settings as settings
-
-    monkeypatch.setattr(settings, "GATEWAY_CLEARED_CALL_SECONDS", 0.2)
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.2)
     await builtin_host.permission_store.set_mode("browser", "allow")
     builtin_host.permissions.set_asker(Asker("once"))
     commission = await _commission(builtin_host)
