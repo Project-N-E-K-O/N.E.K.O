@@ -1508,8 +1508,15 @@ async def on_shutdown():
         try:
             from utils.token_tracker import TokenTracker
 
+            # Always submit the final save, including after the shared cancel
+            # budget expires. Only waiting for it consumes the remaining budget.
+            token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+
+            async def wait_token_save():
+                await asyncio.shield(asyncio.wrap_future(token_save))
+
             shutdown_cancellation = await _run_shutdown_step(
-                lambda: TokenTracker.get_instance().asave(report_timeout=1.0),
+                wait_token_save,
                 what="token usage save",
                 deadline_monotonic=None,
                 cancelled_budget_seconds=_SHUTDOWN_CANCELLED_BUDGET_SECONDS,

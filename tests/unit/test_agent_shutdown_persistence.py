@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture
 def shutdown_fixture(tmp_path, monkeypatch):
     from app.agent_server import api_runtime
-    import utils.token_tracker as token_tracker
+    from utils import token_tracker
     from utils.token_tracker import reporting
 
     monkeypatch.setattr(token_tracker, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
@@ -217,3 +217,42 @@ async def test_browser_last_resort_survives_slow_host_cleanup(shutdown_fixture, 
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await fixture.tracker.asave()
+
+
+@pytest.mark.asyncio
+async def test_agent_submits_stats_after_cancel_budget_expires(shutdown_fixture, monkeypatch):
+    from utils.shutdown_steps import ShutdownCancellationBudget
+
+    fixture = shutdown_fixture
+    monkeypatch.setattr(fixture.api, "ShutdownCancellationBudget", lambda seconds: ShutdownCancellationBudget(.02))
+    entered, release = asyncio.Event(), asyncio.Event()
+    submitted = []
+    original_submit = fixture.tracker.submit_save
+
+    def submit(**kwargs):
+        future = original_submit(**kwargs)
+        submitted.append(future)
+        return future
+
+    async def host():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(fixture.tracker, "submit_save", submit)
+    monkeypatch.setattr(fixture.api, "shutdown_nekoclaw_host", host)
+    task = asyncio.create_task(fixture.api.shutdown())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel("exit")
+        done, _ = await asyncio.wait({task}, timeout=.5)
+        assert done, "saving must not extend the shared shutdown budget"
+        with pytest.raises(asyncio.CancelledError, match="exit"):
+            task.result()
+        assert len(submitted) == 1
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if submitted:
+            await asyncio.wrap_future(submitted[0])
+    assert json.loads(fixture.tracker._storage_path.read_text())["recent_records"][0]["tt"] == 3

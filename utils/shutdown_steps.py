@@ -31,7 +31,7 @@ def _consume_shutdown_task_result(task: asyncio.Task[object]) -> None:
     try:
         task.exception()
     except (asyncio.CancelledError, Exception):
-        pass
+        pass  # The outcome was already reported; only mark it as retrieved.
 
 
 def _forget_shutdown_step(task: asyncio.Task[object]) -> None:

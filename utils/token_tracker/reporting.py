@@ -25,9 +25,8 @@ import secrets
 import time
 import urllib.request
 import urllib.error
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from functools import partial
 from pathlib import Path
 from utils.file_utils import atomic_write_json
 
@@ -372,12 +371,18 @@ class ReportingMixin:
         except Exception as e:
             logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
 
+    def submit_save(self, *, report_timeout: float | None = None) -> Future:
+        """Queue a save even when shutdown has no asynchronous wait budget left.
+
+        Submission is synchronous, but disk/network IO runs on the independent
+        worker. The concurrent future owns queued work without an event loop;
+        the executor joins it before the atexit safety net runs.
+        """
+        return _SAVE_EXECUTOR.submit(self.save, report_timeout=report_timeout)
+
     async def asave(self, *, report_timeout: float | None = None):
-        """Save independently of application workers; cancellation cannot stop IO."""
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            _SAVE_EXECUTOR, partial(self.save, report_timeout=report_timeout),
-        )
+        """Save independently of application workers without cancelling queued IO."""
+        await asyncio.shield(asyncio.wrap_future(self.submit_save(report_timeout=report_timeout)))
 
     def save(self, *, report_timeout: float | None = None):
         """Persist incremental data to disk. Multi-process safe.

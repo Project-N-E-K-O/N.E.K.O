@@ -13,7 +13,7 @@ import pytest
 
 @pytest.fixture
 def tracker_factory(tmp_path, monkeypatch):
-    import utils.token_tracker as token_tracker
+    from utils import token_tracker
     from utils.token_tracker import reporting
 
     monkeypatch.setattr(token_tracker, "get_config_manager", lambda: SimpleNamespace(config_dir=tmp_path))
@@ -149,3 +149,40 @@ async def test_final_save_runs_when_default_executor_is_full(tracker_factory, mo
     finally:
         release.set()
         await asyncio.gather(*workers)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_wait_does_not_cancel_a_queued_save(tracker_factory, monkeypatch):
+    from utils.token_tracker import reporting
+
+    monkeypatch.setattr(reporting, "_DO_NOT_TRACK", True)
+    tracker = tracker_factory()
+    tracker.record("test-model", 2, 1, 3)
+    release = threading.Event()
+    blocker = reporting._SAVE_EXECUTOR.submit(release.wait, 5)
+    submitted = []
+    original_submit = tracker.submit_save
+
+    def submit(**kwargs):
+        future = original_submit(**kwargs)
+        submitted.append(future)
+        return future
+
+    monkeypatch.setattr(tracker, "submit_save", submit)
+    task = asyncio.create_task(tracker.asave(report_timeout=1))
+    try:
+        async with asyncio.timeout(2):
+            while not submitted:
+                await asyncio.sleep(0)
+        task.cancel("stop waiting")
+        with pytest.raises(asyncio.CancelledError, match="stop waiting"):
+            await task
+        assert not submitted[0].cancelled()
+        assert not tracker._storage_path.exists()
+    finally:
+        release.set()
+        await asyncio.wrap_future(blocker)
+        await asyncio.gather(task, return_exceptions=True)
+        if submitted:
+            await asyncio.gather(asyncio.wrap_future(submitted[0]), return_exceptions=True)
+    assert json.loads(tracker._storage_path.read_text())["recent_records"][0]["tt"] == 3

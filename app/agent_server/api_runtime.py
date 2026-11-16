@@ -748,11 +748,18 @@ async def shutdown():
 
     await step(close_builtin_tools, "Agent built-in tools cleanup")
 
-    async def save_stats():
+    try:
         from utils.token_tracker import TokenTracker
-        await TokenTracker.get_instance().asave(report_timeout=1.0)
 
-    await step(save_stats, "Agent token usage save")
+        # Submitting must survive an already exhausted cancellation budget.
+        token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+
+        async def save_stats():
+            await asyncio.shield(asyncio.wrap_future(token_save))
+
+        await step(save_stats, "Agent token usage save")
+    except Exception as exc:
+        logger.warning("[Agent] Token usage save failed during shutdown: %s", exc)
 
     logger.info("[Agent] Shutdown cleanup complete")
     await step(_emit_agent_status_update, "Agent final status")
