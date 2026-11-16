@@ -208,23 +208,30 @@ def test_the_process_starts_in_a_directory_of_ours(tmp_path: Path, monkeypatch: 
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the drive matters on Windows only")
-def test_a_home_on_another_drive_still_starts_the_process_on_c(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("temp", "expected"),
+    [
+        # The user's temporary directory, where it is on drive C:.
+        ("C:/Users/someone/AppData/Local/Temp", "C:/Users/someone/AppData/Local/Temp/nekoclaw-dsh"),
+        # Moved to another drive (as on some machines, and on CI's): the system's own.
+        ("D:/Temp", "C:/Windows/Temp/nekoclaw-dsh"),
+    ],
+)
+def test_a_home_on_another_drive_still_starts_the_process_on_c(
+    monkeypatch: pytest.MonkeyPatch, temp: str, expected: str
+) -> None:
     import tempfile
 
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    # Whatever drive this machine's temporary directory is on: the places are made up, and nothing is created.
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: temp)
+    monkeypatch.setenv("SystemRoot", "C:/Windows")
     made: list[Path] = []
-    real_mkdir = Path.mkdir
+    monkeypatch.setattr(Path, "mkdir", lambda self, *args, **kwargs: made.append(self))
 
-    def mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
-        made.append(self)
-        if self.drive.upper() == "C:":
-            real_mkdir(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "mkdir", mkdir)
     # dsh cannot create a session when it was started on another drive.
     directory = profile.start_directory(Path("Q:/data/nekoclaw/dsh/home"))
-    assert directory.drive.upper() == "C:" and directory == tmp_path / "nekoclaw-dsh"
-    assert all(path.drive.upper() == "C:" for path in made)
+
+    assert directory == Path(expected) and made == [Path(expected)]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the drive matters on Windows only")
