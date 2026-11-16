@@ -228,6 +228,10 @@ function _installNekoIdleReturnArtLoadRetry(art) {
             // The button was torn down meanwhile; do not download for a
             // detached image.
             if (art.isConnected === false) return;
+            // The same source was re-assigned meanwhile and is still loading
+            // (a broken image reports complete === true); do not interrupt that
+            // download. If it fails too, its error event schedules the next try.
+            if (art.complete === false) return;
             // Re-assigning an identical value is not guaranteed to restart the
             // fetch, so drop the attribute first.
             art.removeAttribute('src');

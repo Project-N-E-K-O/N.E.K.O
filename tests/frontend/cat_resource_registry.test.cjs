@@ -747,6 +747,20 @@ test('return button art retries a failed load of the same source, then gives up'
   art.isConnected = false;
   timers.shift().fn();
   assert.equal(assigned.length, 3);
+  delete art.isConnected;
+
+  // The same source was re-assigned and is still downloading when the retry
+  // fires: do not interrupt that download.
+  fire('load');
+  fire('error');
+  art.complete = false;
+  timers.shift().fn();
+  assert.equal(assigned.length, 3);
+  // Once it is broken again (complete === true) the next failure retries.
+  art.complete = true;
+  fire('error');
+  timers.shift().fn();
+  assert.equal(assigned.length, 4);
   assert.ok(warnings.length >= 5);
 });
 
