@@ -363,6 +363,30 @@ async def test_a_commission_that_began_in_a_dsh_that_was_removed_starts_over_in_
     assert await _fallbacks(host, commission_id) == [
         {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": "dsh is no longer installed"}
     ]
+    # Nothing of what was said is there: it is told the commission again, then what the user said.
+    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+
+
+async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_in_runtime_knowing_what_it_is(
+    hosts, tmp_path
+):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    commission_id = await _dispatch(host, "sort the photos")
+    await wait_status(host, commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+
+    host.fake.behaviour["refuses"] = "dsh refused the session: it is busy"
+    assert await host.tell(commission_id, "it is on drive D")
+    done = await wait_status(host, commission_id, "done")
+
+    assert done.runtime == RUNTIME_BUILTIN
+    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+
+
+def _last_user_message(messages: list[dict[str, Any]]) -> str:
+    (text,) = [message["content"] for message in messages if message["role"] == "user"][-1:]
+    return text if isinstance(text, str) else "".join(part.get("text", "") for part in text)
 
 
 @pytest.mark.parametrize(
@@ -506,6 +530,32 @@ async def test_a_search_in_dsh_is_ruled_on_before_it_is_called_and_not_again(hos
     await wait_status(host, commission_id, "done")
 
 
+async def test_a_ruling_on_a_search_is_only_for_what_the_user_was_asked_about(hosts, tmp_path):
+    llm, release = _waiting_llm()
+    host = _host(hosts, tmp_path, llm, Installation())
+    await host.permission_store.set_mode("plugin_entry", "always_ask")
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(commission_id)
+        return "once"
+
+    host.permissions.set_asker(asker)
+    commission_id = await _working(host)
+    await host.task_agents._cb_permission(
+        commission_id, {"tool": "web_search", "category": "host_tool", "arguments": {"queries": ["cats"]}, "workdir": "w", "default": "allow"}
+    )
+    assert len(asked) == 1
+
+    # That call never came (dsh dropped it); a search for something else is
+    # not what the user allowed once, and they are asked about it.
+    with pytest.raises(RuntimeError):
+        await host.task_agents._cb_web_search(commission_id, {"queries": ["dogs"]})
+    assert len(asked) == 2
+    release.set()
+    await wait_status(host, commission_id, "done")
+
+
 async def test_a_ruling_on_a_search_does_not_wait_for_its_call_for_ever_or_outlive_the_commission(
     hosts, tmp_path, monkeypatch
 ):
@@ -582,9 +632,14 @@ async def test_dsh_is_neither_removed_nor_installed_anew_while_a_commission_is_i
 
     with pytest.raises(DshUnavailable, match="in use"):
         await host.uninstall_dsh()
+    # Installed already: nothing to do, and nothing is ended for it.
+    assert (await host.install_dsh())["installed"] is True
+    # Another version is (the one in use changed): it is not put in place under the commission.
+    installation.is_installed = False
     with pytest.raises(DshUnavailable, match="in use"):
         await host.install_dsh()
-    assert installation.is_installed and installation.installs == 0 and not host.fake.dsh[0].shut_down
+    installation.is_installed = True
+    assert installation.installs == 0 and not host.fake.dsh[0].shut_down
 
     release.set()
     await wait_status(host, commission_id, "done")
@@ -605,6 +660,9 @@ async def test_the_switch_and_the_plugins_are_read_and_set_through_the_host(host
     with pytest.raises(ValueError):
         await host.set_dsh_preference("whatever")
     assert await host.dsh_plugins() == [{"name": "a-plugin", "enabled": True}]
+    # Installed already: nothing is done.
+    assert (await host.install_dsh())["installed"] is True and installation.installs == 0
+    installation.is_installed = False
     assert (await host.install_dsh())["installed"] is True and installation.installs == 1
 
 

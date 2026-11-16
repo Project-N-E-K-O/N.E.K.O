@@ -266,35 +266,84 @@ async def test_an_install_cancelled_while_it_unpacks_waits_for_the_unpacking(
 ) -> None:
     import asyncio
     import threading
-    import time
 
     data = release(_release())
-    started = threading.Event()
+    started, go_on = threading.Event(), threading.Event()
     finished: list[bool] = []
     unpack = DshInstallation._unpack
 
     def slow(self: DshInstallation, *args: Any) -> None:
         started.set()
-        time.sleep(0.4)
+        go_on.wait(10)
         unpack(self, *args)
         finished.append(True)
 
     monkeypatch.setattr(DshInstallation, "_unpack", slow)
     dsh = DshInstallation(tmp_path / "dsh", transport=_serving({"first.test": data}, []))
     installing = asyncio.ensure_future(dsh.install())
-    while not started.is_set():
-        await asyncio.sleep(0.01)
+    await _until(started)
 
     installing.cancel()
+    await asyncio.sleep(0.1)
+    # Not handed back before the thread that unpacks is done: an uninstall after it
+    # does not run beside it, and the release file is gone only once it was read.
+    assert not installing.done()
+    go_on.set()
     with pytest.raises(asyncio.CancelledError):
         await installing
 
-    # Not handed back before the thread that unpacks is done: an uninstall after it
-    # does not run beside it, and the release file is gone only once it was read.
     assert finished == [True]
     assert list((tmp_path / "dsh" / "download").iterdir()) == []
     await dsh.uninstall()
     assert not dsh.installed()
+
+
+async def test_an_uninstall_cancelled_while_it_removes_waits_for_the_removing(
+    tmp_path: Path, release, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import threading
+
+    data = release(_release())
+    dsh = DshInstallation(tmp_path / "dsh", transport=_serving({"first.test": data}, []))
+    await dsh.install()
+    started, go_on = threading.Event(), threading.Event()
+    finished: list[bool] = []
+    remove = install_module._remove
+
+    def slow(path: Path, *, strict: bool = False) -> None:
+        if path.name == "runtime":
+            started.set()
+            go_on.wait(10)
+        remove(path, strict=strict)
+        if path.name == "runtime":
+            finished.append(True)
+
+    monkeypatch.setattr(install_module, "_remove", slow)
+    removing = asyncio.ensure_future(dsh.uninstall())
+    await _until(started)
+
+    removing.cancel()
+    await asyncio.sleep(0.1)
+    # The lock (and the host's, around it) is not let go of while the program is
+    # being removed: no commission starts it from a half removed directory.
+    assert not removing.done()
+    go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await removing
+
+    assert finished == [True] and not dsh.installed()
+
+
+async def _until(event: Any) -> None:
+    """Wait, a bounded while, for a thread's event; fail when it does not come."""
+    import asyncio
+
+    for _attempt in range(1000):
+        if event.is_set():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the thread never got there")
 
 
 async def test_a_download_that_breaks_off_leaves_no_half_a_file(tmp_path: Path, release) -> None:
@@ -441,6 +490,55 @@ def test_a_session_whose_log_cannot_be_removed_keeps_its_note_for_the_next_attem
     # What could be removed is; the note stays, so the next attempt knows what is left.
     assert log.exists() and not cached.exists() and (session_dir / SESSION_FILE).exists()
     monkeypatch.setattr(shutil, "rmtree", removing)
+    assert dsh.forget_session(session_dir) is True
+    assert not log.parent.exists() and not (session_dir / SESSION_FILE).exists()
+
+
+def test_a_file_among_dshs_directories_of_sessions_is_none_of_them(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nekoclaw.dsh.driver import SESSION_FILE
+
+    dsh = DshInstallation(tmp_path / "dsh")
+    session_dir, log, cached = _session(tmp_path, dsh)
+    stray = dsh.home() / "sessions" / ".DS_Store"
+    stray.write_bytes(b"\0")
+    remove = install_module._remove
+
+    def as_on_posix(path: Path, *, strict: bool = False) -> None:
+        # What removing a path below a file raises on macOS and Linux (on Windows it is "not found").
+        if path.parent.is_file():
+            raise NotADirectoryError(20, "Not a directory", str(path))
+        remove(path, strict=strict)
+
+    monkeypatch.setattr(install_module, "_remove", as_on_posix)
+
+    assert dsh.forget_session(session_dir) is True
+    assert not log.parent.exists() and not cached.exists() and not (session_dir / SESSION_FILE).exists()
+    assert stray.exists()
+
+
+def test_a_session_whose_logs_cannot_be_looked_for_keeps_its_note_for_the_next_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.dsh.driver import SESSION_FILE
+
+    dsh = DshInstallation(tmp_path / "dsh")
+    session_dir, log, cached = _session(tmp_path, dsh)
+    listing = Path.iterdir
+    projects = dsh.home() / "sessions"
+
+    def refused(self: Path) -> Any:
+        if self == projects:
+            raise PermissionError(13, "Permission denied", str(self))
+        return listing(self)
+
+    monkeypatch.setattr(Path, "iterdir", refused)
+
+    with pytest.raises(PermissionError):
+        dsh.forget_session(session_dir)
+
+    # The log may well be there: the note stays, so that it is not left behind for good.
+    assert log.exists() and (session_dir / SESSION_FILE).exists()
+    monkeypatch.setattr(Path, "iterdir", listing)
     assert dsh.forget_session(session_dir) is True
     assert not log.parent.exists() and not (session_dir / SESSION_FILE).exists()
 

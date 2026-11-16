@@ -257,6 +257,11 @@ class LocalEndpoint:
         body = await _read_body(receive)
         if body is None:
             return
+        if self._session_of(token) != session_id:
+            # Revoked while the body came in: the session was closed, and one
+            # of the same id may have its tools now.
+            await respond_json(send, 401, {"error": "unknown or missing token"})
+            return
         try:
             payload = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):

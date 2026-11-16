@@ -57,7 +57,10 @@ DSH_HOST_TOOLS_SECTION = (
     f"known it at the start, submit it with {HOST_TOOL_PREFIX}note_lesson before you finish."
 )
 
-# Added to the paragraph above when the session is offered the subagent tools.
+# Added to what the host tells a session in its first message (``DSH_FIRST_MESSAGE``)
+# when the session is offered the subagent tools. Not in the paragraph above:
+# the system prompt is one for every session of a dsh process, and a task
+# agent started by another is offered none of them.
 DSH_SUBAGENT_SECTION = (
     f"{HOST_TOOL_PREFIX}subagent starts another agent on a part of the work and returns at once; "
     "its result arrives as a message once it has finished. A message for you is delivered when "

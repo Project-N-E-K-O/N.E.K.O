@@ -202,7 +202,7 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
     """
     from config.nekoclaw_settings import DSH_MODEL_RETRIES, DSH_SPILL_KEPT_DAYS
     from config.prompts.prompts_nekoclaw import TASK_AGENT_IDENTITY
-    from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, DSH_SUBAGENT_SECTION, HOST_TOOL_PREFIX
+    from config.prompts.prompts_nekoclaw_dsh import DSH_HOST_TOOLS_SECTION, HOST_TOOL_PREFIX
 
     # The built-in runtime's margin (design section 8.9): dsh's fixed 65536
     # leaves nothing, or less than nothing, of a small window.
@@ -248,7 +248,10 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
             "config": {
                 "includeHarnessIdentity": False,
                 "personaPrefix": TASK_AGENT_IDENTITY,
-                "personaSuffix": f"{DSH_HOST_TOOLS_SECTION}\n\n{DSH_SUBAGENT_SECTION}",
+                # One for every session of the process: what only some are
+                # offered (the subagent tools) is told in a session's first
+                # message instead; see ``driver._first_message``.
+                "personaSuffix": DSH_HOST_TOOLS_SECTION,
             },
         },
         # Neither of dsh's web tools: its search needs its vendor's key, and

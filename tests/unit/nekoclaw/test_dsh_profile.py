@@ -141,8 +141,10 @@ def test_the_system_prompt_is_ours_and_names_the_hosts_tools_as_dsh_shows_them()
     prompt = _rows()["system-prompt"]["config"]
     assert prompt["includeHarnessIdentity"] is False and prompt["personaPrefix"] == TASK_AGENT_IDENTITY
     suffix = prompt["personaSuffix"]
-    assert "mcp__host__report" in suffix and "mcp__host__note_lesson" in suffix and "mcp__host__wait_agent" in suffix
+    assert "mcp__host__report" in suffix and "mcp__host__note_lesson" in suffix
     assert "ask_user_question" not in suffix and "`waiting`" in suffix
+    # Shared by every session of the process, also those offered no subagent tool: told in a session's first message instead.
+    assert "mcp__host__subagent" not in suffix and "mcp__host__wait_agent" not in suffix
     # dsh fills {{name}} with values of its own and refuses a name it does not know.
     assert "{{" not in prompt["personaPrefix"] and "{{" not in suffix
 

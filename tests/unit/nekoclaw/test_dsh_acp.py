@@ -17,6 +17,10 @@ pytestmark = pytest.mark.integration_serial
 AGENT = r'''
 import json, sys, time
 
+# The client writes UTF-8 whatever the locale is (cp1252 on a Windows runner).
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
+
 def send(message):
     sys.stdout.write(json.dumps(message) + "\n")
     sys.stdout.flush()
@@ -148,6 +152,24 @@ async def test_notifications_reach_the_agent(agent, tmp_path: Path) -> None:
     client.connection.notify("said", {"path": str(target), "word": "two"})
     await client.connection.request("echo", {})
     assert [line.count("one") + 2 * line.count("two") for line in target.read_text().splitlines()] == [1, 2]
+
+
+async def test_what_an_agent_left_in_its_process_group_is_ended_once_it_exited(agent, monkeypatch: pytest.MonkeyPatch) -> None:
+    from nekoclaw.dsh import acp
+
+    ended: list[int | None] = []
+    monkeypatch.setattr(acp, "_end_group", lambda process: ended.append(process.returncode))
+    client = await agent()
+
+    client.connection.notify("exit", {"code": 0})
+    for _attempt in range(250):
+        if ended:
+            break
+        await asyncio.sleep(0.02)
+
+    # What it started may outlive it in the group it led (POSIX): that is ended
+    # as soon as the agent is gone, without anyone having to close the connection.
+    assert ended == [0]
 
 
 async def test_an_agent_that_exits_fails_what_was_waiting_and_is_reported_once(agent) -> None:

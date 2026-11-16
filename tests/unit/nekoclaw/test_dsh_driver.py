@@ -577,6 +577,82 @@ async def test_a_process_that_goes_while_a_session_is_being_started_is_a_refused
     assert not Path(tmp_path, "session", SESSION_FILE).exists()
 
 
+async def test_a_process_that_goes_while_the_note_of_a_new_session_is_written_is_a_refused_start(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = dsh()
+    write = DshRuntime._note
+
+    async def note_once_dsh_is_gone(self: DshRuntime, session: Any) -> None:
+        await asyncio.to_thread(session.process.connection.kill)
+        for _attempt in range(200):
+            if not self.session_ids:
+                break
+            await asyncio.sleep(0.02)
+        await write(self, session)
+
+    monkeypatch.setattr(DshRuntime, "_note", note_once_dsh_is_gone)
+    answer = await driver.started(make_spec(tmp_path))
+    await asyncio.sleep(0.2)
+
+    # The session went with the process, which said nothing of it: the start
+    # failed, and no "started" points the host at a session that is not there.
+    assert answer["type"] == "error" and answer["command"] == "start"
+    assert [event["type"] for event in driver.events.events] == ["error"]
+    assert driver.runtime.session_ids == []
+
+
+async def test_two_starts_that_waited_for_the_same_close_start_the_session_once(tmp_path: Path, dsh) -> None:
+    driver = dsh(FAKE_DSH_CLOSE="slow")
+    spec = make_spec(tmp_path)
+    await driver.started(spec)
+    await driver.runtime.close("s1")
+    position = len(driver.events.events)
+
+    await asyncio.gather(driver.runtime.start(spec), driver.runtime.start(spec))
+
+    answers = [event for event in driver.events.events[position:] if event["type"] in ("started", "error")]
+    assert sorted(event["type"] for event in answers) == ["error", "started"]
+    assert next(event for event in answers if event["type"] == "error")["message"] == 'session "s1" already exists'
+    assert driver.runtime.session_ids == ["s1"] and len(driver.record("session/resume")) == 1
+
+
+async def test_shutdown_gives_up_a_start_that_takes_too_long_and_nothing_starts_after_it(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.dsh import driver as driver_module
+
+    monkeypatch.setattr(driver_module, "_SHUTDOWN_OPENING_WAIT_SECONDS", 0.2)
+    reading, release = threading.Event(), threading.Event()
+    read = driver_module._read_session_file
+
+    def slow_read(directory: str) -> Any:
+        reading.set()
+        release.wait(10)
+        return read(directory)
+
+    monkeypatch.setattr(driver_module, "_read_session_file", slow_read)
+    driver = dsh()
+    starting = asyncio.ensure_future(driver.runtime.start(make_spec(tmp_path)))
+    while not reading.is_set():
+        await asyncio.sleep(0.01)
+
+    try:
+        await asyncio.wait_for(driver.runtime.shutdown(), 5)
+        # The start was over before shutting down went on: what it said came first,
+        # and the session was not taken for one to close.
+        refused = driver.events.of("error", "s1")
+    finally:
+        release.set()
+    await asyncio.wait_for(starting, 5)
+    await asyncio.sleep(0.2)
+
+    # Given up, and not made after the runtime shut down: no session, and no dsh process.
+    assert [event["command"] for event in refused] == ["start"] and "shutting down" in refused[0]["message"]
+    assert [event["type"] for event in driver.events.events] == ["error"]
+    assert driver.launches == 0 and driver.runtime.process_ids == []
+
+
 async def test_a_shutdown_that_is_cancelled_still_ends_the_process(tmp_path: Path, dsh) -> None:
     driver = dsh(FAKE_DSH_CLOSE="slow")
     await driver.started(make_spec(tmp_path))
@@ -748,6 +824,32 @@ async def test_a_service_dsh_cannot_reach_fails_the_start_and_frees_its_model_na
     assert full["type"] == "error" and "as many sessions as it can" in full["message"]
     await driver.closed("s2")
     assert (await driver.started(make_spec(tmp_path, "s3")))["type"] == "started"
+
+
+@pytest.mark.parametrize(("close", "given_again"), [("slow", True), ("refuse", False)])
+async def test_the_model_name_of_a_session_given_up_part_way_is_given_again_once_dsh_let_it_go(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch, close: str, given_again: bool
+) -> None:
+    from config import nekoclaw_settings
+
+    monkeypatch.setattr(nekoclaw_settings, "DSH_SESSION_SLOTS", 1)
+    driver = dsh(FAKE_DSH_CLOSE=close)
+    model_option = profile.model_option
+    monkeypatch.setattr(profile, "model_option", lambda index: "not-a-model-dsh-knows")
+    assert (await driver.started(make_spec(tmp_path, "s1")))["type"] == "error"
+    monkeypatch.setattr(profile, "model_option", model_option)
+
+    # dsh made that session and has not let go of it yet: what it may still ask
+    # of the model under that name must not be taken for another session's.
+    held = await driver.started(make_spec(tmp_path, "s2"))
+    assert held["type"] == "error" and "as many sessions as it can" in held["message"]
+    for _attempt in range(100):
+        if not driver.runtime._closing_quietly:
+            break
+        await asyncio.sleep(0.05)
+
+    # Once dsh confirmed the close, the name is free; when it did not, it stays out of use.
+    assert (await driver.started(make_spec(tmp_path, "s3")))["type"] == ("started" if given_again else "error")
 
 
 # ---------------------------------------------------------------------------
@@ -1125,10 +1227,25 @@ async def test_the_hosts_tools_reach_dsh_as_a_service_and_keep_their_names_in_ev
 
 
 async def test_a_session_started_by_another_is_not_offered_the_subagent_tool(tmp_path: Path, dsh) -> None:
+    from config.prompts.prompts_nekoclaw_dsh import DSH_SUBAGENT_SECTION
+
     host, _calls = _host()
     driver = dsh(host)
-    started = await driver.started(make_spec(tmp_path, top_level=False, disabled_tools=["subagent"]))
+    (tmp_path / "lead").mkdir()
+    lead = await driver.started(make_spec(tmp_path / "lead", "lead", instructions="Commission: tidy the desk."))
+    started = await driver.started(
+        make_spec(tmp_path, top_level=False, disabled_tools=["subagent"], instructions="Commission: the drawers.")
+    )
+    assert "subagent" in lead["tools"]
     assert "subagent" not in started["tools"] and "wait_agent" in started["tools"]
+
+    await driver.run("lead", "go")
+    await driver.run("s1", "go")
+
+    # Told of starting another task agent where it can, and nowhere else.
+    first = {row["session"]: row["text"] for row in driver.record("session/prompt")}
+    assert DSH_SUBAGENT_SECTION in first[driver.record("session/new")[0]["session"]]
+    assert "mcp__host__subagent" not in first[driver.record("session/new")[1]["session"]]
 
 
 async def test_a_host_without_callbacks_hands_dsh_the_one_tool_that_needs_none(tmp_path: Path, dsh) -> None:

@@ -2696,7 +2696,25 @@ async def test_an_agreement_whose_call_never_comes_ends_when_its_time_is_up(buil
 
 
 async def test_a_ruling_that_was_taken_or_replaced_is_not_dropped_again_when_its_time_is_up(builtin_host, monkeypatch):
-    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.2)
+    # The rulings' time runs out when the test says so, not when the event loop gets round to it.
+    loop = asyncio.get_running_loop()
+    schedule = loop.call_later
+    timers: list[tuple[asyncio.TimerHandle, Any, tuple[Any, ...]]] = []
+
+    def held(delay: float, callback: Any, *args: Any, **kwargs: Any) -> asyncio.TimerHandle:
+        if callback == builtin_host.gateway._drop_cleared:
+            timers.append((schedule(3600, callback, *args), callback, args))
+            return timers[-1][0]
+        return schedule(delay, callback, *args, **kwargs)
+
+    def run_out(index: int) -> None:
+        """A ruling's time is up: what was set for then runs, as the event loop would run it, unless it was cancelled."""
+        handle, callback, args = timers[index]
+        if not handle.cancelled():
+            handle.cancel()
+            callback(*args)
+
+    monkeypatch.setattr(loop, "call_later", held)
     await builtin_host.permission_store.set_mode("browser", "allow")
     builtin_host.permissions.set_asker(Asker("once"))
     commission = await _commission(builtin_host)
@@ -2705,16 +2723,16 @@ async def test_a_ruling_that_was_taken_or_replaced_is_not_dropped_again_when_its
     arguments = {"url": "https://example.com"}
 
     await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", arguments)
-    await asyncio.sleep(0.12)
     # Ruled on again for the same call: the earlier ruling is over, and its time running out later ends nothing more.
     await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", arguments)
-    await asyncio.sleep(0.12)
+    run_out(0)
     assert builtin_host.provider.ended == ["agreement-1"] and len(grant.cleared) == 1
 
     result = await _call(builtin_host, grant, "browser_navigate_page", arguments)
-    await asyncio.sleep(0.25)
+    run_out(1)
 
     # Taken by its call: the agreement ended with the call, once.
+    assert len(timers) == 2
     assert result.get("isError") is not True and builtin_host.provider.reopened == ["agreement-2"]
     assert builtin_host.provider.ended == ["agreement-1", "agreement-2"] and grant.cleared == {}
 

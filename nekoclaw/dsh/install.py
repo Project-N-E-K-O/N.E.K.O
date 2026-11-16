@@ -281,13 +281,20 @@ class DshInstallation:
             return False
         named = [known.get("session"), *(known.get("previous") or ())] if isinstance(known, dict) else []
         home = self.home()
+        failures: list[OSError] = []
         try:
-            projects = list((home / "sessions").iterdir())
-        except OSError:
+            # One directory per working directory; whatever else is there (a
+            # file the system put there, say) is none.
+            projects = [item for item in (home / "sessions").iterdir() if item.is_dir() and not item.is_symlink()]
+        except FileNotFoundError:
             projects = []
+        except OSError as exc:
+            # Not read: the logs may be there all the same, and the note is
+            # kept for the next attempt.
+            projects = []
+            failures.append(exc)
         # The session it has now, and those it had before that dsh could not
         # resume: whatever dsh still holds of any of them.
-        failures: list[OSError] = []
         for session in named:
             if not isinstance(session, str) or not _SESSION_ID.fullmatch(session):
                 continue
@@ -319,7 +326,8 @@ class DshInstallation:
         async with self._lock:
             if await asyncio.to_thread(self.installed):
                 return await asyncio.to_thread(self.status)
-            tag = platform_tag()
+            # Both may read files (the system's version, the storage settings).
+            tag = await asyncio.to_thread(platform_tag)
             if tag is None:
                 raise DshUnavailable("dsh is not released for this platform")
             wheel = DSH_WHEELS[tag]
@@ -327,7 +335,7 @@ class DshInstallation:
             self._progress = (0, int(wheel["size"]))
             # Removed whatever comes of it: also half a file, when the disk
             # filled up or the install was cancelled in the middle.
-            archive = self.root() / "download" / str(wheel["file"])
+            archive = await asyncio.to_thread(self.root) / "download" / str(wheel["file"])
             try:
                 await self._download(wheel, archive, on_progress)
                 # A thread is not stopped by cancelling who waits for it: this
@@ -448,7 +456,10 @@ class DshInstallation:
             names = ["runtime", "cache", "resources", "download"] + (["home"] if purge else [])
             try:
                 for name in names:
-                    await asyncio.to_thread(_remove, root / name, strict=True)
+                    # Waited for also when this is cancelled: the lock (and the
+                    # host's, around it) is not let go of while files are being
+                    # removed, nor dsh started from a half removed directory.
+                    await to_thread_through_cancellation(_remove, root / name, strict=True)
             except OSError as exc:
                 raise DshUnavailable(f"dsh could not be removed: {exc}") from exc
             return await asyncio.to_thread(self.status)

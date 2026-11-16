@@ -367,11 +367,14 @@ class NekoClawHost:
         """Download dsh and install it; returns ``dsh_status``. Raises ``DshUnavailable`` with the reason.
 
         ``on_progress`` is called with the bytes fetched so far and the size
-        of the file. An installed dsh is installed anew, which a commission
+        of the file. With the version in use installed already nothing is
+        done. Otherwise dsh is ended first (another version of it may be
+        running, from before the version in use changed), which a commission
         that is in dsh right now forbids: its program cannot be replaced
         while it runs.
         """
-        await self._with_dsh_stopped(lambda: self.dsh.install(on_progress))
+        if not await asyncio.to_thread(self.dsh.installed):
+            await self._with_dsh_stopped(lambda: self.dsh.install(on_progress))
         return await self.dsh_status()
 
     async def uninstall_dsh(self, *, purge: bool = False) -> dict[str, Any]:

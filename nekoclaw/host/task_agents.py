@@ -106,6 +106,11 @@ RuntimeFactory = Callable[[Callable[[dict[str, Any]], None], Any], Any]
 UsageMeter = Callable[[str], Awaitable[bool]]
 
 
+def _search_queries(arguments: dict[str, Any]) -> tuple[str, ...]:
+    """Return the queries of a call of the web search, the way the search takes them."""
+    return tuple(str(query) for query in arguments.get("queries") or [] if str(query).strip())
+
+
 class LessonSink(Protocol):
     """Receives what ``note_lesson`` files, except ``feedback``.
 
@@ -367,9 +372,9 @@ class TaskAgentManager:
         self._requeueing: set[str] = set()
         self._candidates: dict[str, tuple[str, ...]] = {}
         # What was ruled on a commission's web search before the call was
-        # made (``_rule_on_host_tool``): the refusal or None, and until when
-        # it waits for the call (event loop time).
-        self._search_rulings: dict[str, tuple[str | None, float]] = {}
+        # made (``_rule_on_host_tool``): the queries it was for, the refusal
+        # or None, and until when it waits for the call (event loop time).
+        self._search_rulings: dict[str, tuple[tuple[str, ...], str | None, float]] = {}
         # Commissions whose old session files are being removed right now
         # (``hold_session``); a start of one of them waits for that.
         self._held: dict[str, asyncio.Event] = {}
@@ -759,11 +764,22 @@ class TaskAgentManager:
             notes = self._notes.pop(commission.id, [])
             carried = self._carried.pop(commission.id, [])
             session.carried = [*carried, *([prompt] if prompt is not None else []), *notes]
-            if prompt is not None:
-                parts = [*carried, prompt]
-            else:
-                parts = [commission.dispatch_text, *carried]
-            text = "\n\n".join([*parts, *notes])
+
+            def first_message(runtime_name: str) -> str:
+                if prompt is None:
+                    parts = [commission.dispatch_text, *carried]
+                elif begun_in is not None and begun_in != runtime_name:
+                    # Taken up again where nothing of it was said: what was
+                    # said is in the other runtime (began in dsh, dsh is gone
+                    # or would not take it). It starts over, told what the
+                    # commission is; a task agent started by another is told
+                    # no more than a title otherwise.
+                    parts = [commission.dispatch_text, *carried, prompt]
+                else:
+                    parts = [*carried, prompt]
+                return "\n\n".join([*parts, *notes])
+
+            text = first_message(runtime_name)
             await runtime.start(spec)
             if runtime_name == RUNTIME_DSH and commission.id not in runtime.session_ids:
                 # dsh was made ready and still opened no session. It says
@@ -776,6 +792,7 @@ class TaskAgentManager:
                 session.dsh_refused = True
                 runtime_name, runtime = RUNTIME_BUILTIN, self._runtimes.builtin()
                 session.runtime, session.runtime_name = runtime, runtime_name
+                text = first_message(runtime_name)
                 await self._ledger.update(commission.id, runtime=runtime_name)
                 await runtime.start(spec)
 
@@ -1797,11 +1814,13 @@ class TaskAgentManager:
         if payload.get("tool") == "web_search":
             commission = await self._ledger.get(session_id)
             if commission is not None and session_id in self._sessions:
+                arguments = payload.get("arguments")
+                queries = _search_queries(arguments if isinstance(arguments, dict) else {})
                 refusal = await self._search_refusal(commission)
                 if session_id in self._sessions:
                     # Waits for its call as long as a ruling on a gateway tool does.
                     until = asyncio.get_running_loop().time() + GATEWAY_CLEARED_CALL_SECONDS
-                    self._search_rulings[session_id] = (refusal, until)
+                    self._search_rulings[session_id] = (queries, refusal, until)
         return PermissionDecision(True).to_json()
 
     async def _search_refusal(self, commission: Commission) -> str | None:
@@ -1848,13 +1867,14 @@ class TaskAgentManager:
         commission = await self._ledger.get(session_id)
         if commission is None:
             raise RuntimeError("unknown commission")
-        queries = [str(query) for query in payload.get("queries") or [] if str(query).strip()]
+        queries = list(_search_queries(payload))
         capability = f"plugin:{WEB_SEARCH_PLUGIN_ID}:{WEB_SEARCH_ENTRY_ID}"
         ruled = self._search_rulings.pop(commission.id, None)
-        if ruled is not None and asyncio.get_running_loop().time() <= ruled[1]:
+        if ruled is not None and ruled[0] == tuple(queries) and asyncio.get_running_loop().time() <= ruled[2]:
             # Ruled on before the call was made (a task agent in dsh): the
-            # user was asked then, if they had to be.
-            refusal = ruled[0]
+            # user was asked then, if they had to be. Only for what they
+            # were asked about: an allowance for once is not another search's.
+            refusal = ruled[1]
         else:
             refusal = await self._search_refusal(commission)
         if refusal is not None:

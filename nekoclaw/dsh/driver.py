@@ -83,6 +83,8 @@ logger = logging.getLogger(__name__)
 ACP_PROTOCOL_VERSION = 1
 _INVALID_PARAMS = -32602
 _IDLE_POLL_SECONDS = 1.0
+# How long ``shutdown`` lets sessions on their way in finish starting before it gives them up.
+_SHUTDOWN_OPENING_WAIT_SECONDS = 5.0
 _ALLOW = {"outcome": {"outcome": "selected", "optionId": "allow-once"}}
 _REJECT = {"outcome": {"outcome": "selected", "optionId": "reject-once"}}
 _CANCELLED = {"outcome": {"outcome": "cancelled"}}
@@ -117,6 +119,8 @@ class _Session:
     spec: protocol.TaskAgentSpec
     # Done once the attempt to create the session is over.
     opening: asyncio.Future[None]
+    # The task that creates it, while it does.
+    opener: asyncio.Task[tuple[bool, list[str]]] | None = None
     process: _Process | None = None
     dsh_id: str = ""
     slot: int = -1
@@ -127,6 +131,8 @@ class _Session:
     taken: int = 0
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
+    # Whether it is offered the subagent tool, which its first message then tells of.
+    subagents: bool = False
     # dsh sessions its directory had before, which dsh could not resume.
     previous: tuple[str, ...] = ()
     run: asyncio.Task[None] | None = None
@@ -283,6 +289,8 @@ class DshRuntime:
         self._process_lock = asyncio.Lock()
         # Calls of ``shutdown`` at work right now; see ``RuntimeCore``.
         self._shutdowns = 0
+        # Sessions being started, also those dropped meanwhile; shutting down waits for them.
+        self._starting: list[_Session] = []
         # Keeps the tasks alive that tell dsh to drop a session nobody got.
         self._closing_quietly: set[asyncio.Task[None]] = set()
         # Processes being ended for having been idle; shutting down waits for them.
@@ -734,19 +742,26 @@ class DshRuntime:
         """Give up a session whose creation failed part way: dsh is told if it knows of it."""
         process = session.process
         if process is not None and session.dsh_id and process.connection.alive:
-            task = asyncio.ensure_future(self._close_quietly(process, session.dsh_id))
+            # Its slot is given to another session only once dsh let it go; see ``_forget``.
+            slot = session.slot
+            self._forget(session, slot_free=False)
+            task = asyncio.ensure_future(self._close_quietly(process, session.dsh_id, slot))
             self._closing_quietly.add(task)
             task.add_done_callback(self._closing_quietly.discard)
+            return
         self._forget(session)
 
     @staticmethod
-    async def _close_quietly(process: _Process, dsh_id: str) -> None:
+    async def _close_quietly(process: _Process, dsh_id: str, slot: int) -> None:
         from config.nekoclaw_settings import DSH_CLOSE_SECONDS
 
         try:
             await process.connection.request("session/close", {"sessionId": dsh_id}, timeout=DSH_CLOSE_SECONDS)
         except (AcpError, asyncio.TimeoutError):
-            pass
+            # dsh may still hold the session: the slot stays out of use.
+            return
+        if slot >= 0 and slot not in process.free_slots:
+            process.free_slots.append(slot)
 
     async def _session(self, session_id: str, command: str) -> _Session | None:
         session = self._sessions.get(session_id)
@@ -761,24 +776,40 @@ class DshRuntime:
 
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         session_id = spec.session_id
-        if self._shutdowns:
-            self._reject(session_id, "start", "the runtime is shutting down")
-            return
-        current = self._sessions.get(session_id)
-        if current is not None:
+        while True:
+            if self._shutdowns:
+                self._reject(session_id, "start", "the runtime is shutting down")
+                return
+            current = self._sessions.get(session_id)
+            if current is None:
+                break
             if current.closing is None:
                 self._reject(session_id, "start", f'session "{session_id}" already exists')
                 return
             # Its predecessor is closing: dsh must have let go of the session
             # before it is resumed, and ``closed`` precedes the new ``started``.
+            # Looked at again afterwards: another start may have waited for
+            # the same close, and taken the id first.
             await asyncio.shield(current.closing)
+        # Nothing is awaited between the look above and taking the id.
         session = _Session(spec=spec, opening=asyncio.get_running_loop().create_future())
         self._sessions[session_id] = session
+        self._starting.append(session)
+        session.opener = asyncio.ensure_future(self._open(session))
         try:
-            resumed, tools = await self._open(session)
+            resumed, tools = await session.opener
+            process = session.process
+            if self._sessions.get(session_id) is not session or process is None or not process.connection.alive:
+                # The process ended while the session's note was being
+                # written, say: the session went with it, unannounced.
+                raise DshUnavailable("the dsh process ended while the session was being started")
         except asyncio.CancelledError:
             self._abandon(session)
-            raise
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            # Given up by ``shutdown``, not by whoever started it.
+            self._reject(session_id, "start", "the runtime is shutting down")
         except DshUnavailable as exc:
             self._abandon(session)
             self._reject(session_id, "start", str(exc))
@@ -797,6 +828,8 @@ class DshRuntime:
                 session.process.idle_since = None
             self._emit(session, protocol.StartedEvent(session_id=session_id, resumed=resumed, tools=tools))
         finally:
+            self._starting = [other for other in self._starting if other is not session]
+            session.opener = None
             session.opening.set_result(None)
 
     async def _open(self, session: _Session) -> tuple[bool, list[str]]:
@@ -822,7 +855,7 @@ class DshRuntime:
         # has it now. dsh's record of a session names the model of its last
         # request, and should it sum the session up before the next one, it
         # asks under that name: under another session's, that request would
-        # go to the other's model and be counted for it. (When the slot is
+        # go to the other's model address, with its key, and be counted for it. (When the slot is
         # taken that can still happen, once; it takes a session resumed with
         # its context nearly full.)
         had = known.get("slot") if resumable and known is not None else None
@@ -841,6 +874,7 @@ class DshRuntime:
             take_input=lambda seconds: self._take_input(session, seconds),
             emit_report=lambda payload: self._on_report(session, payload),
         )
+        session.subagents = "subagent" in tools
         servers: list[dict[str, Any]] = []
         if tools:
             servers.append(
@@ -916,12 +950,15 @@ class DshRuntime:
 
     def _first_message(self, session: _Session, work: str) -> str:
         from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
-        from config.prompts.prompts_nekoclaw_dsh import DSH_FIRST_MESSAGE
+        from config.prompts.prompts_nekoclaw_dsh import DSH_FIRST_MESSAGE, DSH_SUBAGENT_SECTION
 
         spec = session.spec
         parts = []
         if spec.instructions and spec.instructions.strip():
             parts.append(spec.instructions.strip())
+        if session.subagents:
+            # Not in the system prompt, which every session of the process shares.
+            parts.append(DSH_SUBAGENT_SECTION)
         if spec.reply_language and spec.reply_language.strip():
             parts.append(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", spec.reply_language.strip()))
         if not parts:
@@ -1131,10 +1168,18 @@ class DshRuntime:
         """Close every session and end every dsh process. Afterwards the runtime can be used again."""
         self._shutdowns += 1
         try:
-            # Sessions on their way in are closed as soon as they exist.
-            opening = [session.opening for session in self._sessions.values() if not session.opening.done()]
-            if opening:
-                await asyncio.wait(opening, timeout=5.0)
+            # Sessions on their way in are closed as soon as they exist. Those
+            # that take too long are given up: none is to start, nor to start
+            # a dsh process, after this returned.
+            starting = list(self._starting)
+            if starting:
+                await asyncio.wait([session.opening for session in starting], timeout=_SHUTDOWN_OPENING_WAIT_SECONDS)
+                late = [session for session in starting if not session.opening.done()]
+                for session in late:
+                    if session.opener is not None:
+                        session.opener.cancel()
+                if late:
+                    await asyncio.wait([session.opening for session in late])
             async with self._process_lock:
                 processes, self._processes = list(self._processes.values()), {}
             if processes:

@@ -186,7 +186,7 @@ class AcpConnection:
                 try:
                     loop.call_soon_threadsafe(self._on_line, line)
                 except RuntimeError:
-                    return
+                    break
         except (OSError, ValueError):
             # The pipe was closed under the reader: the end is told below all the same.
             pass
@@ -195,6 +195,11 @@ class AcpConnection:
         except RuntimeError:
             # The event loop is closed: nobody is left to tell.
             pass
+        # What the agent started may outlive it, in the process group it led
+        # (POSIX). That is ended the moment the agent is gone, before its
+        # process id can be another process's.
+        process.wait()
+        _end_group(process)
 
     def _read_errors(self, loop: asyncio.AbstractEventLoop) -> None:
         process = self._process
@@ -397,8 +402,26 @@ def _discard(process: "subprocess.Popen[bytes]") -> None:
             try:
                 stream.close()
             except OSError:
+                # Closed already, or broken: either way it is let go of.
                 pass
     _wait(process, 5.0)
+
+
+def _end_group(process: "subprocess.Popen[bytes]") -> None:
+    """Blocking: on POSIX, kill what is left of the process group an exited agent led; nothing on Windows.
+
+    The agent was started with ``start_new_session``: its group's id is its
+    process id, which no new process gets while the group has members.
+    """
+    if sys.platform == "win32":
+        return
+    import signal
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        # ProcessLookupError: nothing is left of the group.
+        pass
 
 
 def kill_tree(process: "subprocess.Popen[bytes]") -> None:
@@ -418,15 +441,12 @@ def kill_tree(process: "subprocess.Popen[bytes]") -> None:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
+            # No tree to kill after all, or no taskkill: the process itself is killed below.
             pass
     else:
-        import signal
-
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
+        _end_group(process)
     try:
         process.kill()
     except OSError:
+        # It exited meanwhile.
         pass

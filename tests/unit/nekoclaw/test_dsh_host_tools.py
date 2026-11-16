@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -287,6 +288,40 @@ async def test_a_new_token_replaces_the_old_and_a_revoked_one_stops_working(endp
         listener.revoke("s1")
         gone = await client.post(listener.tools_url, headers={"Authorization": f"Bearer {second}"}, json=listing)
     assert (old.status_code, new.status_code, gone.status_code) == (401, 200, 401)
+
+
+async def test_a_call_whose_token_is_revoked_while_its_body_comes_in_is_refused(
+    endpoint, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    listener, calls = endpoint
+    token = listener.issue("s1")
+    looked, go_on = asyncio.Event(), asyncio.Event()
+    session_of = listener._session_of
+
+    def watched(offered: str | None) -> str | None:
+        looked.set()
+        return session_of(offered)
+
+    monkeypatch.setattr(listener, "_session_of", watched)
+    call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "report", "arguments": {"status": "ready", "summary": "x"}}}
+
+    async def body():
+        await go_on.wait()
+        yield json.dumps(call).encode("utf-8")
+
+    async with httpx.AsyncClient(trust_env=False) as client:
+        posting = asyncio.ensure_future(
+            client.post(listener.tools_url, headers={"Authorization": f"Bearer {token}"}, content=body())
+        )
+        await asyncio.wait_for(looked.wait(), 10)
+        # The session is closed and opened again meanwhile: the tools under its
+        # id are the new session's, and the old token is no key to them.
+        listener.revoke("s1")
+        listener.issue("s1")
+        go_on.set()
+        answer = await asyncio.wait_for(posting, 10)
+
+    assert answer.status_code == 401 and calls == []
 
 
 async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoint) -> None:
