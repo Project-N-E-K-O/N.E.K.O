@@ -86,9 +86,10 @@ class _Cancelled:
 
 @dataclass(slots=True)
 class _Offer:
-    """What one session is offered."""
+    """What one session is offered, and its calls under way."""
 
     tools: dict[str, AgentTool] = field(default_factory=dict)
+    running: dict[asyncio.Task[Any], _Cancelled] = field(default_factory=dict)
 
 
 # ``handle``/``call`` without an offer: what the session is offered when they run.
@@ -175,7 +176,13 @@ class HostTools:
         return list(offered)
 
     def close(self, session_id: str) -> None:
-        self._offers.pop(session_id, None)
+        """Take a session's tools back, and stop its calls under way (with what they asked of the host)."""
+        offer = self._offers.pop(session_id, None)
+        if offer is None:
+            return
+        for work, token in list(offer.running.items()):
+            token.cancelled = True
+            work.cancel()
 
     def names(self, session_id: str) -> list[str]:
         offer = self._offers.get(session_id)
@@ -271,6 +278,9 @@ class HostTools:
             return await tool.execute(call_id or name, arguments, token, None)
 
         work = asyncio.ensure_future(carried_out())
+        if offer is not None:
+            offer.running[work] = token
+        work.add_done_callback(lambda done: offer.running.pop(done, None) if offer is not None else None)
         try:
             # Shielded: when the wait is given up below, the work is told to
             # stop through its token and then cancelled, in that order.
@@ -281,11 +291,15 @@ class HostTools:
             await asyncio.gather(work, return_exceptions=True)
             return _result(DSH_TOOL_TOOK_TOO_LONG, error=True)
         except asyncio.CancelledError:
-            # dsh gave the call up (its turn was stopped): so does the host.
             token.cancelled = True
             work.cancel()
             await asyncio.gather(work, return_exceptions=True)
-            raise
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                # dsh gave the call up (its turn was stopped): so does the host.
+                raise
+            # The session was closed under it (``close``).
+            return _result("the session that made this call was closed", error=True)
         except ToolError as exc:
             return _result(str(exc), error=True)
         except Exception as exc:  # noqa: BLE001 - reported to the model, never raised into the listener

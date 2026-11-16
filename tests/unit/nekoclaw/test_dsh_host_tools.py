@@ -376,14 +376,16 @@ async def test_a_batch_whose_session_is_opened_again_midway_carries_out_no_more_
     handling = asyncio.ensure_future(tools.handle("s1", batch))
     await asyncio.wait_for(reporting.wait(), 10)
 
-    # Closed, and one of the same id opened, while the first call of the batch runs.
+    # Closed, and one of the same id opened, while the first call of the batch runs:
+    # that call is stopped, and the rest of the batch is not carried out.
     tools.close("s1")
     _open(tools, tmp_path)
     go_on.set()
     first, second = await asyncio.wait_for(handling, 10)
 
-    assert first["result"]["isError"] is False
-    assert second["result"]["isError"] is True and [name for name, _session, _payload in calls] == ["report"]
+    assert first["result"]["isError"] is True and second["result"]["isError"] is True
+    assert "closed" in second["result"]["content"][0]["text"]
+    assert [name for name, _session, _payload in calls] == ["report"]
 
 
 async def test_a_call_whose_session_is_opened_again_before_its_tool_starts_is_not_carried_out(tmp_path: Path) -> None:
@@ -400,6 +402,34 @@ async def test_a_call_whose_session_is_opened_again_before_its_tool_starts_is_no
     result = await tools.call("s1", "report", {"status": "ready", "summary": "x"}, offer=tools.offer("s1"))
 
     assert result["isError"] is True and "closed" in result["content"][0]["text"] and calls == []
+
+
+async def test_closing_a_session_stops_its_calls_under_way_with_what_they_asked_of_the_host(tmp_path: Path) -> None:
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+    host = _callbacks(calls)
+    asking: asyncio.Event = asyncio.Event()
+    stopped: list[bool] = []
+
+    async def slow_report(session_id: str, payload: dict[str, Any]) -> None:
+        asking.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            stopped.append(True)
+            raise
+
+    host.report = slow_report
+    tools = HostTools(host)
+    _open(tools, tmp_path)
+    calling = asyncio.ensure_future(tools.call("s1", "report", {"status": "progress", "summary": "x"}))
+    await asyncio.wait_for(asking.wait(), 10)
+
+    # Closed while the host works on the call: nothing of it goes on, under its id
+    # there may soon be the same commission taken up again.
+    tools.close("s1")
+    result = await asyncio.wait_for(calling, 10)
+
+    assert result["isError"] is True and "closed" in result["content"][0]["text"] and stopped == [True]
 
 
 async def test_each_dsh_process_has_a_token_of_its_own_that_ends_with_it(endpoint) -> None:

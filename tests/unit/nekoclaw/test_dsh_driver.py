@@ -104,6 +104,20 @@ async def dsh(tmp_path: Path):
         await item.runtime.shutdown()
 
 
+async def _seen_through(tasks: list[asyncio.Future[Any]]) -> None:
+    """Let a test's tasks finish, a bounded while, whatever became of the test; what is left is cancelled.
+
+    Their outcome is looked at, so that a failure of theirs is not left
+    unread; the test itself looks at what it expects of them.
+    """
+    if tasks:
+        await asyncio.wait(tasks, timeout=10)
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def _until_started_on(event: threading.Event, starting: asyncio.Future[Any], events: Recorder) -> None:
     """Wait, a bounded while, for a start to reach the point a test holds it at; fail when it ended first."""
     for _attempt in range(1000):
@@ -682,16 +696,19 @@ async def test_a_note_being_written_when_shutdown_gives_its_start_up_is_written_
     monkeypatch.setattr(driver_module, "_write_session_file", slow_write)
     driver = dsh()
     starting = asyncio.ensure_future(driver.runtime.start(make_spec(tmp_path)))
+    tasks: list[asyncio.Future[Any]] = [starting]
     try:
         await _until_started_on(writing, starting, driver.events)
         shutting = asyncio.ensure_future(driver.runtime.shutdown())
+        tasks.append(shutting)
         await asyncio.sleep(0.5)
         # A note written after the start was over could replace the next one's.
         assert not shutting.done()
     finally:
         go_on.set()
-    await asyncio.wait_for(shutting, 10)
-    await asyncio.wait_for(starting, 10)
+        await _seen_through(tasks)
+    shutting.result()
+    starting.result()
 
     assert written == [True]
     assert [event["command"] for event in driver.events.of("error", "s1")] == ["start"]
@@ -737,7 +754,8 @@ async def test_shutdown_gives_up_a_start_that_takes_too_long_and_nothing_starts_
         refused = driver.events.of("error", "s1")
     finally:
         release.set()
-    await asyncio.wait_for(starting, 5)
+        await _seen_through([starting])
+    starting.result()
     await asyncio.sleep(0.2)
 
     # Given up, and not made after the runtime shut down: no session, and no dsh process.
