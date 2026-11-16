@@ -17,7 +17,9 @@
 ``TaskAgentManager`` is the only user of the runtime's driver interface
 (``nekoclaw.runtime``). It
 
-* starts the runtime when the first task agent is needed, never before;
+* starts a runtime when the first task agent that runs in it is needed, never
+  before, and gives every commission the runtime it runs in: the built-in
+  one, or dsh for a user who installed it (``runtimes.py``);
 * gives every commission a session of its own, whose id is the commission id;
 * keeps at most ``TASK_AGENT_MAX_CONCURRENT`` task agents at work and leaves the
   rest ``queued`` until a place is free. Task agents started by other task agents
@@ -47,7 +49,7 @@ from typing import Any, Protocol
 
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import ACTIVE_STATUSES, Commission, Ledger
-from nekoclaw.host.paths import TRANSCRIPT_NAME, HostPaths
+from nekoclaw.host.paths import DSH_SESSION_NAME, TRANSCRIPT_NAME, HostPaths
 from nekoclaw.host.permissions import (
     CHOICES,
     DENIED_BY_SETTINGS,
@@ -59,10 +61,10 @@ from nekoclaw.host.permissions import (
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
 from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
+from nekoclaw.host.runtimes import RUNTIME_BUILTIN, RUNTIME_DSH, Runtimes
 
 logger = logging.getLogger(__name__)
 
-RUNTIME_BUILTIN = "builtin"
 LEAD_NAME = "lead"
 WEB_SEARCH_PLUGIN_ID = "web_search"
 WEB_SEARCH_ENTRY_ID = "search"
@@ -151,6 +153,13 @@ class _Session:
     # passed on to it waits in the notes, which go to it right after that work.
     ready: bool = False
     closing: bool = False
+    # The runtime the session is in and its name (``runtimes.py``), from the
+    # moment it is started there.
+    runtime: Any = None
+    runtime_name: str | None = None
+    # dsh, though it was made ready, opened no session for it and the
+    # built-in runtime took it: the event in which dsh says why is on its way.
+    dsh_refused: bool = False
     # Model requests already counted against the quota before they were
     # sent; that many usage reports are not counted again.
     prepaid_requests: int = 0
@@ -201,12 +210,45 @@ def _shows_run_at_work(event: dict[str, Any]) -> bool:
     return kind in ("text", "tool_start", "tool_update", "tool_end", "report", "usage", "host_request")
 
 
-def _has_transcript(session_dir: Any) -> bool:
-    """Whether something was ever said in a session directory. Blocking."""
+def _in_builtin(session_dir: Any) -> bool:
+    """Whether the built-in runtime keeps a transcript in a session directory. Blocking."""
     try:
         return (session_dir / TRANSCRIPT_NAME).stat().st_size > 0
     except OSError:
         return False
+
+
+def _in_dsh(session_dir: Any) -> bool:
+    """Whether dsh holds a session for a session directory. Blocking.
+
+    dsh keeps what was said itself; the driver leaves a note of which of
+    its sessions is this one's (``nekoclaw.dsh.driver.SESSION_FILE``).
+    """
+    try:
+        return (session_dir / DSH_SESSION_NAME).is_file()
+    except OSError:
+        return False
+
+
+def _has_transcript(session_dir: Any) -> bool:
+    """Whether something was ever said in a session directory, in either runtime. Blocking."""
+    return _in_builtin(session_dir) or _in_dsh(session_dir)
+
+
+def _begun_in(commission: Commission, session_dir: Any) -> str | None:
+    """Return the runtime that holds what was said in a commission's session, if one does. Blocking.
+
+    The ledger tells which runtime took the commission up last; the session
+    directory tells whether a session came of it. A runtime that was given
+    the commission and never opened a session for it holds nothing of it,
+    and neither does one whose record was removed since, being old: such a
+    commission is free to run in the other.
+    """
+    if commission.runtime == RUNTIME_DSH:
+        return RUNTIME_DSH if _in_dsh(session_dir) else None
+    if commission.runtime == RUNTIME_BUILTIN:
+        return RUNTIME_BUILTIN if _in_builtin(session_dir) else None
+    return None
 
 
 def _has_files(session_dir: Any) -> bool:
@@ -270,6 +312,8 @@ class TaskAgentManager:
         leases: Any = None,
         model_capabilities: Any = None,
         space: Any = None,
+        dsh: Any = None,
+        dsh_runtime_factory: Any = None,
     ) -> None:
         self._meter = meter
         # ``nekoclaw.host.space.TaskAgentSpace``, or None: then task agents
@@ -291,12 +335,19 @@ class TaskAgentManager:
         self._paths = paths
         self._model_config = model_config
         self._gateway = gateway
-        self._runtime_factory = runtime_factory
         self._enabled = enabled
         self._max_concurrent = max_concurrent
         self._lessons: LessonSink = lessons or space or LedgerLessonSink(ledger)
-        self._runtime: Any = None
-        self._runtime_lock = asyncio.Lock()
+        # The built-in runtime and, for a user who installed it, dsh
+        # (``dsh`` is the host's ``nekoclaw.dsh.DshInstallation``, or None).
+        # Each is created when a commission first runs in it.
+        self._runtimes = Runtimes(
+            on_event=lambda event: self._events.put_nowait(event),
+            callbacks=self._callbacks,
+            builtin_factory=runtime_factory,
+            dsh=dsh,
+            **({"dsh_factory": dsh_runtime_factory} if dsh_runtime_factory is not None else {}),
+        )
         self._sessions: dict[str, _Session] = {}
         self._queue: deque[str] = deque()
         # Text passed on to a commission that has not started yet.
@@ -315,6 +366,10 @@ class TaskAgentManager:
         # Being queued to be taken up again, while that status is written.
         self._requeueing: set[str] = set()
         self._candidates: dict[str, tuple[str, ...]] = {}
+        # What was ruled on a commission's web search before the call was
+        # made (``_rule_on_host_tool``): the refusal or None, and until when
+        # it waits for the call (event loop time).
+        self._search_rulings: dict[str, tuple[str | None, float]] = {}
         # Commissions whose old session files are being removed right now
         # (``hold_session``); a start of one of them waits for that.
         self._held: dict[str, asyncio.Event] = {}
@@ -348,7 +403,38 @@ class TaskAgentManager:
 
     @property
     def runtime_started(self) -> bool:
-        return self._runtime is not None
+        return self._runtimes.started
+
+    @property
+    def _runtime(self) -> Any:
+        """The built-in runtime, if it was created."""
+        return self._runtimes.get(RUNTIME_BUILTIN)
+
+    def _runtime_of(self, session: _Session) -> Any:
+        """Return the runtime a session is in, or None.
+
+        A session that was not started anywhere yet is spoken of to the
+        built-in runtime, as far as that was created: it answers that it
+        does not know the session, which is what the caller acts on.
+        """
+        return session.runtime if session.runtime is not None else self._runtimes.get(RUNTIME_BUILTIN)
+
+    @property
+    def dsh_error(self) -> str | None:
+        """Why dsh could not be used the last time a commission was to run in it, if it could not."""
+        return self._runtimes.dsh_error
+
+    def sessions_in(self, runtime_name: str) -> list[str]:
+        """Return the commissions whose sessions are in a runtime right now."""
+        return [session.commission_id for session in self._sessions.values() if session.runtime_name == runtime_name]
+
+    async def stop_dsh(self) -> bool:
+        """End the dsh runtime and its process, unless a session is in it. Returns whether it is stopped.
+
+        For before dsh is removed or installed anew: its program cannot be
+        replaced while it runs.
+        """
+        return await self._runtimes.retire_dsh(lambda: bool(self.sessions_in(RUNTIME_DSH)))
 
     async def available(self) -> tuple[bool, str]:
         """Return whether a task agent could be started, and if not, why."""
@@ -386,12 +472,24 @@ class TaskAgentManager:
             subagent_interrupt=self._cb_subagent_interrupt,
         )
 
-    async def _ensure_runtime(self) -> Any:
-        async with self._runtime_lock:
-            if self._runtime is None:
-                self._runtime = self._runtime_factory(self._events.put_nowait, self._callbacks())
-                self._pump = asyncio.ensure_future(self._pump_events())
-            return self._runtime
+    async def _choose_runtime(
+        self, commission: Commission, model: Any, begun_in: str | None
+    ) -> tuple[str, Any, str | None]:
+        """Return the runtime a commission's task agent is started in; see ``runtimes.py``.
+
+        Its name, the runtime, and, when the commission was to run in dsh
+        and runs in the built-in runtime instead, why.
+        """
+        parent_runtime = None
+        if commission.parent_id is not None:
+            # Where the task agent that started it runs: told by the ledger,
+            # since that one's session may have been closed meanwhile.
+            parent = await self._ledger.get(commission.parent_id)
+            parent_runtime = parent.runtime if parent is not None else None
+        chosen = await self._runtimes.choose(model, begun_in=begun_in, parent_runtime=parent_runtime)
+        if self._pump is None:
+            self._pump = asyncio.ensure_future(self._pump_events())
+        return chosen
 
     async def _pump_events(self) -> None:
         """Handle runtime events one at a time, in the order they arrived."""
@@ -587,15 +685,16 @@ class TaskAgentManager:
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
-            def prepare() -> tuple[str, str]:
-                # In here: where the session is kept is told by what is on the disk.
+            def prepare() -> tuple[str, str, str | None]:
+                # In here: where the session is kept, and which runtime holds
+                # what was said in it, is told by what is on the disk.
                 session_dir = self._session_dir_of(commission)
                 session_dir.mkdir(parents=True, exist_ok=True)
                 workdir = self._workdir_of(commission, session_dir)
                 workdir.mkdir(parents=True, exist_ok=True)
-                return str(session_dir), str(workdir)
+                return str(session_dir), str(workdir), _begun_in(commission, session_dir)
 
-            session_path, workdir = await asyncio.to_thread(prepare)
+            session_path, workdir, begun_in = await asyncio.to_thread(prepare)
 
             if "supports_images" not in config:
                 config = {**config, "supports_images": await self._sees_images(config)}
@@ -636,12 +735,13 @@ class TaskAgentManager:
                 image_pools=image_pools,
                 gateway=gateway_spec,
             )
-            runtime = await self._ensure_runtime()
+            runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
+            session.runtime, session.runtime_name = runtime, runtime_name
             moved = await self._ledger.transition(
                 commission.id,
                 "working",
                 reason="a task agent took it up",
-                runtime=RUNTIME_BUILTIN,
+                runtime=runtime_name,
                 route="task_agent",
                 workdir=workdir,
                 session_dir=session_path,
@@ -650,6 +750,11 @@ class TaskAgentManager:
                 # Stopped while it was being prepared.
                 self._discard(commission.id)
                 return False
+            if fallback is not None:
+                # It was to run in dsh and runs in the built-in runtime instead.
+                await self._ledger.append_event(
+                    commission.id, "runtime_fallback", {"wanted": RUNTIME_DSH, "runtime": runtime_name, "reason": fallback}
+                )
             notes = self._notes.pop(commission.id, [])
             carried = self._carried.pop(commission.id, [])
             session.carried = [*carried, *([prompt] if prompt is not None else []), *notes]
@@ -659,6 +764,19 @@ class TaskAgentManager:
                 parts = [commission.dispatch_text, *carried]
             text = "\n\n".join([*parts, *notes])
             await runtime.start(spec)
+            if runtime_name == RUNTIME_DSH and commission.id not in runtime.session_ids:
+                # dsh was made ready and still opened no session. It says
+                # why in an event, which is on its way and is where the
+                # reason is recorded (``_on_error``). dsh does not hold the
+                # commission, so the built-in runtime takes it here and now,
+                # as when dsh could not be made ready (starting over, should
+                # dsh have a session of it from before): the user is not
+                # left with a failed commission to hand in again.
+                session.dsh_refused = True
+                runtime_name, runtime = RUNTIME_BUILTIN, self._runtimes.builtin()
+                session.runtime, session.runtime_name = runtime, runtime_name
+                await self._ledger.update(commission.id, runtime=runtime_name)
+                await runtime.start(spec)
 
             async def stopped_meanwhile() -> bool:
                 current = await self._ledger.get(commission.id)
@@ -823,6 +941,7 @@ class TaskAgentManager:
     def _discard(self, commission_id: str) -> None:
         self._sessions.pop(commission_id, None)
         self._candidates.pop(commission_id, None)
+        self._search_rulings.pop(commission_id, None)
         if self._gateway is not None:
             self._gateway.revoke(commission_id)
 
@@ -1163,6 +1282,18 @@ class TaskAgentManager:
         if command == "start":
             # The runtime reports a start it could not make here, not by
             # raising from ``start``.
+            if session.dsh_refused:
+                # dsh's word on the session it did not open. The built-in
+                # runtime has the commission by now (``_start``); dsh is
+                # left alone for a while, and why is on the record.
+                session.dsh_refused = False
+                self._runtimes.dsh_refused(message)
+                await self._ledger.append_event(
+                    commission_id,
+                    "runtime_fallback",
+                    {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": message},
+                )
+                return
             await self._fail(commission_id, f"the task agent could not be started: {message}")
             self._keep_unsent(session)
             await self._release(commission_id)
@@ -1178,10 +1309,11 @@ class TaskAgentManager:
             await self._release(commission_id)
 
     async def _close_session(self, session: _Session) -> None:
-        if session.closing or self._runtime is None:
+        runtime = self._runtime_of(session)
+        if session.closing or runtime is None:
             return
         session.closing = True
-        await self._runtime.close(session.commission_id)
+        await runtime.close(session.commission_id)
 
     async def _fail(self, commission_id: str, reason: str) -> None:
         await self._end(commission_id, "failed", reason=reason, text=reason, result_summary=self._summary(reason))
@@ -1252,12 +1384,13 @@ class TaskAgentManager:
             # result, say): this one follows its first work.
             self._notes.setdefault(parent_id, []).append(message)
             return
-        if self._runtime is None:
+        runtime = self._runtime_of(parent)
+        if runtime is None:
             return
         # Before the parent's next model request, so a parent that waits for
         # its task agents sees the result as soon as it looks; an idle parent is
         # started by it.
-        await self._send_text(self._runtime, parent, "steer", message)
+        await self._send_text(runtime, parent, "steer", message)
 
     async def _wake_closed_parent(self, parent_id: str, message: str) -> None:
         """Take up again a working parent whose idle session was closed, a child's result its next work.
@@ -1276,9 +1409,9 @@ class TaskAgentManager:
         if parent is None or parent.route != "task_agent" or parent.status != "working":
             return
         session = self._sessions.get(parent_id)
-        if session is not None and session.ready and self._runtime is not None:
+        if session is not None and session.ready and self._runtime_of(session) is not None:
             # It came back, and was given its work, while the ledger was read.
-            await self._send_text(self._runtime, session, "steer", message)
+            await self._send_text(self._runtime_of(session), session, "steer", message)
             return
         if session is not None or parent_id in self._queue or parent_id in self._requeueing:
             # It is on its way back: this goes along with its work.
@@ -1333,7 +1466,7 @@ class TaskAgentManager:
         if commission is None or commission.route != "task_agent" or self._closed:
             return False
         session = self._sessions.get(commission_id)
-        if session is not None and self._runtime is not None and session.awaiting_prompt:
+        if session is not None and self._runtime_of(session) is not None and session.awaiting_prompt:
             return await self.answer(commission_id, text)
         if session is None and commission.status == "waiting_user":
             # Its session was closed while it waited (an idle runtime exits).
@@ -1348,11 +1481,11 @@ class TaskAgentManager:
             self._notes.setdefault(commission_id, []).append(text)
             await self._ledger.append_event(commission_id, "told", {"text": text, "queued": True})
             return True
-        if session is not None and self._runtime is not None:
+        if session is not None and self._runtime_of(session) is not None:
             if session.closing or commission.status not in ("working", "waiting_user"):
                 return False
             await self._ledger.append_event(commission_id, "told", {"text": text})
-            await self._send_text(self._runtime, session, "steer", text)
+            await self._send_text(self._runtime_of(session), session, "steer", text)
             return True
         return False
 
@@ -1430,7 +1563,7 @@ class TaskAgentManager:
         if session.question is not None and not session.question.done():
             session.question.set_result({"text": text, "choice": choice})
             return True
-        if session.awaiting_prompt and self._runtime is not None:
+        if session.awaiting_prompt and self._runtime_of(session) is not None:
             if not session.run_ended:
                 # The run that asked is still winding down. The answer is kept
                 # and handed over the moment it has ended. A question takes
@@ -1494,7 +1627,7 @@ class TaskAgentManager:
             # Closed while the status was written: its end has the answer.
             return True
         try:
-            await self._send_text(self._runtime, session, "prompt", text)
+            await self._send_text(self._runtime_of(session), session, "prompt", text)
         except BaseException:
             session.untaken_answer = None
             raise
@@ -1577,9 +1710,13 @@ class TaskAgentManager:
 
     async def _cb_permission(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         detail = {key: payload.get(key) for key in ("tool", "path", "command", "cwd") if payload.get(key)}
-        from nekoclaw.runtime.permissions import WRITE_TOOL_NAMES
+        from nekoclaw.runtime.permissions import GATEWAY_CALL_CATEGORY, HOST_TOOL_CALL_CATEGORY, WRITE_TOOL_NAMES
 
         category = str(payload.get("category") or "other")
+        if category == GATEWAY_CALL_CATEGORY:
+            return await self._rule_on_gateway_call(session_id, payload)
+        if category == HOST_TOOL_CALL_CATEGORY:
+            return await self._rule_on_host_tool(session_id, payload)
         path = payload.get("path")
         writes = payload.get("tool") in WRITE_TOOL_NAMES
         # A path outside the working directory, or one a tool is about to
@@ -1626,6 +1763,61 @@ class TaskAgentManager:
         decision = await self._permissions.check(session_id, category, detail=detail)
         return decision.to_json()
 
+    async def _rule_on_gateway_call(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Rule on a call of a gateway tool that a task agent in dsh is about to make.
+
+        Only the dsh runtime asks this (``nekoclaw.runtime.host``). dsh gives
+        a call of a gateway tool up after a minute, so whatever the call
+        needs the user for is asked now, before it is made
+        (``Gateway.clear_call``). The call is let through whatever came of
+        it: the gateway carries it out or answers it with the refusal, in the
+        words every call refused at its entry is answered with, and neither
+        decides nor asks again.
+        """
+        arguments = payload.get("arguments")
+        if self._gateway is not None:
+            await self._gateway.clear_call(
+                session_id, str(payload.get("tool") or ""), arguments if isinstance(arguments, dict) else {}
+            )
+        return PermissionDecision(True).to_json()
+
+    async def _rule_on_host_tool(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Rule on a call of one of the host's own tools that a task agent in dsh is about to make.
+
+        Only the dsh runtime asks this, and only about the web search: with
+        plugin entries set to be asked about, the search asks the user, and
+        dsh gives a call less than a minute. So the user is asked now. The
+        call is let through whatever came of it: the search answers it with
+        what was decided here, in the words it refuses a call with in the
+        built-in runtime, and does not ask again.
+        """
+        from config.nekoclaw_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        if payload.get("tool") == "web_search":
+            commission = await self._ledger.get(session_id)
+            if commission is not None and session_id in self._sessions:
+                refusal = await self._search_refusal(commission)
+                if session_id in self._sessions:
+                    # Waits for its call as long as a ruling on a gateway tool does.
+                    until = asyncio.get_running_loop().time() + GATEWAY_CLEARED_CALL_SECONDS
+                    self._search_rulings[session_id] = (refusal, until)
+        return PermissionDecision(True).to_json()
+
+    async def _search_refusal(self, commission: Commission) -> str | None:
+        """Return why a commission's task agent may not search the web, or None; the user is asked where the settings say so.
+
+        The search is a plugin entry: the plugin switch and the
+        ``plugin_entry`` permission apply as they do through the gateway.
+        """
+        if not self._registry.plugins_enabled():
+            return "web search is not available: plugins are switched off"
+        decision = await self._permissions.check(
+            commission.id,
+            "plugin_entry",
+            detail={"tool": "web_search", "capability": f"plugin:{WEB_SEARCH_PLUGIN_ID}:{WEB_SEARCH_ENTRY_ID}"},
+        )
+        return None if decision.allow else (decision.reason or "permission denied")
+
     async def _cb_ask_user(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         questions = list(payload.get("questions") or [])
         answer = await self._ask(session_id, {"kind": "questions", "questions": questions})
@@ -1656,20 +1848,14 @@ class TaskAgentManager:
         if commission is None:
             raise RuntimeError("unknown commission")
         queries = [str(query) for query in payload.get("queries") or [] if str(query).strip()]
-        # The search is a plugin entry: the plugin switch and the
-        # ``plugin_entry`` permission apply as they do through the gateway.
         capability = f"plugin:{WEB_SEARCH_PLUGIN_ID}:{WEB_SEARCH_ENTRY_ID}"
-        refusal = None
-        if not self._registry.plugins_enabled():
-            refusal = "web search is not available: plugins are switched off"
+        ruled = self._search_rulings.pop(commission.id, None)
+        if ruled is not None and asyncio.get_running_loop().time() <= ruled[1]:
+            # Ruled on before the call was made (a task agent in dsh): the
+            # user was asked then, if they had to be.
+            refusal = ruled[0]
         else:
-            decision = await self._permissions.check(
-                commission.id,
-                "plugin_entry",
-                detail={"tool": "web_search", "capability": capability},
-            )
-            if not decision.allow:
-                refusal = decision.reason or "permission denied"
+            refusal = await self._search_refusal(commission)
         if refusal is not None:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability, "reason": refusal}
@@ -1943,7 +2129,7 @@ class TaskAgentManager:
         # commission nobody stopped into a stopped one.
         for commission_id in list(self._sessions):
             await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
-        if self._runtime is not None:
+        if self._runtimes.started:
             # A parent whose idle session was closed while its task agents
             # worked holds no session and is in no queue, yet is this host's
             # and under way. (With no runtime ever started there is none, and
@@ -1955,8 +2141,7 @@ class TaskAgentManager:
                     and item.id not in self._sessions
                 ):
                     await self._ledger.transition(item.id, "failed", reason=_SHUT_DOWN_REASON)
-        runtime, self._runtime = self._runtime, None
-        if runtime is not None:
+        for _name, runtime in self._runtimes.take_all():
             try:
                 await runtime.shutdown()
             except Exception:  # noqa: BLE001 - shutting down goes on regardless
