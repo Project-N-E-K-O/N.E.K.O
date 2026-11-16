@@ -357,6 +357,19 @@
         }
     }
 
+    // Chromium shares an animated-image timeline across elements using the same
+    // URL, so a restart needs a different URL. Alternate between two tokens
+    // instead of counting up: an ever-new URL misses the immutable HTTP cache
+    // (re-downloading a multi-MB cat animation on every reveal) and leaves one
+    // more decoded image in the memory cache each time.
+    function nextNekoModelCatRevealPlaybackToken(src) {
+        let currentToken = '';
+        try {
+            currentToken = new URL(src, window.location.href).searchParams.get('reveal') || '';
+        } catch (_) {}
+        return currentToken === '1' ? 2 : 1;
+    }
+
     I.restartNekoModelCatRevealArt = function restartNekoModelCatRevealArt(container) {
         const art = container && typeof container.querySelector === 'function'
             ? container.querySelector('.neko-idle-return-art:not(.neko-idle-return-art-next)')
@@ -366,7 +379,7 @@
         if (!currentSrc) return false;
         const nextSrc = buildNekoModelCatRevealPlaybackUrl(
             currentSrc,
-            ++I.nekoModelCatRevealPlaybackToken
+            nextNekoModelCatRevealPlaybackToken(currentSrc)
         );
         art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
         art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;

@@ -638,6 +638,77 @@ test('return transition restarts canonical cat animations and preserves their ve
     '/user_pngtuber/custom.gif');
 });
 
+test('return transition alternates two reveal URLs so restarts stay cacheable', () => {
+  const source = fs.readFileSync(path.join(PROJECT_ROOT,
+    'static/app/app-ui/return-transitions.js'), 'utf8');
+  const start = source.indexOf('function buildNekoModelCatRevealPlaybackUrl(');
+  const end = source.indexOf('I.restartNekoModelCatRevealArt =', start);
+  const context = vm.createContext({ URL, window: { location: { href: 'http://localhost/' } } });
+  vm.runInContext(source.slice(start, end), context);
+  const src = loadRegistry().getAppearance('idle.cat1', { random: false }).url;
+  const seen = new Set();
+  let current = `${src}?v=123`;
+  for (let i = 0; i < 6; i += 1) {
+    const next = context.buildNekoModelCatRevealPlaybackUrl(
+      current, context.nextNekoModelCatRevealPlaybackToken(current));
+    assert.notEqual(next, current, 'each reveal must change the URL to restart playback');
+    assert.equal(new URL(next).searchParams.get('v'), '123');
+    seen.add(next);
+    current = next;
+  }
+  assert.equal(seen.size, 2);
+});
+
+test('return button art retries a failed load of the same source, then gives up', () => {
+  const source = fs.readFileSync(path.join(PROJECT_ROOT,
+    'static/avatar/avatar-ui-buttons/methods-return.js'), 'utf8');
+  const start = source.indexOf('const _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS');
+  const end = source.indexOf('Object.assign(AvatarButtonMixin.methods', start);
+  assert.ok(start >= 0 && end > start);
+  const timers = [];
+  const warnings = [];
+  const context = vm.createContext({
+    Object,
+    console: { warn: (...args) => warnings.push(args) },
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearTimeout: () => {},
+  });
+  vm.runInContext(`${source.slice(start, end)};this.install = _installNekoIdleReturnArtLoadRetry;`, context);
+
+  const listeners = {};
+  const assigned = [];
+  const art = {
+    attrs: { src: 'cat.webp' },
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    getAttribute(name) { return this.attrs[name] ?? null; },
+    removeAttribute(name) { delete this.attrs[name]; },
+    set src(value) { this.attrs.src = value; assigned.push(value); },
+  };
+  const fire = (type) => listeners[type].forEach((fn) => fn());
+  context.install(art);
+  context.install(art);
+  assert.equal(listeners.error.length, 1, 'installing twice must not double the listeners');
+
+  for (let i = 0; i < 3; i += 1) {
+    fire('error');
+    timers.shift().fn();
+  }
+  assert.deepEqual(assigned, ['cat.webp', 'cat.webp', 'cat.webp']);
+  fire('error');
+  assert.equal(timers.length, 0, 'gives up after the retry budget');
+
+  // A successful load resets the budget.
+  fire('load');
+  fire('error');
+  assert.equal(timers.length, 1);
+
+  // Something else changed the source meanwhile: leave it alone.
+  art.attrs.src = 'drag.webp';
+  timers.shift().fn();
+  assert.equal(assigned.length, 3);
+  assert.ok(warnings.length >= 5);
+});
+
 test('registry loads before core in every Avatar and chat template', () => {
   for (const relativePath of REGISTRY_TEMPLATES) {
     const source = fs.readFileSync(path.join(PROJECT_ROOT, relativePath), 'utf8');
