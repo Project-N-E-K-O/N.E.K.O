@@ -240,6 +240,48 @@ async def test_what_an_agent_left_is_ended_whoever_notices_its_exit_first(
 
 
 @POSIX_ONLY
+async def test_an_agent_that_will_not_exit_is_killed_while_its_exit_is_watched() -> None:
+    import subprocess
+    import threading
+
+    from nekoclaw.dsh import acp
+
+    process = await asyncio.to_thread(
+        subprocess.Popen, [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    # The thread a connection starts to see the agent's end: it does not stand in the way of killing it.
+    threading.Thread(target=acp._end_group_once_gone, args=(process,), daemon=True).start()
+    assert not await asyncio.to_thread(acp._wait, process, 0.5)
+
+    await asyncio.wait_for(asyncio.to_thread(acp.kill_tree, process), 10)
+
+    assert await asyncio.to_thread(acp._wait, process, 5.0)
+
+
+@POSIX_ONLY
+async def test_killing_an_agent_that_is_waited_for_elsewhere_does_not_wait_for_ever(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    import threading
+
+    from nekoclaw.dsh import acp
+
+    monkeypatch.setattr(acp, "_GROUP_LOCK_SECONDS", 0.3)
+    process = await asyncio.to_thread(
+        subprocess.Popen, [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    # ``Popen.wait()`` without a time limit, from elsewhere: it holds Popen's lock till the process ends.
+    waiting = threading.Thread(target=process.wait, daemon=True)
+    waiting.start()
+    await asyncio.sleep(0.1)
+
+    killing = asyncio.ensure_future(asyncio.to_thread(acp.kill_tree, process))
+    await asyncio.wait_for(killing, 10)
+
+    await asyncio.to_thread(waiting.join, 10)
+    assert process.returncode is not None
+
+
+@POSIX_ONLY
 @pytest.mark.parametrize("collected", [True, False])
 async def test_the_group_of_a_process_is_killed_only_while_its_id_is_still_its_own(
     monkeypatch: pytest.MonkeyPatch, collected: bool

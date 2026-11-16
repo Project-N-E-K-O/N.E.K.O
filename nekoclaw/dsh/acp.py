@@ -57,6 +57,8 @@ INTERNAL_ERROR = -32603
 _CREATE_NO_WINDOW = 0x08000000
 _STOP = object()
 _CLOSE_INPUT = object()
+# How long killing an agent's process group waits for ``Popen``'s lock; see ``_end_group``.
+_GROUP_LOCK_SECONDS = 5.0
 
 NotificationHandler = Callable[[str, dict[str, Any]], None]
 RequestHandler = Callable[[str, dict[str, Any]], Awaitable["dict[str, Any] | None"]]
@@ -497,12 +499,22 @@ def _kill_group(process: "subprocess.Popen[bytes]") -> None:
 
 
 def _end_group(process: "subprocess.Popen[bytes]") -> None:
-    """Blocking, POSIX: kill the process group of a process that is not collected yet, with whatever is in it."""
-    import contextlib
+    """Blocking, POSIX: kill the process group of a process that is not collected yet, with whatever is in it.
 
-    with getattr(process, "_waitpid_lock", None) or contextlib.nullcontext():
+    The lock is waited for a while only: ``Popen.wait()`` without a time
+    limit holds it until the process ends, and the kill that would end it
+    comes after this. Not got, the group is left to that kill.
+    """
+    lock = getattr(process, "_waitpid_lock", None)
+    if lock is not None and not lock.acquire(timeout=_GROUP_LOCK_SECONDS):
+        logger.warning("the agent process is being waited for elsewhere; its process group is not killed")
+        return
+    try:
         if process.returncode is None:
             _kill_group(process)
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def kill_tree(process: "subprocess.Popen[bytes]") -> None:
