@@ -50,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -172,8 +172,13 @@ class Runtimes:
             # Nothing is wrong with dsh: this model is not served there.
             return RUNTIME_BUILTIN, self.builtin(), unsupported
         async with self._dsh_lock:
-            # Looked at here, after waiting: when dsh just failed for the
-            # commission before this one, this one does not try it again.
+            # Looked at here, after waiting: dsh may have been removed
+            # meanwhile (``retire_dsh``), which is no failure of dsh.
+            if not await asyncio.to_thread(self._dsh.installed):
+                note = "dsh is no longer installed" if begun_in == RUNTIME_DSH else None
+                return RUNTIME_BUILTIN, self.builtin(), note
+            # And when dsh just failed for the commission before this one,
+            # this one does not try it again.
             if not resumes and not self._dsh_rested():
                 return RUNTIME_BUILTIN, self.builtin(), f"dsh could not be used a moment ago: {self.dsh_error}"
             try:
@@ -210,13 +215,17 @@ class Runtimes:
 
     # -- shutting down ----------------------------------------------------
 
-    async def retire_dsh(self, in_use: Callable[[], bool]) -> bool:
+    async def retire_dsh(
+        self, in_use: Callable[[], bool], then: Callable[[], Awaitable[Any]] | None = None
+    ) -> bool:
         """End the dsh runtime and its process unless ``in_use()`` says a session is in it; returns whether it is ended.
 
         Waits for a commission that is being given dsh right now, and asks
         ``in_use`` after that: the caller notes a session's runtime as soon
-        as ``choose`` has returned it, so that commission is seen. The next
-        commission for dsh creates the runtime anew.
+        as ``choose`` has returned it, so that commission is seen. ``then``
+        is awaited once dsh is ended, before any commission may start it
+        again: removing or installing its program. The next commission for
+        dsh creates the runtime anew.
         """
         async with self._dsh_lock:
             if in_use():
@@ -224,6 +233,8 @@ class Runtimes:
             runtime = self._runtimes.pop(RUNTIME_DSH, None)
             if runtime is not None:
                 await runtime.shutdown()
+            if then is not None:
+                await then()
             return True
 
     def take_all(self) -> list[tuple[str, Any]]:

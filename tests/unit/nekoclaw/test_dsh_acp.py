@@ -190,6 +190,41 @@ async def test_an_agent_that_does_not_leave_is_killed(agent) -> None:
     assert pid is not None and not psutil.pid_exists(pid)
 
 
+async def test_a_start_that_is_cancelled_ends_the_process_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+    import time
+
+    script = tmp_path / "agent.py"
+    script.write_text(AGENT, encoding="utf-8")
+    spawned: list[Any] = []
+    spawning = threading.Event()
+    spawn = AcpConnection._spawn
+
+    def slow(argv: list[str], cwd: str, env: dict[str, str]) -> Any:
+        spawning.set()
+        time.sleep(0.3)
+        spawned.append(spawn(argv, cwd, env))
+        return spawned[-1]
+
+    monkeypatch.setattr(AcpConnection, "_spawn", staticmethod(slow))
+    client = Client()
+    opening = asyncio.ensure_future(
+        client.connection.open([sys.executable, str(script), "--linger"], cwd=str(tmp_path), env=dict(os.environ))
+    )
+    while not spawning.is_set():
+        await asyncio.sleep(0.01)
+
+    opening.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+
+    # The agent was started after all, and is ended rather than left running for nobody.
+    (process,) = spawned
+    assert process.poll() is not None
+    assert client.connection.pid is None
+    await client.connection.close(0.5)
+
+
 async def test_a_program_that_does_not_exist_raises(tmp_path: Path) -> None:
     client = Client()
     with pytest.raises(OSError):

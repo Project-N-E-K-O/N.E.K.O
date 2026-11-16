@@ -47,7 +47,8 @@ report itself), ``FAKE_DSH_NO_RESUME=1`` (it cannot resume sessions),
 ``FAKE_DSH_CLOSE=refuse`` (it answers that with an error and keeps the
 session), ``FAKE_DSH_CLOSE=slow`` (it takes half a second to answer),
 ``FAKE_DSH_NEW=crash`` (the process exits when asked for a new session),
-``FAKE_DSH_RESUME=broken`` (resuming a session fails inside it).
+``FAKE_DSH_RESUME=broken`` (resuming a session fails inside it),
+``FAKE_DSH_EXIT_DELAY=<seconds>`` (it takes that long to exit once its input ends).
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -425,8 +427,6 @@ def dispatch(config: Config, method: str, params: dict[str, Any]) -> dict[str, A
             record("close-refused", session=session_id)
             raise RpcError(-32603, "Internal error", "the session is busy")
         if behaviour == "slow":
-            import time
-
             time.sleep(0.5)
         session["closed"] = True
         session["cancel"].set()
@@ -481,6 +481,7 @@ def main() -> None:
             continue
         threading.Thread(target=handle, args=(config, message), daemon=True).start()
     # The client closed the connection: dsh closes its sessions and exits.
+    time.sleep(float(os.environ.get("FAKE_DSH_EXIT_DELAY") or 0))
     record("exit")
 
 

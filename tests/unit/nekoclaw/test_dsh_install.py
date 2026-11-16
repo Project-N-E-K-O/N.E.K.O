@@ -261,6 +261,42 @@ def test_a_system_older_than_the_release_runs_on_counts_as_not_released_for(
     assert platform_tag() == expected
 
 
+async def test_an_install_cancelled_while_it_unpacks_waits_for_the_unpacking(
+    tmp_path: Path, release, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import threading
+    import time
+
+    data = release(_release())
+    started = threading.Event()
+    finished: list[bool] = []
+    unpack = DshInstallation._unpack
+
+    def slow(self: DshInstallation, *args: Any) -> None:
+        started.set()
+        time.sleep(0.4)
+        unpack(self, *args)
+        finished.append(True)
+
+    monkeypatch.setattr(DshInstallation, "_unpack", slow)
+    dsh = DshInstallation(tmp_path / "dsh", transport=_serving({"first.test": data}, []))
+    installing = asyncio.ensure_future(dsh.install())
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+
+    installing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await installing
+
+    # Not handed back before the thread that unpacks is done: an uninstall after it
+    # does not run beside it, and the release file is gone only once it was read.
+    assert finished == [True]
+    assert list((tmp_path / "dsh" / "download").iterdir()) == []
+    await dsh.uninstall()
+    assert not dsh.installed()
+
+
 async def test_a_download_that_breaks_off_leaves_no_half_a_file(tmp_path: Path, release) -> None:
     data = release(_release())
 
@@ -379,6 +415,34 @@ def _session(tmp_path: Path, dsh: DshInstallation, session: str = "6fb9e6f3-9e7f
     cached.parent.mkdir(parents=True)
     cached.write_text("{}", encoding="utf-8")
     return session_dir, log, cached
+
+
+def test_a_session_whose_log_cannot_be_removed_keeps_its_note_for_the_next_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    from nekoclaw.dsh.driver import SESSION_FILE
+
+    dsh = DshInstallation(tmp_path / "dsh")
+    session_dir, log, cached = _session(tmp_path, dsh)
+    removing = shutil.rmtree
+
+    def held_open(path: Any, *args: Any, **kwargs: Any) -> None:
+        if Path(path) == log.parent:
+            raise PermissionError(13, "held open by another program", str(path))
+        removing(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", held_open)
+
+    with pytest.raises(OSError):
+        dsh.forget_session(session_dir)
+
+    # What could be removed is; the note stays, so the next attempt knows what is left.
+    assert log.exists() and not cached.exists() and (session_dir / SESSION_FILE).exists()
+    monkeypatch.setattr(shutil, "rmtree", removing)
+    assert dsh.forget_session(session_dir) is True
+    assert not log.parent.exists() and not (session_dir / SESSION_FILE).exists()
 
 
 def test_what_dsh_kept_of_a_session_is_removed_with_it(tmp_path: Path) -> None:

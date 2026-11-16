@@ -522,6 +522,23 @@ async def test_a_session_that_arrives_gives_an_idle_process_its_time_again(tmp_p
     assert ended["reason"] == "completed" and ended["text"] == "echo: at last" and driver.launches == 1
 
 
+async def test_shutdown_waits_for_a_process_that_is_being_ended_for_being_idle(tmp_path: Path, dsh) -> None:
+    driver = dsh(idle=0.2, FAKE_DSH_EXIT_DELAY="0.6")
+    await driver.started(make_spec(tmp_path))
+    await driver.run("s1", "hello")
+    # It is being ended for having been idle, and takes its time to exit.
+    for _attempt in range(200):
+        if driver.runtime._retiring:
+            break
+        await asyncio.sleep(0.02)
+    assert driver.runtime._retiring and driver.runtime.process_ids == []
+
+    await driver.runtime.shutdown()
+
+    # Not left behind: by the time shutting down is over, so is that process.
+    assert driver.record("exit") and [event["reason"] for event in driver.events.of("ended")][-1] == "closed"
+
+
 async def test_a_busy_session_keeps_the_process_alive(tmp_path: Path, dsh) -> None:
     driver = dsh(idle=0.2)
     await driver.started(make_spec(tmp_path))

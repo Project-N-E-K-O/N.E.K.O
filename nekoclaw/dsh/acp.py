@@ -46,6 +46,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from utils.asyncio_executor import to_thread_through_cancellation
+
 logger = logging.getLogger(__name__)
 
 JSONRPC_VERSION = "2.0"
@@ -130,9 +132,24 @@ class AcpConnection:
         """Start the agent process. Raises ``OSError`` when it cannot be started."""
         if self._process is not None:
             raise RuntimeError("the connection was opened before")
-        self._loop = asyncio.get_running_loop()
-        self._process = await asyncio.to_thread(self._spawn, list(argv), cwd, dict(env))
-        loop = self._loop
+        self._loop = loop = asyncio.get_running_loop()
+        spawning = loop.run_in_executor(None, self._spawn, list(argv), cwd, dict(env))
+        try:
+            self._process = await asyncio.shield(spawning)
+        except asyncio.CancelledError:
+            # The worker cannot be stopped and may start the agent all the
+            # same: it is waited for, and what it started is ended here
+            # rather than left running with nobody to end it.
+            while not spawning.done():
+                try:
+                    await asyncio.shield(spawning)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:  # noqa: BLE001 - the cancellation below is what propagates
+                    break
+            if spawning.done() and not spawning.cancelled() and spawning.exception() is None:
+                await to_thread_through_cancellation(_discard, spawning.result())
+            raise
         threading.Thread(target=self._read_output, args=(loop,), name="acp-agent-output", daemon=True).start()
         threading.Thread(target=self._read_errors, args=(loop,), name="acp-agent-errors", daemon=True).start()
         threading.Thread(target=self._write_input, name="acp-agent-input", daemon=True).start()
@@ -367,6 +384,18 @@ def _wait(process: "subprocess.Popen[bytes]", seconds: float) -> bool:
     except subprocess.TimeoutExpired:
         return False
     return True
+
+
+def _discard(process: "subprocess.Popen[bytes]") -> None:
+    """Blocking: end a process nobody is going to talk to, and let go of its pipes."""
+    kill_tree(process)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    _wait(process, 5.0)
 
 
 def kill_tree(process: "subprocess.Popen[bytes]") -> None:

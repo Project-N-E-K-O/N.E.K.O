@@ -285,6 +285,8 @@ class DshRuntime:
         self._shutdowns = 0
         # Keeps the tasks alive that tell dsh to drop a session nobody got.
         self._closing_quietly: set[asyncio.Task[None]] = set()
+        # Processes being ended for having been idle; shutting down waits for them.
+        self._retiring: set[asyncio.Task[None]] = set()
 
     # -- state ------------------------------------------------------------
 
@@ -523,7 +525,9 @@ class DshRuntime:
             process.retiring = True
             if self._processes.get(process.shape) is process:
                 del self._processes[process.shape]
-            asyncio.ensure_future(self._retire(process))
+            task = asyncio.ensure_future(self._retire(process))
+            self._retiring.add(task)
+            task.add_done_callback(self._retiring.discard)
             return
 
     async def _retire(self, process: _Process) -> None:
@@ -1135,6 +1139,11 @@ class DshRuntime:
                 processes, self._processes = list(self._processes.values()), {}
             if processes:
                 await asyncio.gather(*(self._retire(process) for process in processes), return_exceptions=True)
+            # And those no longer listed: being ended for having been idle,
+            # or told to let go of a session whose start failed.
+            leaving = [*self._retiring, *self._closing_quietly]
+            if leaving:
+                await asyncio.gather(*leaving, return_exceptions=True)
             for session in list(self._sessions.values()):
                 # One whose process never came up, or was gone before it was closed.
                 await asyncio.shield(self._close_session(session))

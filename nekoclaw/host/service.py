@@ -371,8 +371,7 @@ class NekoClawHost:
         that is in dsh right now forbids: its program cannot be replaced
         while it runs.
         """
-        await self._stop_dsh()
-        await self.dsh.install(on_progress)
+        await self._with_dsh_stopped(lambda: self.dsh.install(on_progress))
         return await self.dsh_status()
 
     async def uninstall_dsh(self, *, purge: bool = False) -> dict[str, Any]:
@@ -383,8 +382,7 @@ class NekoClawHost:
         again, commissions that began in dsh go on there. Without dsh they
         start over in the built-in runtime when they are taken up again.
         """
-        await self._stop_dsh()
-        await self.dsh.uninstall(purge=purge)
+        await self._with_dsh_stopped(lambda: self.dsh.uninstall(purge=purge))
         return await self.dsh_status()
 
     async def set_dsh_preference(self, preference: str) -> dict[str, Any]:
@@ -400,8 +398,9 @@ class NekoClawHost:
         """Return the plugins the user added to dsh; see ``DshInstallation.plugins``."""
         return await asyncio.to_thread(self.dsh.plugins)
 
-    async def _stop_dsh(self) -> None:
-        if not await self.task_agents.stop_dsh():
+    async def _with_dsh_stopped(self, work: Any) -> None:
+        """End dsh and await ``work()``; no commission starts dsh before it is done."""
+        if not await self.task_agents.stop_dsh(work):
             from nekoclaw.dsh import DshUnavailable
 
             raise DshUnavailable("dsh is in use: a commission is running in it")

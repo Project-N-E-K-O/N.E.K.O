@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import Any
 
 from nekoclaw.dsh.profile import PROFILE, SESSION_FILE, DshLaunch, DshUnavailable
+from utils.asyncio_executor import to_thread_through_cancellation
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,10 @@ class DshInstallation:
         commission that ran in dsh this is the counterpart: the session's
         log in dsh's home, what dsh cached of it, and the note that tied the
         two together. Returns whether there was such a session.
+
+        Raises ``OSError`` when something of it could not be removed (a log
+        held open, say). The note then stays, so that the next attempt still
+        knows which sessions to remove.
         """
         note = Path(session_dir) / SESSION_FILE
         try:
@@ -282,14 +287,21 @@ class DshInstallation:
             projects = []
         # The session it has now, and those it had before that dsh could not
         # resume: whatever dsh still holds of any of them.
+        failures: list[OSError] = []
         for session in named:
             if not isinstance(session, str) or not _SESSION_ID.fullmatch(session):
                 continue
-            for project in projects:
-                # One directory per working directory, a session's own below it.
-                _remove(project / session)
-            _remove(home / "storages" / "session_projcache" / "sessions" / f"{session}.json")
-        _remove(note)
+            # One directory per working directory, a session's own below it.
+            paths = [project / session for project in projects]
+            paths.append(home / "storages" / "session_projcache" / "sessions" / f"{session}.json")
+            for path in paths:
+                try:
+                    _remove(path, strict=True)
+                except OSError as exc:
+                    failures.append(exc)
+        if failures:
+            raise failures[0]
+        _remove(note, strict=True)
         return True
 
     # -- install ----------------------------------------------------------
@@ -318,7 +330,12 @@ class DshInstallation:
             archive = self.root() / "download" / str(wheel["file"])
             try:
                 await self._download(wheel, archive, on_progress)
-                await asyncio.to_thread(self._unpack, archive, tag, str(wheel["sha256"]), DSH_VERSION)
+                # A thread is not stopped by cancelling who waits for it: this
+                # one is waited for all the same, so that what holds the lock
+                # (another install, an uninstall) does not run beside it.
+                await to_thread_through_cancellation(
+                    self._unpack, archive, tag, str(wheel["sha256"]), DSH_VERSION
+                )
             except DshUnavailable as exc:
                 self._last_error = str(exc)
                 raise
@@ -327,7 +344,7 @@ class DshInstallation:
                 raise DshUnavailable(f"dsh could not be installed: {self._last_error}") from exc
             finally:
                 self._progress = None
-                await asyncio.shield(asyncio.to_thread(_remove, archive))
+                await to_thread_through_cancellation(_remove, archive)
             return await asyncio.to_thread(self.status)
 
     async def _download(self, wheel: dict[str, str | int], target: Path, on_progress: Progress | None) -> None:
@@ -358,19 +375,19 @@ class DshInstallation:
                         if answer.status_code != 200:
                             failures.append(f"{host}: HTTP {answer.status_code}")
                             continue
-                        handle = await asyncio.to_thread(open, target, "wb")
+                        handle = await to_thread_through_cancellation(open, target, "wb")
                         try:
                             async for chunk in answer.aiter_bytes(_CHUNK_BYTES):
                                 fetched += len(chunk)
                                 if fetched > size:
                                     break
                                 digest.update(chunk)
-                                await asyncio.to_thread(handle.write, chunk)
+                                await to_thread_through_cancellation(handle.write, chunk)
                                 self._progress = (fetched, size)
                                 if on_progress is not None:
                                     on_progress(fetched, size)
                         finally:
-                            await asyncio.to_thread(handle.close)
+                            await to_thread_through_cancellation(handle.close)
                 except httpx.HTTPError as exc:
                     failures.append(f"{host}: {type(exc).__name__}")
                     continue

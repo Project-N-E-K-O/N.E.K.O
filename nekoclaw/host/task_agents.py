@@ -428,13 +428,14 @@ class TaskAgentManager:
         """Return the commissions whose sessions are in a runtime right now."""
         return [session.commission_id for session in self._sessions.values() if session.runtime_name == runtime_name]
 
-    async def stop_dsh(self) -> bool:
+    async def stop_dsh(self, then: Any = None) -> bool:
         """End the dsh runtime and its process, unless a session is in it. Returns whether it is stopped.
 
-        For before dsh is removed or installed anew: its program cannot be
-        replaced while it runs.
+        For removing dsh or installing it anew: its program cannot be
+        replaced while it runs. ``then`` (a coroutine function) does that,
+        and no commission starts dsh until it is done.
         """
-        return await self._runtimes.retire_dsh(lambda: bool(self.sessions_in(RUNTIME_DSH)))
+        return await self._runtimes.retire_dsh(lambda: bool(self.sessions_in(RUNTIME_DSH)), then)
 
     async def available(self) -> tuple[bool, str]:
         """Return whether a task agent could be started, and if not, why."""

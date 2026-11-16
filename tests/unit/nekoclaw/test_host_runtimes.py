@@ -230,6 +230,37 @@ async def test_ending_dsh_waits_for_a_commission_that_is_being_given_it() -> Non
     assert await retiring is False and dsh.shut_down == 0 and runtimes.get(RUNTIME_DSH) is dsh
 
 
+async def test_no_commission_starts_dsh_while_its_program_is_being_removed() -> None:
+    import asyncio
+
+    installation = Installation()
+    runtimes, dsh, _made = _runtimes(installation)
+    assert (await runtimes.choose(MODEL))[0] == RUNTIME_DSH
+    removing = asyncio.Event()
+    removed = asyncio.Event()
+
+    async def remove() -> None:
+        removing.set()
+        await removed.wait()
+        installation.is_installed = False
+
+    retiring = asyncio.ensure_future(runtimes.retire_dsh(lambda: False, remove))
+    await asyncio.wait_for(removing.wait(), 1)
+    # A commission that wants dsh meanwhile waits: its program is going.
+    choosing = asyncio.ensure_future(runtimes.choose(MODEL))
+    await asyncio.sleep(0.05)
+    assert not choosing.done() and len(dsh.prepared) == 1
+
+    removed.set()
+    assert await retiring is True and dsh.shut_down == 1
+    name, _runtime, note = await choosing
+
+    # dsh is gone, which is no failure of dsh: nothing is noted against it.
+    assert (name, note) == (RUNTIME_BUILTIN, None) and len(dsh.prepared) == 1 and runtimes.dsh_error is None
+    # One that began in dsh is told why it starts over.
+    assert (await runtimes.choose(MODEL, begun_in=RUNTIME_DSH))[2] == "dsh is no longer installed"
+
+
 async def test_a_commission_for_the_built_in_runtime_does_not_wait_for_dsh() -> None:
     import asyncio
 
