@@ -1613,7 +1613,13 @@ async def on_shutdown():
         try:
             from utils.token_tracker import TokenTracker
 
-            TokenTracker.get_instance().save()
+            shutdown_cancellation = await _run_shutdown_step(
+                lambda: TokenTracker.get_instance().asave(report_timeout=1.0),
+                what="token usage save",
+                deadline_monotonic=None,
+                pending_cancellation=shutdown_cancellation,
+                cancellation_budget=cancellation_budget,
+            )
         except Exception as e:
             logger.debug(f"Token usage save on shutdown failed: {e}")
 

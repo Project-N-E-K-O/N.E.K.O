@@ -285,7 +285,11 @@ class ReportingMixin:
         except Exception as e:
             logger.debug(f"Token tracker: failed to persist unsent queue: {e}")
 
-    def save(self):
+    async def asave(self, *, report_timeout: float | None = None):
+        """Save outside the event loop, optionally bounding the remote attempt."""
+        await asyncio.to_thread(self.save, report_timeout=report_timeout)
+
+    def save(self, *, report_timeout: float | None = None):
         """Persist incremental data to disk. Multi-process safe.
 
         Flow:
@@ -299,6 +303,7 @@ class ReportingMixin:
         being sent. Skip the local disk write but still call _report_to_server, letting
         it decide internally via has_data() whether to actually POST.
         """
+        report_options = {} if report_timeout is None else {"timeout": report_timeout}
         with self._lock:
             if not self._dirty:
                 report_only = True
@@ -316,7 +321,7 @@ class ReportingMixin:
         if report_only:
             # No local LLM data to write; check only pending instruments.
             try:
-                self._report_to_server(delta_daily, delta_records)
+                self._report_to_server(delta_daily, delta_records, **report_options)
             except Exception:
                 # Remote failures do not affect idle paths: no local writes remain, only network
                 # errors retried next 60s cycle / atexit. _report_to_server already persists
@@ -355,7 +360,7 @@ class ReportingMixin:
 
             # After local save, try remote reporting outside the file lock to avoid blocking other processes.
             try:
-                self._report_to_server(delta_daily, delta_records)
+                self._report_to_server(delta_daily, delta_records, **report_options)
             except Exception:
                 pass  # Remote-report failures silently leave local saves unaffected.
 
@@ -374,7 +379,7 @@ class ReportingMixin:
                 self._delta_records.extend(restored[-200:])
                 self._dirty = True
 
-    def _report_to_server(self, delta_daily: dict, delta_records: list):
+    def _report_to_server(self, delta_daily: dict, delta_records: list, *, timeout: float | None = None):
         """Report incremental data to the remote telemetry server.
 
         Data-loss prevention design:
@@ -543,7 +548,9 @@ class ReportingMixin:
                 headers=headers,
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=_TELEMETRY_TIMEOUT) as resp:
+            with urllib.request.urlopen(
+                req, timeout=_TELEMETRY_TIMEOUT if timeout is None else timeout,
+            ) as resp:
                 if resp.status == 200:
                     self._last_report_time = now
                     # Success: clear batch_seq for the next window and remove unsent files.

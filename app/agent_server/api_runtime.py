@@ -928,7 +928,7 @@ async def shutdown():
 
     try:
         from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
+        await TokenTracker.get_instance().asave(report_timeout=1.0)
     except Exception:
         pass
 

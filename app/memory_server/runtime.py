@@ -1282,7 +1282,7 @@ async def shutdown_event_handler():
         await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
     try:
         from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
+        await TokenTracker.get_instance().asave(report_timeout=1.0)
     except Exception:
         # Best-effort final flush — the shutdown path must never fail on
         # tracker IO, and the periodic save loop already persisted recent data.
