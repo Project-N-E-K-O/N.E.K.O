@@ -957,6 +957,20 @@ def _remember_saved_login(directory: Path | None) -> bool:
     return community_device_hold.record_session_account(directory, account) and recorded
 
 
+def _carry_unwritten_hold(bind: dict) -> dict:
+    """Keep a hold that only lives in memory in the bind a new login saves.
+
+    Run after ``_remember_confirmed_owner`` for the login being replaced: if
+    the device record still could not take the hold, the new login's saved
+    bind becomes the copy on disk. An inconclusive bind (cloud unreachable,
+    skipped) is replaced by the conflict; a successful bind is kept, since it
+    proves ownership and clears the hold once recorded.
+    """
+    if not community_device_hold.hold_latched() or bind.get("bound") is True:
+        return bind
+    return {**bind, "error": _BIND_OWNERSHIP_CONFLICT, "bound": False}
+
+
 def _record_device_hold(bind: dict, local_user_id: str) -> bool:
     """Record what a login or bind as ``local_user_id`` proved about the device owner.
 
@@ -1402,6 +1416,7 @@ async def _store_session(
 
     from main_routers import community_oauth
 
+    bind = _carry_unwritten_hold(bind)
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "access_token": access,

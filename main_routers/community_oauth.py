@@ -1346,6 +1346,10 @@ async def _handle_oauth_callback(
             "oauth_attempt_identity": pending.get("instance_identity") or "local",
         }
         await asyncio.to_thread(C._remember_confirmed_owner)
+        carried = C._carry_unwritten_hold(bind)
+        if carried is not bind:
+            bind = carried
+            auth_payload["bind"] = bind
         async with _oauth_start_lock:
             if not await _oauth_attempt_still_current(expected_state):
                 # A newer /oauth/start superseded this login: credential writes will already be rejected, so do not end ongoing visits for it first

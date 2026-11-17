@@ -974,7 +974,8 @@ async def test_persistent_write_failure_survives_relogin_and_logout(tmp_path, mo
     monkeypatch.setattr(O, "_oauth_guest_bind", flaky)
     await O._handle_oauth_callback("auth-code", "expected-state")
     saved_bind = json.loads((tmp_path / "community_auth.json").read_text(encoding="utf-8"))["bind"]
-    assert saved_bind["error"] == "cloud_unreachable"
+    # The inconclusive re-login carries the unwritten conflict instead of erasing it.
+    assert saved_bind["error"] == "client_already_bound_to_other_user"
     assert not (tmp_path / hold.HOLD_FILENAME).exists()
     assert hold.device_held(tmp_path, USER_ID, saved_bind=saved_bind)
 
@@ -1297,3 +1298,64 @@ def test_rebind_does_not_report_success_after_desktop_switched_accounts(oauth_ap
     assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == CONFLICT
     # The device record names USER_ID as owner, so OWNER_A's uploads stay held.
     assert hold.device_held(auth.parent, OWNER_A)
+
+
+async def _conflict_then_flaky_relogin(tmp_path, monkeypatch):
+    """Owner USER_ID on file; a later login finds a conflict but cannot record it; the same
+    account logs in again and its bind only reaches cloud_unreachable."""
+    hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    _pending_login(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(_social_base, _access_token, *, rebind=False):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+    _pending_login(tmp_path, monkeypatch)
+
+    async def flaky(_social_base, _access_token, *, rebind=False):
+        return {"bound": False, "error": "cloud_unreachable"}
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", flaky)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+
+async def _uploads_held_after_restart(tmp_path, monkeypatch) -> bool:
+    import asyncio
+
+    hold._set_unrecorded_hold(False)  # restart
+    real_signed_in_account = sync_worker._signed_in_account
+    _facts_sync_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
+    return await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+async def test_owner_on_file_conflict_unwritten_relogin_then_restart_still_holds(tmp_path, monkeypatch):
+    await _conflict_then_flaky_relogin(tmp_path, monkeypatch)
+    assert await _uploads_held_after_restart(tmp_path, monkeypatch)
+
+
+async def test_owner_on_file_conflict_unwritten_relogin_logout_then_restart_still_holds(tmp_path, monkeypatch):
+    await _conflict_then_flaky_relogin(tmp_path, monkeypatch)
+    assert C._clear_auth()
+    assert await _uploads_held_after_restart(tmp_path, monkeypatch)
+
+
+
+async def test_successful_relogin_bind_is_not_overwritten_by_an_unwritten_hold(tmp_path, monkeypatch):
+    """A bind that proves ownership is kept, so recording it can clear the hold."""
+    _pending_login(tmp_path, monkeypatch)
+    hold._set_unrecorded_hold(True)
+
+    async def bound(_social_base, _access_token, *, rebind=False):
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bound)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+    saved_bind = json.loads((tmp_path / "community_auth.json").read_text(encoding="utf-8"))["bind"]
+    assert saved_bind == BOUND
+    assert not hold.hold_latched()
+    assert not hold.device_held(tmp_path, USER_ID, saved_bind=saved_bind)
