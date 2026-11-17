@@ -104,10 +104,10 @@ def _get_client_id() -> str | None:
 def _signed_in_account() -> str | None:
     """The community account signed in here, or None when nobody is signed in.
 
-    Read through the credential owner's hook. When someone is signed in but
-    the account cannot be told (unreadable credentials, pre-v2 session
-    without an id) this returns ``community_device_hold.UNKNOWN_ACCOUNT``,
-    never None: a failed read must not pass for a logout.
+    Read through the credential owner's hook. Never None for a login whose
+    account cannot be told, so a failed read does not pass for a logout:
+    ``UNREADABLE_ACCOUNT`` when credentials cannot be read, ``LEGACY_ACCOUNT``
+    for a pre-v2 session that has a token but no account id.
     """
     try:
         state, account = _chat_sync_host.signed_in_account_state()
@@ -116,9 +116,9 @@ def _signed_in_account() -> str | None:
         return None
     if state == "signed_out":
         return None
-    if state == "signed_in" and account:
-        return account
-    return community_device_hold.UNKNOWN_ACCOUNT
+    if state == "signed_in":
+        return account or community_device_hold.LEGACY_ACCOUNT
+    return community_device_hold.UNREADABLE_ACCOUNT
 
 
 def _saved_bind(directory: Path) -> Any:

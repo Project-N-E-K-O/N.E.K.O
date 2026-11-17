@@ -817,7 +817,7 @@ def test_unreadable_social_session_never_falls_back_to_older_files(oauth_app, mo
 
     assert C.signed_in_account_state() == ("unknown", None)
     hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
-    assert hold.device_held(auth.parent, hold.UNKNOWN_ACCOUNT)
+    assert hold.device_held(auth.parent, hold.UNREADABLE_ACCOUNT)
 
 
 def test_pre_v2_session_without_account_id_keeps_uploading(oauth_app, tmp_path, monkeypatch):  # noqa: F811
@@ -1002,3 +1002,26 @@ async def test_conflict_reaches_disk_once_writes_recover_before_logout(tmp_path,
     hold._set_unrecorded_hold(False)  # restart: the in-memory latch is gone
     assert hold.device_held(tmp_path, None)
     assert hold.device_held(tmp_path, USER_ID)
+
+
+
+@pytest.mark.parametrize(
+    "saved_bind,owner,held",
+    [
+        (None, None, False),  # pre-v2 single-account install keeps uploading
+        (BOUND, None, False),
+        ({"bound": False, "error": None, "skipped": "native_session_sync"}, None, True),
+        (None, OWNER_A, True),  # cannot compare with an owner on file
+    ],
+)
+def test_pre_v2_session_follows_its_own_bind_without_an_owner(tmp_path, saved_bind, owner, held):
+    if owner:
+        hold.record_bind_outcome(tmp_path, dict(BOUND), owner)
+    assert hold.device_held(tmp_path, hold.LEGACY_ACCOUNT, saved_bind=saved_bind) is held
+
+
+@pytest.mark.parametrize("saved_bind", [None, BOUND, {"bound": False, "error": None, "skipped": "native_session_sync"}])
+def test_unreadable_credentials_hold_even_without_an_owner(tmp_path, saved_bind):
+    """A corrupt social session next to a never-bound mirror must not upload."""
+    assert not (tmp_path / hold.HOLD_FILENAME).exists()
+    assert hold.device_held(tmp_path, hold.UNREADABLE_ACCOUNT, saved_bind=saved_bind)

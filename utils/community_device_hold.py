@@ -35,9 +35,11 @@ logger = logging.getLogger("neko.community_device_hold")
 HOLD_FILENAME = "community_device_hold.json"
 OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _UNREADABLE = object()
-# ``signed_in`` value for "someone is signed in but the account is unknown"
-# (unreadable credentials, or a pre-v2 session without an account id).
-UNKNOWN_ACCOUNT = "unknown"
+# ``signed_in`` values for a login whose account cannot be compared.
+# Unreadable credentials always hold. A pre-v2 session (token, no account id)
+# only holds when there is an owner to compare against or its own bind failed.
+UNREADABLE_ACCOUNT = "unreadable"
+LEGACY_ACCOUNT = "legacy"
 # Set when a hold that had to be recorded could not be written. Uploads stay
 # held for the rest of this process even if the login that carried the
 # conflict is replaced or cleared; only a written successful bind resets it.
@@ -129,10 +131,15 @@ def device_held(
     if isinstance(record, dict) and record.get("conflict"):
         return True
     owner = _account(record.get("owner")) if isinstance(record, dict) else None
-    if signed_in == UNKNOWN_ACCOUNT:
-        # With an owner on file the account cannot be compared, so hold.
-        # With nothing on file there is nothing to protect yet.
-        return owner is not None
+    if signed_in == UNREADABLE_ACCOUNT:
+        # Credentials exist but cannot be read: never treat that as safe.
+        return True
+    if signed_in == LEGACY_ACCOUNT:
+        # A pre-v2 session cannot be compared with an owner on file, so hold
+        # then; without an owner, its own bind decides as below.
+        if owner is not None:
+            return True
+        return not _bind_counts_as_bound(saved_bind)
     current = _account(signed_in)
     if current is None:
         # Nobody signed in: uploads land with the device's owner, and no
@@ -141,10 +148,14 @@ def device_held(
         return False
     if owner is not None:
         return owner != current
-    # No confirmed owner on file. The signed-in login's own bind decides;
-    # sessions saved before bind outcomes existed count as bound, matching
-    # /auth-status. A login that never bound (browser session sync) holds.
-    return not (saved_bind is None or (isinstance(saved_bind, dict) and saved_bind.get("bound") is True))
+    # No confirmed owner on file. The signed-in login's own bind decides.
+    return not _bind_counts_as_bound(saved_bind)
+
+
+def _bind_counts_as_bound(saved_bind: Any) -> bool:
+    """Sessions saved before bind outcomes existed count as bound, matching
+    /auth-status. A login that never bound (browser session sync) does not."""
+    return saved_bind is None or (isinstance(saved_bind, dict) and saved_bind.get("bound") is True)
 
 
 def record_bind_outcome(directory: Path | str | None, bind: Any, account: str | None) -> bool:
@@ -227,7 +238,8 @@ def remember_owner(directory: Path | str | None, account: str | None) -> None:
 __all__ = [
     "HOLD_FILENAME",
     "OWNERSHIP_CONFLICT",
-    "UNKNOWN_ACCOUNT",
+    "LEGACY_ACCOUNT",
+    "UNREADABLE_ACCOUNT",
     "default_directory",
     "device_held",
     "hold_path",
