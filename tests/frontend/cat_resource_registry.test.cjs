@@ -638,6 +638,138 @@ test('return transition restarts canonical cat animations and preserves their ve
     '/user_pngtuber/custom.gif');
 });
 
+test('return transition reuses a few reveal URLs and never one another return art shows', () => {
+  const source = fs.readFileSync(path.join(PROJECT_ROOT,
+    'static/app/app-ui/return-transitions.js'), 'utf8');
+  const start = source.indexOf('function buildNekoModelCatRevealPlaybackUrl(');
+  const end = source.indexOf('I.restartNekoModelCatRevealArt =', start);
+  const arts = [];
+  const makeArt = (src) => {
+    const art = { attrs: { src }, getAttribute(name) { return this.attrs[name] ?? null; } };
+    arts.push(art);
+    return art;
+  };
+  const context = vm.createContext({
+    URL,
+    window: { location: { href: 'http://localhost/' } },
+    document: { querySelectorAll: () => arts },
+  });
+  vm.runInContext(source.slice(start, end), context);
+  const src = loadRegistry().getAppearance('idle.cat1', { random: false }).url;
+  const tokenOf = (value) => new URL(value, 'http://localhost/').searchParams.get('reveal');
+
+  // A single return button alternates between two cacheable URLs.
+  const active = makeArt(`${src}?v=123`);
+  const seen = new Set();
+  for (let i = 0; i < 6; i += 1) {
+    const current = active.attrs.src;
+    const next = context.nextNekoModelCatRevealPlaybackUrl(current);
+    assert.notEqual(next, current, 'each reveal must change the URL to restart playback');
+    assert.equal(new URL(next).searchParams.get('v'), '123');
+    seen.add(next);
+    active.attrs.src = next;
+  }
+  assert.equal(seen.size, 2);
+
+  // A hidden return button of another model still shows reveal=2 while the
+  // active one shows reveal=1: neither may be reused, or the two images would
+  // share one animation timeline.
+  active.attrs.src = `${src}?v=123&reveal=1`;
+  makeArt(`${src}?v=123&reveal=2`);
+  assert.equal(tokenOf(context.nextNekoModelCatRevealPlaybackUrl(active.attrs.src)), '3');
+
+  // Non cat-resource art is left as is (restarted in place).
+  assert.equal(context.nextNekoModelCatRevealPlaybackUrl('/user_pngtuber/custom.gif'),
+    '/user_pngtuber/custom.gif');
+});
+
+test('return button art retries a failed load of the same source, then gives up', () => {
+  const source = fs.readFileSync(path.join(PROJECT_ROOT,
+    'static/avatar/avatar-ui-buttons/methods-return.js'), 'utf8');
+  const start = source.indexOf('const _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS');
+  const end = source.indexOf('Object.assign(AvatarButtonMixin.methods', start);
+  assert.ok(start >= 0 && end > start);
+  let timers = [];
+  let nextTimerId = 0;
+  const warnings = [];
+  const context = vm.createContext({
+    Object,
+    console: { warn: (...args) => warnings.push(args) },
+    setTimeout: (fn, ms) => { nextTimerId += 1; timers.push({ id: nextTimerId, fn, ms }); return nextTimerId; },
+    clearTimeout: (id) => { timers = timers.filter((timer) => timer.id !== id); },
+  });
+  vm.runInContext(`${source.slice(start, end)};this.install = _installNekoIdleReturnArtLoadRetry;`, context);
+
+  const listeners = {};
+  const assigned = [];
+  const art = {
+    attrs: { src: 'cat.webp' },
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    getAttribute(name) { return this.attrs[name] ?? null; },
+    removeAttribute(name) { delete this.attrs[name]; },
+    set src(value) { this.attrs.src = value; assigned.push(value); },
+  };
+  const fire = (type) => listeners[type].forEach((fn) => fn());
+  context.install(art);
+  context.install(art);
+  assert.equal(listeners.error.length, 1, 'installing twice must not double the listeners');
+
+  for (let i = 0; i < 3; i += 1) {
+    fire('error');
+    timers.shift().fn();
+  }
+  assert.deepEqual(assigned, ['cat.webp', 'cat.webp', 'cat.webp']);
+  fire('error');
+  assert.equal(timers.length, 0, 'gives up after the retry budget');
+
+  // A successful load resets the budget.
+  fire('load');
+  fire('error');
+  assert.equal(timers.length, 1);
+
+  // The same source was re-assigned elsewhere and loaded while the retry was
+  // queued: the retry must not reload (and restart) the healthy image.
+  fire('load');
+  assert.equal(timers.length, 0, 'a successful load cancels the queued retry');
+  assert.equal(assigned.length, 3);
+  fire('error');
+  assert.equal(timers.length, 1);
+
+  // Something else changed the source meanwhile: leave it alone.
+  art.attrs.src = 'drag.webp';
+  timers.shift().fn();
+  assert.equal(assigned.length, 3);
+
+  // The button was torn down before the retry fired: no download for a
+  // detached image.
+  fire('load');
+  fire('error');
+  art.isConnected = false;
+  timers.shift().fn();
+  assert.equal(assigned.length, 3);
+  delete art.isConnected;
+
+  // The same source was re-assigned and is still downloading when the retry
+  // fires: do not interrupt that download.
+  fire('load');
+  fire('error');
+  art.complete = false;
+  timers.shift().fn();
+  assert.equal(assigned.length, 3);
+  // Once it is broken again (complete === true) failures retry, and the
+  // skipped retry did not use up any of the three attempts.
+  art.complete = true;
+  for (let i = 0; i < 3; i += 1) {
+    fire('error');
+    assert.equal(timers.length, 1, 'a skipped retry must not use up the retry budget');
+    timers.shift().fn();
+  }
+  assert.equal(assigned.length, 6);
+  fire('error');
+  assert.equal(timers.length, 0);
+  assert.ok(warnings.length >= 5);
+});
+
 test('registry loads before core in every Avatar and chat template', () => {
   for (const relativePath of REGISTRY_TEMPLATES) {
     const source = fs.readFileSync(path.join(PROJECT_ROOT, relativePath), 'utf8');

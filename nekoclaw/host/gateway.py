@@ -63,7 +63,11 @@ What the gateway serves:
   these two, so a long plugin list does not fill every request.
 
 Permissions are decided here, at the gateway's entry, by the same
-``PermissionGate`` the built-in tools use.
+``PermissionGate`` the built-in tools use. A runtime whose client gives a
+call little time (dsh ends a call after a minute, and a person asked for an
+approval may take longer) has the gateway decide before it makes the call
+(``clear_call``): whoever has to be asked is asked then, and the call that
+follows finds the answer and asks nobody a second time.
 
 A plugin entry that answers ``needs_confirmation`` did not carry the call out:
 it wants the user to confirm first. The task agent must not answer for the user,
@@ -81,6 +85,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import json
 import logging
@@ -160,6 +165,27 @@ class JsonRpcError(Exception):
 
 
 @dataclass(slots=True)
+class _Cleared:
+    """What was found out about a call before it was made; see ``CapabilityGateway.clear_call``."""
+
+    # What the call is answered with instead of being carried out, or None.
+    refusal: dict[str, Any] | None = None
+    # The user's agreement to this call opening a browser they closed, if one was needed.
+    agreement: Any = None
+    # Drops it when it has waited for its call long enough.
+    expiry: asyncio.TimerHandle | None = None
+
+
+def _call_key(capability_id: str, arguments: dict[str, Any]) -> tuple[str, str]:
+    """Return what tells one call from another: the capability, and a digest of what it is called with."""
+    try:
+        text = json.dumps(arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = repr(arguments)
+    return capability_id, hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+@dataclass(slots=True)
 class Grant:
     """What one commission's token gives access to."""
 
@@ -179,6 +205,9 @@ class Grant:
     handed_in: dict[str, int | str] = field(default_factory=dict)
     calls: int = 0
     in_flight: set[asyncio.Task[Any]] = field(default_factory=set)
+    # Calls ruled on before they were made, by capability and arguments
+    # (``_call_key``); each is taken by the call it was ruled on for.
+    cleared: dict[tuple[str, str], _Cleared] = field(default_factory=dict)
 
 
 def _text(text: str, *, error: bool = False) -> dict[str, Any]:
@@ -411,6 +440,8 @@ class CapabilityGateway:
         self._grants.pop(grant.token, None)
         for task in list(grant.in_flight):
             task.cancel()
+        for key in list(grant.cleared):
+            self._drop_cleared(grant, key)
 
     def _grant(self, token: str | None) -> Grant | None:
         if not token:
@@ -837,15 +868,91 @@ class CapabilityGateway:
         ]
         return truncate_to_tokens("\n".join(blocks), GATEWAY_RESULT_MAX_TOKENS)
 
-    async def _call_capability(
-        self,
-        commission: Commission,
-        capability: Capability,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
-        from utils.tokenize import truncate_to_tokens
+    async def clear_call(self, commission_id: str, name: str, arguments: dict[str, Any]) -> None:
+        """Rule on a call before it is made, asking whoever has to be asked.
 
+        ``name`` and ``arguments`` are those of the ``tools/call`` that is
+        about to come. The permission the call needs is decided now, and for
+        a browser the user closed they are asked now whether it may be
+        opened again; the commission waits for the user meanwhile, for as
+        long as it takes. What came of it waits for the call
+        (``GATEWAY_CLEARED_CALL_SECONDS``), which then neither decides nor
+        asks again: carried out, or answered with the refusal, in the words
+        a call refused at the entry is answered with.
+
+        It is for that one call: the same capability with the same
+        arguments. A call with other arguments does not take it and is ruled
+        on at the entry, so an approval "for this once" never covers a call
+        the user was not asked about. When its time is up it is dropped, and
+        an agreement to open the browser with it, whether or not a call
+        comes by. (dsh, the one runtime that asks ahead, asks about a call
+        and carries it out before it asks about the next: it runs the tools
+        of a service one at a time. Should the same call be ruled on twice
+        before it comes, the later ruling replaces the earlier.)
+
+        Nothing is ruled on for a call that will carry nothing out: the
+        search tool, an unknown capability, a tool of a group that the call
+        will hand over instead.
+        """
+        from config.nekoclaw_settings import GATEWAY_CLEARED_CALL_SECONDS
+
+        grant = self._by_commission.get(commission_id)
+        if grant is None or name == SEARCH_TOOL:
+            return
+        if name == CALL_TOOL:
+            target = arguments.get("name")
+            if not isinstance(target, str) or not target:
+                return
+            inner = arguments.get("arguments")
+            name, arguments = target, inner if isinstance(inner, dict) else {}
+        callable_now = await self._registry.callable_by_task_agents()
+        capability = next((item for item in self._offered(grant, callable_now) if item.tool_name == name), None)
+        if capability is None:
+            return
+        commission = await self._ledger.get(commission_id)
+        if commission is None or not commission.active:
+            return
+        group = capability.group
+        if group and group not in grant.loaded_groups and not _is_first_call(capability, arguments):
+            return
+        key = _call_key(capability.id, arguments)
+        cleared = await self._permit(commission, capability)
+        if self._by_commission.get(commission_id) is not grant:
+            # The token was taken back while the user was asked: no call will come for it.
+            if cleared.agreement is not None:
+                self._registry.browser_reopen_agreement_over(cleared.agreement)
+            return
+        # One ruled on for this very call that never came is over.
+        self._drop_cleared(grant, key)
+        cleared.expiry = asyncio.get_running_loop().call_later(
+            GATEWAY_CLEARED_CALL_SECONDS, self._drop_cleared, grant, key
+        )
+        grant.cleared[key] = cleared
+
+    def _drop_cleared(self, grant: Grant, key: tuple[str, str]) -> None:
+        """Forget what was ruled on for a call that did not come."""
+        cleared = grant.cleared.pop(key, None)
+        if cleared is None:
+            return
+        if cleared.expiry is not None:
+            # Its time is not to run out on whatever is ruled on for the same call next.
+            cleared.expiry.cancel()
+        if cleared.agreement is not None:
+            # The agreement was for that call and goes with it.
+            self._registry.browser_reopen_agreement_over(cleared.agreement)
+
+    def _take_cleared(self, commission_id: str, capability_id: str, arguments: dict[str, Any]) -> _Cleared | None:
+        """Return what was ruled on ahead for this very call, once."""
+        grant = self._by_commission.get(commission_id)
+        if grant is None:
+            return None
+        cleared = grant.cleared.pop(_call_key(capability_id, arguments), None)
+        if cleared is not None and cleared.expiry is not None:
+            cleared.expiry.cancel()
+        return cleared
+
+    async def _permit(self, commission: Commission, capability: Capability) -> _Cleared:
+        """Decide whether a call may be carried out, asking the user where the settings say so."""
         decision = await self._permissions.check(
             commission.id,
             capability.permission,
@@ -856,28 +963,55 @@ class CapabilityGateway:
             await self._ledger.append_event(
                 commission.id, "capability_denied", {"capability": capability.id, "reason": decision.reason}
             )
-            return _text(decision.reason or "permission denied", error=True)
+            return _Cleared(refusal=_text(decision.reason or "permission denied", error=True))
+        if capability.kind == KIND_BUILTIN and capability.group == BUILTIN_GROUP_BROWSER:
+            refusal, agreement = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
+            return _Cleared(refusal=refusal, agreement=agreement)
+        return _Cleared()
+
+    async def _call_capability(
+        self,
+        commission: Commission,
+        capability: Capability,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        # Ruled on before the call was made (``clear_call``), or now.
+        permitted = self._take_cleared(commission.id, capability.id, arguments)
+        if (
+            permitted is not None
+            and permitted.refusal is None
+            and await self._permissions.forbidden(capability.permission, capability.permission_key)
+        ):
+            # Allowed a moment ago, forbidden by the settings since: a deny
+            # set meanwhile wins, as it does over an answer. Nobody is asked again.
+            if permitted.agreement is not None:
+                self._registry.browser_reopen_agreement_over(permitted.agreement)
+            await self._ledger.append_event(
+                commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
+            )
+            return _text(DENIED_BY_SETTINGS, error=True)
+        if permitted is None:
+            permitted = await self._permit(commission, capability)
+        if permitted.refusal is not None:
+            return permitted.refusal
 
         if capability.kind == KIND_BUILTIN:
-            if capability.group == BUILTIN_GROUP_BROWSER:
-                refusal, agreement = await self._ask_before_reopening(
-                    commission, capability, just_asked=decision.asked
-                )
-                if refusal is not None:
-                    return refusal
-                if agreement is not None:
-                    try:
-                        # What the user agreed to is this call opening the
-                        # browser: the agreement goes with it, and no other
-                        # call opens the browser on the strength of it.
-                        return await self._call_builtin(
-                            commission, capability, arguments, reopen_agreement=agreement
-                        )
-                    finally:
-                        # Should it have ended before it got to the browser
-                        # (stopped, or the browser stayed in use by another
-                        # task): the agreement ends with it.
-                        self._registry.browser_reopen_agreement_over(agreement)
+            if permitted.agreement is not None:
+                try:
+                    # What the user agreed to is this call opening the
+                    # browser: the agreement goes with it, and no other
+                    # call opens the browser on the strength of it.
+                    return await self._call_builtin(
+                        commission, capability, arguments, reopen_agreement=permitted.agreement
+                    )
+                finally:
+                    # Should it have ended before it got to the browser
+                    # (stopped, or the browser stayed in use by another
+                    # task): the agreement ends with it.
+                    self._registry.browser_reopen_agreement_over(permitted.agreement)
             return await self._call_builtin(commission, capability, arguments)
 
         async def run_created(run_id: str) -> None:

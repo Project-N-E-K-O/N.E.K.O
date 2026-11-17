@@ -56,6 +56,20 @@ task agent 留给以后委托用的东西（界面上叫使魔空间）放在 `<
 
 会话目录（`<数据根>/nekoclaw/task_agents/projects/<项目>/sessions/<委托号>/`）故意放在另一棵目录树里：工作目录里有大量链接，更换存储位置时留在原处；使魔空间则跟着用户的其他数据一起搬。
 
+### dsh：可选的 agent runtime
+
+dsh（DeepSeek Harness）是用户可以另外下载的第二个 agent runtime（`nekoclaw/dsh/`），内置的那个始终都在。没装 dsh 的用户什么都不变：它的模块不会被导入，也不起任何进程。
+
+- **用哪个**（`nekoclaw/host/runtimes.py`）。每件委托在第一次开工时定下 runtime，记在台账里，之后不换。新委托在 dsh 上办，条件是 dsh 已安装、用户没有选「只用内置」、委托的模型走 OpenAI 兼容接口；否则在内置 runtime 上办。接着办的委托回到它开工时的 runtime，因为对话记录只有那个 runtime 读得了；task agent 起的 task agent 跟着起它的那个。
+- **dsh 用不了时**。dsh 起不来、没有确认权限守卫已加载，或者没给这件委托开成会话，这件委托改由内置 runtime 办，原因记进委托的事件里；之后 5 分钟新委托不再试 dsh。开工在 dsh 上、而 dsh 已被卸载的委托，在内置 runtime 上从头办。dsh 进程中途退出时，在办的委托记为失败，可以接着办。
+- **怎么连**（`driver.py`、`acp.py`）。dsh 是一个子进程，经标准输入输出按 ACP（JSON-RPC）通信。一个进程带多个会话，用到时才起，所有会话空闲 5 分钟后退出。驱动把 ACP 的通知翻译成和内置 runtime 一样的事件，所以宿主的其余部分不区分两者。
+- **模型请求**（`forward.py`、`endpoint.py`）。dsh 的模型请求发到本机回环地址上的一个转发口，由它换上真正的模型名和 key、补上各厂商需要的参数，再转给用户配置的地址。key 不交给 dsh，每次请求的用量由转发口读出来。转发口端口随机，每个 dsh 进程一个随机令牌，带 `Origin` 头的请求一律拒绝。
+- **权限**（`profile.py`）。dsh 自己的沙箱关闭；随配置带上的一个守卫让 dsh 在每次工具调用之前先问，问到的都交给宿主同一段权限代码判断。经能力网关的调用在发出之前判权限、问用户，调用到达网关时不再问。
+- **宿主的工具**（`host_tools.py`）。汇报、记经验、网页搜索和抓取、子 task agent 以一个 MCP 服务的形式提供给 dsh，定义和内置 runtime 用的是同一份；dsh 自带的网页搜索和抓取关掉了，所以抓网页和内置 runtime 一样只到公网地址。能力网关按 MCP 直接挂给 dsh。
+- **装在哪**（`install.py`）。`<数据根>/nekoclaw/dsh/`：程序、dsh 自己的配置和对话记录都在这里，不随存储位置迁移。下载的版本固定，文件按 sha256 和大小校验。
+
+在 dsh 上有几处和内置 runtime 不同：途中插话要等当前一段结束才送达；回复整条到达，不是逐字；经能力网关的一次调用最长 60 秒；没有「提问并原地等回答」的工具，改用汇报里的等回话。
+
 ### 能力网关与权限
 
 除了自带的文件和命令工具，task agent 用到的其它能力都经能力网关（`nekoclaw/host/gateway.py`）取得。网关是回环地址上的一个 MCP 服务，第一个需要它的 task agent 启动时才开始监听，一件委托一个令牌。它提供：
@@ -161,6 +175,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 插件筛选和决策模型 | `nekoclaw/host/selection.py`、`decision.py` |
 | 台账、outbox、汇报 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | task agent 和 agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
+| dsh：可选的 agent runtime 和它的选用 | `nekoclaw/dsh/`、`nekoclaw/host/runtimes.py`、`config/prompts/prompts_nekoclaw_dsh.py` |
 | task agent 空间：条目、索引、复盘、归档 | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |
 | 能力清单、网关、权限 | `nekoclaw/host/capabilities.py`、`gateway.py`、`permissions.py` |
 | 键鼠和浏览器工具 | `nekoclaw/builtin/`、`config/prompts/prompts_nekoclaw_builtin.py` |

@@ -967,8 +967,9 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     assert told is True
     assert await taking_up is True
     await wait_until(lambda: len(sent) == 3, what="the work and both notes being sent")
-    # Nothing reaches the session before its first work does.
-    assert sent[0] == ("prompt", "put it on drive E:")
+    # Nothing reaches the session before its first work does. It never had a
+    # session, so it starts over, told what the commission is.
+    assert sent[0] == ("prompt", "back up the notes\n\nput it on drive E:")
     assert sent[1] == ("steer", "and skip the drafts")
     assert sent[2][0] == "steer" and "drafts listed" in sent[2][1]
 
