@@ -1096,3 +1096,31 @@ def test_logout_reports_failure_when_the_hold_cannot_be_kept_anywhere(oauth_app,
     assert not C._clear_auth()
     # The mirror, and with it the conflict, stays on disk.
     assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == CONFLICT
+
+
+async def test_rebind_conflict_with_failed_write_holds_after_logout_and_restart(oauth_app, tmp_path, monkeypatch):  # noqa: F811
+    """Login bind was cloud_unreachable, rebind finds a conflict, writes fail, logout, restart."""
+    import asyncio
+
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, {"bound": False, "error": "cloud_unreachable"})
+    _logged_in(monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(*_args, **_kwargs):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
+
+    assert C._clear_auth()
+    tombstone = json.loads(auth.read_text(encoding="utf-8"))
+    assert tombstone[C.DEVICE_HOLD_PENDING] is True
+    assert "access_token" not in tombstone
+
+    hold._set_unrecorded_hold(False)  # restart
+    real_signed_in_account = sync_worker._signed_in_account
+    _facts_sync_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "default_directory", lambda: auth.parent)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
+    assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
