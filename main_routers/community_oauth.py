@@ -1560,14 +1560,25 @@ async def reconfirm_device_owner() -> None:
     reached the cloud, leaves the check on disk and uploads held. Nothing else
     would ask again for a login that already shows as bound.
     """
-    async with _device_bind_lock:
+    # Same fences as the explicit rebind: no login can be saved, and no logout
+    # can clear this one, between reading the session and recording the answer.
+    async with _device_bind_lock, _oauth_start_lock:
         if not await asyncio.to_thread(community_device_hold.check_pending, C._credential_dir()):
             return
-        snapshot = await asyncio.to_thread(C._desktop_session_snapshot) or {}
+        # Refresh-capable: an expired token would be refused on every retry
+        # and keep uploads held after the network recovers.
+        status = await resolve_saved_oauth_status()
+        snapshot = status.get("snapshot") or {}
         access_token = str(snapshot.get("access_token") or "").strip()
         local_user_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
-        if access_token and local_user_id:
-            await _bind_signed_in_login(access_token, local_user_id)
+        if not status.get("logged_in") or not access_token or not local_user_id:
+            return
+        # Never send the token to a community other than its own; the check
+        # stays and uploads stay held.
+        session_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
+        if session_base and not same_endpoint(session_base, C._social_base_url()):
+            return
+        await _bind_signed_in_login(access_token, local_user_id)
 
 
 # facts_sync asks for this before its upload gate; late-bound so patches reach it.
@@ -1700,6 +1711,12 @@ async def _oauth_guest_bind(
             )
             if bind_res.status_code < 400:
                 bind["bound"] = True
+                return bind
+            if bind_res.status_code >= 500:
+                # A server or proxy error does not prove the bind was not
+                # committed; treat it like a request that got no answer.
+                bind["error"] = community_device_hold.CLOUD_UNREACHABLE
+                logger.info("community_oauth: guest bind returned %s", bind_res.status_code)
                 return bind
             bind["error"] = _response_detail(bind_res) or f"http_{bind_res.status_code}"
     except (httpx.HTTPError, OSError) as exc:

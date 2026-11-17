@@ -1735,6 +1735,16 @@ def test_latched_hold_survives_a_read_error_at_logout_and_restart(oauth_app, mon
     assert sync_worker._device_bound_to_other_account()
 
 
+def _signed_in_as(monkeypatch, account, token, *, base_url=None):
+    async def resolve():
+        snapshot = {"access_token": token, "auth_source": "oauth", "local_user_id": account}
+        if base_url:
+            snapshot["base_url"] = base_url
+        return {"logged_in": True, "snapshot": snapshot, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve)
+
+
 def _answer(monkeypatch, bind):
     asked = []
 
@@ -1756,6 +1766,7 @@ async def test_check_left_by_a_stopped_login_is_settled_by_the_signed_in_owner(o
     hold._set_unrecorded_hold(False)  # restart
     assert hold.device_held(auth.parent, USER_ID, saved_bind=dict(BOUND))
 
+    _logged_in(monkeypatch)
     asked = _answer(monkeypatch, BOUND)
     await O.reconfirm_device_owner()
 
@@ -1777,9 +1788,7 @@ async def test_unsaved_login_with_an_unknown_answer_holds_until_reconfirmed(tmp_
 
     hold._set_unrecorded_hold(False)  # restart
     assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
-    (tmp_path / "social_session.json").write_text(
-        json.dumps({"token": "a-token", "local_user_id": OWNER_A, "auth_source": "oauth"}), encoding="utf-8",
-    )
+    _signed_in_as(monkeypatch, OWNER_A, "a-token")
     _answer(monkeypatch, {"bound": False, "error": hold.CLOUD_UNREACHABLE})
     await O.reconfirm_device_owner()
     assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
@@ -1820,3 +1829,59 @@ async def test_facts_sync_asks_again_before_its_upload_gate(tmp_path, monkeypatc
     hold.begin_bind_check(tmp_path)
     await sync_worker._sweep_once()
     assert order == ["resolve", "gate"]
+
+
+async def test_recovery_never_sends_the_token_to_another_community(oauth_app, monkeypatch):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
+    hold.begin_bind_check(auth.parent)
+    _signed_in_as(monkeypatch, USER_ID, "account-b-access", base_url="https://old-community.example")
+
+    asked = _answer(monkeypatch, BOUND)
+    await O.reconfirm_device_owner()
+
+    assert asked == []
+    assert hold.check_pending(auth.parent)
+    assert hold.device_held(auth.parent, USER_ID, saved_bind=dict(BOUND))
+
+
+async def test_recovery_skips_a_signed_out_or_rejected_session(oauth_app, monkeypatch):  # noqa: F811
+    _client, auth, _social, _pending = oauth_app
+    hold.begin_bind_check(auth.parent)
+
+    async def rejected():
+        return {"logged_in": False, "snapshot": None, "auth": {}}
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", rejected)
+    asked = _answer(monkeypatch, BOUND)
+    await O.reconfirm_device_owner()
+    assert asked == []
+    assert hold.check_pending(auth.parent)
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 504])
+async def test_bind_server_error_is_an_unknown_answer(tmp_path, monkeypatch, status_code):
+    """A proxy can fail after the cloud committed the bind: keep the check."""
+    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "local-proof"))
+
+    def handle(request):
+        path = request.url.path
+        if path == "/api/auth/bind-client/challenge":
+            return httpx.Response(200, json={"binding_challenge": "C" * 43})
+        if path == "/api/clients/bind-approval":
+            return httpx.Response(204)
+        if path == "/api/auth/bind-client":
+            return httpx.Response(status_code, json={"detail": "upstream"})
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handle)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: real_client(transport=transport))
+
+    bind = await O._oauth_guest_bind("https://community.example", "account-b-access")
+
+    assert bind == {"bound": False, "error": hold.CLOUD_UNREACHABLE}
+    assert hold.begin_bind_check(tmp_path) is True
+    assert hold.end_bind_check(tmp_path, True, bind)
+    assert hold.check_pending(tmp_path)

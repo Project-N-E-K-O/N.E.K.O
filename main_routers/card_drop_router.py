@@ -1453,6 +1453,11 @@ async def _store_session(
                 )
             if r.status_code < 400:
                 bind["bound"] = True
+            elif r.status_code >= 500:
+                # A server or proxy error does not prove the bind was not
+                # committed; treat it like a request that got no answer.
+                bind["error"] = community_device_hold.CLOUD_UNREACHABLE
+                logger.info("card_drop: bind-client returned %s", r.status_code)
             else:
                 try:
                     bind["error"] = r.json().get("detail") or f"http_{r.status_code}"
