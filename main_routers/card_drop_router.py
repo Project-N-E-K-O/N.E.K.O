@@ -785,7 +785,8 @@ def _public_bind_state(auth: dict | None) -> dict:
     """The bind outcome safe to show to local UI: ``{"bound", "error"}`` only.
 
     Older sessions have no bind field and are treated as bound, which matches
-    the normal single-account case.
+    the normal single-account case. Internal markers such as ``skipped`` and
+    ``local_save_failed`` stay in the saved record; no UI reads them.
     """
     bind = (auth or {}).get("bind")
     if not isinstance(bind, dict):
@@ -867,9 +868,32 @@ def _credential_dir() -> Path | None:
     return path.parent if path is not None else None
 
 
-def _record_device_hold(bind: dict) -> None:
-    """Hold or release header-only uploads for this device; see utils.community_device_hold."""
-    community_device_hold.record_bind_outcome(_credential_dir(), bind)
+def _remember_confirmed_owner() -> None:
+    """Seed the device owner from the saved login before it is replaced or cleared.
+
+    Installs that bound before the device record existed have no owner on
+    file. A saved login whose bind the cloud confirmed is that owner; record
+    it so a later login that never binds (browser session sync) or a logout
+    cannot leave the record empty.
+    """
+    auth = _load_auth() or {}
+    bind = auth.get("bind")
+    if isinstance(bind, dict) and bind.get("bound") is True:
+        community_device_hold.remember_owner(
+            _credential_dir(), _normalize_local_user_id(auth.get("local_user_id"))
+        )
+
+
+def _record_device_hold(bind: dict, local_user_id: str) -> None:
+    """Record what one bind attempt as ``local_user_id`` proved about the device owner.
+
+    See utils.community_device_hold: header-only uploads wait while the
+    signed-in account is not the confirmed owner.
+    """
+    if not community_device_hold.record_bind_outcome(_credential_dir(), bind, local_user_id):
+        # The saved login still carries the refused bind, which facts_sync
+        # also treats as a hold, so a failed write here does not open uploads.
+        logger.warning("card_drop: device hold record not written; relying on the saved bind")
 
 
 def _save_social_session_unlocked(
@@ -1061,6 +1085,7 @@ def _unlink_credentials(paths: list[Path]) -> bool:
 
 
 def _clear_auth() -> bool:
+    _remember_confirmed_owner()
     auth_path = _auth_path()
     paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
     if auth_path is not None:
@@ -1240,6 +1265,7 @@ async def _store_session(
     # device ownership only decides where guest assets migrate, never which
     # account may sign in on this machine.
     bind: dict = {"bound": False, "error": None}
+    await asyncio.to_thread(_remember_confirmed_owner)
     cid = await asyncio.to_thread(_get_client_id) if bind_client else None
     if not bind_client:
         bind["skipped"] = "native_session_sync"
@@ -1287,7 +1313,7 @@ async def _store_session(
         auth_source=normalized_source,
     )
     if bind_client:
-        await asyncio.to_thread(_record_device_hold, bind)
+        await asyncio.to_thread(_record_device_hold, bind, local_user_id)
     return bind
 
 
@@ -1854,8 +1880,12 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             # Persist repaired binds and terminal conflicts alike, or
             # /auth-status keeps reporting the stale transient failure and
             # every later handoff repeats the bind round trip.
-            await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
-            await asyncio.to_thread(_record_device_hold, bind)
+            persisted = await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+            # A success only releases the hold when it was recorded for the
+            # still-current login; a stale account's success must not clear a
+            # newer conflict. Recording a conflict is always safe.
+            if persisted or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+                await asyncio.to_thread(_record_device_hold, bind, local_user_id)
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another

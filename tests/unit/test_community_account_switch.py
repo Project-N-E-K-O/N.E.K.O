@@ -21,6 +21,12 @@ from tests.unit.test_community_oauth import USER_ID, _local_source_request, oaut
 pytestmark = pytest.mark.unit
 
 CONFLICT = {"bound": False, "error": "client_already_bound_to_other_user"}
+BOUND = {"bound": True, "error": None}
+OWNER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+
+def _mark_conflict(directory) -> None:
+    hold.record_bind_outcome(directory, dict(CONFLICT), USER_ID)
 
 
 def _pending_login(tmp_path, monkeypatch):
@@ -96,7 +102,7 @@ async def test_callback_saves_login_when_device_is_bound_to_another_account(tmp_
     saved_social = json.loads(social.read_text(encoding="utf-8"))
     assert saved_social["token"] == "account-b-access"
     assert saved_social["local_user_id"] == USER_ID
-    assert hold.device_held(tmp_path)
+    assert hold.device_held(tmp_path, USER_ID)
 
 
 @pytest.mark.parametrize(
@@ -234,13 +240,14 @@ def test_rebind_needs_a_desktop_oauth_login(oauth_app, monkeypatch):  # noqa: F8
     _logged_in(monkeypatch, auth_source="legacy")
     response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
     assert response.status_code == 409
-    assert response.json() == {"detail": "oauth_session_required"}
+    assert response.json()["detail"] == "oauth_session_required"
+    assert "统一账号" in response.json()["hint"]
 
 
 def test_rebind_runs_local_proof_flow_and_updates_saved_bind(oauth_app, monkeypatch):  # noqa: F811
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, CONFLICT)
-    assert hold.set_held(auth.parent)
+    _mark_conflict(auth.parent)
     _logged_in(monkeypatch)
     requests: list[httpx.Request] = []
 
@@ -287,7 +294,7 @@ def test_rebind_runs_local_proof_flow_and_updates_saved_bind(oauth_app, monkeypa
     saved = json.loads(auth.read_text(encoding="utf-8"))
     assert saved["bind"] == {"bound": True, "error": None}
     assert saved["access_token"] == "account-b-access"
-    assert not hold.device_held(auth.parent)
+    assert not hold.device_held(auth.parent, USER_ID)
 
 
 @pytest.mark.parametrize(
@@ -302,7 +309,7 @@ def test_rebind_failure_keeps_saved_bind_and_reports_reason(
 ):
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, CONFLICT)
-    assert hold.set_held(auth.parent)
+    _mark_conflict(auth.parent)
     _logged_in(monkeypatch)
 
     def handle(request):
@@ -327,7 +334,7 @@ def test_rebind_failure_keeps_saved_bind_and_reports_reason(
         "bind": {"bound": False, "error": cloud_detail},
     }
     assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == CONFLICT
-    assert hold.device_held(auth.parent)
+    assert hold.device_held(auth.parent, USER_ID)
 
 
 async def test_login_bind_never_sends_rebind(monkeypatch):
@@ -368,6 +375,8 @@ def _facts_sync_env(tmp_path, monkeypatch, *, lanlans=("Neko",)):
     )
     monkeypatch.setattr(sync_worker, "_social_base_url", lambda: "https://community.example")
     monkeypatch.setattr(sync_worker, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+    monkeypatch.setattr(hold, "default_directory", lambda: tmp_path)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", lambda: USER_ID)
     return memory_dir
 
 
@@ -375,7 +384,7 @@ def _facts_sync_env(tmp_path, monkeypatch, *, lanlans=("Neko",)):
 async def test_facts_sync_holds_while_device_belongs_to_another_account(tmp_path, monkeypatch, held):
     _facts_sync_env(tmp_path, monkeypatch)
     if held:
-        assert hold.set_held(tmp_path)
+        _mark_conflict(tmp_path)
     registered: list[str] = []
     swept: list[str] = []
 
@@ -396,38 +405,86 @@ async def test_facts_sync_holds_while_device_belongs_to_another_account(tmp_path
 
 
 def test_hold_follows_only_definite_ownership_outcomes(tmp_path):
-    """Logout and transient bind failures must not release a known conflict."""
-    hold.record_bind_outcome(tmp_path, dict(CONFLICT))
-    assert hold.device_held(tmp_path)
+    """Logout, browser syncs and transient bind failures never release a conflict."""
+    _mark_conflict(tmp_path)
+    assert hold.device_held(tmp_path, USER_ID)
     for uncertain in (
         {"bound": False, "error": "cloud_unreachable"},
         {"bound": False, "error": "invalid_client_proof"},
         {"bound": False, "error": None, "skipped": "native_session_sync"},
         None,
     ):
-        hold.record_bind_outcome(tmp_path, uncertain)
-        assert hold.device_held(tmp_path), uncertain
-    hold.record_bind_outcome(tmp_path, {"bound": True, "error": None})
-    assert not hold.device_held(tmp_path)
+        hold.record_bind_outcome(tmp_path, uncertain, USER_ID)
+        assert hold.device_held(tmp_path, USER_ID), uncertain
+    hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    assert not hold.device_held(tmp_path, USER_ID)
     # Unreadable records fail closed.
     (tmp_path / hold.HOLD_FILENAME).write_text("{not json", encoding="utf-8")
-    assert hold.device_held(tmp_path)
+    assert hold.device_held(tmp_path, USER_ID)
+
+
+def test_hold_compares_signed_in_account_with_confirmed_owner(tmp_path):
+    assert not hold.device_held(tmp_path, USER_ID)  # nothing known yet
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    assert not hold.device_held(tmp_path, OWNER_A)
+    # Another account signed in without ever binding (browser session sync).
+    assert hold.device_held(tmp_path, USER_ID)
+    # Signed out: uploads land with the owner, which is where they belong.
+    assert not hold.device_held(tmp_path, None)
+    # remember_owner never overrides a recorded owner.
+    hold.remember_owner(tmp_path, USER_ID)
+    assert hold.device_held(tmp_path, USER_ID)
+
+
+def test_sync_session_login_on_owned_device_holds_uploads(tmp_path, monkeypatch):
+    """A legacy browser sync replaces the login without binding; the owner stays A."""
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    auth.write_text(
+        json.dumps({"access_token": "a-token", "local_user_id": OWNER_A, "auth_source": "oauth", "bind": BOUND}),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps({"token": "a-token", "local_user_id": OWNER_A, "auth_source": "oauth"}),
+        encoding="utf-8",
+    )
+
+    import asyncio as _asyncio
+
+    bind = _asyncio.run(
+        C._store_session(
+            "https://community.example",
+            "b-legacy-token",
+            None,
+            {"id": USER_ID, "display_name": "B"},
+            auth_source="legacy",
+            bind_client=False,
+        )
+    )
+
+    assert bind.get("skipped") == "native_session_sync"
+    assert json.loads(auth.read_text(encoding="utf-8"))["local_user_id"] == USER_ID
+    assert hold.device_held(tmp_path, USER_ID)
+    assert not hold.device_held(tmp_path, OWNER_A)
 
 
 def test_logout_keeps_the_device_hold(oauth_app):  # noqa: F811
     _client, auth, social, _pending = oauth_app
     _save_login(auth, social, CONFLICT)
-    assert hold.set_held(auth.parent)
+    _mark_conflict(auth.parent)
 
     assert C._clear_auth()
 
     assert not auth.exists()
-    assert hold.device_held(auth.parent)
+    assert hold.device_held(auth.parent, None)
 
 
 async def test_relogin_with_transient_bind_failure_keeps_hold(tmp_path, monkeypatch):
     _pending_login(tmp_path, monkeypatch)
-    assert hold.set_held(tmp_path)
+    _mark_conflict(tmp_path)
 
     async def flaky_bind(_social_base, _access_token, *, rebind=False):
         return {"bound": False, "error": "cloud_unreachable"}
@@ -436,7 +493,7 @@ async def test_relogin_with_transient_bind_failure_keeps_hold(tmp_path, monkeypa
     response = await O._handle_oauth_callback("auth-code", "expected-state")
 
     assert response.status_code == 200
-    assert hold.device_held(tmp_path)
+    assert hold.device_held(tmp_path, USER_ID)
 
 
 async def test_facts_sync_stops_between_batches_once_held(tmp_path, monkeypatch):
@@ -452,7 +509,7 @@ async def test_facts_sync_stops_between_batches_once_held(tmp_path, monkeypatch)
     async def post_batch(_base, _client_id, _lanlan, batch):
         posted.append(len(batch))
         # A login saves an ownership conflict while this sweep is running.
-        hold.set_held(tmp_path)
+        _mark_conflict(tmp_path)
         return True, {}
 
     monkeypatch.setattr(sync_worker, "_post_facts_batch", post_batch)
@@ -514,7 +571,7 @@ def test_rebind_refuses_when_signed_in_account_changed(oauth_app, monkeypatch): 
 def test_rebind_records_bind_after_same_account_token_refresh(oauth_app, monkeypatch):  # noqa: F811
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, CONFLICT)
-    assert hold.set_held(auth.parent)
+    _mark_conflict(auth.parent)
     _logged_in(monkeypatch)
 
     async def bind_then_refresh(_base, _access, *, rebind=False):
@@ -533,7 +590,7 @@ def test_rebind_records_bind_after_same_account_token_refresh(oauth_app, monkeyp
     saved = json.loads(auth.read_text(encoding="utf-8"))
     assert saved["access_token"] == "account-b-refreshed"
     assert saved["bind"] == {"bound": True, "error": None}
-    assert not hold.device_held(auth.parent)
+    assert not hold.device_held(auth.parent, USER_ID)
 
 
 def test_rebind_reports_unsaved_local_state(oauth_app, monkeypatch):  # noqa: F811
@@ -558,3 +615,90 @@ def test_conflict_page_script_matches_its_csp_hash():
     assert len(scripts) == 1
     digest = base64.b64encode(hashlib.sha256(scripts[0].encode()).digest()).decode()
     assert digest == O._REBIND_SCRIPT_HASH
+
+
+async def test_rebind_of_proofless_old_device_reports_owner_must_unbind(monkeypatch):
+    paths: list[str] = []
+
+    def handle(request):
+        paths.append(request.url.path)
+        if request.url.path == "/api/auth/bind-client/challenge":
+            return httpx.Response(200, json={"binding_challenge": "C" * 43})
+        if request.url.path == "/api/clients/bind-approval":
+            return httpx.Response(403, json={"detail": "legacy_client_rebind_required"})
+        if request.url.path == "/api/clients/adopt-proof":
+            return httpx.Response(409, json={"detail": "client_already_bound_to_other_user"})
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handle)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(O.httpx, "AsyncClient", lambda **kwargs: real_client(transport=transport))
+    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "P" * 43))
+    rebind = await O._oauth_guest_bind("https://community.example", "platform-access", rebind=True)
+    login = await O._oauth_guest_bind("https://community.example", "platform-access")
+
+    assert rebind == {"bound": False, "error": O.LEGACY_DEVICE_OWNED_ELSEWHERE}
+    # Login keeps reporting the ordinary conflict so the device is held.
+    assert login == CONFLICT
+    assert "/api/auth/bind-client" not in paths
+    assert "legacy_client_owned_by_other_user" in O._REBIND_SCRIPT
+
+
+def test_rebind_refuses_when_community_url_changed(oauth_app, monkeypatch):  # noqa: F811
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+
+    async def resolve():
+        return {
+            "logged_in": True,
+            "snapshot": {
+                "access_token": "account-b-access",
+                "auth_source": "oauth",
+                "local_user_id": USER_ID,
+                "base_url": "https://other-community.example",
+            },
+            "auth": {},
+        }
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("the token must not go to a different community")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve)
+    monkeypatch.setattr(O, "_oauth_guest_bind", unexpected)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "community_base_url_changed"}
+
+
+def test_saved_conflict_still_holds_when_hold_record_is_missing(tmp_path):
+    """A failed hold write cannot open uploads: the login's own bind still holds."""
+    assert not (tmp_path / hold.HOLD_FILENAME).exists()
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=dict(CONFLICT))
+    assert not hold.device_held(tmp_path, USER_ID, saved_bind=dict(BOUND))
+
+
+async def test_facts_sync_uses_saved_conflict_when_hold_write_failed(tmp_path, monkeypatch):
+    _facts_sync_env(tmp_path, monkeypatch)
+    (tmp_path / "community_auth.json").write_text(json.dumps({"bind": CONFLICT}), encoding="utf-8")
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+    assert not hold.record_bind_outcome(tmp_path, dict(CONFLICT), USER_ID)
+
+    assert await __import__("asyncio").to_thread(sync_worker._device_bound_to_other_account)
+
+
+def test_rebind_that_finds_a_conflict_records_the_hold(oauth_app, monkeypatch):  # noqa: F811
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, {"bound": False, "error": "cloud_unreachable"})
+    _logged_in(monkeypatch)
+    assert not hold.device_held(auth.parent, USER_ID)
+
+    async def refused(*_args, **_kwargs):
+        return {"bound": False, "error": O.LEGACY_DEVICE_OWNED_ELSEWHERE}
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "legacy_client_owned_by_other_user"
+    assert hold.device_held(auth.parent, USER_ID)

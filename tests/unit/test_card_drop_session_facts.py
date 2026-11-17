@@ -1843,6 +1843,46 @@ def test_social_session_init_rejects_a_session_replaced_during_the_bind_retry(
     assert C._sync_ticket_is_valid(ticket)
 
 
+def test_social_session_init_stale_bind_success_keeps_a_newer_device_hold(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A late success for the old account must not release a conflict recorded since."""
+    from main_routers import community_oauth
+    from utils import community_device_hold as hold
+
+    newer_account = "33333333-3333-4333-8333-333333333333"
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    snapshots = [_delegate_session()]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshots[-1])
+
+    async def account_switch_mid_bind(_social_base, _access_token):
+        # Another account signs in and learns the device belongs elsewhere.
+        snapshots.append({**_delegate_session(), "access_token": "newer-token"})
+        hold.record_bind_outcome(
+            tmp_path, {"bound": False, "error": C._BIND_OWNERSHIP_CONFLICT}, newer_account,
+        )
+        return {"bound": True, "error": None}
+
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", account_switch_mid_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert hold.device_held(tmp_path, newer_account)
+
+
 def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
     client,
     monkeypatch,

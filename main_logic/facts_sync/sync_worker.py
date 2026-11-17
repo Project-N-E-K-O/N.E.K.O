@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from main_logic import client_registration
+from services.chat_sync import host as _chat_sync_host
 from utils import community_device_hold
 from utils.config_manager import get_config_manager
 
@@ -100,22 +101,41 @@ def _get_client_id() -> str | None:
     return credentials[0] if credentials else None
 
 
+def _signed_in_account() -> str | None:
+    """The community account signed in here, through the credential owner's hook."""
+    try:
+        snapshot = _chat_sync_host.saved_session_snapshot()
+    except _chat_sync_host.CapabilityNotInstalled:
+        return None
+    return (snapshot or {}).get("local_user_id") or None
+
+
+def _saved_bind(directory: Path) -> Any:
+    """The signed-in login's own bind outcome, a fallback if the hold record is missing."""
+    auth = _read_json(directory / "community_auth.json", {})
+    return auth.get("bind") if isinstance(auth, dict) else None
+
+
 def _device_bound_to_other_account() -> bool:
     """Whether uploads must wait because another account owns this device.
 
     Pushes carry only ``X-Client-Id``, which the cloud routes to the device's
     bound account. After switching to account B on a device still bound to A,
-    that would write B's local memories into A. The hold is recorded per
-    device (see ``utils.community_device_hold``), so it survives logout and
-    transient bind failures; facts stay pending locally until a successful
-    bind releases it.
+    that would write B's local memories into A. The owner and any refused bind
+    are recorded per device (see ``utils.community_device_hold``), so logout,
+    transient bind failures and browser session syncs cannot release the
+    hold; facts stay pending locally until a bind confirms the signed-in
+    account owns the device.
     """
-    try:
-        directory = Path(get_config_manager().memory_dir).parent
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("facts_sync: community credential directory unavailable: %s", exc)
+    directory = community_device_hold.default_directory()
+    if directory is None:
         return True
-    return community_device_hold.device_held(directory)
+    try:
+        signed_in = _signed_in_account()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("facts_sync: cannot read the signed-in community account: %s", exc)
+        return True
+    return community_device_hold.device_held(directory, signed_in, saved_bind=_saved_bind(directory))
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:
