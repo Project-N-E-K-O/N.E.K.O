@@ -84,6 +84,27 @@ test('login opens official authorization, disables mutations while pending, and 
     assert.ok(ui.invalidations > before);
 });
 
+test('unchanged subscription polls preserve model pickers and authorization changes invalidate them', async () => {
+    const ui = surface(signedIn);
+    ui.setSubscription({enabled: true, authorization_required: false});
+    await flush();
+    assert.equal(ui.invalidations, 1);
+    await ui.timer();
+    await ui.timer();
+    assert.equal(ui.invalidations, 1);
+    ui.setSubscription({authorization_required: true});
+    await ui.timer();
+    assert.equal(ui.invalidations, 2);
+    ui.setSubscription({authorization_required: false});
+    await ui.timer();
+    assert.equal(ui.invalidations, 3);
+    ui.setState({...signedIn, accounts: [...signedIn.accounts, {id: 'second', connected: true}], active: 'second'});
+    await ui.timer();
+    assert.equal(ui.invalidations, 4);
+    await ui.timer();
+    assert.equal(ui.invalidations, 4);
+});
+
 test('untrusted authorization URLs never open a browser', async () => {
     const ui = surface(signedIn, () => ({url: 'https://evil.test/authorize'}));
     await flush();
@@ -257,4 +278,98 @@ test('failed toggle reconciles persisted state and authorization warning keeps o
     await flush();
     assert.equal(ui.nodes.enabled.disabled, false);
     assert.match(ui.nodes.status.textContent, /restore/);
+});
+
+function independentSettingsSurface(values = {}) {
+    const nodes = Object.fromEntries(Object.entries(values).map(([field, value]) => [field, {value, dataset: {}}]));
+    nodes['chatgpt-independent-settings-note'] = {hidden: true};
+    const calls = [];
+    const messages = [];
+    const window = {t: key => key};
+    window.parent = window;
+    const context = {
+        window, Object, document: {
+            getElementById: field => nodes[field],
+            querySelectorAll: () => [],
+        },
+        MODEL_TYPES: ['conversation', 'omni', 'tts'], _imageProviders: {},
+        _chatgptIndependentSlots: [], _loadedChatGPTIndependentFields: {},
+        _apiSaveInProgress: false, getRealKey: input => input.value,
+        showStatus: (message, status) => messages.push({message, status}),
+        setApiSaveInProgress: value => { context._apiSaveInProgress = value; },
+        runConnectivityCheckBeforeSave: async () => {}, refreshAutoResolvedModelUrlsForSave() {},
+        invalidateModelLists() {}, cacheCurrentSecretDisplays() {}, clearVoiceIds: async () => {},
+        getTargetOrigin: () => 'http://localhost', loadCurrentApiKey: async () => {},
+        fetch: async (url, init) => {
+            calls.push({url, body: JSON.parse(init.body)});
+            return {ok: true, json: async () => ({success: true})};
+        },
+    };
+    const source = fs.readFileSync(path.join(__dirname, '../../static/js/api_key_settings.js'), 'utf8');
+    const gsvStart = source.indexOf('function getGptSovitsConfigForSave(');
+    vm.runInNewContext(source.slice(gsvStart, source.indexOf('// GPT-SoVITS「', gsvStart)), context);
+    vm.runInNewContext(source.slice(source.indexOf('function imageSettingsPayload(')), context);
+    vm.runInNewContext(source.slice(source.indexOf('function rememberChatGPTIndependentSettings('),
+        source.indexOf('\nfunction showWarningModal(')), context);
+    return {context, nodes, calls, messages};
+}
+
+test('ordinary full-form saves omit unchanged dormant slots including inherited display values', async () => {
+    const values = {
+        omniModelProvider: 'follow_core', omniModelUrl: 'wss://old.test/realtime',
+        omniModelId: '', omniModelApiKey: '__NEKO_SECRET_MASKED__',
+        ttsModelProvider: 'follow_assist', ttsModelUrl: 'https://old.test/tts',
+        ttsModelId: '', ttsModelApiKey: '__NEKO_SECRET_MASKED__',
+        imageModelProvider: 'disabled', imageModelUrl: '', imageModelId: '', imageModelApiKey: '',
+    };
+    const ui = independentSettingsSurface(values);
+    ui.context.rememberChatGPTIndependentSettings(['omni', 'tts', 'image']);
+    assert.equal(ui.nodes['chatgpt-independent-settings-note'].hidden, false);
+    ui.nodes.omniModelId.dataset = {fixedModelHidden: 'true'};
+    const fullForm = {...values, enableCustomApi: true, coreApi: 'qwen', assistApi: 'qwen',
+        conversationModelId: 'new-chat-model', disableTts: true,
+        omniModelId: 'auto-filled-fixed-model',
+        omniModelUrl: 'wss://updated-core.test/realtime', ttsModelApiKey: 'updated-book-key'};
+    await ui.context.saveApiKey(fullForm);
+    assert.equal(ui.calls.length, 1);
+    assert.equal(ui.calls[0].body.conversationModelId, 'new-chat-model');
+    assert.equal(ui.calls[0].body.disableTts, true);
+    for (const field of Object.keys(values)) assert.equal(Object.hasOwn(ui.calls[0].body, field), false);
+    assert.equal(fullForm.imageModelProvider, 'disabled', 'the original confirmation payload stays unchanged');
+});
+
+test('ordinary saves use the same GSV defaults and unknown image serialization as the form', async () => {
+    const ui = independentSettingsSurface({
+        ttsModelProvider: 'gptsovits', ttsModelUrl: '', ttsModelId: '', ttsModelApiKey: '',
+        gptsovitsApiUrl: '', gptsovitsVoiceId: '',
+        imageModelProvider: 'unavailable-provider', imageModelUrl: ' https://image.test/v1 ',
+        imageModelId: ' saved-model ', imageModelApiKey: '__NEKO_SECRET_MASKED__',
+    });
+    ui.context.rememberChatGPTIndependentSettings(['tts', 'image']);
+    await ui.context.saveApiKey({
+        enableCustomApi: true, coreApi: 'qwen', ttsModelProvider: 'gptsovits',
+        ttsModelUrl: ui.context.getGptSovitsConfigForSave().url, ttsModelId: '', ttsModelApiKey: '',
+        ...ui.context.imageSettingsPayload(),
+    });
+    assert.equal(ui.calls.length, 1);
+    assert.equal(Object.hasOwn(ui.calls[0].body, 'ttsModelUrl'), false);
+    assert.equal(Object.hasOwn(ui.calls[0].body, 'imageModelUrl'), false);
+});
+
+test('editing an independent slot is explained before saving and is allowed after restrictions end', async () => {
+    for (const slot of ['image', 'omni', 'tts']) {
+        const values = {[`${slot}ModelProvider`]: 'custom', [`${slot}ModelUrl`]: 'https://fixture.test/v1',
+            [`${slot}ModelId`]: 'old-model', [`${slot}ModelApiKey`]: '__NEKO_SECRET_MASKED__'};
+        const ui = independentSettingsSurface(values);
+        ui.context.rememberChatGPTIndependentSettings([slot]);
+        const edited = {...values, enableCustomApi: true, coreApi: 'qwen', [`${slot}ModelId`]: 'new-model'};
+        await ui.context.saveApiKey(edited);
+        assert.equal(ui.calls.length, 0);
+        assert.deepEqual(ui.messages.at(-1), {message: 'api.chatgpt.independentSettings', status: 'error'});
+        ui.context.rememberChatGPTIndependentSettings([]);
+        assert.equal(ui.nodes['chatgpt-independent-settings-note'].hidden, true);
+        await ui.context.saveApiKey(edited);
+        assert.equal(ui.calls.length, 1);
+        assert.equal(ui.calls[0].body[`${slot}ModelId`], 'new-model');
+    }
 });

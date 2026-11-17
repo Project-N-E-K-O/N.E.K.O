@@ -23,6 +23,7 @@
     let refreshGeneration = 0;
     let busy = false;
     let pending = false;
+    let modelAccountState;
     const t = (key, fallback) => {
         const translated = window.t ? window.t(`api.chatgpt.${key}`) : '';
         return translated && translated !== `api.chatgpt.${key}` ? translated : fallback;
@@ -77,6 +78,7 @@
             account.appendChild(option);
         }
         account.value = data.active || (data.accounts.some(a => a.id === previous) ? previous : account.options[0].value);
+        const finishedLogin = pending && data.login_status !== 'pending';
         pending = data.login_status === 'pending';
         if (!pending) {
             authorization.hidden = true;
@@ -98,7 +100,9 @@
         }
         if (pending) timer = setTimeout(() => refresh().catch(report), 1500);
         else {
-            invalidate();
+            const nextModelAccountState = JSON.stringify([data.active, connected, !!subscription.authorization_required]);
+            if (finishedLogin || nextModelAccountState !== modelAccountState) invalidate();
+            modelAccountState = nextModelAccountState;
             if (subscription.enabled) timer = setTimeout(() => refresh().catch(report), 15000);
         }
         return data;

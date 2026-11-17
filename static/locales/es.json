@@ -1326,7 +1326,8 @@
       "signInRequired": "Primero inicia sesión en ChatGPT.",
       "noModels": "La cuenta no devolvió modelos disponibles. No se cambió la configuración.",
       "accountChanged": "La cuenta ha cambiado. Vuelve a intentarlo.",
-      "managedSettings": "Desactiva la suscripción de ChatGPT antes de cambiar los proveedores administrados."
+      "managedSettings": "Desactiva la suscripción de ChatGPT antes de cambiar los proveedores administrados.",
+      "independentSettings": "Esta suscripción solo activó la configuración personalizada de los modelos de texto y visión. Para cambiar la configuración independiente de generación de imágenes o voz, desactiva la suscripción de ChatGPT y luego activa la API personalizada para configurarla."
     },
     "imageModelConfig": "Generación de imágenes",
     "imageModelExamplePlaceholder": "Ej.: gpt-image-2, wanx2.1-t2i-turbo",

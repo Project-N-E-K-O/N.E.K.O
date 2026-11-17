@@ -140,6 +140,23 @@ def test_logout_retains_registration_and_clears_all_tokens(store, monkeypatch):
         store.access_token()
 
 
+@pytest.mark.parametrize('active_logout', [False, True])
+def test_logout_keeps_a_connected_active_account(store, monkeypatch, active_logout):
+    store.save('issued-2', {'sub': 'user-2'}, tokens(access_token='second'))
+    monkeypatch.setattr(
+        auth, 'http_client',
+        lambda: httpx.Client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={'revocation_endpoint': auth.ISSUER + '/revoke'})
+        )),
+    )
+    signed_out = 'issued-2' if active_logout else 'issued-1'
+    remaining = 'issued-1' if active_logout else 'issued-2'
+    assert store.sign_out(signed_out)
+    assert store.status()['active'] == remaining
+    assert store.access_token() == ('test-access' if active_logout else 'second')
+    assert not next(account for account in store.status()['accounts'] if account['id'] == signed_out)['connected']
+
+
 @pytest.fixture
 def identity():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

@@ -243,6 +243,7 @@ async def get_core_config_api():
             """Fall back to coreApiKey only when the provider matches the user-selected coreApi/assistApi."""
             return fallback_key if provider in _fallback_providers else ''
 
+        from utils.chatgpt_subscription import restricted_slots
         response = {
             "api_key": api_key,
             "coreApi": _core_api_provider,
@@ -288,6 +289,7 @@ async def get_core_config_api():
             "openclawTimeout": core_cfg.get('openclawTimeout'),
             "openclawDefaultSenderId": core_cfg.get('openclawDefaultSenderId'),
             "enableCustomApi": core_cfg.get('enableCustomApi', False),
+            "chatgptIndependentSlots": restricted_slots(core_cfg, CORE_CONFIG_MODEL_TYPES),
             "resolvedProviderUrls": core_cfg.get('resolvedProviderUrls', {}) if isinstance(core_cfg.get('resolvedProviderUrls'), dict) else {},
             # Custom API fields: Provider / Url / Id / ApiKey per model type
             **{
@@ -414,6 +416,30 @@ async def update_core_config(request: Request):
         ):
             return {'success': False, 'error': 'Turn off ChatGPT subscription before changing managed providers.',
                     'error_code': 'chatgptManagedSettings'}
+
+        from utils.chatgpt_subscription import restricted_slots
+        for slot in restricted_slots(existing_core_cfg, CORE_CONFIG_MODEL_TYPES):
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey'):
+                key = f'{slot}Model{suffix}'
+                if key not in data:
+                    continue
+                incoming = data[key]
+                stored = existing_core_cfg.get(key, '')
+                if suffix == 'ApiKey' and is_core_config_secret_placeholder(incoming):
+                    continue
+                if suffix == 'Provider':
+                    default = 'disabled' if slot == 'image' else 'follow_core' if slot == 'omni' else 'follow_assist'
+                    if slot != 'image' and (existing_core_cfg.get(f'{slot}ModelUrl')
+                                           or existing_core_cfg.get(f'{slot}ModelApiKey')):
+                        default = 'custom'
+                    incoming, stored = incoming or default, stored or default
+                if not json_values_equal(incoming, stored):
+                    return {'success': False,
+                            'error': 'Turn off ChatGPT subscription and enable custom API before changing independent model settings.',
+                            'error_code': 'chatgptIndependentSettings'}
+            # Preserve dormant values, including absent defaults, during ordinary saves.
+            for suffix in ('Provider', 'Url', 'Id', 'ApiKey'):
+                data.pop(f'{slot}Model{suffix}', None)
 
         def _incoming_provider(field, error_message):
             if field not in data:

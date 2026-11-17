@@ -24,6 +24,14 @@ def fields(slots):
                                for suffix in ('Provider', 'Url', 'Id', 'ApiKey')]]
 
 
+def restricted_slots(config, available_slots):
+    """List independent slots that stayed dormant when the subscription started."""
+    state = config.get(STATE_KEY) or {}
+    if state and not state['before'].get('enableCustomApi', False):
+        return [slot for slot in available_slots if slot not in state['slots']]
+    return []
+
+
 def revision(config, slots):
     snapshot = {key: config[key] for key in fields(slots) + [STATE_KEY] if key in config}
     return hmac.new(_REVISION_KEY, json.dumps(snapshot, sort_keys=True).encode(), hashlib.sha256).hexdigest()

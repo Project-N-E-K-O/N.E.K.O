@@ -1326,7 +1326,8 @@
       "signInRequired": "請先登入 ChatGPT。",
       "noModels": "帳號未傳回可用模型，未變更設定。",
       "accountChanged": "帳號已變更，請重新操作。",
-      "managedSettings": "請先關閉 ChatGPT 訂閱開關，再修改受管理欄位的服務商。"
+      "managedSettings": "請先關閉 ChatGPT 訂閱開關，再修改受管理欄位的服務商。",
+      "independentSettings": "目前訂閱只啟用了文字與視覺模型的自訂設定。若要變更圖片生成或語音模型的獨立設定，請先關閉 ChatGPT 訂閱，再啟用自訂 API 後設定。"
     },
     "imageModelConfig": "圖片生成",
     "imageModelExamplePlaceholder": "例如 gpt-image-2、wanx2.1-t2i-turbo",

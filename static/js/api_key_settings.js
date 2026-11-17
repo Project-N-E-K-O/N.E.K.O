@@ -28,6 +28,8 @@ let _resolvedProviderUrls = {};
 let _coreApiKeyInputDirty = false;
 // 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
 let _apiSaveInProgress = false;
+let _chatgptIndependentSlots = [];
+let _loadedChatGPTIndependentFields = {};
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
 
@@ -3001,6 +3003,7 @@ async function loadCurrentApiKey() {
             if (typeof data.disableTts === 'boolean' && document.getElementById('disableTts')) {
                 document.getElementById('disableTts').checked = data.disableTts;
             }
+            rememberChatGPTIndependentSettings(data.chatgptIndependentSlots);
 
         } else {
             showCurrentApiKey(window.t ? window.t('api.getCurrentApiKeyFailed') : '获取当前API Key失败', '', false);
@@ -3932,8 +3935,57 @@ function refreshAutoResolvedModelUrlsForSave(params) {
 }
 
 
+function rememberChatGPTIndependentSettings(slots) {
+    _chatgptIndependentSlots = Array.isArray(slots)
+        ? slots.filter(slot => MODEL_TYPES.includes(slot) || slot === 'image') : [];
+    _loadedChatGPTIndependentFields = {};
+    for (const slot of _chatgptIndependentSlots) {
+        for (const suffix of ['Provider', 'Url', 'Id', 'ApiKey']) {
+            const field = `${slot}Model${suffix}`;
+            const input = document.getElementById(field);
+            _loadedChatGPTIndependentFields[field] = input
+                ? (suffix === 'ApiKey' ? getRealKey(input) : input.value.trim()) : '';
+        }
+    }
+    if (_chatgptIndependentSlots.includes('image')) {
+        Object.assign(_loadedChatGPTIndependentFields, imageSettingsPayload());
+    }
+    if (_loadedChatGPTIndependentFields.ttsModelProvider === 'gptsovits') {
+        _loadedChatGPTIndependentFields.ttsModelUrl = getGptSovitsConfigForSave().url;
+    }
+    const note = document.getElementById('chatgpt-independent-settings-note');
+    if (note) note.hidden = !_chatgptIndependentSlots.length;
+}
+
+function prepareChatGPTIndependentSettingsForSave(params) {
+    const payload = {...params};
+    for (const slot of _chatgptIndependentSlots) {
+        const providerField = `${slot}ModelProvider`;
+        const provider = params[providerField] ?? _loadedChatGPTIndependentFields[providerField];
+        const followsUnchanged = provider?.startsWith('follow_')
+            && provider === _loadedChatGPTIndependentFields[providerField];
+        for (const suffix of ['Provider', 'Url', 'Id', 'ApiKey']) {
+            const field = `${slot}Model${suffix}`;
+            // Follow-provider defaults can be refreshed without editing this slot.
+            const inherited = followsUnchanged && (suffix === 'Url' || suffix === 'ApiKey'
+                || (suffix === 'Id' && document.getElementById(field)?.dataset.fixedModelHidden === 'true'));
+            if (Object.hasOwn(params, field) && !inherited
+                && params[field] !== _loadedChatGPTIndependentFields[field]) return null;
+            // Ordinary full-form saves must not persist auto-filled dormant settings.
+            delete payload[field];
+        }
+    }
+    return payload;
+}
+
 async function saveApiKey(params) {
     if (_apiSaveInProgress) return;
+    params = prepareChatGPTIndependentSettingsForSave(params);
+    if (!params) {
+        showStatus(window.t ? window.t('api.chatgpt.independentSettings')
+            : 'Turn off ChatGPT subscription and enable custom API before changing independent image or voice model settings.', 'error');
+        return;
+    }
     const { apiKey, coreApi, assistApi, enableCustomApi } = params;
 
     // 统一处理免费版 API Key 的保存值。只看 core 自己：
@@ -4015,8 +4067,12 @@ async function saveApiKey(params) {
                     });
                 }
             } else {
-                const errorMsg = result.error_code === 'chatgptManagedSettings' && window.t
-                    ? window.t('api.chatgpt.managedSettings')
+                const chatgptErrorKey = {
+                    chatgptManagedSettings: 'managedSettings',
+                    chatgptIndependentSettings: 'independentSettings',
+                }[result.error_code];
+                const errorMsg = chatgptErrorKey && window.t
+                    ? window.t(`api.chatgpt.${chatgptErrorKey}`)
                     : result.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 showStatus(window.t ? window.t('api.saveFailed', { error: errorMsg }) : '保存失败: ' + errorMsg, 'error');
             }

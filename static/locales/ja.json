@@ -1326,7 +1326,8 @@
       "signInRequired": "先に ChatGPT にログインしてください。",
       "noModels": "利用可能なモデルが返されませんでした。設定は変更していません。",
       "accountChanged": "アカウントが変更されました。もう一度お試しください。",
-      "managedSettings": "管理対象のプロバイダーを変更するには、先に ChatGPT サブスクリプションをオフにしてください。"
+      "managedSettings": "管理対象のプロバイダーを変更するには、先に ChatGPT サブスクリプションをオフにしてください。",
+      "independentSettings": "このサブスクリプションでは、テキストと画像理解モデルのカスタム設定のみ有効になっています。画像生成や音声モデルの個別設定を変更するには、ChatGPT サブスクリプションをオフにしてから、カスタム API を有効にして設定してください。"
     },
     "imageModelConfig": "画像生成",
     "imageModelExamplePlaceholder": "例: gpt-image-2、wanx2.1-t2i-turbo",

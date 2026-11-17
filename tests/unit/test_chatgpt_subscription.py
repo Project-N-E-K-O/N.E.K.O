@@ -129,6 +129,33 @@ async def test_last_account_logout_restores_before_revoking(manager, routes, mon
 
 
 @pytest.mark.asyncio
+async def test_current_account_logout_keeps_subscription_usable_with_another_account(manager, routes, monkeypatch, tmp_path):
+    import httpx
+    from utils.chatgpt_auth import CredentialStore
+    from utils.chatgpt_auth import store as auth
+    route, core, _, client = routes
+    credentials = CredentialStore(tmp_path / 'accounts.json')
+    for account_id in ('remaining-account', 'current-account'):
+        credentials.save(account_id, {'sub': account_id}, {
+            'access_token': account_id + '-access', 'refresh_token': account_id + '-refresh',
+            'expires_in': 3600, 'scope': auth.PLAN_SCOPE,
+        })
+    monkeypatch.setattr(route, 'get_store', lambda: credentials)
+    monkeypatch.setattr(auth, 'http_client', lambda: httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={'revocation_endpoint': auth.ISSUER + '/revoke'})
+    )))
+    config = {'enableCustomApi': False}
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    result = await route.chatgpt_logout(route.AccountRequest(account_id='current-account'))
+    assert not result['subscription_restored']
+    assert manager.load_json_config('core_config.json') == config
+    assert credentials.status()['active'] == 'remaining-account'
+    assert credentials.access_token() == 'remaining-account-access'
+    core.reload_api_configuration.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_expired_authorization_warns_and_keeps_restore_available(manager, routes):
     from utils.chatgpt_auth import ChatGPTAuthError
     route, core, store, client = routes
@@ -171,18 +198,113 @@ async def test_stale_regular_save_cannot_undo_subscription(manager, routes, monk
     assert manager.load_json_config('core_config.json') == config
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('slot', ['image', 'omni', 'tts'])
+async def test_subscription_rejects_independent_slot_changes(manager, routes, monkeypatch, slot):
+    route, core, store, client = routes
+    monkeypatch.setattr(core, '_auto_resolve_provider_urls_for_save', AsyncMock(return_value={}))
+    monkeypatch.setattr(core, 'ensure_default_yui_voice_for_free_api', AsyncMock())
+    config = {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': False,
+              'imageModelProvider': 'disabled'}
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        'enableCustomApi': True, f'{slot}ModelProvider': 'custom',
+        f'{slot}ModelUrl': 'https://fixture.test/v1', f'{slot}ModelId': 'independent-model',
+        f'{slot}ModelApiKey': 'independent-key',
+    }))
+    result = await core.update_core_config(request)
+    assert not result['success'] and result.get('error_code') == 'chatgptIndependentSettings', result
+    assert manager.load_json_config('core_config.json') == config
+    core.reload_api_configuration.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_subscription_save_preserves_dormant_slots(manager, routes, monkeypatch):
+    route, core, store, client = routes
+    monkeypatch.setattr(core, '_auto_resolve_provider_urls_for_save', AsyncMock(return_value={}))
+    monkeypatch.setattr(core, 'ensure_default_yui_voice_for_free_api', AsyncMock())
+    config = {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': False,
+              'ttsModelProvider': 'custom', 'ttsModelUrl': 'https://tts.test/v1',
+              'ttsModelId': 'dormant', 'ttsModelApiKey': 'private'}
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    submitted = {key: value for key, value in config.items() if key != 'chatgptSubscription'}
+    submitted.update(conversationModelId='new-model', disableTts=True,
+                     ttsModelApiKey=core.CORE_CONFIG_SECRET_SENTINEL,
+                     imageModelProvider='disabled', omniModelProvider='follow_core')
+    result = await core.update_core_config(SimpleNamespace(json=AsyncMock(return_value=submitted)))
+    assert result['success'], result
+    saved = manager.load_json_config('core_config.json')
+    assert saved['conversationModelId'] == 'new-model' and saved['disableTts']
+    assert saved['ttsModelApiKey'] == 'private'
+    assert 'omniModelProvider' not in saved and 'imageModelProvider' not in saved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('custom', [False, True])
+async def test_settings_response_exposes_only_restricted_slot_names(manager, routes, custom):
+    route, core, store, client = routes
+    config = {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': custom,
+              'conversationModelApiKey': 'private-before-subscription'}
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    result = await core.get_core_config_api()
+    assert result['success'], result
+    assert result['chatgptIndependentSlots'] == ([] if custom else ['omni', 'tts', 'image'])
+    assert 'private-before-subscription' not in json.dumps(result)
+    assert 'chatgptSubscription' not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('slot', ['image', 'omni', 'tts'])
+async def test_subscription_keeps_previously_enabled_independent_slots_editable(manager, routes, monkeypatch, slot):
+    route, core, store, client = routes
+    monkeypatch.setattr(core, '_auto_resolve_provider_urls_for_save', AsyncMock(return_value={}))
+    monkeypatch.setattr(core, 'ensure_default_yui_voice_for_free_api', AsyncMock())
+    config = {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': True}
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    changes = {'enableCustomApi': True, f'{slot}ModelProvider': 'custom',
+               f'{slot}ModelUrl': 'https://fixture.test/v1', f'{slot}ModelId': 'new-model',
+               f'{slot}ModelApiKey': 'new-key'}
+    result = await core.update_core_config(SimpleNamespace(json=AsyncMock(return_value=changes)))
+    assert result['success'], result
+    saved = manager.load_json_config('core_config.json')
+    assert all(saved[key] == value for key, value in changes.items())
+
+
+@pytest.mark.asyncio
+async def test_independent_image_configuration_works_after_subscription_restore(manager, routes, monkeypatch):
+    route, core, store, client = routes
+    monkeypatch.setattr(core, '_auto_resolve_provider_urls_for_save', AsyncMock(return_value={}))
+    monkeypatch.setattr(core, 'ensure_default_yui_voice_for_free_api', AsyncMock())
+    config = {'coreApi': 'qwen', 'assistApi': 'qwen', 'enableCustomApi': False}
+    enable(config, supported_slots(), 'model', revision(config, supported_slots()))
+    manager.save_json_config('core_config.json', config)
+    await route.chatgpt_subscription_update(route.SubscriptionRequest(enabled=False))
+    request = SimpleNamespace(json=AsyncMock(return_value={
+        'enableCustomApi': True, 'imageModelProvider': 'custom',
+        'imageModelUrl': 'https://fixture.test/v1', 'imageModelId': 'image-model',
+        'imageModelApiKey': 'image-key',
+    }))
+    result = await core.update_core_config(request)
+    assert result['success'], result
+    assert manager.get_model_api_config('image')['enabled']
+
+
 def test_locales_and_disclosure_contract():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     required = {'useSubscription', 'enabled', 'authorizationRequired', 'confirmEnable',
                 'confirmDisable', 'none', 'configurationChanged', 'signInRequired',
-                'noModels', 'accountChanged', 'managedSettings'}
+                'noModels', 'accountChanged', 'managedSettings', 'independentSettings'}
     for locale in ('en', 'zh-CN', 'zh-TW', 'ja', 'ko', 'es', 'pt', 'ru'):
-        messages = json.loads((root / 'static/locales' / f'{locale}.json').read_text())['api']['chatgpt']
+        messages = json.loads((root / 'static/locales' / f'{locale}.json').read_text(encoding='utf-8'))['api']['chatgpt']
         assert all(messages.get(key) for key in required)
         assert '{{slots}}' in messages['confirmEnable']
         assert '{{model}}' in messages['enabled']
-    template = (root / 'templates/api_key_settings.html').read_text()
+    template = (root / 'templates/api_key_settings.html').read_text(encoding='utf-8')
     assert template.index('id="key-book-section"') < template.index('id="chatgpt-settings"') < template.index('id="custom-api-section"')
     assert 'id="chatgpt-options" hidden' in template
     assert 'id="chatgpt-toggle-btn" aria-expanded="false"' in template

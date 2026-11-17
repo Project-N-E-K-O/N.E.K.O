@@ -263,7 +263,11 @@ class CredentialStore:
             ):
                 account.pop(key, None)
             if value["active"] == account_id:
-                value["active"] = None
+                value["active"] = next(
+                    (key for key, saved in value["accounts"].items()
+                     if key != account_id and saved.get("refresh_token")),
+                    None,
+                )
             self._write(value)
         return confirmed
 
