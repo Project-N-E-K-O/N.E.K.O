@@ -229,7 +229,7 @@ def sparse_accessors(data, *, count=2_000_000_000, copies=1, backed=False):
 
 
 @pytest.mark.parametrize("count,copies,backed,budget", [(2_000_000_000, 1, False, None),
-    (4, 2, False, 64), (4, 2, True, 112)])
+    (4, 2, False, 145), (4, 2, True, 193)])
 def test_vrm_sparse_allocations_are_bounded_individually_and_in_total(tmp_path, count, copies, backed, budget):
     """Count and stride bound actual zero-filled arrays and sparse buffer clones."""
     raw = vrm_bytes(change=lambda data: sparse_accessors(data, count=count, copies=copies, backed=backed))
@@ -241,7 +241,7 @@ def test_vrm_sparse_allocations_are_bounded_individually_and_in_total(tmp_path, 
 
 def test_vrm_zero_accessor_allocation_accepts_the_exact_budget(tmp_path):
     """The budget is a byte limit, not a rejection of legitimate zero-filled data."""
-    raw = vrm_bytes(change=lambda data: data.update(accessors=[{"componentType": 5126, "count": 1, "type": "MAT4"}]))
+    raw = vrm_bytes(change=lambda data: data.update(bufferViews=[], accessors=[{"componentType": 5126, "count": 1, "type": "MAT4"}]))
     path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
     validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=64))
 
@@ -455,3 +455,82 @@ def test_referenced_uppercase_animation_suffix_does_not_skip_structure_check(tmp
     files["Avatar.model3.json"] = json.dumps(model).encode()
     with pytest.raises(ModelFormatError):
         validate_live2d_bundle(make_native_bundle(tmp_path, files=files))
+
+
+def test_vrm_overlapping_buffer_views_cannot_multiply_decoded_memory(tmp_path):
+    """A small shared buffer is copied once per distinct view by the bundled loader."""
+    def graph(data):
+        raw = bytes(64 * 1024)
+        data['buffers'].append({'byteLength': len(raw), 'uri': 'data:application/octet-stream;base64,' + base64.b64encode(raw).decode()})
+        data['bufferViews'].extend({'buffer': 1, 'byteLength': len(raw)} for _ in range(4097))
+        data['accessors'] = [{'bufferView': i + 1, 'componentType': 5126, 'type': 'SCALAR', 'count': 1} for i in range(4097)]
+        data['meshes'] = [{'primitives': [{'attributes': {'_VIEW_' + str(i): i for i in range(4097)}}]}]
+        data['nodes'][0]['mesh'] = 0
+    raw = vrm_bytes(change=graph)
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
+    with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+        validate_vrm_bundle(path)
+
+
+def test_vrm_allows_overlapping_views_inside_the_copy_budget(tmp_path):
+    raw = vrm_bytes(change=lambda data: data['bufferViews'].extend([{'buffer': 0, 'byteLength': 4}] * 2))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
+    validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=12))
+
+
+@pytest.mark.parametrize('budget,accepted', [(67, False), (68, True)])
+def test_vrm_view_copies_and_zero_arrays_share_one_budget(tmp_path, budget, accepted):
+    raw = vrm_bytes(change=lambda data: data.update(accessors=[{'componentType': 5126, 'type': 'MAT4', 'count': 1}]))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
+    if accepted:
+        validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=budget))
+    else:
+        with pytest.raises(ModelFormatError, match='model_accessor_budget_exceeded'):
+            validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=budget))
+
+
+def vrm_animation_output(data, target, shape, component, normalized, count, keys, interpolation):
+    """Animation cardinality fixture with separately valid morph geometry."""
+    vrm_graph(data)
+    for index in (0, 1):
+        data['accessors'][index].pop('bufferView')
+    data['accessors'][0]['count'] = keys
+    data['accessors'][1].update(type=shape, componentType=component, normalized=normalized, count=count)
+    data['animations'][0]['samplers'][0]['interpolation'] = interpolation
+    data['animations'][0]['channels'][0]['target']['path'] = target
+    if target == 'weights':
+        data['accessors'].append({'componentType': 5126, 'count': 1, 'type': 'VEC3'})
+        data['meshes'] = [{'primitives': [{'attributes': {'POSITION': 3}, 'targets': [{'POSITION': 3}, {'POSITION': 3}]}]}]
+        data['nodes'][0]['mesh'] = 0
+
+
+@pytest.mark.parametrize('options', [
+    ('translation', 'SCALAR', 5126, False, 1, 1, 'LINEAR'),
+    ('scale', 'VEC4', 5126, False, 1, 1, 'LINEAR'),
+    ('rotation', 'VEC3', 5126, False, 1, 1, 'LINEAR'),
+    ('translation', 'VEC3', 5123, True, 1, 1, 'LINEAR'),
+    ('rotation', 'VEC4', 5123, False, 1, 1, 'LINEAR'),
+    ('weights', 'VEC3', 5126, False, 2, 1, 'LINEAR'),
+    ('translation', 'VEC3', 5126, False, 2, 1, 'LINEAR'),
+    ('translation', 'VEC3', 5126, False, 3, 1, 'CUBICSPLINE'),
+    ('translation', 'VEC3', 5126, False, 5, 2, 'CUBICSPLINE'),
+    ('weights', 'SCALAR', 5126, False, 1, 1, 'LINEAR'),
+])
+def test_vrm_rejects_animation_outputs_incompatible_with_their_target(tmp_path, options):
+    raw = vrm_bytes(change=lambda data: vrm_animation_output(data, *options))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
+    with pytest.raises(ModelFormatError):
+        validate_vrm_bundle(path)
+
+
+@pytest.mark.parametrize('options', [
+    ('translation', 'VEC3', 5126, False, 1, 1, 'LINEAR'),
+    ('rotation', 'VEC4', 5126, False, 1, 1, 'STEP'),
+    ('rotation', 'VEC4', 5123, True, 1, 1, 'LINEAR'),
+    ('weights', 'SCALAR', 5121, True, 2, 1, 'LINEAR'),
+    ('translation', 'VEC3', 5126, False, 6, 2, 'CUBICSPLINE'),
+])
+def test_vrm_accepts_compatible_animation_outputs_and_normalized_rotations(tmp_path, options):
+    raw = vrm_bytes(change=lambda data: vrm_animation_output(data, *options))
+    path = make_native_bundle(tmp_path, kind='vrm', entry='Avatar.vrm', files={'Avatar.vrm': raw})
+    validate_vrm_bundle(path)
