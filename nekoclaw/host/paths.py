@@ -117,12 +117,15 @@ class SpacePaths:
         ├─ AGENTS.md             rules for every task agent, written by the user
         ├─ MEMORY.md             the index: one line per entry
         ├─ memory/*.md           entries that hold for every project
+        ├─ notes.json            notes that are not in effect yet, and what the
+        │                        user removed (so it is not kept again)
         ├─ state.json            when the space was last tidied
         ├─ projects/<project>/
         │   ├─ project.json      name, description, working directory, dates
         │   ├─ AGENTS.md         the project's own rules, written by the user
         │   ├─ MEMORY.md         the project's index
         │   ├─ memory/*.md       the project's entries
+        │   ├─ notes.json        as above, for the project
         │   └─ reviews/<commission id>.md
         └─ archive/<year>/<project>/
                                  a project nothing was commissioned for in a
@@ -138,6 +141,7 @@ class SpacePaths:
     REVIEWS_DIR = "reviews"
     PROJECT_FILE = "project.json"
     SUMMARY_NAME = "SUMMARY.md"
+    NOTES_FILE = "notes.json"
 
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -169,6 +173,10 @@ class SpacePaths:
 
     def memory_dir(self, project: str | None = None) -> Path:
         return self.scope_dir(project) / self.MEMORY_DIR
+
+    def notes_file(self, project: str | None = None) -> Path:
+        """Return where the notes that are not entries are kept: the ones not in effect yet, and the removed."""
+        return self.scope_dir(project) / self.NOTES_FILE
 
     def reviews_dir(self, project: str) -> Path:
         return self.project_dir(project) / self.REVIEWS_DIR

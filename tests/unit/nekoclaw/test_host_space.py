@@ -76,8 +76,21 @@ async def _waiting_to_write(space: TaskAgentSpace, notes: int) -> None:
     raise AssertionError(f"{notes} writes were to wait for the lock of the space")
 
 
-def _lesson(title: str, content: str, category: str = "lesson", scope: str = "project") -> dict[str, Any]:
-    return {"title": title, "content": content, "category": category, "scope": scope}
+def _lesson(
+    title: str,
+    content: str,
+    category: str = "lesson",
+    scope: str = "project",
+    confidence: str | None = "verified",
+    evidence: list[str] | None = None,
+) -> dict[str, Any]:
+    """Return what ``note_lesson`` hands over. Verified unless said otherwise: such a note takes effect at once."""
+    lesson: dict[str, Any] = {"title": title, "content": content, "category": category, "scope": scope}
+    if confidence is not None:
+        lesson["confidence"] = confidence
+    if evidence is not None:
+        lesson["evidence"] = evidence
+    return lesson
 
 
 # ---------------------------------------------------------------------------
@@ -1926,7 +1939,7 @@ async def test_a_text_that_only_occurs_inside_what_an_entry_says_is_still_added(
 
     assert first == "kept in project _daily as running-the-tests.md"
     assert second == "added to running-the-tests.md in project _daily"
-    assert third == fourth == "already in running-the-tests.md in project _daily, word for word; nothing was added"
+    assert third == fourth == "already in running-the-tests.md in project _daily; nothing was added"
     entry = await space.read_entry("running-the-tests", DEFAULT_PROJECT)
     assert entry.content.count("Use pytest-xdist for parallel runs.") == 1
     assert entry.content.rstrip().endswith("Use pytest") and entry.content.count("## ") == 1
@@ -2097,7 +2110,7 @@ async def test_a_note_with_a_dated_heading_of_its_own_is_kept_once(space, root, 
     third = await space.submit(_commission(id="c-5"), _lesson("The change", note))
 
     assert first == "kept in project _daily as the-change.md"
-    assert second == again == third == "already in the-change.md in project _daily, word for word; nothing was added"
+    assert second == again == third == "already in the-change.md in project _daily; nothing was added"
     entry = await space.read_entry("the-change", DEFAULT_PROJECT)
     assert entry.content.count("Before the change.") == 1 and entry.content.count("A later note.") == 1
     assert entry.sources == ("c-1", "c-2", "c-3", "c-4", "c-5")
@@ -2145,7 +2158,7 @@ async def test_a_text_that_is_the_end_of_a_note_with_a_dated_heading_is_another_
     fourth = await space.submit(_commission(id="c-4"), _lesson("Running the tests", note))
 
     assert second == "added to running-the-tests.md in project _daily"
-    assert third == fourth == "already in running-the-tests.md in project _daily, word for word; nothing was added"
+    assert third == fourth == "already in running-the-tests.md in project _daily; nothing was added"
     entry = await space.read_entry("running-the-tests", DEFAULT_PROJECT)
     assert entry.content.count("Use pytest") == 2 and entry.content.count("Setup") == 1
 
@@ -2173,7 +2186,7 @@ async def test_an_entry_written_by_hand_has_a_text_already_only_when_that_is_all
     same = await space.submit(_commission(id="c-1"), _lesson("stack", "It uses Flask."))
     other = await space.submit(_commission(id="c-2"), _lesson("stack", "It uses"))
 
-    assert same == "already in stack.md in project _daily, word for word; nothing was added"
+    assert same == "already in stack.md in project _daily; nothing was added"
     assert other == "added to stack.md in project _daily"
     assert (directory / "stack.md").read_text(encoding="utf-8").count("It uses") == 2
 
@@ -2195,7 +2208,7 @@ async def test_a_text_an_entry_was_given_in_the_console_is_not_added_when_it_is_
     # What it said before it was changed is not what it says: filed again, it is added.
     before = await space.submit(_commission(id="c-5"), _lesson("Stack", "It uses Flask."))
 
-    already = "already in stack.md in project _daily, word for word; nothing was added"
+    already = "already in stack.md in project _daily; nothing was added"
     assert (same, added, again) == (already, "added to stack.md in project _daily", already)
     assert before == "added to stack.md in project _daily"
     content = (await space.read_entry("stack", DEFAULT_PROJECT)).content
@@ -2214,7 +2227,7 @@ async def test_a_text_that_replaced_an_entrys_in_an_editor_is_not_added_when_it_
     added = await space.submit(_commission(id="c-3"), _lesson("Stack", "And SQLite."))
     again = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
 
-    already = "already in stack.md in project _daily, word for word; nothing was added"
+    already = "already in stack.md in project _daily; nothing was added"
     assert (same, added, again) == (already, "added to stack.md in project _daily", already)
     content = (await space.read_entry("stack", DEFAULT_PROJECT)).content
     assert content.count("It uses FastAPI now.") == 1 and content.count("And SQLite.") == 1
@@ -2243,7 +2256,7 @@ async def test_a_text_found_inside_another_sentence_is_not_the_text_that_was_fil
     once_more = await space.submit(_commission(id="c-4"), _lesson("Running the tests", "Use pytest"))
 
     assert again == "added to running-the-tests.md in project _daily"
-    assert once_more == "already in running-the-tests.md in project _daily, word for word; nothing was added"
+    assert once_more == "already in running-the-tests.md in project _daily; nothing was added"
 
 
 @pytest.mark.parametrize("saved", ["an entry is changed", "a file is added", "a file is removed"])
@@ -2342,7 +2355,7 @@ async def test_a_text_is_added_once_to_an_entry_the_user_wrote_without_front_mat
         replies.append(await space.submit(_commission(id=f"c-{number}"), _lesson("Use pytest", "run tests with -n 4")))
 
     assert replies[0] == "added to use-pytest.md in project _daily"
-    assert replies[1] == replies[2] == "already in use-pytest.md in project _daily, word for word; nothing was added"
+    assert replies[1] == replies[2] == "already in use-pytest.md in project _daily; nothing was added"
     text = path.read_text(encoding="utf-8")
     assert text.count("run tests with -n 4") == 1 and text.startswith("first note by hand")
     # What the user wrote is there already too; a part of a line of it is not.
@@ -2361,7 +2374,7 @@ async def test_what_was_filed_is_still_known_after_the_entry_was_changed_in_the_
     await space.edit_entry("notes", DEFAULT_PROJECT, content=whole.replace("A note", "A note fixed"))
     again = await space.submit(_commission(id="c-3"), _lesson("Notes", "B note"))
 
-    assert again == "already in notes.md in project _daily, word for word; nothing was added"
+    assert again == "already in notes.md in project _daily; nothing was added"
     assert (await space.read_entry("notes", DEFAULT_PROJECT)).content.count("B note") == 1
     # What was corrected away is added when it is filed again.
     assert "added to" in await space.submit(_commission(id="c-4"), _lesson("Notes", "A note"))
@@ -2923,7 +2936,7 @@ async def test_a_note_with_a_dated_heading_is_added_once_to_an_entry_written_by_
         replies.append(await space.submit(_commission(id=f"c-{number}"), _lesson("stack", note)))
 
     assert replies[0] == "added to stack.md in project _daily"
-    assert replies[1] == replies[2] == "already in stack.md in project _daily, word for word; nothing was added"
+    assert replies[1] == replies[2] == "already in stack.md in project _daily; nothing was added"
     assert path.read_text(encoding="utf-8").count("Before the change.") == 1
 
 
@@ -3230,7 +3243,8 @@ def test_a_text_is_looked_through_no_longer_once_all_its_marks_were_found(monkey
         return sha256(*args, **kwargs)
 
     monkeypatch.setattr(hashlib, "sha256", counted)
-    wanted = [sha256(b"one").hexdigest()[:12], sha256(b"two\n\nthree").hexdigest()[:12]]
+    # A mark is of the words alone: neither the blank line between two parts nor any other white space is in it.
+    wanted = [sha256(b"one").hexdigest()[:12], sha256(b"twothree").hexdigest()[:12]]
 
     assert _standing_marks(body, wanted) == set(wanted)
     # Both found by what begins at the first two parts: the other two are not begun.
@@ -3250,7 +3264,7 @@ async def test_a_note_that_still_stands_with_more_written_around_it_in_the_conso
 
     reply = await space.submit(_commission(id="c-2"), _lesson("Notes", "A note"))
 
-    assert reply == "already in notes.md in project _daily, word for word; nothing was added"
+    assert reply == "already in notes.md in project _daily; nothing was added"
     assert (await space.read_entry("notes", DEFAULT_PROJECT)).content.count("A note") == 1
     # Made part of a sentence, it is no longer what was filed: its mark goes, and it is added.
     await space.edit_entry("notes", DEFAULT_PROJECT, content="Introduction: A note, and more")
@@ -3268,11 +3282,11 @@ async def test_a_note_of_several_parts_still_stands_in_what_the_console_gives_wi
 
     reply = await space.submit(_commission(id="c-2"), _lesson("Notes", note))
 
-    assert reply == "already in notes.md in project _daily, word for word; nothing was added"
+    assert reply == "already in notes.md in project _daily; nothing was added"
     assert (await space.read_entry("notes", DEFAULT_PROJECT)).content == given
     # And the text as a whole is known as well, as it was given.
     reply = await space.submit(_commission(id="c-3"), _lesson("Notes", given.replace("\n", "\r\n")))
-    assert reply == "already in notes.md in project _daily, word for word; nothing was added"
+    assert reply == "already in notes.md in project _daily; nothing was added"
 
 
 async def test_a_text_is_told_again_whatever_its_line_ends_are(space, root, clock):
@@ -3286,7 +3300,7 @@ async def test_a_text_is_told_again_whatever_its_line_ends_are(space, root, cloc
 
     for text in (note, note.replace("\r\n", "\n"), note.replace("\r\n", "\r")):
         reply = await space.submit(_commission(id="c-3"), _lesson("Checks", text))
-        assert reply == "already in checks.md in project _daily, word for word; nothing was added"
+        assert reply == "already in checks.md in project _daily; nothing was added"
 
     assert (await space.read_entry("checks", DEFAULT_PROJECT)).content.count("Then lint.") == 1
 
@@ -3363,7 +3377,7 @@ async def test_an_entry_written_by_hand_is_never_given_marks_and_each_part_of_it
         clock.now += 86400
         replies.append(await space.submit(_commission(id=f"c-{number}"), _lesson("Stack", text)))
 
-    there = "already in stack.md in project _daily, word for word; nothing was added"
+    there = "already in stack.md in project _daily; nothing was added"
     expected = ["added to stack.md in project _daily" if text == "New." and number == 0 else there for number, text in enumerate(order)]
     assert replies == expected
     text = path.read_text(encoding="utf-8")
@@ -3386,7 +3400,7 @@ async def test_an_entry_written_by_hand_is_not_given_marks_when_its_text_is_repl
     # Given the front matter an entry has, and no marks.
     assert text.startswith("---\n") and "texts:" not in text
     clock.now += 86400
-    there = "already in stack.md in project _daily, word for word; nothing was added"
+    there = "already in stack.md in project _daily; nothing was added"
     assert await space.submit(_commission(id="c-1"), _lesson("stack", "P2")) == there
     assert await space.submit(_commission(id="c-2"), _lesson("stack", "P1")) == there
     assert (await space.read_entry("stack", DEFAULT_PROJECT)).content == "P1\n\nP2"
@@ -3874,7 +3888,8 @@ async def test_the_count_of_notes_is_kept_for_so_many_commissions(space, monkeyp
 
     monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
     for number in range(3):
-        await space.submit(_commission(id=f"c-{number}"), _lesson(f"Topic {number} t{number}", "Text."))
+        # Each its own text: the same text filed under another title is the same note, and adds nothing.
+        await space.submit(_commission(id=f"c-{number}"), _lesson(f"Topic {number} t{number}", f"Text {number}."))
 
     # The oldest went.
     assert list(space._added_by) == ["c-1", "c-2"]
@@ -3942,8 +3957,8 @@ async def test_what_its_task_agents_filed_goes_with_a_commission_to_its_project(
     await space.submit(_commission(id="c-1"), _lesson("By both", "First."))
     await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("By both", "Second."))
     await space.submit(_commission(id="c-9"), _lesson("Of another", "Filed by another commission."))
-    await space.submit(_commission(id="c-9"), _lesson("Shared", "First."))
-    await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("Shared", "Second."))
+    await space.submit(_commission(id="c-9"), _lesson("Shared", "First of the shared."))
+    await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("Shared", "Second of the shared."))
     # One the user wrote by hand: no commission filed it.
     (root / "projects" / DEFAULT_PROJECT / "memory" / "by-hand.md").write_text("Written by hand.\n", encoding="utf-8")
     await space.touch_project("Budget app")
@@ -4370,7 +4385,7 @@ async def test_a_note_whose_index_could_not_be_written_is_kept_and_counted(root,
         f"kept in project _daily as first.md{unlisted}",
         f"added to first.md in project _daily{unlisted}",
         # Told of the index as well: the record of the note says the same.
-        f"already in first.md in project _daily, word for word; nothing was added{unlisted}",
+        f"already in first.md in project _daily; nothing was added{unlisted}",
         f"kept in project _daily as second.md{unlisted}",
     ]
     # Each of the three that were added is a file, or in one, and used a place: the fourth has none.
@@ -4392,7 +4407,7 @@ async def test_a_note_whose_index_could_not_be_written_is_kept_and_counted(root,
     # The index can be read again. The next time something is filed about the entry, its line is put there.
     index.write_text("- a line of the user\n", encoding="utf-8")
     again = await space.submit(_commission(id="c-2"), _lesson("Second", "Two."))
-    assert again == "already in second.md in project _daily, word for word; nothing was added"
+    assert again == "already in second.md in project _daily; nothing was added"
     assert index.read_text(encoding="utf-8").split("\n")[:2] == ["- [Second](memory/second.md) — Two.", "- a line of the user"]
     assert ledger.rows[-1][2].get("listed") is None
 

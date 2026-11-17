@@ -221,6 +221,46 @@ SPACE_SAME_TOPIC_SIMILARITY = 0.6
 to be about the topic of an existing one, and is added to it instead of
 becoming a file of its own."""
 
+SPACE_EVIDENCE_MAX_PATHS = 5
+"""Most files one note may name as its evidence; the rest are not looked at.
+An entry several notes added to keeps the newest so many."""
+
+SPACE_EVIDENCE_PATH_MAX_TOKENS = 80
+"""A path longer than this is not taken for evidence. A long absolute path
+on Windows is some forty tokens."""
+
+SPACE_SEEN_TO_TAKE_EFFECT = 2
+"""How many commissions must have filed a note for it to take effect when
+nothing else speaks for it: one that is only inferred, or observed with no
+file that exists. A commission and the task agents it started are one."""
+
+SPACE_SEEN_BY_KEPT = 16
+"""How many of the commissions that filed an entry are remembered, so that
+none of them is counted twice. One that filed it before so many others did
+could be counted again; the count itself is kept whole."""
+
+SPACE_HELD_MAX_NOTES = 30
+"""Most notes that are not in effect yet which are kept for one project, or
+for the space as a whole, while they wait to be seen again. With more, the
+ones that waited longest are dropped."""
+
+SPACE_HELD_KEPT_SECONDS = 90 * 24 * 3600.0
+"""How long a note that is not in effect waits to be seen again before a
+round of tidying drops it."""
+
+SPACE_REMOVED_MAX_RECORDS = 1000
+"""Most entries the user removed that are remembered for one project, or for
+the space as a whole, so that the same note is not kept again."""
+
+SPACE_EVIDENCE_ENTRIES_PER_UPKEEP = 500
+"""Most entries one round of tidying looks at for whether the files they
+rest on are still there. With more, the next round goes on where this one
+stopped."""
+
+SPACE_EVIDENCE_NAMED_MAX_PATHS = 20
+"""Most paths that are looked for in the words of an entry a review or an
+archive summary made, to find the files it rests on."""
+
 SPACE_PROJECT_NAME_MAX_TOKENS = 12
 SPACE_PROJECT_DESCRIPTION_MAX_TOKENS = 40
 """Caps on a project's name and on its one-line description."""

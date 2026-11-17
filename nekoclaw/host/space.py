@@ -32,6 +32,18 @@ There is one such set for the space as a whole and one for every project;
 was commissioned for in a while is moved to ``archive/`` whole, and is moved
 back when a commission names it again.
 
+An entry a task agent or a review filed says how it is known (``verified``,
+``observed`` or ``inferred``), which files it rests on, and how many
+commissions have filed it. From these the host tells, without asking a
+model, whether a note takes effect: one that was verified does; one that was
+observed does when a file it names exists; one that was only inferred does
+once a second commission files the same. Until then it is no entry: it waits
+in ``notes.json``, in no index. An entry has one of three states. It is in
+effect (a line of its index points at it); or expired, once none of the
+files it rests on exists any more (the file stays, the line goes); or the
+user removed it, and then ``notes.json`` remembers it so that the same note
+is not kept again.
+
 Only the host writes here. Every write goes through one lock and replaces the
 file atomically, so two task agents finishing at the same time cannot lose
 each other's lines. What the user edited by hand is kept: an index is changed
@@ -53,6 +65,7 @@ import os
 import re
 import shutil
 import time
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -69,6 +82,15 @@ T = TypeVar("T")
 ENTRY_TYPES: tuple[str, ...] = ("lesson", "reflection", "reference", "progress")
 # What ``note_lesson`` calls the kinds, as the tool's schema has them.
 _DEFAULT_TYPE = "lesson"
+# How a note is known, the strongest first: checked by hand, seen to happen,
+# concluded. What ``note_lesson`` calls them, as the tool's schema has them.
+CONFIDENCES: tuple[str, ...] = ("verified", "observed", "inferred")
+VERIFIED, OBSERVED, INFERRED = CONFIDENCES
+# The states an entry that is a file can be in. The third state there is,
+# removed by the user, is one of no file: a record in ``notes.json``.
+ENTRY_ACTIVE = "active"
+ENTRY_EXPIRED = "expired"
+_NOTES_FILE_VERSION = 1
 PROJECT_ACTIVE = "active"
 PROJECT_ARCHIVED = "archived"
 _PROJECT_FILE_VERSION = 1
@@ -124,10 +146,24 @@ class Entry:
     sources: tuple[str, ...] = ()
     # The text below the front matter; empty in a listing.
     content: str = ""
+    # How it is known, one of ``CONFIDENCES``; empty for an entry nobody
+    # said that of (one the user wrote, one filed from the console).
+    confidence: str = ""
+    # The files it rests on, as they were found when it was filed.
+    evidence: tuple[str, ...] = ()
+    # How many commissions have filed it.
+    seen: int = 1
+    # ``ENTRY_ACTIVE`` or ``ENTRY_EXPIRED``.
+    status: str = ENTRY_ACTIVE
+    # The commissions counted in ``seen``, the last of them; each is the
+    # commission she gave, which stands for the task agents it started too.
+    seen_by: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data["sources"] = list(self.sources)
+        data["evidence"] = list(self.evidence)
+        data["seen_by"] = list(self.seen_by)
         return data
 
 
@@ -218,6 +254,50 @@ class _Document:
                 self.meta[index] = (key, value)
                 return
         self.meta.append((key, value))
+
+    def drop(self, key: str) -> None:
+        self.meta = [(name, value) for name, value in self.meta if name != key]
+
+
+@dataclass(frozen=True, slots=True)
+class _Known:
+    """What is known of a note beyond its words, as an entry keeps it."""
+
+    # One of ``CONFIDENCES``.
+    confidence: str
+    # Files that were found to exist when it was filed.
+    evidence: tuple[str, ...] = ()
+    # The commission that is counted as having seen it: the one she gave.
+    observer: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Note:
+    """A note that is to be judged: by a task agent, or made by a review or a summary."""
+
+    title: str
+    content: str
+    kind: str
+    known: _Known
+    description: str = ""
+    # The commission it comes from.
+    source: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Taken:
+    """What became of a note that was judged."""
+
+    # The entry it is in; None for one that is not in effect yet.
+    entry: Entry | None
+    # ``_CREATED``, ``_ADDED``, ``_THERE`` or ``_HELD``.
+    how: str
+    # Whether this filing was counted as one more commission that has seen it.
+    counted: bool = False
+    # Whether the entry had expired and is in effect again.
+    revived: bool = False
+    # For one that is not in effect: how it was filed.
+    confidence: str = ""
 
 
 def _one_line(text: Any) -> str:
@@ -331,6 +411,8 @@ def _entry_type(value: Any) -> str:
 
 # What became of an entry that was filed: a new file, added to one, or there already.
 _CREATED, _ADDED, _THERE = "created", "added", "there"
+# What became of a note that does not take effect yet: no entry, it waits in ``notes.json``.
+_HELD = "held"
 
 # What the target of a link is made of when it can be written as it is:
 # letters and digits of any script, and the few marks the paths here have.
@@ -350,9 +432,296 @@ def _link(target: str) -> str:
     return target if _PLAIN_TARGET.fullmatch(target) else f"<{target}>"
 
 
+def _normal(text: Any) -> str:
+    """Return a text as two filings of it are compared: without white space, punctuation and case.
+
+    Wide and narrow forms of a character are one. What carries the
+    meaning of a comparison or a command is kept (``<``, ``>``, ``=``,
+    ``+``, ``|``, ``$`` are symbols, not punctuation): ``>= 3.10`` and
+    ``<= 3.10`` are two notes. The backtick is a symbol too and goes with
+    the punctuation, since all it does is mark code.
+    """
+    folded = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    return "".join(char for char in folded if char != "`" and unicodedata.category(char)[0] not in "PZC")
+
+
 def _digest(content: str) -> str:
-    """Return a short mark of a text that was filed, to tell later that the same text is filed again."""
-    return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()[:12]
+    """Return a short mark of a text that was filed, to tell later that the same text is filed again.
+
+    Of the text as ``_normal`` leaves it: the same words spaced, punctuated
+    or capitalised another way are the same text.
+    """
+    return hashlib.sha256(_normal(content).encode("utf-8")).hexdigest()[:12]
+
+
+def _confidence(value: Any) -> str:
+    """Return how a note is known as one of ``CONFIDENCES``, or empty for anything else."""
+    known = str(value or "").strip().lower()
+    return known if known in CONFIDENCES else ""
+
+
+def _stronger(one: str, other: str) -> str:
+    """Return the stronger of two ways a note is known; one that is not said is the weakest."""
+    ranked = [item for item in CONFIDENCES if item in (one, other)]
+    return ranked[0] if ranked else ""
+
+
+def _evidence_in(document: _Document) -> list[str]:
+    """Return the files an entry rests on, as its front matter lists them."""
+    raw = document.get("evidence")
+    if not raw:
+        return []
+    try:
+        listed = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(listed, list):
+        return []
+    return [item for item in listed if isinstance(item, str) and item]
+
+
+def _seen_in(document: _Document) -> int:
+    """Return how many commissions have filed an entry; one when it does not say."""
+    try:
+        return max(int(document.get("seen") or 1), 1)
+    except ValueError:
+        return 1
+
+
+def _joined(first: Iterable[Any], second: Iterable[Any], most: int) -> list[str]:
+    """Return two lists of files as one, each file once, the newest ``most`` of them.
+
+    The same file written with another case is one file where the file
+    system reads names so.
+    """
+    paths: list[str] = []
+    known: set[str] = set()
+    for item in [*first, *second]:
+        if not isinstance(item, str) or not item:
+            continue
+        key = os.path.normcase(item)
+        if key not in known:
+            known.add(key)
+            paths.append(item)
+    return paths[-most:] if most > 0 else []
+
+
+def _lexically_inside(path: str, base: str) -> bool:
+    """Whether a path lies in a directory, going by how the two are written. Reads nothing."""
+    target, root = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(base))
+    try:
+        return os.path.commonpath([target, root]) == root
+    except ValueError:
+        # Different drives on Windows.
+        return False
+
+
+def evidence_of(raw: Any, bases: Iterable[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Return the files among ``raw`` that count as evidence, and the others with why they do not.
+
+    A path counts when it names a file that exists inside one of ``bases``
+    (the working directory of the commission, that of its project), links
+    resolved. A relative one is read against each base in turn. A path
+    that leads out of them all is not looked at, so that nothing is told
+    about a file a task agent would have to ask before it may read; it is
+    said to be outside. Blocking: it reads the file system.
+    """
+    from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_EVIDENCE_PATH_MAX_TOKENS
+    from nekoclaw.runtime.permissions import is_inside
+    from utils.tokenize import count_tokens
+
+    roots = [str(base) for base in bases if base]
+    counted: list[str] = []
+    others: list[tuple[str, str]] = []
+    items = raw if isinstance(raw, (list, tuple)) else []
+    for item in items[:SPACE_EVIDENCE_MAX_PATHS]:
+        text = _one_line(item) if isinstance(item, str) else ""
+        if not text:
+            continue
+        if "\x00" in text or count_tokens(text) > SPACE_EVIDENCE_PATH_MAX_TOKENS:
+            others.append((_cut(text, 24), "not a usable path"))
+            continue
+        found: str | None = None
+        within = False
+        for root in roots:
+            candidate = os.path.normpath(os.path.join(root, text))
+            if not _lexically_inside(candidate, root):
+                continue
+            try:
+                if not is_inside(Path(candidate), Path(root)):
+                    # A link in it leads out of the directory.
+                    continue
+                within = True
+                if os.path.isfile(candidate):
+                    found = Path(candidate).as_posix()
+                    break
+            except (OSError, ValueError):
+                continue
+        if found is not None:
+            counted.append(found)
+        else:
+            others.append((text, "not found" if within else "outside the working directory"))
+    return _joined(counted, (), SPACE_EVIDENCE_MAX_PATHS), others
+
+
+# What ends a word in a sentence, for finding the paths it names: white
+# space, quotation marks, brackets, and the punctuation of Chinese.
+_WORD_BREAKS = re.compile(r"[\s`'\"“”‘’<>()\[\]{}，。；：、！？（）「」『』《》]+")
+# A run of what a path is written with in ASCII, wherever it stands: text
+# in Chinese or Japanese puts no space around a path.
+_PLAIN_PATH = re.compile(r"[A-Za-z0-9_.~\-/\\]+")
+_WEB_ADDRESS = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
+_HAS_EXTENSION = re.compile(r"[^./\\]\.[A-Za-z0-9_]{1,8}$")
+
+
+def paths_named_in(text: Any) -> list[str]:
+    """Return what in a text may be the path of a file: words with a path separator in them, or a file extension.
+
+    For an entry a model made from an account of a commission, which has
+    no list of files of its own: the files it rests on are the ones its
+    words name. Whether such a word is a file is for ``evidence_of`` to
+    tell; this only looks at how it is written.
+    """
+    from config.nekoclaw_settings import SPACE_EVIDENCE_NAMED_MAX_PATHS
+
+    # An address of the web is no file, whatever it ends in.
+    said = _WEB_ADDRESS.sub(" ", str(text or ""))
+    found: list[str] = []
+    for word in [*_WORD_BREAKS.split(said), *_PLAIN_PATH.findall(said)]:
+        word = word.rstrip(".,;:!?…")
+        if len(word) < 3 or word in found:
+            continue
+        if "/" not in word and "\\" not in word and _HAS_EXTENSION.search(word) is None:
+            continue
+        found.append(word)
+        if len(found) >= SPACE_EVIDENCE_NAMED_MAX_PATHS:
+            break
+    return found
+
+
+def _stands(path: str) -> bool | None:
+    """Whether a file an entry rests on is there. None when that cannot be told.
+
+    It cannot be told while the drive or the share it is on is not there
+    (a disk that is unplugged, a network that is down), or while the file
+    system refuses to say: an entry does not expire over that.
+    """
+    import stat
+
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        anchor = Path(path).anchor
+        if anchor and not os.path.exists(anchor):
+            return None
+        return False
+    except (OSError, ValueError):
+        return None
+
+
+def _gone(evidence: Iterable[str]) -> bool | None:
+    """Whether every file an entry rests on is gone. None when that cannot be told.
+
+    False as soon as one of them is there. None when none is seen to be
+    there and one of them cannot be looked at.
+    """
+    unknown = False
+    for path in evidence:
+        there = _stands(path)
+        if there:
+            return False
+        if there is None:
+            unknown = True
+    return None if unknown else True
+
+
+def _notes_of(text: str) -> dict[str, Any]:
+    """Return what a ``notes.json`` holds. Raises OSError for one that is not what this module writes.
+
+    Taken for empty, such a file would be written over with the little
+    that is being added to it.
+    """
+    if not text.strip():
+        return {"version": _NOTES_FILE_VERSION, "held": [], "removed": []}
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise OSError("notes.json cannot be read; it is left as it is") from exc
+    if not isinstance(data, dict) or not all(isinstance(data.get(key, []), list) for key in ("held", "removed")):
+        raise OSError("notes.json is not what the host writes; it is left as it is")
+    return {
+        **data,
+        "version": _NOTES_FILE_VERSION,
+        "held": [item for item in data.get("held", []) if isinstance(item, dict) and isinstance(item.get("mark"), str)],
+        "removed": [item for item in data.get("removed", []) if isinstance(item, dict)],
+    }
+
+
+def _notes_text(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def _strings(value: Any) -> list[str]:
+    """Return the strings of a list read from a file that a person may have edited."""
+    return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
+
+
+def _uncounted(others: list[tuple[str, str]]) -> str:
+    """Return what a task agent is told about the files it named that do not count as evidence; empty when all do."""
+    if not others:
+        return ""
+    from config.prompts.prompts_nekoclaw_space import SPACE_EVIDENCE_NOT_COUNTED
+
+    return SPACE_EVIDENCE_NOT_COUNTED.format(paths=", ".join(f"{_cut(path, 40)} ({why})" for path, why in others))
+
+
+def _set_evidence(document: _Document, paths: list[str]) -> None:
+    """Write the files an entry rests on into its front matter: one line, as JSON (a path may hold a comma)."""
+    if paths:
+        document.set("evidence", json.dumps(paths, ensure_ascii=False))
+    else:
+        document.drop("evidence")
+
+
+def _keep_known(document: _Document, known: _Known | None) -> bool:
+    """Write into an entry what a filing adds to what is known of it. Returns whether anything changed.
+
+    Whatever is filed into an entry takes effect, so one that had expired
+    is in effect again; of the files it rested on, the ones that are gone
+    are no longer what it rests on, or it would expire at the next look.
+    The stronger way of knowing it is kept, the files are added to the
+    ones it has, and a commission that has not filed it before is counted.
+    """
+    from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_SEEN_BY_KEPT
+
+    changed = False
+    if document.get("status").strip().lower() == ENTRY_EXPIRED:
+        document.drop("status")
+        document.drop("expired")
+        _set_evidence(document, [path for path in _evidence_in(document) if _stands(path) is not False])
+        changed = True
+    if known is None:
+        return changed
+    confidence = _stronger(_confidence(document.get("confidence")), known.confidence)
+    if confidence and confidence != document.get("confidence"):
+        document.set("confidence", confidence)
+        changed = True
+    before = _evidence_in(document)
+    evidence = _joined(before, known.evidence, SPACE_EVIDENCE_MAX_PATHS)
+    if evidence != before:
+        _set_evidence(document, evidence)
+        changed = True
+    if known.observer:
+        # An entry that names nobody who has seen it was filed from the
+        # console, or before this was kept: the commissions it came from
+        # are the ones that have seen it.
+        seen_by = _listed(document, "seen_by") or _listed(document, "sources")
+        if known.observer not in seen_by:
+            seen = _seen_in(document) if document.get("seen") else max(len(seen_by), 1)
+            document.set("seen", str(seen + 1))
+            document.set("seen_by", ", ".join([*seen_by, known.observer][-SPACE_SEEN_BY_KEPT:]))
+            changed = True
+    return changed
 
 
 def _listed(document: _Document, key: str) -> list[str]:
@@ -429,20 +798,17 @@ def _standing_marks(body: str, marks: Iterable[str]) -> set[str] | None:
         for number, line in enumerate(lines)
         if line.strip() and (number + 1 == len(lines) or not lines[number + 1].strip())
     }
+    # Each line as ``_digest`` reads it: white space is no part of a mark, so
+    # the lines of a text, one after another, are the text.
+    plain = [_normal(line).encode("utf-8") for line in lines]
     found: set[str] = set()
     for first in firsts:
         if len(found) == len(wanted):
             break
-        # One pass for all that begins here, each as ``_digest`` would mark
-        # it: without the white space before it and after it.
+        # One pass for all that begins here, each as ``_digest`` would mark it.
         running = hashlib.sha256()
-        # The white space a line ends in: part of a text only when more follows.
-        held = ""
         for number in range(first, len(lines)):
-            line = lines[number].lstrip() if number == first else lines[number]
-            said = line.rstrip()
-            running.update((held + ("\n" if number > first else "") + said).encode("utf-8"))
-            held = line[len(said) :]
+            running.update(plain[number])
             if number in lasts:
                 mark = running.copy().hexdigest()[:12]
                 if mark in wanted:
@@ -451,9 +817,11 @@ def _standing_marks(body: str, marks: Iterable[str]) -> set[str] | None:
 
 
 def _said_already(document: _Document, content: str) -> bool:
-    """Whether an entry has ``content`` word for word, as what it said first or as one of its additions.
+    """Whether an entry has ``content``, as what it said first or as one of its additions.
 
-    Told by the marks the entry keeps of every text that was filed
+    The same words count as the same text however they are spaced,
+    punctuated and capitalised (``_normal``). Told by the marks the entry
+    keeps of every text that was filed
     (``texts`` in its front matter), not by where its dated headings are:
     a note can have such a heading inside it, and a shorter note can be
     the end of a longer one. The text must still be there as well, so one
@@ -468,15 +836,20 @@ def _said_already(document: _Document, content: str) -> bool:
     and with marks for some of them the others would count as never said
     from then on, and be added a second time.
     """
-    if document.body.strip() == content.strip():
+    if _normal(document.body) == _normal(content):
         return True
+    mark = _digest(content)
     kept = _listed(document, "texts")
-    if kept and _digest(content) not in kept:
+    if kept and mark not in kept:
         return False
     # An entry that keeps no marks (one written by hand) cannot say what it
     # was given: what stands in it by itself is taken to have been.
     # Still there as a text of its own, between blank lines or at an end of
     # the entry: found inside another sentence, it is not what was filed.
+    standing = _standing_marks(document.body, [mark])
+    if standing is not None:
+        return mark in standing
+    # Too long to look through part by part: looked for as it was written.
     alone = r"(?:\A|\n[ \t]*\n)" + re.escape(content.strip()) + r"(?:[ \t]*\n[ \t]*\n|\s*\Z)"
     return re.search(alone, document.body.strip()) is not None
 
@@ -522,6 +895,10 @@ _HOME_NAMES = (
 
 class SpaceError(RuntimeError):
     """Something asked of the space cannot be done: an unknown entry, an unusable name."""
+
+
+class NoteRemoved(SpaceError):
+    """A note is one the user removed from the space, and is not kept again."""
 
 
 class _NotAsWritten(OSError):
@@ -573,6 +950,9 @@ class TaskAgentSpace:
         # commissions are forgotten by when there are many.
         self._added_by: dict[str, int] = {}
         self._adding: dict[str, int] = {}
+        # How far the last look at what the entries rest on got, among
+        # all their files; the next one goes on from there.
+        self._evidence_looked_until = 0
 
     # -- plumbing ---------------------------------------------------------
 
@@ -834,17 +1214,25 @@ class TaskAgentSpace:
             modified = path.stat().st_mtime
         except OSError:
             modified = self._clock()
-        sources = tuple(_listed(document, "sources"))
+        return self._entry_of(document, path.stem, project, modified, with_content=with_content)
+
+    @staticmethod
+    def _entry_of(document: _Document, name: str, project: str | None, modified: float, *, with_content: bool) -> Entry:
         return Entry(
-            id=path.stem,
+            id=name,
             project=project,
-            title=document.get("name") or path.stem,
+            title=document.get("name") or name,
             description=document.get("description"),
             type=_entry_type(document.get("type")),
             created=document.get("created") or _date(modified),
             updated=document.get("updated") or _date(modified),
-            sources=sources,
+            sources=tuple(_listed(document, "sources")),
             content=document.body.strip() if with_content else "",
+            confidence=_confidence(document.get("confidence")),
+            evidence=tuple(_evidence_in(document)),
+            seen=_seen_in(document),
+            status=ENTRY_EXPIRED if document.get("status").strip().lower() == ENTRY_EXPIRED else ENTRY_ACTIVE,
+            seen_by=tuple(_listed(document, "seen_by")),
         )
 
     def _entries(self, directory: Path, project: str | None, *, with_content: bool = False) -> list[Entry]:
@@ -856,7 +1244,12 @@ class TaskAgentSpace:
         return [entry for entry in entries if entry is not None]
 
     def _same_topic(self, directory: Path, project: str | None, title: str) -> Entry | None:
-        """Return the entry of a directory that is about the topic of ``title``, if there is one."""
+        """Return the entry of a directory that is about the topic of ``title``, if there is one.
+
+        An entry that has expired is one only by its very title: what it
+        says rested on files that are gone, and a note that is merely
+        about something like it does not bring that back.
+        """
         from config.nekoclaw_settings import SPACE_SAME_TOPIC_SIMILARITY
         from nekoclaw.host.selection import similarity
 
@@ -865,10 +1258,43 @@ class TaskAgentSpace:
         for entry in self._entries(directory, project):
             if normalize_name(entry.title) == wanted:
                 return entry
+            if entry.status == ENTRY_EXPIRED:
+                continue
             score = similarity(entry.title, title)
             if score >= SPACE_SAME_TOPIC_SIMILARITY and (best is None or score > best[0]):
                 best = (score, entry)
         return best[1] if best is not None else None
+
+    def _same_note(self, directory: Path, project: str | None, title: str, content: str) -> tuple[Entry | None, bool]:
+        """Return the entry of a directory that is this very note, and whether it has its text.
+
+        It is the same note when the entry has the text (as ``_normal``
+        compares texts), or is called the same (as it compares titles):
+        two commissions that find the same thing do not write it in the
+        same words, but a task agent that adds to what is on file uses its
+        title. An entry that is merely about a similar topic is not the
+        same note; see ``_same_topic`` for that.
+        """
+        name = _normal(title)
+        called: Entry | None = None
+        try:
+            files = sorted(item for item in directory.iterdir() if item.suffix == ".md" and item.is_file())
+        except OSError:
+            return None, False
+        for path in files:
+            text = self._read_text(path)
+            if text is None:
+                continue
+            document = _parse_document(text)
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                modified = self._clock()
+            if _said_already(document, content):
+                return self._entry_of(document, path.stem, project, modified, with_content=False), True
+            if called is None and name and _normal(document.get("name") or path.stem) == name:
+                called = self._entry_of(document, path.stem, project, modified, with_content=False)
+        return called, False
 
     @staticmethod
     def _free_name(directory: Path, wanted: str) -> str:
@@ -887,19 +1313,29 @@ class TaskAgentSpace:
         kind: str,
         description: str = "",
         source: str | None = None,
+        into: Entry | None = None,
+        known: _Known | None = None,
     ) -> tuple[Entry, str]:
         """Keep one entry. Returns it and what became of it: a new file, added to one, or there already.
 
         An entry about the same topic is added to: it gets a section with
         today's date at its end, and what it said before stays. Only a
-        text that is there word for word, as what the entry said first or
-        as one of its additions, is not added again; one that merely
-        occurs inside a longer text is.
+        text that is there already (as ``_normal`` compares texts), as
+        what the entry said first or as one of its additions, is not added
+        again; one that merely occurs inside a longer text is.
+
+        This is for what takes effect; whether a note does is told before
+        (``_take_note``). ``into`` is the entry that was found to be the
+        same note, where one was; ``known`` is what is known of the note
+        beyond its words, None for one nobody judged (filed from the
+        console). An entry that had expired is in effect again once
+        something is filed into it.
         """
         from config.nekoclaw_settings import (
             SPACE_ENTRY_CONTENT_MAX_TOKENS,
             SPACE_ENTRY_DESCRIPTION_MAX_TOKENS,
             SPACE_ENTRY_TITLE_MAX_TOKENS,
+            SPACE_EVIDENCE_MAX_PATHS,
         )
 
         paths = self._paths()
@@ -911,7 +1347,7 @@ class TaskAgentSpace:
         description = _cut(_one_line(redact(description)) or _one_line(content), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS)
         directory = paths.memory_dir(project)
         today = _date(self._clock())
-        existing = self._same_topic(directory, project, title)
+        existing = into if into is not None else self._same_topic(directory, project, title)
         if existing is not None:
             path = directory / f"{existing.id}.md"
 
@@ -930,8 +1366,8 @@ class TaskAgentSpace:
                     return document.body if fresh else text
                 # Who filed it is noted even when the text is there already:
                 # an entry two commissions filed is not one commission's own.
-                known = _listed(document, "sources")
-                another = bool(source) and source not in known
+                filed_by = _listed(document, "sources")
+                another = bool(source) and source not in filed_by
                 # The text is in the entry now, added or there already, so
                 # its mark is kept: one that was put there in an editor has
                 # none yet, and would not be known again once the entry
@@ -939,14 +1375,18 @@ class TaskAgentSpace:
                 # ``_said_already``.
                 marks = _listed(document, "texts")
                 unmarked = bool(marks) and _digest(content) not in marks
-                if not fresh and not another and not unmarked:
+                # What is known of it beyond its words is kept on the same
+                # terms: only in an entry the host made. One the user wrote
+                # is theirs; it is given no evidence, no count and no state.
+                noted = bool(marks) and _keep_known(document, known)
+                if not fresh and not another and not unmarked and not noted:
                     return text
                 if fresh:
                     document.set("updated", today)
                 if unmarked:
                     document.set("texts", ", ".join([*marks, _digest(content)]))
                 if another:
-                    document.set("sources", ", ".join([*known, source]))
+                    document.set("sources", ", ".join([*filed_by, source]))
                 return _render_document(document)
 
             self._edit_text(path, add)
@@ -986,6 +1426,14 @@ class TaskAgentSpace:
             body=content,
             has_meta=True,
         )
+        evidence = list(known.evidence[-SPACE_EVIDENCE_MAX_PATHS:]) if known is not None else []
+        if known is not None and known.confidence:
+            document.set("confidence", known.confidence)
+        if evidence:
+            document.set("evidence", json.dumps(evidence, ensure_ascii=False))
+        if known is not None and known.observer:
+            document.set("seen", "1")
+            document.set("seen_by", known.observer)
         path = directory / f"{name}.md"
         landed = True
         try:
@@ -1019,18 +1467,275 @@ class TaskAgentSpace:
                 updated=today,
                 sources=(source,) if source else (),
                 content=content.strip(),
+                confidence=known.confidence if known is not None else "",
+                evidence=tuple(evidence),
+                seen_by=(known.observer,) if known is not None and known.observer else (),
             )
         if unlisted is not None:
             # The entry is a file by now, and is not taken away again.
             raise _LineNotAdded(entry, _CREATED) from unlisted
         return entry, _CREATED
 
+    # -- notes that are not entries ---------------------------------------
+
+    def _notes(self, path: Path) -> dict[str, Any]:
+        """Return what a ``notes.json`` holds; raises OSError when it is there and cannot be read."""
+        return _notes_of(self._text_to_change(path))
+
+    def _change_notes(self, path: Path, change: Callable[[dict[str, Any]], None]) -> None:
+        """Change a ``notes.json`` by a function of what it holds; one that changes nothing writes nothing."""
+
+        def edit(text: str) -> str:
+            data = _notes_of(text)
+            before = json.dumps(data, sort_keys=True, ensure_ascii=False)
+            change(data)
+            if json.dumps(data, sort_keys=True, ensure_ascii=False) == before:
+                return text
+            return _notes_text(data)
+
+        self._edit_text(path, edit)
+
+    def _hold(self, path: Path, note: _Note, mark: str) -> None:
+        """Keep a note that is not in effect yet, until it is seen again. Raises OSError when that cannot be written."""
+        from config.nekoclaw_settings import SPACE_HELD_MAX_NOTES
+
+        now = self._clock()
+        today = _date(now)
+
+        def change(data: dict[str, Any]) -> None:
+            held: list[dict[str, Any]] = data["held"]
+            item = next((kept for kept in held if kept.get("mark") == mark), None)
+            if item is None:
+                item = {
+                    "mark": mark,
+                    "title": note.title,
+                    "description": note.description,
+                    "type": _entry_type(note.kind),
+                    "content": note.content,
+                    "first": today,
+                }
+                held.append(item)
+            item["confidence"] = note.known.confidence
+            item["evidence"] = list(note.known.evidence)
+            item["seen_by"] = _strings(item.get("seen_by"))
+            if note.known.observer and note.known.observer not in item["seen_by"]:
+                item["seen_by"].append(note.known.observer)
+            item["sources"] = _strings(item.get("sources"))
+            if note.source and note.source not in item["sources"]:
+                item["sources"].append(note.source)
+            item["last"] = today
+            item["at"] = now
+            over = len(held) - SPACE_HELD_MAX_NOTES
+            if over > 0:
+                # The ones that waited longest go; never the one just filed.
+                waiting = sorted(
+                    (kept for kept in held if kept is not item),
+                    key=lambda kept: kept.get("at") if isinstance(kept.get("at"), (int, float)) else 0.0,
+                )
+                gone = {id(kept) for kept in waiting[:over]}
+                data["held"] = [kept for kept in held if id(kept) not in gone]
+
+        self._change_notes(path, change)
+
+    def _drop_held(self, path: Path, marks: Iterable[str]) -> None:
+        """Take notes that have become entries off the list of the ones that wait."""
+        gone = set(marks)
+        if not gone:
+            return
+
+        def change(data: dict[str, Any]) -> None:
+            data["held"] = [kept for kept in data["held"] if kept.get("mark") not in gone]
+
+        try:
+            self._change_notes(path, change)
+        except OSError:
+            # It stays on the list. That does no harm: filed again, it is
+            # found in its entry first.
+            logger.warning("a note that took effect could not be taken off the list of the ones that wait", exc_info=True)
+
+    def _bases(self, commission: Commission) -> list[str]:
+        """Return the directories in which a commission's evidence is looked for: where it works, where its project is."""
+        bases: list[str] = []
+        workdir = getattr(commission, "workdir", None)
+        if workdir:
+            bases.append(str(workdir))
+        name = getattr(commission, "project", None)
+        if name and name != DEFAULT_PROJECT:
+            try:
+                project = self._project_from(self._paths().project_dir(name))
+            except (OSError, ValueError):
+                project = None
+            if project is not None and project.workdir and project.workdir not in bases:
+                bases.append(project.workdir)
+        return bases
+
+    def _take_note(self, project: str | None, note: _Note) -> _Taken:
+        """Judge a note and keep it: as an entry when it takes effect, among the ones that wait when it does not.
+
+        No model is asked. A note takes effect when it was verified; when
+        it was observed and a file it names exists; or when as many
+        commissions as ``SPACE_SEEN_TO_TAKE_EFFECT`` have filed it, each
+        counted once with the task agents it started. It is the same note
+        as one on file when the texts are the same or the titles are (see
+        ``_same_note``). One the user removed is not kept again: raises
+        ``NoteRemoved``.
+
+        When a note that waited is seen again by another commission, what
+        waited becomes an entry and what was filed now is added to it.
+        """
+        from config.nekoclaw_settings import (
+            SPACE_ENTRY_CONTENT_MAX_TOKENS,
+            SPACE_ENTRY_TITLE_MAX_TOKENS,
+            SPACE_EVIDENCE_MAX_PATHS,
+            SPACE_SEEN_TO_TAKE_EFFECT,
+        )
+
+        paths = self._paths()
+        self._revive(project)
+        # As they are kept, so that what is compared is what is kept.
+        title = _cut(_one_line(redact(note.title)), SPACE_ENTRY_TITLE_MAX_TOKENS)
+        content = _cut(redact(note.content), SPACE_ENTRY_CONTENT_MAX_TOKENS)
+        if not title or not content:
+            raise SpaceError("an entry needs a title and a text")
+        mark, name = _digest(content), _normal(title)
+        notes_path = paths.notes_file(project)
+        record: dict[str, Any] | None
+        try:
+            record = self._notes(notes_path)
+        except OSError:
+            # Neither what waits nor what was removed can be told: a note
+            # that takes effect by itself is still kept.
+            logger.warning("the notes of the task agent space that are not entries cannot be read", exc_info=True)
+            record = None
+        for removed in record["removed"] if record is not None else ():
+            if mark in _strings(removed.get("marks")) or (name and _normal(removed.get("title")) == name):
+                raise NoteRemoved("the user removed this note from the space, and it is not kept again")
+        same, has_text = self._same_note(paths.memory_dir(project), project, title, content)
+        waiting = [
+            item
+            for item in (record["held"] if record is not None else ())
+            if item.get("mark") == mark or (name and _normal(item.get("title")) == name)
+        ]
+        own = next((item for item in waiting if item.get("mark") == mark), None)
+        observer = note.known.observer
+        if same is not None:
+            counted = bool(observer) and observer not in (same.seen_by or same.sources)
+            seen = same.seen + (1 if counted else 0)
+        else:
+            observers = {seen_by for item in waiting for seen_by in _strings(item.get("seen_by"))}
+            counted = bool(observer) and bool(observers) and observer not in observers
+            seen = max(len(observers | ({observer} if observer else set())), 1)
+        # What was said of the same text before counts with what is said now.
+        known = _Known(
+            confidence=_stronger(note.known.confidence, _confidence(own.get("confidence")) if own else ""),
+            evidence=tuple(
+                _joined(_strings(own.get("evidence")) if own else (), note.known.evidence, SPACE_EVIDENCE_MAX_PATHS)
+            ),
+            observer=observer,
+        )
+        note = replace(note, title=title, content=content, known=known)
+
+        if same is not None and has_text and same.status == ENTRY_ACTIVE:
+            # There already, and in effect: nothing is added but what is known of it.
+            try:
+                entry, _how = self._file_entry(
+                    project, title=title, content=content, kind=note.kind, source=note.source, into=same, known=known
+                )
+            finally:
+                if own is not None:
+                    self._drop_held(notes_path, [mark])
+            return _Taken(entry, _THERE, counted=entry.seen > same.seen)
+
+        in_effect = (
+            known.confidence == VERIFIED
+            or (known.confidence == OBSERVED and bool(known.evidence))
+            or seen >= SPACE_SEEN_TO_TAKE_EFFECT
+        )
+        if not in_effect:
+            if record is None:
+                raise OSError("notes.json cannot be read, so a note that is not in effect yet cannot be kept")
+            self._hold(notes_path, note, mark)
+            return _Taken(None, _HELD, confidence=known.confidence)
+
+        # In effect. What waited under this title and is now seen by another
+        # commission goes in first, as it was filed; then this note.
+        confirmed = [
+            item
+            for item in waiting
+            if item is not own and observer and observer not in _strings(item.get("seen_by"))
+        ]
+        target = same
+        created = False
+        unlisted: _LineNotAdded | None = None
+        entry: Entry | None = None
+        how = _THERE
+        filings: list[tuple[str, str, str, str, str | None, _Known]] = []
+        for item in [*confirmed, *([own] if own is not None else [])]:
+            sources = _strings(item.get("sources"))
+            for position, seen_by in enumerate(_strings(item.get("seen_by")) or [""]):
+                if item is own and seen_by == (observer or ""):
+                    # Counted by the filing that is made now.
+                    continue
+                filings.append(
+                    (
+                        str(item.get("title") or title),
+                        str(item.get("content") or ""),
+                        str(item.get("type") or ""),
+                        str(item.get("description") or ""),
+                        sources[min(position, len(sources) - 1)] if sources else None,
+                        _Known(
+                            confidence=_confidence(item.get("confidence")) or INFERRED,
+                            evidence=tuple(_strings(item.get("evidence"))),
+                            observer=seen_by or None,
+                        ),
+                    )
+                )
+        filings.append((title, content, note.kind, note.description, note.source, known))
+        for filed_title, filed_content, kind, description, source, filed_known in filings:
+            if not filed_content.strip():
+                continue
+            try:
+                entry, how = self._file_entry(
+                    project,
+                    title=filed_title,
+                    content=filed_content,
+                    kind=kind,
+                    description=description,
+                    source=source,
+                    into=target,
+                    known=filed_known,
+                )
+            except _LineNotAdded as exc:
+                # In its file all the same; the rest is still filed.
+                entry, how, unlisted = exc.entry, exc.how, exc
+            created = created or how == _CREATED
+            target = entry
+        self._drop_held(notes_path, [str(item.get("mark")) for item in [*confirmed, *([own] if own is not None else [])]])
+        if entry is None:
+            # Not reached: the note itself is the last of the filings, and has a text.
+            raise SpaceError("an entry needs a title and a text")
+        if created:
+            how = _CREATED
+        if unlisted is not None:
+            raise _LineNotAdded(entry, how) from unlisted
+        return _Taken(
+            entry,
+            how,
+            # Counted in the entry itself: one the user wrote keeps no count.
+            counted=entry.seen > (same.seen if same is not None else 1),
+            revived=same is not None and same.status == ENTRY_EXPIRED,
+        )
+
     async def submit(self, commission: Commission, lesson: dict[str, Any]) -> str | None:
         """Keep what a task agent filed with ``note_lesson``; the ``LessonSink`` of the manager.
 
-        ``feedback`` never arrives here: it is a task preference.
+        ``feedback`` never arrives here: it is a task preference. Whether
+        the note takes effect is told from how the task agent says it
+        knows it and from the files it names; see ``_take_note``. One that
+        says nothing of how it is known is taken for inferred.
         """
         from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+        from config.prompts import prompts_nekoclaw_space as texts
         from config.prompts.prompts_nekoclaw_space import SPACE_LESSONS_CAP_REACHED
 
         scope = str(lesson.get("scope") or "project").strip().lower()
@@ -1087,26 +1792,41 @@ class TaskAgentSpace:
 
         # What became of the note, once the files were written or looked at.
         became: list[str] = []
+        # The files it named that count as evidence, and the ones that do not with why.
+        counted_files: list[str] = []
+        other_files: list[tuple[str, str]] = []
 
-        def work() -> tuple[str, str]:
+        def work() -> _Taken:
+            # Looked for in here, off the event loop: it reads the file system.
+            evidence, others = evidence_of(lesson.get("evidence"), self._bases(commission))
+            counted_files[:] = evidence
+            other_files[:] = others
+            note = _Note(
+                title=str(lesson.get("title") or ""),
+                content=str(lesson.get("content") or ""),
+                kind=kind,
+                source=commission.id,
+                known=_Known(
+                    # Not said: the weakest, which takes effect last.
+                    confidence=_confidence(lesson.get("confidence")) or INFERRED,
+                    evidence=tuple(evidence),
+                    observer=counted,
+                ),
+            )
             try:
-                entry, how = self._file_entry(
-                    project,
-                    title=str(lesson.get("title") or ""),
-                    content=str(lesson.get("content") or ""),
-                    kind=kind,
-                    source=commission.id,
-                )
+                taken = self._take_note(project, note)
             except _LineNotAdded as exc:
                 became.append(exc.how)
                 raise
-            became.append(how)
-            return entry.id, how
+            became.append(taken.how)
+            return taken
 
         listed = True
+        seen: int | None = None
+        newly_seen = revived = False
         try:
             try:
-                entry_id, how = await self._write(work)
+                taken = await self._write(work)
             finally:
                 # However it ended, the place is settled here and nowhere
                 # else, and before anything else is waited for: refused,
@@ -1115,8 +1835,12 @@ class TaskAgentSpace:
                 # (the writing is finished all the same). Only a note that
                 # was added has used a place; one that never got as far
                 # would leave the commission and its other task agents one
-                # short for nothing.
+                # short for nothing. One that waits to take effect was
+                # added, to the ones that wait.
                 settle(bool(became) and became[0] != _THERE)
+        except NoteRemoved as exc:
+            await self._note_unkept(commission, lesson, "removed")
+            return f"not kept: {exc}"
         except (SpaceError, ValueError) as exc:
             await self._note_unkept(commission, lesson, "refused")
             return f"not kept: {exc}"
@@ -1129,6 +1853,7 @@ class TaskAgentSpace:
             # something is added to the entry.
             logger.warning("a lesson is kept, and the index could not be given a line for it", exc_info=True)
             entry_id, how, listed = exc.entry_id, exc.how, False
+            seen = getattr(exc.entry, "seen", None)
         except OSError as exc:
             logger.warning("a lesson could not be written into the task agent space (%s)", type(exc).__name__)
             await self._note_unkept(commission, lesson, "unwritable")
@@ -1138,6 +1863,19 @@ class TaskAgentSpace:
             # the record of its commission before the failure goes on.
             await self._note_unkept(commission, lesson, "error")
             raise
+        else:
+            how = taken.how
+            if taken.entry is None:
+                # Not in effect yet. Said as it is, with what would change it.
+                await self._note_unkept(commission, lesson, "held")
+                why = (
+                    texts.SPACE_NOTE_HELD_NO_EVIDENCE
+                    if taken.confidence == OBSERVED
+                    else texts.SPACE_NOTE_HELD_INFERRED
+                )
+                return texts.SPACE_NOTE_HELD.format(why=why) + _uncounted(other_files)
+            entry_id, seen = taken.entry.id, taken.entry.seen
+            newly_seen, revived = taken.counted, taken.revived
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(
@@ -1150,6 +1888,9 @@ class TaskAgentSpace:
                     "project": project,
                     "created": how == _CREATED,
                     "added": how != _THERE,
+                    **({"evidence_counted": list(counted_files)} if counted_files else {}),
+                    **({"seen": seen} if newly_seen and seen else {}),
+                    **({"revived": True} if revived else {}),
                     **({} if listed else {"listed": False}),
                 },
             )
@@ -1157,12 +1898,13 @@ class TaskAgentSpace:
         # Of an entry that was there before it is not known whether a line
         # lists it: the index may be one that cannot be read.
         unlisted = "" if listed else "; the index could not be read or written, so it may have no line there yet"
+        more = (" It had expired and is in effect again." if revived else "") + _uncounted(other_files)
         if how == _CREATED:
-            return f"kept in {where} as {entry_id}.md{unlisted}"
+            return f"kept in {where} as {entry_id}.md{unlisted}{more}"
         if how == _ADDED:
-            return f"added to {entry_id}.md in {where}{unlisted}"
+            return f"added to {entry_id}.md in {where}{unlisted}{more}"
         # Said as it is: the task agent is not told something was kept that was not.
-        return f"already in {entry_id}.md in {where}, word for word; nothing was added{unlisted}"
+        return f"already in {entry_id}.md in {where}; nothing was added{unlisted}{more}"
 
     async def _note_unkept(self, commission: Commission, lesson: dict[str, Any], reason: str) -> None:
         """Put a note that was not kept on the commission's record.
@@ -1211,6 +1953,58 @@ class TaskAgentSpace:
             logger.warning("an entry is kept, and the index could not be given a line for it", exc_info=True)
             return exc.entry, exc.how == _CREATED
         return entry, how == _CREATED
+
+    async def propose_entry(
+        self,
+        project: str | None,
+        *,
+        title: str,
+        content: str,
+        kind: str = _DEFAULT_TYPE,
+        description: str = "",
+        source: str | None = None,
+        observer: str | None = None,
+        bases: Iterable[str] = (),
+    ) -> tuple[Entry | None, bool]:
+        """Keep an entry a model made of what it read, if it takes effect: for a review, a summary for the archive.
+
+        Such a model has checked nothing by hand, so its entry is never
+        verified. It names no files apart from its words either: the files
+        it rests on are the ones its title, description and text name
+        that exist in ``bases`` (see ``evidence_of``). With one it counts
+        as observed and takes effect; with none it counts as inferred and
+        waits to be seen again, like a note of a task agent (``_take_note``).
+
+        Returns the entry, None for one that waits, and whether it is a
+        new file. Raises ``SpaceError`` for one that cannot be kept, among
+        them one the user removed (``NoteRemoved``); an entry whose index
+        could not be given a line is returned like any other, as by
+        ``file_entry``.
+        """
+        roots = [str(base) for base in bases if base]
+
+        def work() -> _Taken:
+            evidence, _others = evidence_of(paths_named_in(f"{title}\n{description}\n{content}"), roots)
+            note = _Note(
+                title=title,
+                content=content,
+                kind=kind,
+                description=description,
+                source=source,
+                known=_Known(
+                    confidence=OBSERVED if evidence else INFERRED, evidence=tuple(evidence), observer=observer or source
+                ),
+            )
+            return self._take_note(project, note)
+
+        try:
+            taken = await self._write(work)
+        except ValueError as exc:
+            raise SpaceError(str(exc)) from exc
+        except _LineNotAdded as exc:
+            logger.warning("an entry is kept, and the index could not be given a line for it", exc_info=True)
+            return exc.entry, exc.how == _CREATED
+        return taken.entry, taken.how == _CREATED
 
     async def refile_entries(
         self, commission_id: str, source: str, target: str, *, also: Iterable[str] = ()
@@ -1319,7 +2113,10 @@ class TaskAgentSpace:
                     for mark in marks:
                         line = line.replace(mark, f"]({_link(link)})")
                 try:
-                    self._index_add(paths.index(target), line, link)
+                    # One that has expired has no line where it was, and
+                    # gets none where it goes.
+                    if entry.status != ENTRY_EXPIRED:
+                        self._index_add(paths.index(target), line, link)
                 except OSError:
                     # The index of where it goes cannot be written: the
                     # entry stays where it was, listed there as it was, and
@@ -1347,9 +2144,37 @@ class TaskAgentSpace:
                     logger.warning("an entry moved to another project could not be removed where it was", exc_info=True)
                     # Still there, so its line is put back.
                     put_back()
+            # What it filed that is not in effect yet goes with it as well:
+            # seen again by a commission of its project, it is found there.
+            self._move_held(paths.notes_file(source), paths.notes_file(target), own)
             return moved
 
         return await self._write(work)
+
+    def _move_held(self, origin: Path, destination: Path, own: set[str]) -> None:
+        """Move the notes that wait which only the commissions ``own`` filed to another project's list."""
+        try:
+            going = [
+                item
+                for item in self._notes(origin)["held"]
+                if _strings(item.get("sources")) and set(_strings(item.get("sources"))) <= own
+            ]
+            if not going:
+                return
+            marks = {item.get("mark") for item in going}
+
+            def add(data: dict[str, Any]) -> None:
+                there = {kept.get("mark") for kept in data["held"]}
+                data["held"].extend(item for item in going if item.get("mark") not in there)
+
+            def take(data: dict[str, Any]) -> None:
+                data["held"] = [kept for kept in data["held"] if kept.get("mark") not in marks]
+
+            # Written where they go before they are taken from where they were.
+            self._change_notes(destination, add)
+            self._change_notes(origin, take)
+        except OSError:
+            logger.warning("notes that wait could not be moved with their commission to its project", exc_info=True)
 
     # -- for the console: entries -----------------------------------------
 
@@ -1462,20 +2287,210 @@ class TaskAgentSpace:
         """Remove an entry and its line in the index, as the user asks. Returns whether there was one.
 
         An entry of an archived project is named as for ``list_entries``.
+
+        What was removed is remembered (``notes.json`` beside the index):
+        the marks of its texts and its title. A note that is the same, by
+        either, is not kept again when a task agent or a review files it.
+        Only what is removed through here is remembered; a file the user
+        deletes by hand leaves nothing to tell it by.
         """
+        from config.nekoclaw_settings import SPACE_REMOVED_MAX_RECORDS
 
         def work() -> bool:
             scope = self._scope(project, archive_year)
             name = safe_segment(entry_id)
             path = scope / SpacePaths.MEMORY_DIR / f"{name}.md"
+            # Read before it goes: afterwards nothing says what it was.
+            text = self._read_text(path)
             try:
                 path.unlink()
             except FileNotFoundError:
                 return False
             self._index_remove(scope / SpacePaths.INDEX_NAME, f"{SpacePaths.MEMORY_DIR}/{name}.md")
+            if text is not None:
+                document = _parse_document(text)
+                record = {
+                    "marks": _listed(document, "texts") or [_digest(document.body)],
+                    "title": document.get("name") or name,
+                    "at": _date(self._clock()),
+                }
+
+                def remember(data: dict[str, Any]) -> None:
+                    data["removed"] = [*data["removed"], record][-SPACE_REMOVED_MAX_RECORDS:]
+                    # Nor does it wait to take effect any longer.
+                    gone = set(record["marks"])
+                    data["held"] = [kept for kept in data["held"] if kept.get("mark") not in gone]
+
+                try:
+                    self._change_notes(scope / SpacePaths.NOTES_FILE, remember)
+                except OSError:
+                    logger.warning("an entry is removed, and that could not be put on record", exc_info=True)
             return True
 
         return await self._write(work)
+
+    async def read_notes(self, project: str | None = None, *, archive_year: str | None = None) -> dict[str, Any]:
+        """Return the notes of a project, or of the space, that are not entries, for the console.
+
+        ``{"held": [...], "removed": [...]}``: the ones that are not in
+        effect yet, each with its title, text, how it is known, the files
+        it names and who filed it; and what was remembered of the entries
+        the user removed. Empty lists when the file cannot be read.
+        """
+
+        def work() -> dict[str, Any]:
+            try:
+                data = self._notes(self._scope(project, archive_year) / SpacePaths.NOTES_FILE)
+            except OSError:
+                return {"held": [], "removed": []}
+            return {"held": list(data["held"]), "removed": list(data["removed"])}
+
+        return await self._read(work)
+
+    async def check_evidence(self) -> dict[str, int]:
+        """Look whether the files the entries rest on are still there. Returns how many expired, came back, were dropped.
+
+        Part of tidying; no model is asked. An entry the host made that
+        rests on files, of the space or of a project in use, expires once
+        none of them exists: it says so in its front matter and its line
+        leaves the index, so task agents are no longer handed it; the file
+        stays. One that had expired is in effect again when a file it
+        rests on is back (a disk that was unplugged at the last look). An
+        entry that rests on nothing does not expire, and neither does one
+        the user wrote. Where it cannot be told whether a file is there,
+        nothing is changed.
+
+        Notes that have waited longer than ``SPACE_HELD_KEPT_SECONDS`` to
+        be seen again are dropped.
+
+        At most ``SPACE_EVIDENCE_ENTRIES_PER_UPKEEP`` entries are looked at
+        in one call; the next call goes on after them.
+        """
+        from config.nekoclaw_settings import SPACE_EVIDENCE_ENTRIES_PER_UPKEEP, SPACE_HELD_KEPT_SECONDS
+
+        def look() -> tuple[list[tuple[str | None, str, bool]], list[str | None]]:
+            paths = self._paths()
+            scopes: list[str | None] = [None, *(project.name for project in self._active_projects())]
+            files: list[tuple[str | None, Path]] = []
+            for scope in scopes:
+                try:
+                    files.extend(
+                        (scope, item)
+                        for item in sorted(paths.memory_dir(scope).iterdir())
+                        if item.suffix == ".md" and item.is_file()
+                    )
+                except (OSError, ValueError):
+                    continue
+            if not files:
+                return [], scopes
+            start = self._evidence_looked_until % len(files)
+            due: list[tuple[str | None, str, bool]] = []
+            indexes: dict[str | None, str] = {}
+            taken = 0
+            for scope, path in [*files[start:], *files[:start]][:SPACE_EVIDENCE_ENTRIES_PER_UPKEEP]:
+                taken += 1
+                text = self._read_text(path)
+                if text is None:
+                    continue
+                document = _parse_document(text)
+                evidence = _evidence_in(document)
+                if not evidence or not _listed(document, "texts"):
+                    continue
+                expired = document.get("status").strip().lower() == ENTRY_EXPIRED
+                gone = _gone(evidence)
+                if gone is True:
+                    if scope not in indexes:
+                        indexes[scope] = self._read_text(paths.index(scope)) or ""
+                    target = f"{paths.MEMORY_DIR}/{path.stem}.md"
+                    # One that says it expired and still has its line (the
+                    # index could not be written then) is seen to again.
+                    if not expired or self._index_line_in(indexes[scope], target) is not None:
+                        due.append((scope, path.stem, True))
+                elif gone is False and expired:
+                    due.append((scope, path.stem, False))
+            self._evidence_looked_until = (start + taken) % len(files)
+            return due, scopes
+
+        due, scopes = await self._read(look)
+        outcome = {"expired": 0, "restored": 0, "dropped": 0}
+        for scope, entry_id, expire in due:
+            try:
+                changed = await self._write(self._set_standing, scope, entry_id, expire)
+            except (OSError, ValueError):
+                logger.warning("an entry of the task agent space could not be marked as expired or in effect", exc_info=True)
+                continue
+            if changed:
+                outcome["expired" if expire else "restored"] += 1
+        before = self._clock() - SPACE_HELD_KEPT_SECONDS
+
+        def drop_old(scope: str | None) -> int:
+            path = self._paths().notes_file(scope)
+            if not path.is_file():
+                return 0
+            dropped: list[int] = []
+
+            def change(data: dict[str, Any]) -> None:
+                kept = [
+                    item
+                    for item in data["held"]
+                    if not isinstance(item.get("at"), (int, float)) or item["at"] >= before
+                ]
+                dropped[:] = [len(data["held"]) - len(kept)]
+                data["held"] = kept
+
+            self._change_notes(path, change)
+            return dropped[0] if dropped else 0
+
+        for scope in scopes:
+            try:
+                outcome["dropped"] += await self._write(drop_old, scope)
+            except (OSError, ValueError):
+                logger.warning("the notes that wait could not be looked through for old ones", exc_info=True)
+        return outcome
+
+    def _set_standing(self, project: str | None, entry_id: str, expire: bool) -> bool:
+        """Mark an entry as expired, or as in effect again, and see to its line in the index. Returns whether it changed.
+
+        Looked at once more under the lock: it is changed only when the
+        files it rests on are, at this moment, as they were found.
+        """
+        paths = self._paths()
+        path = paths.memory_dir(project) / f"{safe_segment(entry_id)}.md"
+        target = f"{paths.MEMORY_DIR}/{path.stem}.md"
+        today = _date(self._clock())
+        told: list[tuple[str, str]] = []
+        still: list[bool] = []
+
+        def change(text: str) -> str:
+            document = _parse_document(text)
+            evidence = _evidence_in(document)
+            if not document.has_meta or not evidence or _gone(evidence) is not expire:
+                still[:] = [False]
+                return text
+            still[:] = [True]
+            told[:] = [(document.get("name") or path.stem, document.get("description"))]
+            if expire:
+                if document.get("status").strip().lower() == ENTRY_EXPIRED:
+                    return text
+                document.set("status", ENTRY_EXPIRED)
+                document.set("expired", today)
+            else:
+                if document.get("status").strip().lower() != ENTRY_EXPIRED:
+                    return text
+                document.drop("status")
+                document.drop("expired")
+            return _render_document(document)
+
+        if not path.is_file():
+            return False
+        changed = self._edit_text(path, change)
+        if not still or not still[0]:
+            return False
+        if expire:
+            self._index_remove(paths.index(project), target)
+        elif changed and told:
+            self._index_add(paths.index(project), _index_line(told[0][0], target, told[0][1]), target)
+        return changed
 
     # -- for the console: rules and indexes -------------------------------
 

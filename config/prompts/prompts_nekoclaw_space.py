@@ -62,6 +62,22 @@ SPACE_LESSONS_CAP_REACHED = (
     "most one commission may add. Put what matters into your report instead."
 )
 
+# What a task agent is told about a note that does not take effect yet: it is
+# kept, in no index, until it is seen again. Rendered with str.format: why
+# (one of the two below).
+SPACE_NOTE_HELD = (
+    "not in effect yet, and in no index: {why}. It takes effect when another commission files the "
+    "same, or when you file it again as verified, or as observed with a file that exists."
+)
+SPACE_NOTE_HELD_INFERRED = "it was filed as inferred"
+SPACE_NOTE_HELD_NO_EVIDENCE = (
+    "it was filed as observed, and no file given as evidence exists in the working directory"
+)
+
+# Added to what a task agent is told when files it named do not count as
+# evidence. Rendered with str.format: paths (each with why, separated by commas).
+SPACE_EVIDENCE_NOT_COUNTED = " Not counted as evidence: {paths}."
+
 # ---------------------------------------------------------------------------
 # The review of a finished commission. One call writes the review, names the
 # entries worth keeping and says which project the commission belongs to.
