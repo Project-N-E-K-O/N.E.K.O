@@ -17,7 +17,7 @@
           v-if="canWrite && !message.is_hidden"
           text
           size="small"
-          :disabled="sending"
+          :disabled="sending || restoring"
           @click="replyTo = message"
         >
           {{ t('marketFeedback.reply') }}
@@ -32,7 +32,7 @@
   <form v-if="canWrite" class="market-message-form" @submit.prevent="submit">
     <div v-if="replyTo" class="market-message__meta">
       <span>{{ t('market.detailCommentReplyTo', { name: authorName(replyTo) }) }}</span>
-      <el-button text size="small" :disabled="sending" @click="replyTo = null">{{
+      <el-button text size="small" :disabled="sending || restoring" @click="replyTo = null">{{
         t('common.cancel')
       }}</el-button>
     </div>
@@ -46,6 +46,13 @@
         :disabled="sending || restoring"
       />
     </label>
+    <el-alert
+      v-if="restoreWarning"
+      :title="t(restoreWarning)"
+      type="warning"
+      show-icon
+      @close="restoreWarning = ''"
+    />
     <el-alert v-if="sendError" :title="t(sendError)" type="error" :closable="false" show-icon />
     <el-button
       native-type="submit"
@@ -64,16 +71,28 @@
 
 <script lang="ts">
 import type { MarketPluginComment } from '@/api/market'
+import type { MarketMessageDraft } from '@/api/marketConversations'
+
+/** ``maybe``: the response was lost (network, 5xx); the Market may have the message. */
+type SendOutcome = 'posted' | 'maybe' | 'not'
+
+/**
+ * One send of one exact text. The Market dedupes on (author, client_message_id),
+ * so retrying ``draft`` under the same ``session`` (same author) can never post
+ * twice, while a retry under another account is a new message.
+ */
+interface SendAttempt {
+  draft: MarketMessageDraft
+  session: string | null
+  outcome: Promise<SendOutcome>
+}
 
 interface UnsentDraft {
   body: string
   // Kept whole: the target may sit on a page the reloaded thread has not loaded.
   replyTo: MarketPluginComment | null
-  // The id of an earlier attempt at this exact text. The Market dedupes on
-  // (author, client_message_id), so a retry after a lost response cannot post twice.
-  clientMessageId?: string
-  // Set when the reload raced a send of this text; resolves true if it may have posted.
-  posted?: Promise<boolean>
+  // The last attempt at this exact text, in flight or settled.
+  attempt?: SendAttempt
 }
 
 // Unsent drafts survive the remount that follows a session reload. Keyed by
@@ -90,7 +109,6 @@ import {
   MarketConversationError,
   isSentAfterAccountChange,
   marketConversationSessionChanged,
-  type MarketMessageDraft,
 } from '@/api/marketConversations'
 import { MARKET_AUTH_CHANGED_EVENT } from '@/api/marketBridge'
 import { useMarketAuth } from '@/composables/useMarketAuth'
@@ -117,9 +135,24 @@ const avatars = ref<Record<string, string>>({})
 // True while a stashed draft waits for the send it raced; editing pauses so
 // the restored text never collides with newly typed text.
 const restoring = ref(false)
-let lastDraft: MarketMessageDraft | undefined
-let inFlight: Promise<boolean> | undefined
+// Shown over a restored draft whose earlier send, by another account, may have posted.
+const restoreWarning = ref('')
+let lastAttempt: SendAttempt | undefined
 let alive = true
+
+// Writes carry no client timeout; do not keep the form locked on a stuck one.
+const RESTORE_WAIT_MS = 30_000
+
+function settledOutcome(attempt: SendAttempt): Promise<SendOutcome> {
+  return Promise.race([
+    attempt.outcome,
+    new Promise<SendOutcome>((resolve) => setTimeout(() => resolve('maybe'), RESTORE_WAIT_MS)),
+  ])
+}
+
+function sameText(attempt: SendAttempt | undefined, text: string, replyId: number | null) {
+  return attempt?.draft.body === text && attempt.draft.reply_to_id === replyId
+}
 
 /**
  * Take over this thread's stashed draft. The entry stays readable in the Map
@@ -133,23 +166,24 @@ async function claimDraft() {
     for (;;) {
       const draft = unsentDrafts.get(props.draftKey)
       if (!draft || !alive || !props.canWrite || body.value.trim()) return
-      // Restoring text the racing send already posted would invite a duplicate.
-      const posted = draft.posted ? await draft.posted : false
+      const outcome = draft.attempt ? await settledOutcome(draft.attempt) : 'not'
       if (!alive) return
       if (unsentDrafts.get(props.draftKey) !== draft) continue
       unsentDrafts.delete(props.draftKey)
-      if (!posted) {
-        body.value = draft.body
-        replyTo.value = draft.replyTo
-        if (draft.clientMessageId) {
-          lastDraft = {
-            body: draft.body.trim(),
-            reply_to_id: draft.replyTo?.id ?? null,
-            client_message_id: draft.clientMessageId,
-          }
+      // Restoring text that was posted would invite a duplicate.
+      if (outcome === 'posted') continue
+      body.value = draft.body
+      replyTo.value = draft.replyTo
+      if (draft.attempt && outcome === 'maybe') {
+        // Keep the uncertain attempt so a later remount still knows about it. Under
+        // the same account submit() reuses its id and the Market dedupes the retry.
+        lastAttempt = { ...draft.attempt, outcome: Promise.resolve(outcome) }
+        if (draft.attempt.session !== props.session) {
+          // Another account would post a second copy; say so instead of inviting a resend.
+          restoreWarning.value = 'marketFeedback.draftMaybePostedByOtherAccount'
         }
-        return
       }
+      return
     }
   } finally {
     restoring.value = false
@@ -166,8 +200,11 @@ watch(
 )
 
 /** Only a 4xx proves the Market did not take the write; a lost response might have. */
-function mayHavePosted(error: unknown): boolean {
-  return !(error instanceof MarketConversationError && error.status >= 400 && error.status < 500)
+function outcomeOf(error: unknown): SendOutcome {
+  if (isSentAfterAccountChange(error)) return 'posted'
+  const refused =
+    error instanceof MarketConversationError && error.status >= 400 && error.status < 500
+  return refused ? 'not' : 'maybe'
 }
 
 function onAccountChange() {
@@ -178,16 +215,15 @@ onBeforeUnmount(() => {
   alive = false
   window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
   // Every remount (session reload, leaving an Issue, closing the dialog) keeps
-  // what was typed. A send still in flight decides later whether it is restorable.
+  // what was typed, plus the last attempt at that text (in flight or settled), so
+  // the next form knows whether it may already be posted and by which account.
   if (body.value.trim() && !restoring.value) {
-    const retried =
-      lastDraft?.body === body.value.trim() &&
-      lastDraft.reply_to_id === (replyTo.value?.id ?? null)
+    const text = body.value.trim()
+    const replyId = replyTo.value?.id ?? null
     unsentDrafts.set(props.draftKey, {
       body: body.value,
       replyTo: replyTo.value,
-      clientMessageId: retried ? lastDraft?.client_message_id : undefined,
-      posted: sending.value ? inFlight : undefined,
+      attempt: sameText(lastAttempt, text, replyId) ? lastAttempt : undefined,
     })
   }
 })
@@ -237,26 +273,33 @@ async function submit() {
   const text = body.value.trim()
   const replyId = replyTo.value?.id ?? null
   if (!text || sending.value || restoring.value || !props.canWrite) return
-  if (!lastDraft || lastDraft.body !== text || lastDraft.reply_to_id !== replyId) {
-    lastDraft = { body: text, reply_to_id: replyId, client_message_id: crypto.randomUUID() }
+  // Reuse the id only for the same text by the same account (see SendAttempt).
+  const draft =
+    lastAttempt && sameText(lastAttempt, text, replyId) && lastAttempt.session === props.session
+      ? lastAttempt.draft
+      : { body: text, reply_to_id: replyId, client_message_id: crypto.randomUUID() }
+  let settle: (outcome: SendOutcome) => void = () => {}
+  lastAttempt = {
+    draft,
+    session: props.session,
+    outcome: new Promise((resolve) => (settle = resolve)),
   }
-  let settle: (posted: boolean) => void = () => {}
-  inFlight = new Promise((resolve) => (settle = resolve))
   sending.value = true
   sendError.value = ''
+  restoreWarning.value = ''
   try {
-    await props.send(lastDraft)
-    settle(true)
+    await props.send(draft)
+    settle('posted')
     body.value = ''
     replyTo.value = null
-    lastDraft = undefined
+    lastAttempt = undefined
   } catch (error) {
-    settle(isSentAfterAccountChange(error) || mayHavePosted(error))
+    settle(outcomeOf(error))
     if (isSentAfterAccountChange(error)) {
       // Already posted: drop the draft so the new account is not nudged into a resend.
       body.value = ''
       replyTo.value = null
-      lastDraft = undefined
+      lastAttempt = undefined
       // A toast outlives this component, which is re-keyed by the reload below.
       ElMessage.warning(t('marketFeedback.sentAccountChanged'))
       if (alive) emit('session-updated')
@@ -268,8 +311,14 @@ async function submit() {
       // replaced this form, that stash carries this send's outcome instead.
       if (alive) emit('session-updated')
     } else if (!alive) {
-      // The inline error has no form left to show in.
-      ElMessage.error(t('marketFeedback.sendFailed'))
+      // The inline error has no form left to show in; the unmount stash keeps the text.
+      ElMessage.error(
+        t(
+          error instanceof MarketConversationError && error.code === 'market_email_unverified'
+            ? 'marketFeedback.verifyEmail'
+            : 'marketFeedback.sendFailed'
+        )
+      )
     } else {
       sendError.value =
         error instanceof MarketConversationError && error.code === 'market_email_unverified'

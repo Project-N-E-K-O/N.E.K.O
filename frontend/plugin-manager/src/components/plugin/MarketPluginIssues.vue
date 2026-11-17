@@ -240,7 +240,8 @@ async function send(draft: MarketMessageDraft) {
   const request = detailRequest
   // Throw, not return: the form treats a resolved send as posted and clears the draft.
   if (!source?.capabilities.can_reply || !session || !request) {
-    throw new MarketConversationError(0, 'market_feedback_unavailable')
+    // A 4xx-class status: nothing reached the Market, so the draft is safe to resend.
+    throw new MarketConversationError(409, 'market_feedback_unavailable')
   }
   const message = await sendMarketIssueReply(props.pluginId, source.id, session, draft)
   // The write landed even if the detail view has since closed; badges still need a refresh.
@@ -320,6 +321,9 @@ async function transition(action: 'close' | 'reopen') {
     // may predate the write, so read it again rather than trust either copy.
     else if (!disposed && selected.value === source.id) void refreshIssue(source.id, session)
   } catch (error) {
+    // No new state to protect: let a correcting read started before this attempt apply.
+    // (changing.value serialises transitions, so the version is still ours.)
+    if (!isSentAfterAccountChange(error)) stateVersion -= 1
     if (isSentAfterAccountChange(error)) {
       ElMessage.warning(t('marketFeedback.sentAccountChanged'))
       if (!request.signal.aborted) void loadIssue(source.id)

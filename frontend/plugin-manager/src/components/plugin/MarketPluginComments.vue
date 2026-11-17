@@ -102,7 +102,8 @@ async function send(draft: MarketMessageDraft) {
   const activeSession = session.value
   // Throw, not return: the form treats a resolved send as posted and clears the draft.
   if (!activeSession || !thread.value?.can_reply) {
-    throw new MarketConversationError(0, 'market_feedback_unavailable')
+    // A 4xx-class status: nothing reached the Market, so the draft is safe to resend.
+    throw new MarketConversationError(409, 'market_feedback_unavailable')
   }
   const message = await sendMarketComment(props.pluginId, activeSession, draft)
   if (session.value === activeSession && thread.value && !request?.signal.aborted) {
