@@ -154,6 +154,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { handleExternalLinkClick } from '@/utils/openExternal'
 import { fetchCommunityAuthorAvatars } from '@/api/marketCommunityProfiles'
+import { MARKET_AUTH_CHANGED_EVENT } from '@/api/marketBridge'
 import {
   FeedbackRequestError,
   fetchMarketFeedback,
@@ -333,15 +334,22 @@ watch(
     if (authenticated) void loadPage()
   }
 )
+// A direct switch from one signed-in account to another keeps
+// ``authenticated`` true, so the watch above cannot see it.
+function onAccountChange() {
+  if (mounted) void loadPage()
+}
 onMounted(() => {
   mounted = true
   window.addEventListener('focus', refresh)
+  window.addEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
   void loadPage()
 })
 onBeforeUnmount(() => {
   mounted = false
   activePage?.abort()
   window.removeEventListener('focus', refresh)
+  window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
 })
 </script>
 

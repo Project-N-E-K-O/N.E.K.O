@@ -901,19 +901,27 @@ async def _email_unverified_response(access_token: str) -> JSONResponse | None:
 
 
 _FEEDBACK_SESSION_HEADER = "X-Market-Feedback-Session"
+# Set on a successful write whose login switched mid-flight: posted, but not by the current account.
+_FEEDBACK_SESSION_CHANGED_HEADER = "X-Market-Feedback-Session-Changed"
 
 
 def _feedback_session(token: dict[str, Any] | None) -> str:
     if not token or not token.get("access_token") or not _oauth_subject_is_verified(token):
         return ""
-    # Older saved logins may predate session_id. Their creation time survives refresh.
-    login = token.get("session_id") or token.get("created_at") or token["access_token"]
+    # Older saved logins may predate session_id. Their creation time survives
+    # refresh; without either, fall back to the subject alone. Never key on the
+    # access token: a routine refresh rotates it and would read as an account switch.
+    login = token.get("session_id") or token.get("created_at") or ""
     identity = json.dumps([login, token["subject"]], separators=(",", ":"))
     return hmac.new(_BRIDGE_TOKEN.encode(), identity.encode(), "sha256").hexdigest()
 
 
+def _current_feedback_session() -> str:
+    return _feedback_session(_read_json_file(_OAUTH_TOKEN_FILE))
+
+
 def _check_feedback_session(session: str, expected: str | None = None) -> None:
-    current = _feedback_session(_read_json_file(_OAUTH_TOKEN_FILE))
+    current = _current_feedback_session()
     if not session or session != current or (expected is not None and expected != session):
         raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
 
@@ -1017,8 +1025,22 @@ async def _proxy_market_authenticated(
                 },
             )
 
-        if feedback and feedback_session:
-            _check_feedback_session(feedback_session)
+        sent_after_session_change = False
+        if feedback and feedback_session and _current_feedback_session() != feedback_session:
+            # The login switched while the request was in flight. A read or a
+            # write the Market refused is stale for the new account. A write the
+            # Market already applied must not be reported as failed, or the UI
+            # would invite the user to post it again under the new account.
+            if method == "GET" or not upstream.is_success:
+                raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
+            sent_after_session_change = True
+            logger.info(
+                "[market-{}] write applied after session change status={} request_id={} origin={}",
+                surface,
+                upstream.status_code,
+                _safe_market_request_id(upstream.headers.get("x-request-id")),
+                _market_api_log_origin(),
+            )
         if upstream.status_code == 401:
             # A rejected credential never passes its upstream body through: the
             # first time, refresh once and retry; a second rejection means the
@@ -1058,8 +1080,9 @@ async def _proxy_market_authenticated(
             unverified = await _email_unverified_response(access_token)
             if unverified is not None:
                 logger.info(
-                    "[market-submission] request rejected "
+                    "[market-{}] request rejected "
                     "category=email_unverified status=403 request_id={} origin={}",
+                    surface,
                     _safe_market_request_id(upstream.headers.get("x-request-id")),
                     _market_api_log_origin(),
                 )
@@ -1085,7 +1108,10 @@ async def _proxy_market_authenticated(
         }
         if feedback:
             response_headers["cache-control"] = "no-store"
-            if upstream.is_success and feedback_session:
+            if sent_after_session_change:
+                # The old session is gone; do not hand it back as current.
+                response_headers[_FEEDBACK_SESSION_CHANGED_HEADER] = "1"
+            elif upstream.is_success and feedback_session:
                 response_headers[_FEEDBACK_SESSION_HEADER] = feedback_session
                 response_headers["X-Market-Web-Url"] = MARKET_WEB_URL
         return Response(
@@ -1201,6 +1227,11 @@ async def market_conversation_issue_action(
     )
 
 
+# At most 100 public profiles per query; this is far above their real size.
+_AVATAR_QUERY_MAX_BYTES = 512 * 1024
+_AVATAR_URL_MAX_LENGTH = 2048
+
+
 class MarketFeedbackAvatarQuery(BaseModel):
     user_ids: list[UUID] = Field(min_length=1, max_length=100)
 
@@ -1214,11 +1245,21 @@ async def market_feedback_avatars(request: Request, payload: MarketFeedbackAvata
     try:
         base = validate_http_url(social_base_url(), name="NEKO_SOCIAL_BASE_URL")
         async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
-            upstream = await client.post(
-                f"{base}/api/v1/public-profiles/query", json={"user_ids": user_ids}
-            )
-            upstream.raise_for_status()
-            body = upstream.json()
+            async with client.stream(
+                "POST", f"{base}/api/v1/public-profiles/query", json={"user_ids": user_ids}
+            ) as upstream:
+                upstream.raise_for_status()
+                declared = upstream.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _AVATAR_QUERY_MAX_BYTES:
+                    raise ValueError("avatar query response too large")
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in upstream.aiter_bytes(64 * 1024):
+                    size += len(chunk)
+                    if size > _AVATAR_QUERY_MAX_BYTES:
+                        raise ValueError("avatar query response too large")
+                    chunks.append(chunk)
+        body = json.loads(b"".join(chunks))
     except (httpx.HTTPError, ValueError):
         return JSONResponse({}, status_code=502)
     profiles = body.get("profiles") if isinstance(body, dict) else None
@@ -1230,7 +1271,11 @@ async def market_feedback_avatars(request: Request, payload: MarketFeedbackAvata
             if not isinstance(avatar, dict) or avatar.get("kind") != "image":
                 continue
             url = avatar.get("url")
-            if isinstance(url, str) and url.startswith(("https://", "http://")):
+            if (
+                isinstance(url, str)
+                and url.startswith("https://")
+                and len(url) <= _AVATAR_URL_MAX_LENGTH
+            ):
                 avatars[user_id] = url
     return JSONResponse(avatars, headers={"Cache-Control": "no-store"})
 

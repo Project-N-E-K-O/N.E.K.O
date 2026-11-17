@@ -80,6 +80,7 @@
               v-if="visible && openedTabs.comments"
               :key="plugin.rawId"
               :plugin-id="plugin.rawId"
+              @feedback-changed="emit('feedback-changed')"
             />
           </el-tab-pane>
           <el-tab-pane :label="t('marketFeedback.issuesTab')" name="issues">

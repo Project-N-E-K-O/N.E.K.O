@@ -56,10 +56,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 import type { MarketPluginComment } from '@/api/market'
 import { fetchCommunityAuthorAvatars } from '@/api/marketCommunityProfiles'
 import {
   MarketConversationError,
+  isSentAfterAccountChange,
   marketConversationSessionChanged,
   type MarketMessageDraft,
 } from '@/api/marketConversations'
@@ -144,10 +146,19 @@ async function submit() {
     replyTo.value = null
     lastDraft = undefined
   } catch (error) {
-    sendError.value =
-      error instanceof MarketConversationError && error.code === 'market_email_unverified'
-        ? 'marketFeedback.verifyEmail'
-        : 'marketFeedback.sendFailed'
+    if (isSentAfterAccountChange(error)) {
+      // Already posted: drop the draft so the new account is not nudged into a resend.
+      body.value = ''
+      replyTo.value = null
+      lastDraft = undefined
+      // A toast outlives this component, which is re-keyed by the reload below.
+      ElMessage.warning(t('marketFeedback.sentAccountChanged'))
+    } else {
+      sendError.value =
+        error instanceof MarketConversationError && error.code === 'market_email_unverified'
+          ? 'marketFeedback.verifyEmail'
+          : 'marketFeedback.sendFailed'
+    }
     if (marketConversationSessionChanged(error)) {
       emit('session-updated')
     }

@@ -183,6 +183,75 @@ def test_feedback_refresh_retries_only_inside_the_original_session(monkeypatch, 
         assert marked.headers[_FEEDBACK_HEADER] == session
 
 
+def _switch_account_during(status, payload=None):
+    """Answer ``status``, switching the saved login while the request is in flight."""
+
+    def responder(request, attempt):
+        if attempt > 0:
+            responder.token.update(session_id="feedback-login-b", subject="another-account")
+        return httpx.Response(status, json=payload if payload is not None else {})
+
+    return responder
+
+
+def test_a_write_the_market_applied_is_not_reported_failed_after_an_account_switch(monkeypatch):
+    message = {"id": 31, "body": "Reply text"}
+    responder = _switch_account_during(200, message)
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    responder.token = token
+    base = "/market/conversations/plugins/8"
+    login = client.get(f"{base}/issues/10", headers=_BRIDGE_HEADERS)
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: login.headers[_FEEDBACK_HEADER]}
+    draft = {"body": "Reply text", "reply_to_id": None, "client_message_id": "test-message-id"}
+    sent = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
+    assert sent.status_code == 200 and sent.json() == message
+    assert sent.headers["X-Market-Feedback-Session-Changed"] == "1"
+    # The old session is not handed back as if it were still current.
+    assert _FEEDBACK_HEADER not in sent.headers
+    assert len(upstream.requests) == 2
+    # The pre-flight check is unchanged: the stale session cannot write again.
+    again = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
+    assert again.status_code == 409 and len(upstream.requests) == 2
+
+
+@pytest.mark.parametrize(("method", "status"), [("GET", 200), ("POST", 422)])
+def test_a_read_or_refused_write_is_still_rejected_after_an_account_switch(monkeypatch, method, status):
+    responder = _switch_account_during(status, {"items": []})
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    responder.token = token
+    initial = client.get("/market/feedback", headers=_BRIDGE_HEADERS)
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: initial.headers[_FEEDBACK_HEADER]}
+    if method == "GET":
+        response = client.get("/market/feedback", headers=headers)
+    else:
+        response = client.post("/market/feedback/mark-read", headers=headers, json={"all": True})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "market_feedback_session_changed"
+    assert len(upstream.requests) == 2
+
+
+def test_feedback_session_survives_an_access_token_refresh_without_a_session_id():
+    legacy = {"access_token": "access-1", "subject": "ory-subject-abc", "subject_pending": False}
+    refreshed = {**legacy, "access_token": "access-2"}
+    switched = {**refreshed, "subject": "another-account"}
+    session = market_bridge._feedback_session(legacy)
+    assert session and session == market_bridge._feedback_session(refreshed)
+    assert session != market_bridge._feedback_session(switched)
+
+
+def test_feedback_avatars_refuse_plain_http_urls_and_oversized_responses(monkeypatch):
+    user = "123e4567-e89b-42d3-a456-426614174000"
+    profiles = {user: {"avatar": {"kind": "image", "url": "http://cdn.community.example.com/a.png"}}}
+    client, _, _ = _install_feedback(monkeypatch, _ok({"profiles": profiles}))
+    monkeypatch.setattr(market_bridge, "social_base_url", lambda: "https://community.example.com")
+    query = {"headers": _BRIDGE_HEADERS, "json": {"user_ids": [user]}}
+    result = client.post("/market/feedback/avatars", **query)
+    assert result.status_code == 200 and result.json() == {}
+    monkeypatch.setattr(market_bridge, "_AVATAR_QUERY_MAX_BYTES", 16)
+    oversized = client.post("/market/feedback/avatars", **query)
+    assert oversized.status_code == 502 and oversized.json() == {}
+
+
 def test_feedback_avatars_only_returns_requested_public_avatars_without_credentials(monkeypatch):
     requested = "123e4567-e89b-42d3-a456-426614174000"
     missing = "123e4567-e89b-42d3-a456-426614174001"

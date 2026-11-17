@@ -91,6 +91,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import MarketConversationThread from './MarketConversationThread.vue'
 import {
   changeMarketIssueState,
+  isSentAfterAccountChange,
   marketConversationSessionChanged,
   readMarketIssue,
   readMarketIssueMessages,
@@ -229,11 +230,12 @@ async function send(draft: MarketMessageDraft) {
   const request = detailRequest
   if (!source?.capabilities.can_reply || !session || !request) return
   const message = await sendMarketIssueReply(props.pluginId, source.id, session, draft)
+  // The write landed even if the detail view has since closed; badges still need a refresh.
+  emit('feedback-changed')
   if (request.signal.aborted || !detail.value) return
   if (!detail.value.messages.some((existing) => existing.id === message.id)) {
     detail.value = { ...detail.value, messages: [...detail.value.messages, message] }
   }
-  emit('feedback-changed')
 }
 
 async function transition(action: 'close' | 'reopen') {
@@ -244,13 +246,19 @@ async function transition(action: 'close' | 'reopen') {
   changing.value = true
   try {
     const updated = await changeMarketIssueState(props.pluginId, source.id, session, action)
-    if (!request.signal.aborted) {
-      detail.value = updated
+    // A successful write must reach the shared list even after the detail view
+    // was left; only the detail itself depends on that view still being open.
+    if (listSession.value === session) {
       items.value = items.value.map((item) => (item.id === updated.id ? updated : item))
-      emit('feedback-changed')
     }
+    emit('feedback-changed')
+    if (!request.signal.aborted) detail.value = updated
   } catch (error) {
-    if (!request.signal.aborted) {
+    if (isSentAfterAccountChange(error)) {
+      ElMessage.warning(t('marketFeedback.sentAccountChanged'))
+      if (!request.signal.aborted) void loadIssue(source.id)
+      else void loadList()
+    } else if (!request.signal.aborted) {
       if (marketConversationSessionChanged(error)) void loadIssue(source.id)
       else ElMessage.error(t('marketFeedback.updateIssueFailed'))
     }

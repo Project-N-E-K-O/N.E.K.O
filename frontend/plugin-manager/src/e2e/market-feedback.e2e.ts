@@ -253,7 +253,8 @@ appearanceTest(
     await marketTab.close()
 
     await listed.getByRole('button', { name: '标为已读', exact: true }).click()
-    expect(mutations).toEqual([
+    // click() resolves before the request reaches the route handler.
+    await expect.poll(() => mutations).toEqual([
       {
         body: { thread_kind: 'issue', thread_id: 71, through_message_id: 193 },
         session: 'account-a',

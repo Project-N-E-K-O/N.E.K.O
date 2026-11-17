@@ -2,6 +2,8 @@ import type { MarketPluginComment, MarketPluginComments } from './market'
 import { fetchBridge, readErrorCode } from './marketBridge'
 
 const SESSION_HEADER = 'X-Market-Feedback-Session'
+const SESSION_CHANGED_HEADER = 'X-Market-Feedback-Session-Changed'
+const SENT_AFTER_ACCOUNT_CHANGE = 'market_feedback_sent_session_changed'
 
 export interface MarketConversationRead<T> {
   data: T
@@ -41,11 +43,20 @@ export class MarketConversationError extends Error {
   }
 }
 
+/**
+ * The Market accepted the write, but the desktop login switched accounts while
+ * it was in flight. The caller must not offer a resend: the content is posted.
+ */
+export function isSentAfterAccountChange(error: unknown): boolean {
+  return error instanceof MarketConversationError && error.code === SENT_AFTER_ACCOUNT_CHANGE
+}
+
 export function marketConversationSessionChanged(error: unknown): boolean {
   return (
     error instanceof MarketConversationError &&
     (error.status === 401 ||
       error.code === 'market_feedback_session_changed' ||
+      error.code === SENT_AFTER_ACCOUNT_CHANGE ||
       error.code === 'market_auth_required' ||
       error.code === 'market_auth_pending')
   )
@@ -103,7 +114,11 @@ async function writeConversation<T>(
     { method: 'POST', headers, body: draft ? JSON.stringify(draft) : undefined, cache: 'no-store' },
     { authorizationHeader: true, retryOnForbidden: false }
   )
-  return conversationJson<T>(response)
+  const data = await conversationJson<T>(response)
+  if (response?.headers.get(SESSION_CHANGED_HEADER)) {
+    throw new MarketConversationError(response.status, SENT_AFTER_ACCOUNT_CHANGE)
+  }
+  return data
 }
 
 export function readMarketComments(

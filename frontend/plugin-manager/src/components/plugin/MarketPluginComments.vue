@@ -42,6 +42,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import MarketConversationThread from './MarketConversationThread.vue'
 
 const props = defineProps<{ pluginId: number | string }>()
+const emit = defineEmits<{ 'feedback-changed': [] }>()
 const { t } = useI18n()
 const thread = ref<MarketPluginComments | null>(null)
 const session = ref<string | null>(null)
@@ -101,6 +102,7 @@ async function send(draft: MarketMessageDraft) {
       thread.value = { ...thread.value, messages: [...messages, message] }
     }
   }
+  emit('feedback-changed')
 }
 
 onMounted(() => void load())
