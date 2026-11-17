@@ -64,11 +64,17 @@
           >{{ t('marketFeedback.reopenIssue') }}</el-button
         >
       </div>
+      <!--
+        Market contract: an issue's can_reply is (verified-email writer) AND open AND
+        not hidden. Hidden issues never reach this view and the state is checked
+        below, so a remaining false means the email is unverified.
+      -->
       <MarketConversationThread
         :key="`${detail.id}:${detailSession || 'guest'}`"
         :messages="detail.messages"
         :empty-text="t('marketFeedback.empty')"
         :session="detailSession"
+        :draft-key="`issue:${pluginId}:${detail.id}`"
         :can-write="!!detailSession && detail.capabilities.can_reply"
         :requires-email-verification="
           !!detailSession && detail.state === 'open' && !detail.capabilities.can_reply
@@ -118,6 +124,7 @@ const detailFailed = ref(false)
 const changing = ref(false)
 let listRequest: AbortController | undefined
 let detailRequest: AbortController | undefined
+let disposed = false
 
 async function loadList(more = false) {
   if (more && (loading.value || next.value === null)) return
@@ -253,11 +260,14 @@ async function transition(action: 'close' | 'reopen') {
     }
     emit('feedback-changed')
     if (!request.signal.aborted) detail.value = updated
+    // The same issue was reopened while the write was in flight; its fresh read
+    // may predate the write, so read it again rather than trust either copy.
+    else if (!disposed && selected.value === source.id) void loadIssue(source.id)
   } catch (error) {
     if (isSentAfterAccountChange(error)) {
       ElMessage.warning(t('marketFeedback.sentAccountChanged'))
       if (!request.signal.aborted) void loadIssue(source.id)
-      else void loadList()
+      else if (!disposed) void loadList()
     } else if (!request.signal.aborted) {
       if (marketConversationSessionChanged(error)) void loadIssue(source.id)
       else ElMessage.error(t('marketFeedback.updateIssueFailed'))
@@ -269,6 +279,7 @@ async function transition(action: 'close' | 'reopen') {
 
 onMounted(() => void loadList())
 onBeforeUnmount(() => {
+  disposed = true
   listRequest?.abort()
   detailRequest?.abort()
 })

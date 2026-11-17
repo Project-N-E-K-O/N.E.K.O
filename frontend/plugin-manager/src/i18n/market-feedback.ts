@@ -15,6 +15,8 @@ export const marketFeedbackMessages = {
     sendFailed: 'Could not send the message.',
     sentAccountChanged:
       'Done, but the Market account changed in the meantime. Showing the current account now.',
+    notSentSessionChanged:
+      'Not sent: the Market sign-in changed. Your draft is kept; check the account and send again.',
     title: 'My feedback',
     loginRequired: 'Sign in to Market to see feedback for your plugins.',
     kind: 'Feedback type',
@@ -49,6 +51,7 @@ export const marketFeedbackMessages = {
     verifyEmail: '请先验证插件市场账号的邮箱。',
     sendFailed: '发送留言失败。',
     sentAccountChanged: '操作已完成，但期间插件市场账号已切换，现在显示的是当前账号。',
+    notSentSessionChanged: '未发送：插件市场登录状态已变化。草稿已保留，确认账号后再发送。',
     title: '我的反馈',
     loginRequired: '登录插件市场后查看你的插件收到的反馈。',
     kind: '反馈类型',
@@ -83,6 +86,7 @@ export const marketFeedbackMessages = {
     verifyEmail: '請先驗證外掛市集帳號的電子郵件。',
     sendFailed: '無法傳送留言。',
     sentAccountChanged: '操作已完成，但期間外掛市集帳號已切換，現在顯示的是目前帳號。',
+    notSentSessionChanged: '未傳送：外掛市集登入狀態已變更。草稿已保留，確認帳號後再傳送。',
     title: '我的意見回饋',
     loginRequired: '登入外掛市集後即可查看你的外掛收到的意見回饋。',
     kind: '意見回饋類型',
@@ -118,6 +122,8 @@ export const marketFeedbackMessages = {
     sendFailed: 'メッセージを送信できませんでした。',
     sentAccountChanged:
       '操作は完了しましたが、その間にマーケットのアカウントが切り替わりました。現在のアカウントを表示しています。',
+    notSentSessionChanged:
+      '送信されていません：マーケットのログイン状態が変わりました。下書きは残してあります。アカウントを確認してから送信してください。',
     title: '自分のフィードバック',
     loginRequired: 'マーケットにログインすると、自分のプラグインへのフィードバックを確認できます。',
     kind: 'フィードバックの種類',
@@ -153,6 +159,8 @@ export const marketFeedbackMessages = {
     sendFailed: '메시지를 보내지 못했습니다.',
     sentAccountChanged:
       '완료되었지만 그사이 마켓 계정이 바뀌었습니다. 지금은 현재 계정을 표시합니다.',
+    notSentSessionChanged:
+      '전송되지 않았습니다. 마켓 로그인 상태가 바뀌었습니다. 초안은 남겨 두었으니 계정을 확인한 뒤 다시 보내세요.',
     title: '내 피드백',
     loginRequired: '마켓에 로그인하여 내 플러그인에 대한 피드백을 확인하세요.',
     kind: '피드백 유형',
@@ -188,6 +196,8 @@ export const marketFeedbackMessages = {
     sendFailed: 'Не удалось отправить сообщение.',
     sentAccountChanged:
       'Готово, но за это время сменился аккаунт Маркета. Сейчас показан текущий аккаунт.',
+    notSentSessionChanged:
+      'Не отправлено: изменился вход в Маркет. Черновик сохранён — проверьте аккаунт и отправьте снова.',
     title: 'Мои отзывы',
     loginRequired: 'Войдите в Маркет, чтобы увидеть отзывы о ваших плагинах.',
     kind: 'Тип отзыва',
@@ -223,6 +233,8 @@ export const marketFeedbackMessages = {
     sendFailed: 'No se pudo enviar el mensaje.',
     sentAccountChanged:
       'Hecho, pero la cuenta del Mercado cambió mientras tanto. Ahora se muestra la cuenta actual.',
+    notSentSessionChanged:
+      'No se envió: cambió el inicio de sesión del Mercado. Se conservó el borrador; revisa la cuenta y vuelve a enviarlo.',
     title: 'Mis comentarios e incidencias',
     loginRequired:
       'Inicia sesión en el Mercado para ver los comentarios e incidencias de tus complementos.',
@@ -259,6 +271,8 @@ export const marketFeedbackMessages = {
     sendFailed: 'Não foi possível enviar a mensagem.',
     sentAccountChanged:
       'Concluído, mas a conta do Market mudou nesse meio-tempo. Agora é exibida a conta atual.',
+    notSentSessionChanged:
+      'Não enviado: o login do Market mudou. O rascunho foi mantido; confira a conta e envie de novo.',
     title: 'Meu feedback',
     loginRequired: 'Entre no Market para ver o feedback dos seus plugins.',
     kind: 'Tipo de feedback',

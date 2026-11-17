@@ -12,11 +12,16 @@
       :closable="false"
       show-icon
     />
+    <!--
+      Market contract: for a signed-in actor, plugin comments' can_reply is false only
+      when the Market requires email verification and the account is unverified.
+    -->
     <MarketConversationThread
       :key="session || 'guest'"
       :messages="thread.messages"
       :empty-text="t('market.detailCommentsEmpty')"
       :session="session"
+      :draft-key="`comments:${pluginId}`"
       :can-write="!!session && !!thread.can_reply"
       :requires-email-verification="!!session && thread.can_reply === false"
       :has-more="thread.next_cursor !== null"

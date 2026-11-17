@@ -7,14 +7,12 @@
       <div class="market-message__content">
         <div class="market-message__meta">
           <strong>{{ authorName(message) }}</strong>
-          <time :datetime="message.created_at">{{
-            new Date(message.created_at).toLocaleString(locale)
-          }}</time>
+          <time :datetime="message.created_at">{{ formatTime(message.created_at) }}</time>
         </div>
         <div v-if="message.reply_to" class="market-message__context">
           {{ t('market.detailCommentReplyTo', { name: authorName(message.reply_to) }) }}
         </div>
-        <p>{{ message.is_hidden ? t('market.detailCommentHidden') : message.body }}</p>
+        <p>{{ messageText(message) }}</p>
         <el-button
           v-if="canWrite && !message.is_hidden"
           text
@@ -53,6 +51,12 @@
   <p v-else-if="requiresEmailVerification">{{ t('marketFeedback.verifyEmail') }}</p>
 </template>
 
+<script lang="ts">
+// Unsent drafts survive the remount that follows a session reload. Keyed by
+// thread, never by session: the text was not posted under any account.
+const unsentDrafts = new Map<string, { body: string; replyToId: number | null }>()
+</script>
+
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -77,19 +81,33 @@ const props = defineProps<{
   hasMore: boolean
   loadingMore: boolean
   send: (draft: MarketMessageDraft) => Promise<void>
+  draftKey: string
 }>()
 const emit = defineEmits<{ more: []; 'session-updated': [] }>()
 const { t, locale } = useI18n()
 const { marketAuthBusy, startMarketLogin } = useMarketAuth()
-const body = ref('')
-const replyTo = ref<MarketPluginComment | null>(null)
+// A read-only remount (signed out, guest view) leaves the draft for a later writable one.
+const stashed = props.canWrite ? unsentDrafts.get(props.draftKey) : undefined
+if (stashed) unsentDrafts.delete(props.draftKey)
+const body = ref(stashed?.body ?? '')
+const replyTo = ref<MarketPluginComment | null>(
+  props.messages.find((message) => message.id === stashed?.replyToId) ?? null
+)
 const sending = ref(false)
 const sendError = ref('')
 const avatars = ref<Record<string, string>>({})
 let lastDraft: MarketMessageDraft | undefined
 
-function onAccountChange() {
+/** Ask the parent to reload; the reload remounts this form, so keep what was typed. */
+function reloadKeepingDraft() {
+  if (body.value.trim()) {
+    unsentDrafts.set(props.draftKey, { body: body.value, replyToId: replyTo.value?.id ?? null })
+  }
   emit('session-updated')
+}
+
+function onAccountChange() {
+  reloadKeepingDraft()
 }
 onMounted(() => window.addEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange))
 onBeforeUnmount(() => window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange))
@@ -125,6 +143,16 @@ function authorName(entry: Pick<MarketPluginComment, 'author'>): string {
   return entry.author.display_name || entry.author.username || t('market.unknownAuthor')
 }
 
+function messageText(message: MarketPluginComment): string {
+  if (message.is_hidden) return t('market.detailCommentHidden')
+  return message.body || t('market.detailCommentEmpty')
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(locale.value)
+}
+
 function avatarFor(message: MarketPluginComment): string {
   if (message.is_hidden) return ''
   const id = message.author.community_profile_id
@@ -153,14 +181,17 @@ async function submit() {
       lastDraft = undefined
       // A toast outlives this component, which is re-keyed by the reload below.
       ElMessage.warning(t('marketFeedback.sentAccountChanged'))
+      emit('session-updated')
+    } else if (marketConversationSessionChanged(error)) {
+      // Nothing was posted. The inline error would vanish with the remount,
+      // so say it in a toast and carry the draft over.
+      ElMessage.error(t('marketFeedback.notSentSessionChanged'))
+      reloadKeepingDraft()
     } else {
       sendError.value =
         error instanceof MarketConversationError && error.code === 'market_email_unverified'
           ? 'marketFeedback.verifyEmail'
           : 'marketFeedback.sendFailed'
-    }
-    if (marketConversationSessionChanged(error)) {
-      emit('session-updated')
     }
   } finally {
     sending.value = false

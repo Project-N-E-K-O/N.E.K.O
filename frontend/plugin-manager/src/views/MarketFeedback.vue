@@ -178,6 +178,7 @@ const marking = ref(false)
 const appendFailed = ref(false)
 const avatars = ref<Record<string, string>>({})
 let activePage: AbortController | undefined
+let loadedPages = 0
 let mounted = false
 
 const groups = computed(() => {
@@ -233,15 +234,41 @@ function hasChangedSession(error: unknown): boolean {
   return error instanceof FeedbackRequestError && error.code === 'market_feedback_session_changed'
 }
 
-async function loadPage(append = false): Promise<void> {
+function feedbackKey(item: FeedbackItem): string {
+  return `${item.kind}:${item.thread_id}`
+}
+
+/**
+ * Fold a fresh first page into what is already shown, keeping the pages the
+ * author has loaded with "load more". Counts come from the fresh page; items
+ * it carries replace their old copies; new threads go on top.
+ */
+function mergeFirstPage(previous: FeedbackPage, fresh: FeedbackPage): FeedbackPage {
+  const updates = new Map(fresh.items.map((item) => [feedbackKey(item), item]))
+  const kept = previous.items.map((item) => updates.get(feedbackKey(item)) ?? item)
+  const known = new Set(previous.items.map(feedbackKey))
+  return {
+    ...fresh,
+    next_cursor: previous.next_cursor,
+    items: [...fresh.items.filter((item) => !known.has(feedbackKey(item))), ...kept],
+  }
+}
+
+/**
+ * ``quiet`` refreshes in place (window focus, after marking read): the list,
+ * loaded pages and avatars stay on screen. A full load (filters, account
+ * change, the refresh button) starts over from the first page.
+ */
+async function loadPage(append = false, quiet = false): Promise<void> {
   const previous = page.value
   if (append && (!previous?.next_cursor || loading.value)) return
+  const keepLoaded = quiet && !append && !!previous && state.value === 'ready'
   activePage?.abort()
   const request = new AbortController()
   activePage = request
   appendFailed.value = false
   loading.value = true
-  if (!append) {
+  if (!append && !keepLoaded) {
     page.value = null
     avatars.value = {}
     if (state.value !== 'ready') state.value = 'loading'
@@ -261,11 +288,18 @@ async function loadPage(append = false): Promise<void> {
       void loadPage()
       return
     }
-    const items = new Map<string, FeedbackItem>()
-    for (const item of [...(append ? (previous?.items ?? []) : []), ...result.items]) {
-      items.set(`${item.kind}:${item.thread_id}`, item)
+    const sameSession = previous?.session === result.session
+    if (keepLoaded && previous && sameSession && loadedPages > 1) {
+      page.value = mergeFirstPage(previous, result)
+    } else {
+      if (keepLoaded && !sameSession) avatars.value = {}
+      const items = new Map<string, FeedbackItem>()
+      for (const item of [...(append ? (previous?.items ?? []) : []), ...result.items]) {
+        items.set(feedbackKey(item), item)
+      }
+      page.value = { ...result, items: [...items.values()] }
+      loadedPages = append ? loadedPages + 1 : 1
     }
-    page.value = { ...result, items: [...items.values()] }
     state.value = 'ready'
     void fetchCommunityAuthorAvatars(
       result.items.map((item) => item.author),
@@ -292,7 +326,8 @@ async function loadPage(append = false): Promise<void> {
       state.value = 'pending'
     } else if (append) {
       appendFailed.value = true
-    } else {
+    } else if (!keepLoaded) {
+      // A failed quiet refresh falls through and keeps the list already on screen.
       state.value = 'error'
     }
   } finally {
@@ -306,7 +341,21 @@ async function markRead(target: FeedbackItem | 'all'): Promise<void> {
   marking.value = true
   try {
     await markMarketFeedbackRead(target, session)
-    if (mounted && (!page.value || page.value.session === session)) await loadPage()
+    const current = page.value
+    if (mounted && current?.session === session) {
+      // Clear the marked items here too: a quiet refresh only re-reads the first page.
+      page.value = {
+        ...current,
+        items: current.items.map((item) =>
+          target === 'all' || feedbackKey(item) === feedbackKey(target)
+            ? { ...item, unread: false }
+            : item
+        ),
+      }
+      await loadPage(false, true)
+    } else if (mounted && !current) {
+      await loadPage()
+    }
   } catch (error) {
     if (!mounted) return
     if (
@@ -322,9 +371,14 @@ async function markRead(target: FeedbackItem | 'all'): Promise<void> {
   }
 }
 
-async function refresh() {
+async function refresh(quiet = false) {
   if (state.value === 'pending') await loadMarketAuthStatus()
-  if (mounted) await loadPage()
+  if (mounted) await loadPage(false, quiet)
+}
+
+// Coming back from the Market in a browser must not throw away loaded pages.
+function onFocus() {
+  void refresh(true)
 }
 
 watch([kind, status], () => void loadPage())
@@ -341,14 +395,14 @@ function onAccountChange() {
 }
 onMounted(() => {
   mounted = true
-  window.addEventListener('focus', refresh)
+  window.addEventListener('focus', onFocus)
   window.addEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
   void loadPage()
 })
 onBeforeUnmount(() => {
   mounted = false
   activePage?.abort()
-  window.removeEventListener('focus', refresh)
+  window.removeEventListener('focus', onFocus)
   window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
 })
 </script>

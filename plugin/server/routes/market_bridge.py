@@ -1260,7 +1260,7 @@ async def market_feedback_avatars(request: Request, payload: MarketFeedbackAvata
                         raise ValueError("avatar query response too large")
                     chunks.append(chunk)
         body = json.loads(b"".join(chunks))
-    except (httpx.HTTPError, ValueError):
+    except (httpx.HTTPError, ValueError, RecursionError):
         return JSONResponse({}, status_code=502)
     profiles = body.get("profiles") if isinstance(body, dict) else None
     avatars = {}

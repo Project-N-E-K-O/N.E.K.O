@@ -184,12 +184,14 @@ def test_feedback_refresh_retries_only_inside_the_original_session(monkeypatch, 
 
 
 def _switch_account_during(status, payload=None):
-    """Answer ``status``, switching the saved login while the request is in flight."""
+    """Let the first read succeed, then answer ``status`` while switching the login mid-flight."""
 
     def responder(request, attempt):
-        if attempt > 0:
-            responder.token.update(session_id="feedback-login-b", subject="another-account")
-        return httpx.Response(status, json=payload if payload is not None else {})
+        body = payload if payload is not None else {}
+        if attempt == 0:
+            return httpx.Response(200, json=body)
+        responder.token.update(session_id="feedback-login-b", subject="another-account")
+        return httpx.Response(status, json=body)
 
     return responder
 
@@ -201,6 +203,7 @@ def test_a_write_the_market_applied_is_not_reported_failed_after_an_account_swit
     responder.token = token
     base = "/market/conversations/plugins/8"
     login = client.get(f"{base}/issues/10", headers=_BRIDGE_HEADERS)
+    assert login.status_code == 200
     headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: login.headers[_FEEDBACK_HEADER]}
     draft = {"body": "Reply text", "reply_to_id": None, "client_message_id": "test-message-id"}
     sent = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
@@ -220,6 +223,7 @@ def test_a_read_or_refused_write_is_still_rejected_after_an_account_switch(monke
     client, upstream, token = _install_feedback(monkeypatch, responder)
     responder.token = token
     initial = client.get("/market/feedback", headers=_BRIDGE_HEADERS)
+    assert initial.status_code == 200
     headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: initial.headers[_FEEDBACK_HEADER]}
     if method == "GET":
         response = client.get("/market/feedback", headers=headers)
