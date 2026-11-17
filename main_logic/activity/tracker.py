@@ -1001,32 +1001,40 @@ class UserActivityTracker:
         pending = self._context_prompt_pending
         if pending is None:
             return
-        self._context_prompt_pending = None
         callback = self._on_context_prompt
-        if callback is None:
-            return
-        # When builtin mini-games own interaction, gaming describes N.E.K.O's own game window,
-        # not a newly opened external game. Pushing again creates a homepage screen-sharing
-        # prompt while Electron foregrounds the mini-game, leaving the prompt visible
-        # but unclickable. Pending was consumed above, preventing an obsolete prompt on game exit.
-        # Apply the same suppression during any external route takeover, not just mini-games.
-        if is_external_route_active(self.lanlan_name):
-            return
         try:
-            # Consume stale signals even when disabled. Read at delivery time so
-            # a live settings change applies without restarting the tracker.
+            if callback is None:
+                return
+            # When builtin mini-games own interaction, gaming describes N.E.K.O's own game window,
+            # not a newly opened external game. Pushing again creates a homepage screen-sharing
+            # prompt while Electron foregrounds the mini-game, leaving the prompt visible
+            # but unclickable. Consume the suppressed signal in finally to avoid replay on game exit.
+            # Apply the same suppression during any external route takeover, not just mini-games.
+            if is_external_route_active(self.lanlan_name):
+                return
+            # Read at delivery time so a live settings change applies without restarting.
+            # Keep the slot visible while awaiting: a state transition or session reset
+            # must still be able to invalidate this signal.
             from utils.preferences import aload_global_conversation_settings
             settings = await aload_global_conversation_settings(strict=True)
+            if self._context_prompt_pending is not pending:
+                return
             if settings.get('activityContextPromptEnabled', True) is False:
                 return
             if is_external_route_active(self.lanlan_name):
                 return
+            # Claim this signal before the callback yields so concurrent drains cannot repeat it.
+            self._context_prompt_pending = None
             await callback(pending['context'])
         except Exception as e:  # noqa: BLE001 - Push failure must not stop the heartbeat.
             logger.debug(
                 '[%s] context prompt push failed (%s): %s',
                 self.lanlan_name, pending.get('context'), e,
             )
+        finally:
+            # Consume disabled/failed signals without discarding a newer transition.
+            if self._context_prompt_pending is pending:
+                self._context_prompt_pending = None
 
     # ── enrichment kickoff ──────────────────────────────────────
 
