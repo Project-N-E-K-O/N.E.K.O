@@ -360,8 +360,11 @@ async function markRead(target: FeedbackItem | 'all'): Promise<void> {
     if (mounted && current?.session === session) {
       // Apply the write locally first, so the list is right even if the quiet
       // refresh below fails: under "unread" a read item leaves the list.
+      // A single mark only covers messages up to the one shown; a newer message
+      // in the same thread (loaded by a refresh meanwhile) is still unread.
       const marked = (item: FeedbackItem) =>
-        target === 'all' || feedbackKey(item) === feedbackKey(target)
+        target === 'all' ||
+        (feedbackKey(item) === feedbackKey(target) && item.message_id <= target.message_id)
       const newlyRead = current.items.filter((item) => marked(item) && item.unread).length
       page.value = {
         ...current,

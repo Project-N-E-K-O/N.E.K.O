@@ -69,6 +69,9 @@ interface UnsentDraft {
   body: string
   // Kept whole: the target may sit on a page the reloaded thread has not loaded.
   replyTo: MarketPluginComment | null
+  // The id of an earlier attempt at this exact text. The Market dedupes on
+  // (author, client_message_id), so a retry after a lost response cannot post twice.
+  clientMessageId?: string
   // Set when the reload raced a send of this text; resolves true if it may have posted.
   posted?: Promise<boolean>
 }
@@ -138,6 +141,13 @@ async function claimDraft() {
       if (!posted) {
         body.value = draft.body
         replyTo.value = draft.replyTo
+        if (draft.clientMessageId) {
+          lastDraft = {
+            body: draft.body.trim(),
+            reply_to_id: draft.replyTo?.id ?? null,
+            client_message_id: draft.clientMessageId,
+          }
+        }
         return
       }
     }
@@ -170,9 +180,13 @@ onBeforeUnmount(() => {
   // Every remount (session reload, leaving an Issue, closing the dialog) keeps
   // what was typed. A send still in flight decides later whether it is restorable.
   if (body.value.trim() && !restoring.value) {
+    const retried =
+      lastDraft?.body === body.value.trim() &&
+      lastDraft.reply_to_id === (replyTo.value?.id ?? null)
     unsentDrafts.set(props.draftKey, {
       body: body.value,
       replyTo: replyTo.value,
+      clientMessageId: retried ? lastDraft?.client_message_id : undefined,
       posted: sending.value ? inFlight : undefined,
     })
   }
