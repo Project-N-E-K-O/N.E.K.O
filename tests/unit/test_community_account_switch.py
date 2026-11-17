@@ -1410,3 +1410,89 @@ def test_stale_cleanup_cannot_restore_a_conflict_a_newer_login_cleared(oauth_app
 
     # B's success landed last: B owns the device and is not held.
     assert not hold.device_held(auth.parent, OWNER_A)
+
+
+async def test_tombstone_hold_survives_restart_then_second_logout(oauth_app, tmp_path, monkeypatch):  # noqa: F811
+    """Tombstone from a bound login whose rebind conflict was never written; restart; log out again."""
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
+    _logged_in(monkeypatch)
+    real_write = hold._write
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(*_args, **_kwargs):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    monkeypatch.setattr(C, "_persist_repaired_bind", lambda *_args, **_kwargs: False)
+    assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
+    assert C._clear_auth()
+    assert json.loads(auth.read_text(encoding="utf-8"))[C.DEVICE_HOLD_PENDING] is True
+
+    hold._set_unrecorded_hold(False)  # restart
+    monkeypatch.setattr(hold, "_write", real_write)  # disk recovers
+    assert C._clear_auth()  # logout again
+
+    assert not auth.exists()  # the hold moved into the device record
+    assert hold.device_held(auth.parent, None)
+    assert await _uploads_held_after_restart(auth.parent, monkeypatch)
+
+
+def test_tombstone_survives_a_second_logout_while_writes_still_fail(oauth_app, monkeypatch):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(
+        json.dumps({"local_user_id": USER_ID, "bind": BOUND, C.DEVICE_HOLD_PENDING: True}), encoding="utf-8",
+    )
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+    assert C._clear_auth()
+    assert json.loads(auth.read_text(encoding="utf-8"))[C.DEVICE_HOLD_PENDING] is True
+
+
+def test_tombstone_hold_survives_a_sync_session_login_replacing_it(tmp_path, monkeypatch):
+    """The tombstone is the only copy of the hold (no device record); the same account
+    signs in again through a browser sync-session, which never binds."""
+    import asyncio
+
+    auth = tmp_path / "community_auth.json"
+    social = tmp_path / "social_session.json"
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    monkeypatch.setattr(C, "_social_session_path", lambda: social)
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: social)
+    auth.write_text(
+        json.dumps({"local_user_id": USER_ID, "bind": BOUND, C.DEVICE_HOLD_PENDING: True}), encoding="utf-8",
+    )
+    assert not (tmp_path / hold.HOLD_FILENAME).exists()
+
+    asyncio.run(
+        C._store_session(
+            "https://community.example",
+            "same-account-legacy-token",
+            None,
+            {"id": USER_ID, "display_name": "Same"},
+            auth_source="legacy",
+            bind_client=False,
+        )
+    )
+
+    assert hold.device_held(tmp_path, USER_ID)
+    assert C._clear_auth()
+    assert hold.device_held(tmp_path, None)
+
+
+def test_logout_records_use_by_the_social_session_when_the_mirror_lags(oauth_app):  # noqa: F811
+    """Mirror write failed (still A, bound); social session saved B; crash before the device record."""
+    _client, auth, social, _pending = oauth_app
+    hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
+    auth.write_text(
+        json.dumps({"access_token": "a-token", "local_user_id": OWNER_A, "auth_source": "oauth", "bind": BOUND}),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps({"token": "b-token", "local_user_id": USER_ID, "auth_source": "legacy"}),
+        encoding="utf-8",
+    )
+
+    assert C._clear_auth()
+
+    assert hold.device_held(auth.parent, None)

@@ -35,6 +35,9 @@ logger = logging.getLogger("neko.community_device_hold")
 
 HOLD_FILENAME = "community_device_hold.json"
 OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
+# Key in a logout tombstone of community_auth.json: the device record could not
+# take this hold, so the tombstone is its copy on disk.
+DEVICE_HOLD_PENDING = "device_hold_pending"
 _UNREADABLE = object()
 # Every read-modify-write of the record holds this, so a stale outcome read
 # before a newer one cannot be written after it. Reentrant: callers may hold
@@ -274,6 +277,7 @@ def remember_owner(directory: Path | str | None, account: str | None) -> None:
 
 
     __all__ = [
+    "DEVICE_HOLD_PENDING",
         "HOLD_FILENAME",
         "OWNERSHIP_CONFLICT",
         "LEGACY_ACCOUNT",

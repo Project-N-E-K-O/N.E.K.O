@@ -938,8 +938,22 @@ def _remember_confirmed_owner() -> bool:
 
 def _remember_saved_login(directory: Path | None) -> bool:
     auth = _load_auth() or {}
-    bind = auth.get("bind")
     account = _normalize_local_user_id(auth.get("local_user_id"))
+    if auth.get(DEVICE_HOLD_PENDING):
+        # A logout tombstone is the only copy of a hold the device record could
+        # not take. Move it there first; while that fails, keep the tombstone.
+        return community_device_hold.record_bind_outcome(
+            directory, {"bound": False, "error": _BIND_OWNERSHIP_CONFLICT}, account,
+        )
+    # The social session is authoritative and can be ahead of the mirror (its
+    # write can succeed when the mirror's fails). An account signed in there
+    # that the mirror does not describe never proved it owns the device.
+    social = _desktop_session_snapshot() or {}
+    social_account = _normalize_local_user_id(social.get("local_user_id"))
+    if social_account and social_account != account:
+        if not community_device_hold.record_session_account(directory, social_account):
+            return False
+    bind = auth.get("bind")
     if bind is None and account and auth.get("access_token"):
         # Sessions saved before bind outcomes were recorded count as bound,
         # the same compatibility rule /auth-status applies.
@@ -1171,7 +1185,7 @@ def _persist_session_identity_metadata(
         return False
 
 
-DEVICE_HOLD_PENDING = "device_hold_pending"
+DEVICE_HOLD_PENDING = community_device_hold.DEVICE_HOLD_PENDING
 
 
 def _tombstone_auth_mirror(auth_path: Path) -> bool:

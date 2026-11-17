@@ -174,7 +174,7 @@ def _device_bound_to_other_account() -> bool:
     auth = _saved_auth(directory)
     if auth is _AUTH_UNREADABLE:
         return True
-    if auth.get("device_hold_pending"):
+    if auth.get(community_device_hold.DEVICE_HOLD_PENDING):
         # A logout could not write the device record and left this marker
         # instead; it holds until a later login replaces the mirror.
         return True
