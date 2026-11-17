@@ -48,7 +48,7 @@ from utils.logger_config import get_module_logger
 
 from services.model_workshop.runtime import filter_catalog as _filter_workshop_models
 from services.model_workshop.tasks import _drain_sync
-from services.model_workshop.paths import WorkshopError
+from services.model_workshop.paths import WorkshopError, identity
 
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
 logger = get_module_logger(__name__, "Main")
@@ -410,6 +410,22 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
     # Write upload to temporary file before extraction, avoiding memory explosion.
     tmp_path = None
     target_dir = None
+    created_target = None
+
+    def reserve_target():
+        nonlocal created_target
+        # Reserve before extraction. An existing or concurrently published
+        # directory cannot be owned by this request's failure handler.
+        target_dir.mkdir(parents=True, exist_ok=False)
+        created_target = identity(target_dir)
+
+    def cleanup_owned_target():
+        try:
+            if created_target is not None and identity(target_dir) == created_target:
+                shutil.rmtree(target_dir)
+        except (OSError, WorkshopError) as cleanup_error:
+            # Do not turn an absent/replaced directory into broader cleanup.
+            logger.warning("MMD upload cleanup skipped: %s", cleanup_error)
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
             tmp_path = Path(tmp.name)
@@ -521,6 +537,8 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     logger.info(f"清理残留的无效模型目录: {target_dir}")
                     await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
 
+            await _drain_sync(reserve_target)
+
             # Extract using corrected filenames.
             if all(
                 n.startswith(extract_dir_name + '/') or n == extract_dir_name
@@ -530,7 +548,6 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                 await asyncio.to_thread(_extract_zip_with_encoding, zf, mmd_dir, name_map)
             else:
                 # Extract into target_dir.
-                target_dir.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(_extract_zip_with_encoding, zf, target_dir, name_map)
 
         # Find extracted PMX path.
@@ -538,7 +555,7 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
         for ext in ALLOWED_MODEL_EXTENSIONS:
             pmx_candidates.extend(target_dir.rglob(f'*{ext}'))
         if not pmx_candidates:
-            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+            await _drain_sync(cleanup_owned_target)
             return JSONResponse(status_code=500, content={
                 "success": False, "error": "解压后未找到模型文件"
             })
@@ -559,13 +576,14 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
             "file_size": total_size
         })
 
+    except WorkshopError as exc:
+        await _drain_sync(cleanup_owned_target)
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except zipfile.BadZipFile:
-        if target_dir and target_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        await _drain_sync(cleanup_owned_target)
         return JSONResponse(status_code=400, content={"success": False, "error": "ZIP 文件损坏"})
     except Exception as e:
-        if target_dir and target_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        await _drain_sync(cleanup_owned_target)
         logger.error(f"上传 MMD ZIP 包失败: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
     finally:

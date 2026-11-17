@@ -1327,7 +1327,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const option = document.createElement('option');
         const selection = getLive2DModelSelection(model);
         option.value = selection.name;
-        option.textContent = model.display_name || selection.name;
+        // Only a registry-associated package supplies an alternate display label.
+        // Ordinary/Steam labels and every runtime identifier retain their old meaning.
+        option.textContent = (model.model_workshop?.install_id && model.display_name) || selection.name;
         option.setAttribute('data-model-type', 'live2d');
         option.dataset.modelName = selection.name;
         option.dataset.modelPath = selection.path;
@@ -3171,7 +3173,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (model.item_id) {
                         option.dataset.itemId = model.item_id;
                     }
-                    option.textContent = model.name || filename || validPath;
+                    // The package label is display-only; value/data-path/item_id stay native.
+                    option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || filename || validPath;
                     vrmModelSelect.appendChild(option);
                 });
                 vrmModelSelect.disabled = false;
@@ -4477,7 +4480,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (model.item_id) {
                         option.dataset.itemId = model.item_id;
                     }
-                    option.textContent = model.name || model.filename || modelPath.split('/').pop();
+                    // Match the merged 3D list without reinterpreting this legacy save selector.
+                    option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
                 mmdModelSelect.disabled = false;
@@ -4961,7 +4965,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!auxiliary) option.setAttribute('data-sub-type', subType);
             if (filename) option.setAttribute('data-filename', filename);
             if (model.item_id) option.dataset.itemId = model.item_id;
-            option.textContent = model.display_name || model.name || filename || modelPath.split('/').pop();
+            option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || filename || modelPath.split('/').pop();
             if (model.model_workshop?.install_id) option.dataset.workshopInstallId = model.model_workshop.install_id;
             return option;
         }
@@ -5019,7 +5023,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-sub-type', 'vrm');
                 if (filename) option.setAttribute('data-filename', filename);
                 if (model.item_id) option.dataset.itemId = model.item_id;
-                const baseName = model.name || filename || validPath;
+                // Reopening uses the same registered package label as import refresh.
+                const baseName = (model.model_workshop?.install_id && model.display_name) || model.name || filename || validPath;
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
             });
@@ -5034,7 +5039,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 option.setAttribute('data-sub-type', 'mmd');
                 if (model.filename) option.setAttribute('data-filename', model.filename);
                 if (model.item_id) option.dataset.itemId = model.item_id;
-                const baseName = model.name || model.filename || modelPath.split('/').pop();
+                const baseName = (model.model_workshop?.install_id && model.display_name) || model.name || model.filename || modelPath.split('/').pop();
                 option.textContent = baseName;
                 vrmModelSelect.appendChild(option);
             });
@@ -5061,7 +5066,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     option.setAttribute('data-path', modelPath);
                     if (model.filename) option.setAttribute('data-filename', model.filename);
                     if (model.item_id) option.dataset.itemId = model.item_id;
-                    option.textContent = model.name || model.filename || modelPath.split('/').pop();
+                    option.textContent = (model.model_workshop?.install_id && model.display_name) || model.name || model.filename || modelPath.split('/').pop();
                     mmdModelSelect.appendChild(option);
                 });
             }

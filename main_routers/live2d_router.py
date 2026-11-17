@@ -49,7 +49,7 @@ from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_workshop_item_by_id
 from services.model_workshop.catalog import find_models, find_model_directory
 from services.model_workshop.runtime import snapshot_for_mutation as workshop_snapshot
-from services.model_workshop.paths import WorkshopError
+from services.model_workshop.paths import WorkshopError, identity
 from services.model_workshop.tasks import _drain_sync
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
@@ -1155,6 +1155,22 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
     import tempfile
     
     target_model_dir = None
+    created_target = None
+
+    def reserve_target():
+        nonlocal created_target
+        # Atomic creation is the ownership proof: a concurrent publication wins
+        # with FileExistsError and must never enter this upload's cleanup.
+        target_model_dir.mkdir(parents=True, exist_ok=False)
+        created_target = identity(target_model_dir)
+
+    def cleanup_owned_target():
+        # A rejected upload never owns the old directory. A replacement with a
+        # different identity also belongs to somebody else, even at this path.
+        if created_target is not None and identity(target_model_dir) == created_target:
+            shutil.rmtree(target_model_dir)
+            return True
+        return False
     try:
         if not files:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
@@ -1222,7 +1238,8 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
                     await asyncio.to_thread(shutil.rmtree, target_model_dir, ignore_errors=True)
 
             # Copy model root to user-documents live2d directory.
-            await asyncio.to_thread(shutil.copytree, model_root_dir, target_model_dir)
+            await _drain_sync(reserve_target)
+            await _drain_sync(lambda: shutil.copytree(model_root_dir, target_model_dir, dirs_exist_ok=True))
 
             # After upload iterate all *.motion3.json files,
             # empty Segments=[] for official whitelist and model-declared .model3.json LipSync parameters.
@@ -1332,13 +1349,14 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             })
             
     except Exception as e:
-        # Clean possible leftover directory.
+        # Clean only the directory atomically reserved by this request.
         try:
-            if target_model_dir and target_model_dir.exists():
-                await asyncio.to_thread(shutil.rmtree, target_model_dir)
+            if await _drain_sync(cleanup_owned_target):
                 logger.info(f"已清理导入失败的残留目录: {target_model_dir}")
         except Exception as cleanup_err:
             logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")
+        if isinstance(e, WorkshopError):
+            return JSONResponse(status_code=409, content={"success": False, "error_code": str(e)})
         logger.error(f"上传Live2D模型失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 

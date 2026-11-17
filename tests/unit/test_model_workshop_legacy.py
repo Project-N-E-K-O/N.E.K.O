@@ -411,3 +411,115 @@ def test_actual_monitor_auth_wraps_read_only_pending_checks(
     assert (
         service._writer is not None
     )  # Monitor never recovers or replaces Main's owner.
+
+
+def _legacy_upload(client, kind, directory):
+    """Exercise the actual old upload routes with a chosen model-root name."""
+    import io
+    import zipfile
+
+    if kind == 'live2d':
+        return client.post('/api/live2d/upload_model', files=[
+            ('files', (directory + '/Avatar.model3.json', b'{}', 'application/json')),
+        ])
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr(directory + '/Avatar.pmx', b'PMX test upload')
+    return client.post('/api/model/mmd/upload_zip', files={
+        'file': ('Avatar.zip', stream.getvalue(), 'application/zip'),
+    })
+
+
+@pytest.mark.parametrize('kind', ['live2d', 'pmx'])
+@pytest.mark.parametrize('missing_entrypoint', [False, True])
+def test_rejected_old_upload_preserves_managed_directory_and_local_edits(
+    legacy, tmp_path, kind, missing_entrypoint
+):
+    client, _, service = legacy
+    package, _ = bundle_path(tmp_path, kind)
+    row = install(service, package)['result']
+    target = service.paths.root / row['target']
+    if missing_entrypoint:
+        (service.paths.root / row['local_entrypoint']).unlink()
+    (target / 'local-edit.txt').write_bytes(b'keep local edits')
+    before = {str(path.relative_to(target)): path.read_bytes()
+              for path in target.rglob('*') if path.is_file()}
+    registry = (service.paths.private / "installed.json").read_bytes()
+    response = _legacy_upload(client, kind, target.name)
+    assert response.status_code == 409, response.text
+    assert response.json()['error_code'] == 'model_workshop_install_conflict'
+    assert target.is_dir()
+    assert {str(path.relative_to(target)): path.read_bytes()
+            for path in target.rglob('*') if path.is_file()} == before
+    assert (service.paths.private / "installed.json").read_bytes() == registry
+
+
+@pytest.mark.parametrize('kind', ['live2d', 'pmx'])
+def test_old_upload_uncertain_registry_preserves_existing_directory(legacy, monkeypatch, kind):
+    client, cfg, _ = legacy
+    root = cfg.live2d_dir if kind == 'live2d' else cfg.mmd_dir
+    target = root / 'existing'
+    target.mkdir()
+    (target / 'local-edit.txt').write_bytes(b'keep')
+    def unreadable(_):
+        raise WorkshopError('model_workshop_state_unreadable')
+    monkeypatch.setattr(runtime, 'snapshot_for_mutation', unreadable)
+    response = _legacy_upload(client, kind, target.name)
+    assert response.status_code == 409, response.text
+    assert (target / 'local-edit.txt').read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('kind', ['live2d', 'pmx'])
+def test_ordinary_old_upload_still_uses_its_existing_import_path(legacy, kind):
+    client, cfg, _ = legacy
+    response = _legacy_upload(client, kind, 'ordinary-avatar')
+    assert response.status_code == 200 and response.json()['success'], response.text
+    root = cfg.live2d_dir if kind == 'live2d' else cfg.mmd_dir
+    assert (root / 'ordinary-avatar').is_dir()
+
+
+@pytest.mark.parametrize('kind', ['live2d', 'pmx'])
+@pytest.mark.parametrize('replacement', [False, True])
+def test_failed_old_upload_cleans_only_its_own_reserved_directory(legacy, monkeypatch, kind, replacement):
+    import shutil
+
+    client, cfg, _ = legacy
+    root = cfg.live2d_dir if kind == 'live2d' else cfg.mmd_dir
+    target = root / 'incoming'
+    def fail(*args, **kwargs):
+        assert target.is_dir()
+        if replacement:
+            target.rename(root / 'original-reservation')
+            target.mkdir()
+            (target / 'other-owner.txt').write_bytes(b'keep')
+        raise OSError('injected copy/extract failure')
+    if kind == 'live2d':
+        monkeypatch.setattr(shutil, 'copytree', fail)
+    else:
+        monkeypatch.setattr(mmd_router, '_extract_zip_with_encoding', fail)
+    response = _legacy_upload(client, kind, target.name)
+    assert response.status_code == 500, response.text
+    if replacement:
+        assert (target / 'other-owner.txt').read_bytes() == b'keep'
+    else:
+        assert not target.exists()
+
+
+@pytest.mark.parametrize('kind', ['live2d', 'pmx'])
+def test_old_upload_cannot_clean_a_directory_published_before_reservation(legacy, monkeypatch, kind):
+    from pathlib import Path
+
+    client, cfg, _ = legacy
+    root = cfg.live2d_dir if kind == 'live2d' else cfg.mmd_dir
+    target = root / 'incoming'
+    original = Path.mkdir
+    def racing_mkdir(path, *args, **kwargs):
+        if path == target:
+            original(path, *args, **kwargs)
+            (path / 'other-owner.txt').write_bytes(b'keep')
+            raise FileExistsError('concurrent publication won')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'mkdir', racing_mkdir)
+    response = _legacy_upload(client, kind, target.name)
+    assert response.status_code == 500, response.text
+    assert (target / 'other-owner.txt').read_bytes() == b'keep'

@@ -197,7 +197,7 @@ def test_refresh_uses_latest_selection_and_never_dispatches_change(page):
     mount(page)
     value = page.evaluate("""async () => {
         const select = document.getElementById('model-select');
-        const rows = ['a','b'].map(name => ({name, path:'/user_live2d/' + name + '/Avatar.model3.json', source:'local', display_name:'same title'}));
+        const rows = ['a','b'].map(name => ({name, path:'/user_live2d/' + name + '/Avatar.model3.json', source:'local', display_name:'same title', model_workshop:{install_id:name.repeat(32)}}));
         select.replaceChildren(...rows.map(testState.option));
         select.selectedIndex = 0;
         let resolve;
