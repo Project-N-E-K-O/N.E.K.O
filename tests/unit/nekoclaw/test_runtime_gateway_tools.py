@@ -185,7 +185,7 @@ async def test_call_returns_text_pictures_and_the_error_flag(gateway):
     assert gateway.requests[-3]["params"] == {
         "name": "plugin__weather__today",
         "arguments": {"city": "Lyon"},
-        "_meta": {"nekoclaw/reply": 0},
+        "_meta": {"nekoclaw/reply": 0, "nekoclaw/compactions": 0},
     }
 
 
@@ -203,11 +203,74 @@ async def test_every_call_names_the_reply_of_the_model_it_was_written_in(gateway
     client.next_reply()
     await client.call("plugin__weather__today", {"city": "Brest"})
 
-    named = [body["params"]["_meta"] for body in gateway.requests if body["method"] == "tools/call"]
+    named = [body["params"]["_meta"]["nekoclaw/reply"] for body in gateway.requests if body["method"] == "tools/call"]
     # The calls of one reply name the same reply, those of the next another.
-    assert named == [{"nekoclaw/reply": 0}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 2}]
+    assert named == [0, 1, 1, 2]
     # Nothing but the calls names one.
     assert all("_meta" not in (body.get("params") or {}) for body in gateway.requests if body["method"] != "tools/call")
+
+
+async def test_every_call_names_how_often_the_conversation_was_summed_up(gateway):
+    from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY
+
+    assert GATEWAY_COMPACTIONS_META_KEY == "nekoclaw/compactions"
+    client = GatewayClient(gateway.url, TOKEN)
+    await client.connect()
+
+    await client.call("plugin__weather__today", {"city": "Lyon"})
+    client.compactions = 2
+    await client.call("plugin__weather__today", {"city": "Nice"})
+
+    named = [body["params"]["_meta"] for body in gateway.requests if body["method"] == "tools/call"]
+    assert [meta["nekoclaw/compactions"] for meta in named] == [0, 2]
+
+
+async def test_a_session_tells_the_gateway_when_its_conversation_was_summed_up(tmp_path, gateway):
+    from nekoclaw.runtime.protocol import ModelConfig
+
+    model = ModelConfig(model="fake-model", api_key="k", context_window=32_000, max_output_tokens=2_000)
+    spec = _spec(tmp_path, gateway, model=model)
+
+    def weather(city: str, call_id: str) -> list[Any]:
+        return [call("plugin__weather__today", {"city": city}, call_id), finish("tool_calls")]
+
+    def told() -> list[int]:
+        return [
+            body["params"]["_meta"]["nekoclaw/compactions"] for body in gateway.requests if body["method"] == "tools/call"
+        ]
+
+    llm = ScriptedLLM([weather("Lyon", "c1"), [say("Sunny."), finish()]])
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("weather in Lyon")
+        await events.wait_ended()
+        for index in range(4):
+            llm.add(say(f"Step {index}. " + " ".join(f"s{index}w{word}" for word in range(300))), finish())
+            mark = len(events.events)
+            session.prompt(f"Do step {index}.")
+            await events.wait_ended(start=mark)
+        # The next request is refused as too long: the conversation is summed up, and the call after that says so.
+        llm.add(RuntimeError("Error code: 400 - This model's maximum context length is 32000 tokens."))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        llm.add(*weather("Nice", "c2"))
+        llm.add(say("Sunny there too."), finish())
+        mark = len(events.events)
+        session.prompt("and in Nice")
+        await events.wait_ended(start=mark)
+        assert [event["count"] for event in events.of("compacted")] == [1]
+        assert told() == [0, 1]
+    finally:
+        await session.close()
+
+    # A session opened later goes on counting from what its transcript holds.
+    llm = ScriptedLLM([weather("Metz", "c3"), [say("Sunny."), finish()]])
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("and in Metz")
+        await events.wait_ended()
+        assert told() == [0, 1, 1]
+    finally:
+        await session.close()
 
 
 async def test_a_session_tells_the_gateway_which_calls_were_written_in_one_reply(tmp_path, gateway):

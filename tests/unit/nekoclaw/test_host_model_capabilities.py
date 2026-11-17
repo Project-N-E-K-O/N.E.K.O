@@ -295,3 +295,138 @@ def test_only_what_is_a_scheme_is_taken_for_one() -> None:
     assert model_key("Gateway:8080?Upstream=https://API.example.com", "m") == "gateway:8080?Upstream=https://API.example.com|m"
     # Schemes may hold digits, "+", "-" and "." after their first letter.
     assert model_key("Custom+V2.X-1://HOST/Path", "m") == "custom+v2.x-1://host/Path|m"
+
+
+# ---------------------------------------------------------------------------
+# The context window
+# ---------------------------------------------------------------------------
+
+
+async def test_a_model_nothing_is_known_about_gets_the_window_of_the_setting(path):
+    import config.nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+
+    assert settings.TASK_AGENT_CONTEXT_WINDOW == 256_000
+    assert await store.context_window(URL, "any") == 256_000
+    assert await store.describe_window(URL, "any") == {"window": 256_000, "default": 256_000, "set": None}
+    assert not path.exists()
+
+
+async def test_the_user_sets_a_window_for_one_model_and_takes_it_back(path):
+    store = ModelCapabilityStore(path)
+
+    assert await store.set_context_window(URL, "small-local", 32_000) == 32_000
+    assert await store.context_window(URL, "small-local") == 32_000
+    # Larger than the setting is the user's to choose as well.
+    assert await store.set_context_window(URL, "huge", 1_000_000) == 1_000_000
+    # Another model, and that name at another address, keep the setting.
+    assert await store.context_window(URL, "other") == 256_000
+    assert await store.context_window("http://192.168.1.5:8000/v1", "small-local") == 256_000
+    # Read back from the file by a store started later.
+    assert await ModelCapabilityStore(path).context_window(URL, "small-local") == 32_000
+    assert (await store.describe_window(URL, "small-local"))["set"] == 32_000
+
+    assert await store.set_context_window(URL, "small-local", None) == 256_000
+    saved = json.loads(path.read_text(encoding="utf-8"))["models"]
+    # Nothing is left of an entry that says nothing.
+    assert model_key(URL, "small-local") not in saved and model_key(URL, "huge") in saved
+
+
+@pytest.mark.parametrize("tokens", [0, -5, True, "32000", float("nan"), float("inf")])
+async def test_a_window_that_is_no_number_of_tokens_is_not_set(path, tokens):
+    store = ModelCapabilityStore(path)
+    with pytest.raises(ValueError):
+        await store.set_context_window(URL, "m", tokens)
+    assert await store.context_window(URL, "m") == 256_000
+
+
+async def test_no_window_is_smaller_than_a_session_can_be_managed_for(path):
+    import config.nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+    assert await store.set_context_window(URL, "tiny", 512) == settings.TASK_AGENT_CONTEXT_WINDOW_MIN == 4_000
+    assert await store.note_context_window(URL, "tiny-too", 2_048) is True
+    assert await store.context_window(URL, "tiny-too") == 4_000
+
+
+async def test_the_window_a_provider_stated_counts_when_it_is_the_smaller_one(path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    now = [1_800_000_000]
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: now[0])
+    store = ModelCapabilityStore(path)
+
+    assert await store.note_context_window(URL, "local", 32_768) is True
+    assert await store.context_window(URL, "local") == 32_768
+    assert await store.describe_window(URL, "local") == {
+        "window": 32_768,
+        "default": 256_000,
+        "set": None,
+        "learned": 32_768,
+        "learned_at": 1_800_000_000,
+        "lapses_at": 1_800_000_000 + settings.MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS,
+    }
+    # The same or a larger number told again changes nothing; a smaller one does.
+    assert await store.note_context_window(URL, "local", 32_768) is False
+    assert await store.note_context_window(URL, "local", 65_536) is False
+    assert await store.note_context_window(URL, "local", 16_384) is True
+    assert await store.context_window(URL, "local") == 16_384
+
+    # What the user set counts where it is smaller, and the provider's where that is.
+    await store.set_context_window(URL, "local", 8_000)
+    assert await store.context_window(URL, "local") == 8_000
+    await store.set_context_window(URL, "local", 100_000)
+    assert await store.context_window(URL, "local") == 16_384
+    # A provider that states a window larger than the setting does not widen it.
+    assert await store.note_context_window(URL, "big", 1_000_000) is True
+    assert await store.context_window(URL, "big") == 256_000
+    # Read back from the file by a store started later.
+    assert await ModelCapabilityStore(path).context_window(URL, "local") == 16_384
+
+
+@pytest.mark.parametrize("stated", [None, "many", 0, -1, True, float("nan")])
+async def test_a_statement_that_names_no_number_teaches_nothing(path, stated):
+    store = ModelCapabilityStore(path)
+    assert await store.note_context_window(URL, "local", stated) is False
+    assert await store.context_window(URL, "local") == 256_000
+    assert not path.exists()
+
+
+async def test_a_stated_window_is_believed_for_a_while_and_then_the_setting_counts_again(path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    now = [1_800_000_000]
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: now[0])
+    store = ModelCapabilityStore(path)
+    await store.note_context_window(URL, "local", 32_768)
+    await store.set_context_window(URL, "local", 100_000)
+
+    now[0] += settings.MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS - 1
+    assert await store.context_window(URL, "local") == 32_768
+    now[0] += 2
+    # What the user set does not lapse; what was learned does.
+    assert await store.context_window(URL, "local") == 100_000
+    assert await store.describe_window(URL, "local") == {"window": 100_000, "default": 256_000, "set": 100_000}
+    # Stated again, a larger number is taken now: the old one is no longer believed.
+    assert await store.note_context_window(URL, "local", 65_536) is True
+    assert await store.context_window(URL, "local") == 65_536
+
+
+async def test_what_is_known_of_the_window_and_of_pictures_do_not_overwrite_each_other(path):
+    store = ModelCapabilityStore(path)
+    await store.set_context_window(URL, "local", 32_000)
+    await store.note_context_window(URL, "local", 16_000)
+
+    assert await store.note_images_refused(URL, "local", "no pictures") is True
+    assert await store.context_window(URL, "local") == 16_000
+    assert (await store.describe_window(URL, "local"))["set"] == 32_000
+    assert await store.sees_images(URL, "local") is False
+
+    await store.set_context_window(URL, "local", None)
+    assert await store.sees_images(URL, "local") is False
+    assert await store.context_window(URL, "local") == 16_000
+    # A model that is only known by its window is taken to see pictures.
+    await store.set_context_window(URL, "other", 64_000)
+    assert await store.sees_images(URL, "other") is True
+    assert await store.describe(URL, "other") == {"sees": True}

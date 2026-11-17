@@ -661,6 +661,12 @@ def test_recent_user_messages_are_selected_newest_first_within_budget() -> None:
     assert select_user_rows(region, sizes, 250) == {"e4", "e2"}
     assert select_user_rows(region, sizes, 1_000) == {"e0", "e2", "e4"}
     assert select_user_rows(region, sizes, 50) == set()
+    # A pinned row is kept whatever its size, and takes nothing from the room of the others.
+    assert select_user_rows(region, sizes, 250, pinned={"e0"}) == {"e0", "e4", "e2"}
+    assert select_user_rows(region, sizes, 50, pinned={"e0"}) == {"e0"}
+    assert select_user_rows(region, sizes, 150, pinned={"e4"}) == {"e4", "e2"}
+    # One that is not in the part being summed up changes nothing.
+    assert select_user_rows(region, sizes, 250, pinned={"elsewhere"}) == {"e4", "e2"}
 
 
 async def test_summary_replaces_old_work_and_keeps_user_text_verbatim(tmp_path: Path) -> None:

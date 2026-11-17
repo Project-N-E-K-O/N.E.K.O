@@ -24,16 +24,22 @@ around it:
 * it implements the commands (prompt, steer, follow-up, abort, close) and keeps
   a run going while its goal or queued notices call for it.
 
-A session whose transcript file already exists continues that conversation.
+A session whose transcript file already exists continues that conversation,
+with the system prompt and the tool definitions it was opened with before
+(``snapshot.py``): the head of its requests stays the same from one
+commission to the next. They are put together anew after the conversation
+was summed up, and when a tool that can be used now is missing from them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from pathlib import Path
@@ -90,11 +96,26 @@ from nekoclaw.runtime.loop.session.entries import new_entry_id
 from nekoclaw.runtime.loop.tool_history import repair_tool_history
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.loop.turns import AgentTurnContext, AgentTurnDecision
-from nekoclaw.runtime.model import ContextOverflowError, LLMClientProvider, ModelRequestError
+from nekoclaw.runtime.model import (
+    ContextOverflowError,
+    LLMClientProvider,
+    ModelRequestError,
+    window_from_overflow,
+)
 from nekoclaw.runtime.permissions import make_permission_hook
 from nekoclaw.runtime.prompt import build_system_prompt
+from nekoclaw.runtime.snapshot import (
+    REASON_COMPACTED,
+    REASON_OPENED,
+    REASON_TOOLS_ADDED,
+    SystemSnapshot,
+    ToolDefinition,
+    definitions_of,
+    read_snapshot,
+    write_snapshot,
+)
 from nekoclaw.runtime.tools import build_tools
-from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolContext
+from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolContext, ToolError, define_tool
 from nekoclaw.runtime.tools.goal import GOAL_NAMESPACE, GoalState
 from nekoclaw.runtime.tools.jobs import (
     Job,
@@ -110,6 +131,10 @@ logger = logging.getLogger(__name__)
 TRANSCRIPT_FILE = "transcript.jsonl"
 OUTPUTS_DIRECTORY = "outputs"
 TODO_NAMESPACE = "nekoclaw.todos"
+# Which entry holds the text that opened the commission under way (``prompt`` with ``opening``).
+COMMISSION_NAMESPACE = "nekoclaw.commission"
+# The smallest window a session is managed for; ``protocol.ModelConfig`` takes no less.
+MIN_CONTEXT_WINDOW = 4_000
 # After an abort the run is given this long to unwind before its task is cancelled.
 ABORT_GRACE_SECONDS = 15.0
 CLOSE_GRACE_SECONDS = 5.0
@@ -126,6 +151,28 @@ EventSink = protocol.EventSink
 
 class SessionError(Exception):
     """A session could not be created or a command could not be accepted."""
+
+
+def _stand_in(definition: ToolDefinition) -> AgentTool:
+    """Return a tool that answers for one the session was opened with and that is not there now.
+
+    The model is still told of it (the tool definitions of a session stay
+    as they were), so a call has to be answered: with what it can do about it.
+    """
+
+    async def unavailable(args: dict[str, Any], call: Any) -> str:
+        del args, call
+        raise ToolError(texts.TOOL_UNAVAILABLE.replace("<<NAME>>", definition.name))
+
+    return define_tool(
+        {
+            "name": definition.name,
+            "description": definition.description,
+            # Anything is taken: the call is refused for what it is, not for how it was written.
+            "parameters": {"type": "object", "properties": {}},
+        },
+        unavailable,
+    )
 
 
 def _drive(coroutine: Any) -> Any:
@@ -401,7 +448,27 @@ class TaskAgentSession(SessionInbox):
         self._output_nudges = 0
         self._repeat = RepeatToolGuard()
         self._system = ""
+        # Every tool a call can be carried out by: those there are now, and a
+        # stand-in for each the session was opened with that is not.
         self._tools: list[AgentTool] = []
+        # Those there are now.
+        self._executors: list[AgentTool] = []
+        # What the model is told of, as the snapshot has it.
+        self._wire_tools: list[AgentTool] = []
+        self._workdir = Path(".")
+        self._session_dir = Path(".")
+        # How often the conversation has been summed up, and whether what
+        # follows a summary (a new snapshot) is still to be done.
+        self._compactions = 0
+        self._compaction_due = False
+        self._tokens_before_compaction = 0
+        # The entry of the text that opened the commission under way, which a
+        # summary leaves as it is; and that text as a message, from the
+        # moment it is handed over until it is in the transcript.
+        self._opening_entry_id: str | None = None
+        self._opening_message: AgentMessage | None = None
+        # The window the conversation is managed for.
+        self._window = spec.model.context_window
         self._gateway: Any = None
         # Set in _open.
         self._recorder: SessionRecorder
@@ -476,7 +543,7 @@ class TaskAgentSession(SessionInbox):
             emit_report=self._emit_report,
             top_level=spec.top_level,
         )
-        self._tools = build_tools(tool_context, disabled=spec.disabled_tools)
+        executors = build_tools(tool_context, disabled=spec.disabled_tools)
         if spec.gateway is not None:
             # Capabilities the host serves (plugin entries, MCP tools) join the
             # built-in tools. The host decides permissions for them itself.
@@ -486,19 +553,27 @@ class TaskAgentSession(SessionInbox):
                 self._gateway, gateway_tools = await connect_gateway(
                     spec.gateway.url,
                     spec.gateway.token,
-                    reserved={tool.name for tool in self._tools},
+                    reserved={tool.name for tool in executors},
                     disabled=spec.disabled_tools,
                 )
             except GatewayError as exc:
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
-            self._tools = sorted([*self._tools, *gateway_tools], key=lambda tool: tool.name)
-        self._system = build_system_prompt(
-            tool_names=[tool.name for tool in self._tools],
-            workdir=str(workdir),
-            platform=self._platform,
-            reply_language=spec.reply_language,
-            instructions=spec.instructions,
-        )
+            executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
+        self._executors = executors
+        self._workdir, self._session_dir = workdir, session_dir
+        # A session that goes on with a conversation begins its requests as
+        # it did before. One that has nothing said yet is put together from
+        # what there is now, and so is one whose snapshot lacks a tool that
+        # can be used now: without that it could never call the tool.
+        snapshot = await asyncio.to_thread(read_snapshot, session_dir) if state is not None else None
+        if snapshot is not None and {tool.name for tool in executors} <= snapshot.tool_names:
+            self._adopt(snapshot)
+        else:
+            await self._renew_snapshot(REASON_OPENED if snapshot is None else REASON_TOOLS_ADDED)
+        # Fixed for as long as the session is open: a run looks its tools up
+        # here by name. What the model is told of may change after a summary
+        # (``_wire_tools``), and never names a tool that is not among these.
+        self._tools = list(self._wire_tools)
 
         self.harness = SessionHarness(
             AgentHarnessConfig(
@@ -530,12 +605,6 @@ class TaskAgentSession(SessionInbox):
             self._recorder.link(SessionInfoEntry(cwd=str(workdir)))
         self.harness.subscribe(self._on_harness_event)
 
-        fixed_text = self._system + json.dumps(
-            [[tool.name, tool.description, dict(tool.parameters)] for tool in self._tools],
-            ensure_ascii=False,
-        )
-        from utils.tokenize import acount_tokens
-
         self.context = ContextManager(
             policy=ContextPolicy(
                 window=spec.model.context_window, max_output=spec.model.max_output_tokens
@@ -543,19 +612,67 @@ class TaskAgentSession(SessionInbox):
             spill=spill,
             summarize=self._summarize,
             new_entry_id=new_entry_id,
-            fixed_tokens=await acount_tokens(fixed_text),
+            fixed_tokens=await self._fixed_tokens(),
             image_retention=dict(spec.image_retention),
             image_pools=dict(spec.image_pools),
         )
+        if self._gateway is not None:
+            self._gateway.compactions = self._compactions
         if spec.goal is not None and self.goals.current is None:
             self.goals.create(spec.goal.objective, spec.goal.max_rounds)
         self._emit(
             protocol.StartedEvent(
                 session_id=self.session_id,
                 resumed=state is not None,
-                tools=[tool.name for tool in self._tools],
+                tools=[tool.name for tool in self._wire_tools],
             )
         )
+
+    def _adopt(self, snapshot: SystemSnapshot) -> None:
+        """Use the system prompt and the tool definitions the session was opened with before.
+
+        A tool is carried out by what there is now and described as it was
+        then. One that is not there now gets a stand-in, which says so when
+        it is called.
+        """
+        by_name = {tool.name: tool for tool in self._executors}
+        wire: list[AgentTool] = []
+        for definition in snapshot.tools:
+            tool = by_name.get(definition.name) or _stand_in(definition)
+            wire.append(
+                dataclasses.replace(tool, description=definition.description, parameters=definition.parameters)
+            )
+        self._system = snapshot.system
+        self._wire_tools = wire
+
+    async def _renew_snapshot(self, reason: str) -> None:
+        """Put the system prompt and the tool definitions together from what there is now, and keep them."""
+        spec = self.spec
+        self._system = build_system_prompt(
+            tool_names=[tool.name for tool in self._executors],
+            workdir=str(self._workdir),
+            platform=self._platform,
+            reply_language=spec.reply_language,
+            instructions=spec.instructions,
+        )
+        self._wire_tools = list(self._executors)
+        snapshot = SystemSnapshot(self._system, definitions_of(self._wire_tools), reason, time.time())
+        try:
+            await asyncio.to_thread(write_snapshot, self._session_dir, snapshot)
+        except Exception:  # noqa: BLE001 - the session works without the file
+            # Opened again, it finds the snapshot from before or none, and
+            # goes on with that or with one put together then.
+            logger.warning("the system snapshot of session %s could not be written", self.session_id, exc_info=True)
+
+    async def _fixed_tokens(self) -> int:
+        """Return the size of what every request begins with: the system prompt and the tool definitions."""
+        from utils.tokenize import acount_tokens
+
+        fixed_text = self._system + json.dumps(
+            [[tool.name, tool.description, dict(tool.parameters)] for tool in self._wire_tools],
+            ensure_ascii=False,
+        )
+        return await acount_tokens(fixed_text)
 
     def _restore(self, state: SessionState) -> None:
         by_id = {entry.id: entry for entry in state.entries}
@@ -574,6 +691,11 @@ class TaskAgentSession(SessionInbox):
                 self.todos.restore(custom.data.get("items"))
             elif custom.namespace == GOAL_NAMESPACE:
                 self.goals.restore(custom.data)
+            elif custom.namespace == COMMISSION_NAMESPACE:
+                # The last one counts: the commission the session was on.
+                entry_id = custom.data.get("entry_id")
+                self._opening_entry_id = entry_id if isinstance(entry_id, str) and entry_id else None
+        self._compactions = len(state.compaction_entries)
         self._recorder.last_id = state.active_leaf_id
 
     # ------------------------------------------------------------------
@@ -621,6 +743,12 @@ class TaskAgentSession(SessionInbox):
             kind = kind_of(message)
         self._recorder.link(entry)
         self.transcript.register(message, entry.id, kind)
+        if message is self._opening_message:
+            # Noted in the transcript, so that a session opened later knows
+            # which text a summary is to leave alone.
+            self._opening_message = None
+            self._opening_entry_id = entry.id
+            self._recorder.link(CustomEntry(namespace=COMMISSION_NAMESPACE, data={"entry_id": entry.id}))
 
     def _on_harness_event(self, event: AgentEvent) -> None:
         sid = self.session_id
@@ -692,7 +820,7 @@ class TaskAgentSession(SessionInbox):
                         reasoning=usage.reasoning,
                         total_tokens=usage.total_tokens,
                         context_tokens=prompt_tokens + usage.output,
-                        context_window=self.spec.model.context_window,
+                        context_window=self._window,
                     )
                 )
 
@@ -712,15 +840,15 @@ class TaskAgentSession(SessionInbox):
     ) -> AsyncIterator[AssistantMessageEvent]:
         # The loop passes a copy of its history. Context management may rewrite
         # the history just before the request, so the request is built from the
-        # live list instead.
-        del messages, session_id
-        return self._model_request(model, system, tools, signal)
+        # live list instead. Likewise the system prompt and the tools: what
+        # the model is told of is what the session holds (``_wire_tools``),
+        # which is put together anew after a summary.
+        del messages, session_id, system, tools
+        return self._model_request(model, signal)
 
     async def _model_request(
         self,
         model: str,
-        system: str,
-        tools: list[AgentTool],
         signal: CancellationToken | None,
     ) -> AsyncIterator[AssistantMessageEvent]:
         if signal is None or not signal.is_cancelled():
@@ -728,13 +856,19 @@ class TaskAgentSession(SessionInbox):
             await self._fit(force=False)
         retried = False
         while True:
+            if self._compaction_due:
+                await self._after_compaction()
             history = _provider_context(self.harness.message_list)
             # Held back until output follows, so a request that is retried after
             # an overflow does not announce two responses.
             held: AssistantStartEvent | None = None
             try:
                 async for event in self._model.stream_response(
-                    model=model, system=system, messages=history, tools=tools, signal=signal
+                    model=model,
+                    system=self._system,
+                    messages=history,
+                    tools=self._wire_tools,
+                    signal=signal,
                 ):
                     if isinstance(event, AssistantStartEvent):
                         held = event
@@ -745,6 +879,7 @@ class TaskAgentSession(SessionInbox):
                     yield event
                 return
             except ContextOverflowError as exc:
+                self._learn_window(str(exc))
                 if retried:
                     failure = AssistantMessage(
                         model=model,
@@ -765,7 +900,11 @@ class TaskAgentSession(SessionInbox):
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
         await self.context.fit(
-            self.transcript, force=force, on_compaction=self._persist_compaction
+            self.transcript,
+            force=force,
+            on_compaction=self._persist_compaction,
+            # The commission under way stays as it was handed over.
+            pinned=(self._opening_entry_id,) if self._opening_entry_id else (),
         )
 
     def _persist_compaction(self, compaction: Compaction) -> None:
@@ -779,6 +918,56 @@ class TaskAgentSession(SessionInbox):
                 model=self.spec.model.model,
             )
         )
+        self._compactions += 1
+        self._tokens_before_compaction = compaction.tokens_before
+        # What follows a summary is done before the next request, not here:
+        # this is called while the conversation is still being fitted.
+        self._compaction_due = True
+        if self._gateway is not None:
+            # From the next call on the gateway knows that what it handed
+            # over before (a group of tools and how they are used) may be gone.
+            self._gateway.compactions = self._compactions
+
+    async def _after_compaction(self) -> None:
+        """Do what follows a summary of the conversation, before the next request.
+
+        The head of the request changes with a summary anyway, so this is
+        when the system prompt and the tool definitions are put together
+        anew: what the host's instructions hold by now, and the tools there
+        are now, take effect.
+        """
+        self._compaction_due = False
+        await self._renew_snapshot(REASON_COMPACTED)
+        self.context.fixed_tokens = await self._fixed_tokens()
+        self._emit(
+            protocol.CompactedEvent(
+                session_id=self.session_id,
+                count=self._compactions,
+                tokens_before=self._tokens_before_compaction,
+            )
+        )
+
+    def _learn_window(self, said: str) -> None:
+        """Manage the conversation for the window the provider stated when it refused a request as too long.
+
+        Only for one smaller than the session's: the request is then fitted
+        to it and sent again, the host is told, and sessions it starts for
+        this model later are given that window from the start.
+        """
+        stated = window_from_overflow(said)
+        if stated is None:
+            return
+        stated = max(stated, MIN_CONTEXT_WINDOW)
+        if stated >= self._window:
+            return
+        logger.info("session %s: the provider states a window of %d tokens; managed for it now", self.session_id, stated)
+        self._window = stated
+        self.context.policy = dataclasses.replace(self.context.policy, window=stated)
+        self._emit(
+            protocol.ModelCapabilityEvent(
+                session_id=self.session_id, context_window=stated, reason=" ".join(said.split())[:300]
+            )
+        )
 
     async def _summarize(self, messages: list[AgentMessage], max_tokens: int) -> tuple[str, Usage | None]:
         request = [*messages, UserMessage(content=texts.COMPACTION_INSTRUCTION)]
@@ -788,7 +977,8 @@ class TaskAgentSession(SessionInbox):
             reply = await self._model.complete(
                 system=self._system,
                 messages=repaired,
-                tools=self._tools,
+                # As the requests before it: what a provider cached of them is used.
+                tools=self._wire_tools,
                 max_tokens=max_tokens,
                 signal=signal,
             )
@@ -911,13 +1101,24 @@ class TaskAgentSession(SessionInbox):
         """True while a run is in progress or a background job is still running."""
         return self.running or bool(self.jobs.running())
 
-    def prompt(self, text: str) -> None:
+    def prompt(self, text: str, *, opening: bool = False) -> None:
+        """Hand the session work. ``opening`` marks the text that opens a commission.
+
+        A session takes several commissions, one after the other. The text
+        that opens the one under way stays in the conversation word for
+        word when the rest is summed up: what the commission is, what was
+        said of it and what was picked for it is all in that text.
+        """
         if self._closing:
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress; use steer or follow_up to add to it")
         self._inputs += 1
-        self._begin_run(UserMessage(content=text))
+        message = UserMessage(content=text)
+        if opening:
+            # Its entry is known once the run has taken it (``_record``).
+            self._opening_message = message
+        self._begin_run(message)
 
     def steer(self, text: str) -> None:
         if self._closing:

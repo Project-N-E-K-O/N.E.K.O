@@ -54,8 +54,11 @@ class AgentRuntime(Protocol):
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         """Create a session, continuing its transcript if one exists."""
 
-    async def prompt(self, session_id: str, text: str) -> None:
-        """Hand the session work; rejected while a run is in progress."""
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+        """Hand the session work; rejected while a run is in progress.
+
+        ``opening`` marks the text that opens a commission; see ``protocol.PromptCommand``.
+        """
 
     async def steer(self, session_id: str, text: str) -> None:
         """Deliver text before the next model request of the current run."""
@@ -145,7 +148,7 @@ class RuntimeCore:
         if opening is not None:
             await asyncio.shield(opening)
         if isinstance(command, protocol.PromptCommand):
-            self.prompt(command.session_id, command.text)
+            self.prompt(command.session_id, command.text, opening=command.opening)
         elif isinstance(command, protocol.SteerCommand):
             self.steer(command.session_id, command.text)
         elif isinstance(command, protocol.FollowUpCommand):
@@ -198,7 +201,7 @@ class RuntimeCore:
             del self._starting[session_id]
             opening.set_result(None)
 
-    def _text_command(self, session_id: str, command: str, text: str) -> None:
+    def _text_command(self, session_id: str, command: str, text: str, **options: Any) -> None:
         if self._shutdowns:
             # New work would begin behind the back of the shutdown.
             self._reject(session_id, command, "the runtime is shutting down")
@@ -207,12 +210,12 @@ class RuntimeCore:
         if session is None:
             return
         try:
-            getattr(session, command)(text)
+            getattr(session, command)(text, **options)
         except SessionError as exc:
             self._reject(session_id, command, str(exc))
 
-    def prompt(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "prompt", text)
+    def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+        self._text_command(session_id, "prompt", text, opening=opening)
 
     def steer(self, session_id: str, text: str) -> None:
         self._text_command(session_id, "steer", text)
@@ -326,8 +329,8 @@ class InProcessRuntime:
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         await self._core.handle(protocol.StartCommand(spec=spec))
 
-    async def prompt(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.PromptCommand(session_id=session_id, text=text))
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+        await self._core.handle(protocol.PromptCommand(session_id=session_id, text=text, opening=opening))
 
     async def steer(self, session_id: str, text: str) -> None:
         await self._core.handle(protocol.SteerCommand(session_id=session_id, text=text))

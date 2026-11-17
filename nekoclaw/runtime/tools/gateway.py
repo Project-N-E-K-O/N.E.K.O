@@ -40,7 +40,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY, GATEWAY_REPLY_META_KEY
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -90,6 +90,11 @@ class GatewayClient:
         self._protocol_version: str | None = None
         # Which reply of the model the calls being made were written in.
         self._reply = 0
+        # How often the session's conversation has been summed up; the
+        # session keeps it current. Every call names it: what the gateway
+        # handed over before a summary (a group of tools and how they are
+        # used) is no longer in the conversation after it.
+        self.compactions = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -171,7 +176,11 @@ class GatewayClient:
 
     async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
         """Call one tool and return its text and pictures; waits as long as the tool takes."""
-        params = {"name": name, "arguments": arguments, "_meta": {GATEWAY_REPLY_META_KEY: self._reply}}
+        params = {
+            "name": name,
+            "arguments": arguments,
+            "_meta": {GATEWAY_REPLY_META_KEY: self._reply, GATEWAY_COMPACTIONS_META_KEY: self.compactions},
+        }
         result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
             return GatewayResult("", (), False)

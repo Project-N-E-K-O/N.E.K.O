@@ -106,10 +106,34 @@ _OVERFLOW_PATTERNS = re.compile(
             r"request too large",
             r"reduce the length of the (?:messages|prompt|input)",
             r"input token count .* exceeds",
+            # llama.cpp's server ("exceed_context_size_error") and LM Studio.
+            r"exceed_context_size",
+            r"available context size",
+            r"context length of only",
         ]
     ),
     re.IGNORECASE,
 )
+
+# Where a provider states its window when it refuses a request as too long.
+_STATED_WINDOW_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # OpenAI, DeepSeek, vLLM, OpenRouter: "maximum context length is 32768 tokens".
+        r"maximum context length (?:is|of) ([\d,]+)",
+        # llama.cpp's server names it in the error object: 'n_ctx': 8192.
+        r"['\"]n_ctx['\"]\s*:\s*([\d,]+)",
+        # LM Studio: "loaded with context length of only 4096 tokens".
+        r"context length of only ([\d,]+)",
+        # Anthropic: "prompt is too long: 210000 tokens > 200000 maximum".
+        r">\s*([\d,]+) maximum",
+        # DashScope: "Range of input length should be [1, 30720]".
+        r"range of input length should be \[\s*\d+\s*,\s*([\d,]+)\s*\]",
+        # Gemini: "exceeds the maximum number of tokens allowed (1048576)".
+        r"maximum number of tokens allowed \(([\d,]+)\)",
+    )
+)
+_STATED_WINDOW_RANGE = (1_024, 10_000_000)
 
 
 class ContextOverflowError(Exception):
@@ -126,6 +150,28 @@ def is_context_overflow(error: BaseException) -> bool:
     if status is not None and status not in (400, 413, 422):
         return False
     return bool(_OVERFLOW_PATTERNS.search(str(error)))
+
+
+def window_from_overflow(said: str) -> int | None:
+    """Return the context window a provider stated when it refused a request as too long, if it stated one.
+
+    Read from the wordings the common providers use; a refusal in other
+    words, or one that names no number, teaches nothing. Only asked of what
+    ``is_context_overflow`` recognized. A number that cannot be a window is
+    not taken for one.
+    """
+    low, high = _STATED_WINDOW_RANGE
+    for pattern in _STATED_WINDOW_PATTERNS:
+        found = pattern.search(said)
+        if found is None:
+            continue
+        try:
+            stated = int(found.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if low <= stated <= high:
+            return stated
+    return None
 
 
 # What a provider says when a request carries a picture its model cannot take.

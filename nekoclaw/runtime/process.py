@@ -589,8 +589,10 @@ class SubprocessRuntime:
         if self._send_or_reject(spec.session_id, protocol.StartCommand(spec=spec)):
             self._pending_starts[spec.session_id] = self._pending_starts.get(spec.session_id, 0) + 1
 
-    async def prompt(self, session_id: str, text: str) -> None:
-        self._send_or_reject(session_id, protocol.PromptCommand(session_id=session_id, text=text))
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+        self._send_or_reject(
+            session_id, protocol.PromptCommand(session_id=session_id, text=text, opening=opening)
+        )
 
     async def steer(self, session_id: str, text: str) -> None:
         self._send_or_reject(session_id, protocol.SteerCommand(session_id=session_id, text=text))

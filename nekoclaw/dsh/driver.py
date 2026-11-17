@@ -1080,7 +1080,10 @@ class DshRuntime:
             # Arrived while the end was being announced: an idle session is started by it.
             session.run = asyncio.ensure_future(self._run(session))
 
-    async def prompt(self, session_id: str, text: str) -> None:
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+        # ``opening`` is for a runtime that sums the conversation up itself
+        # and can give the text again; dsh does that on its own.
+        del opening
         session = await self._session(session_id, "prompt")
         if session is None:
             return

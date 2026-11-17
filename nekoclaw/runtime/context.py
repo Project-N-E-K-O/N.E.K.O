@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Literal
@@ -521,13 +521,19 @@ def choose_cut(rows: Sequence[Row], sizes: Sequence[int], retain_tokens: int) ->
     return cut
 
 
-def select_user_rows(region: Sequence[Row], sizes: Sequence[int], budget: int) -> set[str]:
-    """Pick the most recent user messages of ``region`` that fit ``budget`` tokens."""
-    kept: set[str] = set()
+def select_user_rows(
+    region: Sequence[Row], sizes: Sequence[int], budget: int, pinned: Collection[str] = ()
+) -> set[str]:
+    """Pick the most recent user messages of ``region`` that fit ``budget`` tokens.
+
+    A row named in ``pinned`` is kept whatever its size and on top of the
+    budget: what the user said since keeps the room it had.
+    """
+    kept: set[str] = {row.entry_id for row in region if row.entry_id in pinned}
     used = 0
     for index in range(len(region) - 1, -1, -1):
         row = region[index]
-        if row.kind != "human":
+        if row.kind != "human" or row.entry_id in kept:
             continue
         if used + sizes[index] > budget:
             break
@@ -626,11 +632,16 @@ class ContextManager:
         *,
         force: bool = False,
         on_compaction: Callable[[Compaction], None] | None = None,
+        pinned: Collection[str] = (),
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
         ``force`` is the overflow path: prune everything and summarize even if
         the estimate says the conversation fits. Returns the summaries made.
+
+        ``pinned`` names rows (by entry id) that a summary leaves as they
+        are, word for word: the text that opened the commission the session
+        is working on.
 
         ``on_compaction`` is how the caller persists them. It is called for each
         summary as soon as that summary has replaced the older messages, with
@@ -665,7 +676,7 @@ class ContextManager:
         for attempt in range(2):
             tokens_before = await self.measure(transcript.messages)
             compaction = await self._compact(
-                transcript.rows(), tokens_before, tight=force or attempt > 0
+                transcript.rows(), tokens_before, tight=force or attempt > 0, pinned=pinned
             )
             if compaction is None:
                 break
@@ -681,7 +692,7 @@ class ContextManager:
         return done
 
     async def _compact(
-        self, rows: list[Row], tokens_before: int, *, tight: bool
+        self, rows: list[Row], tokens_before: int, *, tight: bool, pinned: Collection[str] = ()
     ) -> Compaction | None:
         policy = self.policy
         sizes = [estimate_tokens(row.message, policy.image_tokens) for row in rows]
@@ -696,7 +707,7 @@ class ContextManager:
         retain = policy.retain_tokens // 4 if tight else policy.retain_tokens
         cut = choose_cut(rows, sizes, retain)
         region = rows[:cut]
-        kept_ids = select_user_rows(region, sizes[:cut], policy.user_keep // (2 if tight else 1))
+        kept_ids = select_user_rows(region, sizes[:cut], policy.user_keep // (2 if tight else 1), pinned)
         replaced = [row for row in region if row.entry_id not in kept_ids]
         if not any(row.kind in ("assistant", "tool", "notice") for row in replaced):
             # Nothing but earlier summaries or oversized user text: no gain.

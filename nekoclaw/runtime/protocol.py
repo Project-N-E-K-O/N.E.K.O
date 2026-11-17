@@ -21,6 +21,9 @@ Commands (``type`` field):
 
 * ``start``      - create a session from a ``TaskAgentSpec``.
 * ``prompt``     - hand the session work. Rejected while a run is in progress.
+  ``opening`` marks the text that opens a commission (a session takes
+  several, one after the other): a summary of the conversation leaves the
+  text that opened the commission under way as it is, word for word.
 * ``steer``      - deliver text before the next model request of the current
   run; on an idle session it starts a run.
 * ``follow_up``  - deliver text once the current run has nothing left to do; on
@@ -40,7 +43,11 @@ per-session ``seq`` that increases by one:
 * ``usage``       - token usage of one model request and the context size.
 * ``model_capability`` - something the session learned about its model: the
   provider refused a request for the pictures in it, so the session goes on
-  without pictures. Sent once per session at most.
+  without pictures (once per session at most); or it refused a request as
+  too long and stated a context window smaller than the one the session
+  was started with, which the session is managed for from then on.
+* ``compacted``   - the conversation was summed up. The session's system
+  prompt and tool definitions were put together anew after it.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,
@@ -60,7 +67,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
 
@@ -173,6 +180,9 @@ class PromptCommand(_Strict):
     type: Literal["prompt"] = "prompt"
     session_id: str
     text: str = Field(min_length=1)
+    # True for the text that opens a commission: what the session works on
+    # from here. A summary of the conversation leaves it as it is.
+    opening: bool = False
 
 
 class SteerCommand(_Strict):
@@ -307,14 +317,34 @@ class ModelCapabilityEvent(_SessionEvent):
     """What the session learned about its model while it ran."""
 
     type: Literal["model_capability"] = "model_capability"
-    # False: the provider said the model takes no pictures.
-    supports_images: bool
+    # False: the provider said the model takes no pictures. None: this is
+    # not about pictures.
+    supports_images: bool | None = None
+    # The context window the provider stated when it refused a request as
+    # too long; only when that is smaller than the session's.
+    context_window: int | None = None
     # What the provider said, shortened: kept with what is remembered, so
     # that it can be seen why the model was taken not to see pictures.
     reason: str = ""
     # False: said of this session only (its pictures were refused more than
     # once, for what they were); nothing is to be remembered about the model.
     lasting: bool = True
+
+    @model_validator(mode="after")
+    def _says_something(self) -> "ModelCapabilityEvent":
+        if self.supports_images is None and self.context_window is None:
+            raise ValueError("a model_capability event says what was learned")
+        return self
+
+
+class CompactedEvent(_SessionEvent):
+    """The conversation was summed up; the session goes on from the summary."""
+
+    type: Literal["compacted"] = "compacted"
+    # How often the conversation of this session has been summed up so far.
+    count: int = 0
+    # Size of the conversation before the summary, as the context manager counted it.
+    tokens_before: int = 0
 
 
 # ``EndedEvent.error`` of a session whose runtime process went away. Nothing
@@ -385,6 +415,7 @@ SessionEvent = Union[
     ReportEvent,
     UsageEvent,
     ModelCapabilityEvent,
+    CompactedEvent,
     EndedEvent,
     ErrorEvent,
 ]
@@ -399,6 +430,7 @@ RuntimeEvent = Annotated[
         ReportEvent,
         UsageEvent,
         ModelCapabilityEvent,
+        CompactedEvent,
         EndedEvent,
         ErrorEvent,
         HostRequestEvent,

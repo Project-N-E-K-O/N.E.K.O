@@ -155,6 +155,23 @@ QUERY_RECENT_SECONDS = 24 * 3600.0
 TASK_AGENT_MAX_CONCURRENT = 10
 """Task agents at work at the same time; further commissions wait in the queue."""
 
+TASK_AGENT_CONTEXT_WINDOW = 256_000
+"""Context window a task agent's session is managed for, in tokens, unless the
+user set another for its model (``ModelCapabilityStore.set_context_window``).
+A conversation is cut down and summed up when it nears four fifths of it. A
+model whose window is known to be smaller is given its own: what is used is
+the smaller of the two."""
+
+TASK_AGENT_CONTEXT_WINDOW_MIN = 4_000
+"""The smallest window a session is managed for. A model that takes less
+cannot hold a task agent's instructions and tools."""
+
+MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS = 30 * 24 * 3600
+"""How long a model's window, learned from what its provider said when a
+request was too long, is believed. After that the setting counts again: if
+the model still takes less, one request is refused, the conversation is
+summed up, and the window is written down anew."""
+
 TASK_AGENT_BRIEF_MAX_TOKENS = 1200
 """Cap on the host's instructions appended to a task agent's system prompt."""
 
@@ -388,6 +405,14 @@ GATEWAY_SEARCH_RESULTS = 8
 
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
+
+GATEWAY_COMPACTIONS_META_KEY = "nekoclaw/compactions"
+"""Where a task agent's runtime tells, under a ``tools/call``'s ``_meta``, how
+often the session's conversation has been summed up so far. A group of
+built-in tools handed over before a summary is not in the conversation after
+it: when the number has changed, the gateway hands the group over anew the
+next time one of its tools is called. A client that names none is taken to
+hold what it was handed."""
 
 GATEWAY_REPLY_META_KEY = "nekoclaw/reply"
 """Where a task agent's runtime names the model reply a ``tools/call`` was
