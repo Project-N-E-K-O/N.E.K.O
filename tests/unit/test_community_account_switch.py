@@ -702,3 +702,67 @@ def test_rebind_that_finds_a_conflict_records_the_hold(oauth_app, monkeypatch): 
     assert response.status_code == 409
     assert response.json()["detail"] == "legacy_client_owned_by_other_user"
     assert hold.device_held(auth.parent, USER_ID)
+
+
+async def test_rebind_cannot_land_between_another_logins_bind_and_save(tmp_path, monkeypatch):
+    """The login callback holds the device-bind lock from its bind through its save."""
+    import asyncio
+
+    _pending_login(tmp_path, monkeypatch)
+    order: list[str] = []
+    bind_started = asyncio.Event()
+    release_bind = asyncio.Event()
+
+    async def slow_login_bind(_social_base, _access_token, *, rebind=False):
+        order.append("login-bind")
+        bind_started.set()
+        await release_bind.wait()
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", slow_login_bind)
+    callback = asyncio.create_task(O._handle_oauth_callback("auth-code", "expected-state"))
+    await bind_started.wait()
+
+    async def rebind_attempt():
+        async with O._device_bind_lock:
+            order.append("rebind")
+
+    rebind = asyncio.create_task(rebind_attempt())
+    await asyncio.sleep(0.05)
+    assert order == ["login-bind"]  # the rebind is waiting
+    release_bind.set()
+    await asyncio.wait_for(asyncio.gather(callback, rebind), 5)
+
+    assert order == ["login-bind", "rebind"]
+    # The login's record was written before the rebind could run.
+    assert not hold.device_held(tmp_path, USER_ID)
+
+
+async def test_failed_hold_write_is_recovered_before_next_login(tmp_path, monkeypatch):
+    """A conflict saved only in the login survives that login being replaced."""
+    _pending_login(tmp_path, monkeypatch)
+    real_write = hold._write
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(_social_base, _access_token, *, rebind=False):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+    assert not (tmp_path / hold.HOLD_FILENAME).exists()
+    # Still held through the saved login while the record is missing.
+    saved_bind = json.loads((tmp_path / "community_auth.json").read_text(encoding="utf-8"))["bind"]
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=saved_bind)
+
+    # Disk recovers; the same account logs in again and the bind is inconclusive.
+    monkeypatch.setattr(hold, "_write", real_write)
+    _pending_login(tmp_path, monkeypatch)
+
+    async def flaky(_social_base, _access_token, *, rebind=False):
+        return {"bound": False, "error": "cloud_unreachable"}
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", flaky)
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 200
+    assert hold.device_held(tmp_path, USER_ID)

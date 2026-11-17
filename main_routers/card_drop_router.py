@@ -869,19 +869,26 @@ def _credential_dir() -> Path | None:
 
 
 def _remember_confirmed_owner() -> None:
-    """Seed the device owner from the saved login before it is replaced or cleared.
+    """Carry what the saved login proved about the owner into the device record.
 
-    Installs that bound before the device record existed have no owner on
-    file. A saved login whose bind the cloud confirmed is that owner; record
-    it so a later login that never binds (browser session sync) or a logout
-    cannot leave the record empty.
+    Runs before that login is replaced or cleared, since its bind outcome goes
+    with it. Installs that bound before the device record existed have no
+    owner on file; a confirmed bind seeds it. A refused bind is written again
+    if the device record never got it (a write that failed at the time), so a
+    later login whose bind is inconclusive still finds the conflict.
     """
     auth = _load_auth() or {}
     bind = auth.get("bind")
-    if isinstance(bind, dict) and bind.get("bound") is True:
-        community_device_hold.remember_owner(
-            _credential_dir(), _normalize_local_user_id(auth.get("local_user_id"))
-        )
+    account = _normalize_local_user_id(auth.get("local_user_id"))
+    if not isinstance(bind, dict):
+        return
+    directory = _credential_dir()
+    if bind.get("bound") is True:
+        community_device_hold.remember_owner(directory, account)
+    elif bind.get("error") == _BIND_OWNERSHIP_CONFLICT and not community_device_hold.device_held(
+        directory, account
+    ):
+        community_device_hold.record_bind_outcome(directory, bind, account)
 
 
 def _record_device_hold(bind: dict, local_user_id: str) -> None:
@@ -1875,17 +1882,18 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         # here before it is spent — but only after the session revalidation
         # above, so a superseded account never reaches the cloud bind.
         bind_retried = True
-        bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
-        if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-            # Persist repaired binds and terminal conflicts alike, or
-            # /auth-status keeps reporting the stale transient failure and
-            # every later handoff repeats the bind round trip.
-            persisted = await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
-            # A success only releases the hold when it was recorded for the
-            # still-current login; a stale account's success must not clear a
-            # newer conflict. Recording a conflict is always safe.
-            if persisted or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-                await asyncio.to_thread(_record_device_hold, bind, local_user_id)
+        async with _co._device_bind_lock:
+            bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
+            if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+                # Persist repaired binds and terminal conflicts alike, or
+                # /auth-status keeps reporting the stale transient failure and
+                # every later handoff repeats the bind round trip.
+                persisted = await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+                # A success only releases the hold when it was recorded for the
+                # still-current login; a stale account's success must not clear a
+                # newer conflict. Recording a conflict is always safe.
+                if persisted or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+                    await asyncio.to_thread(_record_device_hold, bind, local_user_id)
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another

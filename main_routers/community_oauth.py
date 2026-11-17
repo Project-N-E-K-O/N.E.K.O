@@ -54,6 +54,12 @@ _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 # account can attach one, so the owner must unbind it on the community site.
 LEGACY_DEVICE_OWNED_ELSEWHERE = "legacy_client_owned_by_other_user"
 _oauth_start_lock = asyncio.Lock()
+# Serializes every cloud call that can change or report this device's owner
+# with the local records that follow it (login callback, explicit rebind,
+# handoff bind retry). Without it a rebind could land between another
+# login's bind and its save, which would then record a stale owner.
+# Lock order: _device_bind_lock, then _oauth_start_lock.
+_device_bind_lock = asyncio.Lock()
 _oauth_status_lock = asyncio.Lock()
 _oauth_status_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
@@ -1017,7 +1023,7 @@ async def oauth_rebind_client_endpoint(request: Request, payload: dict | None = 
     # Same fences as login and logout: no other account can be saved, and no
     # logout can clear this one, between reading the session and recording
     # the cloud's answer for it.
-    async with _oauth_start_lock:
+    async with _device_bind_lock, _oauth_start_lock:
         saved = await asyncio.to_thread(C._desktop_session_snapshot) or {}
         expected_user = C._normalize_local_user_id(saved.get("local_user_id"))
         # Passing the signed-in account keeps live visits running: ownership
@@ -1300,44 +1306,45 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
-    # A device bound to another account must not block switching accounts.
-    # The login still completes; only the one-time guest migration is skipped
-    # and the device keeps its owner until the user explicitly rebinds it.
-    bind = await _oauth_guest_bind(social_base, access_token)
+    async with _device_bind_lock:
+        # A device bound to another account must not block switching accounts.
+        # The login still completes; only the one-time guest migration is skipped
+        # and the device keeps its owner until the user explicitly rebinds it.
+        bind = await _oauth_guest_bind(social_base, access_token)
 
-    auth_payload = {
-        "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "local_user_id": local_user_id,
-        "auth_source": "oauth",
-        "auth_public_url": auth_public_url,
-        "client_id": client_id,
-        "user": _persisted_user_profile(user, local_user_id),
-        "bind": bind,
-        "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
-        "oauth_attempt_identity": pending.get("instance_identity") or "local",
-    }
-    await asyncio.to_thread(C._remember_confirmed_owner)
-    async with _oauth_start_lock:
-        if not await _oauth_attempt_still_current(expected_state):
-            # A newer /oauth/start superseded this login: credential writes will already be rejected, so do not end ongoing visits for it first
-            credentials_saved = False
-        else:
-            # Switching community accounts: finish ongoing visits and await upload archival; admit no new visits while saving the new account's login state
-            async with visit_account_change(local_user_id):
-                credentials_saved = await asyncio.to_thread(
-                    _persist_oauth_credentials, auth_payload, social_base=social_base,
-                    access_token=access_token, refresh_token=refresh_token,
-                    local_user_id=local_user_id, auth_public_url=auth_public_url,
-                    client_id=client_id, expected_pending_state=expected_state,
-                    authorized_request=authorized_request,
-                )
-                if credentials_saved:
-                    # Inside the login lock: a newer login cannot be saved
-                    # between this login's credentials and its device record.
-                    await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
-        await asyncio.to_thread(_unlink_pending, expected_state)
+        auth_payload = {
+            "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "local_user_id": local_user_id,
+            "auth_source": "oauth",
+            "auth_public_url": auth_public_url,
+            "client_id": client_id,
+            "user": _persisted_user_profile(user, local_user_id),
+            "bind": bind,
+            "oauth_attempt_state": hashlib.sha256(expected_state.encode()).hexdigest(),
+            "oauth_attempt_identity": pending.get("instance_identity") or "local",
+        }
+        await asyncio.to_thread(C._remember_confirmed_owner)
+        async with _oauth_start_lock:
+            if not await _oauth_attempt_still_current(expected_state):
+                # A newer /oauth/start superseded this login: credential writes will already be rejected, so do not end ongoing visits for it first
+                credentials_saved = False
+            else:
+                # Switching community accounts: finish ongoing visits and await upload archival; admit no new visits while saving the new account's login state
+                async with visit_account_change(local_user_id):
+                    credentials_saved = await asyncio.to_thread(
+                        _persist_oauth_credentials, auth_payload, social_base=social_base,
+                        access_token=access_token, refresh_token=refresh_token,
+                        local_user_id=local_user_id, auth_public_url=auth_public_url,
+                        client_id=client_id, expected_pending_state=expected_state,
+                        authorized_request=authorized_request,
+                    )
+                    if credentials_saved:
+                        # Inside the login lock: a newer login cannot be saved
+                        # between this login's credentials and its device record.
+                        await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
+            await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(
             "登录未完成",
