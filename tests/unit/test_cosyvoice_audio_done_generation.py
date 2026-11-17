@@ -203,7 +203,7 @@ def test_finish_sends_the_installed_sdk_protocol_without_ending_soft_flush(worke
     assert _audio_done_ids(_drain(response_queue)) == []
     synth.callback.on_complete()
     completed = _drain(response_queue)
-    assert ("__audio__", "speech-a", tail_data) in completed
+    assert ("__audio__", "speech-a", tail_data, "ogg") in completed
     assert _audio_done_ids(completed) == (["speech-a"] if round_end else [])
 
 
@@ -395,7 +395,7 @@ def test_reconnect_does_not_splice_stale_buffer_into_the_new_stream(worker):
 
     def _got_audio():
         seen.extend(item for item in _drain(response_queue)
-                    if isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__")
+                    if isinstance(item, tuple) and len(item) == 4 and item[0] == "__audio__")
         return bool(seen)
 
     _wait_for(_got_audio, "audio from the rebuilt stream")

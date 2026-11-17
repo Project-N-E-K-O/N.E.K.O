@@ -203,6 +203,9 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
     cosplay1: Object.freeze({
       key: 'cosplay1', capability: 'cat1_cosplay_1', requestName: 'requestCat1Cosplay1',
     }),
+    cat2Turn1: Object.freeze({
+      key: 'cat2Turn1', capability: 'cat2_turn_1', requestName: 'requestCat2Turn1', tier: 'cat2',
+    }),
   });
   const buttonClasses = new Map();
   const containerClasses = new Map();
@@ -234,6 +237,7 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
     _getNekoCatVoiceUrl: () => 'hiss.mp3',
     _getNekoCatAppearanceUrl: () => 'stretch.gif',
     _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES: visualProfiles,
+    _NEKO_IDLE_VISUAL_ACTION_PROFILES: visualProfiles,
     _getNekoIdleCat1VisualActionProfile: (actionKey) => visualProfiles[actionKey] || null,
     _isNekoCatActionResourceAvailable: () => hissCapabilityAvailable,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
@@ -322,7 +326,11 @@ test('independent stretch runner and hiss entry keep hard gates and one owned li
   assert.equal(context.window.NekoCatIdlePresentation.requestCat1Happy(), true);
   assert.equal(context.window.NekoCatIdlePresentation.requestCat1Touch(), true);
   assert.equal(context.window.NekoCatIdlePresentation.requestCat1Cosplay1(), true);
-  assert.deepEqual(visualCalls, ['happy', 'touch', 'cosplay1']);
+  assert.equal(typeof context.window.NekoCatIdlePresentation.requestCat2Turn1, 'function');
+  runtimeGate.tier = 'cat2';
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat2Turn1(), true);
+  runtimeGate.tier = 'cat1';
+  assert.deepEqual(visualCalls, ['happy', 'touch', 'cosplay1', 'cat2Turn1']);
 
   assert.equal(context._playNekoIdleCat1StretchAction(button, {
     onTerminal: (result, detail) => terminals.push({ result, detail }),

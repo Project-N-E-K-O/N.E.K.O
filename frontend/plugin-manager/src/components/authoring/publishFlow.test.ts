@@ -6,7 +6,7 @@ import {
   type Toolchain,
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState } from '@/api/marketSubmissions'
-import { publishFlow, type PublishFlowFacts, type PublishStepId } from './publishFlow'
+import { isReleaseUrlOf, publishFlow, type PublishFlowFacts, type PublishStepId } from './publishFlow'
 
 const HEAD = 'a'.repeat(40)
 const APPROVED = 'b'.repeat(40)
@@ -78,6 +78,7 @@ const task = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   release_url: 'https://github.com/owner/n.e.k.o_plugin_hello_world/releases/tag/v0.2.0',
   market_status: null,
   market_candidate_id: null,
+  market_request_id: null,
   log: [],
   started_at: 1,
   updated_at: 2,
@@ -189,6 +190,34 @@ describe('publishFlow', () => {
     expect(step(flow, 'market')).toMatchObject({ state, detail })
   })
 
+  it.each([
+    ['verifying', 'waiting', { key: 'marketVersionVerifying' }],
+    ['accepted', 'waiting', { key: 'marketVersionVerifying' }],
+    ['platform_attention', 'waiting', { key: 'marketVersionPlatformAttention' }],
+    ['rejected', 'todo', { key: 'marketVersionRejectedReceipt' }],
+    ['pending_review', 'waiting', { key: 'marketVersionAwaitingReview' }],
+  ] as const)('shows the Market receipt status %s', (marketStatus, state, detail) => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      marketReceipt: marketStatus,
+    })
+    expect(step(flow, 'market')).toMatchObject({ state, detail })
+  })
+
+  it('shows a task receipt status without a review candidate', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: task({ market_status: 'verifying', market_candidate_id: null, market_request_id: 12 }),
+    })
+    expect(step(flow, 'market')).toMatchObject({
+      state: 'waiting',
+      detail: { key: 'marketVersionVerifying' },
+    })
+  })
+
   it('ignores a Market outcome without a release URL to identify its version', () => {
     const flow = flowOf({
       status: status({ remote: published }),
@@ -213,6 +242,8 @@ describe('publishFlow', () => {
   it.each([
     ['https://github.com/other/repo/releases/tag/v0.2.0', false],
     ['https://github.com/OWNER/N.E.K.O_PLUGIN_HELLO_WORLD/releases/tag/v0.2.0', true],
+    // Tags are case-sensitive on GitHub: V0.2.0 is another Release.
+    ['https://github.com/owner/n.e.k.o_plugin_hello_world/releases/tag/V0.2.0', false],
   ] as const)('associates the Market answer with its repository: %s', (url, listed) => {
     const flow = flowOf({ status: status({ remote: published }), submission: approved(), task: task({ release_url: url, market_status: 'published' }) })
     expect(step(flow, 'market').detail?.key).toBe(listed ? 'marketVersionListed' : 'marketVersionNotify')
@@ -229,6 +260,34 @@ describe('publishFlow', () => {
       }),
     })
     expect(step(flow, 'market').detail?.key).toBe('marketVersionPendingReview')
+  })
+
+  describe('isReleaseUrlOf', () => {
+    const repo = 'Owner/Hello_World'
+    it.each([
+      ['plain', 'https://github.com/owner/hello_world/releases/tag/v0.2.0', 'v0.2.0', true],
+      ['owner and repository case', 'https://GitHub.com/OWNER/HELLO_WORLD/releases/tag/v0.2.0', 'v0.2.0', true],
+      ['tag case', 'https://github.com/owner/hello_world/releases/tag/V0.2.0', 'v0.2.0', false],
+      ['encoded dots', 'https://github.com/owner/hello_world/releases/tag/v2%2E0%2E0', 'v2.0.0', true],
+      ['upper-case escape', 'https://github.com/owner/hello_world/releases/tag/v1%2Fpreview', 'v1/preview', true],
+      ['lower-case escape', 'https://github.com/owner/hello_world/releases/tag/v1%2fpreview', 'v1/preview', true],
+      ['raw slash in the tag', 'https://github.com/owner/hello_world/releases/tag/v1/preview', 'v1/preview', true],
+      // A Git tag may contain "%"; it is literal, so only the URL side is decoded.
+      ['literal percent in the tag', 'https://github.com/owner/hello_world/releases/tag/v1.2.0%252E1', 'v1.2.0%2E1', true],
+      ['literal percent, URL of another tag', 'https://github.com/owner/hello_world/releases/tag/v1.2.0.1', 'v1.2.0%2E1', false],
+      ['literal %2F, URL of a slash tag', 'https://github.com/owner/hello_world/releases/tag/v1%2Fpreview', 'v1%2Fpreview', false],
+      ['only a prefix of the tag', 'https://github.com/owner/hello_world/releases/tag/v1', 'v1/preview', false],
+      ['trailing slash', 'https://github.com/owner/hello_world/releases/tag/v0.2.0/', 'v0.2.0', true],
+      ['query and fragment', 'https://github.com/owner/hello_world/releases/tag/v0.2.0?x=1#notes', 'v0.2.0', true],
+      ['legacy numeric Release ID', 'https://github.com/owner/hello_world/releases/123456', 'v0.2.0', false],
+      ['another repository', 'https://github.com/owner/other/releases/tag/v0.2.0', 'v0.2.0', false],
+      ['another host', 'https://github.example/owner/hello_world/releases/tag/v0.2.0', 'v0.2.0', false],
+      ['plain http', 'http://github.com/owner/hello_world/releases/tag/v0.2.0', 'v0.2.0', false],
+      ['broken escape', 'https://github.com/owner/hello_world/releases/tag/v0.2.0%E0', 'v0.2.0', false],
+      ['not a URL', 'releases/tag/v0.2.0', 'v0.2.0', false],
+    ] as const)('%s', (_, url, tag, expected) => {
+      expect(isReleaseUrlOf(url, repo, tag)).toBe(expected)
+    })
   })
 
   it('reads a listed version from the Market when no task survived', () => {

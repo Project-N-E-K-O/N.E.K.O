@@ -197,6 +197,8 @@ test('Cat Mind dry-run applies the resource preflight to every registered action
         'cat1_small_move',
         'cat1_play_yarn',
         'cat1_idle_random',
+        'cat2_idle_random',
+        'cat3_idle_random',
         'cat1_inactive_sad',
         'cat2_nap_feedback',
         'cat3_sleep_feedback',
@@ -342,7 +344,7 @@ test('grouped CAT1 idle random request selects one member and reports one Cat Mi
         _isNekoIdleCat1EdgePeekActive: () => false,
         _isNekoIdleReturnDragActionBlocking: () => false,
         _isAnyNekoIdleReturnDragActionBlocking: () => false,
-        _pickNekoIdleCat1RandomVisualActionKey: () => { picks += 1; return 'love1'; },
+        _pickNekoIdleRandomVisualActionKey: (tier) => { assert.equal(tier, 'cat1'); picks += 1; return 'love1'; },
         _playNekoIdleCat1VisualAction: (_button, actionKey, options) => {
             selectedKey = actionKey;
             terminal = options.onTerminal;
@@ -383,6 +385,73 @@ test('grouped CAT1 idle random request selects one member and reports one Cat Mi
     assert.equal(results[0].actionId, 'cat1_idle_random');
     assert.equal(results[0].source, 'cat_mind');
     assert.equal(results[0].detail.actionKey, 'love1');
+});
+
+test('CAT2 and CAT3 random requests use the matching provider, profile and Cat Mind lifecycle', () => {
+    for (const [tier, actionId, actionKey] of [
+        ['cat2', 'cat2_idle_random', 'cat2Turn1'],
+        ['cat3', 'cat3_idle_random', 'cat3Back1_2'],
+    ]) {
+        const { window, context, listeners } = loadMixin();
+        const acknowledgements = [];
+        const results = [];
+        let activeTier = tier;
+        let terminal = null;
+        let picked = 0;
+        const button = { querySelector: (selector) => selector === '.neko-idle-return-art' ? {} : null };
+        Object.assign(context, {
+            CustomEvent: class {
+                constructor(type, init = {}) { this.type = type; this.detail = init.detail || {}; }
+            },
+            _findNekoCatMindVisibleButtonForTier: (expectedTier) => expectedTier === tier ? button : null,
+            _getNekoIdleReturnContainerFromButton: () => ({ style: { display: '' }, getAttribute: () => null }),
+            _getActiveNekoIdleReturnTier: () => activeTier,
+            _isNekoCatMindButtonContainerVisible: () => true,
+            _isAnyNekoCatMindReturnPending: () => false,
+            _isNekoCatMindTransitionActive: () => false,
+            _isNekoIdleCompactSurfaceDragging: () => false,
+            _isAnyNekoIdleCat1IndependentActionActive: () => false,
+            _isNekoCatMindAudioActionActive: () => false,
+            _isNekoIdleCat1EdgePeekActive: () => false,
+            _isNekoIdleReturnDragActionBlocking: () => false,
+            _isAnyNekoIdleReturnDragActionBlocking: () => false,
+            isNekoIdleCatAudioEnabled: () => false,
+            _pickNekoIdleRandomVisualActionKey: (selectedTier) => {
+                assert.equal(selectedTier, tier);
+                picked += 1;
+                return actionKey;
+            },
+            _playNekoIdleCat1VisualAction: (_button, selectedKey, options) => {
+                assert.equal(selectedKey, actionKey);
+                terminal = options.onTerminal;
+                return true;
+            },
+        });
+        window.NekoCatResourceRegistry = {
+            getActionCapabilities(id) { return { available: id === actionId, reason: '' }; },
+        };
+        window.nekoCatMind = {
+            acknowledgeActionRequest(payload) { acknowledgements.push(payload); return true; },
+        };
+        window.addEventListener('neko:cat-mind:action-result', (event) => results.push(event.detail));
+        assert.equal(window.NekoCatMindActionProviders.dryRun(actionId).allowed, true,
+            `${tier} visual provider does not need audio`);
+        activeTier = 'cat1';
+        assert.equal(window.NekoCatMindActionProviders.dryRun(actionId).reason, 'tier_mismatch');
+        activeTier = tier;
+
+        listeners.get('neko:cat-mind:action-request')({ detail: {
+            source: 'cat_mind', requestId: `${tier}-random-request`, actionId, tier,
+        }});
+        assert.equal(picked, 1);
+        assert.deepEqual(acknowledgements.map(({ status }) => status), ['accepted', 'started']);
+        terminal('done', { reason: `${tier}-visual-finished` });
+        terminal('done', { reason: 'duplicate' });
+        assert.equal(results.length, 1);
+        assert.equal(results[0].actionId, actionId);
+        assert.equal(results[0].tier, tier);
+        assert.equal(results[0].detail.actionKey, actionKey);
+    }
 });
 
 test('inactive sad request runs the fixed sad profile with one Cat Mind lifecycle', () => {

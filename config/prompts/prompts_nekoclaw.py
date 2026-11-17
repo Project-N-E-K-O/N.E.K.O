@@ -42,7 +42,7 @@
 #   SOFTWARE.
 # ---------------------------------------------------------------------------
 
-"""Model-facing text of the built-in familiar runtime.
+"""Model-facing text of the built-in agent runtime.
 
 The system prompt of dsh is assembled from one paragraph per tool. This module
 keeps the paragraphs of the tools the built-in runtime implements, word for
@@ -51,7 +51,7 @@ repeated-call reminders. The identity paragraphs at the top, the paragraphs for
 this project's own tools and the runtime-context wording are ours.
 
 All of it is English text read by the model and is deliberately not translated:
-translating would discard the tuning it carries. The language a familiar uses
+translating would discard the tuning it carries. The language a task agent uses
 towards the user is set by one separate sentence (``REPLY_LANGUAGE_SENTENCE``).
 
 A snapshot test (``tests/unit/nekoclaw/test_prompt_snapshot.py``) locks the
@@ -66,7 +66,7 @@ from __future__ import annotations
 
 # Replaces the two identity lines of the dsh prompt ("You are an AI agent
 # powered by DeepSeek Harness." / "You are a coding agent powered by ...").
-FAMILIAR_IDENTITY = (
+TASK_AGENT_IDENTITY = (
     "You are an AI agent carrying out a commission: a task delegated to you on the user's own "
     "computer. Work on it autonomously with the tools you have until it is done, and verify the "
     "result before you say it is done.\n"
@@ -210,6 +210,19 @@ TOOL_GUIDANCE_SECTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "conflict detection; coordinate their changes explicitly. The agent integrating the work "
         "must review the final diff and run relevant tests.",
     ),
+    # The keyboard-and-mouse tool and the browser tools have no paragraph
+    # here: they are not among the tools a session is offered, and how they
+    # are used is handed over when their group is loaded through the host's
+    # gateway (``prompts_nekoclaw_builtin.BUILTIN_GROUP_GUIDANCE``).
+    #
+    # No session is offered a tool by one of their names, so none is left
+    # without the paragraph. A session's tools are the runtime's own, which
+    # have other names, and what the gateway lists: plugin entries and tools
+    # of connected services, whose names begin with ``plugin__`` or
+    # ``mcp__``, and its search and call tools; it lists no built-in tool
+    # to anyone. tests/unit/nekoclaw/test_builtin_tool_budget.py holds all
+    # three. A runtime that lists these tools itself has to bring the
+    # paragraphs with it.
 )
 
 # The number of consecutive goal rounds named in the goal paragraph above and

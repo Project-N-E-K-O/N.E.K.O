@@ -1241,6 +1241,8 @@ async def _rename_catgirl_transaction(
     memory_targets.append(old_meta)
     memory_targets.append(new_meta)
     memory_server_reloaded = False
+    old_archive_manager = session_manager.get(old_name)
+    voice_archive_renamed = False
     memory_rename_result = None
     recent_transaction = None
     memory_snapshot_records = []
@@ -1402,6 +1404,17 @@ async def _rename_catgirl_transaction(
                 await _await_thread_mutation(old_meta.rename, new_meta)
                 logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
+            # Voice clips use the display name for their lookup, unlike the
+            # stable text-history record id. Drain any old-session writes and
+            # migrate the owner in this rename transaction; failure triggers
+            # the same rollback as other character data migrations.
+            from main_logic.voice_archive import drain_voice_archive, rename_character_voice_archive
+            if old_archive_manager is not None:
+                await drain_voice_archive(old_archive_manager)
+            voice_archive_renamed = await _await_thread_mutation(
+                rename_character_voice_archive, _config_manager.app_docs_dir, old_name, new_name,
+            )
+
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
                 resume_derived_task_names=(new_name,),
@@ -1525,6 +1538,13 @@ async def _rename_catgirl_transaction(
                 error_message = f"{error_message}; 回滚失败: {rollback_error}"
             return JSONResponse({"success": False, "error": error_message}, status_code=500)
         finally:
+            if voice_archive_renamed and not rename_committed:
+                try:
+                    await _await_cleanup_to_completion(asyncio.to_thread(
+                        rename_character_voice_archive, _config_manager.app_docs_dir, new_name, old_name,
+                    ))
+                except Exception:
+                    logger.exception("角色重命名回滚时恢复语音归档归属失败: %s -> %s", new_name, old_name)
             release_character_recent_transaction(recent_transaction)
 
     # Notify frontend only after data update, reload, and cover migration complete.

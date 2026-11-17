@@ -103,7 +103,11 @@ export function HistoryDialog({ close }: { close: () => void }) {
     fetch('/api/voice-archive/settings', { signal: controller.signal, cache: 'no-store' })
       .then(response => { if (!response.ok) throw new Error('settings'); return response.json(); })
       .then(data => { if (!controller.signal.aborted && revision === recordingRevision.current) { setRecording(data.enabled === true); setRecordingError(false); } })
-      .catch(error => { if (error.name !== 'AbortError') setRecordingError(true); });
+      .catch(error => {
+        if (error.name !== 'AbortError' && !controller.signal.aborted && revision === recordingRevision.current) {
+          setRecordingError(true);
+        }
+      });
     return () => controller.abort();
   }, [retry]);
   const saveRecording = async (enabled: boolean) => {
@@ -115,7 +119,12 @@ export function HistoryDialog({ close }: { close: () => void }) {
       });
       if (!response.ok) throw new Error('settings');
       const data = await response.json(); setRecording(data.enabled === true);
-    } catch { setRecordingError(true); } finally { setRecordingBusy(false); }
+    } catch { setRecordingError(true); } finally {
+      // A retry GET may start while POST is in flight. Invalidate that read too,
+      // so neither its stale value nor an old error can undo the save result.
+      recordingRevision.current += 1;
+      setRecordingBusy(false);
+    }
   };
   const reset = () => { setAnchor(null); };
   const moveDay = (delta: number) => {

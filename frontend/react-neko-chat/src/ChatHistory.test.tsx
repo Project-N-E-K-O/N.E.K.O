@@ -188,3 +188,36 @@ it('ignores a stale settings GET after a newer recording POST', async () => {
   expect(toggle).toBeChecked();
 });
 
+it('ignores settings retries started during an in-flight recording save', async () => {
+  let finishPost!: (value: { ok: boolean; json: () => Promise<{ enabled: boolean }> }) => void;
+  let finishGet!: (value: { ok: boolean; json: () => Promise<{ enabled: boolean }> }) => void;
+  const pendingPost = new Promise<{ ok: boolean; json: () => Promise<{ enabled: boolean }> }>(resolve => { finishPost = resolve; });
+  const pendingGet = new Promise<{ ok: boolean; json: () => Promise<{ enabled: boolean }> }>(resolve => { finishGet = resolve; });
+  let settingsGets = 0;
+  let charactersGets = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.includes('/voice-archive/settings')) {
+      if (options?.method === 'POST') return pendingPost;
+      return ++settingsGets === 1
+        ? { ok: true, json: async () => ({ enabled: false }) }
+        : pendingGet;
+    }
+    if (url.includes('characters')) {
+      if (++charactersGets === 1) throw new Error('temporary character failure');
+      return { ok: true, json: async () => ({ characters: ['Alice'] }) };
+    }
+    return { ok: true, json: async () => ({ messages: [], nextCursor: null, available: true }) };
+  }));
+  render(<HistoryDialog close={vi.fn()} />);
+  const toggle = screen.getByLabelText('recordVoice');
+  await waitFor(() => expect(toggle).toBeEnabled());
+  const retry = await screen.findByText('retry');
+  fireEvent.click(toggle);
+  fireEvent.click(retry);
+  await waitFor(() => expect(settingsGets).toBe(2));
+  await act(async () => finishPost({ ok: true, json: async () => ({ enabled: true }) }));
+  await waitFor(() => expect(toggle).toBeChecked());
+  await act(async () => finishGet({ ok: true, json: async () => ({ enabled: false }) }));
+  expect(toggle).toBeChecked();
+});
+

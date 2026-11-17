@@ -25,9 +25,9 @@ stays acyclic). The hierarchy:
     L0  config, steamworks                   ← foundation (data + vendored SDK)
     L1  utils
     L2  knowledge, memory, main_logic, services
-    L3  main_routers, theater_workshop
+    L3  main_routers
     L4  plugin                                ← high-level extension surface
-    L5  brain, nekoclaw                       ← top-of-stack agent orchestration
+    L5  nekoclaw                              ← top-of-stack agent orchestration
     L6  app, local_server, launcher.py, launcher_core  ← entrypoints
 
 Violations are split into two categories, both forbidden:
@@ -110,19 +110,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # script (no package); we treat it specially in PACKAGE_OF_FILE.
 #
 # ``services`` holds Main-side domain services (chat sync, theater runtime)
-# used by main_logic, main_routers and app. ``theater_workshop`` is the
-# author-side theater host (not shipped) built on services. ``launcher_core``
+# used by main_logic, main_routers and app. ``services/theater_workshop`` is
+# the source-only author host, separate from the theater runtime. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekoclaw`` is the
-# base that runs familiars and will take over from ``brain``; it sits beside
-# it at the top of the stack.
+# base that runs task agents (it took over from the former ``brain`` package)
+# and sits at the top of the stack.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
     (1, {"utils"}),
     (2, {"knowledge", "memory", "main_logic", "services"}),
-    (3, {"main_routers", "theater_workshop"}),
+    (3, {"main_routers"}),
     (4, {"plugin"}),
-    (5, {"brain", "nekoclaw"}),
+    (5, {"nekoclaw"}),
     (6, {"app", "local_server", "launcher", "launcher_core"}),
 ]
 
@@ -169,12 +169,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ("plugin/", "knowledge", "the plugin server goes through Main's proxy"),
     ("knowledge/", "memory", "knowledge never reads or writes memory data"),
     ("services/", "main_logic", "main_logic depends on services; services never imports it back"),
-    # The built-in familiar runtime is a harness without memory that runs in a
+    # The built-in agent runtime is a harness without memory that runs in a
     # child process of its own. Its layer would allow far more; these rows keep
     # it to config and utils, so the child stays small and never touches
     # another subsystem's data.
     *(
-        ("nekoclaw/runtime/", package, "the familiar runtime uses only config and utils")
+        ("nekoclaw/runtime/", package, "the agent runtime uses only config and utils")
         for package in (
             "steamworks",
             "knowledge",
@@ -182,9 +182,37 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "main_logic",
             "services",
             "main_routers",
-            "theater_workshop",
             "plugin",
-            "brain",
+        )
+    ),
+    # The built-in tools (keyboard and mouse, browser) drive the desktop and
+    # a browser and nothing of the application: like the runtime they stay
+    # with config and utils (plus the types of ``nekoclaw.host.capabilities``
+    # they are handed to the host in, which the layering allows).
+    *(
+        ("nekoclaw/builtin/", package, "the built-in tools use only config, utils and the host's capability types")
+        for package in (
+            "steamworks",
+            "knowledge",
+            "memory",
+            "main_logic",
+            "services",
+            "main_routers",
+            "plugin",
+        )
+    ),
+    # The NekoClaw host (task brain, task agents, gateway) reaches plugins over
+    # HTTP and needs ``plugin.settings`` only. Its task preferences stay apart
+    # from every memory: neither reads or writes the other.
+    *(
+        ("nekoclaw/host/", package, reason)
+        for package, reason in (
+            ("memory", "task preferences and persona memory never read or write each other"),
+            ("knowledge", "the NekoClaw host keeps apart from the knowledge subsystem"),
+            ("main_logic", "the NekoClaw host reaches the main dialogue through its outbox only"),
+            ("main_routers", "the NekoClaw host reaches the main dialogue through its outbox only"),
+            ("services", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+            ("steamworks", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
         )
     ),
 ]

@@ -184,9 +184,9 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 sid = self._active_sid
                 if sid and not self._muted:
                     if self._bootstrap_buffer:
-                        self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
+                        self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer), "ogg"))
                     if self._agg_buffer:
-                        self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer)))
+                        self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer), "ogg"))
                     # FINISH sent this round; early returns guarantee this callback belongs to the current
                     # synthesizer, and all rebuild paths clear FINISH.
                     if sid == self.finish_requested_speech_id:
@@ -262,14 +262,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 self._bootstrap_buffer.extend(data)
                 if len(self._bootstrap_buffer) < self._bootstrap_min_bytes:
                     return
-                self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer)))
+                self.response_queue.put(("__audio__", sid, bytes(self._bootstrap_buffer), "ogg"))
                 self._bootstrap_buffer.clear()
                 self._bootstrap_sent = True
                 return
 
             self._agg_buffer.extend(data)
             if len(self._agg_buffer) >= self._agg_min_bytes:
-                self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer)))
+                self.response_queue.put(("__audio__", sid, bytes(self._agg_buffer), "ogg"))
                 self._agg_buffer.clear()
             
     class _SynthCallback(ResultCallback):

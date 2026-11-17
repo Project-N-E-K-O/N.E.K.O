@@ -91,12 +91,6 @@ SRC_EXCLUDE = {
     "README_ja.md",
     "README_ru.md",
     "README_zh-CN.md",
-    "zh-CN/guide/openclaw_guide.md",
-    "zh-CN/guide/openclaw_guide.en.md",
-    "zh-CN/guide/openclaw_guide.ja.md",
-    "zh-CN/guide/openclaw_guide.ko.md",
-    "zh-CN/guide/openclaw_guide.ru.md",
-    "zh-CN/guide/openclaw_guide.zh-TW.md",
 }
 
 # Any markdown inline link target.  Reference-style links (``[foo][bar]``) and

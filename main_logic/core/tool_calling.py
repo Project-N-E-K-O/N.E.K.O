@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tool-calling surface for ``LLMSessionManager``: register/unregister
-and sync of tools, the builtin ``recall_memory`` tool, and tool-call
+and sync of tools, the builtin tools (``recall_memory``, public knowledge,
+and the two task tools ``dispatch_task`` / ``query_tasks``), and tool-call
 dispatch.
 
 Method-only mixin: every instance attribute is assigned in
@@ -31,6 +32,18 @@ from config.turn_context_settings import (
     RECALL_MEMORY_TOOL_BUDGET_MS,
     RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
 )
+from config.prompts.prompts_task_tools import (
+    DISPATCH_TOOL_DESCRIPTION,
+    DISPATCH_TOOL_NAME,
+    DISPATCH_TOOL_TASK_DESCRIPTION,
+    QUERY_TOOL_DESCRIPTION,
+    QUERY_TOOL_NAME,
+    QUERY_TOOL_QUESTION_DESCRIPTION,
+    TASK_TOOL_EMPTY,
+    TASK_TOOL_QUERY_UNREACHABLE,
+    TASK_TOOL_UNCERTAIN,
+    TASK_TOOL_UNREACHABLE,
+)
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
@@ -45,6 +58,20 @@ from ._shared import logger
 
 class ToolCallingMixin:
     """Tool-calling surface methods (see module docstring)."""
+
+    def _only_looks_up(self, tool_name: str) -> bool:
+        """Whether a tool is one of the built-in ones that only look something up.
+
+        A turn in which she called nothing but these has not acted, so what
+        she said in it is still checked afterwards (see ``cross_server``); any
+        other tool call is an action whose result is the one judgement of
+        that turn. A tool of another source that holds one of these names is
+        not known to only look up.
+        """
+        if tool_name not in ("recall_memory", public_knowledge.TOOL_NAME, QUERY_TOOL_NAME):
+            return False
+        held = self.tool_registry.get(tool_name)
+        return held is None or held.metadata.get("source") == "builtin"
 
     # ------------------------------------------------------------------
     # Tool calling — public API for agent_server / plugins
@@ -87,18 +114,18 @@ class ToolCallingMixin:
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
     async def unregister_tool_and_sync(self, name: str) -> bool:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return existed
 
@@ -106,18 +133,18 @@ class ToolCallingMixin:
         return self.tool_registry.names()
 
     def clear_tools(self, *, source: str | None = None) -> int:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return n
 
     async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
@@ -137,6 +164,18 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        if not self._only_looks_up(call.name):
+            self._turn_acted_through_tools = True
+        light_bubble = getattr(self, "_push_focus_thinking", None)
+        if light_bubble is not None and not getattr(self, "_turn_has_spoken", False):
+            # She called a tool before saying anything this turn: the chat
+            # shows the "…" bubble until her first words arrive
+            # (send_lanlan_response clears it) or the turn ends.
+            self._tool_wait_bubble = True
+            try:
+                await light_bubble(True)
+            except Exception:
+                logger.debug("[%s] lighting the tool-wait bubble failed", self.lanlan_name, exc_info=True)
         if call.reply_owner is not None:
             from main_logic.reply_tail import reply_tail_registry
 
@@ -253,6 +292,188 @@ class ToolCallingMixin:
         )
         self.tool_registry.register(recall_tool, replace=True)
         self._register_public_knowledge_tool()
+        self._register_task_tools()
+
+    # ------------------------------------------------------------------
+    # Built-in tools: dispatch_task / query_tasks
+    # ------------------------------------------------------------------
+    # Her two task tools. They exist only while NekoClaw is switched on for
+    # this session (``_is_agent_enabled``), so a session without it does not
+    # carry their definitions. Both take one sentence and no identifier: the
+    # task brain in the agent process keeps the record and works out which
+    # task a sentence is about. Proactive generation builds its own request
+    # without any tool, so these never ride on it.
+
+    def _register_task_tools(self) -> bool:
+        """Register or remove the two task tools to match the switches. Returns whether anything changed."""
+        enabled = False
+        try:
+            enabled = bool(self._is_agent_enabled())
+        except Exception:
+            enabled = False
+        if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            # The kill-switch of ``_register_builtin_tools`` holds on this
+            # path too (a switch update calls this directly).
+            enabled = False
+        changed = False
+        if not enabled:
+            for name in (DISPATCH_TOOL_NAME, QUERY_TOOL_NAME):
+                current = self.tool_registry.get(name)
+                if current is not None and current.metadata.get("source") == "builtin":
+                    self.tool_registry.unregister(name)
+                    changed = True
+            return changed
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        definitions = (
+            ToolDefinition(
+                name=DISPATCH_TOOL_NAME,
+                description=_loc(DISPATCH_TOOL_DESCRIPTION, _lang),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": _loc(DISPATCH_TOOL_TASK_DESCRIPTION, _lang)},
+                    },
+                    "required": ["task"],
+                },
+                handler=self._handle_dispatch_task_call,
+                metadata={"source": "builtin"},
+            ),
+            ToolDefinition(
+                name=QUERY_TOOL_NAME,
+                description=_loc(QUERY_TOOL_DESCRIPTION, _lang),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": _loc(QUERY_TOOL_QUESTION_DESCRIPTION, _lang)},
+                    },
+                },
+                handler=self._handle_query_tasks_call,
+                metadata={"source": "builtin"},
+            ),
+        )
+        for definition in definitions:
+            current = self.tool_registry.get(definition.name)
+            if current is not None and current.metadata.get("source") != "builtin":
+                # A tool of another source holds the name; it is left alone.
+                continue
+            if current is not None and current.description == definition.description:
+                # Registered already, in this language: nothing to do. Every
+                # status push calls this, so it must not register (and log) again.
+                continue
+            changed = True
+            self.tool_registry.register(definition, replace=True)
+        return changed
+
+    async def _post_to_task_system(self, path: str, body: dict) -> tuple[dict | None, bool]:
+        """POST one request of a task tool to the agent process.
+
+        Returns ``(answer, may_have_arrived)``. ``answer`` is None when no
+        usable answer came back. ``may_have_arrived`` then tells the two ways
+        of failing apart: False when the request was never delivered or was
+        turned down before anything was done with it (no connection, a 4xx
+        status), True when it went out and the answer did not come back in
+        time, could not be read, or was an error of the agent process's own
+        (any other status). In the second case the agent process may be
+        carrying it out all the same.
+
+        ``TASK_TOOL_TIMEOUT_SECONDS`` is the limit on the whole request. The
+        HTTP client applies its timeout to connecting, sending and reading
+        each on their own, which could add up to several times that.
+        """
+        import httpx
+
+        from config import TOOL_SERVER_PORT
+        from config.nekoclaw_settings import TASK_TOOL_TIMEOUT_SECONDS
+
+        try:
+            from utils.internal_http_client import get_internal_http_client
+
+            client = get_internal_http_client()
+            resp = await asyncio.wait_for(
+                client.post(
+                    f"http://127.0.0.1:{TOOL_SERVER_PORT}{path}",
+                    json=body,
+                    timeout=TASK_TOOL_TIMEOUT_SECONDS,
+                ),
+                TASK_TOOL_TIMEOUT_SECONDS,
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            logger.warning("[task tools] %s not delivered (%s)", path, type(exc).__name__)
+            return None, False
+        except Exception as exc:
+            # Running out of the overall limit lands here as well: which
+            # phase it was in is not known, so neither is whether it arrived.
+            logger.warning("[task tools] %s sent, no answer (%s)", path, type(exc).__name__)
+            return None, True
+        if not resp.is_success:
+            logger.warning("[task tools] %s returned status=%s", path, resp.status_code)
+            # A 4xx is the agent process turning the request down before it
+            # did anything with it. Any other status can come after the task
+            # was taken on (an error while its receipt was being written).
+            return None, not 400 <= resp.status_code < 500
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("[task tools] %s answered with something unreadable (%s)", path, type(exc).__name__)
+            return None, True
+        if not isinstance(data, dict):
+            return None, True
+        return data, True
+
+    async def _handle_dispatch_task_call(self, arguments: dict) -> str:
+        """Handler for ``dispatch_task``: hand her sentence to the task brain and return its receipt.
+
+        The receipt is the conclusion of the task brain's first round (already
+        under way / nothing can do this / accepted, or what became of a stop,
+        an addition or an answer). It does not wait for the work itself.
+
+        Logging follows ``recall_memory``: INFO carries names and outcome
+        only, never what she or the user said.
+        """
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        args_dict = arguments if isinstance(arguments, dict) else {}
+        task = args_dict.get("task")
+        task = task.strip() if isinstance(task, str) else ""
+        if not task:
+            return _loc(TASK_TOOL_EMPTY, _lang)
+        data, may_have_arrived = await self._post_to_task_system(
+            "/nekoclaw/dispatch",
+            {
+                "text": task,
+                "lanlan_name": self.lanlan_name,
+                # The user's own words of this turn, as far as they are known
+                # by now; plugins get them as ``_ctx.latest_user_request``.
+                "user_text": getattr(self, "_latest_user_utterance", "") or "",
+                "conversation_id": str(getattr(self, "current_speech_id", "") or ""),
+                "language": self.user_language,
+            },
+        )
+        text = str((data or {}).get("text") or "").strip()
+        logger.info(
+            "[dispatch_task] called by name=%s mode=%s lang=%s → kind=%s",
+            self.lanlan_name, self.input_mode, _lang,
+            (data or {}).get("kind") or ("uncertain" if may_have_arrived else "unreachable"),
+        )
+        if text:
+            return text
+        return _loc(TASK_TOOL_UNCERTAIN if may_have_arrived else TASK_TOOL_UNREACHABLE, _lang)
+
+    async def _handle_query_tasks_call(self, arguments: dict) -> str:
+        """Handler for ``query_tasks``: ask the task brain what is under way or whether something can be done."""
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        args_dict = arguments if isinstance(arguments, dict) else {}
+        question = args_dict.get("question")
+        question = question.strip() if isinstance(question, str) else ""
+        data, _may_have_arrived = await self._post_to_task_system(
+            "/nekoclaw/query",
+            {"text": question, "lanlan_name": self.lanlan_name, "language": self.user_language},
+        )
+        text = str((data or {}).get("text") or "").strip()
+        logger.info(
+            "[query_tasks] called by name=%s mode=%s lang=%s → %s",
+            self.lanlan_name, self.input_mode, _lang, "answered" if text else "unreachable",
+        )
+        return text or _loc(TASK_TOOL_QUERY_UNREACHABLE, _lang)
 
     # ------------------------------------------------------------------
     # Built-in tool: query_public_knowledge
@@ -289,25 +510,39 @@ class ToolCallingMixin:
                 type(e).__name__,
             )
 
-    def _public_knowledge_holder(self) -> ToolDefinition | None:
-        """The tool holding the ``query_public_knowledge`` name, before a removal."""
-        return self.tool_registry.get(public_knowledge.TOOL_NAME)
+    def _yielding_builtin_holders(self) -> dict[str, ToolDefinition | None]:
+        """The tools holding the names of the builtins that yield to other sources, before a removal."""
+        return {
+            name: self.tool_registry.get(name)
+            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME)
+        }
 
-    def _refill_vacated_builtins(self, previous_holder: ToolDefinition | None) -> None:
-        """Take the builtin's name back from another source's tool just removed.
+    def _refill_vacated_builtins(self, previous_holders: dict[str, ToolDefinition | None] | None) -> None:
+        """Take a builtin's name back from another source's tool just removed.
 
-        Only for optional builtins that yield to same-name tools of other
-        sources (``query_public_knowledge``): when such a tool goes away the
-        availability flag does not change, so no availability callback would
-        restore the builtin. Removing the builtin itself (e.g. clearing the
-        "builtin" source) is respected: nothing is put back.
+        Only for builtins that yield to same-name tools of other sources
+        (``query_public_knowledge`` and the two task tools): when such a tool
+        goes away neither the availability flag nor a switch changes, so
+        nothing else would restore the builtin. Removing the builtin itself
+        (e.g. clearing the "builtin" source) is respected: nothing is put back.
         """
         if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
             return
-        if previous_holder is None or public_knowledge.is_builtin_definition(previous_holder):
-            return
-        if self.tool_registry.get(public_knowledge.TOOL_NAME) is None and public_knowledge.tool_available():
+        previous_holders = previous_holders or {}
+
+        def vacated(name: str) -> bool:
+            held = previous_holders.get(name)
+            return (
+                held is not None
+                and (held.metadata or {}).get("source") != "builtin"
+                and self.tool_registry.get(name) is None
+            )
+
+        if vacated(public_knowledge.TOOL_NAME) and public_knowledge.tool_available():
             self._register_public_knowledge_tool()
+        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME):
+            # Registers what the switches call for and leaves the rest alone.
+            self._register_task_tools()
 
     def _on_public_knowledge_availability(self) -> None:
         """Availability flipped: re-register and push to live sessions."""

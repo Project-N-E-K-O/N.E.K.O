@@ -493,8 +493,11 @@ function _getNekoIdleReturnCurrentArtUrl(button, tier) {
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EatActionActive(button)) {
         return _getNekoIdleCat1EatActionAssetUrl(button);
     }
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1VisualActionActive(button)) {
-        return _getNekoIdleCat1VisualActionAssetUrl(button);
+    if (_isNekoIdleCat1VisualActionActive(button)) {
+        const visualProfile = _getNekoIdleCat1ActiveVisualActionProfile(button);
+        if (visualProfile && _getNekoIdleVisualActionTier(visualProfile) === normalizedTier) {
+            return _getNekoIdleCat1VisualActionAssetUrl(button);
+        }
     }
     if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1StretchActionActive(button)) {
         return _getNekoIdleCat1StretchAssetUrl();

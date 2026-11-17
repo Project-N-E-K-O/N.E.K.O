@@ -33,6 +33,7 @@ import ast
 import asyncio
 import queue
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -394,16 +395,23 @@ async def test_game_completion_is_false_when_audio_chunk_delivery_failed(monkeyp
         await _stop(task)
 
 
-async def test_game_completion_is_false_for_a_round_dropped_by_the_worker():
+@pytest.mark.parametrize("terminal_error", [False, True])
+async def test_game_completion_is_false_for_a_round_dropped_by_the_worker(terminal_error, monkeypatch):
     # A TTS worker that exits on a permanent rejection closes out rounds it
     # drops with a speech-scoped failure marker plus audio_done.
     mgr = _make_mgr(_RecordingWebsocket())
+    mgr._tts_active_provider_key = "gptsovits"
+    mgr._tts_retry_notify_count = 0
     completion = LLMSessionManager._begin_game_speech_completion_wait(mgr, "sid-dropped")
-    task = await _start_handler(
-        mgr,
-        ("__tts_sentence_failed__", "sid-dropped", ""),
-        ("__audio_done__", "sid-dropped"),
-    )
+    messages = [("__tts_sentence_failed__", "sid-dropped", "")]
+    if terminal_error:
+        monkeypatch.setattr(
+            "utils.token_tracker.TokenTracker.get_instance",
+            lambda: SimpleNamespace(has_completed_core_loop=lambda: False),
+        )
+        messages.append(("__error__", "GPT-SoVITS closed without done"))
+    messages.append(("__audio_done__", "sid-dropped"))
+    task = await _start_handler(mgr, *messages)
     try:
         assert await asyncio.wait_for(completion, timeout=2.0) is False
     finally:

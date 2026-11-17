@@ -42,7 +42,7 @@
 #   SOFTWARE.
 # ---------------------------------------------------------------------------
 
-"""Tool definitions shown to the model by the built-in familiar runtime.
+"""Tool definitions shown to the model by the built-in agent runtime.
 
 ``DSH_TOOL_SCHEMAS`` holds tool names, descriptions and parameter schemas from
 dsh, whose wording was tuned against task benchmarks. Using them unchanged lets

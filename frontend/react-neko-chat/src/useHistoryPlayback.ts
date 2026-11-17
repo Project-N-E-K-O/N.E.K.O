@@ -5,6 +5,11 @@ import { claimVoicePlayback, releaseVoicePlayback } from './voicePlaybackOwner';
 type Phase = 'idle' | 'loading' | 'playing' | 'paused' | 'done' | 'empty' | 'error';
 type PlaybackState = { phase: Phase; current: HistoryEntry | null; sequence: boolean; partial: boolean };
 type Session = { stop: () => void; pause: () => void; resume: () => void };
+type AudioRoute = { stop: () => void };
+type AudioHost = Window & {
+  appAudioPlayback?: { connectHistoryAudioElement?: (audio: HTMLAudioElement) => Promise<AudioRoute | null> };
+  appState?: { speakerVolume?: number; effectiveSpeakerId?: string };
+};
 const idle: PlaybackState = { phase: 'idle', current: null, sequence: false, partial: false };
 
 // This player belongs to the dialog, never a virtual row. At most one page of
@@ -28,6 +33,25 @@ export function useHistoryPlayback(character: string, scope: string, autoContinu
     audio.preload = 'none';
     const controller = new AbortController();
     let stopped = false, paused = false, played = false, inClip = false;
+    let releaseAudioRoute = () => {};
+    const routeReady = (async () => {
+      const host = window as AudioHost;
+      try {
+        const route = await host.appAudioPlayback?.connectHistoryAudioElement?.(audio);
+        if (route) {
+          if (stopped) route.stop(); else releaseAudioRoute = () => route.stop();
+          return;
+        }
+      } catch { /* WebAudio unavailable: apply standalone element settings. */ }
+      if (stopped) return;
+      const storedVolume = Number(host.appState?.speakerVolume ?? localStorage.getItem('neko_speaker_volume') ?? 100);
+      audio.volume = Number.isFinite(storedVolume) ? Math.max(0, Math.min(1, storedVolume / 100)) : 1;
+      const sink = host.appState?.effectiveSpeakerId;
+      const routedElement = audio as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+      if (sink && typeof routedElement.setSinkId === 'function') {
+        try { await routedElement.setSinkId(sink); } catch { /* Browser default output remains usable. */ }
+      }
+    })();
     let current: HistoryEntry | null = single ?? null, partial = false;
     let wake: (() => void) | undefined, rejectClip: ((error: Error) => void) | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -40,6 +64,7 @@ export function useHistoryPlayback(character: string, scope: string, autoContinu
       controller.abort(); clearTimeout(timer);
       audio.onended = null; audio.onerror = null;
       audio.pause(); audio.removeAttribute('src'); audio.load();
+      releaseAudioRoute();
       wake?.(); rejectClip?.(abortError());
       releaseVoicePlayback(cancel);
       if (session.current === handle) session.current = undefined;
@@ -83,7 +108,7 @@ export function useHistoryPlayback(character: string, scope: string, autoContinu
       } finally { clearTimeout(timeout); }
     }
     async function message(entry: HistoryEntry) {
-      await ready(); current = entry; partial = false; publish('loading');
+      await routeReady; await ready(); current = entry; partial = false; publish('loading');
       const params = new URLSearchParams({ character, record_id: entry.voice!.recordId });
       const data = await json<{ clips: { url: string; complete: boolean }[] }>(`/api/voice-archive/message?${params}`);
       if (!data?.clips.length) return;

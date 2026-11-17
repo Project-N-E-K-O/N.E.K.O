@@ -9,6 +9,7 @@ const entry = (id: number): HistoryEntry => ({ id, role: 'assistant', time: `202
 let players: FakeAudio[];
 class FakeAudio {
   src = ''; preload = ''; onended: (() => void) | null = null; onerror: (() => void) | null = null;
+  volume = 1; setSinkId = vi.fn(async (_id: string) => {});
   play = vi.fn(async () => {}); pause = vi.fn(); load = vi.fn(); removeAttribute = vi.fn();
   constructor() { players.push(this); }
 }
@@ -193,4 +194,29 @@ it('plays only the selected context message under the user-only filter', async (
   act(() => players[0].onended?.());
   await waitFor(() => expect(result.current.phase).toBe('done'));
   expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it('uses the live speaker graph for history volume and output routing', async () => {
+  const stopRoute = vi.fn();
+  const connect = vi.fn(async () => ({ stop: stopRoute }));
+  vi.stubGlobal('appAudioPlayback', { connectHistoryAudioElement: connect });
+  vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+  const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+  act(() => result.current.start(entry(1)));
+  await waitFor(() => expect(result.current.phase).toBe('playing'));
+  expect(connect).toHaveBeenCalledWith(players[0]);
+  expect(players[0].setSinkId).not.toHaveBeenCalled(); // The shared AudioContext owns the sink.
+  act(() => result.current.stop());
+  expect(stopRoute).toHaveBeenCalledOnce();
+});
+
+it('honors mute and selected sink when the shared audio graph is unavailable', async () => {
+  vi.stubGlobal('appAudioPlayback', undefined);
+  vi.stubGlobal('appState', { speakerVolume: 0, effectiveSpeakerId: 'headphones' });
+  vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+  const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+  act(() => result.current.start(entry(1)));
+  await waitFor(() => expect(result.current.phase).toBe('playing'));
+  expect(players[0].volume).toBe(0);
+  expect(players[0].setSinkId).toHaveBeenCalledWith('headphones');
 });

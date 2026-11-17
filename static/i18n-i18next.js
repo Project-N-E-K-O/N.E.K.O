@@ -29,8 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh all eight locales for cross-day history voice continuation.
-    const LOCALE_VERSION = '2026-11-13-history-recording';
+    // Merge the history/voice recording strings with the latest theater,
+    // browser, task HUD and TTS copy changes across all eight locales.
+    const LOCALE_VERSION = '2026-11-17-history-theater-tts-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

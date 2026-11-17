@@ -1,4 +1,4 @@
-"""Locks the system prompt and the tool definitions a familiar's model receives.
+"""Locks the system prompt and the tool definitions a task agent's model receives.
 
 The wording comes from dsh, where it was tuned against benchmarks, so a change
 must be deliberate. When one is intended, regenerate the expected files with::
@@ -176,6 +176,38 @@ def test_the_prompt_has_no_unrendered_placeholders_and_no_banned_words() -> None
             assert banned not in text
 
 
+def test_the_tools_of_the_host_gateway_add_nothing_to_the_system_prompt() -> None:
+    # The keyboard-and-mouse tool and the browser tools are not tools of the
+    # runtime, and a session is not offered them: the host's gateway hands a
+    # group over, with how it is used, when a task agent loads it. So the
+    # system prompt is the same with the gateway's tools as without, and
+    # would be even if those tools were listed by their own names.
+    from config.prompts.prompts_nekoclaw_builtin import (
+        BROWSER_TOOL_NAMES,
+        BUILTIN_GROUP_GUIDANCE,
+        COMPUTER_TOOL_NAME,
+    )
+
+    variant = dict(VARIANTS["win32-full"])
+    platform, workdir = variant.pop("platform"), variant.pop("workdir")
+    tools, without, _schemas = _build(platform, workdir, variant.pop("capabilities"), **variant)
+    own = [tool.name for tool in tools]
+    del variant["images"]
+
+    def prompt(*offered_by_the_gateway: str) -> str:
+        return build_system_prompt(
+            tool_names=[*own, *offered_by_the_gateway], workdir=workdir, platform=platform, **variant
+        )
+
+    assert prompt() == without
+    assert prompt("capability_search", "capability_call", "plugin__weather__today") == without
+    assert prompt(COMPUTER_TOOL_NAME, *BROWSER_TOOL_NAMES) == without
+    for guidance in BUILTIN_GROUP_GUIDANCE.values():
+        assert guidance not in without
+    # The snapshot that held the two paragraphs is gone with them.
+    assert not (SNAPSHOTS / "system-prompt.win32-builtin-tools.expected.md").exists()
+
+
 def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:
     def prompt(*names: str) -> str:
         return build_system_prompt(tool_names=names, workdir="/w", platform="linux")
@@ -186,4 +218,4 @@ def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:
     assert "Use read on a matched file" in prompt("grep", "read")
     assert "Use the returned source snippets when available" in prompt("web_search")
     assert "Follow up with web_fetch" in prompt("web_search", "web_fetch")
-    assert texts.FAMILIAR_IDENTITY in prompt()
+    assert texts.TASK_AGENT_IDENTITY in prompt()

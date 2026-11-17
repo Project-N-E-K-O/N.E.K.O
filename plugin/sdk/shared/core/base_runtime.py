@@ -10,11 +10,12 @@ The maintainer emphatically forbids reintroducing loguru here. Lint: scripts/che
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from plugin.sdk.shared.logging import LogLevel, setup_sdk_logging
 
@@ -92,6 +93,122 @@ def resolve_plugin_runtime_config_path(ctx: object) -> Path:
     return resolve_plugin_storage_dir(ctx) / "config" / "plugin.toml"
 
 
+PLUGIN_SHARED_DIRNAME = "plugin_shared"
+
+
+def resolve_plugin_shared_dir(plugin_id: object) -> Path:
+    """Return the directory a plugin publishes for other plugins to read.
+
+    ``<data root>/plugin_shared/<plugin id>/``, next to the plugins' private
+    state and outside it: removing a plugin leaves what it published.
+    """
+    return resolve_runtime_data_root() / PLUGIN_SHARED_DIRNAME / _shared_dirname(plugin_id)
+
+
+_SHARED_PLAIN_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"} | {f"{prefix}{digit}" for prefix in ("com", "lpt") for digit in "123456789"}
+)
+# File systems take names of up to 255 bytes; a plugin id has no length limit
+# and an escaped character takes three. A longer name keeps its beginning
+# and ends in a hash of the whole id.
+_SHARED_NAME_MAX_CHARS = 120
+_SHARED_NAME_KEPT_CHARS = 80
+
+
+def _shared_dirname(plugin_id: object) -> str:
+    """Return the directory name a plugin id publishes under; two ids never get the same one.
+
+    Lower-case letters, digits, ``_`` and ``-`` stand for themselves, so an
+    ordinary id is its own directory name. Every other character is written
+    as ``~`` and the two hex digits of each of its bytes: upper-case letters
+    too, because ``Weather`` and ``weather`` are one directory on Windows
+    and macOS. A plugin id cannot contain ``~``, so an escaped name is never
+    another plugin's plain one, and the mapping can be read backwards.
+
+    The mapping private state uses (``_safe_plugin_dirname``) drops
+    characters instead: ``weather_`` and ``weather`` end up in one
+    directory there. It is kept as it is, being a contract with what is on
+    users' disks; here two plugins would write over each other's files.
+    """
+    raw = str(plugin_id or "").strip()
+    if not raw:
+        return "~"
+    name = "".join(
+        char if char in _SHARED_PLAIN_CHARACTERS else "".join(f"~{byte:02x}" for byte in char.encode("utf-8"))
+        for char in raw
+    )
+    if name in _WINDOWS_DEVICE_NAMES:
+        # Windows reads these as devices, not as directories. Two tildes
+        # cannot come from an escaped character, which is one tilde and hex.
+        return f"~~{name}"
+    if len(name) > _SHARED_NAME_MAX_CHARS:
+        # ``~h`` cannot come from an escaped character either (``h`` is no
+        # hex digit), so a shortened name is never another id's full one.
+        # Two long ids share a name only when 128 bits of their hashes
+        # agree: no name of bounded length can tell every id of unbounded
+        # length apart, and this is as close as it gets.
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+        return f"{name[:_SHARED_NAME_KEPT_CHARS]}~h{digest}"
+    return name
+
+
+def _declared_shared_reads(plugin_section: object) -> frozenset[str] | None:
+    """Read ``[plugin.shared] reads`` from a ``[plugin]`` table; None when it has no ``shared`` table.
+
+    None, not "nothing declared": a configuration the host keeps while a
+    change of it is not confirmed can lack the table though the manifest
+    has it, and the manifest is then what counts.
+    """
+    if not isinstance(plugin_section, dict):
+        return None
+    shared = plugin_section.get("shared")
+    if not isinstance(shared, dict):
+        return None
+    reads = shared.get("reads")
+    if isinstance(reads, str):
+        reads = [reads]
+    if not isinstance(reads, (list, tuple)):
+        return frozenset()
+    return frozenset(item.strip() for item in reads if isinstance(item, str) and item.strip())
+
+
+def resolve_shared_reads(ctx: object) -> frozenset[str]:
+    """Return the ids of the plugins whose shared directory this plugin declares it reads.
+
+    From the plugin's effective configuration when the context has it, else
+    from the manifest itself.
+    """
+    declared = _declared_shared_reads(resolve_effective_config(ctx).get("plugin"))
+    if declared is not None:
+        return declared
+    config_path = getattr(ctx, "config_path", None)
+    if not isinstance(config_path, (str, Path)):
+        return frozenset()
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+        import tomli as tomllib  # type: ignore[no-redef]
+    try:
+        with Path(config_path).open("rb") as stream:
+            manifest = tomllib.load(stream)
+    except Exception:
+        return frozenset()
+    return _declared_shared_reads(manifest.get("plugin")) or frozenset()
+
+
+def join_shared_path(base: Path, parts: tuple[str, ...]) -> Path | None:
+    """Join ``parts`` below a shared directory; None when they would lead out of it."""
+    for part in parts:
+        # Read as a Windows path and as a POSIX path, whatever the platform:
+        # a drive, a leading separator or ".." in either reading leads out.
+        for flavour in (PureWindowsPath, PurePosixPath):
+            pure = flavour(str(part))
+            if pure.anchor or ".." in pure.parts or ":" in str(part):
+                return None
+    return base.joinpath(*(str(part) for part in parts)) if parts else base
+
+
 def resolve_effective_config(ctx: object) -> dict[str, object]:
     effective_cfg = getattr(ctx, "_effective_config", None)
     return effective_cfg if isinstance(effective_cfg, dict) else {}
@@ -142,7 +259,11 @@ __all__ = [
     "resolve_plugin_data_dir",
     "resolve_plugin_dir",
     "resolve_plugin_runtime_config_path",
+    "resolve_plugin_shared_dir",
     "resolve_plugin_storage_dir",
+    "resolve_shared_reads",
+    "join_shared_path",
+    "PLUGIN_SHARED_DIRNAME",
     "resolve_runtime_data_root",
     "resolve_state_backend",
     "resolve_store_enabled",

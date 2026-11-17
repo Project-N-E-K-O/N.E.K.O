@@ -88,3 +88,9 @@ def test_write_receipt_distinguishes_acceptance_conflict_and_refusal():
                     {**accepted, 'accepted': 1}, {**accepted, 'revision': 1.0}, None):
         with pytest.raises(ValueError):
             receipt(invalid, 'owner', 'uid', 'a' * 32)
+
+
+@pytest.mark.parametrize('cold', THREE['invalidCold'])
+def test_invalid_cold_list_is_refused_as_the_sync_service_refuses_it(cold):
+    with pytest.raises((ValueError, TypeError)):
+        document({**THREE['valid'], 'cold': cold})

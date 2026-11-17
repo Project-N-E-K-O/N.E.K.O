@@ -46,6 +46,8 @@
         CAT1_SMALL_MOVE: 'cat1_small_move',
         CAT1_PLAY_YARN: 'cat1_play_yarn',
         CAT1_IDLE_RANDOM: 'cat1_idle_random',
+        CAT2_IDLE_RANDOM: 'cat2_idle_random',
+        CAT3_IDLE_RANDOM: 'cat3_idle_random',
         CAT1_INACTIVE_SAD: 'cat1_inactive_sad',
         CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
         CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback',
@@ -109,6 +111,10 @@
         PLAY_CANCELLED: 'play_cancelled',
         CAT1_IDLE_RANDOM_DONE: 'cat1_idle_random_done',
         CAT1_IDLE_RANDOM_CANCELLED: 'cat1_idle_random_cancelled',
+        CAT2_IDLE_RANDOM_DONE: 'cat2_idle_random_done',
+        CAT2_IDLE_RANDOM_CANCELLED: 'cat2_idle_random_cancelled',
+        CAT3_IDLE_RANDOM_DONE: 'cat3_idle_random_done',
+        CAT3_IDLE_RANDOM_CANCELLED: 'cat3_idle_random_cancelled',
         CAT1_INACTIVE_SAD_DONE: 'cat1_inactive_sad_done',
         CAT1_INACTIVE_SAD_CANCELLED: 'cat1_inactive_sad_cancelled',
         SLEEP_FEEDBACK_DONE: 'sleep_feedback_done',
@@ -165,6 +171,11 @@
     var CAT1_IDLE_RANDOM_POLICY = Object.freeze({
         tickChance: 0.20,
         cooldownMs: 5 * 60 * 1000,
+    });
+    var IDLE_RANDOM_POLICY_BY_TIER = Object.freeze({
+        cat1: CAT1_IDLE_RANDOM_POLICY,
+        cat2: Object.freeze({ tickChance: 0.20, cooldownMs: 60 * 1000 }),
+        cat3: Object.freeze({ tickChance: 0.20, cooldownMs: 5 * 60 * 1000 }),
     });
     var CAT1_INACTIVE_SAD_POLICY = Object.freeze({
         inactivityMs: 13 * 60 * 1000,
@@ -1160,9 +1171,9 @@
     function getActionCooldownDurationMs(actionId) {
         var scoreConfig = getActionScoreConfig(actionId);
         if (scoreConfig) return Number(scoreConfig.cooldownMs) || 0;
-        if (actionId === ACTION_IDS.CAT1_IDLE_RANDOM) {
-            return CAT1_IDLE_RANDOM_POLICY.cooldownMs;
-        }
+        if (actionId === ACTION_IDS.CAT1_IDLE_RANDOM) return IDLE_RANDOM_POLICY_BY_TIER.cat1.cooldownMs;
+        if (actionId === ACTION_IDS.CAT2_IDLE_RANDOM) return IDLE_RANDOM_POLICY_BY_TIER.cat2.cooldownMs;
+        if (actionId === ACTION_IDS.CAT3_IDLE_RANDOM) return IDLE_RANDOM_POLICY_BY_TIER.cat3.cooldownMs;
         return 0;
     }
 
@@ -1372,8 +1383,8 @@
                 actionId === ACTION_IDS.CAT1_IDLE_RANDOM ||
                 actionId === ACTION_IDS.CAT1_INACTIVE_SAD;
         }
-        if (tier === TIERS.CAT2) return actionId === ACTION_IDS.CAT2_NAP_FEEDBACK;
-        if (tier === TIERS.CAT3) return actionId === ACTION_IDS.CAT3_SLEEP_FEEDBACK;
+        if (tier === TIERS.CAT2) return actionId === ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === ACTION_IDS.CAT2_IDLE_RANDOM;
+        if (tier === TIERS.CAT3) return actionId === ACTION_IDS.CAT3_SLEEP_FEEDBACK || actionId === ACTION_IDS.CAT3_IDLE_RANDOM;
         return false;
     }
 
@@ -1479,16 +1490,25 @@
         };
     }
 
-    function isCat1IdleRandomTick(triggerTypes) {
-        return runtimeState.tier === TIERS.CAT1 &&
+    function idleRandomActionIdForTier(tier) {
+        if (tier === TIERS.CAT1) return ACTION_IDS.CAT1_IDLE_RANDOM;
+        if (tier === TIERS.CAT2) return ACTION_IDS.CAT2_IDLE_RANDOM;
+        if (tier === TIERS.CAT3) return ACTION_IDS.CAT3_IDLE_RANDOM;
+        return '';
+    }
+
+    function isIdleRandomTick(triggerTypes) {
+        return !!idleRandomActionIdForTier(runtimeState.tier) &&
             Array.isArray(triggerTypes) &&
             triggerTypes.indexOf(OBSERVATION_TYPES.CAT_ELAPSED) !== -1 &&
             !triggerTypes.some(isUserInteractionObservationType);
     }
 
-    function evaluateCat1IdleRandomCandidate(providers, triggerTypes, timestamp) {
+    function evaluateIdleRandomCandidate(providers, triggerTypes, timestamp) {
+        var actionId = idleRandomActionIdForTier(runtimeState.tier);
+        var policy = IDLE_RANDOM_POLICY_BY_TIER[runtimeState.tier];
         var candidate = {
-            actionId: ACTION_IDS.CAT1_IDLE_RANDOM,
+            actionId: actionId,
             score: null,
             baseScore: null,
             threshold: null,
@@ -1511,11 +1531,11 @@
             reason: '',
             providerDetail: {},
         };
-        if (!isCat1IdleRandomTick(triggerTypes)) {
+        if (!policy || !isIdleRandomTick(triggerTypes)) {
             candidate.reason = 'not_autonomous_idle_tick';
             return candidate;
         }
-        var cooldown = getActionCooldown(ACTION_IDS.CAT1_IDLE_RANDOM, timestamp);
+        var cooldown = getActionCooldown(actionId, timestamp);
         candidate.cooldownApplied = cooldown.active;
         candidate.cooldownRemainingMs = Math.round(cooldown.remainingMs);
         candidate.cooldownRecoveryFactor = Math.round(cooldown.recoveryFactor * 10000) / 10000;
@@ -1528,7 +1548,7 @@
             candidate.reason = 'provider_unavailable';
             return candidate;
         }
-        var providerDecision = providers.dryRun(ACTION_IDS.CAT1_IDLE_RANDOM, {
+        var providerDecision = providers.dryRun(actionId, {
             source: 'cat-mind-selector-read-only',
         }) || {};
         candidate.providerDetail = sanitizeDetail(providerDecision.detail);
@@ -1538,7 +1558,7 @@
                 : 'provider_rejected';
             return candidate;
         }
-        if (Math.random() >= CAT1_IDLE_RANDOM_POLICY.tickChance) {
+        if (Math.random() >= policy.tickChance) {
             candidate.reason = 'chance_miss';
             return candidate;
         }
@@ -1846,7 +1866,7 @@
         }
 
         if (!selectedCandidate) {
-            var idleRandomCandidate = evaluateCat1IdleRandomCandidate(
+            var idleRandomCandidate = evaluateIdleRandomCandidate(
                 providers,
                 triggerTypes,
                 scheduler.lastEvaluatedAt
@@ -1939,6 +1959,8 @@
         var allowed = base.candidates.filter(function (candidate) {
             return candidate.allowed &&
                 candidate.actionId !== ACTION_IDS.CAT1_IDLE_RANDOM &&
+                candidate.actionId !== ACTION_IDS.CAT2_IDLE_RANDOM &&
+                candidate.actionId !== ACTION_IDS.CAT3_IDLE_RANDOM &&
                 candidate.actionId !== ACTION_IDS.CAT1_INACTIVE_SAD;
         });
         if (!selectedCandidate && allowed.length) {
@@ -2182,6 +2204,10 @@
             type === OBSERVATION_TYPES.PLAY_CANCELLED ||
             type === OBSERVATION_TYPES.CAT1_IDLE_RANDOM_DONE ||
             type === OBSERVATION_TYPES.CAT1_IDLE_RANDOM_CANCELLED ||
+            type === OBSERVATION_TYPES.CAT2_IDLE_RANDOM_DONE ||
+            type === OBSERVATION_TYPES.CAT2_IDLE_RANDOM_CANCELLED ||
+            type === OBSERVATION_TYPES.CAT3_IDLE_RANDOM_DONE ||
+            type === OBSERVATION_TYPES.CAT3_IDLE_RANDOM_CANCELLED ||
             type === OBSERVATION_TYPES.CAT1_INACTIVE_SAD_DONE ||
             type === OBSERVATION_TYPES.CAT1_INACTIVE_SAD_CANCELLED ||
             type === OBSERVATION_TYPES.SLEEP_FEEDBACK_DONE ||
@@ -3167,6 +3193,12 @@
                 ? OBSERVATION_TYPES.CAT1_IDLE_RANDOM_DONE
                 : OBSERVATION_TYPES.CAT1_IDLE_RANDOM_CANCELLED;
         }
+        if (actionId === ACTION_IDS.CAT2_IDLE_RANDOM) {
+            return result === 'done' ? OBSERVATION_TYPES.CAT2_IDLE_RANDOM_DONE : OBSERVATION_TYPES.CAT2_IDLE_RANDOM_CANCELLED;
+        }
+        if (actionId === ACTION_IDS.CAT3_IDLE_RANDOM) {
+            return result === 'done' ? OBSERVATION_TYPES.CAT3_IDLE_RANDOM_DONE : OBSERVATION_TYPES.CAT3_IDLE_RANDOM_CANCELLED;
+        }
         if (actionId === ACTION_IDS.CAT1_INACTIVE_SAD) {
             return result === 'done'
                 ? OBSERVATION_TYPES.CAT1_INACTIVE_SAD_DONE
@@ -3346,6 +3378,7 @@
         TIERS: TIERS,
         ACTION_IDS: ACTION_IDS,
         CAT1_IDLE_RANDOM_POLICY: CAT1_IDLE_RANDOM_POLICY,
+        IDLE_RANDOM_POLICY_BY_TIER: IDLE_RANDOM_POLICY_BY_TIER,
         CAT1_INACTIVE_SAD_POLICY: CAT1_INACTIVE_SAD_POLICY,
         isDebugEnabled: isDebugEnabled,
     });

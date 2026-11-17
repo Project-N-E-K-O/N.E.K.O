@@ -24,7 +24,7 @@ def reflection(identity, text='enjoys quiet evenings', **metadata):
 
 
 def document(entries=(), *, retirements=(), confirmations=(), a=(), b=(), organizer=None, maintenance=None,
-             lineage=None, completed=1000):
+             lineage=None, cold=None, completed=1000):
     value = {'schemaVersion': 3, 'completedAt': completed, 'entries': list(entries),
              'evidence': {'retirements': list(retirements), 'confirmations': list(confirmations)},
              'progress': {'a': list(a), 'b': list(b)}}
@@ -34,6 +34,8 @@ def document(entries=(), *, retirements=(), confirmations=(), a=(), b=(), organi
         value['maintenance'] = maintenance
     if lineage is not None:
         value['lineage'] = lineage
+    if cold is not None:
+        value['cold'] = list(cold)
     return value
 
 
@@ -52,6 +54,13 @@ def expected(entries=(), **parts):
 
 def claim(device, renewed, rank):
     return {'deviceId': device, 'renewedAt': renewed, 'rank': rank}
+
+
+def listed(identity, kind='fact', status=None, at=500, **fields):
+    """A cold-list item: identity and state only, never text."""
+    subject = 'relationship' if kind == 'reflection' else 'master'
+    return {'kind': kind, 'subject': subject, 'id': identity,
+            'status': status or ('archived' if kind != 'fact' else 'retracted'), 'archivedAt': at, **fields}
 
 
 def retirement(identity, sources, **fields):
@@ -314,6 +323,53 @@ case('confirmations from both sides are kept',
      document(confirmations=[{'fingerprint': '1:2:3', 'factId': 'f1'}, {'fingerprint': '7:8:9', 'factId': 'f3'}]),
      expected(confirmations=[{'fingerprint': '1:2:3', 'factId': 'f1'}, {'fingerprint': '7:8:9', 'factId': 'f3'},
                              {'fingerprint': '4:5:6', 'factId': 'f2'}]))
+
+case('cold lists keep the published order then local additions',
+     based(cold=[listed('c1')]),
+     document(cold=[listed('c1'), listed('c3', status='superseded', supersededById='f1')]),
+     document(cold=[listed('c1'), listed('r2', kind='reflection')]),
+     expected(cold=[listed('c1'), listed('r2', kind='reflection'), listed('c3', status='superseded', supersededById='f1')]))
+
+case('a listed row leaves the entries whatever either side did to it',
+     based([shared, fact('f2')]),
+     document([fact('f1', 'likes green tea'), fact('f2')]),
+     document([fact('f2')], cold=[listed('f1', status='superseded', supersededById='f2')]),
+     expected([fact('f2')], cold=[listed('f1', status='superseded', supersededById='f2')]))
+
+case('a listed reflection leaves the entries too',
+     based([reflection('r1')]), document([reflection('r1', status='confirmed')]),
+     document(cold=[listed('r1', kind='reflection')]),
+     expected(cold=[listed('r1', kind='reflection')]))
+
+case('without a base a listed row is not brought back as new',
+     None, document([shared, fact('f2')]), document(cold=[listed('f1')]),
+     expected([fact('f2')], cold=[listed('f1')]))
+
+case('a cold row the organizer pruned stays pruned',
+     based(cold=[listed('c1'), listed('c2')]),
+     document(cold=[listed('c1', at=900), listed('c2')]),
+     document(cold=[listed('c2')]),
+     expected(cold=[listed('c2')]))
+
+case('a cold row pruned here stays pruned while the remote did not change it',
+     based(cold=[listed('c1'), listed('c2')]),
+     document(cold=[listed('c2')]),
+     document(cold=[listed('c1'), listed('c2')]),
+     expected(cold=[listed('c2')]))
+
+case('one row both lists changed takes the later status and the later time',
+     based(cold=[listed('r1', kind='reflection', at=100), listed('c1', status='superseded', at=100, supersededById='f2')]),
+     document(cold=[listed('r1', kind='reflection', at=700), listed('c1', status='superseded', at=600, supersededById='f3')]),
+     document(cold=[listed('r1', kind='reflection', at=300), listed('c1', status='retracted', at=200)]),
+     expected(cold=[listed('r1', kind='reflection', at=700), listed('c1', status='retracted', at=600)]))
+
+case('a whole demoted row from an older writer is read as its cold listing',
+     based([shared]),
+     document([shared]),
+     document([fact('f1', archived=True, archivedAt=800, status='superseded', supersededById='f9'),
+               reflection('r1', archived=True, archivedAt=700)]),
+     expected(cold=[listed('f1', status='superseded', at=800, supersededById='f9'),
+                    listed('r1', kind='reflection', at=700)]))
 
 legacy = {'kind': 'fact', 'subject': 'master', 'id': 'f1', 'text': 'likes tea', 'metadata': {'importance': 5}}
 case('facts from an older document count as already judged',

@@ -71,6 +71,7 @@ function createRuntime(randomValues = [], semanticActionId = '', options = {}) {
     };
   }
   let sadAllowed = options.sadAllowed === true;
+  let semanticAllowed = options.deferSemanticProvider !== true;
   win.NekoCatMindActionProviders = {
     getRuntimeGateSnapshot() {
       return {
@@ -91,7 +92,9 @@ function createRuntime(randomValues = [], semanticActionId = '', options = {}) {
     dryRun(actionId) {
       providerCalls.push(actionId);
       const allowed = actionId === 'cat1_idle_random' ||
-        actionId === semanticActionId ||
+        actionId === 'cat2_idle_random' ||
+        actionId === 'cat3_idle_random' ||
+        (actionId === semanticActionId && semanticAllowed) ||
         (actionId === 'cat1_inactive_sad' && sadAllowed);
       return { allowed, reason: allowed ? 'allowed' : 'test_disabled' };
     },
@@ -151,6 +154,14 @@ function createRuntime(randomValues = [], semanticActionId = '', options = {}) {
     now: () => now,
     advance(ms) { now += ms; flush(); },
     setSadAllowed(value) { sadAllowed = value === true; },
+    setSemanticAllowed(value) { semanticAllowed = value === true; },
+    setTier(tier) {
+      now += 1;
+      win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {
+        detail: { type: 'tier_changed', source: 'test', tier, timestamp: now, detail: { tier } },
+      }));
+      flush();
+    },
     globalActivity(source = 'pointerdown') {
       win.dispatchEvent(new CustomEventLike('neko:auto-goodbye:state-change', {
         detail: {
@@ -173,7 +184,7 @@ function startRequest(runtime, request, runId) {
     runId,
     timestamp: runtime.now(),
   }), true);
-  assert.equal(runtime.win.nekoCatMind.getState().actionCooldowns.cat1_idle_random, undefined,
+  assert.equal(runtime.win.nekoCatMind.getState().actionCooldowns[request.actionId], undefined,
     'accepted alone must not start the cooldown');
   assert.equal(runtime.win.nekoCatMind.acknowledgeActionRequest({
     requestId: request.requestId,
@@ -189,9 +200,9 @@ function finishRequest(runtime, request, runId) {
     detail: {
       actionId: request.actionId,
       result: 'done',
-      reason: 'cat1-idle-random-finished',
+      reason: `${request.actionId}-finished`,
       source: 'cat_mind',
-      tier: 'cat1',
+      tier: request.tier,
       timestamp: runtime.now(),
       detail: { requestId: request.requestId, runId, actionKey: 'happy' },
     },
@@ -262,11 +273,79 @@ test('non-clock observations never roll the idle random library', () => {
   assert.equal(runtime.providerCalls.includes('cat1_idle_random'), false);
 });
 
+test('CAT2 and CAT3 random entries use their own tick policy and keep separate cooldowns', () => {
+  const runtime = createRuntime([0.1, 0.1, 0.1, 0.1]);
+  runtime.setTier('cat2');
+  runtime.tick();
+  const cat2 = runtime.requests[0];
+  assert.equal(cat2.actionId, 'cat2_idle_random');
+  assert.equal(cat2.tier, 'cat2');
+  assert.equal(runtime.providerCalls.includes('cat1_idle_random'), false);
+  startRequest(runtime, cat2, 'cat2-visual-run');
+  assert.equal(runtime.win.nekoCatMind.getState().actionCooldowns.cat2_idle_random.fullCooldownMs, 60 * 1000);
+  const fieldsBeforeVisualDone = runtime.win.nekoCatMind.getState().fields;
+  finishRequest(runtime, cat2, 'cat2-visual-run');
+  assert.deepEqual(runtime.win.nekoCatMind.getState().fields, fieldsBeforeVisualDone);
+  assert.equal(runtime.win.nekoCatMind.getState().activeAction, null);
+
+  const rollsDuringCooldown = runtime.randomCalls();
+  runtime.tick();
+  assert.equal(runtime.requests.length, 1);
+  assert.equal(runtime.randomCalls(), rollsDuringCooldown);
+  runtime.tick();
+  assert.equal(runtime.requests.length, 2);
+  assert.equal(runtime.requests[1].actionId, 'cat2_idle_random');
+  startRequest(runtime, runtime.requests[1], 'cat2-visual-run-2');
+  finishRequest(runtime, runtime.requests[1], 'cat2-visual-run-2');
+
+  runtime.setTier('cat3');
+  runtime.tick(60 * 1000);
+  const cat3 = runtime.requests[2];
+  assert.equal(cat3.actionId, 'cat3_idle_random');
+  assert.equal(cat3.tier, 'cat3');
+  startRequest(runtime, cat3, 'cat3-visual-run');
+  assert.equal(runtime.win.nekoCatMind.getState().actionCooldowns.cat3_idle_random.fullCooldownMs, 5 * 60 * 1000);
+  finishRequest(runtime, cat3, 'cat3-visual-run');
+  runtime.tick(4 * 60 * 1000);
+  assert.equal(runtime.requests.length, 3);
+  runtime.tick(60 * 1000);
+  assert.equal(runtime.requests[3].actionId, 'cat3_idle_random');
+});
+
+test('sleep-tier chance miss leaves the scored sleep feedback and does not roll on interaction', () => {
+  const runtime = createRuntime([0.2], 'cat2_nap_feedback', { deferSemanticProvider: true });
+  runtime.setTier('cat2');
+  runtime.observe('cat_hover_reaction');
+  assert.equal(runtime.randomCalls(), 0);
+  runtime.setSemanticAllowed(true);
+  runtime.tick(15 * 60 * 1000);
+  assert.equal(runtime.randomCalls(), 1);
+  assert.equal(runtime.requests[0].actionId, 'cat2_nap_feedback');
+});
+
+test('completed CAT3 back can demote before its result without losing or duplicating the lifecycle', () => {
+  const runtime = createRuntime([0.1, 0.1]);
+  runtime.setTier('cat3');
+  runtime.tick();
+  const request = runtime.requests[0];
+  startRequest(runtime, request, 'cat3-back-run');
+  runtime.setTier('cat1');
+  assert.equal(runtime.win.nekoCatMind.getState().activeAction.actionId, 'cat3_idle_random');
+  finishRequest(runtime, request, 'cat3-back-run');
+  assert.equal(runtime.win.nekoCatMind.getState().activeAction, null);
+  assert.equal(runtime.win.nekoCatMind.getState().tier, 'cat1');
+  assert.equal(runtime.requests.length, 1, 'tier change and completion do not launch a second action immediately');
+  runtime.tick(60 * 1000);
+  assert.equal(runtime.requests[1].actionId, 'cat1_idle_random');
+});
+
 test('public contract exposes the exact random policy', () => {
   const runtime = createRuntime();
   assert.equal(runtime.win.NekoCatMindContract.ACTION_IDS.CAT1_IDLE_RANDOM, 'cat1_idle_random');
   assert.equal(runtime.win.NekoCatMindContract.CAT1_IDLE_RANDOM_POLICY.tickChance, 0.20);
   assert.equal(runtime.win.NekoCatMindContract.CAT1_IDLE_RANDOM_POLICY.cooldownMs, 5 * 60 * 1000);
+  assert.equal(runtime.win.NekoCatMindContract.IDLE_RANDOM_POLICY_BY_TIER.cat2.cooldownMs, 60 * 1000);
+  assert.equal(runtime.win.NekoCatMindContract.IDLE_RANDOM_POLICY_BY_TIER.cat3.cooldownMs, 5 * 60 * 1000);
   assert.equal(runtime.win.NekoCatMindContract.ACTION_IDS.CAT1_INACTIVE_SAD, 'cat1_inactive_sad');
   assert.equal(runtime.win.NekoCatMindContract.CAT1_INACTIVE_SAD_POLICY.inactivityMs, 13 * 60 * 1000);
 });

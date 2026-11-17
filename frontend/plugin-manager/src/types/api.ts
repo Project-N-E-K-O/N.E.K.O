@@ -138,6 +138,11 @@ export interface PluginMeta {
   runtime_enabled?: boolean
   runtime_auto_start?: boolean
   autostart_pending?: boolean
+  consent?: {
+    state: import('@/api/pluginConsent').ConsentState
+    decision: import('@/api/pluginConsent').ConsentDecision | null
+    upgraded: boolean
+  }
   author?: PluginAuthor
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema

@@ -1,6 +1,6 @@
 <!--
 下面两节是项目硬性规范，CI 会校验（scripts/check_pr_report.py）：
-  · 改动了 app/ | main_logic/ | memory/ 任一 *.py → 必须填「回归报告」
+  · 改动了 app/ | main_logic/ | main_routers/ | memory/ 任一 *.py → 必须填「回归报告」
   · 单个 PR 改动计入上限的文件 > 20 个 → 必须填「不拆分理由」
     （新增文件、i18n locale 文件、测试文件不计入）
 不触发的那一节，写「不适用」或直接删除即可。
@@ -14,12 +14,12 @@
 ## 回归报告 / Regression Report
 
 <!--
-仅当本 PR 触碰 app/、main_logic/、memory/ 时必填。请逐项说明：
+仅当本 PR 触碰 app/、main_logic/、main_routers/、memory/ 时必填。请逐项说明：
   - 改动了什么
   - 理由 / 必要性
   - 改动前后的表现对比
   - 潜在回归点（影响哪些链路、怎么验证的）
-未触碰这三个模块：写「不适用」或删除本节。
+未触碰这几个模块：写「不适用」或删除本节。
 -->
 
 ## 不拆分理由 / Why Not Split

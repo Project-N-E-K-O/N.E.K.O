@@ -55,8 +55,10 @@ from main_logic.tts_client import (
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
 )
+from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
+from utils.tts import provider_registry
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
@@ -726,6 +728,15 @@ class TtsRuntimeMixin:
                 'tts_custom' if has_custom else 'tts_default'
             )
             api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
+            provider = provider_registry.get(provider_key)
+            # Workers that read the settings-page fallback voice bind it at start,
+            # so a changed fallback voice must restart them.
+            hosted_default_voice = (
+                (core_config.get('TTS_VOICE_ID', ''), core_config.get('ttsVoiceId', ''))
+                if provider and provider.uses_configured_default_voice
+                and not (provider.preset_catalog and provider.preset_catalog.is_voice(route_voice_id))
+                else ''
+            )
             return (
                 provider_key,
                 self.core_api_type,
@@ -735,6 +746,7 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                hosted_default_voice,
                 api_key,
                 tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
             )
@@ -1090,10 +1102,10 @@ class TtsRuntimeMixin:
                                 )
                                 if (
                                     isinstance(message, tuple)
-                                    and len(message) == 3
+                                    and len(message) in (3, 4)
                                     and message[0] == "__audio__"
                                 ):
-                                    _, response_speech_id, audio = message
+                                    response_speech_id, audio = message[1:3]
                                     if str(response_speech_id or "") == speech_id:
                                         if isinstance(audio, (bytes, bytearray, memoryview)):
                                             received_bytes += audio.nbytes if isinstance(audio, memoryview) else len(audio)
@@ -1612,6 +1624,12 @@ class TtsRuntimeMixin:
             self.tts_thread, self.tts_request_queue, self.tts_response_queue,
             supports_runtime_overlap=bool(getattr(tts_worker, "supports_runtime_overlap", True)),
         )
+        if provider_key == "gptsovits":
+            # The browser may drain its local buffers while the worker is
+            # still waiting for GSV, with one frame write in flight.
+            runtime.audio_done_timeout_ms = int(
+                1000 * (GPTSOVITS_END_TIMEOUT_SECONDS + TTS_FRAME_WRITE_TIMEOUT_SECONDS)
+            )
         self._tts_runtimes.append(runtime)
         self._tts_runtime = runtime
         try:
@@ -2118,6 +2136,19 @@ class TtsRuntimeMixin:
                 configured_provider,
             )
             return True
+        hosted_provider = _core_facade.selected_realtime_output_tts_provider_key(
+            core_config_snapshot, self._config_manager, self.voice_id,
+        )
+        if hosted_provider:
+            # Ask the provider itself: some need no key (local OpenAI-compatible
+            # endpoints), others fall back to a silent dummy worker without one.
+            if _core_facade.realtime_output_tts_provider_ready(
+                core_config_snapshot, self._config_manager, self.voice_id, hosted_provider,
+            ):
+                logger.info("%s🔊 语音模式：使用外部 TTS provider=%s", log_prefix, hosted_provider)
+                return True
+            logger.info("%s🔊 语音模式：TTS provider=%s 不可用（如缺少 API Key），使用原生语音", log_prefix, hosted_provider)
+            return False
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True
@@ -2312,12 +2343,10 @@ class TtsRuntimeMixin:
             self._audio_frame_send_lock = lock
         return lock
 
-    async def _write_audio_frame(self, websocket, header: dict, tts_audio) -> None:
+    async def _write_audio_frame(self, websocket, header: dict, tts_audio,
+                                 audio_format: str | None = None) -> None:
         """Write one header/payload pair. The caller holds the frame lock."""
         async def write_frame():
-            from main_logic.voice_archive import archive_event
-            await archive_event(self, 'audio', header.get('speech_id'),
-                                data=tts_audio, gain=header.get('playback_gain', 1.0))
             try:
                 async with asyncio.timeout(TTS_FRAME_WRITE_TIMEOUT_SECONDS):
                     await websocket.send_json(header)
@@ -2331,6 +2360,10 @@ class TtsRuntimeMixin:
                 except Exception:
                     logger.warning("Failed to close stalled TTS audio transport", exc_info=True)
                 raise WebSocketDisconnect(code=1011) from None
+            from main_logic.voice_archive import archive_event
+            await archive_event(self, 'audio', header.get('speech_id'), data=tts_audio,
+                                format=audio_format or ('ogg' if bytes(tts_audio[:4]) == b'OggS' else 'pcm_s16le_48000'),
+                                gain=header.get('playback_gain', 1.0))
             self.sync_message_queue.put({"type": "binary", "data": tts_audio})
 
         writing = asyncio.create_task(write_frame())
@@ -2355,6 +2388,9 @@ class TtsRuntimeMixin:
             "type": "audio_chunk",
             "speech_id": effective_speech_id
         }
+        runtime = tts_output_runtime.get()
+        if runtime is not None and runtime.audio_done_timeout_ms is not None:
+            header["audio_done_timeout_ms"] = runtime.audio_done_timeout_ms
         correlation_id = self._game_speech_correlation_for(effective_speech_id)
         if correlation_id:
             header["sdk_speech_correlation_id"] = correlation_id
@@ -2378,6 +2414,7 @@ class TtsRuntimeMixin:
         Returns ``(audio_sent, done_sent)``.
         """
         chunks = list(audio_chunks or ())
+        batch_format = ('ogg' if chunks and bytes(chunks[0][:4]) == b'OggS' else 'pcm_s16le_48000')
         try:
             websocket = self.websocket
             if not (
@@ -2399,7 +2436,7 @@ class TtsRuntimeMixin:
                         )
                         return False, False
                     header = self._audio_chunk_header(speech_id)
-                    await self._write_audio_frame(websocket, header, tts_audio)
+                    await self._write_audio_frame(websocket, header, tts_audio, batch_format)
                     self._speech_output_total += 1
                     self._last_speech_output_time = time.time()
                     self._last_speech_output_bytes = len(tts_audio)
@@ -2431,7 +2468,8 @@ class TtsRuntimeMixin:
             self.release_speech_playback_gain(speech_id)
             self._clear_game_speech_correlation(speech_id)
 
-    async def send_speech(self, tts_audio, speech_id: Optional[str] = None):
+    async def send_speech(self, tts_audio, speech_id: Optional[str] = None,
+                          audio_format: str | None = None):
         """Send speech data to the frontend, sending the speech_id header first for precise interruption control"""
         try:
             # Pinned once. The lock keeps other SENDERS out, but ``self.websocket``
@@ -2457,7 +2495,7 @@ class TtsRuntimeMixin:
                             f"⚠️ send_speech skipped: websocket replaced while waiting for the frame lock, speech_id={effective_speech_id}"
                         )
                         return False
-                    await self._write_audio_frame(websocket, header, tts_audio)
+                    await self._write_audio_frame(websocket, header, tts_audio, audio_format)
                 if not self._tts_output_is_current():
                     return False
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
@@ -2928,9 +2966,12 @@ class TtsRuntimeMixin:
                             notified_error_keys.add(notification_key)
                         await self.send_status(user_msg)
                         continue
-                elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
-                    _, speech_id, audio_payload = data
-                    sent = await self.send_speech(audio_payload, speech_id=speech_id)
+                elif isinstance(data, tuple) and len(data) in (3, 4) and data[0] == "__audio__":
+                    speech_id, audio_payload = data[1:3]
+                    if len(data) == 4:
+                        sent = await self.send_speech(audio_payload, speech_id=speech_id, audio_format=data[3])
+                    else:
+                        sent = await self.send_speech(audio_payload, speech_id=speech_id)
                     logger.debug(
                         "[voice-chain] stage=tts_audio_delivery speech_id=%s bytes=%d sent=%s",
                         speech_id,

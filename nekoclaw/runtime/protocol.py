@@ -19,7 +19,7 @@ in-process runtime and the subprocess shell.
 
 Commands (``type`` field):
 
-* ``start``      - create a session from a ``FamiliarSpec``.
+* ``start``      - create a session from a ``TaskAgentSpec``.
 * ``prompt``     - hand the session work. Rejected while a run is in progress.
 * ``steer``      - deliver text before the next model request of the current
   run; on an idle session it starts a run.
@@ -38,8 +38,14 @@ per-session ``seq`` that increases by one:
   arrive while the tool is still running.
 * ``report``      - a structured report made through the ``report`` tool.
 * ``usage``       - token usage of one model request and the context size.
+* ``model_capability`` - something the session learned about its model: the
+  provider refused a request for the pictures in it, so the session goes on
+  without pictures. Sent once per session at most.
 * ``ended``       - a run finished and the session is idle (``completed``,
-  ``aborted``, ``error``), or the session is gone (``closed``).
+  ``aborted``, ``error``), or the session is gone (``closed``). A finished
+  run states ``inputs``: how many texts (``prompt``, ``steer``,
+  ``follow_up``) the session had taken by then. A driver that has sent more
+  knows that a later run is under way.
 * ``error``       - a command was rejected.
 
 The subprocess shell adds messages of its own: ``host_request`` (the runtime
@@ -112,8 +118,17 @@ class RuntimeLimits(_Strict):
     goal_max_rounds: int = Field(default=100, ge=1)
 
 
-class FamiliarSpec(_Strict):
-    """Everything needed to create one familiar session."""
+class GatewaySpec(_Strict):
+    """Where a session reaches the host's capability gateway (an MCP service)."""
+
+    # Endpoint on the loopback address, e.g. "http://127.0.0.1:50123/mcp".
+    url: str = Field(min_length=1)
+    # Issued by the host for this one session; sent as a bearer token.
+    token: str = Field(min_length=1, repr=False)
+
+
+class TaskAgentSpec(_Strict):
+    """Everything needed to create one task agent session."""
 
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     # Directory the tools resolve relative paths against.
@@ -126,16 +141,22 @@ class FamiliarSpec(_Strict):
     instructions: str | None = None
     # Language for text meant for the user, e.g. "Simplified Chinese".
     reply_language: str | None = None
-    # False for a familiar started by another familiar: such a session cannot
+    # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True
     goal: GoalSpec | None = None
     limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
-    # Tools withheld from this session's model, e.g. ["subagent"] for a familiar
-    # that may not start further familiars.
+    # Tools withheld from this session's model, e.g. ["subagent"] for a task agent
+    # that may not start further task agents.
     disabled_tools: list[str] = Field(default_factory=list)
     # Tool name -> how many of its most recent image results stay in context.
     image_retention: dict[str, int] = Field(default_factory=dict)
+    # Tool name -> pool. Tools of one pool are counted together: the pool as a
+    # whole keeps that many image results (the largest number among its tools).
+    image_pools: dict[str, str] = Field(default_factory=dict)
+    # The host's capability gateway. Its tools are offered next to the
+    # built-in ones; without it the session has the built-in tools only.
+    gateway: GatewaySpec | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +166,7 @@ class FamiliarSpec(_Strict):
 
 class StartCommand(_Strict):
     type: Literal["start"] = "start"
-    spec: FamiliarSpec
+    spec: TaskAgentSpec
 
 
 class PromptCommand(_Strict):
@@ -282,6 +303,25 @@ class UsageEvent(_SessionEvent):
     context_window: int = 0
 
 
+class ModelCapabilityEvent(_SessionEvent):
+    """What the session learned about its model while it ran."""
+
+    type: Literal["model_capability"] = "model_capability"
+    # False: the provider said the model takes no pictures.
+    supports_images: bool
+    # What the provider said, shortened: kept with what is remembered, so
+    # that it can be seen why the model was taken not to see pictures.
+    reason: str = ""
+    # False: said of this session only (its pictures were refused more than
+    # once, for what they were); nothing is to be remembered about the model.
+    lasting: bool = True
+
+
+# ``EndedEvent.error`` of a session whose runtime process went away. Nothing
+# more comes for such a session, not even the end of a close asked for.
+PROCESS_EXITED_ERROR = "the runtime process exited"
+
+
 class EndedEvent(_SessionEvent):
     type: Literal["ended"] = "ended"
     reason: EndReason
@@ -290,6 +330,8 @@ class EndedEvent(_SessionEvent):
     # Text of the last model response of the run.
     text: str = ""
     error: str | None = None
+    # Texts the session had taken when the run finished; None for ``closed``.
+    inputs: int | None = None
 
 
 class ErrorEvent(_SessionEvent):
@@ -342,6 +384,7 @@ SessionEvent = Union[
     ToolEndEvent,
     ReportEvent,
     UsageEvent,
+    ModelCapabilityEvent,
     EndedEvent,
     ErrorEvent,
 ]
@@ -355,6 +398,7 @@ RuntimeEvent = Annotated[
         ToolEndEvent,
         ReportEvent,
         UsageEvent,
+        ModelCapabilityEvent,
         EndedEvent,
         ErrorEvent,
         HostRequestEvent,

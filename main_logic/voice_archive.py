@@ -16,6 +16,8 @@ from pathlib import Path
 import sqlite3
 
 log = logging.getLogger(__name__)
+MAX_PENDING_EVENTS = 256
+WRITER_IDLE_SECONDS = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clips (
@@ -82,9 +84,11 @@ class VoiceArchive:
                 elif kind == 'audio':
                     data = event['data']
                     # Same wire format as app-audio-playback: Ogg/Opus or mono PCM16/48kHz.
-                    previous = db.execute('SELECT format FROM chunks WHERE clip_id=? ORDER BY seq DESC LIMIT 1',
-                                          (clip_id,)).fetchone()
-                    fmt = 'ogg' if data.startswith(b'OggS') else (previous[0] if previous else 'pcm_s16le_48000')
+                    # Provider fallback can change formats mid-speech. The
+                    # producer, not the preceding chunk, owns this metadata.
+                    fmt = event['format']
+                    if fmt not in ('ogg', 'pcm_s16le_48000'):
+                        raise ValueError('unknown voice archive audio format')
                     seq = db.execute('SELECT COALESCE(MAX(seq),-1)+1 FROM chunks WHERE clip_id=?', (clip_id,)).fetchone()[0]
                     db.execute('INSERT INTO chunks VALUES(?,?,?,?,?,?)',
                                (clip_id, seq, fmt, data, hashlib.sha256(data).hexdigest(), event.get('gain', 1.0)))
@@ -92,8 +96,31 @@ class VoiceArchive:
                     db.execute('UPDATE clips SET stream_complete=0 WHERE id=?', (clip_id,))
                 elif kind == 'done':
                     db.execute('UPDATE clips SET stream_complete=1 WHERE id=?', (clip_id,))
+                elif kind == 'retry':
+                    # The discarded generation shares the speech id with its
+                    # retry; only its persisted chat identity may survive.
+                    db.execute('DELETE FROM chunks WHERE clip_id=?', (clip_id,))
+                    db.execute('DELETE FROM text_events WHERE clip_id=?', (clip_id,))
+                    db.execute("UPDATE clips SET text='',metadata='{}',stream_complete=0,archive_error=0 "
+                               'WHERE id=?', (clip_id,))
                 else:
                     raise ValueError('unknown archive event')
+
+
+def rename_character_voice_archive(app_docs_dir, old_name: str, new_name: str) -> bool:
+    """Migrate the owner name while retaining immutable clip and chat record ids.
+
+    This runs from the serialized character-rename transaction, off the event
+    loop and after pending writes from the old character have drained.
+    """
+    path = Path(app_docs_dir) / 'voice_archive' / 'archive.sqlite3'
+    if not path.is_file():
+        return False
+    with closing(sqlite3.connect(path, timeout=2)) as db:
+        with db:
+            changed = db.execute('UPDATE clips SET character=? WHERE character=?',
+                                 (new_name, old_name)).rowcount
+    return changed > 0
 
 
 def _mark_incomplete(manager, speech_id):
@@ -105,55 +132,109 @@ def _mark_incomplete(manager, speech_id):
     failed.add(str(speech_id))
 
 
-async def archive_event(manager, kind, speech_id, **values):
-    """Await durable writes off the event loop; archive errors never break speech.
-
-Snapshot turn identity before yielding. Do not create a chat proof for an audio
-callback: proactive/tool origins may not have been assigned yet. A later text
-event fills the same speech-id row even when the provider emits audio first.
-"""
+async def _write_queued_events(manager, queue):
+    """Serialize optional disk work without holding a live transport lock."""
+    cm = manager._config_manager
+    archive = manager._owner_voice_archive
     try:
-        cm = getattr(manager, '_config_manager', None)
-        if cm is None or not speech_id:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=WRITER_IDLE_SECONDS)
+            except asyncio.TimeoutError:
+                # The producer never awaits, so this handoff is atomic on the
+                # event loop. An idle worker must not retain a dead session.
+                if queue.empty():
+                    return
+                continue
+            sid = event['speech_id']
+            try:
+                from utils.voice_archive_settings import load_settings
+                settings = await asyncio.to_thread(load_settings, cm)
+                if not settings['enabled']:
+                    _mark_incomplete(manager, sid)
+                    continue
+                if event['kind'] == 'text' and event.get('is_first'):
+                    cfg = await asyncio.to_thread(cm.get_core_config)
+                    event['metadata'] = {k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')}
+                    event['metadata']['character_voice_id'] = event.pop('character_voice_id', None)
+                event['archive_error'] = sid in getattr(manager, '_owner_voice_archive_failed', set())
+
+                def write_event():
+                    from utils.cloudsave_runtime import assert_cloudsave_writable
+                    assert_cloudsave_writable(cm, operation='voice_archive_write', target=str(archive.path))
+                    archive.write(event)
+
+                await asyncio.to_thread(write_event)
+                if event['kind'] == 'retry':
+                    getattr(manager, '_owner_voice_archive_failed', set()).discard(sid)
+            except asyncio.CancelledError:
+                _mark_incomplete(manager, sid)
+                raise
+            except Exception:
+                _mark_incomplete(manager, sid)
+                log.warning('Voice archive write failed', exc_info=True)
+            finally:
+                queue.task_done()
+    finally:
+        if getattr(manager, '_owner_voice_archive_task', None) is asyncio.current_task():
+            manager._owner_voice_archive_task = None
+
+
+async def drain_voice_archive(manager):
+    """Await queued commits at an explicit durability boundary (and in tests)."""
+    queue = getattr(manager, '_owner_voice_archive_queue', None)
+    if queue is not None:
+        task = getattr(manager, '_owner_voice_archive_task', None)
+        if not queue.empty() and (task is None or task.done()):
+            manager._owner_voice_archive_task = asyncio.create_task(_write_queued_events(manager, queue))
+        await queue.join()
+
+
+def _enqueue_archive_event(manager, kind, speech_id, **values):
+    """Enqueue a bounded, ordered archive event without awaiting disk or config IO.
+
+    Snapshot turn identity before returning to live speech. A later text event
+    fills the same row even when its first audio frame arrived earlier.
+    """
+    cm = getattr(manager, '_config_manager', None)
+    if cm is None or not speech_id:
+        return
+    sid = str(speech_id)
+    character = str(getattr(manager, 'lanlan_name', ''))
+    if not character:
+        _mark_incomplete(manager, sid)
+        return
+    event = dict(values, kind=kind, character=character, speech_id=sid,
+                 proof=dict(getattr(manager, '_chat_original_turns', {}).get(sid, {})))
+    if kind == 'audio':
+        data = event.get('data')
+        if not isinstance(data, (bytes, bytearray, memoryview)) or not data:
             return
-        character = str(getattr(manager, 'lanlan_name', ''))
-        # Capture identity before settings IO yields to another turn.
-        proof = dict(getattr(manager, '_chat_original_turns', {}).get(str(speech_id), {}))
-        from utils.voice_archive_settings import load_settings
-        settings = await asyncio.to_thread(load_settings, cm)
-        if not settings['enabled'] or not character:
-            _mark_incomplete(manager, speech_id)
-            return
-        if not hasattr(manager, '_owner_voice_archive'):
-            manager._owner_voice_archive = VoiceArchive(Path(cm.app_docs_dir) / 'voice_archive' / 'archive.sqlite3')
-            manager._owner_voice_archive_lock = asyncio.Lock()
-        archive = manager._owner_voice_archive
-        event = dict(values, kind=kind, character=character, speech_id=str(speech_id), proof=proof)
-        if kind == 'audio':
-            if not isinstance(event.get('data'), (bytes, bytearray)) or not event['data']:
-                return
-            event['data'] = bytes(event['data'])
-        if kind == 'text':
-            cfg = await asyncio.to_thread(cm.get_core_config)
-            event['metadata'] = {k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')}
-            event['metadata']['character_voice_id'] = getattr(manager, 'voice_id', None)
-        async with manager._owner_voice_archive_lock:
-            event['archive_error'] = str(speech_id) in getattr(manager, '_owner_voice_archive_failed', set())
-            # A cancellation must not release ordering while the thread is still committing.
-            def write_event():
-                from utils.cloudsave_runtime import assert_cloudsave_writable
-                assert_cloudsave_writable(cm, operation='voice_archive_write', target=str(archive.path))
-                archive.write(event)
-            task = asyncio.create_task(asyncio.to_thread(write_event))
-            cancelled = False
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            task.result()
-            if cancelled:
-                raise asyncio.CancelledError
+        event['data'] = bytes(data)
+        # Legacy untagged producers are PCM; only a tagged Ogg producer may
+        # create subsequent Ogg pages without a recognizable OggS prefix.
+        event.setdefault('format', 'ogg' if event['data'].startswith(b'OggS') else 'pcm_s16le_48000')
+    if kind == 'text' and event.get('is_first'):
+        event['character_voice_id'] = getattr(manager, 'voice_id', None)
+    if not hasattr(manager, '_owner_voice_archive'):
+        manager._owner_voice_archive = VoiceArchive(Path(cm.app_docs_dir) / 'voice_archive' / 'archive.sqlite3')
+    queue = getattr(manager, '_owner_voice_archive_queue', None)
+    if queue is None:
+        queue = manager._owner_voice_archive_queue = asyncio.Queue(maxsize=MAX_PENDING_EVENTS)
+    task = getattr(manager, '_owner_voice_archive_task', None)
+    if task is None or task.done():
+        manager._owner_voice_archive_task = asyncio.create_task(_write_queued_events(manager, queue))
+    try:
+        queue.put_nowait(event)
+    except asyncio.QueueFull:
+        _mark_incomplete(manager, sid)
+        log.warning('Voice archive queue full; discarding optional %s event', kind)
+
+
+async def archive_event(manager, kind, speech_id, **values):
+    """Optional recording must never fail the live text or audio transport."""
+    try:
+        _enqueue_archive_event(manager, kind, speech_id, **values)
     except Exception:
         _mark_incomplete(manager, speech_id)
-        log.warning('Voice archive write failed', exc_info=True)
+        log.warning('Voice archive enqueue failed', exc_info=True)
