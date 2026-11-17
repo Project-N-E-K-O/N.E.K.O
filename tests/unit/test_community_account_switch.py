@@ -1534,3 +1534,91 @@ def test_successful_rebind_releases_the_hold_written_before_the_check(oauth_app,
     monkeypatch.setattr(O, "_oauth_guest_bind", bound)
     assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 200
     assert not hold.device_held(auth.parent, USER_ID)
+
+
+async def test_unsaved_oauth_login_refused_as_the_recorded_owner_holds(tmp_path, monkeypatch):
+    """The cloud refuses the recorded owner, but its new login cannot be saved:
+    the old login of that same account stays in place and must not upload."""
+    hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    _pending_login(tmp_path, monkeypatch)
+
+    async def refused(_social_base, _access_token, *, rebind=False):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    monkeypatch.setattr(O, "_persist_oauth_credentials", lambda *_args, **_kwargs: False)
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 400
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=dict(BOUND))
+
+
+def _refusing_bind_client(monkeypatch):
+    monkeypatch.setattr(C, "_get_client_id", lambda: "client-1")
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(409, json={"detail": CONFLICT["error"]})
+    )
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(transport=transport, **kwargs))
+
+
+async def test_unsaved_password_login_refused_as_the_recorded_owner_holds(tmp_path, monkeypatch):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_save_auth", lambda _payload: False)
+    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+    _refusing_bind_client(monkeypatch)
+
+    bind = await C._store_session(
+        "https://community.example", "a-token", None, {"id": USER_ID}, auth_source="legacy",
+    )
+
+    assert bind["error"] == CONFLICT["error"]
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=dict(BOUND))
+
+
+async def test_unsaved_login_refused_as_another_account_leaves_the_owner_uploading(tmp_path, monkeypatch):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_save_auth", lambda _payload: False)
+    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+    _refusing_bind_client(monkeypatch)
+
+    await C._store_session(
+        "https://community.example", "b-token", None, {"id": USER_ID}, auth_source="legacy",
+    )
+
+    assert not hold.device_held(tmp_path, OWNER_A)
+
+
+def test_undecodable_hold_record_fails_closed(tmp_path):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    (tmp_path / hold.HOLD_FILENAME).write_bytes(b"\xff\xfe{")
+    assert hold.device_held(tmp_path, USER_ID)
+    assert hold.record_session_account(tmp_path, OWNER_A)
+
+
+def test_latched_hold_is_not_dropped_by_an_unreadable_record(tmp_path, monkeypatch):
+    """A read error is no proof the hold is on disk; it may pass and leave none."""
+    path = tmp_path / hold.HOLD_FILENAME
+    path.write_text("{not json", encoding="utf-8")
+    hold._set_unrecorded_hold(True)
+    with monkeypatch.context() as m:
+        m.setattr(hold, "_write", lambda *_args: False)
+        assert not hold.persist_latched_hold(tmp_path)
+        assert hold.hold_latched()
+    assert hold.persist_latched_hold(tmp_path)
+    assert not hold.hold_latched()
+    assert json.loads(path.read_text(encoding="utf-8"))["conflict"] is True
+
+
+def test_session_account_on_an_unreadable_record_writes_or_latches_the_hold(tmp_path, monkeypatch):
+    path = tmp_path / hold.HOLD_FILENAME
+    path.write_text("{not json", encoding="utf-8")
+    with monkeypatch.context() as m:
+        m.setattr(hold, "_write", lambda *_args: False)
+        assert not hold.record_session_account(tmp_path, USER_ID)
+        assert hold.hold_latched()
+    hold._set_unrecorded_hold(False)
+    assert hold.record_session_account(tmp_path, USER_ID)
+    assert hold.device_held(tmp_path, None)

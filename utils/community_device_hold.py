@@ -91,7 +91,7 @@ def _read(directory: Path | str | None) -> Any:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("community_device_hold: cannot read hold record: %s", exc)
         return _UNREADABLE
     try:
@@ -210,12 +210,9 @@ def persist_latched_hold(directory: Path | str | None) -> bool:
     with record_lock:
         if not _unrecorded_hold:
             return True
+        # An unreadable record holds only while it stays unreadable; a read
+        # error can pass. Overwrite it so the hold is actually on disk.
         record = _read(directory)
-        if record is _UNREADABLE:
-            # An unreadable record already holds on disk; the latch has
-            # nothing left to carry.
-            _set_unrecorded_hold(False)
-            return True
         record = record if isinstance(record, dict) else {}
         if _write(directory, {**record, "conflict": True}):
             _set_unrecorded_hold(False)
@@ -275,8 +272,8 @@ def record_session_account(directory: Path | str | None, account: str | None) ->
         if not account:
             return True
         record = _read(directory)
-        if record is _UNREADABLE:
-            return True  # already held
+        # An unreadable record is rewritten rather than trusted to keep
+        # holding: the read error may pass and leave no conflict behind.
         record = record if isinstance(record, dict) else {}
         owner = _account(record.get("owner"))
         if owner == account or record.get("conflict"):
@@ -284,6 +281,25 @@ def record_session_account(directory: Path | str | None, account: str | None) ->
         # Another account, or nobody confirmed yet: this account's local
         # memories must not reach whoever the cloud lists as the owner.
         return _write_hold(directory, {**record, "conflict": True})
+
+
+def record_unsaved_refusal(directory: Path | str | None, account: str | None) -> bool:
+    """Record a refused bind made by a login whose credentials were not saved.
+
+    That login never used this device, so unlike ``record_bind_outcome`` it
+    does not pause a different confirmed owner's uploads. It holds only when
+    the record names ``account`` itself as the owner, names nobody, or cannot
+    be read: the login left in place may be that account, and its uploads
+    would reach whoever the cloud lists as the owner.
+    """
+    with record_lock:
+        account = _account(account)
+        record = _read(directory)
+        record = record if isinstance(record, dict) else {}
+        owner = _account(record.get("owner"))
+        if owner is not None and owner != account:
+            return True
+        return _write_hold(directory, {**record, "owner": None, "conflict": True})
 
 
 def remember_owner(directory: Path | str | None, account: str | None) -> None:
@@ -298,22 +314,23 @@ def remember_owner(directory: Path | str | None, account: str | None) -> None:
         _write(directory, {"owner": account, "conflict": False})
 
 
-    __all__ = [
+__all__ = [
     "DEVICE_HOLD_PENDING",
-        "HOLD_FILENAME",
-        "OWNERSHIP_CONFLICT",
-        "LEGACY_ACCOUNT",
-        "UNKNOWN_BIND",
+    "HOLD_FILENAME",
+    "OWNERSHIP_CONFLICT",
+    "LEGACY_ACCOUNT",
+    "UNKNOWN_BIND",
     "begin_ownership_check",
-        "hold_latched",
-        "persist_latched_hold",
+    "hold_latched",
+    "persist_latched_hold",
     "record_lock",
-        "normalize_account",
-        "UNREADABLE_ACCOUNT",
-        "default_directory",
-        "device_held",
-        "hold_path",
-        "record_bind_outcome",
-        "record_session_account",
-        "remember_owner",
-    ]
+    "normalize_account",
+    "UNREADABLE_ACCOUNT",
+    "default_directory",
+    "device_held",
+    "hold_path",
+    "record_bind_outcome",
+    "record_session_account",
+    "record_unsaved_refusal",
+    "remember_owner",
+]

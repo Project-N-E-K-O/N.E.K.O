@@ -1439,6 +1439,7 @@ async def _store_session(
 
     from main_routers import community_oauth
 
+    refused = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
     bind = _carry_unwritten_hold(bind)
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
@@ -1463,6 +1464,10 @@ async def _store_session(
         # A login that saved nothing never used this device; it must not
         # leave a hold behind that pauses the owner's uploads.
         await asyncio.to_thread(_record_device_hold, bind, local_user_id)
+    elif refused:
+        # The login left in place may be this same account, still recorded
+        # as the owner the cloud just refused.
+        await asyncio.to_thread(community_device_hold.record_unsaved_refusal, _credential_dir(), local_user_id)
     return bind
 
 

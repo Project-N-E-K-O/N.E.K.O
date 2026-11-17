@@ -1350,6 +1350,7 @@ async def _handle_oauth_callback(
         # The login still completes; only the one-time guest migration is skipped
         # and the device keeps its owner until the user explicitly rebinds it.
         bind = await _oauth_guest_bind(social_base, access_token)
+        refused = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
 
         auth_payload = {
             "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
@@ -1387,6 +1388,12 @@ async def _handle_oauth_callback(
                         # Inside the login lock: a newer login cannot be saved
                         # between this login's credentials and its device record.
                         await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
+            if not credentials_saved and refused:
+                # The login left in place may be this same account, still
+                # recorded as the owner the cloud just refused.
+                await asyncio.to_thread(
+                    community_device_hold.record_unsaved_refusal, C._credential_dir(), local_user_id,
+                )
             await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(
