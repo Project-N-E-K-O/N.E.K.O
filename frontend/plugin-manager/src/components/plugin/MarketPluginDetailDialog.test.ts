@@ -7,12 +7,16 @@ import type { MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
 
 const apiMocks = vi.hoisted(() => ({
   fetchMarketPlugin: vi.fn(),
-  fetchMarketPluginComments: vi.fn(),
   fetchMarketPluginReadme: vi.fn(),
   fetchMarketPluginVersions: vi.fn(),
 }))
+const readMarketComments = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/market', () => apiMocks)
+vi.mock('@/api/marketConversations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/marketConversations')>()),
+  readMarketComments,
+}))
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }))
@@ -20,6 +24,7 @@ vi.mock('dompurify', () => ({ default: { sanitize: (value: string) => value } })
 vi.mock('marked', () => ({ marked: { parse: (value: string) => value } }))
 vi.mock('@element-plus/icons-vue', () => ({
   Download: defineComponent(() => () => h('span')),
+  Loading: defineComponent(() => () => h('span')),
   Star: defineComponent(() => () => h('span')),
   User: defineComponent(() => () => h('span')),
 }))
@@ -90,14 +95,14 @@ describe('MarketPluginDetailDialog comments', () => {
     apiMocks.fetchMarketPlugin.mockResolvedValue({ ...plugin, id: 15 })
     apiMocks.fetchMarketPluginVersions.mockResolvedValue([])
     apiMocks.fetchMarketPluginReadme.mockResolvedValue(null)
-    apiMocks.fetchMarketPluginComments.mockResolvedValue({ messages: [], next_cursor: null })
+    readMarketComments.mockResolvedValue({ data: { messages: [], next_cursor: null }, session: null })
 
     const dialog = await mountDialog()
-    expect(apiMocks.fetchMarketPluginComments).not.toHaveBeenCalled()
+    expect(readMarketComments).not.toHaveBeenCalled()
 
     ;(dialog.container.querySelector('[data-tab="comments"]') as HTMLButtonElement).click()
     await flush()
-    expect(apiMocks.fetchMarketPluginComments).toHaveBeenCalledWith(15)
+    expect(readMarketComments).toHaveBeenCalledWith(15, expect.any(AbortSignal), undefined, undefined)
     dialog.unmount()
   })
 })

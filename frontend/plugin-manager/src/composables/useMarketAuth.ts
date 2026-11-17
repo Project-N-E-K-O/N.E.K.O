@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { openExternalUrl } from '@/utils/openExternal'
+import { MARKET_AUTH_CHANGED_EVENT } from '@/api/marketBridge'
 
 type MarketOAuthState =
   | 'ready'
@@ -322,6 +323,7 @@ export function useMarketAuth() {
       marketAuthBusy.value = false
       if (!marketAuth.value.authenticated) return
       if (marketAuth.value.market_state === 'ready') {
+        window.dispatchEvent(new Event(MARKET_AUTH_CHANGED_EVENT))
         const appliedGeneration = marketAuthStatusGeneration
         await loadMarketAccountSummary()
         if (
@@ -413,6 +415,7 @@ export function useMarketAuth() {
           if (marketAuth.value.auth_state === 'pending') {
             marketAuthBusy.value = true
           } else if (marketAuth.value.market_state === 'ready') {
+            window.dispatchEvent(new Event(MARKET_AUTH_CHANGED_EVENT))
             const appliedGeneration = marketAuthStatusGeneration
             await loadMarketAccountSummary()
             if (
@@ -509,6 +512,7 @@ export function useMarketAuth() {
       invalidateAccountSummaryRequests()
       marketAuth.value = { authenticated: false }
       marketAccountSummary.value = null
+      window.dispatchEvent(new Event(MARKET_AUTH_CHANGED_EVENT))
       ElMessage.success(t('market.logoutSuccess'))
     } finally {
       marketLogoutBusy.value = false

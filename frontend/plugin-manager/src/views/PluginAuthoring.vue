@@ -51,6 +51,9 @@
               >
             </template>
             <template v-else-if="!requestedProject">
+              <el-button @click="router.push('/workbench/feedback')">
+                {{ t('marketFeedback.title') }}
+              </el-button>
               <el-button
                 tag="a"
                 :href="tutorialUrl"
