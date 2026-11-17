@@ -234,6 +234,25 @@ def test_a_read_or_refused_write_is_still_rejected_after_an_account_switch(monke
     assert len(upstream.requests) == 2
 
 
+def test_a_write_5xx_after_an_account_switch_stays_uncertain_not_refused(monkeypatch):
+    # The Market may have applied a write that answered 5xx. Reporting it as the
+    # 409 refusal would tell the UI it is safe to post again under the new account.
+    responder = _switch_account_during(503, {"detail": "upstream unavailable"})
+    client, upstream, token = _install_feedback(monkeypatch, responder)
+    responder.token = token
+    base = "/market/conversations/plugins/8"
+    login = client.get(f"{base}/issues/10", headers=_BRIDGE_HEADERS)
+    assert login.status_code == 200
+    headers = {**_BRIDGE_HEADERS, _FEEDBACK_HEADER: login.headers[_FEEDBACK_HEADER]}
+    draft = {"body": "Reply text", "reply_to_id": None, "client_message_id": "test-message-id"}
+    response = client.post(f"{base}/issues/10/messages", headers=headers, json=draft)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "upstream unavailable"}
+    assert _FEEDBACK_HEADER not in response.headers
+    assert "X-Market-Feedback-Session-Changed" not in response.headers
+    assert len(upstream.requests) == 2
+
+
 def test_feedback_session_survives_an_access_token_refresh_without_a_session_id():
     legacy = {"access_token": "access-1", "subject": "ory-subject-abc", "subject_pending": False}
     refreshed = {**legacy, "access_token": "access-2"}

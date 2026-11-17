@@ -1027,16 +1027,19 @@ async def _proxy_market_authenticated(
 
         sent_after_session_change = False
         if feedback and feedback_session and _current_feedback_session() != feedback_session:
-            # The login switched while the request was in flight. A read or a
-            # write the Market refused is stale for the new account. A write the
-            # Market already applied must not be reported as failed, or the UI
-            # would invite the user to post it again under the new account.
-            if method == "GET" or not upstream.is_success:
+            # The login switched while the request was in flight. A read, or a
+            # write the Market refused (below 500), is stale for the new account.
+            # A write the Market already applied must not be reported as failed,
+            # or the UI would invite the user to post it again under the new
+            # account. A 5xx may or may not have been applied: pass it through so
+            # the UI treats it as uncertain rather than as a definite refusal.
+            if method == "GET" or (not upstream.is_success and upstream.status_code < 500):
                 raise HTTPException(status_code=409, detail={"code": "market_feedback_session_changed"})
-            sent_after_session_change = True
+            sent_after_session_change = upstream.is_success
             logger.info(
-                "[market-{}] write applied after session change status={} request_id={} origin={}",
+                "[market-{}] write {} after session change status={} request_id={} origin={}",
                 surface,
+                "applied" if sent_after_session_change else "uncertain",
                 upstream.status_code,
                 _safe_market_request_id(upstream.headers.get("x-request-id")),
                 _market_api_log_origin(),
