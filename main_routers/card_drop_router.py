@@ -895,6 +895,13 @@ def _persist_repaired_bind(
                     # Rewriting its tokens here could roll back a newer refresh.
                     current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
             else:
+                if same_account is not None:
+                    # The mirror may still hold this token after the desktop
+                    # host switched accounts in the social session; only
+                    # record the bind while the same account is signed in.
+                    social = _desktop_session_snapshot() or {}
+                    if social.get("local_user_id") != same_account[0]:
+                        return False
                 current.pop("bind_session_fingerprint", None)
             _write_private_json(path, {**current, "bind": bind})
             return True
@@ -917,10 +924,18 @@ def _remember_confirmed_owner() -> bool:
     if the device record never got it (a write that failed at the time), so a
     later login whose bind is inconclusive still finds the conflict.
     """
+    directory = _credential_dir()
+    # A hold this process could not write (for example a conflict a rebind
+    # found while the login's own bind still says bound) must reach disk
+    # before the login goes, or a restart would forget it.
+    latched_saved = community_device_hold.persist_latched_hold(directory)
+    return _remember_saved_login(directory) and latched_saved
+
+
+def _remember_saved_login(directory: Path | None) -> bool:
     auth = _load_auth() or {}
     bind = auth.get("bind")
     account = _normalize_local_user_id(auth.get("local_user_id"))
-    directory = _credential_dir()
     if bind is None and account and auth.get("access_token"):
         # Sessions saved before bind outcomes were recorded count as bound,
         # the same compatibility rule /auth-status applies.
@@ -942,7 +957,7 @@ def _remember_confirmed_owner() -> bool:
     return community_device_hold.record_session_account(directory, account) and recorded
 
 
-def _record_device_hold(bind: dict, local_user_id: str) -> None:
+def _record_device_hold(bind: dict, local_user_id: str) -> bool:
     """Record what a login or bind as ``local_user_id`` proved about the device owner.
 
     See utils.community_device_hold: header-only uploads wait while a
@@ -956,6 +971,7 @@ def _record_device_hold(bind: dict, local_user_id: str) -> None:
         recorded = community_device_hold.record_session_account(directory, local_user_id) and recorded
     if not recorded:
         logger.warning("card_drop: device hold record not written; holding uploads in memory")
+    return recorded
 
 
 def _save_social_session_unlocked(
@@ -1037,8 +1053,8 @@ def _persist_session_credentials(
     *,
     local_user_id: str,
     auth_source: str,
-) -> None:
-    """Persist both desktop credential files from a worker thread."""
+) -> bool:
+    """Persist both desktop credential files; return whether either was written."""
     auth_saved = _save_auth(auth_payload)
     social_saved = _save_social_session(
         base,
@@ -1057,6 +1073,7 @@ def _persist_session_credentials(
         # Any credential publication can represent an account switch or token
         # rotation. Existing browser delegates must be reissued for that session.
         _clear_native_delegates()
+    return auth_saved or social_saved
 
 
 def _persist_session_identity_metadata(
@@ -1169,15 +1186,15 @@ def _clear_auth() -> bool:
     hold_saved = _remember_confirmed_owner()
     auth_path = _auth_path()
     paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
-    tombstone_failed = False
-    if not hold_saved and auth_path is not None:
+    tombstone = not hold_saved and auth_path is not None
+    if tombstone:
         # The device record could not take this login's hold. The auth mirror
         # becomes a tombstone that drops every credential but keeps the hold,
         # so it survives a restart. If even that cannot be written, keep the
         # mirror and report the logout as failed (callers retry it) rather
-        # than let uploads resume.
+        # than let uploads resume. Written under the same lock as the
+        # deletions, so a refresh cannot put its tokens back in between.
         paths = [path for path in paths if path != auth_path]
-        tombstone_failed = not _tombstone_auth_mirror(auth_path)
     if auth_path is not None:
         # Cancel in-flight OAuth before its credential commit under this same lock.
         paths.append(auth_path.parent / "community_oauth_pending.json")
@@ -1190,7 +1207,9 @@ def _clear_auth() -> bool:
     # logout would clear only the social file while the mirror returns, and clear would incorrectly report failure.
     try:
         with _social_session_locks(_social_session_paths()):
-            success = _unlink_credentials(paths) and success and not tombstone_failed
+            if tombstone and not _tombstone_auth_mirror(auth_path):
+                success = False
+            success = _unlink_credentials(paths) and success
             for path in paths:
                 try:
                     path.lstat()
@@ -1392,7 +1411,7 @@ async def _store_session(
         "user": community_oauth._persisted_user_profile(user, local_user_id),
         "bind": bind,
     }
-    await asyncio.to_thread(
+    published = await asyncio.to_thread(
         _persist_session_credentials,
         auth_payload,
         bind,
@@ -1402,7 +1421,10 @@ async def _store_session(
         local_user_id=local_user_id,
         auth_source=normalized_source,
     )
-    await asyncio.to_thread(_record_device_hold, bind, local_user_id)
+    if published:
+        # A login that saved nothing never used this device; it must not
+        # leave a hold behind that pauses the owner's uploads.
+        await asyncio.to_thread(_record_device_hold, bind, local_user_id)
     return bind
 
 

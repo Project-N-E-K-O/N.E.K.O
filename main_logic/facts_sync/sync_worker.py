@@ -121,9 +121,35 @@ def _signed_in_account() -> str | None:
     return community_device_hold.UNREADABLE_ACCOUNT
 
 
-def _saved_auth(directory: Path) -> dict:
-    auth = _read_json(directory / "community_auth.json", {})
-    return auth if isinstance(auth, dict) else {}
+_AUTH_UNREADABLE = object()
+
+
+def _saved_auth(directory: Path) -> Any:
+    """The auth mirror, ``{}`` when absent, or ``_AUTH_UNREADABLE``."""
+    path = directory / "community_auth.json"
+    try:
+        if not path.exists():
+            return {}
+        auth = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _AUTH_UNREADABLE
+    return auth if isinstance(auth, dict) else _AUTH_UNREADABLE
+
+
+def _saved_bind_for(auth: Any, signed_in: str | None) -> Any:
+    """The signed-in login's bind outcome, or ``UNKNOWN_BIND`` if it cannot be trusted.
+
+    A missing ``bind`` field (or a missing mirror, for sessions the desktop
+    host wrote on its own) is a session from before bind outcomes were
+    recorded and counts as bound, matching /auth-status. A mirror naming
+    another account belongs to another login and says nothing about this one.
+    An unreadable mirror never reaches here; it holds outright.
+    """
+    current = community_device_hold.normalize_account(signed_in)
+    mirror_user = community_device_hold.normalize_account(auth.get("local_user_id"))
+    if current and mirror_user and mirror_user != current:
+        return community_device_hold.UNKNOWN_BIND
+    return auth.get("bind")
 
 
 def _device_bound_to_other_account() -> bool:
@@ -146,11 +172,15 @@ def _device_bound_to_other_account() -> bool:
         logger.warning("facts_sync: cannot read the signed-in community account: %s", exc)
         return True
     auth = _saved_auth(directory)
+    if auth is _AUTH_UNREADABLE:
+        return True
     if auth.get("device_hold_pending"):
         # A logout could not write the device record and left this marker
         # instead; it holds until a later login replaces the mirror.
         return True
-    return community_device_hold.device_held(directory, signed_in, saved_bind=auth.get("bind"))
+    return community_device_hold.device_held(
+        directory, signed_in, saved_bind=_saved_bind_for(auth, signed_in)
+    )
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:

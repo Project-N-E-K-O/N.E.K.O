@@ -40,6 +40,9 @@ _UNREADABLE = object()
 # only holds when there is an owner to compare against or its own bind failed.
 UNREADABLE_ACCOUNT = "unreadable"
 LEGACY_ACCOUNT = "legacy"
+# ``saved_bind`` value when the login's own bind outcome cannot be trusted
+# (mirror missing, unreadable, or belonging to another login): never bound.
+UNKNOWN_BIND = object()
 # Set when a hold that had to be recorded could not be written. Uploads stay
 # held for the rest of this process even if the login that carried the
 # conflict is replaced or cleared; only a written successful bind resets it.
@@ -188,6 +191,32 @@ def record_bind_outcome(directory: Path | str | None, bind: Any, account: str | 
     return _write_hold(directory, record)
 
 
+def persist_latched_hold(directory: Path | str | None) -> bool:
+    """Write an in-memory hold to disk before the login that knew of it goes.
+
+    Returns True when nothing was latched or the hold is now on disk.
+    """
+    if not _unrecorded_hold:
+        return True
+    record = _read(directory)
+    if record is _UNREADABLE:
+        return True  # already holds on disk
+    record = record if isinstance(record, dict) else {}
+    if _write(directory, {**record, "conflict": True}):
+        _set_unrecorded_hold(False)
+        return True
+    return False
+
+
+def hold_latched() -> bool:
+    """Whether a hold that had to be recorded is held only in this process."""
+    return _unrecorded_hold
+
+
+def normalize_account(value: object) -> str | None:
+    return _account(value)
+
+
 def _set_unrecorded_hold(value: bool) -> None:
     global _unrecorded_hold
     _unrecorded_hold = value
@@ -239,6 +268,10 @@ __all__ = [
     "HOLD_FILENAME",
     "OWNERSHIP_CONFLICT",
     "LEGACY_ACCOUNT",
+    "UNKNOWN_BIND",
+    "hold_latched",
+    "persist_latched_hold",
+    "normalize_account",
     "UNREADABLE_ACCOUNT",
     "default_directory",
     "device_held",

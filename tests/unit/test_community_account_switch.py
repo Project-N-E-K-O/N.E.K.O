@@ -920,7 +920,8 @@ def test_rebind_conflict_after_flaky_login_holds_even_if_write_fails(oauth_app, 
 
     assert response.status_code == 409
     saved_bind = json.loads(auth.read_text(encoding="utf-8"))["bind"]
-    assert saved_bind["error"] == "cloud_unreachable"
+    # The conflict also lands on the login, a second copy of the hold on disk.
+    assert saved_bind == CONFLICT
     assert hold.device_held(auth.parent, USER_ID, saved_bind=saved_bind)
 
 
@@ -1124,3 +1125,175 @@ async def test_rebind_conflict_with_failed_write_holds_after_logout_and_restart(
     monkeypatch.setattr(hold, "default_directory", lambda: auth.parent)
     monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
     assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+
+async def test_bound_login_rebind_conflict_with_failed_write_holds_after_logout_and_restart(
+    oauth_app, tmp_path, monkeypatch,  # noqa: F811
+):
+    """Login says bound, rebind finds a conflict, every write to the device record fails."""
+    import asyncio
+
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
+    _logged_in(monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(*_args, **_kwargs):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    # Also lose the login copy, so only the in-memory latch knows.
+    monkeypatch.setattr(C, "_persist_repaired_bind", lambda *_args, **_kwargs: False)
+    assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
+    assert hold.hold_latched()
+
+    assert C._clear_auth()
+    assert json.loads(auth.read_text(encoding="utf-8"))[C.DEVICE_HOLD_PENDING] is True
+
+    hold._set_unrecorded_hold(False)  # restart
+    real_signed_in_account = sync_worker._signed_in_account
+    _facts_sync_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "default_directory", lambda: auth.parent)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
+    assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+def test_latched_hold_is_written_once_disk_recovers_before_logout(oauth_app):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold._set_unrecorded_hold(True)
+    assert C._clear_auth()
+    assert not auth.exists()  # no tombstone needed: the hold reached the device record
+    hold._set_unrecorded_hold(False)  # restart
+    assert hold.device_held(auth.parent, None)
+
+
+def test_rejected_session_cleanup_keeps_an_unwritten_conflict(oauth_app, monkeypatch):  # noqa: F811
+    """Token rejection deletes the login automatically; its conflict must survive."""
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    assert O._clear_rejected_oauth_snapshot({"access_token": "account-b-access"})
+
+    assert not social.exists()
+    tombstone = json.loads(auth.read_text(encoding="utf-8"))
+    assert "access_token" not in tombstone
+    assert tombstone[C.DEVICE_HOLD_PENDING] is True
+
+
+def test_rejected_session_cleanup_writes_the_conflict_when_it_can(oauth_app):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    assert O._clear_rejected_oauth_snapshot({"access_token": "account-b-access"})
+    assert not auth.exists() and not social.exists()
+    assert hold.device_held(auth.parent, None)
+
+
+def test_logout_tombstone_is_written_inside_the_credential_lock(oauth_app, monkeypatch):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+    in_lock = {"depth": 0, "tombstone_inside": None}
+    real_locks = C._social_session_locks
+    real_tombstone = C._tombstone_auth_mirror
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def tracking_locks(paths):
+        with real_locks(paths):
+            in_lock["depth"] += 1
+            try:
+                yield
+            finally:
+                in_lock["depth"] -= 1
+
+    def tracking_tombstone(path):
+        in_lock["tombstone_inside"] = in_lock["depth"] > 0
+        return real_tombstone(path)
+
+    monkeypatch.setattr(C, "_social_session_locks", tracking_locks)
+    monkeypatch.setattr(C, "_tombstone_auth_mirror", tracking_tombstone)
+    assert C._clear_auth()
+    assert in_lock["tombstone_inside"] is True
+
+
+async def test_unreadable_auth_mirror_holds_uploads(tmp_path, monkeypatch):
+    import asyncio
+
+    _facts_sync_env(tmp_path, monkeypatch)
+    (tmp_path / "community_auth.json").write_text("{half-written", encoding="utf-8")
+    assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+async def test_auth_mirror_of_another_login_is_not_trusted(tmp_path, monkeypatch):
+    """No owner on file; the mirror says bound but belongs to another account."""
+    import asyncio
+
+    _facts_sync_env(tmp_path, monkeypatch)  # signed in as USER_ID
+    (tmp_path / "community_auth.json").write_text(
+        json.dumps({"local_user_id": OWNER_A, "bind": BOUND}), encoding="utf-8",
+    )
+    assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+async def test_failed_login_save_leaves_no_hold(tmp_path, monkeypatch):
+    """Both credential writes fail: the login never happened, so no hold for the owner."""
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_save_auth", lambda _payload: False)
+    monkeypatch.setattr(C, "_save_social_session", lambda *_args, **_kwargs: False)
+
+    await C._store_session(
+        "https://community.example",
+        "b-token",
+        None,
+        {"id": USER_ID, "display_name": "B"},
+        auth_source="legacy",
+        bind_client=False,
+    )
+
+    assert not hold.device_held(tmp_path, OWNER_A)
+    assert not hold.device_held(tmp_path, None)
+
+
+def test_rebind_reports_unsaved_device_record(oauth_app, monkeypatch):  # noqa: F811
+    """Cloud rebind succeeded but the device record could not be written: retryable 503."""
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    _logged_in(monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def bound(*_args, **_kwargs):
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bound)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "local_bind_state_not_saved"
+
+
+def test_rebind_does_not_report_success_after_desktop_switched_accounts(oauth_app, monkeypatch):  # noqa: F811
+    """Electron switched the social session mid-rebind; the stale auth mirror still has the token."""
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    _logged_in(monkeypatch)
+
+    async def bind_while_desktop_switches(*_args, **_kwargs):
+        social.write_text(
+            json.dumps({"token": "c-token", "local_user_id": OWNER_A, "auth_source": "oauth"}),
+            encoding="utf-8",
+        )
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bind_while_desktop_switches)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "desktop_login_required"
+    assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == CONFLICT
+    # The device record names USER_ID as owner, so OWNER_A's uploads stay held.
+    assert hold.device_held(auth.parent, OWNER_A)

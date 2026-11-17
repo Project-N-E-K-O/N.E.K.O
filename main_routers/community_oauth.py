@@ -351,6 +351,9 @@ def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
     credentials = [(path, "token") for path in social_paths]
     if auth_path is not None:
         credentials.append((auth_path, "access_token"))
+    # Like a logout: what the rejected login knew about the device owner must
+    # reach the device record first, or survive in a tombstone mirror.
+    hold_saved = C._remember_confirmed_owner()
     try:
         # Keep conditional reads and deletions in the same critical section as
         # bind repair and identity writes, including the legacy session path.
@@ -359,7 +362,11 @@ def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
                 try:
                     saved = C._read_json_dict(path)
                     if str((saved or {}).get(token_key) or "").strip() == expected_access:
-                        path.unlink(missing_ok=True)
+                        if path == auth_path and not hold_saved:
+                            if not C._tombstone_auth_mirror(path):
+                                success = False
+                        else:
+                            path.unlink(missing_ok=True)
                 except OSError:
                     success = False
     except (OSError, TimeoutError):
@@ -1068,22 +1075,34 @@ async def _rebind_current_session(headers: dict[str, str], expected_user: str | 
         error = str(bind.get("error") or "rebind_failed")
         if error in (_BIND_OWNERSHIP_CONFLICT, LEGACY_DEVICE_OWNED_ELSEWHERE):
             # Confirmed: another account still owns this device. Hold uploads
-            # even if the login itself never saw the conflict.
+            # even if the login itself never saw the conflict, and record it
+            # on the login too so the hold has a second copy on disk.
+            conflict = {"bound": False, "error": _BIND_OWNERSHIP_CONFLICT}
+            await asyncio.to_thread(C._record_device_hold, conflict, local_user_id)
             await asyncio.to_thread(
-                C._record_device_hold, {"bound": False, "error": _BIND_OWNERSHIP_CONFLICT}, local_user_id,
+                C._persist_repaired_bind, access_token, conflict, same_account=(local_user_id, "oauth"),
             )
         status_code = 502 if error == "cloud_unreachable" else 409
         return JSONResponse({"detail": error, "bind": public_bind}, status_code=status_code, headers=headers)
 
-    # The cloud now lists this account as the owner, so header-only uploads
-    # land in the right place again whatever happens to the local record.
-    await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
+    # The cloud now lists this account as the owner. Record that as a fact
+    # about the device; if the desktop host has switched accounts meanwhile,
+    # the owner comparison keeps the new account's uploads held.
+    hold_saved = await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
     saved = await asyncio.to_thread(
         C._persist_repaired_bind, access_token, bind, same_account=(local_user_id, "oauth"),
     )
     if not saved:
+        current = await asyncio.to_thread(C._desktop_session_snapshot) or {}
+        if C._normalize_local_user_id(current.get("local_user_id")) != local_user_id:
+            return JSONResponse(
+                {"detail": "desktop_login_required", "bind": public_bind},
+                status_code=409,
+                headers=headers,
+            )
+    if not (saved and hold_saved):
         # Retrying is safe: the device is already ours, so the cloud answers
-        # the same way and this write gets another chance.
+        # the same way and these writes get another chance.
         return JSONResponse(
             {"detail": "local_bind_state_not_saved", "bind": public_bind},
             status_code=503,
