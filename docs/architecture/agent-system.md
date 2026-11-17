@@ -56,6 +56,20 @@ What task agents keep for later commissions is in `<data root>/nekoclaw/task_age
 
 The session directories (`<data root>/nekoclaw/task_agents/projects/<project>/sessions/<commission id>/`) are a separate tree on purpose: a working directory is full of links and stays where it is when the storage location is changed, while the space moves with the rest of the user's data.
 
+### dsh: the optional agent runtime
+
+dsh (DeepSeek Harness) is a second agent runtime a user may download (`nekoclaw/dsh/`); the built-in one is always there. Nothing changes for a user without dsh: its modules are not imported and no process is started.
+
+- **Which one** (`nekoclaw/host/runtimes.py`). A commission is given its runtime when it is first taken up, the ledger records it, and it keeps it. A new commission runs on dsh when dsh is installed, the user has not chosen "built-in only", and the commission's model is reached through an OpenAI-compatible API; otherwise it runs on the built-in runtime. A commission taken up again goes back to the runtime it began in, because only that runtime can read what was said in its session; a task agent started by a task agent runs where the one that started it runs.
+- **When dsh cannot be used.** If dsh does not come up, its permission guard is not confirmed to have loaded, or it opens no session for the commission, the commission runs on the built-in runtime instead and the reason is recorded in the commission's events; dsh is not tried for new commissions for the next 5 minutes. A commission that began on dsh starts over on the built-in runtime once dsh has been removed. When the dsh process exits mid-way, the commissions it was working on fail and can be taken up again.
+- **How it is connected** (`driver.py`, `acp.py`). dsh is a child process spoken to over standard input and output with ACP (JSON-RPC). One process carries several sessions, is started when first needed, and exits after all its sessions have been idle for 5 minutes. The driver translates ACP notifications into the same events the built-in runtime sends, so the rest of the host does not tell the two apart.
+- **Model requests** (`forward.py`, `endpoint.py`). dsh sends its model requests to a forwarder on the loopback address, which puts in the real model name and key, adds the parameters each provider needs, and passes them on to the address the user configured. The key is never given to dsh, and the usage of every request is read by the forwarder. The forwarder listens on a random port, each dsh process has its own random token, and any request carrying an `Origin` header is refused.
+- **Permissions** (`profile.py`). dsh's own sandbox is switched off; a guard shipped with its configuration makes dsh ask before every tool call, and each of those questions is decided by the same permission code of the host. A call through the capability gateway is ruled on, and the user asked, before it is sent; the gateway does not ask again when the call arrives.
+- **The host's tools** (`host_tools.py`). Reporting, noting lessons, web search and fetch, and child task agents are offered to dsh as an MCP service, from the same definitions the built-in runtime uses; dsh's own web search and fetch are switched off, so a page is fetched from public addresses only, as on the built-in runtime. The capability gateway is mounted into dsh directly over MCP.
+- **Where it is installed** (`install.py`). `<data root>/nekoclaw/dsh/` holds the program, dsh's own configuration and its session logs; it does not move with a storage migration. The version downloaded is pinned and the file is checked against its sha256 and size.
+
+A few things differ from the built-in runtime on dsh: something added mid-way reaches the task agent only when its current stretch of work has ended; a reply arrives whole rather than word by word; one call through the capability gateway may take 60 seconds at most; and there is no tool that asks the user and waits in place, so a report that waits for an answer is used instead.
+
 ### Capability gateway and permissions
 
 Besides its own file and command tools, a task agent reaches everything through the capability gateway (`nekoclaw/host/gateway.py`): an MCP service on the loopback address, started when the first task agent needs it, with one token per commission. It serves:
@@ -161,6 +175,7 @@ Managers and the Agent Server initialize these switches off. Persisted runtime i
 | Plugin selection and the decision model | `nekoclaw/host/selection.py`, `decision.py` |
 | Ledger, outbox, reports | `nekoclaw/host/ledger.py`, `outbox.py`, `reports.py` |
 | Task agents and the agent runtime | `nekoclaw/host/task_agents.py`, `nekoclaw/runtime/` |
+| dsh: the optional agent runtime and the choice of runtime | `nekoclaw/dsh/`, `nekoclaw/host/runtimes.py`, `config/prompts/prompts_nekoclaw_dsh.py` |
 | Task agent space: entries, indexes, reviews, archiving | `nekoclaw/host/space.py`, `space_keeper.py`, `config/prompts/prompts_nekoclaw_space.py` |
 | Capability list, gateway, permissions | `nekoclaw/host/capabilities.py`, `gateway.py`, `permissions.py` |
 | Keyboard-and-mouse and browser tools | `nekoclaw/builtin/`, `config/prompts/prompts_nekoclaw_builtin.py` |

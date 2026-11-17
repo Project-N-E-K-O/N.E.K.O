@@ -2480,3 +2480,302 @@ async def test_a_task_agent_uses_the_group_the_commission_that_started_it_occupi
     held = builtin_host.leases.holder("browser")
     assert (held.team, held.members) == (lead.id, {lead.id, child.id})
     assert [cid for _name, cid, _args in builtin_host.provider.calls] == [lead.id, child.id]
+
+
+# ---------------------------------------------------------------------------
+# A call ruled on before it is made (for a runtime whose client gives a call little time)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_call_ruled_on_before_it_is_made_asks_the_user_once(host, server):
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+
+    # Before the call: the user is asked now, for as long as it takes.
+    await host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "mcp__notes__search"})
+    assert [(ask.category, ask.key) for _cid, ask in asker.asked] == [("mcp_server", "notes")]
+    assert server.calls == []
+
+    result = await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+
+    # The call is carried out on that answer and asks nobody a second time.
+    assert _text(result) == "3 notes" and len(asker.asked) == 1
+    # "Once" was for that call: the next one is asked about again.
+    await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+    assert len(asker.asked) == 2
+
+
+async def test_a_call_refused_before_it_is_made_is_answered_as_one_refused_at_the_entry(host, server):
+    _mcp(server)
+    asker = Asker("deny")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+
+    await host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "mcp__notes__search"})
+    result = await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+
+    assert result["isError"] and "the user declined" in _text(result)
+    assert server.calls == [] and len(asker.asked) == 1
+    denied = [event for event in await host.ledger.events(commission.id) if event.type == "capability_denied"]
+    assert len(denied) == 1
+
+
+async def test_a_call_allowed_before_it_is_made_is_refused_when_the_settings_forbid_it_since(host, server):
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+
+    await host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "mcp__notes__search"})
+    # Denied after the user allowed it and before the call came: the settings win.
+    await host.permission_store.set_mode("mcp_server", "deny", key="notes")
+    result = await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+
+    assert result["isError"] and "the permission settings forbid this" in _text(result)
+    assert server.calls == [] and len(asker.asked) == 1 and grant.cleared == {}
+    denied = [event for event in await host.ledger.events(commission.id) if event.type == "capability_denied"]
+    assert len(denied) == 1
+
+
+async def test_what_was_ruled_on_does_not_wait_for_its_call_for_ever(host, server, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.05)
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+
+    await host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "mcp__notes__search"})
+    assert len(grant.cleared) == 1
+    await asyncio.sleep(0.3)
+
+    # Dropped when its time was up, not when a call came by.
+    assert grant.cleared == {}
+    # A call that comes after that is ruled on like any other.
+    await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search"})
+    assert len(asker.asked) == 2 and grant.cleared == {}
+
+
+async def test_what_was_ruled_on_is_for_the_call_the_user_was_asked_about_and_no_other(host, server):
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+    asked_about = {"name": "mcp__notes__search", "arguments": {"query": "milk", "limit": 3}}
+
+    await host.gateway.clear_call(commission.id, CALL_TOOL, asked_about)
+    # The turn was stopped and that call never came; another one of the same tool does.
+    await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search", "arguments": {"query": "passwords"}})
+
+    # "This once" was not for it: it is asked about itself, and what was ruled on still waits.
+    assert len(asker.asked) == 2 and len(grant.cleared) == 1
+
+    # The call the user was asked about, however its arguments are ordered, is carried out on that answer.
+    await _call(host, grant, CALL_TOOL, {"name": "mcp__notes__search", "arguments": {"limit": 3, "query": "milk"}})
+    assert len(asker.asked) == 2 and grant.cleared == {}
+
+
+async def test_what_was_ruled_on_is_for_that_capability_of_that_commission(host, server):
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    other = await _commission(host, title="another one", dispatch_text="another one")
+    grant, other_grant = _grant(host, commission), _grant(host, other)
+
+    await host.gateway.clear_call(commission.id, "mcp__notes__search", {})
+    await _call(host, other_grant, CALL_TOOL, {"name": "mcp__notes__search"})
+    await _call(host, grant, CALL_TOOL, {"name": "mcp__calendar__today"})
+
+    # Neither took what was ruled on for the first commission's search.
+    assert [(cid, ask.key) for cid, ask in asker.asked] == [
+        (commission.id, "notes"),
+        (other.id, "notes"),
+        (commission.id, "calendar"),
+    ]
+    assert [capability_id for capability_id, _digest in grant.cleared] == ["mcp:notes:search"]
+
+
+async def test_nothing_is_ruled_on_for_a_call_that_will_carry_nothing_out(builtin_host, server):
+    _mcp(server)
+    asker = Asker("deny")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True, loaded=())
+
+    await builtin_host.gateway.clear_call(commission.id, SEARCH_TOOL, {"query": "notes"})
+    await builtin_host.gateway.clear_call(commission.id, CALL_TOOL, {"arguments": {}})
+    await builtin_host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "no_such_capability"})
+    # A tool of a group that was not handed over: the call hands the group over instead.
+    await builtin_host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "browser_take_screenshot"})
+    await builtin_host.gateway.clear_call("no-such-commission", CALL_TOOL, {"name": "mcp__notes__search"})
+    assert asker.asked == [] and grant.cleared == {}
+
+    # The group's first call is carried out, so it is ruled on.
+    await builtin_host.gateway.clear_call(
+        commission.id, CALL_TOOL, {"name": "browser_navigate_page", "arguments": {"url": "https://example.com"}}
+    )
+    assert [ask.category for _cid, ask in asker.asked] == ["browser"]
+
+
+async def test_a_commission_that_is_over_is_asked_nothing(host, server):
+    _mcp(server)
+    asker = Asker("once")
+    host.permissions.set_asker(asker)
+    commission = await _commission(host)
+    _grant(host, commission)
+    await host.ledger.transition(commission.id, "done")
+
+    await host.gateway.clear_call(commission.id, CALL_TOOL, {"name": "mcp__notes__search"})
+
+    assert asker.asked == []
+
+
+async def test_a_browser_the_user_closed_is_asked_about_before_the_call_that_opens_it(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", {"url": "https://example.com"})
+
+    # Asked now; nothing was carried out and the browser is still closed.
+    assert [ask.category for _cid, ask in asker.asked] == ["browser_reopen"]
+    assert builtin_host.provider.calls == [] and builtin_host.provider.closed_by_user is True
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    # The call opens it on the agreement given before, and the user is not asked again.
+    assert result.get("isError") is not True and len(asker.asked) == 1
+    assert builtin_host.provider.reopened == ["agreement-1"] and builtin_host.provider.agreed == 1
+    assert builtin_host.provider.ended == ["agreement-1"]
+
+
+async def test_a_refusal_to_open_the_browser_again_given_before_the_call_is_what_the_call_is_told(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    asker = Asker("deny")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", {"url": "https://example.com"})
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result["isError"] is True and "does not want it opened again" in _text(result)
+    assert builtin_host.provider.calls == [] and len(asker.asked) == 1
+
+
+async def test_an_agreement_given_before_a_call_that_never_comes_ends(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    builtin_host.permissions.set_asker(Asker("once"))
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", {"url": "https://example.com"})
+    # Ruled on again before the first call came: the earlier agreement is over.
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", {"url": "https://example.com"})
+    assert builtin_host.provider.ended == ["agreement-1"]
+    assert [capability_id for capability_id, _digest in grant.cleared] == ["builtin:browser:browser_navigate_page"]
+
+    # The commission's token is taken back: so is what waited for its call.
+    builtin_host.gateway.revoke(commission.id)
+    assert builtin_host.provider.ended == ["agreement-1", "agreement-2"] and grant.cleared == {}
+    assert builtin_host.provider.calls == []
+
+
+async def test_an_agreement_whose_call_never_comes_ends_when_its_time_is_up(builtin_host, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_CLEARED_CALL_SECONDS", 0.05)
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", {"url": "https://example.com"})
+    assert builtin_host.provider.ended == []
+    await asyncio.sleep(0.3)
+
+    # No call came, and none had to come by for the agreement to end.
+    assert builtin_host.provider.ended == ["agreement-1"] and grant.cleared == {}
+    # The call that comes now opens nothing on the strength of it: the user is asked again.
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    assert [ask.category for _cid, ask in asker.asked] == ["browser_reopen", "browser_reopen"]
+
+
+async def test_a_ruling_that_was_taken_or_replaced_is_not_dropped_again_when_its_time_is_up(builtin_host, monkeypatch):
+    # The rulings' time runs out when the test says so, not when the event loop gets round to it.
+    loop = asyncio.get_running_loop()
+    schedule = loop.call_later
+    timers: list[tuple[asyncio.TimerHandle, Any, tuple[Any, ...]]] = []
+
+    def held(delay: float, callback: Any, *args: Any, **kwargs: Any) -> asyncio.TimerHandle:
+        if callback == builtin_host.gateway._drop_cleared:
+            timers.append((schedule(3600, callback, *args), callback, args))
+            return timers[-1][0]
+        return schedule(delay, callback, *args, **kwargs)
+
+    def run_out(index: int) -> None:
+        """A ruling's time is up: what was set for then runs, as the event loop would run it, unless it was cancelled."""
+        handle, callback, args = timers[index]
+        if not handle.cancelled():
+            handle.cancel()
+            callback(*args)
+
+    monkeypatch.setattr(loop, "call_later", held)
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    builtin_host.permissions.set_asker(Asker("once"))
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+    arguments = {"url": "https://example.com"}
+
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", arguments)
+    # Ruled on again for the same call: the earlier ruling is over, and its time running out later ends nothing more.
+    await builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", arguments)
+    run_out(0)
+    assert builtin_host.provider.ended == ["agreement-1"] and len(grant.cleared) == 1
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", arguments)
+    run_out(1)
+
+    # Taken by its call: the agreement ended with the call, once.
+    assert len(timers) == 2
+    assert result.get("isError") is not True and builtin_host.provider.reopened == ["agreement-2"]
+    assert builtin_host.provider.ended == ["agreement-1", "agreement-2"] and grant.cleared == {}
+
+
+async def test_a_token_taken_back_while_the_user_is_asked_leaves_nothing_waiting(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    asked = asyncio.Event()
+    answer = asyncio.Event()
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.set()
+        await answer.wait()
+        return "once"
+
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    clearing = asyncio.ensure_future(
+        builtin_host.gateway.clear_call(commission.id, "browser_navigate_page", {"url": "https://example.com"})
+    )
+    await asyncio.wait_for(asked.wait(), 5)
+    builtin_host.gateway.revoke(commission.id)
+    answer.set()
+    await asyncio.wait_for(clearing, 5)
+
+    assert grant.cleared == {} and builtin_host.provider.ended == ["agreement-1"]

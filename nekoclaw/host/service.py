@@ -18,7 +18,9 @@
 work: no file is opened, no thread or process is started, nothing listens and
 nothing is fetched. The ledger file is opened by the first dispatch or query,
 the runtime and the gateway are started by the first task agent, and the task
-agent space is first read when a task agent starts.
+agent space is first read when a task agent starts. Whether the user
+installed dsh, the optional second runtime (``nekoclaw.dsh``), is looked at
+when a task agent starts, too.
 
 Whoever embeds the host supplies what it cannot know by itself, all optional:
 
@@ -65,6 +67,7 @@ from nekoclaw.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
 from nekoclaw.host.model_capabilities import ModelCapabilityStore
 from nekoclaw.host.outbox import OutboxSender, SendReport
 from nekoclaw.host.paths import HostPaths
+from nekoclaw.host.runtimes import RUNTIME_DSH
 from nekoclaw.host.permissions import PermissionGate, PermissionStore
 from nekoclaw.host.plugin_runs import ClientFactory, PluginCatalog, PluginRunner
 from nekoclaw.host.preferences import PreferenceStore
@@ -120,8 +123,19 @@ class NekoClawHost:
         task_agent_meter: UsageMeter | None = None,
         on_commission: Listener | None = None,
         on_builtin_activity: ActivityListener | None = None,
+        dsh: Any = None,
+        dsh_runtime_factory: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
+        # Where dsh is, for a user who downloaded it; a page about the
+        # runtimes reads and changes it through the methods further down.
+        # Only the module that knows where dsh would be is imported here;
+        # dsh's driver is imported when a commission first runs in dsh.
+        if dsh is None:
+            from nekoclaw.dsh.install import DshInstallation
+
+            dsh = DshInstallation(self.paths.dsh)
+        self.dsh = dsh
         self.ledger = Ledger(self.paths.ledger_db, reconcile_report=self._restart_report)
         self.preferences = PreferenceStore(self.ledger)
         self.permission_store = PermissionStore(self.paths.permissions_json)
@@ -179,6 +193,8 @@ class NekoClawHost:
             leases=self.leases,
             model_capabilities=self.model_capabilities,
             space=self.space,
+            dsh=self.dsh,
+            dsh_runtime_factory=dsh_runtime_factory,
         )
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
@@ -189,6 +205,7 @@ class NekoClawHost:
             session_dir_of=self.task_agents.session_dir_of,
             hold_session=self.task_agents.hold_session,
             release_session=self.task_agents.release_session,
+            forget_dsh_session=self.dsh.forget_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)
         # A plugin's request for confirmation is put to the user by the
@@ -326,6 +343,70 @@ class NekoClawHost:
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
         return await self.brain.complete_deferred(commission_id)
+
+    # -- dsh --------------------------------------------------------------
+    #
+    # For a page about the runtimes (there is none yet, and no route leads
+    # here): what it shows and what its buttons do.
+
+    async def dsh_status(self) -> dict[str, Any]:
+        """Return what there is to show of dsh.
+
+        ``DshInstallation.status`` (whether it is installed, which version,
+        whether a download is under way, which runtime the user wants), and
+        of this host: ``sessions``, how many commissions are in dsh right
+        now, and ``fallback_reason``, why the last commission that was to
+        run in dsh ran in the built-in runtime instead, if one did.
+        """
+        status = await asyncio.to_thread(self.dsh.status)
+        status["sessions"] = len(self.task_agents.sessions_in(RUNTIME_DSH))
+        status["fallback_reason"] = self.task_agents.dsh_error
+        return status
+
+    async def install_dsh(self, on_progress: Any = None) -> dict[str, Any]:
+        """Download dsh and install it; returns ``dsh_status``. Raises ``DshUnavailable`` with the reason.
+
+        ``on_progress`` is called with the bytes fetched so far and the size
+        of the file. With the version in use installed already nothing is
+        done. Otherwise dsh is ended first (another version of it may be
+        running, from before the version in use changed), which a commission
+        that is in dsh right now forbids: its program cannot be replaced
+        while it runs.
+        """
+        if not await asyncio.to_thread(self.dsh.installed):
+            await self._with_dsh_stopped(lambda: self.dsh.install(on_progress))
+        return await self.dsh_status()
+
+    async def uninstall_dsh(self, *, purge: bool = False) -> dict[str, Any]:
+        """Remove dsh; returns ``dsh_status``. Raises ``DshUnavailable`` while a commission is in dsh.
+
+        Its program goes. What dsh kept (what was said in its sessions, the
+        plugins the user added) stays unless ``purge`` is set: installed
+        again, commissions that began in dsh go on there. Without dsh they
+        start over in the built-in runtime when they are taken up again.
+        """
+        await self._with_dsh_stopped(lambda: self.dsh.uninstall(purge=purge))
+        return await self.dsh_status()
+
+    async def set_dsh_preference(self, preference: str) -> dict[str, Any]:
+        """Set which runtime new commissions run in: ``auto`` (dsh when installed) or ``builtin``.
+
+        Returns ``dsh_status``; raises ValueError for anything else.
+        Commissions that are under way stay where they are.
+        """
+        await asyncio.to_thread(self.dsh.set_preference, preference)
+        return await self.dsh_status()
+
+    async def dsh_plugins(self) -> list[dict[str, Any]]:
+        """Return the plugins the user added to dsh; see ``DshInstallation.plugins``."""
+        return await asyncio.to_thread(self.dsh.plugins)
+
+    async def _with_dsh_stopped(self, work: Any) -> None:
+        """End dsh and await ``work()``; no commission starts dsh before it is done."""
+        if not await self.task_agents.stop_dsh(work):
+            from nekoclaw.dsh import DshUnavailable
+
+            raise DshUnavailable("dsh is in use: a commission is running in it")
 
     # -- upkeep -----------------------------------------------------------
 

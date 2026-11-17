@@ -56,6 +56,20 @@ task agent が後の依頼のために残すものは `<データルート>/neko
 
 セッションディレクトリ（`<データルート>/nekoclaw/task_agents/projects/<プロジェクト>/sessions/<依頼 ID>/`）は、意図的に別のツリーに置かれています。作業ディレクトリにはリンクが多く、保存場所を変更してもそのまま残ります。一方、task agent 空間はユーザーの他のデータと一緒に移動します。
 
+### dsh：オプションの agent runtime
+
+dsh（DeepSeek Harness）は、ユーザーが別途ダウンロードできる 2 つ目の agent runtime です（`nekoclaw/dsh/`）。内蔵の runtime は常にあります。dsh を入れていないユーザーには何の変化もありません。dsh のモジュールは読み込まれず、プロセスも起動しません。
+
+- **どちらを使うか**（`nekoclaw/host/runtimes.py`）。依頼の runtime は最初に着手したときに決まり、台帳に記録され、その後は変わりません。新しい依頼は、dsh がインストール済みで、ユーザーが「内蔵のみ」を選んでおらず、依頼のモデルが OpenAI 互換 API で呼び出せる場合に dsh で実行されます。それ以外は内蔵 runtime で実行されます。再開された依頼は着手時の runtime に戻ります。セッションの会話記録を読めるのはその runtime だけだからです。task agent が起動した task agent は、起動元と同じ runtime で動きます。
+- **dsh が使えないとき**。dsh が起動しない、権限ガードの読み込みが確認できない、またはその依頼のセッションを開けなかった場合、その依頼は内蔵 runtime で実行され、理由が依頼のイベントに記録されます。その後 5 分間、新しい依頼では dsh を試しません。dsh で着手した依頼は、dsh が削除された後は内蔵 runtime で最初からやり直します。dsh プロセスが途中で終了した場合、実行中の依頼は失敗となり、再開できます。
+- **接続方法**（`driver.py`、`acp.py`）。dsh は子プロセスで、標準入出力上の ACP（JSON-RPC）で通信します。1 つのプロセスが複数のセッションを受け持ち、必要になったときに起動し、すべてのセッションが 5 分間アイドルになると終了します。ドライバーは ACP の通知を内蔵 runtime と同じイベントに変換するため、ホストの他の部分は両者を区別しません。
+- **モデルリクエスト**（`forward.py`、`endpoint.py`）。dsh のモデルリクエストはループバックアドレス上の転送口に送られ、転送口が実際のモデル名とキーに差し替え、各プロバイダーが必要とするパラメーターを補ってから、ユーザーが設定したアドレスへ転送します。キーは dsh に渡しません。各リクエストの使用量は転送口が読み取ります。転送口はランダムなポートで待ち受け、dsh プロセスごとにランダムなトークンを 1 つ発行し、`Origin` ヘッダー付きのリクエストはすべて拒否します。
+- **権限**（`profile.py`）。dsh 自身のサンドボックスは無効にします。設定と一緒に渡すガードが、ツール呼び出しのたびに dsh に確認を取らせ、その確認はすべてホストの同じ権限コードで判断します。能力ゲートウェイ経由の呼び出しは、送信前に権限を判断してユーザーに確認し、呼び出しがゲートウェイに届いたときには再確認しません。
+- **ホストのツール**（`host_tools.py`）。報告、経験の記録、ウェブ検索とページ取得、子 task agent は 1 つの MCP サービスとして dsh に提供され、定義は内蔵 runtime と同じものを使います。dsh 自身のウェブ検索とページ取得は無効にしているため、ページ取得は内蔵 runtime と同じく公開アドレスにしか届きません。能力ゲートウェイは MCP で dsh に直接接続します。
+- **インストール先**（`install.py`）。`<データルート>/nekoclaw/dsh/` にプログラム、dsh 自身の設定、会話記録を置きます。保存場所の移行では移動しません。ダウンロードするバージョンは固定で、ファイルは sha256 とサイズで検証します。
+
+dsh では内蔵 runtime と異なる点がいくつかあります。途中で追加した指示は現在の作業区切りが終わってから届きます。返信は 1 文字ずつではなくまとめて届きます。能力ゲートウェイ経由の 1 回の呼び出しは最長 60 秒です。「質問してその場で回答を待つ」ツールはなく、代わりに回答待ちの報告を使います。
+
 ### 能力ゲートウェイと権限
 
 task agent は、自前のファイル・コマンド系ツール以外の機能を、能力ゲートウェイ（`nekoclaw/host/gateway.py`）経由で使います。ゲートウェイはループバックアドレス上の MCP サービスで、最初にそれを必要とする task agent が起動した時点で待ち受けを始め、依頼ごとにトークンを一つ発行します。提供するものは次のとおりです。
@@ -161,6 +175,7 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 | プラグインの選択と判断モデル | `nekoclaw/host/selection.py`、`decision.py` |
 | 台帳、outbox、報告 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | task agent と agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
+| dsh：オプションの agent runtime とその選択 | `nekoclaw/dsh/`、`nekoclaw/host/runtimes.py`、`config/prompts/prompts_nekoclaw_dsh.py` |
 | task agent 空間：エントリ、索引、振り返り、アーカイブ | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |
 | 能力一覧、ゲートウェイ、権限 | `nekoclaw/host/capabilities.py`、`gateway.py`、`permissions.py` |
 | キーボード・マウスとブラウザーのツール | `nekoclaw/builtin/`、`config/prompts/prompts_nekoclaw_builtin.py` |
