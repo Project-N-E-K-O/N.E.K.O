@@ -172,7 +172,10 @@ async def test_runtime_client_lists_and_calls_tools(server, hosts, tmp_path):
     definitions = await client.connect()
     result = await client.call("plugin__weather__today", {"city": "Lyon"})
 
-    assert [definition["name"] for definition in definitions] == ["plugin__weather__today"]
+    assert [definition["name"] for definition in definitions] == ["capability_search", "capability_call"]
+    assert [item["name"] for item in await host.gateway.candidate_definitions(commission.id)] == [
+        "plugin__weather__today"
+    ]
     assert (result.text, result.images, result.is_error) == ("sunny in Lyon", (), False)
     assert server.run_requests[0]["task_id"] == commission.id
     assert server.run_requests[0]["args"]["_ctx"]["latest_user_request"] == "plan my trip"
