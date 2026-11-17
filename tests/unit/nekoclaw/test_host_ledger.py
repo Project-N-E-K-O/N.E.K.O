@@ -342,7 +342,10 @@ async def test_there_is_no_other_way_to_write_a_status():
     from nekoclaw.host import ledger as module
 
     source = inspect.getsource(module)
-    assert source.count("UPDATE commissions SET") == 2
+    # A third one gives the commissions of an earlier build their sessions,
+    # and names the one column it writes.
+    assert source.count("UPDATE commissions SET") == 3
+    assert source.count("UPDATE commissions SET session_id = ? WHERE id = ?") == 1
     assert "status" not in module._UPDATABLE
     assert "host_instance" not in module._UPDATABLE
 
@@ -794,7 +797,7 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert columns.count("session_dir") == 1 and version == 2
+    assert columns.count("session_dir") == 1 and version == 3
     # It has every column a new ledger has. A column put into the table and the commission but left out of
     # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
     from nekoclaw.host.ledger import _COMMISSION_COLUMNS
@@ -820,3 +823,239 @@ async def test_a_new_ledger_has_the_added_columns_from_the_start(ledger):
     # Every field of a commission is a column, the ones added later included.
     assert set(_COMMISSION_COLUMNS) == columns
     assert {name for name, _kind in _ADDED_COLUMNS} <= columns
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+
+async def test_a_session_is_a_row_of_its_own_with_a_name_no_other_has(ledger):
+    first = await ledger.create_session(lanlan_name="Lan", name="tidy the desk", workdir="D:/work")
+    second = await ledger.create_session(lanlan_name="Lan", name="tidy the desk")
+    third = await ledger.create_session(lanlan_name="Lan", name="tidy the desk")
+    other = await ledger.create_session(lanlan_name="Mio", name="tidy the desk")
+
+    assert (first.kind, first.status, first.workdir) == ("single", "closed", "D:/work")
+    assert (first.created_at, first.last_active_at) == (1000.0, 1000.0)
+    # A name that is taken gets a number; another character's names are its own.
+    assert [first.name, second.name, third.name, other.name] == [
+        "tidy the desk",
+        "tidy the desk-2",
+        "tidy the desk-3",
+        "tidy the desk",
+    ]
+    assert len({first.id, second.id, third.id, other.id}) == 4
+    assert await ledger.get_session(first.id) == first
+    assert await ledger.get_session("nowhere") is None and await ledger.get_session(None) is None
+    # A name that says nothing is still a name.
+    assert (await ledger.create_session(lanlan_name="Lan", name="   ")).name == "session"
+
+
+@pytest.mark.parametrize(
+    "values",
+    [{"status": "asleep"}, {"kind": "team"}, {"lanlan_name": ""}, {"colour": "red"}],
+)
+async def test_a_session_that_makes_no_sense_is_not_made(ledger, values):
+    fields = {"lanlan_name": "Lan", "name": "x", **values}
+    with pytest.raises(ValueError):
+        await ledger.create_session(**fields)
+
+
+async def test_updating_a_session_writes_what_may_change_and_nothing_else(ledger):
+    session = await ledger.create_session(lanlan_name="Lan", name="a")
+    await ledger.create_session(lanlan_name="Lan", name="b")
+    ledger.clock.now = 2000.0
+
+    updated = await ledger.update_session(session.id, status="running", runtime="builtin", session_dir="D:/s", active=True)
+    assert (updated.status, updated.runtime, updated.session_dir, updated.last_active_at) == (
+        "running",
+        "builtin",
+        "D:/s",
+        2000.0,
+    )
+    # Without ``active`` the time stays.
+    ledger.clock.now = 3000.0
+    assert (await ledger.update_session(session.id, status="closed")).last_active_at == 2000.0
+    # Renamed to a name that is taken, it gets a number; to its own name, nothing changes.
+    assert (await ledger.update_session(session.id, name="b")).name == "b-2"
+    assert (await ledger.update_session(session.id, name="b-2")).name == "b-2"
+
+    with pytest.raises(ValueError):
+        await ledger.update_session(session.id, status="asleep")
+    for fixed in ("id", "lanlan_name", "kind", "created_at"):
+        with pytest.raises(ValueError):
+            await ledger.update_session(session.id, **{fixed: "x"})
+    assert await ledger.update_session("nowhere", status="closed") is None
+
+
+async def test_a_project_has_one_session_for_each_character(ledger):
+    first, made = await ledger.project_session("Lan", "ledger app", workdir="D:/apps/ledger")
+    again, made_again = await ledger.project_session("Lan", "ledger app", workdir="D:/elsewhere")
+    other, made_other = await ledger.project_session("Mio", "ledger app")
+    another, _ = await ledger.project_session("Lan", "blog")
+
+    assert (made, made_again, made_other) == (True, False, True)
+    assert again == first and other.id != first.id and another.id != first.id
+    assert (first.kind, first.project, first.name, first.workdir) == ("project", "ledger app", "ledger app", "D:/apps/ledger")
+    # A session of the same project that is not the project's own is never taken for it.
+    single = await ledger.create_session(lanlan_name="Lan", name="one thing", project="blog")
+    assert (await ledger.project_session("Lan", "blog"))[0].id == another.id != single.id
+
+
+async def test_two_commissions_of_a_project_handed_over_together_get_one_session(ledger):
+    found = await asyncio.gather(*(ledger.project_session("Lan", "ledger app") for _ in range(8)))
+    assert len({session.id for session, _made in found}) == 1
+    assert [made for _session, made in found].count(True) == 1
+
+
+async def test_a_session_is_as_old_as_the_last_change_of_a_commission_in_it(ledger):
+    session = await ledger.create_session(lanlan_name="Lan", name="a")
+    other = await ledger.create_session(lanlan_name="Lan", name="b")
+    commission = await _file(ledger, route="task_agent", session_id=session.id)
+    loose = await _file(ledger, title="no session")
+
+    ledger.clock.now = 2000.0
+    assert (await ledger.transition(commission.id, "working")).applied
+    assert (await ledger.transition(loose.id, "working")).applied
+    assert (await ledger.get_session(session.id)).last_active_at == 2000.0
+    assert (await ledger.get_session(other.id)).last_active_at == 1000.0
+
+    # A refused move is not a change.
+    ledger.clock.now = 3000.0
+    assert not (await ledger.transition(commission.id, "queued", only_from=("done",))).applied
+    assert (await ledger.get_session(session.id)).last_active_at == 2000.0
+
+    # A commission given its session with the move counts for that session.
+    late = await _file(ledger, title="late")
+    assert (await ledger.transition(late.id, "working", session_id=other.id)).applied
+    assert (await ledger.get_session(other.id)).last_active_at == 3000.0
+
+
+async def test_commissions_are_found_by_their_session(ledger):
+    session = await ledger.create_session(lanlan_name="Lan", name="a")
+    first = await _file(ledger, title="first", session_id=session.id)
+    second = await _file(ledger, title="second", session_id=session.id, continues=first.id)
+    await _file(ledger, title="elsewhere")
+
+    found = await ledger.select(session_id=session.id, oldest_first=True)
+    assert [item.id for item in found] == [first.id, second.id]
+    assert found[1].continues == first.id and found[0].continues is None
+    assert await ledger.select(session_id="nowhere") == []
+
+
+def _old_ledger(path: Any, rows: list[tuple[Any, ...]], events: list[tuple[Any, ...]] = ()) -> None:
+    """Write a ledger as a build from before sessions left it: the tables of then, at version 2."""
+    conn = sqlite3.connect(path)
+    conn.execute(f"CREATE TABLE commissions ({_FIRST_SCHEMA_COLUMNS}, session_dir TEXT)")
+    conn.execute(
+        "CREATE TABLE events (commission_id TEXT NOT NULL, seq INTEGER NOT NULL, ts REAL NOT NULL, "
+        "type TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (commission_id, seq))"
+    )
+    conn.executemany(
+        "INSERT INTO commissions (id, lanlan_name, title, dispatch_text, source, route, status, created_at, "
+        "updated_at, project, workdir, session_dir, runtime, parent_id) VALUES (?, 'Lan', ?, ?, 'dispatch', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.executemany("INSERT INTO events (commission_id, seq, ts, type, payload) VALUES (?, ?, ?, ?, '{}')", events)
+    conn.execute("PRAGMA user_version=2")
+    conn.commit()
+    conn.close()
+
+
+async def test_commissions_of_an_earlier_build_are_given_the_sessions_they_had(tmp_path):
+    path = tmp_path / "ledger.db"
+    _old_ledger(
+        path,
+        [
+            # id, title, dispatch, route, status, created, updated, project, workdir, session_dir, runtime, parent
+            ("a1", "sort photos", "sort photos", "task_agent", "done", 10.0, 20.0, "album", "D:/w/a1", "D:/s/a1", "builtin", None),
+            ("a2", "part two", "part two", "task_agent", "blocked", 11.0, 21.0, "album", "D:/w/a1/part", None, "dsh", "a1"),
+            ("a3", "old one", "old one", "task_agent", "failed", 12.0, 22.0, None, None, "D:/s/a3", "builtin", None),
+            ("a4", "taken up", "taken up", "task_agent", "failed", 13.0, 40.0, None, None, "D:/s/a4", "builtin", None),
+            ("p1", "weather", "weather", "plugin", "done", 14.0, 24.0, None, None, None, None, None),
+            ("u1", "undecided", "undecided", None, "failed", 15.0, 25.0, None, None, None, None, None),
+        ],
+        # a3 was cleaned after it ended; a4 was cleaned and then taken up again.
+        events=[("a3", 1, 30.0, "session_cleaned"), ("a4", 1, 30.0, "session_cleaned")],
+    )
+
+    ledger = Ledger(path)
+    try:
+        await ledger.open()
+        first = await ledger.get_session("a1")
+        child = await ledger.get_session("a2")
+        cleaned = await ledger.get_session("a3")
+        resumed = await ledger.get_session("a4")
+        # The session has the commission's id and what the commission had on record: nothing on the disk moves.
+        assert (first.kind, first.project, first.workdir, first.session_dir, first.runtime, first.status) == (
+            "single",
+            "album",
+            "D:/w/a1",
+            "D:/s/a1",
+            "builtin",
+            "closed",
+        )
+        assert (first.created_at, first.last_active_at, first.lanlan_name) == (10.0, 20.0, "Lan")
+        assert (child.kind, child.parent_id, child.runtime) == ("child", "a1", "dsh")
+        assert (cleaned.status, resumed.status) == ("cleared", "closed")
+        for commission_id in ("a1", "a2", "a3", "a4"):
+            assert (await ledger.get(commission_id)).session_id == commission_id
+        # A commission no task agent ever had has no session.
+        for commission_id in ("p1", "u1"):
+            assert (await ledger.get(commission_id)).session_id is None
+            assert await ledger.get_session(commission_id) is None
+        # Not one of them is taken for the session of the project.
+        project, made = await ledger.project_session("Lan", "album")
+        assert made and project.id not in ("a1", "a2")
+        names = [first.name, child.name, cleaned.name, resumed.name]
+        assert len(set(names)) == 4 and first.name == "sort photos-a1"
+    finally:
+        await ledger.close()
+
+    # Opened again, nothing is given a second time and what was changed since stays.
+    with sqlite3.connect(path) as conn:
+        conn.execute("UPDATE sessions SET status = 'cleared', name = 'renamed' WHERE id = 'a1'")
+        before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    conn.close()
+    assert version == 3
+    again = Ledger(path)
+    try:
+        await again.open()
+        kept = await again.get_session("a1")
+        assert (kept.status, kept.name) == ("cleared", "renamed")
+    finally:
+        await again.close()
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == before
+    conn.close()
+
+
+async def test_sessions_an_earlier_process_left_open_are_closed_on_open(tmp_path):
+    path = tmp_path / "ledger.db"
+    first = Ledger(path)
+    try:
+        sessions = {
+            status: await first.create_session(lanlan_name="Lan", name=status, status=status)
+            for status in ("idle", "running", "waiting", "closed", "cleared")
+        }
+    finally:
+        await first.close()
+
+    second = Ledger(path)
+    try:
+        found = {status: (await second.get_session(session.id)).status for status, session in sessions.items()}
+        # What was said in them is on the disk; no runtime of this process has one open.
+        assert found == {
+            "idle": "closed",
+            "running": "closed",
+            "waiting": "closed",
+            "closed": "closed",
+            "cleared": "cleared",
+        }
+        # One this process opens stays as it says.
+        mine = await second.create_session(lanlan_name="Lan", name="mine", status="running")
+        assert (await second.get_session(mine.id)).status == "running"
+    finally:
+        await second.close()
