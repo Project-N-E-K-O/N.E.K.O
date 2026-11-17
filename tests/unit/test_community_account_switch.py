@@ -42,6 +42,16 @@ def _reset_unrecorded_hold():
     hold._set_unrecorded_hold(False)
 
 
+def _refuse_then_break_writes(monkeypatch):
+    """Cloud answers that another account owns the device; every later write fails."""
+
+    async def refused(*_args, **_kwargs):
+        monkeypatch.setattr(hold, "_write", lambda *_a: False)
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+
+
 def _mark_conflict(directory) -> None:
     hold.record_bind_outcome(directory, dict(CONFLICT), USER_ID)
 
@@ -910,12 +920,7 @@ def test_rebind_conflict_after_flaky_login_holds_even_if_write_fails(oauth_app, 
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, {"bound": False, "error": "cloud_unreachable"})
     _logged_in(monkeypatch)
-    monkeypatch.setattr(hold, "_write", lambda *_args: False)
-
-    async def refused(*_args, **_kwargs):
-        return dict(CONFLICT)
-
-    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    _refuse_then_break_writes(monkeypatch)
     response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
 
     assert response.status_code == 409
@@ -1107,12 +1112,7 @@ async def test_rebind_conflict_with_failed_write_holds_after_logout_and_restart(
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, {"bound": False, "error": "cloud_unreachable"})
     _logged_in(monkeypatch)
-    monkeypatch.setattr(hold, "_write", lambda *_args: False)
-
-    async def refused(*_args, **_kwargs):
-        return dict(CONFLICT)
-
-    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    _refuse_then_break_writes(monkeypatch)
     assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
 
     assert C._clear_auth()
@@ -1139,12 +1139,7 @@ async def test_bound_login_rebind_conflict_with_failed_write_holds_after_logout_
     _save_login(auth, social, dict(BOUND))
     hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
     _logged_in(monkeypatch)
-    monkeypatch.setattr(hold, "_write", lambda *_args: False)
-
-    async def refused(*_args, **_kwargs):
-        return dict(CONFLICT)
-
-    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    _refuse_then_break_writes(monkeypatch)
     # Also lose the login copy, so only the in-memory latch knows.
     monkeypatch.setattr(C, "_persist_repaired_bind", lambda *_args, **_kwargs: False)
     assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
@@ -1419,12 +1414,7 @@ async def test_tombstone_hold_survives_restart_then_second_logout(oauth_app, tmp
     hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
     _logged_in(monkeypatch)
     real_write = hold._write
-    monkeypatch.setattr(hold, "_write", lambda *_args: False)
-
-    async def refused(*_args, **_kwargs):
-        return dict(CONFLICT)
-
-    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    _refuse_then_break_writes(monkeypatch)
     monkeypatch.setattr(C, "_persist_repaired_bind", lambda *_args, **_kwargs: False)
     assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
     assert C._clear_auth()
@@ -1496,3 +1486,51 @@ def test_logout_records_use_by_the_social_session_when_the_mirror_lags(oauth_app
     assert C._clear_auth()
 
     assert hold.device_held(auth.parent, None)
+
+
+async def test_rebind_conflict_with_every_write_failing_holds_after_direct_restart(
+    oauth_app, monkeypatch,  # noqa: F811
+):
+    """Owner on file is the signed-in account; the rebind learns another account owns the
+    device; the hold and the login copy both fail; the process restarts without a logout."""
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
+    _logged_in(monkeypatch)
+    _refuse_then_break_writes(monkeypatch)
+    monkeypatch.setattr(C, "_persist_repaired_bind", lambda *_args, **_kwargs: False)
+
+    assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 409
+    assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == BOUND  # login copy never written
+
+    assert await _uploads_held_after_restart(auth.parent, monkeypatch)
+
+
+def test_rebind_refuses_to_start_when_the_hold_cannot_be_written_first(oauth_app, monkeypatch):  # noqa: F811
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    _logged_in(monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("the cloud must not be asked without a hold on disk")
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", unexpected)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "local_bind_state_not_saved"
+
+
+def test_successful_rebind_releases_the_hold_written_before_the_check(oauth_app, monkeypatch):  # noqa: F811
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    _logged_in(monkeypatch)
+
+    async def bound(*_args, **_kwargs):
+        assert hold.device_held(auth.parent, USER_ID)  # held while the cloud is asked
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bound)
+    assert client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True}).status_code == 200
+    assert not hold.device_held(auth.parent, USER_ID)

@@ -35,6 +35,7 @@ from services.chat_sync import host as _chat_sync_host
 # Re-exported: card_drop_router / visit_router.credentials read it as
 # ``community_oauth.status_session_saved``, and tests patch it here.
 from utils.community_session import status_session_saved
+from utils import community_device_hold
 from utils.http.url import same_endpoint
 from utils.social_base import auth_public_url as _configured_auth_public_url
 from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
@@ -1076,6 +1077,16 @@ async def _rebind_current_session(headers: dict[str, str], expected_user: str | 
     configured_base = C._social_base_url()
     if session_base and not same_endpoint(session_base, configured_base):
         return JSONResponse({"detail": "community_base_url_changed"}, status_code=409, headers=headers)
+
+    # The cloud may answer that another account owns this device. Hold uploads
+    # on disk first, so that answer is never lost to a failed write and a
+    # restart; only a successful, recorded rebind releases the hold.
+    if not await asyncio.to_thread(
+        community_device_hold.begin_ownership_check, C._credential_dir()
+    ):
+        return JSONResponse(
+            {"detail": "local_bind_state_not_saved"}, status_code=503, headers=headers,
+        )
 
     bind = await _oauth_guest_bind(configured_base, access_token, rebind=True)
     public_bind = C._public_bind_state({"bind": bind})

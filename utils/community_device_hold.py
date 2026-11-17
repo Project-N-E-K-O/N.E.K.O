@@ -49,7 +49,9 @@ record_lock = threading.RLock()
 UNREADABLE_ACCOUNT = "unreadable"
 LEGACY_ACCOUNT = "legacy"
 # ``saved_bind`` value when the login's own bind outcome cannot be trusted
-# (mirror missing, unreadable, or belonging to another login): never bound.
+# because the auth mirror belongs to another login: never counts as bound.
+# (A missing mirror or bind field counts as bound, matching /auth-status; an
+# unreadable mirror holds before this is consulted.)
 UNKNOWN_BIND = object()
 # Set when a hold that had to be recorded could not be written. Uploads stay
 # held for the rest of this process even if the login that carried the
@@ -210,12 +212,32 @@ def persist_latched_hold(directory: Path | str | None) -> bool:
             return True
         record = _read(directory)
         if record is _UNREADABLE:
-            return True  # already holds on disk
+            # An unreadable record already holds on disk; the latch has
+            # nothing left to carry.
+            _set_unrecorded_hold(False)
+            return True
         record = record if isinstance(record, dict) else {}
         if _write(directory, {**record, "conflict": True}):
             _set_unrecorded_hold(False)
             return True
         return False
+
+
+def begin_ownership_check(directory: Path | str | None) -> bool:
+    """Hold uploads on disk before asking the cloud who owns the device.
+
+    A rebind can discover that another account owns the device. If every
+    write after that answer failed, nothing on disk would remember it once
+    the process restarts. Recording the hold first means the answer can only
+    release it (a written successful bind), never be lost. Returns False when
+    the hold cannot be written; the caller must not start the check then.
+    """
+    with record_lock:
+        record = _read(directory)
+        if record is _UNREADABLE:
+            return False
+        record = record if isinstance(record, dict) else {}
+        return _write(directory, {**record, "conflict": True})
 
 
 def hold_latched() -> bool:
@@ -282,6 +304,7 @@ def remember_owner(directory: Path | str | None, account: str | None) -> None:
         "OWNERSHIP_CONFLICT",
         "LEGACY_ACCOUNT",
         "UNKNOWN_BIND",
+    "begin_ownership_check",
         "hold_latched",
         "persist_latched_hold",
     "record_lock",
