@@ -430,3 +430,11 @@ def test_atlascloud_rules_stay_on_the_atlas_host(endpoint):
         assert 'reasoning_effort' not in params
     finally:
         client.close()
+
+
+@pytest.mark.unit
+def test_standardcompute_routed_id_turns_thinking_off_and_focus_on():
+    """The routed StandardCompute id sends the OpenRouter dialect on its own host."""
+    endpoint = 'https://api.stdcmpt.com/v1'
+    assert P.get_extra_body('StandardCompute', endpoint) == {'reasoning': {'effort': 'none'}}
+    assert focus_extra_body('StandardCompute', endpoint) == {'reasoning': {'effort': 'low'}}
