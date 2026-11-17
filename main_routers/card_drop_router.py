@@ -33,6 +33,7 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
+from utils import community_device_hold
 from services.chat_sync import host as _chat_sync_host
 
 logger = logging.getLogger("neko.card_drop")
@@ -796,48 +797,79 @@ def _public_bind_state(auth: dict | None) -> dict:
     }
 
 
-def _persist_repaired_bind(access_token: str, bind: dict) -> None:
+def _persist_repaired_bind(
+    access_token: str,
+    bind: dict,
+    *,
+    same_account: tuple[str, str] | None = None,
+) -> bool:
     """Record a repaired bind without clobbering a concurrent refresh.
 
     Serialized on the social-session lock rather than one keyed to the auth
     file: ``_persist_refreshed_oauth_tokens`` rewrites ``community_auth.json``
     while holding that lock, so it is the only lock both writers share.
+
+    ``same_account`` (``local_user_id``, ``auth_source``) is for callers that
+    hold the account-change locks for the whole bind: a token that rotated in
+    the meantime can then only be a refresh of that account, so the bind is
+    still recorded for it. Returns whether the bind outcome was written.
     """
     path = _auth_path()
     social_path = _social_session_path()
     if path is None or social_path is None:
-        return
+        return False
     try:
         with _social_session_lock(social_path):
             current = _read_json_dict(path)
             if not current:
-                return
-            if str(current.get("access_token") or "").strip() != access_token:
+                return False
+            mirror_token = str(current.get("access_token") or "").strip()
+            if mirror_token != access_token:
                 # A mirror token that differs from this bind's token can mean either a newer login or
                 # refresh won (do not touch it), or refresh wrote the authoritative social_session.json
                 # while the best-effort write to the community_auth.json mirror failed (record the failure, or
                 # /auth-status will remain stuck on an old transient error). Decide from the authoritative snapshot.
-                social = _desktop_session_snapshot()
-                authoritative = str((social or {}).get("access_token") or "").strip()
-                if authoritative != access_token:
-                    return
+                social = _desktop_session_snapshot() or {}
+                authoritative = str(social.get("access_token") or "").strip()
+                mirror_user = _normalize_local_user_id(current.get("local_user_id"))
+                mirror_source = _normalize_auth_source(current.get("auth_source"))
+                if authoritative != access_token and not (
+                    same_account is not None
+                    and mirror_user == same_account[0] == social.get("local_user_id")
+                    and mirror_source == same_account[1] == social.get("auth_source")
+                ):
+                    return False
                 # A two-file account switch can leave a *newer* auth mirror
                 # beside the old social file. Only a matching identity proves
                 # that this is a lagging refresh mirror for the same account.
-                mirror_user = _normalize_local_user_id(current.get("local_user_id"))
-                if not mirror_user or mirror_user != (social or {}).get("local_user_id"):
-                    return
-                if _normalize_auth_source(current.get("auth_source")) != social.get("auth_source"):
-                    return
-                # Persist the validated bind's session separately: the mirror
-                # may contain either lagging or ahead-of-social credentials.
-                # Rewriting its tokens here could roll back a newer refresh.
-                current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
+                if not mirror_user or mirror_user != social.get("local_user_id"):
+                    return False
+                if mirror_source != social.get("auth_source"):
+                    return False
+                if mirror_token == authoritative:
+                    current.pop("bind_session_fingerprint", None)
+                else:
+                    # Persist the validated bind's session separately: the mirror
+                    # may contain either lagging or ahead-of-social credentials.
+                    # Rewriting its tokens here could roll back a newer refresh.
+                    current["bind_session_fingerprint"] = _desktop_session_fingerprint(social)
             else:
                 current.pop("bind_session_fingerprint", None)
             _write_private_json(path, {**current, "bind": bind})
+            return True
     except (OSError, TimeoutError) as exc:
         logger.warning("card_drop: persist repaired bind failed: %s", exc)
+        return False
+
+
+def _credential_dir() -> Path | None:
+    path = _auth_path()
+    return path.parent if path is not None else None
+
+
+def _record_device_hold(bind: dict) -> None:
+    """Hold or release header-only uploads for this device; see utils.community_device_hold."""
+    community_device_hold.record_bind_outcome(_credential_dir(), bind)
 
 
 def _save_social_session_unlocked(
@@ -1254,6 +1286,8 @@ async def _store_session(
         local_user_id=local_user_id,
         auth_source=normalized_source,
     )
+    if bind_client:
+        await asyncio.to_thread(_record_device_hold, bind)
     return bind
 
 
@@ -1821,6 +1855,7 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
             # /auth-status keeps reporting the stale transient failure and
             # every later handoff repeats the bind round trip.
             await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+            await asyncio.to_thread(_record_device_hold, bind)
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another

@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from main_logic import client_registration
+from utils import community_device_hold
 from utils.config_manager import get_config_manager
 
 logger = logging.getLogger("neko.facts_sync")
@@ -99,26 +100,22 @@ def _get_client_id() -> str | None:
     return credentials[0] if credentials else None
 
 
-_COMMUNITY_AUTH_FILENAME = "community_auth.json"
-_BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
-
-
 def _device_bound_to_other_account() -> bool:
-    """Whether the signed-in community account does not own this device.
+    """Whether uploads must wait because another account owns this device.
 
     Pushes carry only ``X-Client-Id``, which the cloud routes to the device's
     bound account. After switching to account B on a device still bound to A,
-    that would write B's local memories into A. Hold them until the user
-    rebinds this device or signs back in to A; the facts stay pending locally.
+    that would write B's local memories into A. The hold is recorded per
+    device (see ``utils.community_device_hold``), so it survives logout and
+    transient bind failures; facts stay pending locally until a successful
+    bind releases it.
     """
     try:
-        path = Path(get_config_manager().memory_dir).parent / _COMMUNITY_AUTH_FILENAME
+        directory = Path(get_config_manager().memory_dir).parent
     except Exception as exc:  # noqa: BLE001
-        logger.debug("facts_sync: community auth path unavailable: %s", exc)
-        return False
-    auth = _read_json(path, {})
-    bind = auth.get("bind") if isinstance(auth, dict) else None
-    return isinstance(bind, dict) and bind.get("error") == _BIND_OWNERSHIP_CONFLICT
+        logger.warning("facts_sync: community credential directory unavailable: %s", exc)
+        return True
+    return community_device_hold.device_held(directory)
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:
@@ -274,6 +271,11 @@ async def _sync_one_lanlan(
 
     # Split into batches.
     for i in range(0, len(candidates), BATCH_SIZE):
+        # A login can learn mid-sweep that this device belongs to another
+        # account; stop before the next header-only batch reaches it.
+        if await asyncio.to_thread(_device_bound_to_other_account):
+            logger.info("facts_sync: device bound to another account; holding remaining facts")
+            break
         batch = candidates[i : i + BATCH_SIZE]
         ok, _resp = await _post_facts_batch(base_url, client_id, lanlan_name, batch)
         if ok:

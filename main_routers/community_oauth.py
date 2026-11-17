@@ -1004,30 +1004,60 @@ async def oauth_rebind_client_endpoint(request: Request, payload: dict | None = 
         return JSONResponse({"detail": "instance_authorization_required"}, status_code=403, headers=headers)
     if not C._local_request_source_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403, headers=headers)
-    if not (payload or {}).get("confirm"):
-        # A blind POST must not move device ownership. The UI sends this only
-        # after the user confirmed the rebind.
+    if not isinstance(payload, dict) or payload.get("confirm") is not True:
+        # A blind POST must not move device ownership. The UI sends exactly
+        # ``{"confirm": true}`` only after the user confirmed the rebind.
         return JSONResponse({"detail": "confirmation_required"}, status_code=400, headers=headers)
 
+    # Same fences as login and logout: no other account can be saved, and no
+    # logout can clear this one, between reading the session and recording
+    # the cloud's answer for it.
+    async with _oauth_start_lock:
+        saved = await asyncio.to_thread(C._desktop_session_snapshot) or {}
+        expected_user = C._normalize_local_user_id(saved.get("local_user_id"))
+        # Passing the signed-in account keeps live visits running: ownership
+        # of the device changes, the account using it does not.
+        async with visit_account_change(expected_user):
+            return await _rebind_current_session(headers, expected_user)
+
+
+async def _rebind_current_session(headers: dict[str, str], expected_user: str | None) -> JSONResponse:
     status = await resolve_saved_oauth_status()
     snapshot = status.get("snapshot") or {}
     access_token = str(snapshot.get("access_token") or "").strip()
-    if not status.get("logged_in") or not access_token:
+    local_user_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
+    if (
+        not status.get("logged_in")
+        or not access_token
+        or not local_user_id
+        or local_user_id != expected_user
+    ):
         return JSONResponse({"detail": "desktop_login_required"}, status_code=409, headers=headers)
     if snapshot.get("auth_source") != "oauth":
         return JSONResponse({"detail": "oauth_session_required"}, status_code=409, headers=headers)
 
     bind = await _oauth_guest_bind(C._social_base_url(), access_token, rebind=True)
-    if bind.get("bound"):
-        await asyncio.to_thread(C._persist_repaired_bind, access_token, bind)
-        return JSONResponse({"ok": True, "bind": C._public_bind_state({"bind": bind})}, headers=headers)
-    error = str(bind.get("error") or "rebind_failed")
-    status_code = 502 if error == "cloud_unreachable" else 409
-    return JSONResponse(
-        {"detail": error, "bind": C._public_bind_state({"bind": bind})},
-        status_code=status_code,
-        headers=headers,
+    public_bind = C._public_bind_state({"bind": bind})
+    if not bind.get("bound"):
+        error = str(bind.get("error") or "rebind_failed")
+        status_code = 502 if error == "cloud_unreachable" else 409
+        return JSONResponse({"detail": error, "bind": public_bind}, status_code=status_code, headers=headers)
+
+    # The cloud now lists this account as the owner, so header-only uploads
+    # land in the right place again whatever happens to the local record.
+    await asyncio.to_thread(C._record_device_hold, bind)
+    saved = await asyncio.to_thread(
+        C._persist_repaired_bind, access_token, bind, same_account=(local_user_id, "oauth"),
     )
+    if not saved:
+        # Retrying is safe: the device is already ours, so the cloud answers
+        # the same way and this write gets another chance.
+        return JSONResponse(
+            {"detail": "local_bind_state_not_saved", "bind": public_bind},
+            status_code=503,
+            headers=headers,
+        )
+    return JSONResponse({"ok": True, "bind": public_bind}, headers=headers)
 
 
 async def _oauth_logout() -> dict:
@@ -1275,6 +1305,8 @@ async def _handle_oauth_callback(
                     authorized_request=authorized_request,
                 )
         await asyncio.to_thread(_unlink_pending, expected_state)
+    if credentials_saved:
+        await asyncio.to_thread(C._record_device_hold, bind)
     if not credentials_saved:
         return _callback_html(
             "登录未完成",
