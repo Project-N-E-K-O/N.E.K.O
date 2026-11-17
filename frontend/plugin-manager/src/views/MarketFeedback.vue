@@ -238,20 +238,34 @@ function feedbackKey(item: FeedbackItem): string {
   return `${item.kind}:${item.thread_id}`
 }
 
+// The Market caps one feedback page at 100 items.
+const MARKET_FEEDBACK_PAGE_MAX = 100
+
 /**
- * Fold a fresh first page into what is already shown, keeping the pages the
- * author has loaded with "load more". Counts come from the fresh page; items
- * it carries replace their old copies; new threads go on top.
+ * Re-read the list from the top, as deep as the author had scrolled, under the
+ * current filters. Re-reading rather than merging into the old pages drops
+ * threads that no longer match (read under "unread", answered under "awaiting").
  */
-function mergeFirstPage(previous: FeedbackPage, fresh: FeedbackPage): FeedbackPage {
-  const updates = new Map(fresh.items.map((item) => [feedbackKey(item), item]))
-  const kept = previous.items.map((item) => updates.get(feedbackKey(item)) ?? item)
-  const known = new Set(previous.items.map(feedbackKey))
-  return {
-    ...fresh,
-    next_cursor: previous.next_cursor,
-    items: [...fresh.items.filter((item) => !known.has(feedbackKey(item))), ...kept],
+async function readThrough(count: number, signal: AbortSignal): Promise<FeedbackPage> {
+  const filters = { kind: kind.value, status: status.value }
+  let result = await fetchMarketFeedback(
+    { ...filters, limit: Math.min(MARKET_FEEDBACK_PAGE_MAX, count) },
+    signal
+  )
+  const items = [...result.items]
+  while (items.length < count && result.next_cursor) {
+    result = await fetchMarketFeedback(
+      {
+        ...filters,
+        cursor: result.next_cursor,
+        limit: Math.min(MARKET_FEEDBACK_PAGE_MAX, count - items.length),
+      },
+      signal,
+      result.session
+    )
+    items.push(...result.items)
   }
+  return { ...result, items }
 }
 
 /**
@@ -273,33 +287,33 @@ async function loadPage(append = false, quiet = false): Promise<void> {
     avatars.value = {}
     if (state.value !== 'ready') state.value = 'loading'
   }
+  const deep = keepLoaded && !!previous && loadedPages > 1
   try {
-    const result = await fetchMarketFeedback(
-      {
-        kind: kind.value,
-        status: status.value,
-        cursor: append ? (previous?.next_cursor ?? undefined) : undefined,
-      },
-      request.signal,
-      append ? previous?.session : undefined
-    )
+    const result =
+      deep && previous
+        ? await readThrough(previous.items.length, request.signal)
+        : await fetchMarketFeedback(
+            {
+              kind: kind.value,
+              status: status.value,
+              cursor: append ? (previous?.next_cursor ?? undefined) : undefined,
+            },
+            request.signal,
+            append ? previous?.session : undefined
+          )
     if (request.signal.aborted) return
     if (append && previous?.session !== result.session) {
       void loadPage()
       return
     }
-    const sameSession = previous?.session === result.session
-    if (keepLoaded && previous && sameSession && loadedPages > 1) {
-      page.value = mergeFirstPage(previous, result)
-    } else {
-      if (keepLoaded && !sameSession) avatars.value = {}
-      const items = new Map<string, FeedbackItem>()
-      for (const item of [...(append ? (previous?.items ?? []) : []), ...result.items]) {
-        items.set(feedbackKey(item), item)
-      }
-      page.value = { ...result, items: [...items.values()] }
-      loadedPages = append ? loadedPages + 1 : 1
+    if (keepLoaded && previous?.session !== result.session) avatars.value = {}
+    const items = new Map<string, FeedbackItem>()
+    for (const item of [...(append ? (previous?.items ?? []) : []), ...result.items]) {
+      items.set(feedbackKey(item), item)
     }
+    page.value = { ...result, items: [...items.values()] }
+    if (append) loadedPages += 1
+    else if (!deep) loadedPages = 1
     state.value = 'ready'
     void fetchCommunityAuthorAvatars(
       result.items.map((item) => item.author),
@@ -309,7 +323,7 @@ async function loadPage(append = false, quiet = false): Promise<void> {
     })
   } catch (error) {
     if (request.signal.aborted) return
-    if (append && hasChangedSession(error)) {
+    if ((append || deep) && hasChangedSession(error)) {
       void loadPage()
       return
     }

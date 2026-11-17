@@ -245,6 +245,42 @@ async function send(draft: MarketMessageDraft) {
   }
 }
 
+/**
+ * Re-read an open issue without tearing down its reply form, so text typed in
+ * the meantime survives. While the detail is still loading there is no form
+ * yet, and that read may predate the write, so a full reload is safe there.
+ */
+async function refreshIssue(issueId: number, session: string) {
+  const request = detailRequest
+  if (!detail.value) {
+    void loadIssue(issueId)
+    return
+  }
+  if (!request) return
+  try {
+    const result = await readMarketIssue(props.pluginId, issueId, request.signal)
+    const current = detail.value
+    if (
+      request.signal.aborted ||
+      current?.id !== issueId ||
+      result.data.is_hidden ||
+      result.session !== session ||
+      detailSession.value !== session
+    ) {
+      return
+    }
+    const messages = new Map(current.messages.map((message) => [message.id, message]))
+    for (const message of result.data.messages) messages.set(message.id, message)
+    detail.value = {
+      ...result.data,
+      messages: [...messages.values()].sort((left, right) => left.id - right.id),
+      next_message_cursor: current.next_message_cursor,
+    }
+  } catch {
+    // The list already shows the new state; a later visit re-reads the detail.
+  }
+}
+
 async function transition(action: 'close' | 'reopen') {
   const source = detail.value
   const session = detailSession.value
@@ -262,7 +298,7 @@ async function transition(action: 'close' | 'reopen') {
     if (!request.signal.aborted) detail.value = updated
     // The same issue was reopened while the write was in flight; its fresh read
     // may predate the write, so read it again rather than trust either copy.
-    else if (!disposed && selected.value === source.id) void loadIssue(source.id)
+    else if (!disposed && selected.value === source.id) void refreshIssue(source.id, session)
   } catch (error) {
     if (isSentAfterAccountChange(error)) {
       ElMessage.warning(t('marketFeedback.sentAccountChanged'))

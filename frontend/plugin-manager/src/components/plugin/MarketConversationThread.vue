@@ -52,16 +52,25 @@
 </template>
 
 <script lang="ts">
+import type { MarketPluginComment } from '@/api/market'
+
+interface UnsentDraft {
+  body: string
+  // Kept whole: the target may sit on a page the reloaded thread has not loaded.
+  replyTo: MarketPluginComment | null
+  // Set when the reload raced a send of this text; resolves true if it may have posted.
+  posted?: Promise<boolean>
+}
+
 // Unsent drafts survive the remount that follows a session reload. Keyed by
 // thread, never by session: the text was not posted under any account.
-const unsentDrafts = new Map<string, { body: string; replyToId: number | null }>()
+const unsentDrafts = new Map<string, UnsentDraft>()
 </script>
 
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import type { MarketPluginComment } from '@/api/market'
 import { fetchCommunityAuthorAvatars } from '@/api/marketCommunityProfiles'
 import {
   MarketConversationError,
@@ -86,31 +95,59 @@ const props = defineProps<{
 const emit = defineEmits<{ more: []; 'session-updated': [] }>()
 const { t, locale } = useI18n()
 const { marketAuthBusy, startMarketLogin } = useMarketAuth()
-// A read-only remount (signed out, guest view) leaves the draft for a later writable one.
-const stashed = props.canWrite ? unsentDrafts.get(props.draftKey) : undefined
-if (stashed) unsentDrafts.delete(props.draftKey)
-const body = ref(stashed?.body ?? '')
-const replyTo = ref<MarketPluginComment | null>(
-  props.messages.find((message) => message.id === stashed?.replyToId) ?? null
-)
+const body = ref('')
+const replyTo = ref<MarketPluginComment | null>(null)
 const sending = ref(false)
 const sendError = ref('')
 const avatars = ref<Record<string, string>>({})
 let lastDraft: MarketMessageDraft | undefined
+let inFlight: Promise<boolean> | undefined
+let alive = true
+
+async function restoreDraft(draft: UnsentDraft) {
+  // Wait for a racing send: restoring text it already posted would invite a duplicate.
+  if (draft.posted && (await draft.posted)) return
+  if (!alive) {
+    unsentDrafts.set(props.draftKey, { body: draft.body, replyTo: draft.replyTo })
+    return
+  }
+  if (body.value.trim()) return
+  body.value = draft.body
+  replyTo.value = draft.replyTo
+}
+
+// A read-only remount (signed out, guest view) leaves the draft for a later writable one.
+const stashed = props.canWrite ? unsentDrafts.get(props.draftKey) : undefined
+if (stashed) {
+  unsentDrafts.delete(props.draftKey)
+  void restoreDraft(stashed)
+}
 
 /** Ask the parent to reload; the reload remounts this form, so keep what was typed. */
 function reloadKeepingDraft() {
   if (body.value.trim()) {
-    unsentDrafts.set(props.draftKey, { body: body.value, replyToId: replyTo.value?.id ?? null })
+    unsentDrafts.set(props.draftKey, {
+      body: body.value,
+      replyTo: replyTo.value,
+      posted: sending.value ? inFlight : undefined,
+    })
   }
   emit('session-updated')
+}
+
+/** Only a 4xx proves the Market did not take the write; a lost response might have. */
+function mayHavePosted(error: unknown): boolean {
+  return !(error instanceof MarketConversationError && error.status >= 400 && error.status < 500)
 }
 
 function onAccountChange() {
   reloadKeepingDraft()
 }
 onMounted(() => window.addEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange))
-onBeforeUnmount(() => window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange))
+onBeforeUnmount(() => {
+  alive = false
+  window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
+})
 
 const queried = new Set<string>()
 watch(
@@ -166,14 +203,18 @@ async function submit() {
   if (!lastDraft || lastDraft.body !== text || lastDraft.reply_to_id !== replyId) {
     lastDraft = { body: text, reply_to_id: replyId, client_message_id: crypto.randomUUID() }
   }
+  let settle: (posted: boolean) => void = () => {}
+  inFlight = new Promise((resolve) => (settle = resolve))
   sending.value = true
   sendError.value = ''
   try {
     await props.send(lastDraft)
+    settle(true)
     body.value = ''
     replyTo.value = null
     lastDraft = undefined
   } catch (error) {
+    settle(isSentAfterAccountChange(error) || mayHavePosted(error))
     if (isSentAfterAccountChange(error)) {
       // Already posted: drop the draft so the new account is not nudged into a resend.
       body.value = ''
@@ -181,12 +222,14 @@ async function submit() {
       lastDraft = undefined
       // A toast outlives this component, which is re-keyed by the reload below.
       ElMessage.warning(t('marketFeedback.sentAccountChanged'))
-      emit('session-updated')
+      if (alive) emit('session-updated')
     } else if (marketConversationSessionChanged(error)) {
       // Nothing was posted. The inline error would vanish with the remount,
       // so say it in a toast and carry the draft over.
       ElMessage.error(t('marketFeedback.notSentSessionChanged'))
-      reloadKeepingDraft()
+      // If an account-change reload already replaced this form, its stash
+      // carries this send's outcome and the new form restores the text.
+      if (alive) reloadKeepingDraft()
     } else {
       sendError.value =
         error instanceof MarketConversationError && error.code === 'market_email_unverified'
