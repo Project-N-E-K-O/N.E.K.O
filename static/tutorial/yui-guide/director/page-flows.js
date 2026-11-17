@@ -219,7 +219,6 @@
                 return this.setFallbackFloatingPopupVisible('agent', false);
             });
             this.collapseAgentSidePanel('agent-user-plugin');
-            this.collapseAgentSidePanel('agent-openclaw');
             return closed;
         },
 

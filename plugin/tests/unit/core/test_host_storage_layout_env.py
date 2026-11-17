@@ -73,6 +73,7 @@ def test_plugin_host_uses_default_process_context_without_shared_response_proxie
     monkeypatch.setattr(host_module, "HostTransport", _FakeTransport)
     monkeypatch.setattr(host_module, "PluginCommunicationResourceManager", lambda **_kwargs: _FakeCommManager())
     monkeypatch.setattr(host_module.multiprocessing, "Manager", lambda: accessed_response_proxies.append("manager"))
+    monkeypatch.setattr(host_module.multiprocessing, "get_start_method", lambda: "spawn")
     monkeypatch.setattr(host_module.multiprocessing, "get_context", _reject_explicit_context)
     monkeypatch.setattr(host_module.multiprocessing, "Event", lambda: default_event)
     monkeypatch.setattr(host_module.multiprocessing, "Process", lambda **_kwargs: default_process)
@@ -736,6 +737,32 @@ def test_plugin_process_runner_skips_auto_work_after_failed_startup_in_fail_mode
     assert startup_payload["success"] is False
     assert "startup exploded" in str(startup_payload["error"])
     assert started_threads == []
+
+
+@pytest.mark.plugin_unit
+def test_plugin_host_keeps_active_layout_when_default_policy_differs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from utils import config_manager
+    from utils.storage_policy import save_storage_policy
+
+    selected_root = tmp_path / "isolated" / "data"
+    anchor_root = tmp_path / "isolated" / "anchor"
+    default_parent = tmp_path / "default"
+    manager = SimpleNamespace(
+        app_name="N.E.K.O",
+        app_docs_dir=selected_root,
+        anchor_root=anchor_root,
+        _get_standard_data_directory_candidates=lambda: [default_parent],
+    )
+    save_storage_policy(manager, selected_root=default_parent / manager.app_name, selection_source="default")
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda **_kwargs: manager)
+
+    layout = host_module._resolve_current_storage_layout()
+
+    assert layout["selected_root"] == str(selected_root)
+    assert layout["anchor_root"] == str(anchor_root)
+    assert layout["cloudsave_root"] == str(anchor_root / "cloudsave")
 
 
 @pytest.mark.plugin_unit

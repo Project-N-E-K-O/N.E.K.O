@@ -51,7 +51,7 @@ OTHER = {"reflection_archive": "persona_archive", "persona_archive": "reflection
 
 
 def _entry(entry_id: str, archived_at: str | None = T1, **extra) -> dict:
-    entry = {"id": entry_id, "text": f"text of {entry_id}", **extra}
+    entry = {"id": entry_id, "text": f"text of {entry_id}", "entity_key": "master", **extra}
     if archived_at is not None:
         entry["archived_at"] = archived_at
     return entry
@@ -147,9 +147,51 @@ def test_unreadable_shard_keeps_every_archive_event_of_that_side_only(tmp_path, 
 
 
 @pytest.mark.parametrize("side", SIDES)
-def test_event_without_snapshot_follows_normal_rules(tmp_path, side):
-    _, make_event = side
-    assert _check(str(tmp_path))(make_event("x", None)) is False
+def test_event_without_snapshot_keeps_persona_subject_evidence(tmp_path, side):
+    dirname, make_event = side
+    assert _check(str(tmp_path))(make_event("x", None)) is (dirname == 'persona_archive')
+
+
+@pytest.mark.parametrize('snapshot', [False, True])
+@pytest.mark.parametrize('subject', [None, 'neko', 'master'])
+def test_persona_archive_subject_must_be_durable_before_its_event_can_go(tmp_path, snapshot, subject):
+    row = _entry('legacy')
+    if subject is None:
+        row.pop('entity_key')
+    else:
+        row['entity_key'] = subject
+    _write_shard(str(tmp_path), 'persona_archive', '2026-09-01_aaaaaaaa.json', [row])
+    event = _persona_event('legacy', _entry('legacy') if snapshot else None)
+    assert _check(str(tmp_path))(event) is (subject != 'master')
+
+
+def test_complete_persona_copy_does_not_discard_subject_evidence_for_an_incomplete_duplicate(tmp_path):
+    complete = _entry('x')
+    incomplete = {key: value for key, value in complete.items() if key != 'entity_key'}
+    _write_shard(str(tmp_path), 'persona_archive', '2026-09-01_aaaaaaaa.json', [complete])
+    _write_shard(str(tmp_path), 'persona_archive', '2026-09-01_bbbbbbbb.json', [incomplete])
+    assert _check(str(tmp_path))(_persona_event('x', incomplete, shard='2026-09-01_bbbbbbbb.json'))
+
+
+@pytest.mark.parametrize('kind,subject_id,scope', [
+    ('group_chat', 'p:g1', 'group_chat:p:g1'),
+    ('participant', 'p:u1', 'participant:p:u1'),
+    ('group_participant', 'p:g1:u1', 'group:p:g1'),
+])
+@pytest.mark.parametrize('copy_subject', ['same', 'other', 'missing'])
+def test_scoped_persona_archives_follow_the_saved_copy_check(tmp_path, kind, subject_id, scope, copy_subject):
+    from memory.scopes import MemorySubject
+    subject = MemorySubject(kind=kind, subject_id=subject_id, scope=scope)
+    row = _entry('scoped', entity_key=subject.persona_section_key, **subject.as_entry_fields())
+    snapshot = dict(row)
+    if copy_subject == 'other':
+        row['entity_key'] = 'master'
+    elif copy_subject == 'missing':
+        row.pop('entity_key')
+    _write_shard(str(tmp_path), 'persona_archive', '2026-09-01_aaaaaaaa.json', [row])
+    event = _persona_event('scoped', snapshot)
+    event['payload']['entity_key'] = subject.persona_section_key
+    assert _check(str(tmp_path))(event) is (copy_subject != 'same')
 
 
 @pytest.mark.parametrize("side", SIDES)

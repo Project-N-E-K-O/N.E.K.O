@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Already asynchronous directories: repository-owned backend code. plugin/ and its synchronous wrappers
 # (_get_text_guard_max_length / _start_tts_thread etc.) belong to later batches, outside this gate.
-GUARDED_DIRS = ("app", "brain", "main_logic", "main_routers", "memory", "utils")
+GUARDED_DIRS = ("app", "main_logic", "main_routers", "memory", "utils")
 
 SYNC_CONFIG_READERS = frozenset({"get_core_config", "get_model_api_config"})
 

@@ -8,9 +8,9 @@ import pytest
 
 from tests.unit.test_theater_numeric_v2_router import _client
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup, numeric_v2_story
-from theater_workshop.host import InProcessPackageGateway
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectError, NumericV2ProjectStore, _setup_fields
+from services.theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectError, NumericV2ProjectStore, _setup_fields
 
 
 @pytest.mark.parametrize('description', [123, '字' * 2500], ids=['number', 'long'])
@@ -245,7 +245,7 @@ def test_cleaned_view_autosave_only_stales_quality_on_real_change(tmp_path, edit
 @pytest.mark.parametrize('setup', ['broken', ['broken'], 5], ids=['text', 'list', 'number'])
 @pytest.mark.parametrize('repair', ['clear', 'null', 'brief'])
 def test_damaged_setup_repair_defaults_and_explicit_metric_clear(tmp_path, setup, repair):
-    from theater_workshop.sdk.contracts import NumericV2SetupPayload
+    from services.theater_workshop.sdk.contracts import NumericV2SetupPayload
 
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext,
         compiler=NumericV2Compiler(InProcessPackageGateway()))

@@ -29,6 +29,7 @@
     const screenCaptureStreamSources = new WeakMap();
     window.getScreenCaptureStreamSourceId = stream => screenCaptureStreamSources.get(stream);
     var screenSourceSelectionGeneration = 0;
+    window.getScreenSourceSelectionGeneration = () => screenSourceSelectionGeneration;
     var explicitScreenSourceSelectionGeneration = null;
     // 来源列表里最近一次点击的令牌：所有列表（宠物窗口菜单、设置面板等）共用，
     // 后点的那次让更早、还在确认来源是否存在的点击作废。
@@ -702,8 +703,12 @@
                     return source.id.startsWith('window:')
                         && normalizeScreenSourceTitle(source.name) === rememberedTitle;
                 }) : [];
+                var selectedIsTitleMatch = !!selected && matches.some(function (source) {
+                    return source.id === selected.id;
+                });
                 var allowed = !!selected && (rememberedTitle
-                    ? matches.length === 1 && matches[0].id === selected.id
+                    ? (matches.length === 1 && matches[0].id === selected.id)
+                        || (selectedIsTitleMatch && isCurrentScreenSourceSelectionExplicit(selected))
                     : isCurrentScreenSourceSelectionExplicit(selected));
                 return buildCaptureResult(allowed, allowed ? 'matched' : 'scope-changed');
             }
@@ -2464,6 +2469,7 @@
                                 }
                             }));
                             if (discardSupersededManualCapture()) return;
+                            screenCaptureStreamSources.set(captureStream, selectedSourceId);
                         } catch (captureErr) {
                             if (discardCancelledScreenSharingStart(attempt)) return;
                             if (!manualCaptureIdentityIsCurrent()) {
@@ -2502,6 +2508,7 @@
                                         }));
                                         if (discardCancelledScreenSharingStart(attempt)) return;
                                         if (discardSupersededManualCapture()) return;
+                                        screenCaptureStreamSources.set(captureStream, fallbackSources[0].id);
                                         S.selectedScreenSourceId = fallbackSources[0].id;
                                         try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) { }
                                         rememberScreenSourceLabel(fallbackSources[0], 0);

@@ -4,8 +4,10 @@ These changes constrain only waiting and second-pass review material, not player
 """
 
 from dataclasses import replace
+from copy import deepcopy
 import asyncio
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -31,7 +33,7 @@ def _long_history_session(engine, session, prose_repeats=20):
 
 
 def _payload(messages):
-    return json.loads(messages[1].content.split('：', 1)[1])
+    return prompt_payload(messages[1].content)
 
 
 def _judge_payload(engine, session, outcome, candidate, **kwargs):
@@ -101,6 +103,8 @@ async def test_judge_messages_are_built_before_client_and_deadline_covers_close(
             return False
 
         async def ainvoke(self, messages):
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(
                 offer_present=False, valid=False, body_violations=[],
                 unsafe_suggestion_indexes=[], failure_reason='')))
@@ -126,7 +130,7 @@ async def test_judge_messages_are_built_before_client_and_deadline_covers_close(
             actor_performance=candidate, transition_outcome=outcome)
 
     # Assemble messages before connecting; closing time belongs within the deadline.
-    assert order == [True]
+    assert order == [True, True]
 
 
 @pytest.mark.asyncio
@@ -147,6 +151,8 @@ async def test_review_call_accepts_remaining_budget_timeout(monkeypatch):
             return False
 
         async def ainvoke(self, _messages):
+            if prompt_payload(_messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps({
                 'offer_present': False,
                 'offer_quote': '',
@@ -171,6 +177,111 @@ async def test_review_call_accepts_remaining_budget_timeout(monkeypatch):
     assert captured['timeout'] == 1.5
 
 
+@pytest.mark.asyncio
+async def test_workflow_review_pack_timeout_never_connects_or_commits(tmp_path, monkeypatch):
+    """Native packing consumes the fast-check deadline, with no late request or partial commit."""
+
+    import threading
+    from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+
+    case = initiation_case()
+    runtime = NumericV2Runtime(case['engine'], tmp_path)
+    current = await runtime.start_session(
+        session_id='review_pack_timeout', catgirl_binding=_binding(),
+        opening_performance=case['session'].opening_performance)
+    before = {path.relative_to(tmp_path): path.read_bytes()
+              for path in tmp_path.rglob('*') if path.is_file()}
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    loop = asyncio.get_running_loop()
+    real_build = evaluator._build_transition_judge_messages
+    factories = []
+
+    def slow_build(*args, **kwargs):
+        try:
+            messages = real_build(*args, **kwargs)
+            loop.call_soon_threadsafe(entered.set)
+            release.wait(2.0)
+            return messages
+        finally:
+            finished.set()
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        return {'performance': '我听着，你先说。', 'suggested_inputs': []}
+
+    async def propose(self, **kwargs):
+        return []
+
+    async def review_on():
+        return {**await _all_off(), 'evaluator': True, 'review': True}
+
+    async def config(_):
+        return {'model': 'test', 'base_url': 'http://test.invalid'}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def ainvoke(self, _messages, **_kwargs):
+            if prompt_payload(_messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
+            return SimpleNamespace(content=json.dumps({
+                'offer_present': False, 'offer_quote': '', 'valid': False,
+                'body_violations': [], 'unsafe_suggestion_indexes': [], 'failure_reason': '',
+                'missed_initiation': False, 'player_request_quote': '',
+                'approved_narrative_event_indexes': [], 'narrative_review_complete': True,
+            }))
+
+    async def factory(*args, **kwargs):
+        factories.append(kwargs)
+        return Client()
+
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(numeric_v2_workflow, 'aload_theater_module_options', review_on)
+    monkeypatch.setattr(evaluator, '_build_transition_judge_messages', slow_build)
+    monkeypatch.setattr(evaluator, '_model_config', config)
+    monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
+    monkeypatch.setattr(evaluator, 'NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS', 0.05)
+    monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS', 0.05)
+
+    diagnostics = {}
+    task = asyncio.create_task(numeric_v2_workflow._execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('new', current.session.revision, '我还想再聊聊。'),
+        ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        await asyncio.sleep(0.08)
+        release.set()
+        with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
+            await task
+    finally:
+        # Cancelling to_thread does not stop its worker; finish it before monkeypatch teardown.
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 2.0)
+
+    assert factories == []
+    assert diagnostics['transition_review_results'][-1]['failure_reason'] == 'numeric_v2_transition_judge_timeout'
+    assert {path.relative_to(tmp_path): path.read_bytes()
+            for path in tmp_path.rglob('*') if path.is_file()} == before
+    assert await NumericV2Runtime(case['engine'], tmp_path).restore_session('review_pack_timeout') == current
+
+
+
+
 def _violating_review(**kwargs):
     return evaluator.NumericV2TransitionOfferReview(
         False, False, ('author_boundary',), (), '需要修正初稿。')
@@ -181,17 +292,10 @@ async def _all_off() -> dict:
         'evaluator', 'review', 'dispute', 'suggestion_fill', 'history_lookup', 'actor_retry')}
 
 
-def test_only_metric_judgment_is_on_by_default():
-    """Every optional module except reply defaults off."""  # noqa: DOCSTRING_CJK
-
+def test_pipeline_modules_are_all_enabled_by_default():
     from services.theater.numeric_v2_options import default_options
 
-    options = default_options()
-    # Preserve numeric changes from preceding decisions; other optional modules default off.
-    assert options['evaluator'] is True
-    assert {key: value for key, value in options.items() if key != 'evaluator'} == {
-        'review': False, 'dispute': False, 'review_delivery': False, 'review_contract': False,
-        'suggestion_fill': False, 'history_lookup': False, 'actor_retry': False}
+    assert all(default_options().values())
 
 
 def test_evaluator_off_does_not_authorize_an_unverified_first_suggestion():
@@ -408,7 +512,8 @@ async def test_consumed_acceptance_stays_removed_across_commits_and_restore(
 
     async def review(self, **kwargs):
         calls.append('review')
-        return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
+        return evaluator.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_suggestion_texts=tuple(kwargs['actor_performance'].get('suggested_inputs') or []))
 
     async def review_on():
         return {**await _all_off(), 'evaluator': True, 'review': True}
@@ -477,7 +582,8 @@ async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, mon
         }
 
     async def review(self, **_kwargs):
-        return evaluator.NumericV2TransitionOfferReview(True, True, (), ())
+        return evaluator.NumericV2TransitionOfferReview(True, True, (), (),
+            approved_suggestion_texts=tuple(_kwargs['actor_performance'].get('suggested_inputs') or []))
 
     async def review_on():
         return {
@@ -693,7 +799,7 @@ async def test_review_budget_skips_later_rechecks_without_committing_unreviewed_
 
     diagnostics = {}
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
@@ -744,7 +850,7 @@ async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monk
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS', 0.0)
 
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
             ensure_current_binding=lambda _: _binding())
@@ -753,8 +859,9 @@ async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypatch):
-    """The second review cannot receive the full dispute timeout after a slow fast check."""
+@pytest.mark.parametrize('slow_dispute', [False, True])
+async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypatch, slow_dispute):
+    """Disputes share the remaining deadline; a late recheck cannot erase the fast verdict."""
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -781,6 +888,8 @@ async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypat
         if not kwargs.get('dispute_review'):
             await asyncio.sleep(0.1)
         if kwargs.get('dispute_review'):
+            if slow_dispute:
+                await asyncio.sleep(0.08)
             return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
         return _violating_review(**kwargs)
 
@@ -795,17 +904,28 @@ async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypat
     monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     monkeypatch.setattr(numeric_v2_workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS', 3.0)
+    monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_DISPUTE_TIMEOUT_CAP_SECONDS',
+                        0.05 if slow_dispute else 0.5)
 
-    await numeric_v2_workflow.execute_numeric_v2_turn(
+    result = await numeric_v2_workflow.execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
         ensure_current_binding=lambda _: _binding())
 
-    assert len(calls) >= 2
-    fast, dispute = calls[:2]
+    assert len(calls) == 3
+    fast, repaired, dispute = calls
     assert fast.get('dispute_review') is not True
+    assert repaired.get('dispute_review') is not True
+    assert repaired['timeout_seconds'] < fast['timeout_seconds']
     assert dispute.get('dispute_review') is True
     assert dispute['timeout_seconds'] < evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS
+    if slow_dispute:
+        assert result.diagnostics['dispute_review_degraded'] is True
+        first, repaired, degraded = result.diagnostics['transition_review_results']
+        assert repaired['body_violations'] == ['author_boundary']
+        assert first['body_violations'] == ['author_boundary']
+        assert degraded == {'review_mode': 'dispute', 'degraded': True,
+                            'failure_reason': 'numeric_v2_transition_judge_timeout'}
 
 
 def test_review_budget_is_a_wait_limit_only():
@@ -920,8 +1040,8 @@ async def test_boundary_check_reads_author_boundaries_and_reports_violation(monk
 
 
 @pytest.mark.asyncio
-async def test_contract_switch_checks_stay_turns_and_rewrites_once(tmp_path, monkeypatch):
-    """Stay-in-act turns also check author prohibitions: one hit shares one rewrite; retain recheck diagnostics separately."""  # noqa: DOCSTRING_CJK
+async def test_contract_checks_scene_changes_in_stay_turns_and_rewrites_once(tmp_path, monkeypatch):
+    """A proposed scene change still uses the bounded contract rewrite."""
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -941,7 +1061,9 @@ async def test_contract_switch_checks_stay_turns_and_rewrites_once(tmp_path, mon
 
     async def generate(self, **kwargs):
         generations.append(kwargs.get('retry_hint', ''))
-        return {'performance': '（指向远处的平台）我们到了最高的地方。', 'suggested_inputs': []}
+        return {'performance': ('（指向远处的平台）我们到了最高的地方。' if len(generations) == 1
+                                else '（停在山脚）先在这里休息。'), 'suggested_inputs': [],
+                **({'scene_narration': '脚下已经是最高处的平台。'} if len(generations) == 1 else {})}
 
     async def boundaries(self, **kwargs):
         boundary_calls.append(kwargs)
@@ -968,7 +1090,7 @@ async def test_contract_switch_checks_stay_turns_and_rewrites_once(tmp_path, mon
     assert diagnostics['contract_violated'] == ['不得直接到达最高处平台']
     assert diagnostics['contract_violated_after_rewrite'] == []
     assert diagnostics['semantic_rewrite_attempts'] == 1
-    assert '作者禁令' in generations[1]
+    assert '正文合同' in generations[1]
 
 
 @pytest.mark.asyncio
@@ -1016,29 +1138,17 @@ async def test_contract_switch_off_sends_no_boundary_call(tmp_path, monkeypatch)
     assert called == []
 
 
-def test_source_side_delivery_drops_the_target_opening():
-    """Transition boundary checks retain only source responses/bridges; target-act openings do not participate in source-act prohibition checks."""  # noqa: DOCSTRING_CJK
-
-    full = {'segments': [
-        {'phase': 'source_response', 'performance': '（点头）好。'},
-        {'phase': 'transition_bridge', 'scene_narration': '窗外的雨渐渐停了。'},
-        {'phase': 'target_opening', 'performance': '（望向窗外）终于可以歇一会儿了。'},
-    ]}
-    view = numeric_v2_workflow._source_side_delivery(full)
-    assert [segment['phase'] for segment in view['segments']] == ['source_response', 'transition_bridge']
-    # Retain stay-in-act candidates unchanged when missing the three-paragraph structure; do not trim.
-    plain = {'performance': '（点头）好。'}
-    assert numeric_v2_workflow._source_side_delivery(plain) is plain
 
 
 @pytest.mark.asyncio
-async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path, monkeypatch):
+async def test_transition_boundary_check_sends_all_phases_with_target_contract(tmp_path, monkeypatch):
     """Narrow transition checks must exclude target-act openings, or source prohibitions misclassify normal transitions."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 
     case = initiation_case()
+    original_nodes = deepcopy(case['engine'].nodes)
     runtime = NumericV2Runtime(case['engine'], tmp_path)
     current = await runtime.start_session(
         session_id='contract_transition', catgirl_binding=_binding(),
@@ -1053,6 +1163,10 @@ async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path
 
     async def boundaries(self, **kwargs):
         payloads.append(kwargs['actor_performance'])
+        assert kwargs['target_node']['id'] == 'ending_leave'
+        assert kwargs['target_node']['story_beat']['opening_scene'] == original_nodes['ending_leave']['story_beat']['opening_scene']
+        for key, value in original_nodes['start']['route_gates'][1]['transition_contract'].items():
+            assert kwargs['transition_contract'][key] == value
         return ()
 
     async def generate(self, **kwargs):
@@ -1087,9 +1201,10 @@ async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
 
     assert payloads, '换场回合必须做一次边界核对'
+    assert case['engine'].nodes == original_nodes
     for payload in payloads:
         phases = [segment['phase'] for segment in payload['segments']]
-        assert phases == ['source_response', 'transition_bridge']
+        assert phases == ['source_response', 'transition_bridge', 'target_opening']
 
 
 @pytest.mark.asyncio
@@ -1133,7 +1248,7 @@ async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeyp
 
     diagnostics = {}
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_segment_overlap'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '带路吧。'),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)

@@ -173,7 +173,6 @@ async def test_witness_failure_keeps_local_replies_only_for_heads_this_process_c
 
 @pytest.mark.parametrize("corrupt", [None, "payload", "domain"])
 def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path, corrupt):
-    from services.chat_sync.long_term import LongTermMemorySync
     from services.chat_sync.runtime import DesktopChatSyncRuntime
     from services.chat_sync.source import ChatOriginalSource
     from services.chat_sync.ledger import ChatDomain, ChatOriginal
@@ -199,16 +198,13 @@ def test_quarantine_stages_old_authority_and_new_source_uses_new_stream(tmp_path
         conn.execute("INSERT INTO chat_batches VALUES (?,?,?,?)", (domain.key(), 'c' * 32, b'{}', '0' * 64))
         if corrupt:
             conn.execute("UPDATE chat_deletions SET " + corrupt + "=?", ("{broken",))
-    # Long-term ACKs, retry deadlines and the device identity are copied authority too.
-    LongTermMemorySync(runtime.state.path, None).acknowledge(domain.key(), 'op-1', revision=3)
+    # Retry deadlines and the device identity are copied authority too.
     runtime.scheduler.failure(domain.key(), 'long_term', runtime.state.binding(domain.character_uid)['generation'],
                               'session', OSError())
     device = runtime.state.settings()['device_id']
     runtime.writer.path.write_text('{broken')
     runtime.prepare_writer_recovery()
     assert runtime.state.binding(domain.character_uid)['enabled'] == 0
-    with closing(sqlite3.connect(runtime.state.path)) as conn:
-        assert conn.execute('SELECT count(*) FROM long_term_memory_state').fetchone() == (0,)
     with closing(sqlite3.connect(runtime.scheduler.path)) as conn:
         assert conn.execute('SELECT count(*) FROM scheduler_tasks').fetchone() == (0,)
     assert runtime.state.settings()['device_id'] != device

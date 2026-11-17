@@ -218,7 +218,7 @@ test('chat host restores and live-syncs the shared font preset', () => {
 });
 
 test('compact mirror wide art follows play-yarn metadata instead of a filename', () => {
-    const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif';
+    const playYarnUrl = '/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp';
     const matcher = createCompactMirrorWideArtMatcher({
         getAppearance(slot, options) {
             assert.equal(slot, 'action.cat1.play_yarn');
@@ -231,12 +231,12 @@ test('compact mirror wide art follows play-yarn metadata instead of a filename',
     });
 
     assert.equal(matcher(`${playYarnUrl}?v=123`), true);
-    assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif'), false);
+    assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.webp'), false);
 });
 
 test('compact mirror keeps the narrow fallback when registry metadata is unavailable', () => {
     const matcher = createCompactMirrorWideArtMatcher(null);
-    assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif'), false);
+    assert.equal(matcher('/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp'), false);
 });
 
 function createCompactMirrorShow(registry) {
@@ -285,7 +285,7 @@ test('compact mirror hides instead of reusing a stale image when no cat art is a
 });
 
 test('compact mirror falls back to the registry idle art when the event has no asset', () => {
-    const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif';
+    const idleUrl = '/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.webp';
     const mirror = createCompactMirrorShow({
         getAppearance: (slot) => (slot === 'idle.cat1'
             ? { available: true, url: idleUrl, urls: [idleUrl], metadata: {} }

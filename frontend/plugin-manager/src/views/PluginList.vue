@@ -520,6 +520,8 @@ import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { Refresh, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, User, Top, MoreFilled, Check } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { usePluginStartGate } from '@/composables/usePluginStartGate'
+import { usePluginConsentNotices } from '@/composables/pluginConsentNotices'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import { useMarketVersionsStore, type MarketVersionTarget } from '@/stores/marketVersions'
@@ -555,7 +557,7 @@ import { transitionLayout, holdLeave, cancelLeave } from '@/motion/scheduler'
 import { METRICS_REFRESH_INTERVAL, PANEL_HOST_MIN_HEIGHT } from '@/utils/constants'
 import { formatHttpError, isRequestTimeout } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
-import { findDuplicatePluginDisplayNameIds, isOrdinaryPlugin } from '@/utils/pluginDisplay'
+import { findDuplicatePluginDisplayNameIds } from '@/utils/pluginDisplay'
 import { openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
 import { useI18n } from 'vue-i18n'
@@ -649,7 +651,12 @@ const dangerDialogMessage = computed(() => {
   )
 })
 
-const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus.filter(isOrdinaryPlugin))
+const rawPlugins = computed(() => pluginStore.pluginSummariesWithStatus)
+
+// Each time this page is opened, list running plugins that still have
+// unconfirmed capabilities; dismissing the notice decides nothing, so it
+// reappears on the next open.
+usePluginConsentNotices()
 const duplicateDisplayNamePluginIds = computed(() => [
   ...findDuplicatePluginDisplayNameIds(rawPlugins.value, locale.value),
 ])
@@ -1253,11 +1260,26 @@ function getSelectedPlugins() {
   return rawPlugins.value.filter((p) => selectedPluginIds.value.includes(p.id))
 }
 
+const startGate = usePluginStartGate()
 const { busy: batchBusy, runBatch } = useBatchActions(getSelectedPlugins, refreshAfterPluginChange)
 
 async function handleBatchStart() {
+  const ids = getSelectedPlugins().filter((p) => p.status !== 'running' && p.status !== 'disabled').map((p) => p.id)
+  let allowed: string[] = []
+  let consentConfirmed = false
+  if (ids.length) {
+    try {
+      const prepared = await startGate.prepareBatchStart(ids)
+      allowed = prepared.allowed
+      consentConfirmed = prepared.confirmed
+    } catch {
+      ElMessage.error(t('pluginConsent.loadFailed'))
+      return
+    }
+  }
   await runBatch({
-    filter: (p) => p.status !== 'running' && p.status !== 'disabled',
+    skipConfirm: consentConfirmed,
+    filter: (p) => allowed.includes(p.id),
     action: (p) => pluginStore.start(p.id, { refresh: false }),
     noItemsKey: 'plugins.batchNoStartable',
     confirmKey: 'plugins.batchStartConfirm',

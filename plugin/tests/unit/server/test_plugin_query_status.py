@@ -99,6 +99,7 @@ def test_build_plugin_list_reports_source_missing_status(monkeypatch: pytest.Mon
             "id": "missing_plugin",
             "name": "Missing Plugin",
             "autostart_pending": False,
+            "consent": {"state": "analyzing", "decision": None, "upgraded": False},
             "runtime_source_missing": True,
             "status": "source_missing",
             "i18n": {"messages": {}},
@@ -139,6 +140,7 @@ def test_projection_reuses_failed_approval_read_and_retries_next_request(
 ) -> None:
     from plugin.server.infrastructure import autostart_approvals
     from utils import config_manager
+    monkeypatch.setattr(query_module, "consent_summary", lambda *_: {"state": "analyzing", "decision": None, "upgraded": False})
 
     reads = 0
 

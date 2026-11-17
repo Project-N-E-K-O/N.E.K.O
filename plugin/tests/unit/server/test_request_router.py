@@ -152,6 +152,8 @@ async def test_saturated_dispatcher_delivers_busy_replies_for_the_whole_burst(
 
     router._handlers["HELD"] = held
     monkeypatch.setattr(state, "get_downlink_sender", lambda _: send)
+    # This burst exercises the shared limits; lift the per-plugin share above them.
+    monkeypatch.setenv("NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_PLUGIN", "1000")
     for index in range(600):
         state.plugin_comm_queue.put_nowait(
             {"type": "HELD", "request_id": str(index), "from_plugin": "healthy"}

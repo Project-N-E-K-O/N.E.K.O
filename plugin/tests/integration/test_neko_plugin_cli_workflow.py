@@ -93,6 +93,7 @@ def _metadata_snapshot(metadata: dict[str, object]) -> dict[str, object]:
 @pytest.mark.plugin_integration
 def test_init_custom_output_generates_runnable_vscode_check_task(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     output = tmp_path / "custom-source-root" / "custom_output"
 
@@ -121,6 +122,8 @@ def test_init_custom_output_generates_runnable_vscode_check_task(
     if not resolved_cwd.is_absolute():
         resolved_cwd = output / resolved_cwd
 
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+
     completed = subprocess.run(
         check_task["command"].replace("${workspaceFolder}", str(output)),
         cwd=resolved_cwd.resolve(),
@@ -128,6 +131,7 @@ def test_init_custom_output_generates_runnable_vscode_check_task(
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
 

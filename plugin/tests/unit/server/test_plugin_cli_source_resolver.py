@@ -141,3 +141,30 @@ def test_string_plugin_id_ambiguity_is_reported_without_guessing(tmp_path: Path)
 
     with pytest.raises(ValueError, match="ambiguous"):
         PluginSourceResolver(policy).resolve_string("same_plugin_id")
+
+
+def test_bulk_resolution_reuses_projects_only_within_each_call(tmp_path):
+    policy = _make_policy(tmp_path)
+    first = _write_plugin(tmp_path / "projects", "first", "first")
+    second = _write_plugin(tmp_path / "projects", "second", "second")
+    directories = [first, second]
+    reads = []
+
+    def projects():
+        reads.append(True)
+        return list(directories), []
+
+    resolver = PluginSourceResolver(policy, project_sources=projects)
+    resolved = resolver.resolve_many(
+        refs=[{"root_id": "project", "directory_name": "first"}],
+        specifiers=[str(first), "second"],
+    )
+    assert [source.plugin_dir for source in resolved] == [first, first, second]
+    assert len(reads) == 1
+    directories.pop()
+    with pytest.raises(FileNotFoundError):
+        resolver.resolve_many(refs=[{"root_id": "project", "directory_name": "second"}])
+    assert len(reads) == 2
+    _write_plugin(policy.builtin_plugins_root, "builtin_demo", "builtin_demo")
+    resolver.resolve_many(refs=[{"root_id": "builtin", "directory_name": "builtin_demo"}])
+    assert len(reads) == 2

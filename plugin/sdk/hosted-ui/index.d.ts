@@ -26,9 +26,27 @@ export type HostedAction = {
 }
 
 export type HostedApi = {
+  display: PluginDisplayApi
   call: (actionId: string, args?: Record<string, any>, options?: { timeoutMs?: number; signal?: AbortSignal; userInitiated?: boolean }) => Promise<any>
   parseDocument: (file: File, options?: { timeoutMs?: number; signal?: AbortSignal }) => Promise<ParsedHostedDocument>
   refresh: () => Promise<any>
+}
+
+export type PluginDisplayMode = "normal" | "focus" | "fullscreen"
+export type PluginDisplayState = {
+  mode: PluginDisplayMode
+  supportedModes: Array<"focus" | "fullscreen">
+}
+export type PluginDisplayResult = {
+  status: "applied" | "declined" | "unsupported" | "cancelled" | "busy" | "failed"
+  state: PluginDisplayState
+  reason?: string
+}
+export type PluginDisplayApi = {
+  getState: () => Promise<PluginDisplayState>
+  requestMode: (mode: "focus" | "fullscreen") => Promise<PluginDisplayResult>
+  exit: () => Promise<PluginDisplayResult>
+  onStateChange: (listener: (state: PluginDisplayState) => void) => () => void
 }
 
 export type ParsedHostedDocument = {

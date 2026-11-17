@@ -55,7 +55,8 @@ async def test_single_offer_option_keeps_structured_acceptance_fill(monkeypatch,
         allow_fill=fill_enabled,
         performance={'performance': '（指向门外）我们现在出发，好吗？',
                      'transition_offered': True, 'suggested_inputs': [decline]},
-        player_input='接下来怎么安排？', catgirl_name='测试猫娘', max_input_tokens=900,
+        # This tests acceptance filling, not an arbitrary budget below the fixed format contract.
+        player_input='接下来怎么安排？', catgirl_name='测试猫娘', max_input_tokens=10000,
     )
     assert suggestions == ([accept, decline] if fill_enabled else [decline])
     assert len(calls) == int(fill_enabled)
@@ -81,7 +82,7 @@ async def test_repeated_input_is_removed_before_deciding_to_fill(monkeypatch, re
         allow_fill=fill_enabled,
         performance={'performance': '（点头）好的。',
                      'suggested_inputs': [current_input] + ([usable] if remaining else [])},
-        player_input=current_input, catgirl_name='测试猫娘', max_input_tokens=900,
+        player_input=current_input, catgirl_name='测试猫娘', max_input_tokens=10000,
     )
     assert len(calls) == int(fill_enabled and not remaining)
     assert result == ([usable] if remaining else ['（点头）请详细说说。'] if fill_enabled else [])
@@ -93,8 +94,9 @@ async def test_repeated_input_is_removed_before_deciding_to_fill(monkeypatch, re
 @pytest.mark.parametrize('kept_count', [0, 1, 2, 3])
 @pytest.mark.parametrize('fill_enabled', [False, True])
 @pytest.mark.parametrize('action_only', [False, True])
+@pytest.mark.parametrize('explicit_approval', [False, True])
 async def test_review_filter_never_generates_unreviewed_replacements(
-    monkeypatch, tmp_path, phase, kept_count, fill_enabled, action_only,
+    monkeypatch, tmp_path, phase, kept_count, fill_enabled, action_only, explicit_approval,
 ):
     case = initiation_case()
     engine = case['engine']
@@ -137,6 +139,9 @@ async def test_review_filter_never_generates_unreviewed_replacements(
             tuple(range(kept_count, len(suggestions))),
             '候选新增了未授权的玩家行动。' if cancelled else '仅指定推荐不安全。',
             initiation_authorized=False if cancelled else None,
+            # Explicit approvals bind originals but cannot override a sibling
+            # rejection; legacy omission never approves the group.
+            approved_suggestion_texts=tuple(suggestions[:kept_count]) if explicit_approval else None,
         )
 
     async def unexpected_fill(*args, **kwargs):
@@ -154,7 +159,9 @@ async def test_review_filter_never_generates_unreviewed_replacements(
         ensure_current_binding=lambda _: _binding(),
     )
     assert len(generations) == len(reviews) == (2 if phase == 'cancelled' else 1)
-    assert result.performance['suggested_inputs'] == (suggestions if kept_count == len(suggestions) else [])
+    assert result.performance['suggested_inputs'] == (
+        suggestions if explicit_approval and kept_count == len(suggestions) else []
+    )
     assert result.diagnostics['actor_suggestion_refill_after_review_attempts'] == 0
     assert result.stored.session.current_node_id == ('ending_leave' if phase == 'formal' else 'start')
     assert result.stored.session.revision == 1

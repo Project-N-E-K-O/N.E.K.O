@@ -198,18 +198,20 @@ Requests reflection synthesis and schedules the applicable automatic promotion p
 Returns proactive-chat topic candidates without marking them as shown:
 
 ```json
-{ "topics": [] }
+{ "topics": [], "commitment": null }
 ```
 
-The caller must submit the reflection IDs actually used to `/record_surfaced`.
+`commitment` is the character's open promise from the pinned section that falls due soonest within two days, as `{"id": "pin_...", "text": "...", "due": "YYYY-MM-DD"}`, or `null`. Undated promises, promises offered in the last 12 hours, and promises she has mentioned recently are not returned.
+
+The caller must submit the reflection IDs actually used, and the promise ID once a model has been given it, to `/record_surfaced`.
 
 ### `POST /record_surfaced/{lanlan_name}`
 
 ```json
-{ "reflection_ids": ["reflection_..."] }
+{ "reflection_ids": ["reflection_..."], "commitment_ids": ["pin_..."] }
 ```
 
-Records proactive-chat surfacing and refreshes cooldowns. An empty or missing list is a no-op. The stable response is `{"ok":true}`; persistence failures are logged and do not fail the caller.
+Records proactive-chat surfacing and refreshes cooldowns. An empty or missing list is a no-op. The response is `{"ok":true}`; when `commitment_ids` is not empty it also carries `commitments_recorded`, which is `true` only once the pinned section has written the offer, so the caller knows whether to submit the promise again. Other persistence failures are logged and do not fail the caller.
 
 ### `POST /cancel_correction/{lanlan_name}`
 

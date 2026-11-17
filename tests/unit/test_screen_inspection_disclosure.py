@@ -124,6 +124,7 @@ async def test_no_window_guidance_when_capture_has_no_allowed_windows():
 
 def test_released_screen_image_carries_short_restart_hint():
     from main_logic.tool_calling import ToolImage, ToolResult
+    from utils.llm_client.messages import _normalize_messages
 
     client = _client()
     client._tool_image_locale = lambda: "zh"
@@ -132,7 +133,7 @@ def test_released_screen_image_carries_short_restart_hint():
                         images=[ToolImage(data_b64="cGl4ZWxz")])
     client._append_tool_result_images(messages, result, slots=slots)
     client._release_tool_image_slots(slots)
-    assert messages == [{"role": "user", "content": TEXT["released"]["zh"]}]
+    assert _normalize_messages(messages) == [{"role": "user", "content": TEXT["released"]["zh"]}]
     assert len(messages[0]["content"]) < 70
     assert not slots
 
@@ -269,3 +270,190 @@ def test_previous_turn_inventory_is_hidden_even_before_old_turn_cleanup():
     assert 'PRIVATE-TITLE' not in str(view)
     assert 'PRIVATE-TITLE' in str(messages)  # no mutation of another live turn
     assert view[-1] is messages[-1]
+
+
+def test_pending_screen_image_is_projected_without_touching_other_images():
+    from copy import deepcopy
+    from main_logic.tool_calling import ToolImage, ToolResult
+    from utils.llm_client import HumanMessage
+    from utils.llm_client.messages import _normalize_messages
+
+    client = _client()
+    messages = [HumanMessage(content='Read the shared screen'), {
+        'role': 'assistant', 'content': '', 'tool_calls': [
+            {'id': name, 'type': 'function', 'function': {'name': name, 'arguments': '{}'}}
+            for name in ('plugin_picture', 'read_current_screen')
+        ],
+    }]
+    for name in ('plugin_picture', 'read_current_screen'):
+        messages.append({'role': 'tool', 'name': name, 'tool_call_id': name, 'content': '{}'})
+    slots = []
+    for name, pixels in (('plugin_picture', 'cGx1Z2lu'), ('read_current_screen', 'c2NyZWVu')):
+        client._append_tool_result_images(messages, ToolResult(
+            call_id=name, name=name, output={}, images=[ToolImage(data_b64=pixels)],
+        ), slots=slots)
+    same_turn = client._dialog_messages_for_provider(messages)
+    assert 'c2NyZWVu' in str(same_turn)
+    assert all('metadata' not in message for message in _normalize_messages(same_turn))
+    messages.append(HumanMessage(content='Just chat now'))
+    before = deepcopy(messages)
+
+    view = client._dialog_messages_for_provider(messages)
+
+    assert 'c2NyZWVu' not in str(view)
+    assert 'cGx1Z2lu' in str(view), 'other tools retain their image ownership'
+    screen_image = view[-2]
+    assert screen_image['content'] == TEXT['released']['zh']
+    assert messages == before, 'the older provider request still owns the original pixels'
+    assert view[-1] is messages[-1]
+
+
+def test_restored_screen_image_does_not_start_a_user_turn():
+    from main_logic.tool_calling import ToolImage, ToolResult
+    from utils.llm_client import HumanMessage
+    from utils.llm_client.messages import _normalize_messages, messages_from_dict, messages_to_dict
+
+    client = _client()
+    messages = [HumanMessage(content='Read the shared screen'), {
+        'role': 'assistant', 'content': '', 'tool_calls': [{
+            'id': 'screen', 'type': 'function',
+            'function': {'name': 'read_current_screen', 'arguments': '{}'},
+        }],
+    }, {
+        'role': 'tool', 'name': 'read_current_screen', 'tool_call_id': 'screen',
+        'content': '{"snapshot_id":"active-snapshot"}',
+    }]
+    client._append_tool_result_images(messages, ToolResult(
+        call_id='screen', name='read_current_screen', output={},
+        images=[ToolImage(data_b64='c2NyZWVu', vision_prompt='CURRENT-SCREEN-CAPTION')],
+    ), slots=[])
+    messages[-1] = messages_from_dict(messages_to_dict([messages[-1]]))[0]
+
+    same_turn = client._dialog_messages_for_provider(messages)
+    assert 'active-snapshot' in str(same_turn)
+    assert 'c2NyZWVu' in str(same_turn)
+    messages.append(HumanMessage(content='Just chat now'))
+    next_turn = client._dialog_messages_for_provider(messages)
+    assert 'active-snapshot' not in str(next_turn)
+    assert 'c2NyZWVu' not in str(next_turn)
+    assert 'CURRENT-SCREEN-CAPTION' not in str(next_turn)
+    assert all('metadata' not in message for message in _normalize_messages(next_turn))
+
+
+@pytest.mark.parametrize('provider', ['openai', 'gemini'])
+async def test_new_turn_excludes_screen_pixels_while_old_followup_is_pending(provider, monkeypatch):
+    import asyncio
+    from copy import deepcopy
+    from main_logic.tool_calling import ToolImage, ToolResult
+    from tests.unit.test_offline_turn_cancellation_e2e import _text
+    from tests.unit.test_offline_provider_frame_publish import _png_b64
+    from tests.unit.test_tool_calling import _GenaiChunk, _GenaiPart, _GenaiFunctionCall
+    from utils.llm_client import LLMStreamChunk
+
+    monkeypatch.setattr('main_logic.omni_offline_client._genai_support._GENAI_AVAILABLE', True)
+    monkeypatch.setattr('utils.token_tracker.TokenTracker.get_instance', lambda: None)
+    stalled, release = asyncio.Event(), asyncio.Event()
+
+    async def handler(call):
+        return ToolResult(call_id=call.call_id, name=call.name,
+                          output={'snapshot_id': 'old-snapshot', 'windows': [{'title': 'OLD-PRIVATE-TITLE'}]},
+                          images=[ToolImage(data_b64=_png_b64(32, 32), vision_prompt='OLD-SCREEN-CAPTION')])
+
+    async def wait_for_reply():
+        stalled.set()
+        await release.wait()
+
+    client = _client(provider, handler=handler)
+    client._tool_definitions = screen.build_tools(SimpleNamespace(user_language='zh'))
+    if provider == 'openai':
+        tool_call = LLMStreamChunk(content='', finish_reason='tool_calls', tool_call_deltas=[{
+            'index': 0, 'id': 'screen-call', 'type': 'function',
+            'function': {'name': 'read_current_screen', 'arguments': '{}'},
+        }])
+        answer = [_text('hello'), _text('', 'stop')]
+    else:
+        tool_call = _GenaiChunk([_GenaiPart(function_call=_GenaiFunctionCall('read_current_screen', id_='screen-call'))])
+        answer = [_GenaiChunk([_GenaiPart(text='hello')])]
+    client.script = [[tool_call], [wait_for_reply, *answer], answer]
+
+    def has_image(messages):
+        for message in messages:
+            parts = message.get('content', []) if isinstance(message, dict) else getattr(message, 'parts', [])
+            if not isinstance(parts, list):
+                continue
+            for part in parts:
+                if (isinstance(part, dict) and part.get('type') == 'image_url') or getattr(part, 'inline_data', None) is not None:
+                    return True
+        return False
+
+    old_turn = asyncio.create_task(client.stream_text('Read the shared screen'))
+    try:
+        await asyncio.wait_for(stalled.wait(), 3)
+        original_request = deepcopy(client.requests[1])
+        assert 'OLD-SCREEN-CAPTION' in str(original_request)
+        assert has_image(original_request)
+        await client.handle_interruption()
+        await client.stream_text('Let us chat; do not look at the screen')
+        new_request = client.requests[2]
+        assert 'OLD-SCREEN-CAPTION' not in str(new_request)
+        assert 'OLD-PRIVATE-TITLE' not in str(new_request)
+        assert 'old-snapshot' not in str(new_request)
+        assert not has_image(new_request)
+        assert client.requests[1] == original_request
+    finally:
+        release.set()
+        await asyncio.wait_for(old_turn, 3)
+
+
+def test_realtime_never_advertises_offline_screen_tool():
+    from unittest.mock import AsyncMock
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    from main_logic.tool_calling import ToolDefinition
+
+    tools = [ToolDefinition(name='recall_memory', description='recall', parameters={}),
+             *screen.build_tools(SimpleNamespace(user_language='en'))]
+    client = OmniRealtimeClient('wss://fixture.invalid', 'fixture-key', model='gpt-realtime',
+                                api_type='openai', on_tool_call=AsyncMock(), tool_definitions=tools)
+    assert [tool['name'] for tool in client._tools_for_openai_realtime()] == ['recall_memory']
+    client.set_tools(tools)
+    assert [tool['name'] for tool in client._tools_for_openai_realtime()] == ['recall_memory']
+    assert len(tools) == 2, 'filtering a client must not mutate the shared registry snapshot'
+
+
+@pytest.mark.parametrize('realtime_active', [False, True])
+async def test_active_and_pending_clients_receive_only_supported_tools(realtime_active):
+    import asyncio
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+    from main_logic.tool_calling import ToolDefinition
+
+    manager = ToolCallingMixin()
+    manager.tool_registry = ToolRegistry()
+    for tool in [ToolDefinition(name='recall_memory', description='recall', parameters={}),
+                 *screen.build_tools(SimpleNamespace(user_language='en'))]:
+        manager.tool_registry.register(tool)
+    offline = _client()
+    realtime = OmniRealtimeClient('wss://fixture.invalid', 'fixture-key', model='gpt-realtime', api_type='openai')
+    manager.session, manager.pending_session = (realtime, offline) if realtime_active else (offline, realtime)
+    manager._tool_sync_lock = asyncio.Lock()
+
+    await manager._sync_tools_to_active_session(raise_on_failure=True)
+
+    assert [tool.name for tool in offline._tool_definitions] == ['recall_memory', 'read_current_screen']
+    assert [tool.name for tool in realtime._tool_definitions] == ['recall_memory']
+    assert manager.tool_registry.names() == ['recall_memory', 'read_current_screen']
+
+
+@pytest.mark.parametrize('source', ['builtin', 'plugin'])
+async def test_builtin_screen_is_lookup_without_reclassifying_a_plugin(source):
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolDefinition
+
+    manager = ToolCallingMixin()
+    manager.tool_registry = ToolRegistry()
+    manager.tool_registry.register(ToolDefinition(
+        name='read_current_screen', description='read', handler=lambda _: {}, metadata={'source': source},
+    ))
+    manager._turn_acted_through_tools = False
+    await manager._on_tool_call(ToolCall(call_id='read', name='read_current_screen', arguments={}))
+    assert manager._turn_acted_through_tools is (source != 'builtin')

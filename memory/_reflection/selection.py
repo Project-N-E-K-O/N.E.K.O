@@ -6,6 +6,8 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
+from memory.introspection import is_permanently_suppressed
+
 
 def in_window(timestamp: str, cutoff: datetime) -> bool:
     try:
@@ -102,6 +104,7 @@ def filter_active_confirmed(
         for reflection in reflections
         if reflection.get("status") == "confirmed"
         and not reflection.get("suppress")
+        and not is_permanently_suppressed(reflection)
         and score(reflection, now) > 0
     ]
 
@@ -131,6 +134,8 @@ def filter_followup_candidates(
     eligible: list[dict] = []
     seen_text_keys: set[str] = set()
     for reflection in pending:
+        if is_permanently_suppressed(reflection):
+            continue
         next_eligible = reflection.get("next_eligible_at")
         if next_eligible:
             try:

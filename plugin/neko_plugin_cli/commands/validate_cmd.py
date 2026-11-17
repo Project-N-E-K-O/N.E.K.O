@@ -10,16 +10,13 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from plugin.core.python_dependencies import (
-    collect_project_python_requirements,
-    find_missing_python_requirements,
-    split_host_provided_requirements,
-)
+from plugin._types.entry_metadata import ENTRY_CONTRACT_FIELDS
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
     format_removed_plugin_host,
 )
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
     LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
@@ -27,11 +24,17 @@ from plugin.sdk.shared.core.push_message_schema import (
     format_push_message_v1_static_diagnostic,
 )
 
-from ..core.build_rules import is_vendor_sync_path, reraise_walk_error
+from plugin.utils.source_paths import iter_plugin_python_files
+from ..core.build_rules import reraise_walk_error
 from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
+_PLUGIN_ENTRIES_MAX = 1024
+_PLUGIN_ENTRY_FIELDS_MAX = 64
+_PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
+# Fields the registry coerces with bool(), so "false" would read as True.
+_PLUGIN_ENTRY_BOOL_FIELDS = ("auto_start", "enabled", "dynamic", "model_validate", "quick_action")
 
 
 def validate_plugin_dir(
@@ -72,7 +75,9 @@ def validate_plugin_dir(
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
-    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+    if require_matching_directory_name and not plugin_package_matches_directory(
+        source.plugin_id, plugin_dir.name
+    ):
         issues.append(
             (
                 "warning",
@@ -122,6 +127,7 @@ def validate_plugin_dir(
 
     _check_gitignore(plugin_dir / ".gitignore", issues, strict=strict)
     _check_python_decorators(plugin_dir, issues)
+    _check_symlink_tree(plugin_dir, issues)
 
     return issues
 
@@ -163,6 +169,7 @@ def _check_plugin_toml_schema(
         "passive",
         "version",
         "entry",
+        "entries",
         "author",
         "i18n",
         "sdk",
@@ -175,6 +182,7 @@ def _check_plugin_toml_schema(
         "dependency",
         "dependencies",
         "previous_ids",
+        "shared",
     }
     _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
 
@@ -199,11 +207,13 @@ def _check_plugin_toml_schema(
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
+    _check_shared_table(plugin_table.get("shared"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
     _check_install_table(plugin_dir, plugin_table.get("install"), issues)
     _check_safety_table(plugin_table.get("safety"), issues)
     _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
     _check_dependency_tables(plugin_table.get("dependency"), issues)
+    _check_entries(plugin_table.get("entries"), issues)
     _check_ui_table(plugin_dir, plugin_table.get("ui"), issues)
     _check_runtime_table(config.get("plugin_runtime"), issues)
     _check_plugin_state_table(config.get("plugin_state"), issues)
@@ -407,6 +417,21 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
     backend = value.get("backend")
     if backend is not None:
         _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+
+
+def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.shared]``: the plugins whose shared files this one reads."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.shared] must be a table"))
+        return
+    _warn_unknown_keys(value, {"reads"}, "[plugin.shared]", issues)
+    reads = value.get("reads")
+    if isinstance(reads, str):
+        # One id may be written without the brackets; the plugin is run with it read so.
+        reads = [reads]
+    _check_string_list(reads, "[plugin.shared].reads", issues, required=False)
 
 
 def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
@@ -636,6 +661,154 @@ def _check_dependency_tables(value: object, issues: list[tuple[str, str]]) -> No
             _check_string_list(conflicts, f"{label}.conflicts", issues, required=False)
 
 
+def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    # Bound iteration, unknown-key sorting and diagnostic size before scanning.
+    if isinstance(value, (list, dict)):
+        if len(value) > _PLUGIN_ENTRIES_MAX:
+            issues.append((
+                "error",
+                f"[plugin].entries exceeds {_PLUGIN_ENTRIES_MAX} entries / "
+                f"[plugin].entries 超过 {_PLUGIN_ENTRIES_MAX} 个条目 / "
+                f"[plugin].entries が {_PLUGIN_ENTRIES_MAX} 件を超えています",
+            ))
+            return
+        if isinstance(value, dict) and any(len(key) > _PLUGIN_ENTRY_KEY_LENGTH_MAX for key in value):
+            issues.append((
+                "error",
+                f"[plugin].entries keys must not exceed {_PLUGIN_ENTRY_KEY_LENGTH_MAX} characters / "
+                f"[plugin].entries 键名不能超过 {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 个字符 / "
+                f"[plugin].entries のキーは {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 文字以内にしてください",
+            ))
+            return
+        for item in value.values() if isinstance(value, dict) else value:
+            if not isinstance(item, dict):
+                continue
+            if len(item) > _PLUGIN_ENTRY_FIELDS_MAX:
+                issues.append((
+                    "error",
+                    f"[plugin].entries tables must not exceed {_PLUGIN_ENTRY_FIELDS_MAX} fields / "
+                    f"[plugin].entries 表不能超过 {_PLUGIN_ENTRY_FIELDS_MAX} 个字段 / "
+                    f"[plugin].entries のテーブルは {_PLUGIN_ENTRY_FIELDS_MAX} フィールド以内にしてください",
+                ))
+                return
+            if any(len(key) > _PLUGIN_ENTRY_KEY_LENGTH_MAX for key in item):
+                issues.append((
+                    "error",
+                    f"[plugin].entries field names must not exceed {_PLUGIN_ENTRY_KEY_LENGTH_MAX} characters / "
+                    f"[plugin].entries 字段名不能超过 {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 个字符 / "
+                    f"[plugin].entries のフィールド名は {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 文字以内にしてください",
+                ))
+                return
+    # id plus the display fields registry copies, union the shared contract tuple.
+    allowed = {"id", "name", "description", "input_schema"} | set(ENTRY_CONTRACT_FIELDS)
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            label = f"[plugin].entries[{index}]"
+            # The registry also takes a bare string item as the entry id.
+            if isinstance(item, str):
+                if not item.strip():
+                    issues.append((
+                        "warning",
+                        f"{label} is a blank entry id / "
+                        f"{label} 是空的入口 id / {label} のエントリ id が空です",
+                    ))
+                continue
+            if not isinstance(item, dict):
+                issues.append((
+                    "error",
+                    f"{label} must be a table or entry id string / "
+                    f"{label} 必须是表或入口 id 字符串 / "
+                    f"{label} はテーブルまたはエントリ id 文字列である必要があります",
+                ))
+                continue
+            _warn_unknown_keys(item, allowed, label, issues)
+            _check_entry_field_types(item, label, issues)
+            # The registry skips a list item whose id is missing or blank.
+            # Truthiness avoids recursively stringifying a structured TOML value.
+            entry_id = item.get("id")
+            if not entry_id or (isinstance(entry_id, str) and not entry_id.strip()):
+                issues.append((
+                    "warning",
+                    f"{label}.id is missing or blank / "
+                    f"{label}.id 缺失或为空 / {label}.id が未指定または空です",
+                ))
+        return
+    if isinstance(value, dict):
+        # The registry iterates a keyed table by key, so the declared fields
+        # never reach the entry. Flag it until the runtime normalizes it.
+        if value:
+            issues.append((
+                "warning",
+                "[plugin].entries as a keyed table is not applied at runtime; "
+                "its declared fields are ignored. Use [[plugin.entries]] with id = \"...\" instead / "
+                "[plugin].entries 的键控表形式在运行时不会生效，其声明字段会被忽略，"
+                "请改用 [[plugin.entries]] 并填写 id / "
+                "[plugin].entries のキー付きテーブル形式は実行時に反映されず、宣言したフィールドは無視されます。"
+                "[[plugin.entries]] と id を使用してください",
+            ))
+        for entry_id, item in value.items():
+            label = f"[plugin].entries.{entry_id}"
+            if not isinstance(item, dict):
+                issues.append((
+                    "error",
+                    f"{label} must be a table / {label} 必须是表 / {label} はテーブルである必要があります",
+                ))
+                continue
+            _warn_unknown_keys(item, allowed, label, issues)
+            _check_entry_field_types(item, label, issues)
+        return
+    issues.append((
+        "error",
+        "[plugin].entries must be a table or array of tables / "
+        "[plugin].entries 必须是表或表数组 / "
+        "[plugin].entries はテーブルまたはテーブルの配列である必要があります",
+    ))
+
+
+def _check_entry_field_types(item: dict[str, object], label: str, issues: list[tuple[str, str]]) -> None:
+    for key in _PLUGIN_ENTRY_BOOL_FIELDS:
+        _check_entry_bool(item.get(key), f"{label}.{key}", issues)
+    _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
+
+
+def _check_entry_bool(value: object, label: str, issues: list[tuple[str, str]]) -> None:
+    # Unlike _check_optional_bool, no string spelling is safe here: the registry
+    # applies bool(), so "false", "no", "0" and "off" all read as True.
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        issues.append((
+            "error",
+            f"{label} must be true/false, not a string; the registry reads any non-empty string as true",
+        ))
+        return
+    issues.append(("error", f"{label} must be a boolean"))
+
+
+def _check_entry_timeout(value: object, label: str, issues: list[tuple[str, str]]) -> None:
+    # Mirrors resolve_entry_timeout(): it accepts anything float() reads, treats
+    # <= 0 as "no per-entry timeout", and silently falls back on anything else.
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        issues.append(("error", f"{label} must be a number"))
+        return
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        issues.append(("error", f"{label} must be a number"))
+        return
+    if not math.isfinite(number):
+        issues.append(("error", f"{label} must be finite"))
+        return
+    if isinstance(value, str):
+        issues.append(("warning", f"{label} uses string number '{value}'; prefer a number"))
+    if number < 0:
+        issues.append(("warning", f"{label} is negative, which disables the entry timeout; use 0 for that"))
+
+
 def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
     if value is None:
         return
@@ -795,12 +968,6 @@ def _check_entry_target(
     if expected_bases and actual_bases.isdisjoint(expected_bases):
         issues.append(("warning", f"plugin.entry class '{class_name}' should inherit one of: {', '.join(sorted(expected_bases))}"))
 
-    lifecycle_ids = _decorator_ids_in_class(class_node, "lifecycle")
-    if "startup" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"startup\")"))
-    if "shutdown" not in lifecycle_ids:
-        issues.append(("warning", "plugin.entry class should define @lifecycle(id=\"shutdown\")"))
-
 
 def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: str) -> Path | None:
     prefix = f"plugin.plugins.{plugin_id}"
@@ -818,24 +985,11 @@ def _resolve_entry_module_path(plugin_dir: Path, plugin_id: str, module_name: st
     return None
 
 
-_SKIPPED_SOURCE_DIRS = {"__pycache__", ".venv", "venv", "vendor"}
-
-
 def _plugin_python_files(plugin_dir: Path) -> list[Path]:
     """The plugin's own .py files. Skipped directories are pruned during the
     walk, not filtered afterwards: a retained sync backup or a venv may hold
     a large tree or a mount."""
-    found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(plugin_dir, onerror=reraise_walk_error):
-        base = Path(dirpath)
-        dirnames[:] = [
-            name
-            for name in dirnames
-            if name not in _SKIPPED_SOURCE_DIRS
-            and not is_vendor_sync_path((base / name).relative_to(plugin_dir))
-        ]
-        found.extend(base / name for name in filenames if name.endswith(".py"))
-    return sorted(found)
+    return sorted(iter_plugin_python_files(plugin_dir))
 
 
 def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
@@ -992,19 +1146,6 @@ def _has_decorator(decorators: list[ast.expr], name: str) -> bool:
     return any(_decorator_name(item) == name for item in decorators)
 
 
-def _decorator_ids_in_class(class_node: ast.ClassDef, decorator_name: str) -> set[str]:
-    ids: set[str] = set()
-    for item in class_node.body:
-        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for decorator in item.decorator_list:
-            if _decorator_name(decorator) == decorator_name:
-                value = _decorator_keyword_string(decorator, "id")
-                if value:
-                    ids.add(value)
-    return ids
-
-
 def _decorator_keyword_string(decorator: ast.expr, keyword: str) -> str:
     value = _decorator_keyword_literal(decorator, keyword)
     return value.strip() if isinstance(value, str) else ""
@@ -1079,6 +1220,13 @@ def _check_pyproject_dependency_layout(
     package_type: str,
     issues: list[tuple[str, str]],
 ) -> None:
+    # plugin.core loads the plugin runtime state; keep it off CLI start-up.
+    from plugin.core.python_dependencies import (
+        collect_project_python_requirements,
+        find_missing_python_requirements,
+        split_host_provided_requirements,
+    )
+
     python_requirements = collect_project_python_requirements(pyproject_toml)
     external_requirements, _host_requirements = split_host_provided_requirements(python_requirements)
     if not external_requirements:
@@ -1114,7 +1262,8 @@ def _check_json_file(path: Path, label: str, issues: list[tuple[str, str]], *, s
         issues.append(("error" if strict else "warning", f"{label} is missing"))
         return
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: Windows editors save a BOM, which json.loads rejects.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         issues.append(("error" if strict else "warning", f"{label} is not valid UTF-8: {exc}"))
         return
@@ -1130,7 +1279,8 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
         return
 
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig: a BOM would otherwise hide the first line from the checks below.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         issues.append(("error" if strict else "warning", f".gitignore is not valid UTF-8: {exc}"))
         return
@@ -1138,3 +1288,26 @@ def _check_gitignore(path: Path, issues: list[tuple[str, str]], *, strict: bool)
     for pattern in required_patterns:
         if not re.search(rf"(^|\n){re.escape(pattern)}($|\n)", text):
             issues.append(("warning", f".gitignore should include {pattern}"))
+
+
+def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None:
+    # Market CI rejects any symlink in the mounted source; report the same
+    # rule locally so the upload is not the first place it surfaces. CI scans
+    # the checkout before dependency sync, so vendor/ (which pip may populate
+    # with link wrappers) and .git/ are out of scope here too.
+    try:
+        links = []
+        for root, directories, files in os.walk(plugin_dir, onerror=reraise_walk_error, followlinks=False):
+            base = Path(root)
+            if base == plugin_dir:
+                directories[:] = [name for name in directories if name not in {"vendor", ".git"}]
+                files = [name for name in files if name not in {"vendor", ".git"}]
+            links.extend(base / name for name in (*directories, *files) if (base / name).is_symlink())
+    except OSError as exc:
+        issues.append(("warning", f"plugin source tree could not be scanned for links: {exc}"))
+        return
+    if not links:
+        return
+    shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
+    suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
+    issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))

@@ -849,7 +849,9 @@ async function _companionRunGenerate(state) {
         // 不静默地往 form 写字段并 autoSave，关闭即取消。
         if (state.closed) return;
         typing.remove();
-        const fields = resp.fields || {};
+        const fields = Object.fromEntries(
+            Object.entries(resp.fields || {}).filter(([key]) => !_cardAssistIsReservedKey(key))
+        );
         const fieldKeys = Object.keys(fields);
         if (!fieldKeys.length) {
             _companionAppendAssistant(state,

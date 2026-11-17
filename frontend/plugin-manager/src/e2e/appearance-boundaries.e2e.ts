@@ -167,7 +167,7 @@ appearanceTest(
       'Plugin API',
       'Runs',
       'Server Logs',
-      'Development plugins',
+      'Plugin studio',
     ]) {
       await expect(sidebar.getByRole('button', { name, exact: true })).toBeVisible()
     }

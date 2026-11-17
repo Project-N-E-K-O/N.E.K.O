@@ -66,7 +66,7 @@ def build_tools(manager):
                 "required": [],
             },
             handler=partial(read_screen, manager),
-            metadata={"source": "builtin"},
+            metadata={"source": "builtin", "offline_only": True},
         )
     ]
 

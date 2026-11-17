@@ -479,9 +479,11 @@ def test_normalize_startup_failure_policy_rejects_falsy_non_default_values(raw_v
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize("project", [False, True])
 async def test_start_plugin_refreshes_registry_before_loading(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    project: bool,
 ) -> None:
     config_path = tmp_path / "refresh_adapter" / "plugin.toml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -507,6 +509,7 @@ async def test_start_plugin_refreshes_registry_before_loading(
     handlers_backup = dict(module.state.event_handlers)
     cache_backup = copy.deepcopy(module.state._snapshot_cache)
     refresh_calls: list[str] = []
+    source_modes: list[bool] = []
     loop_thread = threading.current_thread()
     capability_threads: dict[str, threading.Thread] = {}
     for capability_name in ("create_plugin_host", "scan_plugin_metadata_isolated", "install_isolated_plugin_metadata"):
@@ -526,6 +529,8 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
         async def _refresh_plugin(plugin_id: str) -> dict[str, object]:
             refresh_calls.append(plugin_id)
+            if project:
+                module.state.plugins[plugin_id] = {"id": plugin_id, "source": "project", "source_dir": str(config_path.parent), "config_path": str(config_path)}
             return {"success": True, "plugin_id": plugin_id, "status": "added"}
 
         monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", _refresh_plugin)
@@ -540,6 +545,7 @@ async def test_start_plugin_refreshes_registry_before_loading(
         )
         monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
         def host_factory(**kwargs):
+            source_modes.append(kwargs.pop("source_only", False))
             capability_threads["create_plugin_host"] = threading.current_thread()
             return _FakeProcessHost(**kwargs)
         scan = _metadata_scan_for(_FakeAdapterPlugin)
@@ -555,6 +561,7 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
         assert response["success"] is True
         assert refresh_calls == ["refresh_adapter"]
+        assert source_modes == [project]
         assert set(capability_threads) == {
             "create_plugin_host", "scan_plugin_metadata_isolated", "install_isolated_plugin_metadata"
         }

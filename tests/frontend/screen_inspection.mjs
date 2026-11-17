@@ -1,5 +1,14 @@
 import {readFile} from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import {test} from 'node:test';
+let completed = false;
+process.on('exit', () => {
+    if (!completed) {
+        console.error('Screen inspection scenarios did not finish');
+        process.exitCode = 1;
+    }
+});
 const code = await readFile(new URL('../../static/app/app-screen-inspection.js', import.meta.url),'utf8');
 const {handleScreenInspection: run} = await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
 global.WebSocket = {OPEN:1};
@@ -26,7 +35,7 @@ function fixture() {
     const f=fixture(); f.state.selectedScreenSourceId='window:2';
     await run({operation:'overview',request_id:'1'},f.state,f.socket);
     assert.deepEqual(f.captures,['window:2']); assert.equal(f.sent[0].windows.length,1);
-    await run({operation:'window',scope:'window:2',window_id:'window:3',request_id:'2'},f.state,f.socket);
+    await run({operation:'window',scope:f.sent[0].scope,window_id:'window:3',request_id:'2'},f.state,f.socket);
     assert.equal(f.sent[1].success,false); assert.equal(f.captures.length,1);
 }
 {
@@ -83,8 +92,9 @@ function fixture() {
 {
     const f=fixture(); f.state.selectedScreenSourceId='window:2';
     window.electronDesktopCapturer.getSources=async()=>[{id:'window:3',name:'Music'}];
-    await run({operation:'window',scope:'window:2',window_id:'window:2',request_id:'1'},f.state,f.socket);
-    assert.equal(f.sent[0].error,'window_unavailable'); assert.equal(f.captures.length,0);
+    await run({operation:'validate',request_id:'scope'},f.state,f.socket);
+    await run({operation:'window',scope:f.sent[0].scope,window_id:'window:2',request_id:'1'},f.state,f.socket);
+    assert.equal(f.sent[1].error,'window_unavailable'); assert.equal(f.captures.length,0);
 }
 {
     const f=fixture(); window.isNekoHomeTutorialProactiveSuppressed=()=>true;
@@ -196,3 +206,170 @@ for (const bound of [true,false]) {
     resume();await Promise.resolve();assert.equal(drawn,false);assert.equal(f.sent.length,1);
 }
 console.log('Frontend permission regression scenarios passed');
+
+// Load the real source-selection and manual-sharing module for cross-module contracts.
+const appScreenCode = await readFile(new URL('../../static/app/app-screen.js', import.meta.url), 'utf8');
+const providerCode = await readFile(new URL('../../static/app/desktop-capture-provider.js', import.meta.url), 'utf8');
+function sharingFixture({prompting = false, storage = {}, sources} = {}) {
+    const f = fixture();
+    const values = new Map(Object.entries(storage));
+    const nodes = new Map(['screenButton', 'micButton', 'muteButton', 'stopButton', 'resetSessionButton'].map(id => {
+        const classes = new Set();
+        return [id, {disabled: true, classList: {
+            add: name => classes.add(name), remove: name => classes.delete(name),
+            contains: name => classes.has(name), toggle: (name, on) => on ? classes.add(name) : classes.delete(name),
+        }}];
+    }));
+    const document = {
+        getElementById: id => nodes.get(id) || null,
+        querySelectorAll: () => [], querySelector: () => null,
+        createElement: name => name === 'video'
+            ? {videoWidth: 640, videoHeight: 480, play: async () => {}, pause() {}}
+            : {getContext: () => ({drawImage() {}}), toDataURL: () => 'data:image/png;base64,shared-pixels'},
+    };
+    const localStorage = {
+        getItem: key => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, String(value)),
+        removeItem: key => values.delete(key),
+    };
+    const provider = window.electronDesktopCapturer;
+    f.sources = sources || [{id: 'screen:1', name: 'Screen'}, {id: 'window:2', name: 'Editor'}];
+    f.enumerations = [];
+    provider.sourceEnumerationMayPrompt = prompting;
+    provider.getSources = async options => {
+        f.enumerations.push(options);
+        assert.equal(provider.sourceEnumerationMayPrompt, false, 'inspection must not open a portal');
+        return f.sources.filter(source => options.types.includes(source.id.split(':')[0]));
+    };
+    provider.setSelectedSource = () => {};
+    Object.assign(f.state, {screenCaptureStream: null, audioPlayerContext: {state: 'running'},
+        isRecording: false, voiceChatActive: true});
+    Object.assign(window, {appState: f.state, appConst: {}, appUtils: {isMobile: () => false},
+        safeT: (_key, fallback) => fallback, t: key => key, showStatusToast() {},
+        addEventListener() {}, dispatchEvent() {}, document});
+    const mediaDevices = {
+        getUserMedia: async () => assert.fail('unexpected stream acquisition'),
+        getDisplayMedia: async () => assert.fail('must not widen capture through a new picker'),
+    };
+    const context = vm.createContext({window, document, localStorage,
+        navigator: {userAgent: prompting ? 'Linux' : 'Windows', mediaDevices},
+        console: {log() {}, warn() {}, error: (...args) => f.errors.push(args)},
+        CustomEvent: class {}, WebSocket: global.WebSocket,
+        setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}});
+    f.errors = [];
+    vm.runInContext(providerCode, context, {filename: 'desktop-capture-provider.js'});
+    vm.runInContext(appScreenCode, context, {filename: 'app-screen.js'});
+    global.document = document;
+    return Object.assign(f, {window, provider, mediaDevices, values, nodes});
+}
+function sharedStream(displaySurface) {
+    const track = {readyState: 'live', getSettings: () => ({displaySurface}),
+        stop() { this.readyState = 'ended'; }};
+    return {active: true, getVideoTracks: () => [track], getTracks: () => [track]};
+}
+
+for (const id of ['window:2', 'screen:1']) {
+    await test(`forced reselection invalidates persisted ${id} scopes`, async () => {
+        const f = sharingFixture();
+        await f.window.selectScreenSource(id, 'Original');
+        await run({operation: 'overview', request_id: 'before'}, f.state, f.socket);
+        const scope = f.sent.at(-1).scope;
+        assert.equal(f.sent.at(-1).success, true);
+        await run({operation: 'validate', scope, request_id: 'unchanged'}, f.state, f.socket);
+        assert.equal(f.sent.at(-1).success, true, 'an unchanged selection remains valid');
+        await f.window.selectScreenSource(id, 'Replacement', undefined, undefined, {force: true});
+        const captures = f.captures.length;
+        for (const operation of ['validate', 'window']) {
+            await run({operation, scope, window_id: 'window:2', request_id: operation}, f.state, f.socket);
+            assert.equal(f.sent.at(-1).error, 'scope_changed', 'old pixels must not survive a same-ID source switch');
+            assert.equal(f.sent.at(-1).data_url, undefined);
+        }
+        assert.equal(f.captures.length, captures);
+        await run({operation: 'overview', request_id: 'fresh'}, f.state, f.socket);
+        assert.equal(f.sent.at(-1).success, true);
+        assert.notEqual(f.sent.at(-1).scope, scope);
+    });
+}
+await test('forced same-ID selection rejects a native frame already in flight', async () => {
+    const f = sharingFixture();
+    await f.window.selectScreenSource('window:2', 'Editor');
+    let release, started;
+    const capturing = new Promise(resolve => { started = resolve; });
+    f.provider.captureSourceAsDataUrl = () => {
+        started();
+        return new Promise(resolve => { release = resolve; });
+    };
+    const pending = run({operation: 'overview', request_id: 'pending'}, f.state, f.socket);
+    await capturing;
+    await f.window.selectScreenSource('window:2', 'Replacement', undefined, undefined, {force: true});
+    release({success: true, dataUrl: 'old-pixels'});
+    await pending;
+    assert.equal(f.sent.at(-1).error, 'scope_changed');
+    assert.equal(f.sent.at(-1).data_url, undefined);
+});
+await test('manual portal sharing binds the authorized window stream for inspection', async () => {
+    const f = sharingFixture({prompting: true});
+    await f.window.selectScreenSource('window:2', 'Editor');
+    const stream = sharedStream('window');
+    f.mediaDevices.getUserMedia = async options => {
+        assert.equal(options.video.mandatory.chromeMediaSourceId, 'window:2');
+        return stream;
+    };
+    f.state.isRecording = true;
+    await f.window.startScreenSharing();
+    assert.equal(f.state.screenCaptureStream, stream);
+    assert.equal(f.nodes.get('stopButton').disabled, false);
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.window.getScreenCaptureStreamSourceId(stream), 'window:2');
+    await run({operation: 'overview', request_id: 'manual'}, f.state, f.socket);
+    assert.equal(f.sent.at(-1).success, true);
+    assert.equal(f.sent.at(-1).data_url, 'data:image/png;base64,shared-pixels');
+    assert.equal(f.sent.at(-1).source_id, 'window:2', 'source IDs remain separate from versioned scope keys');
+    assert.equal(f.sent.at(-1).avatar_position, null);
+    assert.deepEqual(f.enumerations, []);
+    assert.deepEqual(f.captures, []);
+    assert.equal(stream.getVideoTracks()[0].readyState, 'live');
+});
+await test('manual non-remembered fallback binds the actual monitor source', async () => {
+    const f = sharingFixture();
+    await f.window.selectScreenSource('window:2', 'Editor');
+    const stream = sharedStream('monitor');
+    const acquired = [];
+    f.mediaDevices.getUserMedia = async options => {
+        const id = options.video.mandatory.chromeMediaSourceId;
+        acquired.push(id);
+        if (id === 'window:2') throw new Error('window capture unavailable');
+        return stream;
+    };
+    f.state.isRecording = true;
+    await f.window.startScreenSharing();
+    assert.deepEqual(acquired, ['window:2', 'screen:1']);
+    assert.equal(f.state.selectedScreenSourceId, 'screen:1');
+    assert.equal(f.state.screenCaptureStream, stream);
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.window.getScreenCaptureStreamSourceId(stream), 'screen:1');
+});
+for (const scenario of [
+    {name: 'explicit duplicate title', explicit: true, duplicate: true, remembered: 'editor', allowed: true},
+    {name: 'restored duplicate title', explicit: false, duplicate: true, remembered: 'editor', allowed: false},
+    {name: 'explicit different remembered title', explicit: true, duplicate: true, remembered: 'music', allowed: false},
+    {name: 'restored unique title', explicit: false, duplicate: false, remembered: 'editor', allowed: true},
+]) {
+    await test(`read-only remembered capture: ${scenario.name}`, async () => {
+        const sources = [{id: 'window:2', name: ' Editor '}, {id: 'window:4', name: 'Music'}];
+        if (scenario.duplicate) sources.push({id: 'window:3', name: 'editor'});
+        const f = sharingFixture({sources, storage: {selectedScreenSourceId: 'window:2',
+            screenSourceTitleMatchEnabled: 'true', selectedScreenWindowTitle: scenario.remembered}});
+        if (scenario.explicit) await f.window.selectScreenSource('window:2', ' Editor ');
+        // A changed remembered title must not inherit permission from an explicit but different title.
+        f.values.set('selectedScreenWindowTitle', scenario.remembered);
+        const before = [...f.values];
+        await run({operation: 'overview', request_id: scenario.name}, f.state, f.socket);
+        assert.equal(f.sent.at(-1).success, scenario.allowed);
+        assert.equal(f.state.selectedScreenSourceId, 'window:2', 'inspection cannot remap the selected source');
+        assert.deepEqual([...f.values], before, 'read-only validation cannot rewrite remembered settings');
+        assert.deepEqual(f.captures, scenario.allowed ? ['window:2'] : []);
+        if (!scenario.allowed) assert.equal(f.sent.at(-1).error, 'scope_changed');
+    });
+}
+completed = true;

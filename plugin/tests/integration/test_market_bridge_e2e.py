@@ -726,6 +726,46 @@ async def test_market_catalog_readme_uses_same_origin_bridge(
 
 
 @pytest.mark.asyncio
+async def test_market_catalog_zones_use_same_origin_bridge(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The submission form reads the Market's zone list via this fixed path."""
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    seen_urls: list[str] = []
+    payload = [{"id": "game", "name": "游戏", "pluginCount": 3}]
+
+    class CatalogResponse:
+        status_code = 200
+        content = json.dumps(payload).encode("utf-8")
+        headers = {"content-type": "application/json"}
+
+    class CatalogClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> "CatalogClient":
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def get(self, url: str, *args: Any, **kwargs: Any) -> CatalogResponse:
+            seen_urls.append(url)
+            return CatalogResponse()
+
+    monkeypatch.setattr(load_httpx(), "AsyncClient", CatalogClient)
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    response = await bridge_e2e_env["client"].get("/market/catalog/api/v1/zones")
+
+    assert response.status_code == 200
+    assert response.json() == payload
+    assert seen_urls == ["https://market.test/api/v1/zones"]
+
+
+@pytest.mark.asyncio
 async def test_market_catalog_comments_use_same_origin_bridge(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -1172,6 +1212,7 @@ async def test_authenticated_market_install_reports_usage(
     from plugin.server.routes import market_bridge as market_bridge_module
 
     reports: list[dict[str, Any]] = []
+    report_received = asyncio.Event()
     real_async_client = load_httpx().AsyncClient
 
     class _RecordingAsyncClient:
@@ -1205,6 +1246,7 @@ async def test_authenticated_market_install_reports_usage(
         ) -> httpx.Response:
             if url == "https://market.test/api/v1/me/installs":
                 reports.append({"headers": headers or {}, "json": json or {}})
+                report_received.set()
                 return httpx.Response(
                     200,
                     json={"ok": True},
@@ -1290,6 +1332,7 @@ async def test_authenticated_market_install_reports_usage(
 
     assert final_status is not None, "task did not reach terminal state"
     assert final_status["status"] == "completed", final_status
+    await asyncio.wait_for(report_received.wait(), timeout=5)
     assert len(reports) == 1
 
     report = reports[0]

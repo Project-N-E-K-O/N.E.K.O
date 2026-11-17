@@ -110,7 +110,7 @@ def compress_screenshot(
 
     Pass ``max_w`` and the result is inside BOTH bounds, which is what a caller
     handing the image to a model wants (see ``normalize_image_for_model``). The
-    default stays None on purpose: brain/computer_use.py asks for target_h=1080
+    default stays None on purpose: nekoclaw/builtin/desktop.py asks for target_h=1080
     deliberately and every existing caller must keep coming out byte-identical,
     so the new bound has to be opt-in rather than a new floor everyone silently
     inherits.
@@ -365,9 +365,13 @@ async def analyze_image_with_vision_model(
             VISION_SYSTEM_WITH_TITLE, VISION_SYSTEM_NO_TITLE,
             VISION_USER_WITH_TITLE, VISION_USER_NO_TITLE,
             get_avatar_annotation_ignore_hint,
+            normalize_sys_prompt_locale,
         )
-        from utils.language_utils import get_global_language
-        lang = get_global_language()
+        from utils.language_utils import get_global_language_full
+        # Full locale, same source the avatar overlay is drawn from: the short code
+        # collapses zh-TW into zh, so Traditional users got a Traditional overlay on
+        # the image but a Simplified prompt and ignore hint (issue #2841).
+        lang = normalize_sys_prompt_locale(get_global_language_full())
 
         ignore_hint = get_avatar_annotation_ignore_hint(lang)
         if window_title:

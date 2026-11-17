@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins import PluginLifecycleService
-from plugin.server.application.plugins.development_service import stop_ordinary_plugin
 from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 
@@ -141,6 +140,6 @@ class AdminCommandService:
 
         if method == "plugin.stop":
             plugin_id = self._require_non_empty_str(params, "plugin_id")
-            return await stop_ordinary_plugin(plugin_id, lifecycle_service=self._lifecycle_service)
+            return await self._lifecycle_service.stop_plugin(plugin_id)
 
         raise self._bad_request("unknown method", code="UNKNOWN_METHOD")

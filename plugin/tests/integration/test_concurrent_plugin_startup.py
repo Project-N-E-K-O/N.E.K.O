@@ -62,7 +62,6 @@ async def test_real_autostart_keeps_initialization_concurrent_and_releases_opera
     monkeypatch.setattr(host_module, "_refresh_child_storage_layout_env", lambda _: None)
     monkeypatch.setenv("NEKO_PLUGIN_OPERATION_LOCK_PATH", str(tmp_path / "operations.lock"))
     monkeypatch.setattr(operation_lock, "_reload_install_source_manager_sync", lambda: None)
-    monkeypatch.setattr(lifecycle_service.development_store, "registration_for_plugin_sync", lambda _: None)
     service = lifecycle_service.PluginLifecycleService()
     batch = asyncio.create_task(service.start_plugins_batch(
         list(records), concurrency=count, refresh_registry=False,

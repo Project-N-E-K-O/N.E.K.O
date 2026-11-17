@@ -80,7 +80,9 @@ class Node {
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
   dispatch(type, ev) { (this.listeners[type] || []).forEach((fn) => fn(Object.assign({ target: this, stopPropagation() {}, preventDefault() {} }, ev || {}))); }
   click() { if (!this.disabled) this.dispatch('click'); }
-  focus() {}
+  contains(node) { let current = node; while (current) { if (current === this) return true; current = current.parentNode; } return false; }
+  get isConnected() { return !!(this.ownerDocument && this.ownerDocument.body.contains(this)); }
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   all(pred, out) { out = out || []; if (pred(this)) out.push(this); this.children.forEach((c) => c.all(pred, out)); return out; }
 }
 
@@ -98,16 +100,30 @@ function createHarness(opts) {
   const toasts = [];
   const sendCalls = [];
   const relayFrames = [];
+  const restoreFrames = [];
   const socket = { readyState: 1, send(m) { sent.push(JSON.parse(m)); } };
   const body = new Node('body');
   const docListeners = [];
   const documentShim = {
-    body: body, documentElement: body,
-    createElement: (tag) => new Node(tag),
+    body: body, documentElement: body, activeElement: body,
+    createElement: (tag) => { const node = new Node(tag); node.ownerDocument = documentShim; return node; },
+    querySelectorAll(selector) {
+      const className = String(selector || '').startsWith('.') ? String(selector).slice(1) : '';
+      return className ? body.all((node) => String(node.className || '').split(/\s+/).includes(className)) : [];
+    },
     addEventListener(type, fn) { docListeners.push({ type, fn }); },
     removeEventListener(type, fn) { const i = docListeners.findIndex((l) => l.type === type && l.fn === fn); if (i >= 0) docListeners.splice(i, 1); },
   };
-  function pressKey(key) { docListeners.filter((l) => l.type === 'keydown').slice().forEach((l) => l.fn({ key })); }
+  body.ownerDocument = documentShim;
+  function pressKey(key, shiftKey) {
+    let prevented = false;
+    docListeners.filter((l) => l.type === 'keydown').slice().forEach((l) => l.fn({
+      key, shiftKey: shiftKey === true, preventDefault() { prevented = true; },
+    }));
+    return prevented;
+  }
+  function appendFocusNode() { const node = documentShim.createElement('button'); body.appendChild(node); node.focus(); return node; }
+  function appendOverlay(className) { const node = documentShim.createElement('div'); node.className = className; body.appendChild(node); return node; }
   // 与真实宿主一样：每条消息带 sortKey（没给就排到最后），按 sortKey 排序
   let sortSeq = 0;
   function sortAll() { messages.sort((a, b) => a.sortKey - b.sortKey); }
@@ -165,6 +181,12 @@ function createHarness(opts) {
       return true;
     },
   };
+  if (opts.localRestore === true) {
+    win.nekoRestoreVisitStateToDisplay = function (frame) {
+      restoreFrames.push(JSON.parse(JSON.stringify(frame)));
+      return true;
+    };
+  }
   win.window = win;
   win.t = () => '';
   async function fetchStub(url, init) {
@@ -217,7 +239,7 @@ function createHarness(opts) {
   function buttonsOf(node) { return node.all((n) => n.tagName === 'BUTTON'); }
   function lineMessage(id) { return messages.find((x) => x.id.indexOf('visit-line-') === 0 && x.id.endsWith(':' + id)); }
   function lineText(id) { const m = lineMessage(id); return m ? m.blocks.map((b) => b.text).join('|') : null; }
-  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, listeners };
+  return { win, I, chat, sent, fetches, messages, rollbacks, toasts, sendCalls, relayFrames, restoreFrames, socket, body, advance, settle, frame, state, dialogs, buttonsOf, lineText, lineMessage, timers, pressKey, appendFocusNode, appendOverlay, activeElement: () => documentShim.activeElement, listeners };
 }
 
 const report = {};
@@ -720,6 +742,50 @@ const report = {};
     report.recall_body = call && call.body;
     report.recall_toast = h.toasts.length > 0;
   }
+  // ── 猫形态退出：普通退出也复用场景内的统一确认；模型串门不受影响 ──
+  {
+    const routes = {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: {
+        active: false, visit_id: null, phase: null, enabled: true,
+      } }),
+    };
+    const h = createHarness({ routes });
+    h.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID, side: 'guest', visit_mode: 'cat', ts: 1 });
+    h.frame({ type: 'visit_state_change', action: 'departed', visit_id: VID, side: 'guest', visit_mode: 'cat', ts: 1 });
+    const opener = h.appendFocusNode();
+    h.I.handleVisitBarAction('recall');
+    await h.settle();
+    const first = h.dialogs()[0];
+    const firstButtons = h.buttonsOf(first);
+    firstButtons[1].focus();
+    report.cat_exit_tab_forward_prevented = h.pressKey('Tab');
+    report.cat_exit_tab_forward_wrapped = h.activeElement() === firstButtons[0];
+    report.cat_exit_tab_reverse_prevented = h.pressKey('Tab', true);
+    report.cat_exit_tab_reverse_wrapped = h.activeElement() === firstButtons[1];
+    const commonModal = h.appendOverlay('modal-overlay');
+    report.cat_exit_covered_tab_ignored = h.pressKey('Tab') === false
+      && h.activeElement() === firstButtons[1];
+    h.body.removeChild(commonModal);
+    report.cat_exit_confirm_text = first && first.textContent;
+    report.cat_exit_before_confirm = h.fetches.filter((f) => f.url === '/api/visit/route/end').length;
+    h.buttonsOf(first).find((b) => b.attrs['data-visit-dialog-button'] === 'cancel').click();
+    await h.settle();
+    report.cat_exit_cancel_restored_focus = h.activeElement() === opener;
+    report.cat_exit_after_cancel = h.fetches.filter((f) => f.url === '/api/visit/route/end').length;
+    h.I.handleVisitBarAction('recall');
+    await h.settle();
+    const second = h.dialogs()[0];
+    h.buttonsOf(second).find((b) => b.attrs['data-visit-dialog-button'] === 'ok').click();
+    await h.settle();
+    const call = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.cat_exit_after_confirm = call && call.body;
+    report.cat_exit_active_before_reconcile = h.chat.isActive();
+    h.advance(5100);
+    await h.settle();
+    report.cat_exit_active_after_reconcile = h.chat.isActive();
+    report.cat_exit_state_probes = h.fetches.filter((f) => f.url.indexOf('/api/visit/state?catgirl=') === 0).length;
+  }
   // ── debrief：芯片去重 + ack；点「记成日记」带 lanlan_name；预览块 committing 帧 ──
   {
     const routes = { '/api/visit/debrief/choice': async () => ({ status: 200, body: { ok: true, applied: 'preview', preview: { diary: 'd', facts: [] } } }) };
@@ -910,6 +976,19 @@ const report = {};
     await probe;
     report.stale_same_visit_ending_phase = h.chat._test.state().visit.phase;
     report.stale_same_visit_ending_relay = h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id);
+  }
+  // ── 猫形态场次没有 room / 转录：已开始的 ending 快照靠 cat_started 判定，不能提前转发 ended ──
+  for (const catStarted of [true, false]) {
+    const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: {
+      active: true, visit_id: VID, phase: 'ending', side: 'guest', enabled: true, room: null, transcript: [],
+      cat_scene: 2, cat_started: catStarted,
+    } }) };
+    const h = createHarness({ routes });
+    await h.chat.afterBind(h.socket, '咪咪');
+    report['cat_ending_started_' + catStarted] = {
+      phase: h.chat._test.state().visit.phase,
+      relay: h.relayFrames.map((frame) => frame.action + ':' + frame.visit_id),
+    };
   }
   // ── 被拒那句之后又提交过：不把旧文字塞回输入框，气泡照样标「未送达」 ──
   {
@@ -1115,13 +1194,14 @@ const report = {};
   // ── 重连轮询发现已结束：照样留下该场的结束消息（查看详情 / 导出 / 举报） ──
   {
     const routes = { '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA': async () => ({ status: 200, body: { active: false, visit_id: null, phase: null, enabled: true } }) };
-    const h = createHarness({ routes });
+    const h = createHarness({ routes, localRestore: true });
     h.state('started');
     h.state('reconnecting');
     h.advance(5100);
     await h.settle();
     report.recover_ended_message = h.messages.some((m) => m.id === 'visit-ended-' + VID);
-    report.recover_ended_relay = h.relayFrames[h.relayFrames.length - 1].action;
+    report.recover_ended_relay = h.restoreFrames[h.restoreFrames.length - 1].action;
+    report.recover_ended_local_restore = !h.relayFrames.some((frame) => frame.action === 'ended');
   }
   // ── abort 的 i_done 比收到的片多：补占位，迟片还能落位 ──
   {
@@ -1606,6 +1686,75 @@ const report = {};
     report.geometry_on_close = refreshes;
     report.geometry_dialog_closed = h.dialogs().length;
   }
+  // ── 返回模型的兜底对账：只有旧场次已明确结束才可提交本地形态 ──
+  {
+    const stateUrl = '/api/visit/state?catgirl=%E5%92%AA%E5%92%AA';
+    const idle = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    const ending = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID, phase: 'ending', side: 'host' } }),
+    } });
+    const replaced = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: true, visit_id: VID2, phase: 'active', side: 'host' } }),
+    } });
+    const failed = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 503, body: {} }),
+    } });
+    [idle, ending, replaced, failed].forEach((h) => h.state('started'));
+    await Promise.all([idle, ending, replaced, failed].map((h) => h.chat.endCatVisitForModelReturn(VID)));
+
+    const switched = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    switched.state('started');
+    await switched.chat.endCatVisitForModelReturn(VID);
+    switched.win.lanlan_config.lanlan_name = '小橘';
+
+    let releaseState;
+    const stateGate = new Promise((resolve) => { releaseState = resolve; });
+    const raced = createHarness({ routes: {
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+      [stateUrl]: async () => {
+        await stateGate;
+        return { status: 200, body: { active: false, visit_id: null, phase: null } };
+      },
+    } });
+    raced.state('started');
+    await raced.chat.endCatVisitForModelReturn(VID);
+    const racedProbe = raced.chat.confirmCatVisitEnded(VID);
+    await raced.settle();
+    raced.frame({ type: 'visit_state_change', action: 'pending', visit_id: VID2, side: 'host', ts: 2 });
+    releaseState();
+    // A lost response may still have ended the visit: keep the probe so state can confirm it.
+    const lostEnd = createHarness({ routes: {
+      '/api/visit/route/end': async () => { throw new Error('network down'); },
+      [stateUrl]: async () => ({ status: 200, body: { active: false, visit_id: null, phase: null } }),
+    } });
+    lostEnd.state('started');
+    const lostEndResult = await lostEnd.chat.endCatVisitForModelReturn(VID);
+    report.cat_return_lost_response = {
+      result: lostEndResult,
+      confirmed: await lostEnd.chat.confirmCatVisitEnded(VID),
+    };
+    report.cat_return_reconcile = {
+      idle: await idle.chat.confirmCatVisitEnded(VID),
+      ending: await ending.chat.confirmCatVisitEnded(VID),
+      replaced: await replaced.chat.confirmCatVisitEnded(VID),
+      failed: await failed.chat.confirmCatVisitEnded(VID),
+      switched: await switched.chat.confirmCatVisitEnded(VID),
+      raced: await racedProbe,
+      idle_active: idle.chat.isActive(),
+      idle_relayed_ended: idle.relayFrames.some((frame) => frame.action === 'ended' && frame.visit_id === VID),
+      replaced_visit: replaced.chat._test.state().visit.visitId,
+      raced_visit: raced.chat._test.state().visit.visitId,
+    };
+  }
   // ── 切换角色：上一位的串门 UI 状态清掉，不往新角色的聊天里补结束消息 ──
   {
     const routes = {
@@ -1842,6 +1991,23 @@ const report = {};
     await pending;
     const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
     report.switched_create_end = end && end.body;
+  }
+  // ── 后端建出的定向房间形态与请求不符：立即取消，不能留下占位中的 pending 房间 ──
+  {
+    const target = '22222222-2222-4222-8222-222222222222';
+    const currentUrl = '/api/visit/rooms/current?catgirl=%E5%92%AA%E5%92%AA';
+    const routes = {
+      [currentUrl]: async () => ({ status: 404, body: { error: 'no_pending_invite' } }),
+      '/api/visit/rooms': async () => ({ status: 202, body: {
+        visit_id: VID2, phase: 'pending', visit_mode: 'model', target_user_id: target,
+      } }),
+      '/api/visit/route/end': async () => ({ status: 200, body: { ok: true } }),
+    };
+    const h = createHarness({ routes });
+    const result = await h.chat._test.startInvite(target, 'cat');
+    const end = h.fetches.find((f) => f.url === '/api/visit/route/end');
+    report.mode_mismatch_create_ok = result.ok;
+    report.mode_mismatch_create_end = end && end.body;
   }
   // ── 读 state 期间到了新一场的邀请：旧快照作废，不把新一场又收掉 ──
   {
@@ -2450,6 +2616,25 @@ def test_backend_refusal_marks_that_bubble_and_restores_the_text(report):
     assert report["recipient_switch_refreshed_hit_geometry"] is True
 
 
+def test_cat_model_return_keeps_reconciling_after_a_lost_response(report):
+    assert report["cat_return_lost_response"] == {"result": "unknown", "confirmed": True}
+
+
+def test_cat_model_return_reconciliation_requires_authoritative_end(report):
+    assert report["cat_return_reconcile"] == {
+        "idle": True,
+        "ending": False,
+        "replaced": True,
+        "failed": False,
+        "switched": False,
+        "raced": False,
+        "idle_active": False,
+        "idle_relayed_ended": True,
+        "replaced_visit": "B" * 22,
+        "raced_visit": "B" * 22,
+    }
+
+
 def test_guest_side_and_wrap_up_refuse_but_ending_does_not_take_input(report):
     assert report["guest_accepted"] is False and report["guest_disabled"] is True
     assert report["wrap_accepted"] is False
@@ -2473,7 +2658,7 @@ def test_persona_409_is_confirmed_before_the_single_retry(report):
     assert report["persona_joins_before"] == 1       # After the first join returns 409, before retry.
     assert report["join_count"] == 2
     assert report["join_body"] == {"catgirl": "咪咪", "invite_code": "ABCDEFGH23", "confirm": True,
-                                   "crop": "full"}
+                                   "crop": "full", "cat_asset": "dev_neko"}
 
 
 def test_guest_quota_exhaustion_reuses_the_global_status_banner(report):
@@ -2486,6 +2671,24 @@ def test_recall_posts_the_route_end_body_and_toasts_recall_already(report):
         "lanlan_name": "咪咪", "visit_id": "AAAAAAAAAAAAAAAAAAAAAA", "reason": "recall",
     }
     assert report["recall_toast"] is True
+
+
+def test_cat_visit_exit_uses_the_shared_confirmation_without_changing_model_visits(report):
+    assert report["cat_exit_confirm_text"] == "是否退出猫猫串门取消确定"
+    assert report["cat_exit_tab_forward_prevented"] is True
+    assert report["cat_exit_tab_forward_wrapped"] is True
+    assert report["cat_exit_tab_reverse_prevented"] is True
+    assert report["cat_exit_tab_reverse_wrapped"] is True
+    assert report["cat_exit_covered_tab_ignored"] is True
+    assert report["cat_exit_cancel_restored_focus"] is True
+    assert report["cat_exit_before_confirm"] == 0
+    assert report["cat_exit_after_cancel"] == 0
+    assert report["cat_exit_after_confirm"] == {
+        "lanlan_name": "咪咪", "visit_id": "AAAAAAAAAAAAAAAAAAAAAA", "reason": "recall",
+    }
+    assert report["cat_exit_active_before_reconcile"] is True
+    assert report["cat_exit_active_after_reconcile"] is False
+    assert report["cat_exit_state_probes"] == 1
 
 
 def test_debrief_chips_dedupe_ack_and_choice_body(report):
@@ -2561,6 +2764,15 @@ def test_stale_unstarted_ending_snapshot_closes_the_same_visit(report):
         "pending:AAAAAAAAAAAAAAAAAAAAAA",
         "ended:AAAAAAAAAAAAAAAAAAAAAA",
     ]
+
+
+def test_cat_ending_snapshot_uses_cat_started(report):
+    started = report["cat_ending_started_true"]
+    assert started["phase"] == "ending"
+    assert not [frame for frame in started["relay"] if frame.startswith("ended:")]
+    unstarted = report["cat_ending_started_false"]
+    assert unstarted["phase"] is None
+    assert unstarted["relay"] == ["ended:AAAAAAAAAAAAAAAAAAAAAA"]
 
 
 def test_a_later_submission_keeps_an_old_refused_text_out_of_the_composer(report):
@@ -2642,6 +2854,7 @@ def test_snapshot_visit_switch_resets_line_and_avatar_caches(report):
 def test_snapshot_recovery_of_an_ended_visit_keeps_its_ended_message(report):
     assert report["recover_ended_message"] is True
     assert report["recover_ended_relay"] == "ended"
+    assert report["recover_ended_local_restore"] is True
 
 
 def test_abort_extends_to_i_done_with_placeholders(report):
@@ -2904,6 +3117,14 @@ def test_room_created_after_a_character_switch_is_ended(report):
     end = report["switched_create_end"]
     assert end is not None
     assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end" and end["visit_id"]
+
+
+def test_direct_room_with_the_wrong_mode_is_ended(report):
+    assert report["mode_mismatch_create_ok"] is False
+    end = report["mode_mismatch_create_end"]
+    assert end is not None
+    assert end["lanlan_name"] == "咪咪" and end["reason"] == "route_end"
+    assert end["visit_id"] == "BBBBBBBBBBBBBBBBBBBBBB"
 
 
 def test_clicking_invite_restores_the_existing_code_without_creating_another_room(report):

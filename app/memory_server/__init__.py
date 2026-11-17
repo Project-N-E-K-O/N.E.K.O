@@ -85,6 +85,7 @@ from .gates import (  # noqa: F401
     _INITIAL_DELAY_ARCHIVE,
     _INITIAL_DELAY_AUTO_PROMOTE,
     _INITIAL_DELAY_EVENT_LOG_COMPACT,
+    _INITIAL_DELAY_HABITUAL_PHRASES,
     _INITIAL_DELAY_IDLE_MAINT,
     _INITIAL_DELAY_PERSONA_REFINE,
     _INITIAL_DELAY_REBUTTAL,
@@ -183,6 +184,7 @@ from .review import (  # noqa: F401
     compress_backup_tasks,
     correction_cancel_flags,
     correction_tasks,
+    introspection_tasks,
     maybe_spawn_review,
 )
 
@@ -212,11 +214,19 @@ from .evidence_loops import (  # noqa: F401
 
 from . import refine_loops  # noqa: F401
 from .refine_loops import (  # noqa: F401
+    _periodic_introspection_loop,
     _periodic_persona_refine_loop,
     _periodic_reflection_refine_loop,
     _periodic_reflection_synthesis_loop,
     _run_persona_refine_for_character,
     _run_reflection_refine_for_character,
+)
+
+from . import habitual_phrase_loop  # noqa: F401
+from .habitual_phrase_loop import (  # noqa: F401
+    HABITUAL_PHRASE_POLL_INTERVAL,
+    _arefresh_habitual_phrases_once,
+    _periodic_habitual_phrase_loop,
 )
 
 from . import post_turn  # noqa: F401

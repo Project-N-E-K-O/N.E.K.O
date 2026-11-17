@@ -1,3 +1,4 @@
+import { useChatScreenVisibility } from './ChatScreenVisibility';
 import { useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MessageBubble from './MessageBubble';
 import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
@@ -39,6 +40,7 @@ export default function MessageList({
   footer,
   footerKey,
 }: MessageListProps) {
+  const { isMessageHidden } = useChatScreenVisibility();
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
   const scrollbarTimerRef = useRef<number | null>(null);
@@ -50,8 +52,8 @@ export default function MessageList({
   });
 
   const displayMessages = useMemo(
-    () => messages.filter(hasVisibleMessageContent).slice(-MAX_DISPLAY_MESSAGES),
-    [messages],
+    () => messages.filter(message => !isMessageHidden(message) && hasVisibleMessageContent(message)).slice(-MAX_DISPLAY_MESSAGES),
+    [messages, isMessageHidden],
   );
 
   const exposureAnchorIds = useMemo(
@@ -63,6 +65,10 @@ export default function MessageList({
     () => displayMessages.map(message => message.id).join('|'),
     [displayMessages],
   );
+
+  useEffect(() => {
+    if (displayMessages.length === 0) shouldScrollRef.current = true;
+  }, [displayMessages.length]);
 
   // Always instant scroll: behavior:'smooth' is silently broken in our Electron
   // host (window.scrollTo / element.scrollTo with behavior:'smooth' is a no-op),

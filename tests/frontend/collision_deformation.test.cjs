@@ -83,6 +83,7 @@ test('contact anchoring uses translate compensation without moving the facing pi
   const block = css.match(/\.neko-idle-return-btn\.is-neko-collision-deforming[^}]+}/)?.[0] || '';
   assert.match(block, /translate:\s*var\(--neko-collision-shift-x/);
   assert.doesNotMatch(block, /transform-origin:/);
+  assert.match(css, /\.neko-playground-collision-deformation-target\.is-neko-collision-deforming/);
 });
 
 test('CAT2 and CAT3 contact compensation uses the art computed transform origin', () => {
@@ -122,6 +123,37 @@ test('equal-speed impacts use the same amplitude on either axis', () => {
   assert.ok(Math.abs((vertical.scaleX - 1) - (horizontal.scaleY - 1)) < 1e-12);
 });
 
+test('component strength scales amplitude independently and zero stays disabled', () => {
+  const full = sample({ strength: 1 });
+  const half = sample({ strength: 0.5 });
+  const disabled = sample({ strength: 0 });
+  const identity = { active: false, scaleX: 1, scaleY: 1, originX: 50, originY: 50 };
+
+  assert.ok(Math.abs((1 - half.scaleY) - (1 - full.scaleY) * 0.5) < 1e-12);
+  assert.ok(Math.abs((half.scaleX - 1) - (full.scaleX - 1) * 0.5) < 1e-12);
+  assert.deepEqual(disabled, identity);
+  assert.deepEqual(sample(), full, 'legacy callers retain the existing full-strength default');
+});
+
+test('simultaneous targets retain separate deformation strengths and cleanup', () => {
+  const strong = buttonFixture();
+  const subtle = buttonFixture();
+  beginCollisionDeformation(strong, {
+    owner: 'playground', direction: 'down', impactVelocityChange: 800, startedAt: 1000, strength: 1,
+  });
+  beginCollisionDeformation(subtle, {
+    owner: 'playground', direction: 'up', impactVelocityChange: 800, startedAt: 1000, strength: 0.25,
+  });
+  const strongCompression = 1 - Number(strong.style.getPropertyValue('--neko-collision-scale-y'));
+  const subtleCompression = 1 - Number(subtle.style.getPropertyValue('--neko-collision-scale-y'));
+  assert.ok(Math.abs(subtleCompression - strongCompression * 0.25) < 0.0002);
+
+  assert.equal(clearCollisionDeformation(strong, 'playground'), true);
+  assert.equal(strong.classList.contains('is-neko-collision-deforming'), false);
+  assert.equal(subtle.classList.contains('is-neko-collision-deforming'), true);
+  assert.equal(renderCollisionDeformation(subtle, 1100), true);
+});
+
 test('every faster finite impact produces stronger deformation toward a safe limit', () => {
   const slow = sample({ impactVelocityChange: 100 });
   const medium = sample({ impactVelocityChange: 700 });
@@ -148,6 +180,41 @@ test('deformation holds briefly, then recovers within a short fixed duration', (
   assert.ok(recovering.scaleY > held.scaleY && recovering.scaleY < 1);
   assert.equal(almostDone.active, true);
   assert.deepEqual(done, { active: false, scaleX: 1, scaleY: 1, originX: 50, originY: 50 });
+});
+
+test('expiry clears a deformation even when its physics renderer stops immediately', () => {
+  const button = buttonFixture();
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let expire = null;
+  let delay = null;
+  let clearedTimer = null;
+  const timer = { unrefCalled: false, unref() { this.unrefCalled = true; } };
+  globalThis.setTimeout = (callback, timeout) => {
+    expire = callback;
+    delay = timeout;
+    return timer;
+  };
+  globalThis.clearTimeout = value => { clearedTimer = value; };
+  try {
+    assert.equal(beginCollisionDeformation(button, {
+      owner: 'playground', direction: 'down', impactVelocityChange: 600,
+      startedAt: 1000, strength: 0.5,
+    }), true);
+    assert.equal(delay, 160);
+    assert.equal(timer.unrefCalled, true);
+    assert.equal(button.classList.contains('is-neko-collision-deforming'), true);
+
+    expire();
+
+    assert.equal(clearedTimer, timer);
+    assert.equal(button.classList.contains('is-neko-collision-deforming'), false);
+    assert.equal(button.style.getPropertyValue('--neko-collision-scale-x'), '');
+    assert.equal(button.style.getPropertyValue('--neko-collision-scale-y'), '');
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
 });
 
 test('resting, invalid, expired, and reduced-motion samples stay unchanged', () => {

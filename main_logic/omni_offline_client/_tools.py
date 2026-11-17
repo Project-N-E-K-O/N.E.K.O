@@ -15,6 +15,7 @@
 
 import json
 
+from utils.llm_client.messages import message_metadata
 from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
 from ._turn_context import _TurnContextMixin, is_turn_context_message
@@ -71,6 +72,10 @@ _TOOLS_REFUSAL_REQUEST_QUALIFIERS = (
     "when using",
     "for this request",
 )
+
+
+def _is_screen_image_message(message):
+    return message_metadata(message).get("screen_inspection_image") is True
 
 
 class _ToolingMixin(_TurnContextMixin):
@@ -224,13 +229,23 @@ class _ToolingMixin(_TurnContextMixin):
             (index for index in range(len(paired) - 1, -1, -1)
              if getattr(paired[index], "type", None) == "human"
              and id(paired[index]) not in context_ids
-             and not is_turn_context_message(paired[index])),
+             and not is_turn_context_message(paired[index])
+             and not _is_screen_image_message(paired[index])),
             0,
         )
-        if any(isinstance(message, dict) and message.get("role") == "tool"
-               and message.get("name") == "read_current_screen" for message in paired[:last_user]):
+        if any(_is_screen_image_message(message) or (
+            isinstance(message, dict) and message.get("role") == "tool"
+            and message.get("name") == "read_current_screen"
+        ) for message in paired[:last_user]):
+            from config.prompts.prompts_screen_inspection import text as screen_text
+
             receipt = self._released_screen_result_content()
+            placeholder = screen_text("released", self._tool_image_locale())
             paired = [
+                {"role": "user", "content": placeholder,
+                 "metadata": {"screen_inspection_image": True}}
+                if index < last_user and _is_screen_image_message(message)
+                else
                 {**message, "content": receipt}
                 if index < last_user and isinstance(message, dict)
                 and message.get("role") == "tool" and message.get("name") == "read_current_screen"
@@ -241,7 +256,8 @@ class _ToolingMixin(_TurnContextMixin):
             (index + 1 for index in range(len(paired) - 1, -1, -1)
              if getattr(paired[index], "type", None) == "human"
              and id(paired[index]) not in context_ids
-             and not is_turn_context_message(paired[index])),
+             and not is_turn_context_message(paired[index])
+             and not _is_screen_image_message(paired[index])),
             len(paired),
         )
         hits: dict = {}
@@ -951,6 +967,11 @@ class _ToolingMixin(_TurnContextMixin):
             return None
 
         message = {"role": "user", "content": content}
+        if result.name == "read_current_screen":
+            # Internal metadata survives history serialization but is omitted
+            # from provider messages. A concurrent new turn can now release its
+            # request view without mutating the old provider's in-flight image.
+            message["metadata"] = {"screen_inspection_image": True}
         index = len(messages)
         if insert_after is not None:
             after = _find_by_identity(messages, -1, insert_after)

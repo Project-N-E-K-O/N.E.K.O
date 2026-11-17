@@ -26,6 +26,7 @@
         <div class="plugin-statuses">
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <PluginAutoStartBadge v-if="plugin.autoStart === true" />
+          <el-tag v-if="plugin.consent?.state === 'confirm'" size="small" type="info">{{ t('pluginConsent.pending') }}</el-tag>
         </div>
       </header>
 
@@ -48,7 +49,12 @@
           <el-tag size="small" type="info" class="plugin-version-tag" :title="`v${plugin.version}`">
             <span class="plugin-version-tag__label">v{{ plugin.version }}</span>
           </el-tag>
-          <SourceTag :source="plugin.install_source?.source" :has-update="hasUpdate" compact />
+          <SourceTag
+            :source="plugin.install_source?.source"
+            :registry-source="plugin.source"
+            :has-update="hasUpdate"
+            compact
+          />
         </div>
         <el-button
           v-if="availableUiAction"

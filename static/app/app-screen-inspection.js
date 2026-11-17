@@ -30,6 +30,10 @@ export async function handleScreenInspection(request, state, socket) {
     );
     const scopeNow = () => {
         const id = state.selectedScreenSourceId || '';
+        const generation = typeof window.getScreenSourceSelectionGeneration === 'function'
+            ? window.getScreenSourceSelectionGeneration() : 0;
+        // Portal selections can reuse an ID for a different window between requests.
+        const selectedKey = id ? `${id}#${generation}` : '';
         const candidate = state.screenCaptureStream;
         const track = candidate && candidate.active && candidate.getVideoTracks()[0];
         const stream = track && track.readyState !== 'ended' ? candidate : null;
@@ -37,12 +41,12 @@ export async function handleScreenInspection(request, state, socket) {
         const bound = stream && typeof window.getScreenCaptureStreamSourceId === 'function'
             && window.getScreenCaptureStreamSourceId(stream) === id;
         if (id.startsWith('window:')) {
-            return {key: id, restricted: true, id, stream: bound ? stream : null};
+            return {key: selectedKey, restricted: true, id, stream: bound ? stream : null};
         }
         if (displaySurface === 'window' || displaySurface === 'browser') {
             return {key: streamKey(stream), restricted: true, id: '', stream};
         }
-        return {key: id || (stream ? streamKey(stream) : 'desktop'), restricted: false, id, stream};
+        return {key: selectedKey || (stream ? streamKey(stream) : 'desktop'), restricted: false, id, stream};
     };
     try {
         if (blocked()) throw new Error('disabled');
@@ -109,7 +113,7 @@ export async function handleScreenInspection(request, state, socket) {
                     canvas.getContext('2d').drawImage(video, 0, 0);
                     dataUrl = canvas.toDataURL('image/png');
                     captureType = scope.restricted ? null : 'screen';
-                    sourceId = scope.key;
+                    sourceId = scope.id || scope.key;
                     title = scope.restricted ? 'Shared window' : 'Shared screen';
                 } finally { video.pause(); video.srcObject = null; }
             } else throw new Error('unsupported_capture');

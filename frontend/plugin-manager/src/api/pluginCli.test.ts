@@ -26,10 +26,17 @@ beforeEach(() => {
 })
 
 describe('pluginCli API', () => {
-  it('preserves the build-all wait budget for explicit managed targets without development headers', async () => {
+  it('preserves an explicit wait budget for selected managed targets', async () => {
     vi.mocked(post).mockResolvedValue({})
-    const request = { mode: 'selected' as const, plugin_refs: [{ root_id: 'user' as const, directory_name: 'demo' }] }
+    const request = { mode: 'selected' as const, plugin_refs: [{ root_id: 'project' as const, directory_name: 'demo' }] }
     await buildPluginCli(request, { timeout: 300_000 })
+    expect(post).toHaveBeenCalledWith('/plugin-cli/build', request, { timeout: 300_000 })
+  })
+
+  it('gives build-all a long wait budget', async () => {
+    vi.mocked(post).mockResolvedValue({})
+    const request = { mode: 'all' as const }
+    await buildPluginCli(request)
     expect(post).toHaveBeenCalledWith('/plugin-cli/build', request, { timeout: 300_000 })
   })
 

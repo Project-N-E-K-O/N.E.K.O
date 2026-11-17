@@ -531,3 +531,40 @@ plugin/plugins/mcp_adapter/
 - toast 和 confirm dialog
 - 插件本地 i18n
 - hosted TSX 测试
+
+## 请求专注模式与全屏
+
+Static UI 与 Hosted TSX 共用宿主确认弹窗，仅支持当前可见的 panel，guide/docs 不支持。
+`focus` 隐藏侧栏和页面操作区，`fullscreen` 全屏显示面板；iframe 保持挂载，保留草稿和组件状态。
+
+```tsx
+const result = await props.api.display.requestMode("fullscreen") // 也支持 "focus"
+const state = await props.api.display.getState()
+const unsubscribe = props.api.display.onStateChange(state => { /* 更新界面 */ })
+// 在 effect cleanup 中调用 unsubscribe。
+await props.api.display.exit()
+```
+
+Static 页面通过 `NekoPluginDisplay` 使用同一套 API：
+
+```html
+<script src="/plugin-ui-sdk/display.js"></script>
+<button id="expand">扩大显示</button>
+<script>
+document.getElementById("expand").onclick = () => NekoPluginDisplay.requestMode("focus")
+</script>
+```
+
+`getState()` 返回 `{ mode, supportedModes }`，mode 为 `normal`、`focus` 或 `fullscreen`。
+请求返回 `{ status, state, reason? }`，status 为 `applied`、`declined`、`unsupported`、
+`cancelled`、`busy` 或 `failed`。重复请求当前模式直接成功，不再弹窗。
+直接在顶层打开静态页面时返回 `unsupported`。
+
+- 进入模式需要宿主确认；确认按钮的真实点击直接调用 Fullscreen API，无需 Python action。
+- 确认请求不使用普通 action 超时，由用户确认、取消或文档销毁结束。
+- 其他功能占用全屏或原生转换尚未结束时返回 `busy`；原生操作失败返回 `failed`，不自动切换其他模式。
+- 退出恢复会话前布局；用户通过宿主明确退出专注时，保留其选择的普通布局。
+- 客户端在宿主加载握手完成后才发送请求；重新连接会同步状态监听器，包括缓存文档恢复。
+- 切换 panel、导航或替换文档会结束旧会话。客户端在 `pageshow` / `pagehide` 登记和释放文档，忽略旧响应；文档销毁时，待处理的 `getState()` 以 `AbortError` 拒绝。
+
+桌面全屏需要配套 Electron 宿主支持；此 API 不提供原生窗口尺寸调整或最大化能力。

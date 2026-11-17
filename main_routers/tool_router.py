@@ -54,6 +54,10 @@ Endpoints
     Body: ``{"source": "plugin:foo", "role": null}`` — drops every tool
     whose ``metadata.source == source``. Useful for plugin shutdown.
 
+``POST /api/tools/release-host``
+    Body: ``{"host_instance_id": "..."}`` — drops every tool still owned
+    by that plugin host. Used by the host during shutdown.
+
 ``GET /api/tools``
     Optional ``?role=Lanlan`` query — returns the active tool list.
 
@@ -89,6 +93,7 @@ from main_routers.cookies_login_router import verify_local_access
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_session_manager
+from .tool_host_monitor import ToolHost, ToolHostMonitor
 from main_logic.reply_tail import ReplyHookUnavailableError, reply_tail_registry
 
 
@@ -182,6 +187,9 @@ class ToolRegisterRequest(BaseModel):
     # never hold main_server long-term.
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
     reply_tail: bool = False
+    host_instance_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    host_pid: Optional[int] = Field(default=None, gt=0)
+    host_process_started_at: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
 
     @field_validator("callback_url")
     @classmethod
@@ -196,6 +204,7 @@ class ToolUnregisterRequest(BaseModel):
     # refused_roles. Prevent plugin self-unregistration deleting same-name tools owned
     # by others (e.g. its registration never succeeded and another plugin owns name).
     expected_source: Optional[str] = None
+    expected_host_instance_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class ToolClearRequest(BaseModel):
@@ -203,16 +212,18 @@ class ToolClearRequest(BaseModel):
     role: Optional[str] = None
 
 
+class ToolHostReleaseRequest(BaseModel):
+    host_instance_id: str = Field(min_length=1, max_length=64)
+
+
 # ---------------------------------------------------------------------------
 # Remote dispatcher — issued when ToolRegistry.execute() runs a remote tool
 # ---------------------------------------------------------------------------
 
-# Evict dead plugins automatically: crashes leave tools pointing at dead endpoints in
-# main_server registry, visible/callable in model schemas, always connection
-# refused. Graceful shutdown uses /api/tools/clear; kill -9 cannot,
-# so clean reactively during dispatch.
+# Keep reactive eviction for callback failures, including tools registered by
+# older hosts without an instance ID.
 #
-# Count failures by ``(source, callback_origin)``, never source alone:
+# Count failures by source, callback origin and host instance:
 # ``/api/tools/register`` permits different callback_url per tool under one plugin source;
 # source-only counting turns one endpoint outage into whole-plugin outage, removing
 # healthy sibling endpoint tools. (source, origin) confines cleanup to tools on
@@ -225,7 +236,7 @@ class ToolClearRequest(BaseModel):
 # of business result resets (source, origin), preventing occasional connection refused
 # accumulating into false eviction over time.
 _EVICTION_FAILURE_THRESHOLD = 3
-_consecutive_connect_failures: Dict[Tuple[str, str], int] = {}
+_consecutive_connect_failures: Dict[Tuple[str, str, Optional[str]], int] = {}
 
 
 def _callback_origin(url: str) -> str:
@@ -249,7 +260,8 @@ def _callback_origin(url: str) -> str:
         port = parsed.port  # May raise ValueError for nonnumeric ports.
         if port is None:
             port = 443 if parsed.scheme == "https" else 80
-        return f"{parsed.scheme}://{parsed.hostname}:{port}"
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        return f"{parsed.scheme}://{host}:{port}"
     except (ValueError, TypeError):
         return url
 
@@ -269,24 +281,31 @@ def _is_connection_level_failure(exc: BaseException) -> bool:
     return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
 
 
-def _note_dispatch_outcome(source: str, callback_url: str, *, connection_failed: bool) -> None:
-    """Update the consecutive connection-failure counter for a ``(source,
-    callback_origin)``. A single success (any HTTP status) resets it to zero;
-    hitting the threshold consecutively triggers ``_evict_dead_callback_origin``."""
+def _note_dispatch_outcome(
+    source: str, callback_url: str, *, connection_failed: bool, host_instance_id: Optional[str] = None,
+) -> None:
+    """Count connection failures for the instance that received the call."""
     if not _is_plugin_source(source):
         return
-    key = (source, _callback_origin(callback_url))
+    origin = _callback_origin(callback_url)
+    if host_instance_id is not None and not any(
+        entry.tool.metadata.get("host_instance_id") == host_instance_id
+        for entry in _remote_tool_ledger.values()
+    ):
+        # An in-flight callback can complete after its host has been retired.
+        return
+    key = (source, origin, host_instance_id)
     if not connection_failed:
         _consecutive_connect_failures.pop(key, None)
         return
     cnt = _consecutive_connect_failures.get(key, 0) + 1
     _consecutive_connect_failures[key] = cnt
     if cnt >= _EVICTION_FAILURE_THRESHOLD:
-        _evict_dead_callback_origin(source, key[1])
+        _evict_dead_callback_origin(*key)
 
 
-def _evict_dead_callback_origin(source: str, origin: str) -> None:
-    """Sweep the tools of the given ``(source, origin)`` out of every session
+def _evict_dead_callback_origin(source: str, origin: str, host_instance_id: Optional[str] = None) -> None:
+    """Sweep the tools of the failed callback out of every session
     manager's registry, and trigger ``_sync_tools_to_active_session`` to refresh
     the live OpenAI Realtime / GLM / Qwen schemas on the wire — touching only
     the registry without pushing to the wire would leave the model seeing the
@@ -297,14 +316,19 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
     process crashing (one plugin usually runs one server, so all its tools share
     one callback_url origin → swept together) while avoiding collateral damage
     to other healthy endpoints when a single endpoint is misconfigured."""
-    _consecutive_connect_failures.pop((source, origin), None)
+    _consecutive_connect_failures.pop((source, origin, host_instance_id), None)
+    _evict_remote_tools(
+        lambda tool: tool.metadata.get("source") == source
+        and _callback_origin(tool.metadata.get("callback_url") or "") == origin
+        and tool.metadata.get("host_instance_id") == host_instance_id,
+        f"connection failures for {source} at {origin}",
+    )
+
+
+def _evict_remote_tools(matches: Callable[[ToolDefinition], bool], reason: str) -> int:
     # Sweep ledger too, or character rebuild replays dead tools. Before obtaining
     # session_manager, so cleanup works even when manager unavailable.
-    _ledger_forget(
-        lambda entry: entry.tool.metadata.get("source") == source
-        and _callback_origin(entry.tool.metadata.get("callback_url") or "") == origin,
-        None,
-    )
+    _ledger_forget(lambda entry: matches(entry.tool), None)
     try:
         session_manager = get_session_manager()
     except Exception as e:
@@ -314,29 +338,26 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
             "auto-eviction skipped (session_manager unavailable): %s: %s",
             type(e).__name__, e,
         )
-        return
+        return 0
     total = 0
     affected: List[str] = []
     for mgr in list(session_manager.values()):
         if mgr is None:
             continue
         try:
-            to_drop = [
-                t.name for t in mgr.tool_registry.all()
-                if t.metadata.get("source") == source
-                and _callback_origin(t.metadata.get("callback_url") or "") == origin
-            ]
+            to_drop = [t.name for t in mgr.tool_registry.all() if matches(t)]
             if not to_drop:
                 continue
-            holder_of = getattr(mgr, "_public_knowledge_holder", None)
-            holder = holder_of() if callable(holder_of) else None
+            holders_of = getattr(mgr, "_yielding_builtin_holders", None)
+            holders = holders_of() if callable(holders_of) else None
             for name in to_drop:
                 mgr.tool_registry.unregister(name)
-            # Evicted tools may shadow builtin query_public_knowledge;
-            # restore builtin after name becomes free.
+            # Evicted tools may shadow a builtin that yields its name
+            # (query_public_knowledge, the two task tools); restore the
+            # builtin after the name becomes free.
             refill = getattr(mgr, "_refill_vacated_builtins", None)
             if callable(refill):
-                refill(holder)
+                refill(holders)
             # Reuse manager fire-and-forget sync channel (same as register_tool /
             # clear_tools), sending fresh session.update onto wire.
             # Access ``_fire_task`` / ``_sync_tools_to_active_session`` directly because
@@ -345,8 +366,8 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
             mgr._fire_task(mgr._sync_tools_to_active_session())  # noqa: SLF001
         except Exception as e:
             logger.warning(
-                "auto-eviction sweep on mgr=%s (source=%s origin=%s) failed: %s: %s",
-                getattr(mgr, "lanlan_name", "?"), source, origin,
+                "remote tool cleanup on mgr=%s (%s) failed: %s: %s",
+                getattr(mgr, "lanlan_name", "?"), reason,
                 type(e).__name__, e,
             )
             continue
@@ -354,11 +375,39 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
         affected.append(getattr(mgr, "lanlan_name", "?"))
     if total:
         logger.warning(
-            "auto-evicted %d tool(s) for plugin source %s callback origin %s "
-            "across roles=%s after %d consecutive connect failures — endpoint "
-            "unreachable (plugin process or sub-endpoint likely down)",
-            total, source, origin, affected, _EVICTION_FAILURE_THRESHOLD,
+            "Removed %d remote tool(s) across roles=%s: %s", total, affected, reason,
         )
+    return total
+
+
+def _evict_tool_host(host_instance_id: str, reason: str) -> int:
+    for key in list(_consecutive_connect_failures):
+        if key[2] == host_instance_id:
+            del _consecutive_connect_failures[key]
+    return _evict_remote_tools(
+        lambda tool: tool.metadata.get("host_instance_id") == host_instance_id,
+        f"plugin host {host_instance_id}: {reason}",
+    )
+
+
+def _registered_tool_hosts() -> set[ToolHost]:
+    hosts = set()
+    for entry in _remote_tool_ledger.values():
+        metadata = entry.tool.metadata
+        host_id = metadata.get("host_instance_id")
+        if host_id:
+            hosts.add(ToolHost(
+                instance_id=host_id,
+                origin=_callback_origin(metadata["callback_url"]),
+                pid=metadata["host_pid"],
+                started_at=metadata["host_process_started_at"],
+            ))
+    return hosts
+
+
+_tool_host_monitor = ToolHostMonitor(_registered_tool_hosts, _evict_tool_host)
+router.add_event_handler("startup", _tool_host_monitor.start)
+router.add_event_handler("shutdown", _tool_host_monitor.stop)
 
 
 async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResult:
@@ -400,6 +449,7 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         _note_dispatch_outcome(
             source, str(callback_url or ""),
             connection_failed=_is_connection_level_failure(e),
+            host_instance_id=metadata.get("host_instance_id"),
         )
         return ToolResult(
             call_id=call.call_id, name=call.name,
@@ -408,7 +458,10 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
     # HTTP exchange completed (any status code) → endpoint is reachable,
     # reset the consecutive-failure counter. Application-level errors
     # (4xx/5xx or ``is_error=True`` in body) are NOT lifecycle failures.
-    _note_dispatch_outcome(source, str(callback_url or ""), connection_failed=False)
+    _note_dispatch_outcome(
+        source, str(callback_url or ""), connection_failed=False,
+        host_instance_id=metadata.get("host_instance_id"),
+    )
     if resp.status_code >= 400:
         err = f"remote tool callback returned HTTP {resp.status_code}: {resp.text[:200]}"
         return ToolResult(
@@ -554,7 +607,7 @@ def _resolve_target_managers(role: Optional[str]) -> List[Any]:
 #                Reregistered names move to tail, preserving last-writer-wins replay.
 #   unregister → role=None removes all name records; role=X removes (X,name), global record skips X.
 #   clear → same as unregister, matched by source.
-#   Dead-plugin eviction → remove all matching (source, callback origin).
+#   Dead-plugin eviction → remove registrations matching the failed callback or host.
 #   Character slot delete/rename → ``forget_role``: manager/registry gone together.
 # Process-local: main_server restart clears ledger, still requiring plugin reregistration.
 # Known edge: all-target wire-sync failures still record (registries already written), but plugins receive
@@ -659,6 +712,14 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
     _ensure_dispatcher_bound([req.role] if req.role else None)
 
+    host_metadata = {}
+    if (_is_plugin_source(req.source) and req.host_instance_id is not None
+            and req.host_pid is not None and req.host_process_started_at is not None):
+        host_metadata = {
+            "host_instance_id": req.host_instance_id,
+            "host_pid": req.host_pid,
+            "host_process_started_at": req.host_process_started_at,
+        }
     tool = ToolDefinition(
         name=req.name,
         description=req.description,
@@ -669,6 +730,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             "callback_url": req.callback_url,
             "timeout_seconds": req.timeout_seconds,
             "role": req.role,
+            **host_metadata,
             **({"reply_tail": True} if req.reply_tail else {}),
         },
     )
@@ -699,6 +761,12 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
+            if host_metadata:
+                entry = _remote_tool_ledger.get((req.role, req.name))
+                if entry is None or entry.tool is not tool or role_name in entry.excluded_roles:
+                    # Another task can retire or replace this registration
+                    # while a previous role awaits its session update.
+                    continue
             # Reject cross-source name collisions: name-keyed registry replace=True overwrites unconditionally;
             # without protection, later plugins silently displace existing same-name tools from other sources,
             # rerouting model calls to new callback and permitting original plugin to unregister another's tool.
@@ -751,12 +819,18 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
 @router.post("/unregister")
 async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     targets = _resolve_target_managers(req.role)
+
+    def matches_owner(tool: ToolDefinition) -> bool:
+        return (
+            (req.expected_source is None or tool.metadata.get("source") == req.expected_source)
+            and (req.expected_host_instance_id is None
+                 or tool.metadata.get("host_instance_id") == req.expected_host_instance_id)
+        )
+
     # After successful resolution, remove ledger before first await: 404 requests cannot mutate it, while managers
     # rebuilt mid-loop must not replay removed tools; no await separates these operations.
     _ledger_forget(
-        lambda entry: entry.tool.name == req.name and (
-            req.expected_source is None or entry.tool.metadata.get("source") == req.expected_source
-        ), req.role,
+        lambda entry: entry.tool.name == req.name and matches_owner(entry.tool), req.role,
     )
     removed_any = False
     affected: List[str] = []
@@ -765,24 +839,25 @@ async def unregister_tool(req: ToolUnregisterRequest) -> Dict[str, Any]:
     for mgr in targets:
         role_name = getattr(mgr, "lanlan_name", "?")
         try:
-            # Ownership check: reject removal if expected_source differs from current source.
+            # Reject removal if the source or host instance has been replaced.
             # Symmetric with /register cross-source rejection: unregister only own tools.
             # getattr tool_registry supports duck-typed managers/test stubs;
             # managers without registries skip validation, retaining previous unregister behavior.
             registry = getattr(mgr, "tool_registry", None)
             existing = registry.get(req.name) if registry is not None else None
-            if req.expected_source is not None and existing is not None:
-                existing_source = str((getattr(existing, "metadata", None) or {}).get("source", ""))
-                if existing_source != req.expected_source:
-                    logger.warning(
-                        "unregister_tool refused foreign-owned name on %s: name='%s' owned_by='%s' expected='%s'",
-                        role_name, req.name, existing_source or "unknown", req.expected_source,
-                    )
-                    refused.append({
-                        "role": role_name,
-                        "owned_by": existing_source or "unknown",
-                    })
-                    continue
+            if existing is not None and not matches_owner(existing):
+                existing_source = str(existing.metadata.get("source") or "unknown")
+                logger.warning(
+                    "unregister_tool refused '%s' on %s: source=%s expected_source=%s "
+                    "host_instance_id=%s expected_host_instance_id=%s",
+                    req.name, role_name, existing_source, req.expected_source,
+                    existing.metadata.get("host_instance_id"), req.expected_host_instance_id,
+                )
+                refused.append({
+                    "role": role_name,
+                    "owned_by": existing_source,
+                })
+                continue
             # _and_sync awaits session synchronization before return, symmetric with register.
             if await mgr.unregister_tool_and_sync(req.name):
                 removed_any = True
@@ -834,6 +909,11 @@ async def clear_tools(req: ToolClearRequest) -> Dict[str, Any]:
         "affected_roles": affected,
         "failed_roles": failed,
     }
+
+
+@router.post("/release-host")
+async def release_tool_host(req: ToolHostReleaseRequest) -> Dict[str, Any]:
+    return {"ok": True, "removed": _evict_tool_host(req.host_instance_id, "host shut down")}
 
 
 @router.get("")

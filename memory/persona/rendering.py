@@ -35,7 +35,15 @@ from config import (
     SCOPED_RENDER_TOTAL_MAX_TOKENS,
 )
 
-from memory.evidence import evidence_score
+from memory.evidence import awaits_user_signal, evidence_score
+from memory.introspection import (
+    KIND_PERSONA,
+    KIND_REFLECTION,
+    PERMANENT_SUPPRESSION_KEY,
+    is_permanently_suppressed,
+    retirement_blocks_restatement,
+)
+from memory.temporal import _parse_iso_safe, to_naive_local
 
 from ._shared import logger
 
@@ -524,6 +532,11 @@ class RenderingMixin:
                     # next subject under the floor while producing
                     # nothing at all.
                     continue
+                if is_permanently_suppressed(entry):
+                    # Retired by introspection: in no section at all, not
+                    # even the do-not-mention one (which still puts the
+                    # text in front of the model).
+                    continue
                 if entry.get('suppress'):
                     # Suppressed entries are rendered in their own section
                     # (compose phase) — they don't compete with protected/
@@ -571,9 +584,19 @@ class RenderingMixin:
         suppressed_text_set: set[str],
         subjects=None,
         include_legacy_private: bool | None = None,
+        retired_hides=None,
     ) -> list[dict]:
         """Drop reflections whose text matches a suppressed persona entry
         (existing semantic — see `_is_suppressed_text` callers below).
+
+        ``retired_hides`` (``retired_persona_hides``) also drops the ones
+        repeating a persona line introspection retired.
+
+        A pending reflection resting only on the AI's own words, with no
+        backing from the user yet (``awaits_user_signal``), is not shown
+        either: the chat model would otherwise read the AI's self-talk as an
+        impression of the user. Proactive followups still pick it, since the
+        user's reply there is how it can be confirmed.
 
         Blank-rejection goes through `_renderable_text`, the same single
         definition the persona split and the suppressed section use (those
@@ -607,10 +630,75 @@ class RenderingMixin:
                 continue
             if not cls._renderable_text(r):
                 continue
-            if r.get('text', '') in suppressed_text_set:
+            if is_permanently_suppressed(r):
+                continue
+            if r.get('status') == 'pending' and awaits_user_signal(r):
+                continue
+            text = r.get('text', '')
+            if text in suppressed_text_set:
+                continue
+            if retired_hides is not None and retired_hides(r):
                 continue
             out.append(r)
         return out
+
+    @staticmethod
+    def _hidden_by_retirement_cutoff(
+        reflection: dict, cutoffs: dict[str, datetime | None],
+    ) -> bool:
+        """Whether ``reflection`` repeats a persona line retired as stale,
+        contradicted or off-card (``cutoffs``, see ``_retired_text_cutoffs``)
+        without every fact behind it postdating that retirement."""
+        text = reflection.get('text', '')
+        if text not in cutoffs:
+            return False
+        cutoff = cutoffs[text]
+        evidence = to_naive_local(_parse_iso_safe(reflection.get('source_facts_oldest_at')))
+        return cutoff is None or evidence is None or evidence <= cutoff
+
+    def retired_persona_hides(self, persona: dict):
+        """A predicate: does this reflection repeat a persona line
+        introspection retired?
+
+        Always for a line retired for its wording; for one retired as stale,
+        contradicted or off-card unless every fact behind the reflection
+        postdates the retirement (``source_facts_oldest_at``, recorded at
+        synthesis -- its own ``created_at`` is no evidence, synthesis may run
+        on facts noted before). Only lines of the reflection's own subject
+        count: a private retirement says nothing about a group's
+        same-worded reflection. The mention cooldown is not counted here
+        (``_suppressed_text_set``). The render, the pre-synthesis dedup pool
+        and promotion all ask this one predicate.
+        """
+        from memory.scopes import subject_from_entry
+
+        def _subject(entry: dict):
+            subject = subject_from_entry(entry)
+            return None if subject is None else (subject.scope, subject.key)
+
+        retired_by_subject: dict = {}
+        for entry in self._collect_all_entries(persona):
+            if isinstance(entry, dict) and is_permanently_suppressed(entry):
+                retired_by_subject.setdefault(_subject(entry), []).append(entry)
+        rules = {
+            subject: (
+                {e.get('text', '') for e in entries if retirement_blocks_restatement(e)},
+                self._retired_text_cutoffs({'retired': {'facts': entries}}),
+            )
+            for subject, entries in retired_by_subject.items()
+        }
+
+        def hides(reflection: dict) -> bool:
+            rule = rules.get(_subject(reflection))
+            if rule is None:
+                return False
+            wording, cutoffs = rule
+            return (
+                reflection.get('text', '') in wording
+                or self._hidden_by_retirement_cutoff(reflection, cutoffs)
+            )
+
+        return hides
 
     @staticmethod
     def _renders_scoped_only(subjects=None, include_legacy_private=None) -> bool:
@@ -638,6 +726,7 @@ class RenderingMixin:
         scoped_only: bool = False,
         skipped: set | None = None,
         marker_aliases: dict | None = None,
+        annotator=None,
     ) -> str:
         """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
 
@@ -646,7 +735,17 @@ class RenderingMixin:
         Within each entity section: protected entries first (deterministic
         order from persona file) then non-protected kept by score-trim,
         preserving the trim-order (which is score DESC).
+
+        `annotator` (introspection only) gets one `tag` call per bullet and
+        its prefix goes right after `- `; with it None every line is exactly
+        what it always was.
         """  # noqa: DOCSTRING_CJK
+        if annotator is not None:
+            annotator.bind_persona(persona)
+
+        def _tag(kind: str, entry: dict) -> str:
+            return annotator.tag(kind, entry) if annotator is not None else ""
+
         master_name = name_mapping.get('human', '主人')
         ai_name = name
         from config.prompts.prompts_memory import get_persona_section_header
@@ -672,7 +771,11 @@ class RenderingMixin:
         suppressed_total = 0
         seen_suppressed: set[str] = set()
         for entry in self._collect_all_entries(persona):
-            if isinstance(entry, dict) and entry.get('suppress'):
+            if (
+                isinstance(entry, dict)
+                and entry.get('suppress')
+                and not is_permanently_suppressed(entry)
+            ):
                 if self._entry_is_skipped(entry, skipped, marker_aliases):
                     # This subject's entire section was skipped; its budget-exempt section must not leak out independently.
                     # Resolve aliases: `skipped` contains participants' primary markers,
@@ -690,7 +793,7 @@ class RenderingMixin:
                     seen_suppressed.add(text)
                     suppressed_total += 1
                     if len(suppressed_lines) < PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES:
-                        suppressed_lines.append(f"- {text}")
+                        suppressed_lines.append(f"- {_tag(KIND_PERSONA, entry)}{text}")
         if suppressed_total > PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES:
             logger.warning(
                 f"[Persona] suppressed 条目 {suppressed_total} 条超过渲染上限 "
@@ -710,6 +813,44 @@ class RenderingMixin:
             ek = non_protected_entity_index.get(id(entry))
             if ek:
                 per_entity[ek].append(entry)
+
+        # Split confirmed reflections into active vs past at render time.
+        # Past = derived (state/episode beyond TTL) or stored 'past'. Pending
+        # reflections do not participate in past splitting (pending already means uncertain;
+        # signals either reinforce it to confirmed or low scores archive it,
+        # so another stale downgrade is unnecessary).
+        from memory.scopes import persona_subject_from_section, subject_from_entry
+        from memory.temporal import (
+            is_past_for_render as _is_past,
+            time_since_label as _time_label,
+        )
+        now_for_past = datetime.now()
+        active_confirmed: list[dict] = []
+        past_confirmed: list[dict] = []
+        for r in trimmed_confirmed_reflections:
+            if not r.get('text'):
+                continue
+            (past_confirmed if _is_past(r, now=now_for_past) else active_confirmed).append(r)
+        # Scoped impressions render under their subject's own heading, next
+        # to its persona lines: one render can hold the group and several
+        # people, and a single flat list would not say whose impression a
+        # line is. Legacy (private) ones keep the shared section below.
+        scoped_impressions: dict = defaultdict(list)
+        legacy_active_confirmed: list[dict] = []
+        for r in active_confirmed:
+            subject = subject_from_entry(r)
+            if subject is None:
+                legacy_active_confirmed.append(r)
+            else:
+                scoped_impressions[
+                    self._subject_bucket_marker(subject, marker_aliases)
+                ].append(r)
+
+        def _impression_lines(marker) -> list[str]:
+            return [
+                f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}"
+                for r in scoped_impressions.pop(marker, ())
+            ]
 
         # Fold sections that belong to the same PARTICIPANT into one heading.
         # Without this a person with two accounts gets two ``### `` blocks whose
@@ -741,7 +882,7 @@ class RenderingMixin:
                 # Use the same whitespace criterion as splitting (#2578 fixed the reflection half;
                 # this is the persona half): bare truthiness renders '   ' as an empty bullet.
                 if self._renderable_text(entry):
-                    lines.append(f"- {entry.get('text', '')}")
+                    lines.append(f"- {_tag(KIND_PERSONA, entry)}{entry.get('text', '')}")
             if lines:
                 # The heading always names the PRIMARY section of the group —
                 # for a single-section group that is the section itself, so
@@ -752,6 +893,13 @@ class RenderingMixin:
                 section_meta = persona.get(primary_key, {})
                 subject_kind = section_meta.get('subject_kind')
                 subject_id = section_meta.get('subject_id')
+                section_subject = persona_subject_from_section(
+                    primary_key, section_meta,
+                ) if isinstance(section_meta, dict) else None
+                if section_subject is not None:
+                    lines.extend(_impression_lines(
+                        self._subject_bucket_marker(section_subject, marker_aliases)
+                    ))
                 if subject_kind in (
                     'group_chat', 'participant', 'group_participant',
                 ):
@@ -776,8 +924,29 @@ class RenderingMixin:
                     header = _headers.get(primary_key, primary_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
+        # Subjects whose impressions have no persona section to join (most
+        # scoped impressions stay impressions): their own heading, the same
+        # one the persona section would get, without a display name (only
+        # persona sections store one).
+        for marker, impressions in list(scoped_impressions.items()):
+            # The heading names the bucket's marker: for a person with
+            # several accounts that is the primary one, whichever account
+            # the impressions themselves were written under.
+            subject = self._subject_of_marker(marker) or subject_from_entry(impressions[0])
+            lines = _impression_lines(marker)
+            if not lines or subject is None:
+                continue
+            from config.prompts.prompts_memory import (
+                get_scoped_persona_section_header,
+            )
+            header = get_scoped_persona_section_header(
+                subject.kind, subject.subject_id, render_lang,
+            )
+            sections.append(f"### {header}\n" + "\n".join(lines))
+
         if trimmed_pending_reflections:
-            lines = [f"- {r.get('text', '')}" for r in trimmed_pending_reflections
+            lines = [f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}"
+                     for r in trimmed_pending_reflections
                      if r.get('text')]
             if lines:
                 sections.append(
@@ -792,25 +961,11 @@ class RenderingMixin:
                     + "\n".join(lines)
                 )
 
-        # Split confirmed reflections into active vs past at render time.
-        # Past = derived (state/episode beyond TTL) or stored 'past'. Pending
-        # reflections do not participate in past splitting (pending already means uncertain;
-        # signals either reinforce it to confirmed or low scores archive it,
-        # so another stale downgrade is unnecessary).
-        from memory.temporal import (
-            is_past_for_render as _is_past,
-            time_since_label as _time_label,
-        )
-        now_for_past = datetime.now()
-        active_confirmed: list[dict] = []
-        past_confirmed: list[dict] = []
-        for r in trimmed_confirmed_reflections:
-            if not r.get('text'):
-                continue
-            (past_confirmed if _is_past(r, now=now_for_past) else active_confirmed).append(r)
-
-        if active_confirmed:
-            lines = [f"- {r.get('text', '')}" for r in active_confirmed]
+        if legacy_active_confirmed:
+            lines = [
+                f"- {_tag(KIND_REFLECTION, r)}{r.get('text', '')}"
+                for r in legacy_active_confirmed
+            ]
             sections.append(
                 "### "
                 + get_persona_section_header(
@@ -841,7 +996,7 @@ class RenderingMixin:
                 )
                 label = _time_label(anchor, now=now_for_past, lang=lang)
                 prefix = f"[{label}] " if label else ""
-                past_lines.append(f"- {prefix}{r.get('text', '')}")
+                past_lines.append(f"- {_tag(KIND_REFLECTION, r)}{prefix}{r.get('text', '')}")
             sections.append(
                 render_past_memory_block(
                     lang=lang,
@@ -876,6 +1031,31 @@ class RenderingMixin:
                 t = entry.get('text', '')
                 if t:
                     out.add(t)
+        return out
+
+    def _retired_text_cutoffs(self, persona: dict) -> dict[str, datetime | None]:
+        """Each permanently retired persona text, with when it was retired.
+
+        A text retired more than once keeps the latest time; ``None`` when
+        any of its times is unreadable, which hides every repeat.
+        """
+        out: dict[str, datetime | None] = {}
+        for entry in self._collect_all_entries(persona):
+            if not (isinstance(entry, dict) and is_permanently_suppressed(entry)):
+                continue
+            text = entry.get('text', '')
+            if not text:
+                continue
+            marker = entry.get(PERMANENT_SUPPRESSION_KEY)
+            at = to_naive_local(_parse_iso_safe(
+                marker.get('at') if isinstance(marker, dict) else None
+            ))
+            if text not in out:
+                out[text] = at
+            elif out[text] is None or at is None:
+                out[text] = None
+            else:
+                out[text] = max(out[text], at)
         return out
 
     # ------------------------------------------------------------------
@@ -919,6 +1099,18 @@ class RenderingMixin:
         if include_legacy_private:
             slots.append(None)
         return tuple(slots)
+
+    @staticmethod
+    def _subject_of_marker(marker):
+        """The subject a ``(key, scope)`` bucket marker stands for, or None."""
+        from memory.scopes import MemorySubject
+
+        try:
+            key, scope = marker
+            kind, subject_id = str(key).split(':', 1)
+            return MemorySubject(kind, subject_id, scope)
+        except Exception:  # noqa: BLE001 - a malformed marker falls back to the entry
+            return None
 
     @staticmethod
     def _section_group_keys(persona: dict, marker_aliases: dict | None) -> dict:
@@ -1264,6 +1456,7 @@ class RenderingMixin:
             persona_view, suppressed_text_set,
             subjects,
             include_legacy_private,
+            retired_hides=self.retired_persona_hides(persona_view),
         )
         return _RenderPrep(
             persona_view=persona_view,
@@ -1286,6 +1479,7 @@ class RenderingMixin:
         subjects=None,
         include_legacy_private: bool | None = None,
         skipped: set | None = None,
+        annotator=None,
     ) -> str:
         """Phase 3 shared by both render paths.
 
@@ -1316,6 +1510,7 @@ class RenderingMixin:
             ),
             skipped=skipped,
             marker_aliases=prep.marker_aliases,
+            annotator=annotator,
         )
 
     @classmethod
@@ -1427,6 +1622,7 @@ class RenderingMixin:
         subjects=None,
         include_legacy_private: bool | None = None,
         participant_groups=None,
+        annotator=None,
     ) -> str:
         """Async 3-phase render path. Production hot path — uses
         `acount_tokens` so the event loop doesn't stall on tiktoken IO.
@@ -1434,7 +1630,11 @@ class RenderingMixin:
         Structurally the twin of `_compose_persona_markdown`: everything
         that is not token counting lives in `_prepare_render` /
         `_compose_from_prep`, so the two paths cannot drift on the parts
-        that have nothing to do with sync-vs-async."""
+        that have nothing to do with sync-vs-async.
+
+        `annotator` numbers each bullet for introspection (see
+        `memory.introspection.RenderAnnotator`); selection and wording are
+        untouched by it."""
         await self.aupdate_suppressions(name)
         persona = await self.aensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
@@ -1464,6 +1664,7 @@ class RenderingMixin:
             trimmed_non_protected, trimmed_reflections,
             pending_reflections, subjects, include_legacy_private,
             skipped=skipped,
+            annotator=annotator,
         )
 
     async def arecall_residency(
@@ -1507,7 +1708,4 @@ class RenderingMixin:
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:
         """Check if a given text matches any suppressed entry."""
-        for entry in self._collect_all_entries(persona):
-            if isinstance(entry, dict) and entry.get('suppress') and entry.get('text') == text:
-                return True
-        return False
+        return bool(text) and text in self._suppressed_text_set(persona)

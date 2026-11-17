@@ -149,6 +149,7 @@ class FakeHost:
         self.lanlan_name = lanlan_name
         self.current = True
         self.precondition: Optional[str] = None
+        self.precondition_allow_goodbye_silent: list[bool] = []
         self.frames: list[dict] = []
         self.statuses: list[tuple[str, dict]] = []
         self.takeovers: list[object] = []
@@ -180,7 +181,10 @@ class FakeHost:
     def is_current(self) -> bool:
         return self.current
 
-    def precondition_failure(self):
+    def precondition_failure(self, *, allow_goodbye_silent: bool = False):
+        self.precondition_allow_goodbye_silent.append(allow_goodbye_silent)
+        if allow_goodbye_silent and self.precondition == "goodbye_silent":
+            return None
         return self.precondition
 
     async def interrupt_main_turn(self, timeout: float) -> bool:

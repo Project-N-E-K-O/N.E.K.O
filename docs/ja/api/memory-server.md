@@ -198,18 +198,20 @@ reflection の合成を要求し、適用される自動昇格経路をスケジ
 表示済みとは記録せずに、プロアクティブチャットの話題候補を返します。
 
 ```json
-{ "topics": [] }
+{ "topics": [], "commitment": null }
 ```
 
-呼び出し側は、実際に使用した reflection ID を `/record_surfaced` に送信する必要があります。
+`commitment` は、常駐領域にあるキャラクターの未履行の約束のうち、2 日以内で最も早く期限が来るもので、`{"id": "pin_...", "text": "...", "due": "YYYY-MM-DD"}` の形をとります。該当がなければ `null` です。日付のない約束、12 時間以内に渡した約束、最近本人が口にした約束は返しません。
+
+呼び出し側は、実際に使用した reflection ID と、モデルに渡した約束 ID を `/record_surfaced` に送信する必要があります。
 
 ### `POST /record_surfaced/{lanlan_name}`
 
 ```json
-{ "reflection_ids": ["reflection_..."] }
+{ "reflection_ids": ["reflection_..."], "commitment_ids": ["pin_..."] }
 ```
 
-プロアクティブチャットで表示した reflections を記録し、クールダウンを更新します。空または省略された配列は no-op です。安定した応答は `{"ok":true}`。保存失敗はログに記録されますが、呼び出し側を失敗させません。
+プロアクティブチャットで表示した reflections を記録し、クールダウンを更新します。空または省略された配列は no-op です。応答は `{"ok":true}` で、`commitment_ids` が空でない場合は `commitments_recorded` も含みます。常駐領域がこの提示を実際に書き込んだときだけ `true` になり、呼び出し側はこれを見て約束を再送するかどうかを決めます。それ以外の保存失敗はログに記録されますが、呼び出し側を失敗させません。
 
 ### `POST /cancel_correction/{lanlan_name}`
 

@@ -2,7 +2,7 @@
 
 The host derives ``origin`` from upstream ``event_type`` plus the validated
 user-plugin result-kind contract:
-- ``event_type == "task_result"`` (agent_server._emit_task_result):
+- ``event_type == "task_result"`` (agent_server ``nekoclaw_mount.send_report``):
   real task completion → ``origin="task_result"`` → TASK_* reporting templates.
 - ``event_type == "proactive_message"`` (proactive_bridge from
   plugin push_message): event stream → ``origin="event"`` → neutral EVENT_*

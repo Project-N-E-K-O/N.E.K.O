@@ -54,6 +54,9 @@ class SyntheticService:
         if self.on_request is not None:
             await self.on_request(request)
         path = request.url.path
+        if path == "/v1/chat-sync/models/capabilities":
+            # Historical synthetic services model an older text/profile-only deployment.
+            return httpx.Response(404, json={"detail": "Not Found"})
         if path == "/v1/chat-sync/identity":
             return httpx.Response(200, json={"ownerId": self.owner})
         body = json.loads(request.content) if request.content else None
@@ -127,8 +130,7 @@ def setup_runtime(tmp_path, service=None, *, fixed_service_url=None, recent_memo
         clock=lambda: clock[0], uniform=lambda *_: 0,
         current_character_uid_provider=current_character_uid,
         fixed_service_url=fixed_service_url,
-        recent_memory_adapter=recent_memory_adapter, recent_character_name=recent_character_name,
-        long_term_memory_adapter=long_term_memory_adapter,
+        recent_memory_adapter=recent_memory_adapter, long_term_memory_adapter=long_term_memory_adapter, recent_character_name=recent_character_name,
     )
     runtime.test_clock = clock
     return runtime, service, session
@@ -610,8 +612,8 @@ async def test_notification_production_transport_uses_verified_wss_and_closes(tm
 
 
 @pytest.mark.asyncio
-async def test_established_silent_wss_automatically_wakes_recent_pull(tmp_path, local_tls_files):
-    """Native keepalive notices a silent established peer, and its failure hint wakes the fallback pull."""
+async def test_established_silent_wss_wakes_pull_after_approved_heartbeat_deadline(tmp_path, local_tls_files):
+    """Use production keepalive against a TLS peer that silently stops reading."""
     from websockets.asyncio.server import serve
     ca_path, _, cert_path, key_path = local_tls_files
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -652,9 +654,8 @@ async def test_established_silent_wss_automatically_wakes_recent_pull(tmp_path, 
                         await asyncio.sleep(1)
                 pause.set()
                 await asyncio.wait_for(paused.wait(), 5)
-                # The frozen test clock never reaches the next poll or a reconnect deadline. The
-                # 2 s ping interval, 2 s pong timeout and 1 s close wait notice the peer in about 5 s.
-                async with asyncio.timeout(10):
+                # Production keepalive uses 10 s pings, 5 s timeout and a 1 s close wait.
+                async with asyncio.timeout(18.5):
                     while len(service.recent_roles) == settled:
                         await asyncio.sleep(.02)
             finally:
@@ -668,7 +669,8 @@ async def test_established_silent_wss_automatically_wakes_recent_pull(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_transport_disconnect_reconnect_deadline_is_at_most_three_seconds(tmp_path):
+@pytest.mark.parametrize('failures', [0, 4])
+async def test_transport_disconnect_reconnect_deadline_backs_off_to_thirty_seconds(tmp_path, failures):
     """A new network failure stays bounded independently of HTTP and auth gates."""
     runtime, _, _ = setup_runtime(tmp_path)
     try:
@@ -679,16 +681,17 @@ async def test_transport_disconnect_reconnect_deadline_is_at_most_three_seconds(
         presence = await runtime.session_presence_provider()
         await runtime._manage_notifications(runtime.state.bindings(), presence)
         await wait_notification(lambda: socket.receives >= 3)
+        runtime._notification_failures = failures
         await socket.incoming.put(OSError("synthetic disconnected"))
         await wait_notification(lambda: runtime._notification_task.done())
-        assert 0 < runtime._notification_retry_at - runtime.scheduler.clock() <= 3000
+        assert runtime._notification_retry_at - runtime.scheduler.clock() == min(30_000, 5000 * 2 ** failures)
     finally:
         await runtime.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sent_code", [1002, 1007, 1008, 1009, 1011, None])
-async def test_sent_only_close_keeps_protocol_backoff_and_fast_transport_recovery(tmp_path, sent_code):
+async def test_sent_only_close_keeps_protocol_backoff_and_progressive_transport_recovery(tmp_path, sent_code):
     """A missing close reply must not turn local protocol rejection into transport loss."""
     from websockets.exceptions import ConnectionClosedError
     from websockets.frames import Close
@@ -702,15 +705,16 @@ async def test_sent_only_close_keeps_protocol_backoff_and_fast_transport_recover
         presence = await runtime.session_presence_provider()
         await runtime._manage_notifications(runtime.state.bindings(), presence)
         await wait_notification(lambda: socket.receives >= 3)
+        runtime._notification_failures = 3
         sent = Close(sent_code, "") if sent_code is not None else None
         await socket.incoming.put(ConnectionClosedError(None, sent))
         await wait_notification(lambda: runtime._notification_task.done())
         delay = runtime._notification_retry_at - runtime.scheduler.clock()
         if sent_code in {1002, 1007, 1008, 1009}:
-            assert delay == 5000
+            assert delay == 40000
         else:
             # Native keepalive expiry sends 1011; a broken network may send nothing.
-            assert 0 < delay <= 3000
+            assert delay == 30000
     finally:
         await runtime.close()
 
@@ -1880,7 +1884,7 @@ async def test_status_counts_a_recent_memory_operation_frozen_by_a_lost_receipt(
         assert runtime.scheduler.last_error(DOMAIN.key()) == "chat_sync_unavailable"
         # Two new entries and one removal stay frozen in the same unacknowledged operation.
         assert await progress() == {"pendingOriginals": 2, "pendingDeletions": 1, "cursor": 1, "hasSealedBatch": True}
-        runtime.test_clock[0] += 3_000
+        runtime.test_clock[0] += 5_000
         await run_scheduler_tick(runtime)
         assert await progress() == {"pendingOriginals": 0, "pendingDeletions": 0, "cursor": 2, "hasSealedBatch": False}
         assert [row["text"] for row in service.rows[UID]] == ["memo", "second", "third"]
@@ -2192,7 +2196,8 @@ async def test_setup_account_mismatch_is_visible_without_rebinding_or_resetting_
         retained = runtime.state.new_role(UID)
         assert retained['lastError'] == 'chat_sync_account_mismatch'
         assert retained['next_at'] == saved['next_at'] and 'error' not in retained
-        assert (await runtime.status())['syncSetupErrors'] == {UID: 'chat_sync_account_mismatch'}
+        assert (await runtime.status())['syncSetupErrors'] == {}
+        assert (await runtime.status())['syncSetupDiagnostics'] == {UID: 'chat_sync_account_mismatch'}
         assert runtime.state.binding(UID) == binding and runtime.ledger.visible_originals(DOMAIN) == originals
         assert [request.url.path for request in service.requests] == ['/v1/chat-sync/identity']
         with pytest.raises(ValueError, match='chat_sync_account_mismatch'):
@@ -2227,3 +2232,34 @@ async def test_setup_diagnostics_cannot_expose_unknown_errors_or_overwrite_a_new
         await runtime.close()
 
 
+@pytest.mark.asyncio
+async def test_retired_role_purges_all_memory_sync_states_without_touching_other_domains(tmp_path):
+    from memory.recent_sync import RecentMemoryAdapter
+    from memory.long_term_sync import DesktopLongTermAdapter
+    config = SimpleNamespace(app_docs_dir=tmp_path, memory_dir=tmp_path / 'memory')
+    runtime, _, _ = setup_runtime(tmp_path, recent_memory_adapter=RecentMemoryAdapter(config),
+                                  long_term_memory_adapter=DesktopLongTermAdapter(config))
+    try:
+        await runtime.configure('https://sync.test')
+        await runtime.enable(UID, 'Neko')
+        domain = DOMAIN.key()
+        tables = ('recent_memory_state', 'recent_memory_preferences', 'recent_memory_apply')
+        adapter = runtime.long_term_memory.adapter
+        adapter.directory.mkdir(parents=True, exist_ok=True)
+        kept = [adapter.directory / f'{OTHER_UID}-0123456789abcdef.json', adapter.incoming_path(OTHER_UID)]
+        dropped = [adapter.directory / f'{UID}-0123456789abcdef.json', adapter.incoming_path(UID)]
+        for path in kept + dropped:
+            path.write_text('{}', encoding='utf-8')
+        with closing(runtime.state._connect()) as conn, conn:
+            for key in (domain, 'other-domain'):
+                conn.execute('INSERT INTO recent_memory_state VALUES(?,?,NULL,1)', (key, '["private chat"]'))
+                conn.execute('INSERT INTO recent_memory_preferences VALUES(?,?,NULL)', (key, '[]'))
+                conn.execute('INSERT INTO recent_memory_apply VALUES(?,?,?,1)', (key, 'receipt', '[]'))
+        runtime._purge_retired_character(runtime.state.binding(UID), await runtime.session_presence_provider(), runtime.writer.epoch())
+        with closing(runtime.state._connect()) as conn:
+            for table in tables:
+                assert [row[0] for row in conn.execute(f'SELECT domain FROM {table}')] == ['other-domain']
+        # The confirmed long-term base and inbox of the retired role go with it; other roles keep theirs.
+        assert [path.exists() for path in kept + dropped] == [True, True, False, False]
+    finally:
+        await runtime.close()

@@ -746,11 +746,18 @@ async def test_scoped_promotion_is_idempotent_after_partial_commit():
     reflections = [{
         "id": "r-1", "status": "confirmed", "text": "群里常聊摄影",
         "entity": "group_chat", "confirmed_at": old_ts,
+        "observed_days": [
+            (datetime.now() - timedelta(days=d)).date().isoformat()
+            for d in (40, 30, 20, 10)
+        ],
         **subject.as_entry_fields(),
     }]
     engine = PromotionMixin.__new__(PromotionMixin)
     engine._persona_manager = SimpleNamespace(
         aensure_persona=mixin._persona_manager.aensure_persona,
+        aget_persona=mixin._persona_manager.aensure_persona,
+        # Nothing here is retired by introspection.
+        retired_persona_hides=lambda persona: (lambda reflection: False),
         aadd_fact=AsyncMock(
             return_value=PersonaManager.FACT_QUEUED_CORRECTION,
         ),
@@ -1145,6 +1152,12 @@ async def test_scoped_reflections_use_time_driven_lifecycle(tmp_path):
             "confirmed_at": (now - timedelta(days=8)).isoformat(),
             "reinforcement": 5.0, "rein_last_signal_at": now.isoformat(),
             "source_fact_ids": ["g2"],
+            # Seen in others' words on four days, the first 40 days ago:
+            # the scoped promotion gate (memory.evidence.scoped_promotion_ready).
+            "observed_days": [
+                (now - timedelta(days=d)).date().isoformat()
+                for d in (40, 30, 20, 10)
+            ],
             "speaker_id": "qq:1001", "speaker_trust": 0.8,
             **group.as_entry_fields(),
         },
@@ -1531,13 +1544,13 @@ async def test_extraction_prompt_uses_speaker_label(tmp_path):
 
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         await fs._allm_extract_facts("Neko", [msg])
-        assert "主人 | 我对花生过敏" in captured["prompt"]
+        assert "[SOURCE 1] human (主人) | 我对花生过敏" in captured["prompt"]
 
         await fs._allm_extract_facts(
             "Neko", [msg], speaker_label="Alice(12345)",
         )
-    assert "Alice(12345) | 我对花生过敏" in captured["prompt"]
-    assert "主人 | 我对花生过敏" not in captured["prompt"]
+    assert "[SOURCE 1] human (Alice(12345)) | 我对花生过敏" in captured["prompt"]
+    assert "[SOURCE 1] human (主人) | 我对花生过敏" not in captured["prompt"]
     assert "{MASTER_NAME}" not in captured["prompt"]
 
 

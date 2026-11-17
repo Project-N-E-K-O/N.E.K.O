@@ -4268,43 +4268,6 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_wechat_plugin_without_session_locale_omits_process_fallback(monkeypatch):
-    import httpx
-
-    from plugin.plugins.wechat_integration import WechatIntegrationPlugin
-    from utils import language_utils
-
-    calls = []
-
-    class Response:
-        is_success = True
-        text = "memory"
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def get(self, url, **kwargs):
-            calls.append((url, kwargs))
-            return Response()
-
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
-    monkeypatch.setattr(language_utils, "get_global_language", lambda: "zh")
-    monkeypatch.setattr(
-        language_utils,
-        "get_global_language_full",
-        lambda: "zh-TW",
-    )
-
-    assert await WechatIntegrationPlugin._fetch_memory_context("Neko") == "memory"
-
-    assert all("params" not in kwargs for _url, kwargs in calls)
-
-
-@pytest.mark.asyncio
 async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     """The plugin server must not push its own process locale across the boundary.
 
@@ -4312,8 +4275,7 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     server has no session locale to contribute. Its ``get_global_language_full()``
     also misses the Steam resolver that only the main server registers, so on a
     Steam=Traditional / system=English machine it resolves to ``en`` and would
-    override the memory server's own (correct) resolution. Same contract as the
-    WeChat bridge assertion directly above.
+    override the memory server's own (correct) resolution.
     """
     from plugin.server.application.messages import memory_query_service
     from plugin.utils.http_imports import load_httpx

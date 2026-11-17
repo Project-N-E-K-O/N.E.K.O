@@ -35,7 +35,7 @@ import re
 import json
 from contextlib import suppress
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import quote
 
 import httpx
@@ -116,6 +116,7 @@ def _empty_repetition_effects(days: int) -> dict:
         "period_days": days,
         "totals": {
             "soft_hint_injected": 0,
+            "phrase_hint_injected": 0,
             "detected": 0,
             "regen_triggered": 0,
             "regen_guard_passed": 0,
@@ -981,12 +982,15 @@ def _write_recent_browser_payload(
             current_rows = []
         if not isinstance(current_rows, list):
             current_rows = []
+        used_sources = set()
         for item, edit in zip(payload, browser_chat or []):
             source = edit.get("source_index") if isinstance(edit, dict) else None
-            if type(source) is int and 0 <= source < len(current_rows) and isinstance(current_rows[source], dict):
+            if (type(source) is int and 0 <= source < len(current_rows)
+                    and source not in used_sources and isinstance(current_rows[source], dict)):
                 key = message_metadata(current_rows[source]).get(ID_KEY)
                 source_type = current_rows[source].get('type') or _RECENT_BROWSER_ROLE_TYPES.get(current_rows[source].get('role'))
                 if key and item.get("type") == source_type:
+                    used_sources.add(source)
                     item["data"].setdefault("metadata", {})[ID_KEY] = key
                     item["data"]["metadata"][TIME_KEY] = message_metadata(current_rows[source]).get(TIME_KEY)
         # Maintain theater capsules only through /cache and /theater/forget; browser saves preserve them unchanged.
@@ -1145,6 +1149,218 @@ def _insight_selectable_name(name: str) -> str | None:
     if not validation.ok and validation.code != "reserved_route_name":
         return None
     return validation.normalized or None
+
+
+class HabitualPhraseOverrideRequest(BaseModel):
+    character_name: str
+    phrase: str = Field(min_length=1, max_length=200)
+    action: Literal["allow", "suppress", "clear"]
+    ui_language: Optional[str] = Field(default=None, max_length=32)
+
+
+class HabitualPhraseRecomputeRequest(BaseModel):
+    character_name: str
+    ui_language: Optional[str] = Field(default=None, max_length=32)
+
+
+async def _resolve_memory_character(raw_name: str):
+    """``(config_manager, memory key)`` for a panel request, or the error response.
+
+    Same rules the repetition panel applies: a valid name, resolved to its
+    configured characters.json key, that has a character or a memory
+    directory and does not escape the memory root.
+    """
+    from utils.config_manager import get_config_manager
+
+    validation = validate_character_name(
+        raw_name, allow_dots=True, max_units=PROFILE_NAME_MAX_UNITS,
+    )
+    if not validation.ok and validation.code != "reserved_route_name":
+        return None, JSONResponse(
+            {"success": False, "error": "invalid character name"}, status_code=422,
+        )
+    character_name = validation.normalized
+    config_manager = get_config_manager()
+    characters = await config_manager.aload_characters()
+    configured = characters.get("猫娘", {}) if isinstance(characters, dict) else {}
+    configured_key = _configured_character_key(configured, character_name)
+    if configured_key is None and not character_memory_exists(config_manager, character_name):
+        return None, JSONResponse(
+            {"success": False, "error": "character not found"}, status_code=404,
+        )
+    if configured_key is not None:
+        character_name = configured_key
+    if _default_memory_dir_escapes_root(config_manager, character_name):
+        return None, JSONResponse(
+            {"success": False, "error": "character not found"}, status_code=404,
+        )
+    return (config_manager, character_name), None
+
+
+async def _ahabitual_phrase_language(
+    config_manager, character_name: str, ui_language: Optional[str] = None,
+) -> str:
+    """The language the next session start most likely checks the list against.
+
+    The same order the chat client resolves its conversation language in:
+    the character's stored language (``prompt_locale.json``, which the
+    recompute also mines in), else the client's own UI language, which the
+    memory browser passes along; the server's global language only when
+    neither is known. It is still a prediction: a session opened from a
+    window in another language checks against that one.
+    """
+    from utils.language_utils import (
+        get_global_language_full,
+        is_supported_language_code,
+        normalize_language_code,
+    )
+
+    reader = getattr(config_manager, "_read_durable_prompt_locale", None)
+    if callable(reader):
+        try:
+            selected = await asyncio.to_thread(reader, character_name)
+        except OSError:
+            selected = None
+        if isinstance(selected, str) and selected:
+            return selected
+    if is_supported_language_code(ui_language):
+        return normalize_language_code(str(ui_language), format="full")
+    return get_global_language_full()
+
+
+async def _habitual_phrase_panel(
+    config_manager, character_name: str, ui_language: Optional[str] = None,
+) -> dict:
+    """What the memory browser shows for one character's avoid list."""
+    from config import (
+        HABITUAL_PHRASE_CANDIDATE_POOL,
+        HABITUAL_PHRASE_MAX_AGE_SECONDS,
+        HABITUAL_PHRASE_MAX_ITEMS,
+        HABITUAL_PHRASE_MIN_SESSIONS,
+        HABITUAL_PHRASE_PROMPT_MAX_TOKENS,
+        HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS,
+        HABITUAL_PHRASE_SESSION_GAP_SECONDS,
+    )
+    from memory.habitual_phrases import get_habitual_phrase_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    described = await get_habitual_phrase_store().adescribe(
+        character_name,
+        await _ahabitual_phrase_language(config_manager, character_name, ui_language),
+    )
+    try:
+        async with _memory_toggle_write_lock:
+            review_enabled = await asyncio.to_thread(
+                _load_memory_toggle_enabled, config_manager, 'powerful_memory_enabled'
+            )
+    except Exception:
+        review_enabled = True
+    computed_at = described.get("computed_at")
+    return {
+        "success": True,
+        "character_name": character_name,
+        "switches": {
+            "natural_expression": bool(await asyncio.to_thread(is_slop_filter_enabled)),
+            "review": bool(review_enabled),
+        },
+        "rules": {
+            "min_sessions": HABITUAL_PHRASE_MIN_SESSIONS,
+            "session_gap_minutes": round(HABITUAL_PHRASE_SESSION_GAP_SECONDS / 60),
+            "max_items": HABITUAL_PHRASE_MAX_ITEMS,
+            "candidate_pool": HABITUAL_PHRASE_CANDIDATE_POOL,
+            "prompt_max_tokens": HABITUAL_PHRASE_PROMPT_MAX_TOKENS,
+            "refresh_interval_hours": round(HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS / 3600),
+            "max_age_days": round(HABITUAL_PHRASE_MAX_AGE_SECONDS / 86400),
+        },
+        "next_refresh_at": (
+            computed_at + HABITUAL_PHRASE_REFRESH_INTERVAL_SECONDS
+            if isinstance(computed_at, (int, float))
+            else None
+        ),
+        **described,
+    }
+
+
+@router.get('/habitual_phrases')
+async def get_habitual_phrases(character_name: str, ui_language: Optional[str] = None):
+    """The avoid list as the next session start will use it, with the reasons."""
+    try:
+        resolved, error = await _resolve_memory_character(character_name)
+        if error is not None:
+            return error
+        config_manager, name = resolved
+        return await _habitual_phrase_panel(config_manager, name, ui_language)
+    except Exception as exc:
+        logger.warning("Habitual phrase panel unavailable: %s", type(exc).__name__)
+        return JSONResponse(
+            {"success": False, "error": "habitual phrases unavailable"}, status_code=503,
+        )
+
+
+@router.post('/habitual_phrases/override')
+async def override_habitual_phrase(request: HabitualPhraseOverrideRequest):
+    """Allow a phrase, suppress one the review kept, or clear the user's decision."""
+    try:
+        resolved, error = await _resolve_memory_character(request.character_name)
+        if error is not None:
+            return error
+        config_manager, name = resolved
+        from memory.habitual_phrases import get_habitual_phrase_store
+
+        try:
+            await get_habitual_phrase_store().aupdate_override(
+                name, request.phrase, request.action,
+            )
+        except ValueError:
+            return JSONResponse(
+                {"success": False, "error": "invalid phrase"}, status_code=422,
+            )
+        logger.info("Habitual phrase override saved for %s: %s", name, request.action)
+        return await _habitual_phrase_panel(config_manager, name, request.ui_language)
+    except MaintenanceModeError:
+        return JSONResponse(
+            {"success": False, "error": "memory is being restored; try again shortly"},
+            status_code=503,
+        )
+    except Exception as exc:
+        logger.warning("Habitual phrase override failed: %s", type(exc).__name__)
+        return JSONResponse(
+            {"success": False, "error": "habitual phrases unavailable"}, status_code=503,
+        )
+
+
+@router.post('/habitual_phrases/recompute')
+async def recompute_habitual_phrases(request: HabitualPhraseRecomputeRequest):
+    """Recompute one character's avoid list now, then return the refreshed panel."""
+    try:
+        resolved, error = await _resolve_memory_character(request.character_name)
+        if error is not None:
+            return error
+        config_manager, name = resolved
+        from config import MEMORY_SERVER_PORT
+        from utils.internal_http_client import get_internal_http_client
+
+        # The review may take the model's whole hard timeout (110 s).
+        response = await get_internal_http_client().post(
+            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/internal/memory/"
+            f"{quote(name, safe='')}/habitual_phrases/recompute",
+            timeout=130.0,
+        )
+        if response.status_code == 409:
+            return JSONResponse(
+                {"success": False, "error": "already recomputing"}, status_code=409,
+            )
+        if response.status_code != 200:
+            return JSONResponse(
+                {"success": False, "error": "recompute unavailable"},
+                status_code=503 if response.status_code not in {404, 422} else response.status_code,
+            )
+        return await _habitual_phrase_panel(config_manager, name, request.ui_language)
+    except Exception as exc:
+        logger.warning("Habitual phrase recompute failed: %s", type(exc).__name__)
+        return JSONResponse(
+            {"success": False, "error": "recompute unavailable"}, status_code=503,
+        )
 
 
 @router.get('/insight_characters')

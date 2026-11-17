@@ -303,26 +303,45 @@ class PersistenceMixin:
         return items
 
     def load_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         path = self._reflections_path(name)
         if os.path.exists(path):
             try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
-                return self._filter_reflections(data, include_archived, path)
+                with consistent_view_read(path):
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
+                return self._without_cold_copies(
+                    name, self._filter_reflections(data, include_archived, path),
+                )
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载失败: {e}")
         return []
 
+    def _without_cold_copies(self, name: str, items: list[dict]) -> list[dict]:
+        """Drop reflections also held in the archive shards (cold storage wins)."""
+        from memory import cold_store
+        return cold_store.without_cold_copies(
+            os.path.join(self._config_manager.memory_dir, name), 'reflection', items,
+            lambda row: row.get('entity'),
+        )
+
     async def aload_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         path = self._reflections_path(name)
         if not await asyncio.to_thread(os.path.exists, path):
             return []
         try:
-            data = await read_json_async(path)
+            with consistent_view_read(path):
+                data = await read_json_async(path)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[Reflection] 加载失败: {e}")
             return []
-        return self._filter_reflections(data, include_archived, path)
+        return await asyncio.to_thread(
+            self._without_cold_copies, name,
+            self._filter_reflections(data, include_archived, path),
+        )
 
     def _prepare_save_reflections(
         self, name: str, reflections: list[dict], all_on_disk: list[dict],

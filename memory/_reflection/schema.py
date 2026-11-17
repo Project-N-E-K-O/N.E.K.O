@@ -62,6 +62,7 @@ def normalize_reflection(entry: dict) -> dict:
         "sub_zero_days": 0,
         "sub_zero_last_increment_date": None,
         "user_fact_reinforce_count": 0,
+        "user_confirm_count": 0,
         "absorbed_into": None,
         "last_promote_attempt_at": None,
         "promote_attempt_count": 0,
