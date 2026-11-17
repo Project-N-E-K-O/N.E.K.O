@@ -1201,11 +1201,17 @@ export function renderMarkdown(report) {
   for (const site of report.sites) {
     lines.push(`| ${escapeCell(site.label)} | ${dateRangeLabel(site.gsc?.windows?.recent7)} | ${periodValue(site.gsc?.recent7, 'clicks')} | ${trend(site.gsc?.trend7?.clicks)} | ${periodValue(site.gsc?.recent7, 'impressions')} | ${trend(site.gsc?.trend7?.impressions)} | ${percentage(site.gsc?.recent7?.ctr)} | ${percentagePointTrend(site.gsc?.trend7?.ctr)} | ${display(site.gsc?.recent7?.position, 2)} | ${positionTrend(site.gsc?.trend7?.position)} |`)
   }
+  lines.push(
+    '',
+    `- 高曝光低 CTR 页面：${report.actions.lowCtr.length || '0'}`,
+    `- GSC 新查询：${report.sites.flatMap(site => site.gsc?.newQueries ?? []).slice(0, 10).map(item => item.query).join('、') || 'N/A'}`,
+    '- 限制：GSC 的最新完整日由 API `first_incomplete_date` 动态解析；query/page 维度仍可能受 API top rows 限制。',
+  )
   for (const site of report.sites) {
     const tracked = site.gsc?.trackedHomepageQueries
     if (!tracked) continue
     lines.push('', `### GSC 首页关键词 · ${escapeCell(site.label)}`, '')
-    lines.push(`- 页面 ${tracked.page} · ${dateRangeLabel(tracked.window)}`)
+    lines.push(`- 页面 ${escapeCell(tracked.page)} · ${dateRangeLabel(tracked.window)}`)
     if (tracked.status !== 'ok') {
       lines.push(`- 取数失败 · ${escapeCell(tracked.reason)}`)
       continue
@@ -1217,10 +1223,6 @@ export function renderMarkdown(report) {
     lines.push('', '- N/A 表示 Google 未返回该词的数据行。')
   }
   lines.push(
-    '',
-    `- 高曝光低 CTR 页面：${report.actions.lowCtr.length || '0'}`,
-    `- GSC 新查询：${report.sites.flatMap(site => site.gsc?.newQueries ?? []).slice(0, 10).map(item => item.query).join('、') || 'N/A'}`,
-    '- 限制：GSC 的最新完整日由 API `first_incomplete_date` 动态解析；query/page 维度仍可能受 API top rows 限制。',
     '',
     '## 🤖 GEO / AI 搜索战况',
     '',

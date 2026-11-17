@@ -399,6 +399,11 @@ test('dual-site report renders the skill contract and evidence-driven action que
   assert.match(markdown, /20\.00 次\/日（Δ \+5\.71（\+40\.00%））/)
   assert.match(markdown, /GSC 连续 7 日环比/)
   assert.match(markdown, /GSC 首页关键词 · \.cn 产品主页/)
+  const homepageHeading = markdown.indexOf('### GSC 首页关键词')
+  for (const summary of ['- 高曝光低 CTR 页面：', '- GSC 新查询：', '- 限制：GSC 的最新完整日']) {
+    const summaryIndex = markdown.indexOf(summary)
+    assert.ok(summaryIndex >= 0 && summaryIndex < homepageHeading, summary)
+  }
   assert.match(markdown, /\| 数字生命 \| N\/A \| N\/A \| N\/A \| N\/A \|/)
   assert.match(markdown, /\| AI 数字生命 \| 5 \| 20 \| 25\.00% \| 9\.00 \|/)
   assert.match(markdown, /GEO \/ AI 搜索战况/)

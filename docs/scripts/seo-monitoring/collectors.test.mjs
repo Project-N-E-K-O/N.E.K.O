@@ -128,7 +128,7 @@ test('GSC tracks homepage keywords in the final web window and preserves missing
   }
   const window = reportingWindow(new Date('2026-07-23T08:00:00Z'))
   let keywordRequest
-  const collect = (keywordStatus = 200) => collectGsc(config, window, {
+  const collect = (keywordStatus = 200, overrides = {}) => collectGsc({ ...config, ...overrides }, window, {
     accessToken: 'token',
     fetchImpl: async (url, options) => {
       if (url.includes('/sitemaps/')) return jsonResponse({})
@@ -172,6 +172,10 @@ test('GSC tracks homepage keywords in the final web window and preserves missing
   assert.equal(failed.status, 'ok')
   assert.equal(failed.trackedHomepageQueries.status, 'unavailable')
   assert.match(failed.trackedHomepageQueries.reason, /HTTP 503/)
+
+  const misconfigured = await collect(200, { trackedHomepageQueries: { page } })
+  assert.equal(misconfigured.status, 'ok')
+  assert.equal(misconfigured.trackedHomepageQueries.status, 'unavailable')
 })
 
 test('GSC sitemap failure stays partial instead of discarding search performance', async () => {

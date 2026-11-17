@@ -276,11 +276,11 @@ async function collectGscRange(analyticsUrl, range, options) {
 }
 
 async function collectTrackedHomepageQueries(analyticsUrl, range, { page, queries }, options) {
-  const queryPatterns = queries.map(query => query.trim().split(/\s+/u)
-    .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('\\s*'))
-  const normalize = query => query.toLowerCase().replace(/\s+/gu, '')
   try {
+    const queryPatterns = queries.map(query => query.trim().split(/\s+/u)
+      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('\\s*'))
+    const normalize = query => query.toLowerCase().replace(/\s+/gu, '')
     const { rows } = await collectGscRows(analyticsUrl, {
       ...range,
       dimensions: ['query'],
