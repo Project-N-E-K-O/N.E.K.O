@@ -72,12 +72,6 @@ _session_path_warning_lock = threading.Lock()
 _session_path_expand_warning_emitted = False
 
 
-class _ClientBindingConflict(Exception):
-    """The local client belongs to another cloud user; do not publish new JWTs."""
-
-    detail = _BIND_OWNERSHIP_CONFLICT
-
-
 class _InvalidIdentityResponse(Exception):
     """The cloud accepted a token but did not return the frozen identity contract."""
 
@@ -786,6 +780,22 @@ def _save_auth(data: dict) -> bool:
         return False
 
 
+def _public_bind_state(auth: dict | None) -> dict:
+    """The bind outcome safe to show to local UI: ``{"bound", "error"}`` only.
+
+    Older sessions have no bind field and are treated as bound, which matches
+    the normal single-account case.
+    """
+    bind = (auth or {}).get("bind")
+    if not isinstance(bind, dict):
+        return {"bound": True, "error": None}
+    error = bind.get("error")
+    return {
+        "bound": bool(bind.get("bound")),
+        "error": str(error) if error else None,
+    }
+
+
 def _persist_repaired_bind(access_token: str, bind: dict) -> None:
     """Record a repaired bind without clobbering a concurrent refresh.
 
@@ -1192,11 +1202,11 @@ async def _store_session(
     if not access or not local_user_id or not normalized_source:
         raise _InvalidIdentityResponse()
 
-    # Bind before publishing either local credential file.  A client that belongs to another
-    # user is a non-recoverable identity conflict: publishing the new JWT even briefly would let
-    # Electron observe and use the wrong account before this request reports the conflict.
-    # Other historical bind failures remain recoverable and still persist the cloud-validated
-    # login below, together with their bind status.
+    # Bind before publishing either local credential file, so the saved login
+    # carries its bind outcome. Every bind failure, including a device that is
+    # still bound to another account, leaves the cloud-validated login usable:
+    # device ownership only decides where guest assets migrate, never which
+    # account may sign in on this machine.
     bind: dict = {"bound": False, "error": None}
     cid = await asyncio.to_thread(_get_client_id) if bind_client else None
     if not bind_client:
@@ -1222,9 +1232,6 @@ async def _store_session(
         except (httpx.HTTPError, OSError) as exc:
             bind["error"] = "cloud_unreachable"
             logger.info("card_drop: bind-client after login failed: %s", exc)
-
-    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-        raise _ClientBindingConflict()
 
     from main_routers import community_oauth
 
@@ -1262,8 +1269,6 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
             user,
             auth_source="legacy",
         )
-    except _ClientBindingConflict as exc:
-        raise HTTPException(status_code=409, detail=exc.detail) from exc
     except _InvalidIdentityResponse as exc:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     return user, bind
@@ -1393,12 +1398,10 @@ async def auth_status_endpoint(request: Request):
     if status["logged_in"]:
         a = status["auth"]
         u = a.get("user") if isinstance(a.get("user"), dict) else {}
-        # Older sessions have no bind field → treat them as bound (backward compatible; valid for the normal single-account case)
-        bind = a.get("bind") or {"bound": True, "error": None}
         return {
             "logged_in": True,
             "user": community_oauth._public_user_profile(u),
-            "bind": bind,
+            "bind": _public_bind_state(a),
         }
     # If cloud validation is temporarily unavailable, the local session still exists; the frontend uses this to distinguish "explicitly logged out" from "status unknown",
     # so do not tell the user to log in for the latter.
@@ -2106,8 +2109,6 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
                 auth_source=lookup.identity.auth_source,
                 bind_client=False,
             )
-    except _ClientBindingConflict as exc:
-        return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
     except _InvalidIdentityResponse as exc:
         return JSONResponse({"detail": exc.detail}, status_code=502, headers=cors)
     from main_routers import community_oauth

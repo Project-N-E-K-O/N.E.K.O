@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, JSONResponse
 from main_routers.local_access import is_local_oauth_status_request as _loopback_request_source
@@ -151,6 +151,54 @@ def _callback_html(title: str, message: str, *, status_code: int = 200) -> HTMLR
             message=html.escape(message),
         ),
         status_code=status_code,
+    )
+
+
+# Offered only on the conflict page. Static text keeps the CSP hash constant;
+# the request is same-origin and the endpoint itself enforces local access.
+_REBIND_SCRIPT = """(()=>{
+const button=document.getElementById('rebind');const note=document.getElementById('rebind-note');
+if(!button||!note)return;
+button.addEventListener('click',async()=>{
+if(!window.confirm('确认把这台设备改绑到当前社区账号？原账号已有的卡牌、记忆和锻造券不会转移，原账号将不再拥有这台设备。'))return;
+button.disabled=true;note.textContent='正在改绑…';
+try{const res=await fetch('/api/card-drop/oauth/rebind-client',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:true})});
+let data={};try{data=await res.json();}catch(_){}
+if(res.ok){button.remove();note.textContent='已将这台设备改绑到当前账号，可关闭此页。';return;}
+note.textContent='改绑未完成（'+String(data.detail||('HTTP '+res.status))+'），可稍后重试。';}
+catch(_){note.textContent='无法连接 NEKO，请稍后重试。';}
+button.disabled=false;});
+})();"""
+_REBIND_SCRIPT_HASH = base64.b64encode(hashlib.sha256(_REBIND_SCRIPT.encode()).digest()).decode()
+_REBIND_ACTION = (
+    '<p style="margin-top:20px"><button id="rebind" type="button" style="font:inherit;'
+    'padding:10px 18px;border-radius:999px;border:0;background:#f472b6;color:#1a1a2e;'
+    'font-weight:700;cursor:pointer">将此设备改绑到当前账号</button></p>'
+    '<p id="rebind-note" role="status" style="margin-top:12px;font-size:.9rem"></p>'
+    "<script>" + _REBIND_SCRIPT + "</script>"
+)
+
+
+def _ownership_conflict_callback_html() -> HTMLResponse:
+    """Login succeeded on a device another account owns; offer an explicit rebind."""
+    page = _CALLBACK_PAGE.format(
+        title=html.escape("社区登录已完成"),
+        message=html.escape(
+            "当前账号已登录成功。这台设备此前已绑定其他社区账号，本次没有迁移游客资产，"
+            "原账号下的卡牌和记忆不受影响。如需把这台设备改绑到当前账号，可点击下方按钮确认。"
+        ),
+    ).replace("    </main>", "      " + _REBIND_ACTION + "\n    </main>", 1)
+    return HTMLResponse(
+        page,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "Content-Security-Policy": (
+                "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; "
+                f"script-src 'sha256-{_REBIND_SCRIPT_HASH}'; frame-ancestors 'none'; base-uri 'none'"
+            ),
+        },
     )
 
 
@@ -836,6 +884,7 @@ async def oauth_status_endpoint(request: Request):
             "auth_source": None,
             "local_user_id": None,
             "user": None,
+            "bind": None,
             "session_saved": status_session_saved(status),
             "community_base_url": C._social_base_url(),
             **session_fields,
@@ -848,6 +897,7 @@ async def oauth_status_endpoint(request: Request):
         "auth_source": snapshot.get("auth_source") or None,
         "local_user_id": snapshot.get("local_user_id") or None,
         "user": public_profile,
+        "bind": C._public_bind_state(auth),
         "community_base_url": C._social_base_url(),
         **session_fields,
     }
@@ -935,6 +985,49 @@ async def oauth_logout_endpoint(request: Request):
     # Finish ongoing visits and wait for upload archival (retaining the account used for each session); admit no new visits while clearing local login state
     async with visit_account_change():
         return await _oauth_logout()
+
+
+@router.post(
+    "/oauth/rebind-client",
+    summary="用本机证明把这台设备改绑到当前社区账号（需用户确认）",
+)
+async def oauth_rebind_client_endpoint(request: Request, payload: dict | None = Body(default=None)):
+    """Move this install from another account to the signed-in one.
+
+    The signed-in OAuth token and this install's persisted client proof stay
+    on this machine: the browser never hands a platform bearer to localhost,
+    and the cloud only accepts ``rebind`` with a freshly approved local proof.
+    Nothing moves between accounts; only the device's owner changes.
+    """
+    headers = {"Cache-Control": "no-store"}
+    if await _account_request_identity(request) is None:
+        return JSONResponse({"detail": "instance_authorization_required"}, status_code=403, headers=headers)
+    if not C._local_request_source_allowed(request):
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403, headers=headers)
+    if not (payload or {}).get("confirm"):
+        # A blind POST must not move device ownership. The UI sends this only
+        # after the user confirmed the rebind.
+        return JSONResponse({"detail": "confirmation_required"}, status_code=400, headers=headers)
+
+    status = await resolve_saved_oauth_status()
+    snapshot = status.get("snapshot") or {}
+    access_token = str(snapshot.get("access_token") or "").strip()
+    if not status.get("logged_in") or not access_token:
+        return JSONResponse({"detail": "desktop_login_required"}, status_code=409, headers=headers)
+    if snapshot.get("auth_source") != "oauth":
+        return JSONResponse({"detail": "oauth_session_required"}, status_code=409, headers=headers)
+
+    bind = await _oauth_guest_bind(C._social_base_url(), access_token, rebind=True)
+    if bind.get("bound"):
+        await asyncio.to_thread(C._persist_repaired_bind, access_token, bind)
+        return JSONResponse({"ok": True, "bind": C._public_bind_state({"bind": bind})}, headers=headers)
+    error = str(bind.get("error") or "rebind_failed")
+    status_code = 502 if error == "cloud_unreachable" else 409
+    return JSONResponse(
+        {"detail": error, "bind": C._public_bind_state({"bind": bind})},
+        status_code=status_code,
+        headers=headers,
+    )
 
 
 async def _oauth_logout() -> dict:
@@ -1149,14 +1242,10 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
+    # A device bound to another account must not block switching accounts.
+    # The login still completes; only the one-time guest migration is skipped
+    # and the device keeps its owner until the user explicitly rebinds it.
     bind = await _oauth_guest_bind(social_base, access_token)
-    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-        await _clear_pending_attempt(expected_state)
-        return _callback_html(
-            "登录冲突",
-            "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
-            status_code=400,
-        )
 
     auth_payload = {
         "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
@@ -1193,6 +1282,8 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
+    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        return _ownership_conflict_callback_html()
     if bind.get("error") == client_registration.LEGACY_REBIND_DETAIL:
         return _callback_html(
             "社区登录已完成",
@@ -1309,11 +1400,18 @@ def _response_detail(res: Any) -> Any:
         return None
 
 
-async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, Any]:
+async def _oauth_guest_bind(
+    social_base: str,
+    access_token: str,
+    *,
+    rebind: bool = False,
+) -> dict[str, Any]:
     """Best-effort OAuth guest migration via binding challenge.
 
-    Ownership conflicts must surface to the caller; other failures are recorded
-    but do not abort the login.
+    Failures, including an ownership conflict, are recorded in the returned
+    bind state and never abort the login. ``rebind`` asks the cloud to move a
+    device bound to another account to this one; only an explicit user action
+    may set it, and the cloud still requires this install's local proof.
     """
     bind: dict[str, Any] = {"bound": False, "error": None}
     base = social_base.rstrip("/")
@@ -1411,13 +1509,16 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                 bind["error"] = approval_detail or f"http_{approval_res.status_code}"
                 return bind
 
+            bind_body: dict[str, Any] = {
+                "client_id": client_id,
+                "binding_challenge": challenge,
+            }
+            if rebind:
+                bind_body["rebind"] = True
             bind_res = await client.post(
                 f"{base}/api/auth/bind-client",
                 headers=headers,
-                json={
-                    "client_id": client_id,
-                    "binding_challenge": challenge,
-                },
+                json=bind_body,
             )
             if bind_res.status_code < 400:
                 bind["bound"] = True

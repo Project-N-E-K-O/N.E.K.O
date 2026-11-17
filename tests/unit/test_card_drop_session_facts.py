@@ -3010,30 +3010,27 @@ def _existing_session_files(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bind_ownership_conflict_never_publishes_new_token(tmp_path, monkeypatch):
-    auth, session, old_auth, old_session = _existing_session_files(tmp_path, monkeypatch)
+async def test_bind_ownership_conflict_still_saves_the_new_login(tmp_path, monkeypatch):
+    """A device bound to another account must not block switching accounts."""
+    auth, session, _old_auth, _old_session = _existing_session_files(tmp_path, monkeypatch)
     _cloud_client(monkeypatch)
-    writes: list[tuple[Path, dict]] = []
-    original_write = C._write_private_json
 
-    def track_write(path, data):
-        writes.append((path, data))
-        original_write(path, data)
+    bind = await C._store_session(
+        "https://community.example",
+        "new-account-token",
+        "new-account-refresh",
+        {"id": USER_A_ID, "display_name": "New User", "email": "new@example.com"},
+    )
 
-    monkeypatch.setattr(C, "_write_private_json", track_write)
-
-    with pytest.raises(C._ClientBindingConflict) as exc_info:
-        await C._store_session(
-            "https://community.example",
-            "wrong-new-token",
-            "wrong-new-refresh",
-            {"id": USER_A_ID, "display_name": "New User", "email": "new@example.com"},
-        )
-
-    assert exc_info.value.detail == "client_already_bound_to_other_user"
-    assert writes == []  # Electron cannot observe even a transient wrong social_session token.
-    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
-    assert json.loads(session.read_text(encoding="utf-8")) == old_session
+    conflict = {"bound": False, "error": "client_already_bound_to_other_user"}
+    assert bind == conflict
+    saved_auth = json.loads(auth.read_text(encoding="utf-8"))
+    assert saved_auth["access_token"] == "new-account-token"
+    assert saved_auth["local_user_id"] == USER_A_ID
+    assert saved_auth["bind"] == conflict
+    saved_session = json.loads(session.read_text(encoding="utf-8"))
+    assert saved_session["token"] == "new-account-token"
+    assert not hasattr(C, "_ClientBindingConflict")
 
 
 def test_sync_session_skips_legacy_client_binding_and_replaces_session(
