@@ -36,6 +36,8 @@ class FormatLimits:
     json_depth: int = 64
     binary_records: int = 2000000
     binary_text_bytes: int = 1024 * 1024
+    # Bound zero-filled/sparse backing arrays independently of encoded GLB size.
+    vrm_accessor_bytes: int = 256 * 1024 * 1024
 
 
 def _require(condition, path: str, code: str = "invalid_model_structure") -> None:
@@ -380,8 +382,8 @@ def _vrm(resources: _Resources) -> None:
         _require(vrm.get("specVersion") in ("1.0", "1.0-beta"), entry, "unsupported_model_extension")
     else:
         _require(vrm.get("specVersion", "0.0") == "0.0", entry, "unsupported_model_extension")
-    buffers, views, images, nodes = (data.get(key, []) for key in ("buffers", "bufferViews", "images", "nodes"))
-    _require(all(isinstance(value, list) for value in (buffers, views, images, nodes)) and bool(buffers), entry)
+    buffers, views, images, nodes, textures = (data.get(key, []) for key in ("buffers", "bufferViews", "images", "nodes", "textures"))
+    _require(all(isinstance(value, list) for value in (buffers, views, images, nodes, textures)) and bool(buffers), entry)
     buffer_sizes = []
     for index, buffer in enumerate(buffers):
         _require(isinstance(buffer, dict) and buffer.get("type", "arraybuffer") == "arraybuffer", entry)
@@ -406,6 +408,16 @@ def _vrm(resources: _Resources) -> None:
         else:
             _index(image["bufferView"], views, entry)
             _require(image.get("mimeType") in ("image/png", "image/jpeg", "image/webp", "image/avif"), entry)
+    for texture in textures:
+        _require(isinstance(texture, dict), entry)
+        if "source" in texture:
+            _index(texture["source"], images, entry)
+        # These supported extensions select a different image in the same table.
+        for name in ("EXT_texture_webp", "EXT_texture_avif"):
+            if name in texture.get("extensions", {}):
+                extension = texture["extensions"][name]
+                _require(isinstance(extension, dict), entry)
+                _index(extension.get("source"), images, entry)
     humanoid, meta = vrm.get("humanoid"), vrm.get("meta")
     _require(isinstance(humanoid, dict) and isinstance(meta, dict), entry)
     bones = humanoid.get("humanBones")
@@ -418,11 +430,13 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(bone, dict), entry)
         _index(bone.get("node"), nodes, entry)
     # Validate common graph indices; shader/humanoid behavior still needs rendering.
-    accessors, meshes, skins, scenes = (data.get(key, []) for key in ("accessors", "meshes", "skins", "scenes"))
-    _require(all(isinstance(value, list) for value in (accessors, meshes, skins, scenes)), entry)
+    accessors, meshes, skins, scenes, animations = (data.get(key, []) for key in ("accessors", "meshes", "skins", "scenes", "animations"))
+    _require(all(isinstance(value, list) for value in (accessors, meshes, skins, scenes, animations)), entry)
+    allocated = 0
     for accessor in accessors:
         _require(isinstance(accessor, dict), entry)
         count = _uint(accessor.get("count"), entry)
+        _require(count > 0, entry)
         component_type = _uint(accessor.get("componentType"), entry)
         component = {5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4}.get(component_type)
         shape = accessor.get("type")
@@ -433,6 +447,8 @@ def _vrm(resources: _Resources) -> None:
             element_size = columns * ((columns * component + 3) // 4 * 4)
         else:
             element_size = component * (1 if shape == "SCALAR" else int(shape[-1]))
+        _require(count * element_size <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
+        view = None
         if "bufferView" in accessor:
             view = views[_index(accessor["bufferView"], views, entry)]
             offset = _uint(accessor.get("byteOffset", 0), entry)
@@ -440,12 +456,21 @@ def _vrm(resources: _Resources) -> None:
             _require(offset % component == 0 and stride >= element_size, entry)
             _require(offset + (count - 1) * stride + element_size <= view["byteLength"] if count else offset <= view["byteLength"], entry)
         else:
-            _require("sparse" in accessor, entry)
+            # glTF and the bundled loader allow pure zero-initialized accessors.
+            _require(_uint(accessor.get("byteOffset", 0), entry) == 0, entry)
+        if view is None or "sparse" in accessor:
+            # Sparse data over an existing interleaved view clones its full stride,
+            # not just the logical element width. Sum every private backing array.
+            allocated += count * (view.get("byteStride", element_size) if view is not None else element_size)
+            _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "sparse" in accessor:
+            # This bundled GLTFLoader writes sparse items through setX/Y/Z/W;
+            # matrix widths above four components are explicitly unsupported.
+            _require(shape not in ("MAT3", "MAT4"), entry, "unsupported_model_structure")
             sparse = accessor["sparse"]
             _require(isinstance(sparse, dict), entry)
             sparse_count = _uint(sparse.get("count"), entry)
-            _require(sparse_count <= count, entry)
+            _require(0 < sparse_count <= count, entry)
             for key in ("indices", "values"):
                 part = sparse.get(key)
                 _require(isinstance(part, dict), entry)
@@ -453,6 +478,23 @@ def _vrm(resources: _Resources) -> None:
                 width = {5121: 1, 5123: 2, 5125: 4}.get(_uint(part.get("componentType"), entry)) if key == "indices" else element_size
                 _require(width is not None, entry)
                 _require(_uint(part.get("byteOffset", 0), entry) + sparse_count * width <= view["byteLength"], entry)
+    for animation in animations:
+        _require(isinstance(animation, dict), entry)
+        samplers, channels = animation.get("samplers"), animation.get("channels")
+        _require(isinstance(samplers, list) and bool(samplers) and isinstance(channels, list) and bool(channels), entry)
+        for sampler in samplers:
+            _require(isinstance(sampler, dict), entry)
+            source = accessors[_index(sampler.get("input"), accessors, entry)]
+            _index(sampler.get("output"), accessors, entry)
+            _require(source["type"] == "SCALAR" and source["componentType"] == 5126, entry)
+            _require(sampler.get("interpolation", "LINEAR") in ("LINEAR", "STEP", "CUBICSPLINE"), entry)
+        for channel in channels:
+            _require(isinstance(channel, dict), entry)
+            _index(channel.get("sampler"), samplers, entry)
+            target = channel.get("target")
+            _require(isinstance(target, dict) and target.get("path") in ("translation", "rotation", "scale", "weights"), entry)
+            if "node" in target:
+                _index(target["node"], nodes, entry)
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         for child in node.get("children", []):
@@ -485,6 +527,10 @@ def _vrm(resources: _Resources) -> None:
         _require(isinstance(skin, dict) and isinstance(skin.get("joints"), list), entry)
         for joint in skin["joints"]:
             _index(joint, nodes, entry)
+        if "inverseBindMatrices" in skin:
+            matrices = accessors[_index(skin["inverseBindMatrices"], accessors, entry)]
+            _require(matrices["type"] == "MAT4" and matrices["componentType"] == 5126
+                     and matrices["count"] >= len(skin["joints"]), entry)
     for scene in scenes:
         _require(isinstance(scene, dict) and isinstance(scene.get("nodes", []), list), entry)
         for node in scene.get("nodes", []):
@@ -756,7 +802,9 @@ def _pmd(resources: _Resources, reader: _MmdReader) -> None:
             if value:
                 key = _pmd_normalized(value)
                 if key not in table:
-                    table[key] = len(textures)
+                    # PmdReader uses Map.size, even when toon slots collapse to
+                    # duplicate keys. Check the slot the loader will really read.
+                    table[key] = len(table)
                     textures.append(value)
                 active.append(table[key])
     for index, (toon, _diffuse, _sphere) in enumerate(materials):

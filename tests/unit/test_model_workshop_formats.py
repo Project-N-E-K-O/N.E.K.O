@@ -1,6 +1,7 @@
 """Native admission fixtures are structural samples, not renderable avatars."""
 
 import hashlib
+import base64
 import json
 import struct
 import zipfile
@@ -8,7 +9,7 @@ import zipfile
 import pytest
 
 from services.model_workshop.formats import (
-    ModelFormatError, validate_live2d_bundle, validate_vrm_bundle,
+    FormatLimits, ModelFormatError, validate_live2d_bundle, validate_vrm_bundle,
     validate_mmd_bundle, validate_model_bundle,
 )
 
@@ -162,6 +163,102 @@ def test_accepts_supported_vrm_extensions_and_preserves_bytes(tmp_path, version)
     assert path.read_bytes() == before
 
 
+def vrm_graph(data):
+    """Independent loader dependency fixture: texture, animation, skin and accessors."""
+    matrix = struct.pack("<16f", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)
+    data["buffers"].append({"byteLength": 64, "uri": "data:application/octet-stream;base64," + base64.b64encode(matrix).decode()})
+    data["bufferViews"].append({"buffer": 1, "byteLength": 64})
+    data["images"] = [{"uri": "data:image/png;base64,YQ=="}]
+    data["textures"] = [{"source": 0}]
+    data["materials"] = [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+    data["accessors"] = [{"bufferView": 0, "componentType": 5126, "count": 1, "type": "SCALAR"},
+                         {"bufferView": 1, "componentType": 5126, "count": 1, "type": "VEC3"},
+                         {"bufferView": 1, "componentType": 5126, "count": 1, "type": "MAT4"}]
+    data["skins"] = [{"joints": [0], "inverseBindMatrices": 2}]
+    data["nodes"][0]["skin"] = 0
+    data["animations"] = [{"samplers": [{"input": 0, "output": 1}],
+                           "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}]}]
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d["textures"][0].update(source=1),
+    lambda d: d["textures"][0].update(source=True),
+    lambda d: d["textures"][0].update(extensions={"EXT_texture_webp": {"source": 1}}),
+    lambda d: d["textures"][0].update(extensions={"EXT_texture_avif": {"source": 1}}),
+    lambda d: d["animations"][0]["samplers"][0].update(input=3),
+    lambda d: d["animations"][0]["samplers"][0].update(output=3),
+    lambda d: d["animations"][0]["channels"][0].update(sampler=1),
+    lambda d: d["animations"][0]["channels"][0]["target"].update(node=1),
+    lambda d: d["skins"][0].update(inverseBindMatrices=3),
+    lambda d: d["skins"][0].update(inverseBindMatrices=0),
+    lambda d: d["accessors"][2].update(componentType=5123),
+    lambda d: (d["nodes"].append({}), d["skins"][0].update(joints=[0, 1])),
+])
+def test_vrm_loading_dependencies_reject_invalid_indices_and_skin_shape(tmp_path, change):
+    """Out-of-range texture/animation/skin data must fail before the renderer loads it."""
+    def graph(data):
+        vrm_graph(data)
+        change(data)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    with pytest.raises(ModelFormatError):
+        validate_vrm_bundle(path)
+
+
+def test_vrm_accepts_valid_loading_dependencies_and_zero_initialized_accessor(tmp_path):
+    """Zero values need neither a view nor sparse overrides in glTF 2.0."""
+    def graph(data):
+        vrm_graph(data)
+        data["accessors"][1].pop("bufferView")
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": vrm_bytes(change=graph)})
+    before = path.read_bytes()
+    assert validate_vrm_bundle(path).model_format == "vrm"
+    assert path.read_bytes() == before
+
+
+def sparse_accessors(data, *, count=2_000_000_000, copies=1, backed=False):
+    """A tiny encoded model may request a huge zero/sparse backing allocation."""
+    data["buffers"].append({"byteLength": 64, "uri": "data:application/octet-stream;base64," + base64.b64encode(bytes(64)).decode()})
+    data["bufferViews"].extend([{"buffer": 1, "byteLength": 64, "byteStride": 16},
+        {"buffer": 1, "byteLength": 1}, {"buffer": 1, "byteOffset": 4, "byteLength": 12}])
+    accessor = {"componentType": 5126, "count": count, "type": "VEC3",
+                "sparse": {"count": 1, "indices": {"bufferView": 2, "componentType": 5121},
+                           "values": {"bufferView": 3}}}
+    if backed:
+        accessor["bufferView"] = 1
+    data["accessors"] = [dict(accessor) for _ in range(copies)]
+
+
+@pytest.mark.parametrize("count,copies,backed,budget", [(2_000_000_000, 1, False, None),
+    (4, 2, False, 64), (4, 2, True, 112)])
+def test_vrm_sparse_allocations_are_bounded_individually_and_in_total(tmp_path, count, copies, backed, budget):
+    """Count and stride bound actual zero-filled arrays and sparse buffer clones."""
+    raw = vrm_bytes(change=lambda data: sparse_accessors(data, count=count, copies=copies, backed=backed))
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    options = {} if budget is None else {"format_limits": FormatLimits(vrm_accessor_bytes=budget)}
+    with pytest.raises(ModelFormatError, match="model_accessor_budget_exceeded"):
+        validate_vrm_bundle(path, **options)
+
+
+def test_vrm_zero_accessor_allocation_accepts_the_exact_budget(tmp_path):
+    """The budget is a byte limit, not a rejection of legitimate zero-filled data."""
+    raw = vrm_bytes(change=lambda data: data.update(accessors=[{"componentType": 5126, "count": 1, "type": "MAT4"}]))
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    validate_vrm_bundle(path, format_limits=FormatLimits(vrm_accessor_bytes=64))
+
+
+@pytest.mark.parametrize("shape", ["MAT3", "MAT4"])
+def test_vrm_rejects_sparse_matrix_shapes_the_bundled_loader_cannot_apply(tmp_path, shape):
+    """Valid glTF data still cannot use a sparse shape rejected by this loader."""
+    def matrix(data):
+        sparse_accessors(data, count=1)
+        data["accessors"][0]["type"] = shape
+        data["bufferViews"][3] = {"buffer": 1, "byteLength": 64}
+    raw = vrm_bytes(change=matrix)
+    path = make_native_bundle(tmp_path, kind="vrm", entry="Avatar.vrm", files={"Avatar.vrm": raw})
+    with pytest.raises(ModelFormatError, match="unsupported_model_structure"):
+        validate_vrm_bundle(path)
+
+
 @pytest.mark.parametrize("change", [
     lambda d: d["buffers"][0].update(uri="https://other.invalid/buffer.bin"),
     lambda d: d["buffers"][0].update(uri="file:///outside.bin"),
@@ -233,7 +330,7 @@ def pmx_bytes(texture="../Textures/face.png", *, shared=True, version=2.0, broke
     return raw
 
 
-def pmd_bytes(texture="../Textures/face.png", *, toon=-1, toon_path=None):
+def pmd_bytes(texture="../Textures/face.png", *, toon=-1, toon_path=None, toon_paths=None):
     """PMD fixtures include optional English/toon/physics tail when requested."""
     def fixed(value, size):
         raw = value.encode("cp932")
@@ -243,8 +340,10 @@ def pmd_bytes(texture="../Textures/face.png", *, toon=-1, toon_path=None):
     raw += struct.pack("<3I", 0, 0, 1) + bytes(44)
     raw += struct.pack("<bBI", toon, 0, 0) + fixed(texture, 20)
     raw += struct.pack("<3H2BI", 0, 0, 0, 0, 0, 0)
-    if toon_path is not None:
-        raw += b"\x00" + fixed(toon_path, 100) + bytes(900) + struct.pack("<2I", 0, 0)
+    if toon_path is not None or toon_paths is not None:
+        paths = toon_paths if toon_paths is not None else [toon_path] + [""] * 9
+        assert len(paths) == 10
+        raw += b"\x00" + b"".join(fixed(value, 100) for value in paths) + struct.pack("<2I", 0, 0)
     return raw
 
 
@@ -295,6 +394,24 @@ def test_rejects_truncated_mmd_after_material_dependency_section(tmp_path, kind)
     files = {main: raw[:-1], "Textures/face.png": b"\x89PNG\r\n\x1a\nfixture"}
     with pytest.raises(ModelFormatError):
         validate_mmd_bundle(make_native_bundle(tmp_path, kind="mmd", entry=main, files=files))
+
+
+@pytest.mark.parametrize("reference", ["face.png", "face.sph"])
+def test_pmd_duplicate_toon_keys_cannot_hide_the_loaders_external_texture(tmp_path, reference):
+    """The converter uses map size, which can select an existing toon slot."""
+    main = "Models/Avatar.pmd"
+    paths = ["", "", "https://evil.invalid/x.png"] + [""] * 7
+    files = {main: pmd_bytes(reference, toon_paths=paths), "Models/" + reference: b"\x89PNG\r\n\x1a\nfixture"}
+    with pytest.raises(ModelFormatError):
+        validate_mmd_bundle(make_native_bundle(tmp_path, kind="mmd", entry=main, files=files))
+
+
+def test_pmd_validates_the_actual_converted_slot_instead_of_the_appended_path(tmp_path):
+    """Keep loader-compatible local paths, even when a nominal diffuse path is unused."""
+    main = "Models/Avatar.pmd"
+    paths = ["", "", "../Textures/loaded.png"] + [""] * 7
+    files = {main: pmd_bytes("missing.png", toon_paths=paths), "Textures/loaded.png": b"\x89PNG\r\n\x1a\nfixture"}
+    validate_mmd_bundle(make_native_bundle(tmp_path, kind="mmd", entry=main, files=files))
 
 
 def test_pmx_unknown_skin_weight_structure_is_not_skipped(tmp_path):

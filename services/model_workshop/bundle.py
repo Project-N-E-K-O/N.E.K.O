@@ -265,12 +265,15 @@ def inspect_bundle(path: str | Path | BinaryIO, *, limits: BundleLimits = Bundle
 
     Native admission reads through this context rather than reopening a pathname
     after container validation. The final identity check covers those reads too.
+    Borrowed descriptors retain caller ownership but share their file offset;
+    callers must explicitly seek before reading the borrowed handle again.
     """
     try:
         if isinstance(path, (str, os.PathLike)):
             path = Path(path)
             # No-follow/nonblocking open prevents link aliases and FIFO input where supported.
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            # Be explicit at descriptor creation; Windows FileIO also sets binary mode.
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         else:
             # A private object store can lend its checked descriptor; never reopen its path.
             # Duplicate it to retain caller ownership and bypass any stale read buffer.
@@ -280,6 +283,8 @@ def inspect_bundle(path: str | Path | BinaryIO, *, limits: BundleLimits = Bundle
         with os.fdopen(descriptor, "rb", buffering=0) as source:
             stamp = _source_stamp(source)
             _same_input(source, path, stamp)
+            if stamp[2] > limits.archive_bytes:
+                raise BundleError("model_bundle_too_large")
             size, digest = _hash_source(source, limits.archive_bytes)
             _same_input(source, path, stamp)
             _directory_budget(source, size, limits)

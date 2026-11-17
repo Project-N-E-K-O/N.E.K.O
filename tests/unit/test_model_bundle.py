@@ -315,9 +315,33 @@ def test_rejects_symbolic_link_input_without_reading_target(tmp_path):
     """The bundle entry point accepts ordinary private inputs, not link aliases."""
     path = make_bundle(tmp_path)
     alias = tmp_path / "alias.neko-model.zip"
-    alias.symlink_to(path)
+    try:
+        alias.symlink_to(path)
+    except OSError as error:
+        # Windows ordinary accounts may lack symlink privilege. Other setup
+        # failures must remain failures rather than hiding a broken test.
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("symlink privilege is unavailable")
+        raise
     with pytest.raises(BundleError):
         validate_bundle(alias)
+
+
+def test_bundle_identity_preserves_crlf_and_control_z_bytes(tmp_path):
+    """Windows input must retain every raw ZIP byte, including CRT text sentinels."""
+    path = make_bundle(tmp_path, files={"Avatar.vrm": b"raw\r\n\x1a\r\nbytes"}, compression=zipfile.ZIP_STORED)
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert validate_bundle(path).sha256 == expected
+
+
+def test_oversized_regular_file_is_rejected_before_hashing(tmp_path, monkeypatch):
+    """Known file size can reject a large input without reading its archive budget."""
+    path = make_bundle(tmp_path)
+    def unexpected(*_args):
+        pytest.fail("an already-oversized input reached whole-archive hashing")
+    monkeypatch.setattr(bundle_module, "_hash_source", unexpected)
+    with pytest.raises(BundleError, match="model_bundle_too_large"):
+        validate_bundle(path, limits=BundleLimits(archive_bytes=1))
 
 
 def test_inspection_context_checks_input_after_native_consumer(tmp_path):
