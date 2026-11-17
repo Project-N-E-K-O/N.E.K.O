@@ -117,6 +117,63 @@ test('GSC collector returns latest day, consecutive 7-day trend, and action queu
   assert.equal(result.pagination.recent7Requests, 1)
 })
 
+test('GSC tracks homepage keywords in the final web window and preserves missing rows', async () => {
+  const page = 'https://project-neko.cn/'
+  const recent7 = { startDate: '2026-07-14', endDate: '2026-07-20' }
+  const config = {
+    siteUrl: 'sc-domain:project-neko.cn',
+    sitemapUrl: `${page}sitemap.xml`,
+    categoryQueryRegex: 'AI 桌宠',
+    trackedHomepageQueries: { page, queries: ['数字生命', 'AI 数字生命'] },
+  }
+  const window = reportingWindow(new Date('2026-07-23T08:00:00Z'))
+  let keywordRequest
+  const collect = (keywordStatus = 200) => collectGsc(config, window, {
+    accessToken: 'token',
+    fetchImpl: async (url, options) => {
+      if (url.includes('/sitemaps/')) return jsonResponse({})
+      const body = JSON.parse(options.body)
+      if (body.dataState === 'all') {
+        return jsonResponse({ metadata: { first_incomplete_date: '2026-07-21' } })
+      }
+      if (!body.dimensionFilterGroups) return jsonResponse({ rows: [] })
+      keywordRequest = body
+      return jsonResponse({
+        rows: [
+          { keys: ['ai数字生命'], clicks: 3, impressions: 10, position: 8 },
+          { keys: ['ai 数字生命'], clicks: 2, impressions: 10, position: 10 },
+        ],
+      }, keywordStatus)
+    },
+  })
+
+  const result = await collect()
+  assert.deepEqual(keywordRequest.dimensionFilterGroups, [{
+    filters: [
+      { dimension: 'page', operator: 'equals', expression: page },
+      { dimension: 'query', operator: 'includingRegex', expression: '(?i)^(?:数字生命|AI\\s*数字生命)$' },
+    ],
+  }])
+  assert.deepEqual(keywordRequest.dimensions, ['query'])
+  assert.equal(keywordRequest.type, 'web')
+  assert.equal(keywordRequest.dataState, 'final')
+  assert.deepEqual({ startDate: keywordRequest.startDate, endDate: keywordRequest.endDate }, recent7)
+  assert.deepEqual(result.trackedHomepageQueries, {
+    status: 'ok',
+    window: recent7,
+    page,
+    rows: [
+      { query: '数字生命', metrics: null },
+      { query: 'AI 数字生命', metrics: { clicks: 5, impressions: 20, ctr: 0.25, position: 9, rows: 2 } },
+    ],
+  })
+
+  const failed = await collect(503)
+  assert.equal(failed.status, 'ok')
+  assert.equal(failed.trackedHomepageQueries.status, 'unavailable')
+  assert.match(failed.trackedHomepageQueries.reason, /HTTP 503/)
+})
+
 test('GSC sitemap failure stays partial instead of discarding search performance', async () => {
   const result = await collectGsc({
     siteUrl: 'sc-domain:project-neko.cn',
