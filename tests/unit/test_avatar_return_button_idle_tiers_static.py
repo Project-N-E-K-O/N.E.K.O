@@ -991,7 +991,9 @@ def test_model_cat_transition_contract_is_present():
     assert "const commitReturn = () => {" in avatar_source
     assert "if (_guardNekoVisitCatReturn(commitReturn)) return true;" in avatar_source
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
-    assert "nekoModelCatRevealPlaybackToken = 0" in source
+    # Reveal restarts alternate two URLs so they stay in the HTTP cache.
+    assert "nekoModelCatRevealPlaybackToken" not in source
+    assert "function nextNekoModelCatRevealPlaybackUrl(src)" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
     assert "url.searchParams.set('reveal'" in source
     assert "function restartNekoModelCatRevealArt(container)" in source

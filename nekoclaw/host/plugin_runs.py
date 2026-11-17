@@ -257,6 +257,7 @@ def describe_result(entry: dict[str, Any] | None, outcome: "RunOutcome", *, lang
     error = (outcome.run_error or outcome.error) if not outcome.success else None
     return parse_plugin_result(
         outcome.data,
+        plugin_id=outcome.plugin_id, entry_id=outcome.entry_id,
         llm_result_fields=llm_result_fields(entry),
         plugin_message=str(outcome.message or ""),
         error=error,
@@ -552,12 +553,18 @@ class PluginRunner:
         latest_user_request: str = "",
         on_progress: ProgressCallback | None = None,
         on_run_created: Callable[[str], Awaitable[None]] | None = None,
+        housekeeping: bool = False,
     ) -> RunOutcome:
         """Call one plugin entry and wait for the run to end.
 
         Never raises for a failed call; the outcome says what happened. When
         the caller is cancelled while waiting, the run is cancelled on the
         plugin server as well.
+
+        ``housekeeping`` is for a call the host makes on its own account and
+        no model chose (handing a deferred task's id to the plugin's
+        ``bind_task`` entry): such an entry may be hidden from selection, so
+        the entry is looked for among all of the plugin's entries.
         """
         plugin_args = dict(args) if isinstance(args, dict) else {}
         requested_entry = entry_id or plugin_args.pop("_entry", None)
@@ -586,7 +593,12 @@ class PluginRunner:
             return rejected(f"Plugin {plugin_id} not found", "Plugin not found")
 
         entries_listed = isinstance(plugin.get("entries"), list)
-        known = [str(item.get("id")) for item in visible_entries(plugin) if item.get("id")]
+        listed = (
+            [item for item in plugin.get("entries") or [] if isinstance(item, dict)]
+            if housekeeping
+            else visible_entries(plugin)
+        )
+        known = [str(item.get("id")) for item in listed if item.get("id")]
         if entries_listed and not known:
             return rejected(f"Plugin {plugin_id} has no Agent-visible entries", "no_agent_visible_entries")
         if entries_listed and not requested_entry:
@@ -614,14 +626,27 @@ class PluginRunner:
                 )
 
         resolved_entry = str(requested_entry or "run")
+        # Autonomous playback must not replace an occupied or recently refused player.
+        playback = resolved_entry == "play_netease_music" or (
+            resolved_entry == "cloud_music" and plugin_args.get("action") == "play"
+        ) or (resolved_entry == "playlist" and plugin_args.get("action") in {
+            "curate", "replay", "next", "revise", "search", "resume",
+        })
+        if plugin_id == "netease_music" and playback and not latest_user_request:
+            from utils.proactive_music import proactive_music_block_reason
+            blocked = await proactive_music_block_reason(lanlan_name)
+            if blocked:
+                return rejected(blocked, blocked, resolved_entry)
         safe_args = dict(plugin_args)
         entry_timeout = resolve_entry_timeout(plugin, requested_entry, self._default_entry_timeout())
         try:
             ctx = safe_args.pop("_ctx", None)
             ctx = dict(ctx) if isinstance(ctx, dict) else {}
-            # Never forward an unverified model-supplied _ctx after a parsing error.
             safe_args["_ctx"] = ctx
-            if lanlan_name and "lanlan_name" not in ctx:
+            # The host's character name wins over one the model wrote into
+            # the arguments: which character the call is for is the host's
+            # to say (owner, 2026-11-13).
+            if lanlan_name:
                 ctx["lanlan_name"] = lanlan_name
             if conversation_id:
                 ctx["conversation_id"] = conversation_id
@@ -633,7 +658,7 @@ class PluginRunner:
                 # Commission user_text is supplied separately from model dispatch/args.
                 # An autonomous commission cannot manufacture authorization via _ctx.
                 ctx["latest_user_request"] = latest_user_request
-                ctx["request_source"] = "user" if latest_user_request else ""
+                ctx["request_source"] = "user" if latest_user_request else "proactive"
                 ctx["authorized_action"] = safe_args.get("action", "") if latest_user_request else ""
             entry_timeout = _ctx_entry_timeout(ctx, entry_timeout)
             ctx["entry_timeout"] = entry_timeout

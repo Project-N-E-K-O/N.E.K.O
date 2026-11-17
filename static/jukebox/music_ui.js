@@ -278,7 +278,14 @@
             && previousContext.url === String(track.url || '');
         return {
             characterName: String(window.lanlan_config?.lanlan_name || ''),
-            neteaseId: track.neteaseId,
+            neteaseId: (() => {
+                const explicit = String(track.neteaseId || '');
+                const match = String(track.url || '').match(/\/api\/music\/play\/netease\/(\d+)/);
+                const id = /^\d{1,20}$/.test(explicit) ? explicit : match ? match[1]
+                    : track.source === 'netease' ? String(track.id || '') : '';
+                const numericId = Number(id);
+                return /^\d{1,20}$/.test(id) && Number.isSafeInteger(numericId) && numericId > 0 ? numericId : '';
+            })(),
             queueTicket: track.queueTicket || '',
             musicRequestId: track.musicRequestId || '',
             playbackId: playbackId || '',
@@ -2975,6 +2982,8 @@
                 for (const event of ['waiting', 'stalled']) boundPlayer.on(event, () => {
                     const context = getOwnedMusicPlaybackReportContext(boundPlayer, 'buffering');
                     if (!context || !context.playbackStarted || boundPlayer.audio.paused) return;
+                    if (event === 'stalled' && boundPlayer.audio.readyState >= 3) return;
+                    const stalledAt = boundPlayer.audio.currentTime;
                     boundPlayer._musicBuffering = true;
                     reportMusicPlaybackState('buffering', null, context);
                     emitBarState();
@@ -2984,6 +2993,14 @@
                     context.stallTimer = setTimeout(() => {
                         if (localPlayer === boundPlayer && boundPlayer._latestToken === token
                             && context.lastReportedState === 'buffering') {
+                            context.stallTimer = null;
+                            if (boundPlayer.audio.readyState >= 3 || boundPlayer.audio.currentTime > stalledAt) {
+                                boundPlayer._musicBuffering = false;
+                                reportMusicPlaybackState('playing', null, context);
+                                setMusicBarVisualState(musicBar, 'playing');
+                                emitBarState();
+                                return;
+                            }
                             reportMusicPlaybackFailureIfNeeded(context, 'load_timeout', false);
                             boundPlayer.audio.pause();
                         }

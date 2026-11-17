@@ -39,7 +39,7 @@ late results cannot reactivate a stopped or replaced expression.
 Immediately before an ordinary text message starts a reply, the chat window
 requests one observation from the model window through the existing partition
 bridge. It waits at most 300 ms. No poll or proactive reply is created. The
-snapshot binds request ID, playback ID and timestamp to the current track.
+snapshot binds character name, request ID, playback ID and timestamp to the current track. Both the responder and collector reject another character; the backend also requires this binding.
 
 The optional Live2D expression profile extension supplies a recent final render
 sample and the visible accent state. Without that extension, the snapshot can
@@ -54,10 +54,20 @@ The backend revalidates against its owning player's current state immediately
 before dispatch, including pause/resume and connection loss. A validated short
 natural-language block uses the actual character name and the turn's language
 (Simplified/Traditional Chinese, English or Japanese; English fallback). Persona
-and voice stay with the active character configuration. The block is merged into
-`TurnContext.ephemeral`, excluded from stored history and memory inputs. Ordinary
-user/assistant messages keep their normal history behavior. Voice-only turns and
-synthetic/proactive inputs do not attach this snapshot.
+and voice stay with the active character configuration. A `TurnContext.tools`
+entry exposes `read_listening_context` for this reply only. No mood or gesture
+text is injected into the initial request. Music/visible-expression questions
+can read the snapshot through the existing tool loop; it revalidates current
+playback and the observation age before returning. The result is replaced with
+an expired receipt when the turn ends, so it is not reused as next-turn context
+or memory evidence. Context-local ownership and response generations isolate
+concurrent sessions, cancellation and proactive replies. Playback authority is
+also read on demand through `read_music_state`, available to ordinary and proactive
+offline replies. Routine passive player receipts update live state without
+priming the next unrelated chat; first-play announcements and errors remain
+deliverable. Both tools release their evidence at the end of the reply.
+There is no keyword filter or additional relevance-classifier call. Voice-only
+turns and synthetic/proactive inputs do not attach this snapshot.
 
 ## Validation
 

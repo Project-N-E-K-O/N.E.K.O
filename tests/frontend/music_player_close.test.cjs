@@ -1531,6 +1531,7 @@ for (const transport of ['ipc', 'broadcast']) test(`plugin ID reaches classifica
 for (const event of ['waiting', 'stalled']) test(`closing ${event} playback preserves recommendation and sends terminal receipt`, async t => {
     const s=createSurface(t), r=await startRecommendation(s,1);
     const player=s.players[0];
+    player.audio.readyState = 2;
     player.emit(event);
     assert.equal(player._musicPlaybackReportContext.lastReportedState,'buffering');
     assert.equal(player._musicPlaybackReportContext.recommendationLastState,'playing');
@@ -1549,3 +1550,34 @@ test('buffering player rejects a proactive plugin dispatch at final playback bou
     assert.equal(player.destroyed,false);
     assert.equal(s.players.length,1);
 });
+
+
+for (const scenario of ['buffered', 'progress', 'starved']) {
+    test(`network stalled: ${scenario} respects actual playback progress`, async t => {
+        const s = createSurface(t), events = [];
+        s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+        await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)},false);
+        const player = s.players[0]; player.play();
+        Object.defineProperty(player.audio, 'readyState', { configurable:true, value: scenario === 'buffered' ? 3 : 2 });
+        player.emit('stalled');
+        if (scenario === 'progress') player.audio.currentTime += 5;
+        await s.advance(16000);
+        assert.equal(events.some(e=>e.reason==='load_timeout'), scenario === 'starved');
+        assert.equal(player.audio.paused, scenario === 'starved');
+        if (scenario !== 'starved') assert.equal(player._musicBuffering || false, false);
+    });
+}
+
+for (const track of [
+    {url:'/api/music/play/netease/123', id:'123'},
+    {url:'https://music.163.com/test.mp3', id:123, source:'netease'},
+    {url:'/api/music/play/netease/999', neteaseId:123},
+]) {
+    test(`canonical NetEase identity survives recommendation playback: ${JSON.stringify(track)}`, async t => {
+        const s = createSurface(t), events=[];
+        s.w.appState={socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+        await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',...track},false);
+        s.players[0].play();
+        assert.equal(events.find(e=>e.state==='playing').netease_id,123);
+    });
+}

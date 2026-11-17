@@ -1141,7 +1141,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 141076,
+  "source_bytes": 141470,
   "source_files": [
     "README.md",
     "__init__.py",
@@ -1164,5 +1164,5 @@
     "provider.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "8c72144fcf7457cb379651e52f15bf65dee3085a22e157bc29e1607c77bce7f5"
+  "source_sha256": "549e701c1fed91a6a915c180fcaa11ee600d6c3222f4cf4af61415ba905adafa"
 }

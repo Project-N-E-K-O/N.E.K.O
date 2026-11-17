@@ -9,7 +9,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from brain.music_capabilities import scoped_music_catalog
+from utils.music_capabilities import scoped_music_catalog
 from plugin.plugins.netease_music.cloud_entry import CLOUD_SCHEMA
 from plugin.plugins.netease_music.models import SongCandidate
 from plugin.plugins.netease_music.provider import NeteaseMusicProvider
@@ -58,38 +58,6 @@ def test_user_language_never_removes_or_selects_operations(text):
         proactive[0]["entries"][2]["input_schema"]["properties"]["action"]["enum"]
     ) == {"account", "playlists", "tracks", "play", "liked", "daily", "artists"}
     assert catalog == original
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "offer",
-    [
-        "今天的雨好大，推荐你听听《晴天》吧。",
-        "我的建议是：给你放一首《晴天》",
-        'Let me play "Yellow" by Coldplay — it is lovely.',
-    ],
-)
-async def test_proactive_offer_goes_through_model(offer):
-    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
-
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor.plugin_list_provider = AsyncMock(
-        return_value=[
-            {"id": "netease_music", "entries": [{"id": "play_netease_music"}]}
-        ]
-    )
-    executor._assess_user_plugin = AsyncMock(
-        return_value=UserPluginDecision(has_task=False, can_execute=False)
-    )
-    result = await executor._analyze_and_execute_inner(
-        messages=[{"role": "assistant", "content": offer}],
-        lanlan_name="Example",
-        agent_flags={"user_plugin_enabled": True},
-        proactive=True,
-    )
-    assert result is None or not result.has_task
-    executor._assess_user_plugin.assert_awaited_once()
-    assert offer in executor._assess_user_plugin.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -218,33 +186,24 @@ async def test_queue_facts_survive_actual_result_projection(tmp_path):
     assert pushes[0]["visibility"] == []
     for entry in ("playlist", "cloud_music"):
         meta = getattr(getattr(plugin, entry), EVENT_META_ATTR)
-        projected = json.loads(
-            parse_plugin_result(
-                result["finish"]["data"], llm_result_fields=meta.llm_result_fields
-            )
-        )
-        assert projected["status"] == "submitted"
-        assert projected["song"]["name"] == "Song"
-        assert projected["player_confirmed"] is False
+        projected = parse_plugin_result(result["finish"]["data"],
+            plugin_id="netease_music", entry_id=entry, llm_result_fields=meta.llm_result_fields)
+        assert '"status": "submitted"' in projected
+        assert '"name": "Song"' in projected
+        assert '"player_confirmed": false' in projected
 
 
-def test_proactive_cap_applies_before_model_assessment(monkeypatch):
-    from app.agent_server import api_runtime as api
-
-    monkeypatch.setattr(api, "AGENT_PROACTIVE_ANALYZE_ENABLED", True)
-    monkeypatch.setattr(api, "AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION", 2)
-    monkeypatch.setattr(api.Modules, "agent_flags", {"user_plugin_enabled": True})
-    monkeypatch.setattr(api.Modules, "proactive_analyze_count", {"Example": 2})
-    monkeypatch.setattr(api.Modules, "last_proactive_assistant_fingerprint", {})
-    monkeypatch.setattr(
-        api, "_create_tracked_task", lambda task: pytest.fail("Exceeded cap")
-    )
-    api._handle_proactive_analyze(
-        [{"role": "assistant", "content": "来听听《Example Song》吧"}],
-        "Example",
-        "Example",
-        "test",
-    )
+@pytest.mark.asyncio
+async def test_autonomous_reply_cannot_trigger_user_turn_check():
+    from nekoclaw.host.task_brain import TaskBrain
+    brain = TaskBrain.__new__(TaskBrain)
+    brain._status_answered_at = {}
+    brain._dispatch_generation = 0
+    brain._is_enabled = lambda: True
+    brain._request = AsyncMock(side_effect=AssertionError("No model assessment for an empty user turn"))
+    result = await brain.check_turn(lanlan_name="YUI", user_text="", reply_text="来听听 Example Song 吧")
+    assert result.skipped == "empty"
+    brain._request.assert_not_awaited()
 
 
 @pytest.mark.asyncio

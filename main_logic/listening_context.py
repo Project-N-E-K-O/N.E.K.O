@@ -1,21 +1,23 @@
-"""Validate a frontend observation against player authority, then carry it once.
+"""Offer validated listening observations only when the current reply requests them.
 
-No callback queue, history append, persistent field or inference call. The offline
-client's ephemeral request view excludes this block from saved conversations and
-therefore memory extraction. Ordinary user/assistant dialogue is unchanged.
+No callback queue, persistent field or extra classifier. The existing tool loop
+reads the evidence on demand and expires its result at turn end. Unrelated
+requests never receive the mood/gesture payload. Ordinary dialogue is unchanged.
 """
 
 from dataclasses import replace
+from copy import deepcopy
 import math
 import re
 import time
 
 from config.prompts.prompts_listening_context import (
     get_listening_context_text,
+    LISTENING_CONTEXT_TOOL_DESCRIPTION,
 )
-from main_logic.omni_offline_client import OmniOfflineClient, TurnContext
+from main_logic.omni_offline_client import ContextTool, OmniOfflineClient, TurnContext
+from main_logic.tool_calling import ToolDefinition
 from services.chat_sync.source import is_chat_input_source
-from utils.llm_client import HumanMessage
 from utils.language_utils import get_global_language_full
 from utils.tokenize import truncate_to_tokens
 
@@ -45,6 +47,8 @@ def listening_observation(manager, message, *, now=None):
         or not request_id
         or packet.get("request_id") != request_id
     ):
+        return None
+    if packet.get("character_name") != manager.lanlan_name:
         return None
     state = getattr(manager, "_music_confirmed_state", None)
     owner = getattr(manager, "_music_playback_owner_key", None)
@@ -129,20 +133,23 @@ def listening_observation(manager, message, *, now=None):
 
 
 def attach_listening_context(manager, message, kwargs):
-    """Called at actual text dispatch, after awaits; preserve other context blocks."""
+    """Offer a read-only tool; do not prime unrelated replies with mood/gestures."""
     if not isinstance(manager.session, OmniOfflineClient):
         return
-    text = listening_observation(manager, message)
-    if not text:
+    if not listening_observation(manager, message):
         return
     context = kwargs.get("turn_context") or TurnContext()
-    previous = getattr(context.ephemeral, "content", "")
-    if not isinstance(previous, str):
-        return
+    snapshot = deepcopy(message)
+
+    def read():
+        text = listening_observation(manager, snapshot)
+        return {"observation": text} if text else {"status": "unavailable"}
+
     kwargs["turn_context"] = replace(
         context,
-        ephemeral=HumanMessage(
-            content=(previous + "\n\n" if previous else "") + text,
-            metadata={"turn_context": "ephemeral"},
-        ),
+        tools=(*context.tools, ContextTool(ToolDefinition(
+            name="read_listening_context",
+            description=LISTENING_CONTEXT_TOOL_DESCRIPTION,
+            parameters={"type": "object", "properties": {}, "additionalProperties": False},
+        ), read)),
     )

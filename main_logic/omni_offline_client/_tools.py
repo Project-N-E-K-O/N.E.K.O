@@ -116,7 +116,16 @@ class _ToolingMixin(_TurnContextMixin):
         # The synthetic context blocks are not the user's turn: the screen
         # projection still cuts its head right after the real user message.
         projected = self._projected_dialog_messages(messages, context_ids=context_ids)
-        return self._seat_tool_rounds(projected)
+        projected = self._seat_tool_rounds(projected)
+        provider = getattr(self, "request_policy_provider", None)
+        if callable(provider):
+            from utils.llm_client import SystemMessage
+            from utils.tokenize import truncate_to_tokens
+            policy = provider()
+            if policy:
+                # Response policy only; live music facts are read on demand.
+                projected = [*projected, SystemMessage(content=truncate_to_tokens(str(policy), 800))]
+        return projected
 
     def _turn_request_view(self, overrides):
         """Pop a tool loop's turn parameters from ``overrides``.
@@ -360,8 +369,11 @@ class _ToolingMixin(_TurnContextMixin):
         except Exception as e:
             logger.debug("on_tool_round_start callback failed (ignored): %s", e)
 
+    def _has_tool_handler(self) -> bool:
+        return self.on_tool_call is not None or bool(self._context_tools())
+
     def has_tools(self) -> bool:
-        return bool(self._tool_definitions) and self.on_tool_call is not None
+        return bool(self._context_tools()) or (bool(self._tool_definitions) and self.on_tool_call is not None)
 
     def _openai_tools_payload(self) -> Optional[List[dict]]:
         """OpenAI Chat Completions ``tools`` param — nested under
@@ -371,7 +383,7 @@ class _ToolingMixin(_TurnContextMixin):
             return None
         if getattr(self, "_openai_tools_unsupported", False):
             return None
-        return [t.to_openai_chat() for t in self._tool_definitions]
+        return [t.to_openai_chat() for t in self._request_tool_definitions()]
 
     @staticmethod
     def _messages_carry_images(messages) -> bool:
@@ -637,7 +649,16 @@ class _ToolingMixin(_TurnContextMixin):
                 if not generation_is_active():
                     break
                 handler = self.on_tool_call
-                if handler is None:
+                context_tool = next((tool for tool in self._context_tools()
+                                     if tool.definition.name == tool_call.name), None)
+                if context_tool is not None:
+                    try:
+                        evidence = context_tool.read()
+                    except Exception:
+                        evidence = {"status": "unavailable"}
+                    result = ToolResult(call_id=tool_call.call_id, name=tool_call.name,
+                                        output=evidence)
+                elif handler is None:
                     # No handler — surface a structured error back so the
                     # model can apologize / abort gracefully.
                     result = ToolResult(
@@ -670,6 +691,9 @@ class _ToolingMixin(_TurnContextMixin):
                 }
                 messages.append(tool_result_message)
                 tool_results.append(tool_result_message)
+                if context_tool is not None and tool_image_slots is not None:
+                    tool_image_slots.append((messages, len(messages) - 1, tool_result_message,
+                                             '{"status":"context_expired"}'))
                 if getattr(result, "images", None):
                     image_results.append((result, tool_result_message))
             else:
@@ -1152,7 +1176,7 @@ class _ToolingMixin(_TurnContextMixin):
         )
         tool_frames_turn_id = overrides.pop("_tool_frames_turn_id", None)
         tool_names = {
-            tool.name for tool in getattr(self, "_tool_definitions", [])
+            tool.name for tool in self._request_tool_definitions()
             if getattr(tool, "name", None)
         }
         leak_filter = ToolLeakFilter(tool_names=tool_names)
@@ -1381,7 +1405,7 @@ class _ToolingMixin(_TurnContextMixin):
                 finish_reason == "tool_calls"
                 and deltas_per_chunk
                 and tools_payload
-                and self.on_tool_call is not None
+                and self._has_tool_handler()
             ):
                 if tool_leak_filter is not None:
                     tail, event = tool_leak_filter.finalize()

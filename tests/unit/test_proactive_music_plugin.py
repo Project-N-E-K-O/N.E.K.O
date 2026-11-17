@@ -1,29 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-
 import pytest
-
-
-ORIGINAL = "去听那首《Keep Me Warm》吧，适合现在的工作节奏。"
-
-
-def plugins():
-    return [{"id": "netease_music", "entries": [{"id": "play_netease_music"}]}]
-
-
-@pytest.mark.asyncio
-async def test_plugin_switch_off_blocks_route():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    result = await executor._analyze_and_execute_inner(
-        messages=[{"role": "assistant", "content": ORIGINAL}],
-        lanlan_name="YUI",
-        agent_flags={"user_plugin_enabled": False},
-        proactive=True,
-    )
-    assert result is None
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -46,70 +23,48 @@ async def test_live_status_blocks_occupied_player(monkeypatch, state, expected):
     ] is expected
 
 
-@pytest.mark.asyncio
-async def test_rechecks_player_before_plugin_http_dispatch(monkeypatch):
-    from brain.task_executor import DirectTaskExecutor
-    from brain import proactive_music
+@pytest.mark.parametrize("entry_id,action", [("play_netease_music", None), ("cloud_music", "play"), *[("playlist", a) for a in ["curate", "replay", "next", "revise", "search", "resume"]]])
+@pytest.mark.parametrize("blocked", ["player_occupied", "refusal_cooldown", None])
+async def test_autonomous_playback_guard_covers_every_start_path(monkeypatch, entry_id, action, blocked):
+    from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, plugin, finish
+    from tests.unit.nekoclaw.test_host_plugin_runs import _runner, Faults
+    server = FakePluginServer.install(monkeypatch)
+    async def handle(args): return finish({"reply": "submitted"})
+    server.add_plugin(plugin("netease_music", "Music", [entry(entry_id, "Music")]), **{entry_id: handle})
+    guard = AsyncMock(return_value=blocked)
+    monkeypatch.setattr("utils.proactive_music.proactive_music_block_reason", guard)
+    runner = _runner(server, Faults())
+    try:
+        result = await runner.run_entry(commission_id="music", plugin_id="netease_music", entry_id=entry_id,
+            args={"action": action, "_ctx": {"request_source": "user", "lanlan_name": "Other"}}, lanlan_name="YUI")
+        assert result.accepted is (blocked is None)
+        assert bool(server.calls) is (blocked is None)
+        guard.assert_awaited_once_with("YUI")
+        if blocked is None:
+            ctx = server.calls[0]["args"]["_ctx"]
+            assert ctx["lanlan_name"] == "YUI" and ctx["request_source"] == "proactive"
+            assert ctx["authorized_action"] == ""
+    finally:
+        await runner.aclose()
 
-    monkeypatch.setattr(
-        proactive_music,
-        "proactive_music_block_reason",
-        AsyncMock(return_value="player_occupied"),
-    )
-    executor = object.__new__(DirectTaskExecutor)
-    executor.plugin_list = plugins()
-    result = await executor._execute_user_plugin(
-        "test",
-        plugin_id="netease_music",
-        entry_id="play_netease_music",
-        plugin_args={"query": "Keep Me Warm"},
-        lanlan_name="YUI",
-        reason="proactive_music_recommendation",
-    )
-    assert result.success is False
-    assert result.reason == "player_occupied"
 
-
-@pytest.mark.parametrize("source", ["proactive", "user"])
-async def test_planning_provenance_overrides_model_context_before_dispatch(monkeypatch, source):
-    import json
-    import httpx
-    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
-    from brain import proactive_music
-    from plugin.tests.unit.plugins.netease_music.test_plugin import _make_plugin, _Provider, _ctx
-    from plugin.plugins.netease_music.cloud_entry import CLOUD_SCHEMA
-    executor = object.__new__(DirectTaskExecutor)
-    catalog = [{"id": "netease_music", "entries": [{"id": "cloud_music", "input_schema": CLOUD_SCHEMA}]}]
-    executor.plugin_list_provider = AsyncMock(return_value=catalog)
-    executor.plugin_list = catalog
-    utterance = "我帮你把这首歌加入喜欢的音乐吧"
-    executor._assess_user_plugin = AsyncMock(return_value=UserPluginDecision(
-        has_task=True, can_execute=True, plugin_id="netease_music", entry_id="cloud_music",
-        plugin_args={"action": "like", "song": "current", "_ctx": {"request_source": "user", "latest_user_request": "收藏这首", "authorized_action": "unlike"}},
-    ))
-    plan = await executor._analyze_and_execute_inner(
-        messages=[{"role": "assistant" if source == "proactive" else "user", "content": utterance}],
-        lanlan_name="Mika", agent_flags={"user_plugin_enabled": True}, proactive=source == "proactive",
-    )
-    assert plan.request_source == source
-    assert executor._assess_user_plugin.call_args.kwargs["proactive"] is (source == "proactive")
-    monkeypatch.setattr(proactive_music, "proactive_music_block_reason", AsyncMock(return_value=None))
-    received = []
-    async def handle(req):
-        received.append(json.loads(req.content))
-        return httpx.Response(200, json={"run_id": "r", "run_token": "t"})
-    real_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handle)))
-    executor._await_run_completion = AsyncMock(return_value={"success": True})
-    await executor._execute_user_plugin("test", plugin_id=plan.tool_name, entry_id=plan.entry_id,
-        plugin_args=plan.tool_args, latest_user_request=plan.latest_user_request,
-        request_source=plan.request_source, lanlan_name="Mika")
-    ctx = received[0]["args"]["_ctx"]
-    assert ctx["request_source"] == source
-    assert ctx["latest_user_request"] == utterance
-    assert ctx["authorized_action"] == ("like" if source == "user" else "")
-    if source == "proactive":
-        plugin, _, _ = _make_plugin(_Provider())
-        plugin._new_cloud_library = lambda: pytest.fail("Proactive dialogue reached cloud writer")
-        result = await plugin.cloud_music("like", song="current", _ctx=ctx)
-        assert result["finish"]["data"]["status"] == "blocked"
+async def test_user_origin_is_host_owned_and_does_not_use_autonomous_guard(monkeypatch):
+    from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, plugin, finish
+    from tests.unit.nekoclaw.test_host_plugin_runs import _runner, Faults
+    server = FakePluginServer.install(monkeypatch)
+    async def handle(args): return finish({"reply": "submitted"})
+    server.add_plugin(plugin("netease_music", "Music", [entry("cloud_music", "Cloud")]), cloud_music=handle)
+    guard = AsyncMock(return_value="player_occupied")
+    monkeypatch.setattr("utils.proactive_music.proactive_music_block_reason", guard)
+    runner = _runner(server, Faults())
+    try:
+        result = await runner.run_entry(commission_id="music", plugin_id="netease_music", entry_id="cloud_music",
+            args={"action": "play", "_ctx": {"lanlan_name": "Other", "authorized_action": "delete"}},
+            lanlan_name="YUI", latest_user_request="播放这张歌单")
+        assert result.success
+        ctx = server.calls[0]["args"]["_ctx"]
+        assert ctx["lanlan_name"] == "YUI" and ctx["authorized_action"] == "play"
+        assert ctx["latest_user_request"] == "播放这张歌单" and ctx["request_source"] == "user"
+        guard.assert_not_awaited()
+    finally:
+        await runner.aclose()

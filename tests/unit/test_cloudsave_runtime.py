@@ -851,7 +851,7 @@ def test_theater_scaffolding_alone_is_not_user_content(tmp_path):
 
 
 @pytest.mark.unit
-def test_theater_scaffolding_after_real_maintenance_is_not_user_content(tmp_path):
+def test_empty_theater_maintenance_does_not_create_user_content(tmp_path):
     cm = _make_config_manager(tmp_path)
 
     from services.theater.numeric_v2_maintenance import maintain_numeric_v2_storage_once
@@ -866,7 +866,8 @@ def test_theater_scaffolding_after_real_maintenance_is_not_user_content(tmp_path
         character_ids_by_name={},
     )
 
-    assert theater_root.is_dir()
+    # With no bundled packages or user records, maintenance leaves fresh storage untouched.
+    assert not theater_root.exists()
     assert runtime_root_has_user_content(root, config_manager=cm) is False
 
 

@@ -15,7 +15,7 @@
 
 """Passive turn context in the offline client's request view.
 
-A typed reply may carry two extra user-role messages that the saved history
+A typed reply may carry extra user-role messages that the saved history
 never holds (``config.turn_context_settings``):
 
 * the **ephemeral** block (corpus material, memories) is this turn's
@@ -34,6 +34,7 @@ that carried it; until then it belongs to that turn alone.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextvars import ContextVar
 from typing import Any, Optional, Sequence
 
 from config.turn_context_settings import TURN_CONTEXT_RESIDENT_KNOWLEDGE_MAX_TOKENS
@@ -45,6 +46,14 @@ from ._shared import logger
 # reaches a provider; the request view reads the mark to tell these synthetic
 # user-role messages from what the user really said.
 TURN_CONTEXT_MARK = "turn_context"
+_request_context_tools = ContextVar("neko_request_context_tools", default=None)
+
+
+@dataclass(frozen=True)
+class ContextTool:
+    """Read-only evidence available only inside the owning reply task."""
+    definition: Any
+    read: Any
 
 
 def is_turn_context_message(message) -> bool:
@@ -60,16 +69,19 @@ class TurnContext:
     ``ephemeral`` rides this turn's requests only (corpus, memories). Either
     may be ``None``. ``resident_ids`` name what ``resident`` holds, so later
     turns do not send it again while the model still sees it.
+    ``tools`` exposes read-only evidence on demand for this reply only. Tool
+    results are replaced with an expired receipt when the reply ends.
     """
 
     resident: Any = None
     resident_ids: tuple[str, ...] = ()
     resident_tokens: int = 0
     ephemeral: Any = None
+    tools: tuple[ContextTool, ...] = ()
 
     @property
     def empty(self) -> bool:
-        return self.resident is None and self.ephemeral is None
+        return self.resident is None and self.ephemeral is None and not self.tools
 
 
 @dataclass(eq=False)
@@ -82,6 +94,16 @@ class _ResidentEntry:
 
 
 class _TurnContextMixin:
+    def _context_tools(self):
+        scope = _request_context_tools.get()
+        scoped = scope[1] if (scope is not None and scope[0] is self
+                              and scope[2] == self._active_response_generation) else ()
+        provider = getattr(self, "context_tools_provider", None)
+        return (*scoped, *(provider() if callable(provider) else ()))
+
+    def _request_tool_definitions(self):
+        return [*getattr(self, "_tool_definitions", ()), *(tool.definition for tool in self._context_tools())]
+
     def _resident_entries(self) -> list:
         entries = getattr(self, "_resident_turn_context", None)
         if entries is None:

@@ -651,6 +651,23 @@
         "女声": "eve"
       }
     },
+    "deepseek": {
+      "catalog_prefix": "DeepSeek",
+      "default_voice": "stella",
+      "default_male_voice": "tide",
+      "voices": {
+        "stella": "Female",
+        "tide": "Male"
+      },
+      "aliases": {
+        "female": "stella",
+        "女": "stella",
+        "女声": "stella",
+        "male": "tide",
+        "男": "tide",
+        "男声": "tide"
+      }
+    },
     "mimo": {
       "catalog_prefix": "MiMo",
       "default_voice": "mimo_default",

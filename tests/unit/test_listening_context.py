@@ -45,6 +45,7 @@ def fixture():
         "request_id": "r",
         "listening_context": {
             "version": 1,
+            "character_name": "小雨",
             "request_id": "r",
             "captured_at": (now - 1) * 1000,
             "playback_id": "play-a",
@@ -196,19 +197,39 @@ async def test_real_offline_requests_carry_once_without_saving_to_memory_history
     original = copy.deepcopy(msg)
     attach_listening_context(m, msg, kwargs)
     assert kwargs["turn_context"].resident is existing.resident
-    assert "其他本轮资料" in kwargs["turn_context"].ephemeral.content
+    assert kwargs["turn_context"].ephemeral is existing.ephemeral
+    assert len(kwargs["turn_context"].tools) == 1
     assert existing.ephemeral.content == "其他本轮资料" and msg == original
     assert not client.requests, "attaching context must not start a model request"
     await client.stream_text(msg["data"], **kwargs)
     await client.stream_text("下一句")
     first = str(_view(client.requests[0], "openai"))
     second = str(_view(client.requests[1], "openai"))
-    assert "Example Song" in first and "掉了几滴眼泪" in first
+    assert "Example Song" not in first and "掉了几滴眼泪" not in first
     assert "Example Song" not in second and "掉了几滴眼泪" not in second
     assert "Example Song" not in _saved(client) and "以下是用户发消息前" not in _saved(
         client
     )
     assert msg["data"] in _saved(client)
+
+
+@pytest.mark.parametrize("question", ["帮我安排明天的工作", "今天穿着吗", "你刚才怎么哭了？", "现在放的是什么歌？"])
+async def test_listening_details_are_absent_until_explicitly_read(question):
+    manager, message = fixture()
+    message["data"] = question
+    kwargs = {}
+    attach_listening_context(manager, message, kwargs)
+    context = kwargs["turn_context"]
+    assert context.ephemeral is None
+    manager.session.script = [[_text("回答。"), _text("", "stop")]]
+    await manager.session.stream_text(question, **kwargs)
+    texts = [text for _role, text, _calls in _view(manager.session.requests[0], "openai")]
+    assert texts[-1] == question
+    assert "Example Song" not in str(texts)
+    assert "掉了几滴眼泪" not in str(texts)
+    assert context.tools[0].definition.name == "read_listening_context"
+    assert "Example Song" in context.tools[0].read()["observation"]
+    assert "Example Song" not in _saved(manager.session)
 
 
 @pytest.mark.parametrize("pause_before_dispatch", [False, True])
@@ -224,6 +245,7 @@ async def test_real_core_dispatch_attaches_after_awaits_and_revalidates_playback
     session = _make_offline_session_for_callback_media()
     manager = _make_callback_media_manager(session)
     m, msg = fixture()
+    msg["listening_context"]["character_name"] = manager.lanlan_name
     manager._music_playback_owner_key = m._music_playback_owner_key
     manager._music_confirmed_state = m._music_confirmed_state
     manager.memory_server_port = 1
@@ -246,6 +268,91 @@ async def test_real_core_dispatch_attaches_after_awaits_and_revalidates_playback
     session.stream_text.assert_awaited_once()
     context = session.stream_text.call_args.kwargs.get("turn_context")
     if pause_before_dispatch:
-        assert context is None or "手抬到了嘴边" not in context.ephemeral.content
+        assert context is None or not context.tools
     else:
-        assert "手抬到了嘴边" in context.ephemeral.content
+        assert "手抬到了嘴边" in context.tools[0].read()["observation"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+async def test_on_demand_read_uses_real_tool_loop_and_expires_from_saved_history(provider, monkeypatch):
+    from tests.unit.test_offline_turn_cancellation_e2e import _tool_calls, _gemini_calls
+    from tests.unit.test_turn_context_request_view import _text_step
+    import main_logic.omni_offline_client._genai_support as genai
+    monkeypatch.setattr(genai, "_GENAI_AVAILABLE", True)
+    manager, message = fixture()
+    manager.session = _client(provider)
+    call = _tool_calls("listen") if provider == "openai" else _gemini_calls("listen")
+    if provider == "openai":
+        call.tool_call_deltas[0]["function"]["name"] = "read_listening_context"
+    else:
+        call.candidates[0].content.parts[0].function_call.name = "read_listening_context"
+    manager.session.script = [[call], _text_step(provider, "刚才有眼泪。"), _text_step(provider, "好。")]
+    kwargs = {}
+    attach_listening_context(manager, message, kwargs)
+    await manager.session.stream_text(message["data"], **kwargs)
+    first, second = [str(_view(r, provider)) for r in manager.session.requests]
+    assert "Example Song" not in first
+    if provider == "gemini":
+        second += str([part.function_response.response for content in manager.session.requests[1]
+                       for part in content.parts if getattr(part, "function_response", None)])
+    assert "Example Song" in second and "掉了几滴眼泪" in second
+    assert "Example Song" not in _saved(manager.session)
+    assert "context_expired" in _saved(manager.session)
+    assert not manager.session._context_tools()
+    await manager.session.stream_text("下一句")
+    assert "Example Song" not in str(_view(manager.session.requests[-1], provider))
+
+
+def test_on_demand_read_revalidates_pause_and_snapshot_expiry():
+    manager, message = fixture()
+    kwargs = {}
+    attach_listening_context(manager, message, kwargs)
+    reader = kwargs["turn_context"].tools[0].read
+    assert "observation" in reader()
+    manager._music_confirmed_state["state"] = "paused"
+    assert reader() == {"status": "unavailable"}
+
+
+async def test_overlapping_reply_cannot_inherit_or_execute_an_old_context_tool():
+    import asyncio
+    from tests.unit.test_offline_turn_cancellation_e2e import _tool_calls
+    manager, message = fixture()
+    client = manager.session
+    started, release = asyncio.Event(), asyncio.Event()
+    kwargs = {}
+    attach_listening_context(manager, message, kwargs)
+    reader = kwargs['turn_context'].tools[0].read
+    reads = []
+    from dataclasses import replace
+    def tracked_read():
+        reads.append(True)
+        return reader()
+    kwargs['turn_context'] = replace(kwargs['turn_context'], tools=(replace(kwargs['turn_context'].tools[0], read=tracked_read),))
+    async def wait_for_new_turn():
+        assert client._context_tools()
+        started.set()
+        await release.wait()
+        assert not client._context_tools(), 'retired generation must lose its reader'
+    call = _tool_calls('stale-listening')
+    call.tool_call_deltas[0]['function']['name'] = 'read_listening_context'
+    client.script = [[wait_for_new_turn, call], [_text('新话题。'), _text('', 'stop')]]
+    old = asyncio.create_task(client.stream_text('旧问题', **kwargs))
+    await started.wait()
+    await client.stream_text('新问题')
+    release.set()
+    await old
+    assert reads == []
+    assert not client._context_tools()
+    assert 'Example Song' not in _saved(client)
+
+
+def test_observation_cannot_be_relabelled_as_another_character():
+    manager, message = fixture()
+    message["listening_context"]["character_name"] = "Other"
+    assert listening_observation(manager, message) is None
+
+
+def test_listening_context_requires_character_binding():
+    manager, message = fixture()
+    message["listening_context"].pop("character_name")
+    assert listening_observation(manager, message) is None

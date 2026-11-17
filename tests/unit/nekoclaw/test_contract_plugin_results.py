@@ -351,3 +351,17 @@ async def test_call_carries_the_users_words_in_ctx(route, server):
     assert ctx["latest_user_request"] == "帮我记一下买牛奶"
     assert ctx["lanlan_name"] == "Lan"
     assert ctx["conversation_id"] == "conv-1"
+
+
+async def test_cloud_library_page_survives_direct_route_reporting(route, server):
+    from plugin.plugins.netease_music.cloud_entry import cloud_result_summary
+    data = {"scope": "netease_cloud", "action": "playlists", "offset": 0, "total": 163,
+            "next_offset": 20, "items": [{"id": i, "name": f"Cloud playlist {i}"} for i in range(20)]}
+    data["summary"] = cloud_result_summary(data)
+    server.add_plugin(plugin("netease_music", "Cloud library", [entry("cloud_music", "Query", llm_result_fields=["summary"])]),
+                      cloud_music=_returns(finish(data)))
+    result = await route.run("netease_music", "cloud_music", {"action": "playlists"}, user_text="List my playlists")
+    assert result.final_status == "completed"
+    assert len(result.reports) == 1
+    assert '"next_offset": 20' in result.reports[0]["summary"]
+    assert "Cloud playlist 19" in result.reports[0]["summary"]

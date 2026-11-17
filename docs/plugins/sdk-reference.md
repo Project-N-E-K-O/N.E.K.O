@@ -77,6 +77,8 @@ Choose storage by data shape:
 | Structured SQLite data | `self.db` after enabling `[plugin.database]` |
 | Arbitrary persistent files | `self.data_path(...)` |
 | Rebuildable files | `self.cache_path(...)` |
+| Files other plugins may read | `self.shared_path(...)` |
+| Files another plugin published | `self.shared_path_of("<plugin_id>", ...)` after declaring it in `[plugin.shared]` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -113,7 +115,7 @@ self.report_status({
 
 #### `push_message(**kwargs) -> PushMessageResult`
 
-Push a message to the host system with the v2 schema.
+Push a message to the host system with the v2 schema: `visibility` controls rendering in the user's chat or HUD, `ai_behavior` independently controls whether the model reads the message or responds, and `parts` carries text, images, and `ui_action`s.
 
 ```python
 result = self.push_message(
@@ -123,46 +125,11 @@ result = self.push_message(
     parts=[{"type": "text", "text": "Task complete"}],
     priority=5,
 )
-
 if not result["submitted"]:
-    # Keep local state; retry and deduplication remain plugin policy.
-    self.logger.warning("message submission failed: %s", result["reason"])
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
-`submitted=True` means only that the SDK's authoritative local submission path
-accepted responsibility for the payload. It does not acknowledge host
-consumption, model generation, or playback. Rejections use the stable reasons
-`backpressure`, `transport_error`, or `transport_unavailable`; the result never
-contains the message body or raw exception text. Rejected results also carry
-`ok=False` for compatibility with legacy callers; new code should use
-`submitted` as the authoritative discriminator.
-
-The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated but still translated in current source. Migrate now; this documentation does not guarantee an exact removal release. See the [migration guide](./migration-v0.9#push-message-v2).
-
-#### Media parts
-
-- Text and image parts are supported. A small image can be sent inline:
-
-  ```python
-  parts=[{"type": "image", "data": image_bytes, "mime": "image/png"}]
-  ```
-
-- For a non-trivial image, upload it through the host and send the returned part instead:
-
-  ```python
-  image_part = await self.ctx.images.upload(image_bytes, mime="image/png")
-  result = self.push_message(
-      source="my_feature",
-      visibility=["chat"],
-      ai_behavior="read",
-      parts=[image_part],
-  )
-  ```
-
-  Arbitrary external image URLs are not accepted for model delivery; use this temporary host upload. Inline images share the message-plane payload budget, while the uploaded part keeps the image bytes out of that envelope. `ctx.images.upload()` is unavailable in lifecycle handlers because the plugin command loop cannot service the upload response there; call it from a plugin entry, timer, message, or custom event handler.
-- `visibility` controls rendering in the user's chat or HUD; `ai_behavior` independently controls whether the model reads the message or responds.
-- Audio and video message parts are not currently delivered by the host. Do not report them as successfully played or shown.
-- A Hosted UI panel can render user-facing audio or video itself, but that does not deliver media through the native chat or model channel.
+The return value reports only local submission (`submitted` / `reason`). For the full axis semantics, `parts` types, payload and image size limits, `ctx.images.upload()`, and v1 field migration, see [Message Delivery](./push-message).
 
 #### `data_path(*parts) -> Path`
 
@@ -181,6 +148,27 @@ Get a path under the plugin's disposable cache directory.
 preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
+
+#### `shared_path(*parts) -> Path`
+
+Get a path under the directory this plugin publishes for other plugins to read. The directory is not created for you, and it is kept when the plugin is removed. The directory is named after the plugin id; characters other than lower-case letters, digits, `_` and `-` are escaped in the name, so always take the path from this method.
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+Get a path under another plugin's shared directory, for reading. That plugin's id must be listed under `[plugin.shared] reads` in `plugin.toml`; otherwise `ValidationError` is raised (`code="shared_not_declared"`). A path that would leave the shared directory is refused as well (`code="shared_bad_path"`).
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+This is an agreement between plugins, not a security boundary: plugins are not sandboxed from each other. Treat the files as read-only.
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 
@@ -243,19 +231,21 @@ Signal task completion to the host.
 
 ### Reply Control
 
-The `finish()` method accepts a `reply` parameter (default `True`) that controls whether the plugin result triggers the main character to speak.
+`finish()` takes a `delivery` argument (`"proactive"` by default, `"passive"`, or `"silent"`) that controls whether the result enters the main AI's context and whether the character speaks immediately. `reply=True/False` is the deprecated boolean alias. `delivery` takes effect when the Agent calls the entry directly. When a task agent calls the entry, the result goes back to the task agent, and how the user is told follows the task's own setting.
 
 ```python
 # Normal: character will announce the result
-return await self.finish(data={"summary": "Done"}, reply=True)
+return await self.finish(data={"summary": "Done"})
 
 # Silent: result is recorded but character stays quiet
-return await self.finish(data={"summary": "Done"}, reply=False)
+return await self.finish(data={"summary": "Done"}, delivery="silent")
 ```
+
+For the three modes, `result_kind` result semantics, and the `{MASTER_NAME}` / `{LANLAN_NAME}` role placeholders, see [Message Delivery](./push-message).
 
 ### LLM Result Field Filtering
 
-Use `llm_result_fields` on `@plugin_entry` (static entries) or `register_dynamic_entry()` (dynamic entries) to control which fields of the result the main LLM can see. Fields not listed are excluded from the LLM prompt but still stored in the task registry.
+Use `llm_result_fields` on `@plugin_entry` (static entries) or `register_dynamic_entry()` (dynamic entries) to control which fields of the result a model can see: the main LLM when the entry is called directly, or the task agent that called it. Fields not listed are excluded from the prompt but remain in the run's result. See "How the Agent calls an entry" in [Entries](./entries) for what is shown when an entry declares no fields.
 
 ```python
 # Static entry

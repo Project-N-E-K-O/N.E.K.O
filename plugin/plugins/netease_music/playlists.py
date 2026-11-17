@@ -95,9 +95,9 @@ class PlaylistMixin:
 
     async def _finish_music(self, data, **kwargs):
         """Preserve nested execution facts through the standard result projection."""
-        return await self.finish(data={**data, "execution": json.dumps(data, ensure_ascii=False)}, **kwargs)
+        return await self.finish(data={"summary": json.dumps(data, ensure_ascii=False), **data, "execution": json.dumps(data, ensure_ascii=False)}, **kwargs)
 
-    def _note(self, target, event, ai_behavior="read", **facts):
+    def _note(self, target, event, ai_behavior="respond", **facts):
         from config.prompts.prompts_music_context import MUSIC_EVENT_CONTEXT
         return self.push_message(
             source="netease_music", visibility=[], ai_behavior=ai_behavior,
@@ -282,7 +282,7 @@ class PlaylistMixin:
                 self._note(target, "revised", track_count=len(tail))
                 return await self._finish_silent("revised")
             q = self._queues[key] = Queue(name, rows, locale, proactive_start=(_ctx or {}).get("request_source") == "proactive")
-            self._note(target, "queue_ready", collection=name, track_count=len(rows), player_confirmed=False)
+            self._note(target, "queue_ready", ai_behavior="read", collection=name, track_count=len(rows), player_confirmed=False)
             return await self._advance(provider, target, key, q)
 
     async def _curated_tracks(self, provider, pairs):

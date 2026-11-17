@@ -84,15 +84,19 @@ short_description = "Note management with AI-powered organization."
 keywords = ["笔记", "note", "记录", "备忘", "memo", "メモ"]
 ```
 
-这些字段在宿主完成加载后参与 Agent 路由：
+宿主完成加载后，Agent（猫爪，NekoClaw）按这些字段筛选插件：
 
-- `description` — 完整描述，同时用于插件元数据和 Agent 精筛。
-- `short_description` — 粗筛使用的短描述；缺失时 Agent 可以根据 `description` 生成并缓存。
-- `keywords` — 正则表达式模式。命中项会并入第一阶段候选集，但不会跳过第二阶段，也不保证执行。
+- `description` — 完整描述，同时用于插件元数据和精选。
+- `short_description` — 粗筛读的短描述，最多读 150 token。**请写上。** 缺失且 `description` 超过这 150 token 时，宿主会在后台让小模型按 `description` 写一份，存在数据目录的 `nekoclaw/plugin_short_descriptions.json`：写成功的话每个插件、每版描述一次模型请求。写出来超过 150 token 的截到 150 保存；请求失败的不保存，10 分钟后再试，每试一次又是一次请求；同一版 `description` 一天最多试 3 次（重启也算在内），改了 `description` 重新计。保存之前改用 `description` 的开头部分。
+- `keywords` — 正则表达式模式。命中的插件会进入粗筛的候选集，并在精选时标为关键词命中；它不会跳过精选，也不保证执行。
+
+筛选分两级。全部可选插件及其可见入口的描述合计超过 3000 token 时先粗筛，取三者的并集：关键词命中的插件、BM25 文本匹配的前 10 名（匹配插件的 ID、名称、描述，以及入口的 ID 和描述）、小模型按短描述挑出的插件。然后由精选选出 `plugin_id` 和运行时 `entry_id`，并填好参数。不超过 3000 token 时跳过粗筛，全部可选插件直接进入精选。
+
+只有主对话模型把一件事交出来时才会筛选：它调用了 `dispatch_task` 工具，或者口头答应了、由事后检查替它派发。系统不再在每轮对话结束后自动分析，所以依赖「用户随口一提就被选中」的插件，被选中的次数会变少。关键词和 BM25 比对的文本是用户原话加上模型派发的那句话。用户原话命中关键词，也是让一轮对话进入事后检查的信号之一。
 
 纯监听/集成插件可设置 `passive = true`，使其完全不参与 Agent 分派。非 passive 插件还必须至少有一个 Agent 可见的运行时入口，才会成为候选。
 
-Agent 第二阶段最终返回 `plugin_id` 和运行时 `entry_id`。两者都会严格对照本轮候选集校验；第一次不合法时只纠正重试一次，仍不合法就拒绝执行。
+精选给出的 `plugin_id` 和 `entry_id` 会对照本轮给它看的候选集校验。不合法时不追问，也不会直达调用任何入口：这件事交给 task agent，task agent 不可用时回「办不了」。精选还可以答这件事谁也办不了、或者根本不是一件要办的事（`route="none"`），这时什么都不启动。入口被调用时发生什么，见[入口与参数](./entries)的「Agent 怎么调用入口」一节。
 
 ```toml
 version = "1.2.0"
@@ -195,6 +199,25 @@ enabled = true
 
 ---
 
+### `[plugin.shared]` — 读取别的插件的共享文件
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+每个插件都有一个共享目录 `<用户数据根目录>/plugin_shared/<插件 id>/`，用来放它愿意让别的插件读的文件。目录的主人用 `self.shared_path(...)` 往里写。要读别的插件发布的文件，先把那个插件的 id 写进 `reads`，再调用 `self.shared_path_of("weather", ...)`；没有声明就调用会抛 `ValidationError`。
+
+有三点要知道：
+
+- **这是约定，不是安全边界。** 插件之间没有沙箱，没有任何东西能拦住一个插件往别的插件的目录里写。声明的作用只是让这层依赖在清单里看得见。别的插件的文件请只读不写，也不要把密钥放进自己的共享目录。
+- **共享目录不属于插件的私有状态。** 发布它的插件被删除后，目录会留下；用户更换存储位置时，它跟着用户数据一起搬。
+- **不要往里面放链接。** 因为它会跟着用户数据一起搬，目录里只要有一个符号链接或目录联接（虚拟环境、git 检出、`node_modules` 里常有），用户更换存储位置就会整次失败。只发布普通的文件和目录。
+
+发布文件不需要声明。既不发布也不读取共享文件？不写这段就行。
+
+---
+
 ### `[plugin.ui]` — 自定义界面
 
 ```toml
@@ -269,6 +292,8 @@ plugin/plugins/smart_notes/
 │   └── plugin.toml          ← 这个用户实际使用的配置
 ├── data/                    ← 运行时数据，self.data_path() 指向这里
 └── cache/                   ← 运行时缓存，self.cache_path() 指向这里
+
+<用户数据根目录>/plugin_shared/smart_notes/   ← self.shared_path() 指向这里，给声明过的插件读
 ```
 
 必需的是 `plugin.toml` 和 `[plugin].entry` 指向的可导入 Python 模块。模块不一定非得是 `__init__.py`，只是这种布局最常见。安装包中的代码与这些可写状态分开存放。

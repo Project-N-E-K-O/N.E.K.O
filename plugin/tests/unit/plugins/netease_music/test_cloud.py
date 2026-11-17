@@ -260,3 +260,65 @@ async def test_cloud_play_waiting_on_lock_cannot_restart_after_stop():
     result = await pending
     assert result["finish"]["data"]["status"] == "superseded"
     assert not any(part.get("action") == "media_play_url" for push in pushes for part in push["parts"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["account", "playlists", "tracks", "liked", "artists", "daily", "create", "add", "remove", "like", "unlike", "invalid", "missing_target", "blocked", "expired", "unexpected"])
+async def test_cloud_exits_pass_real_sdk_contract(case):
+    from types import SimpleNamespace
+    from contextlib import asynccontextmanager
+    from plugin.sdk.shared.constants import EVENT_META_ATTR
+    from plugin.sdk.shared.core.context import SdkContext
+    plugin = CloudMusicMixin()
+    sdk = SdkContext(SimpleNamespace(plugin_id="netease_music", get_current_entry_meta=lambda: getattr(CloudMusicMixin.cloud_music, EVENT_META_ATTR)))
+    captured = []
+    async def finish(**kwargs):
+        result = await sdk.finish(**kwargs)
+        captured.append(kwargs)
+        return result
+    plugin.finish = finish
+    plugin._target_lanlan = lambda ctx: "" if case == "missing_target" else "YUI"
+    plugin._session_key = lambda target: target
+    @asynccontextmanager
+    async def library():
+        yield object()
+    plugin._new_cloud_library = library
+    operation = AsyncMock(return_value={"items": [{"id": 7, "name": "Evening"}], "offset": 0, "next_offset": 1})
+    if case == "expired": operation.side_effect = CloudError("login_expired")
+    if case == "unexpected": operation.side_effect = RuntimeError("private error")
+    plugin._cloud_operation = operation
+    action = "account" if case in {"missing_target", "expired", "unexpected"} else "create" if case == "blocked" else case
+    ctx = {"request_source": "user", "authorized_action": action} if case != "blocked" else {}
+    await plugin.cloud_music(action, _ctx=ctx)
+    assert len(captured) == 1
+    data = captured[0]["data"]
+    assert isinstance(data["summary"], str) and isinstance(data["execution"], str)
+    if case not in {"invalid", "missing_target", "blocked", "expired", "unexpected"}:
+        assert data["items"][0]["id"] == 7
+    else:
+        assert data["status"] in {"error", "blocked"}
+
+
+@pytest.mark.asyncio
+async def test_cloud_play_queue_result_passes_real_sdk_contract():
+    from types import SimpleNamespace
+    from plugin.plugins.netease_music.playlists import PlaylistMixin
+    from plugin.sdk.shared.constants import EVENT_META_ATTR
+    from plugin.sdk.shared.core.context import SdkContext
+    sdk = SdkContext(SimpleNamespace(plugin_id="netease_music", get_current_entry_meta=lambda: getattr(CloudMusicMixin.cloud_music, EVENT_META_ATTR)))
+    plugin = PlaylistMixin()
+    plugin.finish = sdk.finish
+    await plugin._finish_music(data={"status": "submitted", "player_confirmed": False}, delivery="passive")
+
+
+@pytest.mark.parametrize("event", ["saved", "not_found", "library", "added", "already_saved", "not_saved", "no_playable_tracks"])
+def test_user_playlist_results_request_a_character_response(event):
+    from plugin.plugins.netease_music.playlists import PlaylistMixin
+    plugin = PlaylistMixin()
+    pushes = []
+    plugin._queues = {}
+    plugin._session_key = lambda target: target
+    plugin.push_message = lambda **kwargs: pushes.append(kwargs)
+    plugin._note("YUI", event)
+    assert pushes[0]["ai_behavior"] == "respond"
+    assert pushes[0]["target_lanlan"] == "YUI"

@@ -1049,7 +1049,7 @@
 
     function closeAgentPanel() {
         var manager = getManager();
-        document.querySelectorAll('[data-neko-sidepanel-type="agent-user-plugin-actions"], [data-neko-sidepanel-type="agent-openclaw-actions"]').forEach(function (panel) {
+        document.querySelectorAll('[data-neko-sidepanel-type="agent-user-plugin-actions"]').forEach(function (panel) {
             if (!panel) return;
             if (panel._hoverCollapseTimer) {
                 clearTimeout(panel._hoverCollapseTimer);
@@ -1189,8 +1189,7 @@
         var toggleMap = {
             user_plugin_enabled: 'agent-user-plugin',
             computer_use_enabled: 'agent-keyboard',
-            browser_use_enabled: 'agent-browser',
-            openclaw_enabled: 'agent-openclaw'
+            browser_use_enabled: 'agent-browser'
         };
 
         return sendAgentCommand('set_flag', {

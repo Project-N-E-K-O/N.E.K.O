@@ -411,7 +411,7 @@ class _GenaiMixin:
         # across iterations within one stream_text call).
         tools_payload: list = []
         if self.has_tools():
-            decls = [t.to_gemini_function_declaration() for t in self._tool_definitions]
+            decls = [t.to_gemini_function_declaration() for t in self._request_tool_definitions()]
             tools_payload = [types.Tool(function_declarations=decls)]
 
         # max_completion_tokens semantics: same intent as OpenAI path.
@@ -654,7 +654,7 @@ class _GenaiMixin:
                     getattr(self, "_last_prompt_tokens", None),
                 )
 
-            if saw_tool_call_fragment and self.on_tool_call is not None:
+            if saw_tool_call_fragment and self._has_tool_handler():
                 # Ordering invariant, symmetric with OpenAI _tools.py's finalize/yield-tail-before-notify:
                 # emit every leak-filter-held pretool fragment before
                 # round-start callbacks. Buffered callers clear reply_chunks
@@ -689,7 +689,7 @@ class _GenaiMixin:
             if (
                 saw_tool_call_fragment
                 and not collected_tool_calls
-                and self.on_tool_call is not None
+                and self._has_tool_handler()
             ):
                 # Zero-execution rounds with all empty-name calls dropped leave messages
                 # unchanged. Retrying provides no new information and repeats
@@ -716,7 +716,7 @@ class _GenaiMixin:
                     zero_exec_break = True
                     break
                 continue
-            if collected_tool_calls and self.on_tool_call is not None:
+            if collected_tool_calls and self._has_tool_handler():
                 if not generation_is_active():
                     return
                 # Execute tools, append a unified assistant + tool history (dict shape

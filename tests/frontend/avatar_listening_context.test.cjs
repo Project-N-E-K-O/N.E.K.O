@@ -5,7 +5,7 @@ const code = fs.readFileSync('static/avatar/avatar-listening-context.js', 'utf8'
 
 function fixture() {
     const peers = [], queue = [];
-    function peer(pet) {
+    function peer(pet, character = 'Alice') {
         const handlers = {};
         let state = { audible: true, playbackId: 'a', track: { name: 'Song A', artist: 'Artist' } };
         const doc = { visibilityState: 'visible' };
@@ -15,7 +15,7 @@ function fixture() {
         const mood = { playbackId: 'a', state: 'ready', result: { track_id: 'track:a', category: 'sad',
             confidence: 0.78, source: 'lyrics_text_model', classifier_version: 'v1' } };
         const listening = { source: 'music', playbackId: 'a', expression: 'expressions/listening-sad.exp3.json' };
-        const w = { crypto: require('node:crypto').webcrypto, innerWidth: 1000, innerHeight: 1000,
+        const w = { lanlan_config: { lanlan_name: character }, crypto: require('node:crypto').webcrypto, innerWidth: 1000, innerHeight: 1000,
             setTimeout, clearTimeout, getMusicPlaybackSnapshot: () => state,
             nekoMusicMood: { sync() {}, snapshot: () => mood }, nekoMusicListening: { snapshot: () => listening },
             addEventListener: (key, fn) => (handlers[key] ||= []).push(fn),
@@ -88,4 +88,28 @@ test('response for another request cannot attach; new model with no frame cannot
     pet.w.live2dManager._manualExpressionResource = null;
     h.deliver(); const snap = await p;
     assert.equal(snap.expression, null); assert.equal(snap.facts.length, 0);
+});
+
+
+test('only the requested character can answer a shared playback observation', async () => {
+    const h = fixture(), bob = h.peer(true, 'Bob'), alice = h.peer(true, 'Alice'), chat = h.peer(false, 'Alice');
+    bob.resource.observedFrame.parameters = { ParamMouthForm: 1 };
+    const request = chat.w.nekoListeningContext.capture('r');
+    h.deliver();
+    const snapshot = await request;
+    assert.equal(snapshot.character_name, 'Alice');
+    assert.ok(snapshot.facts.includes('sad_face'));
+    assert.ok(!snapshot.facts.includes('smile'));
+    chat.w.lanlan_config.lanlan_name = 'Bob';
+    assert.equal(chat.w.nekoListeningContext.forMessage(snapshot), null);
+});
+
+test('a mismatched responder does not consume the pending request', async () => {
+    const h = fixture(), chat = h.peer(false), pet = h.peer(true);
+    const request = chat.w.nekoListeningContext.capture('r');
+    const nonce = h.queue[0].data.nonce;
+    chat.emit('neko:listening-context', { type: 'listening_context_response', nonce,
+        characterName: 'Bob', snapshot: null });
+    h.deliver();
+    assert.equal((await request).character_name, 'Alice');
 });

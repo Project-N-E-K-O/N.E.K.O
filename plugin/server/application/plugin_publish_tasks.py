@@ -55,7 +55,7 @@ _PRE_RELEASE_RESERVE_SECONDS = 300.0
 _MIN_RELEASE_WAIT_SECONDS = 60.0
 _RELEASE_URL_PATTERN = re.compile(r"GitHub Release ready: (\S+)")
 # The CLI's one-line report of the Market's answer to the release notification.
-_MARKET_STATUS_PATTERN = re.compile(r"^\[MARKET\] status=([a-z_]+)(?: candidate=([0-9]+))?$")
+_MARKET_STATUS_PATTERN = re.compile(r"^\[MARKET\] status=([a-z_]+)(?: candidate=([0-9]+))?(?: request=([0-9]+))?$")
 _RELEASE_WORKFLOW = ".github/workflows/release.yml"
 # Lines the CLI starts itself; anything else after ``[FAIL]`` continues it.
 _MARKER_PATTERN = re.compile(r"^\[[^\]]+\]")
@@ -72,6 +72,7 @@ class _Task:
     release_url: str = ""
     market_status: str | None = None
     market_candidate_id: int | None = None
+    market_request_id: int | None = None
     log: deque[str] = field(default_factory=lambda: deque(maxlen=_LOG_LINES))
     started_at: float | None = None
     updated_at: float = field(default_factory=time.time)
@@ -100,6 +101,7 @@ def _snapshot(task: _Task) -> dict[str, object]:
             "release_url": task.release_url,
             "market_status": task.market_status,
             "market_candidate_id": task.market_candidate_id,
+            "market_request_id": task.market_request_id,
             "log": list(task.log),
             "started_at": task.started_at,
             "updated_at": task.updated_at,
@@ -426,16 +428,21 @@ def _extract_release_url(task: _Task) -> str:
     return ""
 
 
-def _extract_market_result(task: _Task) -> tuple[str | None, int | None]:
-    """The Market status and review candidate from the CLI's ``[MARKET]`` line."""
+def _extract_market_result(task: _Task) -> tuple[str | None, int | None, int | None]:
+    """The Market status, review candidate and receipt from the CLI's ``[MARKET]`` line."""
     with _lock:
         lines = list(task.log)
     for line in reversed(lines):
         match = _MARKET_STATUS_PATTERN.match(line.strip())
         if match:
             candidate = match.group(2)
-            return match.group(1), int(candidate) if candidate else None
-    return None, None
+            request = match.group(3)
+            return (
+                match.group(1),
+                int(candidate) if candidate else None,
+                int(request) if request else None,
+            )
+    return None, None, None
 
 
 async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
@@ -506,7 +513,9 @@ def _finalize(
             task.message = _failure_message(task, returncode)
         task.release_url = _extract_release_url(task) or task.release_url
         # A rejected notification exits 1, so the status is read on failure too.
-        task.market_status, task.market_candidate_id = _extract_market_result(task)
+        task.market_status, task.market_candidate_id, task.market_request_id = (
+            _extract_market_result(task)
+        )
         task.finished_at = time.time()
         task.updated_at = task.finished_at
         if _active.get(task.project_id) == task.task_id:

@@ -13,7 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from typing import Sequence
+
+from utils.image_history import replace_history_text
 
 from main_logic.agent_event_bus import conversation_reply_observation
 from main_logic.proactive_delivery import (
@@ -1195,6 +1198,8 @@ class _StreamingMixin:
         # This turn's resident blocks initially belong only to it, surviving for later turns after provider response;
         # bind before try so finally can access them.
         _resident_entry = None
+        from ._turn_context import _request_context_tools
+        _context_tools_token = _request_context_tools.set((self, getattr(turn_context, "tools", ()), response_generation))
         _ephemeral_context = getattr(turn_context, "ephemeral", None)
         if _ephemeral_context is not None:
             # Internal marker (not sent to provider): request views must not treat this as the user's turn.
@@ -2346,6 +2351,7 @@ class _StreamingMixin:
             # Before other cleanup, remove base64 from history so subsequent requests do not
             # resend it (token counter uses short image placeholders, invisible to truncation).
             response_cancelled = self._active_response_generation != response_generation
+            _request_context_tools.reset(_context_tools_token)
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
@@ -2365,16 +2371,9 @@ class _StreamingMixin:
                     _history, history_replacement_index, user_message,
                 )
                 if _replace_at >= 0:
-                    replacement_content = history_replacement_text
-                    if _prefix_history_only and isinstance(user_message.content, list):
-                        # Retain user image/attachment blocks and their order.
-                        replacement_content = [
-                            {**block, "text": history_replacement_text}
-                            if isinstance(block, dict) and block.get("type") == "text"
-                            and block.get("text") == _user_text_with_prefix else block
-                            for block in user_message.content
-                        ]
-                    _history[_replace_at] = HumanMessage(content=replacement_content)
+                    _history[_replace_at] = replace(user_message, content=replace_history_text(
+                        user_message.content, _user_text_with_prefix, history_replacement_text,
+                    ))
                     # This turn's resident knowledge blocks follow the replacement message.
                     self._rebind_resident_anchor(user_message, _history[_replace_at])
 

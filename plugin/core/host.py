@@ -33,7 +33,7 @@ from plugin.core.communication import (
 )
 from plugin.core.context import PluginContext
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
-from plugin.core.entry_points import normalize_plugin_entry_point
+from plugin.core.entry_points import normalize_plugin_entry_point, plugin_package_matches_directory
 from plugin.core.model_gateway_access import model_gateway_access
 from plugin.core.state import state
 from plugin.core.source_imports import ensure_plugins_namespace as _ensure_plugins_namespace
@@ -530,7 +530,7 @@ def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any
     except OSError as exc:
         logger.debug("[Plugin Process] Failed to resolve plugin directory for cache eviction: {}", exc)
         return
-    if plugin_id != plugin_dir.name:
+    if not plugin_package_matches_directory(plugin_id, plugin_dir.name):
         return
 
     package_prefixes = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
@@ -567,7 +567,7 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         logger.debug("[Plugin Process] Failed to resolve plugin directory for import fallback: {}", exc)
         return None
 
-    if parts[1] != plugin_dir.name:
+    if not plugin_package_matches_directory(parts[1], plugin_dir.name):
         logger.debug(
             "[Plugin Process] Import fallback skipped because module '{}' does not match plugin dir '{}'",
             module_path,
@@ -661,7 +661,7 @@ def _import_plugin_module(module_path: str, config_path: Path | None, logger: An
         canonical = module_path.removeprefix("plugin.")
         parts = canonical.split(".")
         directory = config_path.resolve().parent
-        if len(parts) < 2 or parts[0] != "plugins" or parts[1] != directory.name:
+        if len(parts) < 2 or parts[0] != "plugins" or not plugin_package_matches_directory(parts[1], directory.name):
             raise ValueError("Source-only plugin module must match its source directory")
         package = ".".join(parts[:2])
         _evict_plugin_module_tree(package)

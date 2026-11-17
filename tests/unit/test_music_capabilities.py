@@ -1,6 +1,6 @@
 from copy import deepcopy
 import pytest
-from brain.music_capabilities import scoped_music_catalog
+from utils.music_capabilities import scoped_music_catalog
 from plugin.plugins.netease_music.cloud_entry import CLOUD_SCHEMA
 from utils.music_capability_context import music_capability_prompt
 
@@ -35,7 +35,9 @@ def test_main_chat_hint_has_no_operation_catalog():
 
 @pytest.mark.asyncio
 async def test_query_page_survives_result_pipeline_but_history_is_compact(monkeypatch):
-    from app.agent_server import results
+    from nekoclaw.host.plugin_runs import RunOutcome, describe_result
+    from nekoclaw.host.reports import Reporter
+    from types import SimpleNamespace
     from utils.result_parser import parse_plugin_result
     from utils.tokenize import count_tokens
     from plugin.plugins.netease_music.cloud_entry import cloud_result_summary
@@ -54,26 +56,13 @@ async def test_query_page_survives_result_pipeline_but_history_is_compact(monkey
         ],
     }
     data["summary"] = cloud_result_summary(data)
-    detail = parse_plugin_result(
-        data,
-        plugin_id="netease_music",
-        entry_id="cloud_music",
-        llm_result_fields=["summary"],
-    )
+    outcome = RunOutcome(plugin_id="netease_music", entry_id="cloud_music", accepted=True, success=True, data=data)
+    detail = describe_result({"llm_result_fields": ["summary"]}, outcome)
     assert "Cloud playlist 19" in detail and '"next_offset": 20' in detail
-    emit = AsyncMock()
-    monkeypatch.setattr(results, "_emit_main_event", emit)
-    await results._emit_task_result(
-        "YUI",
-        task_id="test",
-        channel="user_plugin",
-        success=True,
-        summary=detail,
-        detail=detail,
-        plugin_id="netease_music",
-        entry_id="cloud_music",
-    )
-    event = emit.call_args.kwargs
+    commission = SimpleNamespace(parent_id=None, lanlan_name="YUI", id="test", title="Cloud query")
+    reporter = Reporter.__new__(Reporter)
+    _, event = reporter.task_result_report(commission, channel="user_plugin", success=True,
+        status="completed", summary=detail, detail=detail, plugin_id="netease_music", entry_id="cloud_music")
     assert event["metadata"] == {"music_library_evidence": True}
     assert "Cloud playlist 19" in event["summary"]
     cb = {**event, "origin": "task_result"}

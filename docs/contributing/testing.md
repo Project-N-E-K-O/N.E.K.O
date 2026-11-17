@@ -7,7 +7,7 @@ uv sync
 uv run playwright install chromium
 ```
 
-The root `tests/conftest.py` also attempts to install Chromium when unavailable, but explicit preparation is more predictable. Never commit `tests/api_keys.json`; only create it from the template for tests that genuinely call external services.
+The root `tests/conftest.py` also attempts to install Chromium when unavailable, but explicit preparation is more predictable. Playwright and this Chromium are for the frontend and e2e tests only: Playwright is a development dependency, and the application's own browser control drives a browser installed on the machine without it. Never commit `tests/api_keys.json`; only create it from the template for tests that genuinely call external services.
 
 ## Common commands
 

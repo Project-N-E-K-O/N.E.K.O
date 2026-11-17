@@ -96,6 +96,10 @@ def cloud_result_summary(data):
 
 
 class CloudMusicMixin:
+    async def _finish_cloud(self, *, data, **kwargs):
+        """Preserve both declared fields on every cloud entry exit."""
+        return await self.finish(data={**data, "execution": json.dumps(data, ensure_ascii=False)}, **kwargs)
+
     def _new_cloud_library(self):
         return CloudLibrary(self._netease_cookies)
 
@@ -123,7 +127,7 @@ class CloudMusicMixin:
     ):
         target = self._target_lanlan(_ctx or {})
         if not target:
-            return await self.finish(
+            return await self._finish_cloud(
                 data={"status": "error", "summary": "缺少目标角色会话。"},
                 delivery="proactive",
             )
@@ -132,7 +136,7 @@ class CloudMusicMixin:
             "created",
             "subscribed",
         }:
-            return await self.finish(
+            return await self._finish_cloud(
                 data={"status": "error", "summary": "未知的云端音乐操作。"},
                 delivery="proactive",
             )
@@ -145,7 +149,7 @@ class CloudMusicMixin:
             (_ctx or {}).get("request_source") != "user"
             or (_ctx or {}).get("authorized_action") != action
         ):
-            return await self.finish(
+            return await self._finish_cloud(
                 data={"status": "blocked", "summary": "This operation lacks a current user-origin plan."},
                 delivery="proactive",
             )
@@ -179,10 +183,10 @@ class CloudMusicMixin:
             if action == "play":  # _advance already returned a plugin finish envelope.
                 return result
             data = {"scope": "netease_cloud", "action": action, **result}
-            data["summary"] = cloud_result_summary(data)
-            return await self.finish(data=data, delivery="proactive")
+            data["summary"] = await asyncio.to_thread(cloud_result_summary, data)
+            return await self._finish_cloud(data=data, delivery="proactive")
         except CloudError as exc:
-            return await self.finish(
+            return await self._finish_cloud(
                 data={
                     "status": "error",
                     "code": exc.code,
@@ -195,7 +199,7 @@ class CloudMusicMixin:
         except asyncio.CancelledError:
             raise
         except Exception:
-            return await self.finish(
+            return await self._finish_cloud(
                 data={"status": "error", "summary": "云端音乐操作失败，未确认成功。"},
                 delivery="proactive",
             )
@@ -279,7 +283,7 @@ class CloudMusicMixin:
             if not self._is_current(key, generation):
                 return await self._finish_silent("superseded")
             queue = self._queues[key] = Queue(name, tracks, proactive_start=proactive)
-            self._note(target, "queue_ready", source="netease_cloud", collection=name,
+            self._note(target, "queue_ready", ai_behavior="read", source="netease_cloud", collection=name,
                        track_count=len(tracks), total=total, player_confirmed=False)
             async with self._new_provider() as provider:
                 return await self._advance(provider, target, key, queue)

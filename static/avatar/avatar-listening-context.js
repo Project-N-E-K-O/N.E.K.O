@@ -5,6 +5,7 @@
     if (window.nekoListeningContext) return;
     const pending = new Map(), captures = new WeakMap();
     let revision = 0, key = '';
+    function character() { return String(window.lanlan_config?.lanlan_name || ''); }
     function playback() {
         const state = window.getMusicPlaybackSnapshot?.();
         const next = state?.audible ? state.playbackId : '';
@@ -49,7 +50,7 @@
             }
             if (performance?.visibleCue === 'tears') facts.push('tears');
         }
-        return { version: 1, request_id: requestId, captured_at: Date.now(), playback_id: playing.playbackId,
+        return { version: 1, request_id: requestId, character_name: character(), captured_at: Date.now(), playback_id: playing.playbackId,
             track: { name: String(playing.track?.name || '').slice(0, 120), artist: String(playing.track?.artist || '').slice(0, 120) },
             mood: result ? { track_id: result.track_id, category: result.category, confidence: result.confidence,
                 source: result.source, classifier_version: result.classifier_version } : null,
@@ -61,31 +62,32 @@
     }
     function capture(requestId) {
         const playing = playback();
-        if (!playing || typeof requestId !== 'string') return Promise.resolve(null);
+        if (!playing || !character() || typeof requestId !== 'string') return Promise.resolve(null);
         if (window.live2dManager?.currentModel) return Promise.resolve(remember(observe(requestId)));
         return new Promise(resolve => {
             const nonce = window.crypto.randomUUID();
-            const job = { playbackId: playing.playbackId, requestId, finish(value) {
+            const job = { character: character(), playbackId: playing.playbackId, requestId, finish(value) {
                 window.clearTimeout(job.timer); pending.delete(nonce); resolve(remember(value));
             } };
             job.timer = window.setTimeout(() => job.finish(null), 300);
             pending.set(nonce, job);
             window.__nekoBroadcastChatMirror?.({ type: 'listening_context_request', nonce, requestId,
-                playbackId: playing.playbackId });
+                playbackId: playing.playbackId, characterName: job.character });
         });
     }
     window.addEventListener('neko:listening-context', ({ detail: data }) => {
         if (!data || typeof data.nonce !== 'string' || data.nonce.length > 100) return;
         if (data.type === 'listening_context_request') {
+            if (!character() || data.characterName !== character()) return;
             if (!window.live2dManager?.currentModel || typeof data.requestId !== 'string' || data.requestId.length > 128) return;
             const snapshot = observe(data.requestId);
             window.__nekoBroadcastChatMirror?.({ type: 'listening_context_response', target: data.sender,
-                nonce: data.nonce, snapshot: snapshot?.playback_id === data.playbackId ? snapshot : null });
+                nonce: data.nonce, characterName: character(), snapshot: snapshot?.playback_id === data.playbackId ? snapshot : null });
         } else if (data.type === 'listening_context_response') {
             const job = pending.get(data.nonce);
-            if (!job) return;
+            if (!job || data.characterName !== job.character) return;
             const current = playback(), value = data.snapshot;
-            job.finish(current && current.playbackId === job.playbackId && value?.playback_id === job.playbackId
+            job.finish(character() === job.character && value?.character_name === job.character && current && current.playbackId === job.playbackId && value?.playback_id === job.playbackId
                 && value.request_id === job.requestId && Date.now() - value.captured_at >= 0
                 && Date.now() - value.captured_at < 1000 ? value : null);
         }
@@ -96,7 +98,7 @@
         try { return await capture(requestId); } catch (_) { return null; }
     }, forMessage(snapshot) {
         const current = playback();
-        return snapshot && captures.get(snapshot) === revision && current?.playbackId === snapshot.playback_id
+        return snapshot && snapshot.character_name === character() && captures.get(snapshot) === revision && current?.playbackId === snapshot.playback_id
             && Date.now() - snapshot.captured_at <= 30000 ? snapshot : null;
     } };
 })();

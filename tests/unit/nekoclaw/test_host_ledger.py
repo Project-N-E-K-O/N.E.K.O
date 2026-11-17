@@ -633,3 +633,190 @@ async def test_reporter_stores_nothing_for_a_silent_result_or_a_child_task_agent
     # A question from a child task agent still has to reach the user.
     assert await reporter.question(child, {"kind": "questions", "questions": []}) is not None
     assert [item.kind for item in await ledger.outbox_pending()] == ["question"]
+
+
+# ---------------------------------------------------------------------------
+# Listeners and the report of what an earlier process left unfinished
+# ---------------------------------------------------------------------------
+
+
+async def test_listener_is_told_of_filings_and_status_changes_after_they_are_stored(ledger):
+    seen: list[tuple[str, str, Any]] = []
+
+    def listener(commission: Any, previous: Any) -> None:
+        seen.append((commission.id, commission.status, previous))
+
+    ledger.subscribe(listener)
+    commission = await _file(ledger)
+    await ledger.transition(commission.id, "working")
+    await ledger.transition(commission.id, "done")
+
+    assert seen == [
+        (commission.id, "queued", None),
+        (commission.id, "working", "queued"),
+        (commission.id, "done", "working"),
+    ]
+
+
+async def test_listener_is_not_told_of_a_refused_move_or_of_a_filing_that_did_not_happen(ledger):
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "cancelled")
+    seen: list[Any] = []
+    ledger.subscribe(lambda commission, previous: seen.append((commission.status, previous)))
+
+    refused = await ledger.transition(commission.id, "working")
+    same, created = await ledger.create(
+        unless=lambda active: commission,
+        lanlan_name="Lan",
+        title="weather",
+        dispatch_text="check the weather",
+        source="dispatch",
+    )
+
+    assert not refused.applied and not created and same.id == commission.id
+    assert seen == []
+
+
+async def test_a_listener_that_raises_does_not_undo_the_change_or_silence_the_others(ledger):
+    seen: list[str] = []
+
+    def broken(commission: Any, previous: Any) -> None:
+        raise RuntimeError("listener bug")
+
+    ledger.subscribe(broken)
+    ledger.subscribe(lambda commission, previous: seen.append(commission.status))
+
+    commission = await _file(ledger)
+    moved = await ledger.transition(commission.id, "working")
+
+    assert moved.applied
+    assert (await ledger.get(commission.id)).status == "working"
+    assert seen == ["queued", "working"]
+
+
+async def test_unsubscribing_stops_the_calls(ledger):
+    seen: list[str] = []
+    unsubscribe = ledger.subscribe(lambda commission, previous: seen.append(commission.status))
+    commission = await _file(ledger)
+
+    unsubscribe()
+    unsubscribe()
+    await ledger.transition(commission.id, "working")
+
+    assert seen == ["queued"]
+
+
+async def test_what_an_earlier_process_left_unfinished_is_reported_with_its_failure(tmp_path):
+    path = tmp_path / "nekoclaw" / "ledger.db"
+    first = Ledger(path)
+    working = await _file(first, title="resize the photos")
+    await first.transition(working.id, "working")
+    blocked = await _file(first, title="book a table")
+    await _walk(first, blocked.id, "blocked")
+    await first.close()
+
+    asked: list[str] = []
+
+    def report(commission: Any) -> Any:
+        asked.append(commission.id)
+        return "task_result", {"task_id": commission.id, "status": commission.status, "delivery_mode": "passive"}
+
+    second = Ledger(path, reconcile_report=report)
+    try:
+        rows = await second.outbox_pending()
+        assert asked == [working.id]
+        assert [(row.commission_id, row.kind, row.payload) for row in rows] == [
+            (working.id, "task_result", {"task_id": working.id, "status": "failed", "delivery_mode": "passive"})
+        ]
+        assert (await second.get(working.id)).status == "failed"
+        assert (await second.get(blocked.id)).status == "blocked"
+    finally:
+        await second.close()
+
+
+async def test_no_report_is_stored_when_the_hook_gives_none(tmp_path):
+    path = tmp_path / "nekoclaw" / "ledger.db"
+    first = Ledger(path)
+    commission = await _file(first)
+    await first.transition(commission.id, "working")
+    await first.close()
+
+    second = Ledger(path, reconcile_report=lambda commission: None)
+    try:
+        assert await second.outbox_pending() == []
+        assert (await second.get(commission.id)).status == "failed"
+    finally:
+        await second.close()
+
+
+# ---------------------------------------------------------------------------
+# Columns added after the first schema
+# ---------------------------------------------------------------------------
+
+
+_FIRST_SCHEMA_COLUMNS = (
+    "id TEXT PRIMARY KEY, lanlan_name TEXT NOT NULL, title TEXT NOT NULL, dispatch_text TEXT NOT NULL, "
+    "user_text TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, route TEXT, project TEXT, workdir TEXT, "
+    "status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', runtime TEXT, created_at REAL NOT NULL, "
+    "updated_at REAL NOT NULL, started_at REAL, ended_at REAL, result_summary TEXT, pending_question TEXT, "
+    "delivery TEXT, parent_id TEXT, conversation_id TEXT, lang TEXT, plugin_id TEXT, entry_id TEXT, name TEXT, "
+    "deferred_until REAL, host_instance TEXT"
+)
+
+
+async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_opened(tmp_path):
+    from nekoclaw.host.ledger import Ledger
+
+    path = tmp_path / "ledger.db"
+    # As a build from before the session directory was recorded left it.
+    conn = sqlite3.connect(path)
+    conn.execute(f"CREATE TABLE commissions ({_FIRST_SCHEMA_COLUMNS})")
+    conn.execute(
+        "INSERT INTO commissions (id, lanlan_name, title, dispatch_text, source, status, created_at, updated_at, workdir) "
+        "VALUES ('c1', 'Lan', 'sort the photos', 'sort the photos', 'dispatch', 'blocked', 1.0, 2.0, 'D:/old/work')"
+    )
+    conn.execute("PRAGMA user_version=1")
+    conn.commit()
+    conn.close()
+
+    ledger = Ledger(path)
+    try:
+        await ledger.open()
+        kept = await ledger.get("c1")
+        # What it held is all there, and the new column reads as nothing known.
+        assert (kept.title, kept.status, kept.workdir, kept.session_dir) == ("sort the photos", "blocked", "D:/old/work", None)
+        updated = await ledger.update("c1", session_dir="D:/old/sessions/c1")
+        assert updated.session_dir == "D:/old/sessions/c1"
+    finally:
+        await ledger.close()
+
+    with sqlite3.connect(path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    conn.close()
+    assert columns.count("session_dir") == 1 and version == 2
+    # It has every column a new ledger has. A column put into the table and the commission but left out of
+    # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
+    from nekoclaw.host.ledger import _COMMISSION_COLUMNS
+
+    assert set(columns) == set(_COMMISSION_COLUMNS)
+
+    # Opened again, nothing is added a second time.
+    again = Ledger(path)
+    try:
+        await again.open()
+        assert (await again.get("c1")).session_dir == "D:/old/sessions/c1"
+    finally:
+        await again.close()
+
+
+async def test_a_new_ledger_has_the_added_columns_from_the_start(ledger):
+    from nekoclaw.host.ledger import _ADDED_COLUMNS, _COMMISSION_COLUMNS
+
+    await ledger.open()
+    with sqlite3.connect(ledger.path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(commissions)")}
+    conn.close()
+    # Every field of a commission is a column, the ones added later included.
+    assert set(_COMMISSION_COLUMNS) == columns
+    assert {name for name, _kind in _ADDED_COLUMNS} <= columns
