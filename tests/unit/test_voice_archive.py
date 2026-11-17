@@ -40,6 +40,34 @@ def test_recording_is_opt_in(tmp_path):
     assert not (tmp_path/'voice_archive').exists()
 
 
+def test_queued_pre_opt_in_events_are_not_saved_after_enabling(tmp_path):
+    from utils.voice_archive_settings import save_settings
+    async def run():
+        mgr = manager(tmp_path, enabled=False)
+        # The writer has not had a chance to read the disabled setting yet.
+        await archive_event(mgr, 'audio', 'before', data=b'\0\0')
+        save_settings(mgr._config_manager, True)
+        await drain_voice_archive(mgr)
+        assert not (tmp_path/'voice_archive').exists()
+
+        await archive_event(mgr, 'audio', 'after', data=b'\1\1')
+        await drain_voice_archive(mgr)
+        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT speech_id FROM clips') == [('after',)]
+    asyncio.run(run())
+
+
+def test_queued_audio_is_discarded_after_disabling_and_reenabling(tmp_path):
+    from utils.voice_archive_settings import save_settings
+    async def run():
+        mgr = manager(tmp_path, enabled=True)
+        await archive_event(mgr, 'audio', 'before', data=b'\0\0')
+        save_settings(mgr._config_manager, False)
+        save_settings(mgr._config_manager, True)
+        await drain_voice_archive(mgr)
+        assert not (tmp_path/'voice_archive').exists()
+    asyncio.run(run())
+
+
 def test_slow_archive_does_not_hold_up_live_event_producers(tmp_path):
     async def run():
         mgr = manager(tmp_path)

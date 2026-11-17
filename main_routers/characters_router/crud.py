@@ -1411,9 +1411,13 @@ async def _rename_catgirl_transaction(
             from main_logic.voice_archive import drain_voice_archive, rename_character_voice_archive
             if old_archive_manager is not None:
                 await drain_voice_archive(old_archive_manager)
-            voice_archive_renamed = await _await_thread_mutation(
+            voice_archive_renamed, voice_archive_cancelled = await _await_thread_call_to_completion(
                 rename_character_voice_archive, _config_manager.app_docs_dir, old_name, new_name,
             )
+            # The worker may have committed its mutation while the request was
+            # cancelled. Preserve its result so finally can undo that rename.
+            if voice_archive_cancelled:
+                raise asyncio.CancelledError
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",

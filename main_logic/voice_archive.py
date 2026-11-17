@@ -14,6 +14,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import time
 
 log = logging.getLogger(__name__)
 MAX_PENDING_EVENTS = 256
@@ -148,9 +149,15 @@ async def _write_queued_events(manager, queue):
                 continue
             sid = event['speech_id']
             try:
-                from utils.voice_archive_settings import load_settings
+                from utils.voice_archive_settings import load_settings, recording_gate
                 settings = await asyncio.to_thread(load_settings, cm)
-                if not settings['enabled']:
+                gate = recording_gate(cm)
+                if (not settings['enabled'] or
+                        (gate is not None and
+                         (not gate[0] or event['produced_at_ns'] < gate[1]))):
+                    # Enabling a recording cannot retroactively authorize
+                    # speech produced while it was disabled, even if the
+                    # writer was backlogged until after the POST committed.
                     _mark_incomplete(manager, sid)
                     continue
                 if event['kind'] == 'text' and event.get('is_first'):
@@ -199,12 +206,19 @@ def _enqueue_archive_event(manager, kind, speech_id, **values):
     cm = getattr(manager, '_config_manager', None)
     if cm is None or not speech_id:
         return
+    produced_at_ns = time.monotonic_ns()
+    from utils.voice_archive_settings import recording_gate
+    snapshot = recording_gate(cm)
     sid = str(speech_id)
+    if snapshot is not None and not snapshot[0]:
+        _mark_incomplete(manager, sid)
+        return
     character = str(getattr(manager, 'lanlan_name', ''))
     if not character:
         _mark_incomplete(manager, sid)
         return
     event = dict(values, kind=kind, character=character, speech_id=sid,
+                 produced_at_ns=produced_at_ns,
                  proof=dict(getattr(manager, '_chat_original_turns', {}).get(sid, {})))
     if kind == 'audio':
         data = event.get('data')

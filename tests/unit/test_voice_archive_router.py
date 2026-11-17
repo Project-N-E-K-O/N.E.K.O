@@ -22,7 +22,8 @@ def client(tmp_path, monkeypatch):
 
 def save(archive, sid, record, character='YUI', complete=True):
     base = dict(character=character, speech_id=sid, proof={'recordId': record})
-    archive.write(dict(base, kind='audio', data=b'\x01\x00' * 480))
+    archive.write(dict(base, kind='audio', data=b'\x01\x00' * 480,
+                       format='pcm_s16le_48000'))
     archive.write(dict(base, kind='text', text='identical text', is_first=True))
     if complete:
         archive.write(dict(base, kind='done'))

@@ -135,7 +135,7 @@ def test_mixed_format_size_limit_applies_only_to_requested_run(client, monkeypat
 
 def test_producer_recording_is_discovered_and_replayed_by_history(client):
     import asyncio
-    from main_logic.voice_archive import archive_event
+    from main_logic.voice_archive import archive_event, drain_voice_archive
     web, root = client
     config = chat_history_router.get_config_manager()
     web.post('/api/voice-archive/settings', json={'enabled': True})
@@ -147,6 +147,7 @@ def test_producer_recording_is_discovered_and_replayed_by_history(client):
         manager._chat_original_turns['new-speech'] = {'recordId': 'new-record', 'origin': 'chat'}
         await archive_event(manager, 'text', 'new-speech', text='recorded reply', is_first=True)
         await archive_event(manager, 'done', 'new-speech')
+        await drain_voice_archive(manager)
     # The existing voice fixture is intentionally minimal; start a producer-owned DB.
     (root/'voice_archive/archive.sqlite3').rename(root/'voice_archive/fixture.sqlite3')
     asyncio.run(record())
