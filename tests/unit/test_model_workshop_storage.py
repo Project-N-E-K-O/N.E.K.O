@@ -18,7 +18,7 @@ from utils.storage.migration import (
     MIGRATED_RUNTIME_ENTRY_NAMES,
     StorageMigrationError,
     _V1_CATCH_UP_ENTRIES,
-    _require_paired_model_workshop_roots,
+    require_paired_model_workshop_roots,
     create_pending_storage_migration,
     get_storage_migration_path,
     root_has_migrated_entry_content,
@@ -182,9 +182,9 @@ def test_reuse_never_combines_registry_and_models_from_different_roots(
                 )))
     if conflict:
         with pytest.raises(StorageMigrationError, match="model_workshop_root_conflict"):
-            _require_paired_model_workshop_roots(source, target, reuse_target=reuse)
+            require_paired_model_workshop_roots(source, target, reuse_target=reuse)
     else:
-        _require_paired_model_workshop_roots(source, target, reuse_target=reuse)
+        require_paired_model_workshop_roots(source, target, reuse_target=reuse)
 
 
 def test_real_legacy_reuse_rejects_unpaired_registry_and_keeps_both_trees(service, tmp_path):

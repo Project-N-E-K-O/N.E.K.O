@@ -123,6 +123,28 @@ def model_workshop_has_user_content(directory: Path) -> bool:
         return True
 
 
+def inspect_model_workshop_metadata(root: Path):
+    """Validate storage evidence without acquiring or releasing any writer."""
+    directory = root / "model_workshop"
+    try:
+        _ordinary(directory)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ModelWorkshopStorageError("model_workshop_state_unreadable") from exc
+    try:
+        entries = _layout(directory)
+        if "transactions" in entries and any(entries["transactions"].iterdir()):
+            raise ModelWorkshopStorageError("model_workshop_pending")
+        if "installed.json" in entries:
+            _registry(entries["installed.json"])
+        return entries
+    except ModelWorkshopStorageError:
+        raise
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ModelWorkshopStorageError("model_workshop_state_unreadable") from exc
+
+
 def assert_model_workshop_stopped(root: Path) -> None:
     """Probe an existing OS owner without initializing or recovering its service.
 
@@ -131,12 +153,14 @@ def assert_model_workshop_stopped(root: Path) -> None:
     not authorization to copy. Never hold this handle while moving the lock file.
     """
     directory = root / "model_workshop"
-    if not os.path.lexists(directory):
+    # Only lstat-confirmed absence is empty. lexists() collapses lookup errors
+    # into False, which must not authorize moving unreadable private metadata.
+    entries = inspect_model_workshop_metadata(root)
+    if entries is None:
         return
     handle = None
     locked = False
     try:
-        entries = _layout(directory)
         lock = directory / "locks/writer.lock"
         before = _ordinary(lock)
         if not stat.S_ISREG(before.st_mode):
@@ -151,10 +175,9 @@ def assert_model_workshop_stopped(root: Path) -> None:
             locked = True
         except portalocker.exceptions.LockException as exc:
             raise ModelWorkshopStorageError("model_workshop_busy") from exc
-        if "transactions" in entries and any(entries["transactions"].iterdir()):
-            raise ModelWorkshopStorageError("model_workshop_pending")
-        if "installed.json" in entries:
-            _registry(entries["installed.json"])
+        # Recheck metadata after the probe too; the first read is not a lease.
+        if inspect_model_workshop_metadata(root) is None:
+            raise ModelWorkshopStorageError("model_workshop_state_unreadable")
     except ModelWorkshopStorageError:
         raise
     except (OSError, ValueError, RecursionError) as exc:

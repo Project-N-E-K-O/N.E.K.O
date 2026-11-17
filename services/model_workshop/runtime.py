@@ -7,8 +7,10 @@ import shutil
 import stat
 import threading
 from itertools import islice
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
 
 import portalocker
@@ -237,6 +239,79 @@ def snapshot_for_mutation(config) -> Snapshot:
     return state
 
 
+@contextmanager
+def _migration_scope(source, target, *, quiesce):
+    """Keep Main admissions frozen through one storage transaction, never recover."""
+    from utils.model_workshop_storage import (
+        ModelWorkshopStorageError,
+        assert_model_workshop_stopped,
+        inspect_model_workshop_metadata,
+    )
+    from utils.storage.migration import StorageMigrationError, require_paired_model_workshop_roots
+
+    # get_service starts under _gate before taking the storage fence. A
+    # nonblocking acquire avoids reversing that order during final rechecks.
+    if not _gate.acquire(blocking=False):
+        raise WorkshopError("model_workshop_busy")
+    try:
+        with ExitStack() as stack:
+            try:
+                if _stopped:
+                    raise WorkshopError("model_workshop_busy")
+                roots = tuple(dict.fromkeys(Path(root).resolve() for root in (source, target)))
+                owners = []
+                for root in roots:
+                    service = _services.get(str(root))
+                    if service is not None:
+                        stack.enter_context(service.migration_idle())
+                        owners.append((str(root), service))
+                    evidence = inspect_model_workshop_metadata(root)
+                    if evidence is not None:
+                        # Main validates full rows/journals as well as the low
+                        # layer's envelope; no metadata is repaired by preflight.
+                        config = SimpleNamespace(app_docs_dir=root, **{
+                            name + "_dir": root / name for name in ("live2d", "vrm", "mmd")
+                        })
+                        state = snapshot(config)
+                        if state.errors:
+                            raise WorkshopError("model_workshop_state_unreadable")
+                        if state.pending:
+                            raise WorkshopError("model_workshop_pending")
+                    if service is None:
+                        assert_model_workshop_stopped(root)
+                require_paired_model_workshop_roots(roots[0], roots[-1], reuse_target=False)
+                if quiesce:
+                    # Validate both roots before releasing either idle owner.
+                    # New callers stay behind _gate through commit/rollback.
+                    for key, service in owners:
+                        service.close()
+                        _services.pop(key)
+            except (ModelWorkshopStorageError, StorageMigrationError) as exc:
+                raise WorkshopError(getattr(exc, "error_code", str(exc))) from exc
+            except (OSError, ValueError, portalocker.exceptions.LockException) as exc:
+                if isinstance(exc, WorkshopError):
+                    raise
+                raise WorkshopError("model_workshop_state_unreadable") from exc
+            # Do not translate write/rollback failures from inside the caller's
+            # transaction into a harmless preflight rejection.
+            yield
+    finally:
+        _gate.release()
+
+
+def check_migration_ready(source, target):
+    """Read-only preflight; idle Main ownership is retained until actual scheduling."""
+    with _migration_scope(source, target, quiesce=False):
+        pass
+
+
+@contextmanager
+def prepare_migration(source, target):
+    """Quiesce before taking root_state, then exclude new work through rollback."""
+    with _migration_scope(source, target, quiesce=True):
+        yield
+
+
 def maintain(config):
     """Main's explicit lazy maintenance; absence and read failures do not disable ordinary models."""
     root = getattr(config, "app_docs_dir", None)
@@ -280,7 +355,7 @@ def remove_managed_model(config, captured, auxiliary=None):
     service = get_service(config)
     installer = service.installer
     digest = captured["package_sha256"]
-    with installer.lifecycle(digest), installer.registry.lock, installer.mutation():
+    with service.activity(), installer.lifecycle(digest), installer.registry.lock, installer.mutation():
         state = installer.registry.read()
         row = state["installed"].get(digest)
         if (
@@ -383,7 +458,7 @@ def write_managed_json(
     service = get_service(config)
     installer = service.installer
     digest = captured["package_sha256"]
-    with installer.lifecycle(digest), installer.registry.lock, installer.mutation():
+    with service.activity(), installer.lifecycle(digest), installer.registry.lock, installer.mutation():
         current = installer.registry.read()
         row = current["installed"].get(digest)
         if (
@@ -423,7 +498,7 @@ def write_managed_blob(config, path, data):
     service = get_service(config)
     installer = service.installer
     digest = captured["package_sha256"]
-    with installer.lifecycle(digest), installer.registry.lock, installer.mutation():
+    with service.activity(), installer.lifecycle(digest), installer.registry.lock, installer.mutation():
         current = installer.registry.read()
         row = current["installed"].get(digest)
         if (

@@ -2150,7 +2150,7 @@ def _require_stopped_model_workshops(*roots: Path) -> None:
             raise StorageMigrationError(str(exc), str(exc)) from exc
 
 
-def _require_paired_model_workshop_roots(source: Path, target: Path, *, reuse_target: bool) -> None:
+def require_paired_model_workshop_roots(source: Path, target: Path, *, reuse_target: bool) -> None:
     """Do not combine a kept registry with model directories from the other root."""
     from utils.model_workshop_storage import model_workshop_has_user_content
 
@@ -3085,7 +3085,7 @@ def run_pending_storage_migration(
         # Scheduling and copying are separate processes. Check ownership and
         # unfinished transactions again after shutdown, just before any copy.
         _require_stopped_model_workshops(source_root, target_root)
-        _require_paired_model_workshop_roots(source_root, target_root, reuse_target=use_existing_target)
+        require_paired_model_workshop_roots(source_root, target_root, reuse_target=use_existing_target)
         _ensure_target_root_writable(target_root)
 
         source_snapshots: dict[str, dict[str, int | str]] = {}

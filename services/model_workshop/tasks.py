@@ -8,6 +8,7 @@ import threading
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 
@@ -73,6 +74,8 @@ class WorkshopTasks:
         self._admission = threading.RLock()
         self._tasks = OrderedDict()
         self._receivers = 0
+        self._uploads = 0
+        self._operations = 0
         self._writer = None
         self._executor = None
         self._closing = False
@@ -294,8 +297,60 @@ class WorkshopTasks:
                 task.cancel.set()
         return self.wait(attempt)
 
-    def recover(self):
+    def begin_upload(self):
+        """Reserve an HTTP parser without retaining a thread lock across await."""
+        with self._admission, self._condition:
+            if self._closing:
+                raise WorkshopError("model_workshop_closed")
+            self._assert_owner()
+            if self._uploads >= MAX_ACTIVE:
+                raise WorkshopError("model_workshop_busy")
+            self._uploads += 1
+
+    def finish_upload(self):
+        """Release even after shutdown; the HTTP owner drains and closes its spool."""
+        with self._condition:
+            self._uploads -= 1
+
+    @contextmanager
+    def activity(self):
+        """Retain ownership through legacy mutations/recovery, including their cleanup."""
         with self._admission:
+            with self._condition:
+                if self._closing:
+                    raise WorkshopError("model_workshop_closed")
+                self._assert_owner()
+                self._operations += 1
+            try:
+                yield
+            finally:
+                with self._condition:
+                    self._operations -= 1
+
+    @contextmanager
+    def migration_idle(self):
+        """Freeze admissions only if immediately idle; never wait on a storage writer."""
+        if not self._admission.acquire(blocking=False):
+            raise WorkshopError("model_workshop_busy")
+        try:
+            if not self._condition.acquire(blocking=False):
+                raise WorkshopError("model_workshop_busy")
+            try:
+                if self._closing or self._operations or self._receivers or self._uploads or any(
+                    not task.done.is_set() for task in self._tasks.values()
+                ):
+                    raise WorkshopError("model_workshop_busy")
+                self._assert_owner()
+            finally:
+                self._condition.release()
+            # Keep admission frozen until the caller finishes its checkpoint
+            # transaction (including rollback), so an old reference cannot write.
+            yield
+        finally:
+            self._admission.release()
+
+    def recover(self):
+        with self.activity():
             with self._condition:
                 if self._closing:
                     raise WorkshopError("model_workshop_closed")
@@ -331,7 +386,7 @@ class WorkshopTasks:
 
     def recover_if_changed(self):
         """Retry changed state once; unchanged conflicts remain visible but are not rehashed."""
-        with self._admission:
+        with self.activity():
             if self._closing:
                 raise WorkshopError("model_workshop_closed")
             if self._recovery_metadata_version() != self._recovery_version:
@@ -347,6 +402,10 @@ class WorkshopTasks:
         """Admission is closed while recovery, receivers and workers finish."""
         with self._condition:
             self._closing = True
+            # HTTP parsers own only temporary spools; late receive() calls are
+            # rejected below. An unfinished client body must not retain root
+            # ownership indefinitely during shutdown. Migration rejects it
+            # earlier through _uploads instead of closing an active parser.
             for task in self._tasks.values():
                 if task.phase not in TERMINAL and task.phase != "committing":
                     task.cancel.set()

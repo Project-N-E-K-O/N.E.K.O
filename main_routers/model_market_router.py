@@ -124,9 +124,19 @@ class ModelImportBodyGuard:
                 scope, receive, send
             )
         await self._slots.acquire()
+        upload_owner = None
+
+        def admit():
+            nonlocal upload_owner
+            service = get_service(self.config_getter())
+            service.begin_upload()
+            # Transfer this lease inside the worker: cancellation may discard
+            # the await result after admission has already succeeded.
+            upload_owner = service
+
         try:
             try:
-                await _drain_sync(lambda: get_service(self.config_getter()))
+                await _drain_sync(admit)
             except (
                 WorkshopError,
                 OSError,
@@ -136,7 +146,11 @@ class ModelImportBodyGuard:
                 return await _error(exc)(scope, receive, send)
             await self._bounded(scope, receive, send)
         finally:
-            self._slots.release()
+            try:
+                if upload_owner is not None:
+                    await _drain_sync(upload_owner.finish_upload)
+            finally:
+                self._slots.release()
 
 
 class _OwnedUpload(UploadFile):
