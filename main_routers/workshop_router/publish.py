@@ -195,7 +195,7 @@ async def prepare_workshop_upload(request: Request):
     try:
         import shutil
         import uuid
-        from utils.frontend_utils import find_model_directory
+        from services.model_workshop.catalog import find_model_directory
         
         data = await request.json()
         chara_data = data.get('charaData')

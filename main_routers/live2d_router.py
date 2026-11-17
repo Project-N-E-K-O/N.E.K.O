@@ -46,7 +46,11 @@ from .workshop_router import get_subscribed_workshop_items
 from contextlib import suppress
 
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
+from utils.frontend_utils import find_workshop_item_by_id
+from services.model_workshop.catalog import find_models, find_model_directory
+from services.model_workshop.runtime import snapshot as workshop_snapshot
+from services.model_workshop.paths import WorkshopError
+from services.model_workshop.tasks import _drain_sync
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
 from utils.workshop_utils import get_workshop_path
@@ -79,13 +83,18 @@ logger = get_module_logger(__name__, "Main")
 _MODEL_CONFIG_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
-async def _persist_model_config(model_json_path, config, *, indent: int) -> None:
+async def _persist_model_config(model_json_path, config, *, indent: int, workshop_attempt) -> None:
     """Write the config out without letting cancellation release the caller's lock early."""
     # to_thread cannot cancel dispatched work; thread runs through os.replace. Direct await cancellation
     # (disconnect/timeout middleware) lets async with release per-file lock as CancelledError
     # passes, while os.replace still runs; concurrent handlers can again replace
     # same target, producing WinError 5, precisely the issue this PR fixes.
     # shield contains cancellation outside writer; explicitly await completion before propagating CancelledError.
+    # The managed writer also serializes with uninstall/recovery, in one worker.
+    from services.model_workshop.runtime import write_managed_json
+    from services.model_workshop.tasks import _drain_sync
+    if await _drain_sync(lambda: write_managed_json(get_config_manager(), model_json_path, config, indent=indent, captured=workshop_attempt)):
+        return
     writer = asyncio.ensure_future(
         atomic_write_json_async(model_json_path, config, ensure_ascii=False, indent=indent)
     )
@@ -513,6 +522,8 @@ async def update_model_config(model_name: str, request: Request):
         # Lock entire read/modify/write; write-only locks let both requests read same base,
         # then last writer overwrites whole file, silently losing earlier edits.
         async with _model_config_write_lock(model_json_path):
+            # Capture before the asynchronous read, not after a concurrent reinstall.
+            workshop_attempt = await _drain_sync(lambda: workshop_snapshot(get_config_manager()).record_for(model_json_path))
             current_config = await read_json_async(model_json_path)
 
             file_refs = current_config.setdefault("FileReferences", {})
@@ -522,9 +533,11 @@ async def update_model_config(model_name: str, request: Request):
             if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
                 file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 preserves formatting.
+            await _persist_model_config(model_json_path, current_config, indent=4, workshop_attempt=workshop_attempt)  # indent=4 preserves formatting.
 
         return {"success": True, "message": "模型配置已更新"}
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"更新模型配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -628,6 +641,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         # Lock entire read/modify/write as update_model_config. Cubism transformation below is pure CPU
         # with no await; enclosing it changes no logic (git diff -w shows indentation-only changes).
         async with _model_config_write_lock(model_json_path):
+            workshop_attempt = await _drain_sync(lambda: workshop_snapshot(get_config_manager()).record_for(model_json_path))
             config_data = await read_json_async(model_json_path)
 
             # Write standard Cubism structure (FileReferences.Motions / FileReferences.Expressions).
@@ -693,10 +707,12 @@ async def update_emotion_mapping(model_name: str, request: Request):
             config_data['EmotionMapping'] = data
 
             # Save configuration file.
-            await _persist_model_config(model_json_path, config_data, indent=2)
+            await _persist_model_config(model_json_path, config_data, indent=2, workshop_attempt=workshop_attempt)
 
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"更新情绪映射配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -858,7 +874,10 @@ async def save_model_parameters(model_name: str, request: Request):
         
         # Save parameters.json.
         parameters_file = os.path.join(model_dir, 'parameters.json')
-        await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
+        from services.model_workshop.runtime import write_managed_json
+        from services.model_workshop.tasks import _drain_sync
+        if not await _drain_sync(lambda: write_managed_json(get_config_manager(), parameters_file, parameters)):
+            await atomic_write_json_async(parameters_file, parameters, indent=2, ensure_ascii=False)
         
         logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
         return {"success": True, "message": "参数保存成功"}
@@ -990,6 +1009,8 @@ async def update_model_config_by_id(model_id: str, request: Request):
         # symmetric with update_model_config. Resolved-file lock keys let by-name/by-ID
         # routes share one lock for the same Workshop model.
         async with _model_config_write_lock(model_json_path):
+            # Capture before the asynchronous read, not after a concurrent reinstall.
+            workshop_attempt = await _drain_sync(lambda: workshop_snapshot(get_config_manager()).record_for(model_json_path))
             current_config = await read_json_async(model_json_path)
 
             file_refs = current_config.setdefault("FileReferences", {})
@@ -999,9 +1020,11 @@ async def update_model_config_by_id(model_id: str, request: Request):
             if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
                 file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 preserves formatting.
+            await _persist_model_config(model_json_path, current_config, indent=4, workshop_attempt=workshop_attempt)  # indent=4 preserves formatting.
 
         return {"success": True, "message": "模型配置已更新"}
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"更新模型配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -1179,6 +1202,11 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # Target directory.
             target_model_dir = user_live2d_dir / model_name
+            # A missing entrypoint can be an unfinished managed publication;
+            # the legacy residue cleanup must never claim that directory.
+            from services.model_workshop.runtime import reject_managed_upload
+            from services.model_workshop.tasks import _drain_sync
+            await _drain_sync(lambda: reject_managed_upload(config_mgr, target_model_dir))
             
             # Existing target: error or overwrite; choose error here.
             if target_model_dir.exists():
@@ -1367,17 +1395,19 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # Create target subdirectory if absent.
+        # Basename only, avoiding traversal. For managed models the complete
+        # create/write operation shares the install/delete lifecycle fence.
         target_dir = pathlib.Path(model_dir) / target_subdir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Basename only, avoiding traversal.
         safe_filename = pathlib.Path(filename).name
-        
         target_file_path = target_dir / safe_filename
         try:
-            with open(target_file_path, 'xb') as f:
-                f.write(file_content)
+            from services.model_workshop.runtime import write_managed_blob
+            from services.model_workshop.tasks import _drain_sync
+            managed = await _drain_sync(lambda: write_managed_blob(get_config_manager(), target_file_path, file_content))
+            if not managed:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                with open(target_file_path, 'xb') as f:
+                    f.write(file_content)
         except FileExistsError:
             return JSONResponse(status_code=400, content={"success": False, "error": f"文件 {safe_filename} 已存在"})
         
@@ -1502,6 +1532,16 @@ def delete_model(model_name: str):
         if not os.path.exists(model_dir):
             logger.info(f"模型目录不存在，视为已删除: {model_name}")
             return {"success": True, "message": f"模型 {model_name} 已成功删除"}
+
+        # A trusted managed directory uses the same delete intent, under the
+        # installation lifecycle lock. No prefix-based claim or second uninstall API.
+        from services.model_workshop import runtime as model_workshop
+        captured = model_workshop.snapshot(config_mgr).record_for(model_dir)
+        if captured is not None:
+            try:
+                return model_workshop.remove_managed_model(config_mgr, captured)
+            except model_workshop.WorkshopError as exc:
+                return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
 
         # Recursively delete model directory.
         import shutil

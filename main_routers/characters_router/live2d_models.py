@@ -38,9 +38,12 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
-from utils.frontend_utils import find_models, find_model_directory
+from services.model_workshop.catalog import find_models, find_model_directory
 from utils.url_utils import encode_url_path
 from utils.cloudsave_runtime import MaintenanceModeError
+from services.model_workshop.paths import WorkshopError
+from services.model_workshop.runtime import require_url
+from services.model_workshop.tasks import _drain_sync
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
@@ -295,6 +298,8 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
 
     # Keep external links bound to their original locations; do not rebind them to local or Workshop directories.
     if resolved_source == "manual_external":
+        # Absolute loopback URLs still refer to protected local resources.
+        require_url(get_config_manager(), normalized_model)
         return normalized_model or resolved_model_path, resolved_source_id, resolved_source
 
     try:
@@ -311,9 +316,14 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
             resolved_model_path = _normalize_live2d_catalog_path(matched_path) or resolved_model_path
             resolved_source = _derive_live2d_asset_source(matched_path) or resolved_source
             resolved_source_id = normalized_item_id or str(matching_model.get("item_id") or "").strip()
+    except WorkshopError:
+        raise
     except Exception as exc:
         logger.debug("解析 Live2D 模型绑定时查找模型目录失败: %s", exc)
 
+    # Keep unavailable results outside the catalog compatibility fallback.
+    require_url(get_config_manager(), normalized_model)
+    require_url(get_config_manager(), resolved_model_path)
     return resolved_model_path, resolved_source_id, resolved_source
 
 
@@ -836,6 +846,9 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # Load the current character configuration.
         _config_manager = get_config_manager()
+        for model_ref in (vrm_model, mmd_model):
+            if model_ref:
+                await _drain_sync(lambda: require_url(_config_manager, str(model_ref)))
         async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 
@@ -974,9 +987,8 @@ async def update_catgirl_l2d(name: str, request: Request):
                 logger.debug(f"已保存角色 {name} 的PNGTuber配置")
             else:
                 # Update Live2D model settings and save item_id as well, if provided.
-                live2d_model_path, resolved_item_id, resolved_asset_source = _resolve_live2d_model_binding(
-                    live2d_model,
-                    item_id=str(item_id or ""),
+                live2d_model_path, resolved_item_id, resolved_asset_source = await _drain_sync(
+                    lambda: _resolve_live2d_model_binding(live2d_model, item_id=str(item_id or ""))
                 )
                 set_reserved(
                     characters['猫娘'][name],
@@ -1051,6 +1063,8 @@ async def update_catgirl_l2d(name: str, request: Request):
 
     except MaintenanceModeError:
         raise
+    except WorkshopError as exc:
+        return JSONResponse({"success": False, "error_code": str(exc)}, status_code=409)
     except Exception as e:
         logger.exception("更新角色模型设置失败")
         return JSONResponse(content={

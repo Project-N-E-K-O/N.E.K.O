@@ -70,7 +70,8 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.file_utils import atomic_write_json_async, read_json_async
-from utils.frontend_utils import find_model_directory, is_user_imported_model
+from utils.frontend_utils import is_user_imported_model
+from services.model_workshop.catalog import find_model_directory
 from utils.cloudsave_runtime import MaintenanceModeError
 from utils.character_memory import (
     asave_characters_with_recent_activation,

@@ -46,6 +46,10 @@ from .workshop_router import get_subscribed_workshop_items
 from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
 
+from services.model_workshop.runtime import filter_catalog as _filter_workshop_models
+from services.model_workshop.tasks import _drain_sync
+from services.model_workshop.paths import WorkshopError
+
 router = APIRouter(prefix="/api/model/mmd", tags=["mmd"])
 logger = get_module_logger(__name__, "Main")
 
@@ -498,6 +502,10 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
                     "success": False, "error": f"目录名 '{extract_dir_name}' 是保留名称，不能用作模型目录"
                 })
 
+            # Managed residue belongs to its recorded transaction, even when
+            # its entrypoint is missing. The legacy upload cannot reclaim it.
+            from services.model_workshop.runtime import reject_managed_upload
+            await _drain_sync(lambda: reject_managed_upload(config_mgr, target_dir))
             if target_dir.exists():
                 # Check valid model files; absent means leftover empty directory, automatically clean up.
                 has_valid_model = any(
@@ -680,7 +688,7 @@ async def get_mmd_models():
         except Exception as e:
             logger.error(f"获取创意工坊MMD模型时出错: {e}")
 
-        return JSONResponse(content={"success": True, "models": models})
+        return JSONResponse(content={"success": True, "models": await _drain_sync(lambda: _filter_workshop_models(config_mgr, models))})
     except Exception as e:
         logger.error(f"获取 MMD 模型列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -795,6 +803,9 @@ async def update_emotion_mapping(request: Request):
             return JSONResponse(status_code=400, content={"success": False, "error": "映射配置格式无效"})
 
         config_mgr = get_config_manager()
+        # Body-based identifiers must pass the same availability gate as reads.
+        from services.model_workshop.runtime import require_identifier
+        await _drain_sync(lambda: require_identifier(config_mgr, 'mmd', model_name))
         mmd_dir = _ensure_mmd_directory(config_mgr)
         if not mmd_dir:
             return JSONResponse(status_code=500, content={"success": False, "error": "MMD 目录创建失败"})
@@ -811,10 +822,14 @@ async def update_emotion_mapping(request: Request):
         if not config_file.resolve().is_relative_to(config_path.resolve()):
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的模型名称"})
 
-        await atomic_write_json_async(config_file, mapping)
+        from services.model_workshop.runtime import write_managed_json
+        if not await _drain_sync(lambda: write_managed_json(config_mgr, config_file, mapping, kind='mmd', name=model_name)):
+            await atomic_write_json_async(config_file, mapping)
 
         logger.info(f"更新 MMD 情感映射: {safe_name}")
         return JSONResponse(content={"success": True, "message": "情感映射已更新"})
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"更新 MMD 情感映射失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -824,6 +839,27 @@ def _count_and_rmtree(path: Path) -> int:
     count = sum(1 for f in path.rglob('*') if f.is_file())
     shutil.rmtree(path)
     return count
+
+
+async def _delete_managed_mmd(config_mgr, path, model_name):
+    """Delete a trusted model and its existing mapping under one lifecycle fence."""
+    from services.model_workshop import runtime
+    captured = await _drain_sync(lambda: runtime.snapshot(config_mgr).record_for(path))
+    if captured is None:
+        return None
+    def auxiliary():
+        config_dir = config_mgr.mmd_dir / 'emotion_config'
+        # A user may have added another PMX within the owned package directory;
+        # clean both the requested mapping and the canonical model's mapping.
+        names = {model_name, Path(captured['local_entrypoint']).stem}
+        for name in names:
+            config_file = config_dir / (name.replace('..', '_') + '.json')
+            if config_file.exists():
+                if not config_file.resolve().is_relative_to(config_dir.resolve()):
+                    return False
+                config_file.unlink()
+        return True
+    return await _drain_sync(lambda: runtime.remove_managed_model(config_mgr, captured, auxiliary))
 
 
 @router.delete('/model')
@@ -866,6 +902,9 @@ async def delete_mmd_model(request: Request):
                         "success": False, "error": "该目录包含模型文件，请通过模型 URL 删除"
                     })
                 # Incomplete directory without model files: permit deletion.
+                managed = await _delete_managed_mmd(config_mgr, candidate, candidate.name)
+                if managed is not None:
+                    return JSONResponse(content=managed)
                 deleted_files = await asyncio.to_thread(_count_and_rmtree, candidate)
                 logger.info(f"删除残缺 MMD 模型目录: {candidate}")
                 return JSONResponse(content={
@@ -894,6 +933,9 @@ async def delete_mmd_model(request: Request):
                 return JSONResponse(status_code=400, content={"success": False, "error": "路径越界"})
             if top_subdir.name.lower() in RESERVED_DIRS:
                 return JSONResponse(status_code=400, content={"success": False, "error": "不能删除保留目录"})
+            managed = await _delete_managed_mmd(config_mgr, safe_path, model_name)
+            if managed is not None:
+                return JSONResponse(content=managed)
             deleted_files = await asyncio.to_thread(_count_and_rmtree, top_subdir)
             logger.info(f"删除 MMD 模型目录: {top_subdir} ({deleted_files} 个文件)")
         else:
@@ -916,6 +958,8 @@ async def delete_mmd_model(request: Request):
             "message": f"已删除模型 {model_name}",
             "deleted_files": deleted_files
         })
+    except WorkshopError as exc:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
     except Exception as e:
         logger.error(f"删除 MMD 模型失败: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
