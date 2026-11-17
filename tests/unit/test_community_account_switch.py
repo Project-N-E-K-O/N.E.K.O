@@ -1300,9 +1300,9 @@ async def _conflict_then_flaky_relogin(tmp_path, monkeypatch):
     account logs in again and its bind only reaches cloud_unreachable."""
     hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
     _pending_login(tmp_path, monkeypatch)
-    monkeypatch.setattr(hold, "_write", lambda *_args: False)
 
     async def refused(_social_base, _access_token, *, rebind=False):
+        monkeypatch.setattr(hold, "_write", lambda *_args: False)
         return dict(CONFLICT)
 
     monkeypatch.setattr(O, "_oauth_guest_bind", refused)
@@ -1622,3 +1622,114 @@ def test_session_account_on_an_unreadable_record_writes_or_latches_the_hold(tmp_
     hold._set_unrecorded_hold(False)
     assert hold.record_session_account(tmp_path, USER_ID)
     assert hold.device_held(tmp_path, None)
+
+
+async def test_unsaved_oauth_login_bound_elsewhere_holds_through_logout_and_restart(tmp_path, monkeypatch):
+    """The cloud now binds the device to the new account, whose login cannot be
+    saved: the owner on file is out of date, so its old login must not upload."""
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    _pending_login(tmp_path, monkeypatch)
+
+    async def bound(_social_base, _access_token, *, rebind=False):
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bound)
+    monkeypatch.setattr(O, "_persist_oauth_credentials", lambda *_args, **_kwargs: False)
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 400
+    assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
+    assert C._clear_auth()
+    assert await _uploads_held_after_restart(tmp_path, monkeypatch)
+    assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
+
+
+async def test_unsaved_refused_login_with_every_write_failing_holds_after_restart(tmp_path, monkeypatch):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    _pending_login(tmp_path, monkeypatch)
+    _refuse_then_break_writes(monkeypatch)
+    monkeypatch.setattr(O, "_persist_oauth_credentials", lambda *_args, **_kwargs: False)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+    hold._set_unrecorded_hold(False)  # restart
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=dict(BOUND))
+
+
+async def test_login_skips_the_bind_when_its_hold_cannot_be_written(tmp_path, monkeypatch):
+    """The login still completes; only the cloud is not asked."""
+    _pending_login(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("the cloud must not be asked without a hold on disk")
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", unexpected)
+    response = await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert response.status_code == 200
+    saved_auth = json.loads((tmp_path / "community_auth.json").read_text(encoding="utf-8"))
+    assert saved_auth["access_token"] == "account-b-access"
+    assert saved_auth["bind"]["error"] == "local_bind_state_not_saved"
+
+
+async def test_recorded_login_answer_releases_its_check(tmp_path, monkeypatch):
+    _pending_login(tmp_path, monkeypatch)
+
+    async def bound(_social_base, _access_token, *, rebind=False):
+        assert hold.device_held(tmp_path, None)  # held while the cloud is asked
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bound)
+    assert (await O._handle_oauth_callback("auth-code", "expected-state")).status_code == 200
+
+    assert "checking" not in json.loads((tmp_path / hold.HOLD_FILENAME).read_text(encoding="utf-8"))
+    assert not hold.device_held(tmp_path, USER_ID)
+
+
+def test_unfinished_check_holds_until_a_recorded_bind(tmp_path):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    assert hold.begin_bind_check(tmp_path) is True
+    # The process stops before the answer is recorded.
+    assert hold.device_held(tmp_path, OWNER_A)
+    assert hold.begin_bind_check(tmp_path) is False  # a later check must not end it
+    assert hold.device_held(tmp_path, OWNER_A)
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    assert not hold.device_held(tmp_path, OWNER_A)
+
+
+@pytest.mark.parametrize("owner,bind,held", [
+    (OWNER_A, BOUND, True),  # the cloud moved the device to USER_ID
+    (USER_ID, BOUND, False),
+    (USER_ID, CONFLICT, True),  # the cloud refused the owner on file
+    (OWNER_A, CONFLICT, False),
+    (OWNER_A, {"bound": False, "error": "cloud_unreachable"}, False),
+])
+def test_unsaved_bind_holds_only_when_it_outdates_the_record(tmp_path, owner, bind, held):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), owner)
+    assert hold.record_unsaved_bind(tmp_path, dict(bind), USER_ID)
+    assert hold.device_held(tmp_path, owner, saved_bind=dict(BOUND)) is held
+
+
+def test_owner_is_seeded_while_a_check_is_on_disk(tmp_path):
+    assert hold.begin_bind_check(tmp_path) is True
+    hold.remember_owner(tmp_path, USER_ID)
+    assert hold.end_bind_check(tmp_path)
+    assert not hold.device_held(tmp_path, USER_ID)
+    assert hold.device_held(tmp_path, OWNER_A)
+
+
+def test_latched_hold_survives_a_read_error_at_logout_and_restart(oauth_app, monkeypatch):  # noqa: F811
+    """Write fails, then logout cannot read the record, then reads recover."""
+    _client, auth, social, _pending = oauth_app
+    hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
+    _save_login(auth, social, {"bound": False, "error": None, "skipped": "native_session_sync"})
+    hold._set_unrecorded_hold(True)  # B's use of A's device could not be written
+    with monkeypatch.context() as m:
+        m.setattr(hold, "_read", lambda *_args: hold._UNREADABLE)
+        m.setattr(hold, "_write", lambda *_args: False)
+        C._clear_auth()
+    assert json.loads(auth.read_text(encoding="utf-8"))[hold.DEVICE_HOLD_PENDING] is True
+    hold._set_unrecorded_hold(False)  # restart
+    monkeypatch.setattr(hold, "default_directory", lambda: auth.parent)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", lambda: None)
+    assert sync_worker._device_bound_to_other_account()

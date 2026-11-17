@@ -1349,8 +1349,15 @@ async def _handle_oauth_callback(
         # A device bound to another account must not block switching accounts.
         # The login still completes; only the one-time guest migration is skipped
         # and the device keeps its owner until the user explicitly rebinds it.
-        bind = await _oauth_guest_bind(social_base, access_token)
-        refused = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
+        # Hold uploads on disk first, so the cloud's answer cannot be lost to
+        # a restart before it is recorded. Without that hold, do not ask: the
+        # login still completes and the guest migration waits for a later bind.
+        check = await asyncio.to_thread(community_device_hold.begin_bind_check, C._credential_dir())
+        if check is None:
+            bind = {"bound": False, "error": "local_bind_state_not_saved"}
+        else:
+            bind = await _oauth_guest_bind(social_base, access_token)
+        cloud_bind = bind
 
         auth_payload = {
             "schema_version": C._SOCIAL_SESSION_SCHEMA_VERSION,
@@ -1387,13 +1394,13 @@ async def _handle_oauth_callback(
                     if credentials_saved:
                         # Inside the login lock: a newer login cannot be saved
                         # between this login's credentials and its device record.
-                        await asyncio.to_thread(C._record_device_hold, bind, local_user_id)
-            if not credentials_saved and refused:
-                # The login left in place may be this same account, still
-                # recorded as the owner the cloud just refused.
-                await asyncio.to_thread(
-                    community_device_hold.record_unsaved_refusal, C._credential_dir(), local_user_id,
-                )
+                        await asyncio.to_thread(
+                            C._settle_bind_check, check, cloud_bind, local_user_id, bind,
+                        )
+            if not credentials_saved:
+                # The login left in place keeps uploading; hold if this answer
+                # shows the device record is out of date.
+                await asyncio.to_thread(C._settle_bind_check, check, cloud_bind, local_user_id, None)
             await asyncio.to_thread(_unlink_pending, expected_state)
     if not credentials_saved:
         return _callback_html(

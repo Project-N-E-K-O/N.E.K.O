@@ -16,6 +16,8 @@ record keeps two facts the cloud has confirmed:
 
 * ``owner``: the account a successful bind last confirmed as the owner.
 * ``conflict``: a bind was refused because another account owns the device.
+* ``checking``: a login asked the cloud about the device and its answer has
+  not been recorded yet.
 
 Only a successful bind updates ``owner`` and clears ``conflict``.
 """
@@ -141,7 +143,7 @@ def device_held(
     record = _read(directory)
     if record is _UNREADABLE:
         return True
-    if isinstance(record, dict) and record.get("conflict"):
+    if isinstance(record, dict) and (record.get("conflict") or record.get("checking")):
         return True
     owner = _account(record.get("owner")) if isinstance(record, dict) else None
     if signed_in == UNREADABLE_ACCOUNT:
@@ -237,6 +239,40 @@ def begin_ownership_check(directory: Path | str | None) -> bool:
         return _write(directory, {**record, "conflict": True})
 
 
+def begin_bind_check(directory: Path | str | None) -> bool | None:
+    """Hold uploads on disk before a login asks the cloud to bind the device.
+
+    The answer can show that the cloud owner is not the one on file. If every
+    write after it failed, nothing on disk would remember it once the process
+    restarts. Unlike ``begin_ownership_check`` this does not mark a conflict,
+    so a login whose answer is recorded leaves no hold behind for the owner.
+
+    Returns None when the hold cannot be written; the caller must not bind
+    then. Returns False when an earlier check that never finished (the process
+    stopped before its answer was recorded) already holds; the caller must not
+    end that one. Otherwise True: pass it to ``end_bind_check``.
+    """
+    with record_lock:
+        record = _read(directory)
+        if record is _UNREADABLE:
+            return None
+        record = record if isinstance(record, dict) else {}
+        if record.get("checking"):
+            return False
+        return True if _write(directory, {**record, "checking": True}) else None
+
+
+def end_bind_check(directory: Path | str | None) -> bool:
+    """Release the hold of a check whose answer is now recorded."""
+    with record_lock:
+        record = _read(directory)
+        if not isinstance(record, dict):
+            return record is None
+        if not record.get("checking"):
+            return True
+        return _write(directory, {key: value for key, value in record.items() if key != "checking"})
+
+
 def hold_latched() -> bool:
     """Whether a hold that had to be recorded is held only in this process."""
     return _unrecorded_hold
@@ -283,35 +319,47 @@ def record_session_account(directory: Path | str | None, account: str | None) ->
         return _write_hold(directory, {**record, "conflict": True})
 
 
-def record_unsaved_refusal(directory: Path | str | None, account: str | None) -> bool:
-    """Record a refused bind made by a login whose credentials were not saved.
+def record_unsaved_bind(directory: Path | str | None, bind: Any, account: str | None) -> bool:
+    """Record a bind answer for a login whose credentials were not saved.
 
     That login never used this device, so unlike ``record_bind_outcome`` it
-    does not pause a different confirmed owner's uploads. It holds only when
-    the record names ``account`` itself as the owner, names nobody, or cannot
-    be read: the login left in place may be that account, and its uploads
-    would reach whoever the cloud lists as the owner.
+    does not pause the confirmed owner's uploads, and a successful bind does
+    not make ``account`` the owner. It holds only when the answer shows the
+    record is out of date, since the login left in place keeps uploading by
+    it: the cloud refused ``account`` while the record names it (or nobody),
+    or bound the device to ``account`` while the record names someone else.
+    An unreadable record holds either way. Other answers change nothing.
     """
     with record_lock:
+        if not isinstance(bind, dict):
+            return True
+        refused = bind.get("error") == OWNERSHIP_CONFLICT
+        if not refused and bind.get("bound") is not True:
+            return True
         account = _account(account)
         record = _read(directory)
-        record = record if isinstance(record, dict) else {}
+        readable = isinstance(record, dict)
+        record = record if readable else {}
         owner = _account(record.get("owner"))
-        if owner is not None and owner != account:
+        if readable and (owner not in (None, account) if refused else owner == account):
             return True
-        return _write_hold(directory, {**record, "owner": None, "conflict": True})
+        return _write_hold(directory, {**record, "conflict": True})
 
 
 def remember_owner(directory: Path | str | None, account: str | None) -> None:
     """Adopt a confirmed owner for installs that bound before this record existed.
 
-    Only fills an empty record; it never overrides a recorded owner or conflict.
+    Only fills a record without an owner or conflict; it never overrides them.
     """
     with record_lock:
         account = _account(account)
-        if not account or _read(directory) is not None:
+        record = _read(directory)
+        if not account or record is _UNREADABLE:
             return
-        _write(directory, {"owner": account, "conflict": False})
+        record = record if isinstance(record, dict) else {}
+        if record.get("owner") or record.get("conflict"):
+            return
+        _write(directory, {**record, "owner": account, "conflict": False})
 
 
 __all__ = [
@@ -320,7 +368,9 @@ __all__ = [
     "OWNERSHIP_CONFLICT",
     "LEGACY_ACCOUNT",
     "UNKNOWN_BIND",
+    "begin_bind_check",
     "begin_ownership_check",
+    "end_bind_check",
     "hold_latched",
     "persist_latched_hold",
     "record_lock",
@@ -331,6 +381,6 @@ __all__ = [
     "hold_path",
     "record_bind_outcome",
     "record_session_account",
-    "record_unsaved_refusal",
+    "record_unsaved_bind",
     "remember_owner",
 ]

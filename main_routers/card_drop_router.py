@@ -1007,6 +1007,26 @@ def _record_device_hold(bind: dict, local_user_id: str) -> bool:
     return recorded
 
 
+def _settle_bind_check(
+    check: bool | None, cloud_bind: dict, local_user_id: str, saved_bind: dict | None,
+) -> bool:
+    """Record a login's bind answer, then release the hold its check put on disk.
+
+    ``saved_bind`` is the outcome the saved login carries, or None when the
+    login was not saved. While the answer is not on disk the check keeps
+    holding, so a restart cannot forget it.
+    """
+    directory = _credential_dir()
+    with community_device_hold.record_lock:
+        if saved_bind is not None:
+            recorded = _record_device_hold(saved_bind, local_user_id)
+        else:
+            recorded = community_device_hold.record_unsaved_bind(directory, cloud_bind, local_user_id)
+        if check and recorded:
+            recorded = community_device_hold.end_bind_check(directory)
+    return recorded
+
+
 def _save_social_session_unlocked(
     path: Path,
     base: str,
@@ -1413,10 +1433,16 @@ async def _store_session(
     bind: dict = {"bound": False, "error": None}
     await asyncio.to_thread(_remember_confirmed_owner)
     cid = await asyncio.to_thread(_get_client_id) if bind_client else None
+    check = None
+    if bind_client and cid:
+        check = await asyncio.to_thread(community_device_hold.begin_bind_check, _credential_dir())
     if not bind_client:
         bind["skipped"] = "native_session_sync"
     elif not cid:
         bind["error"] = "client_not_registered"
+    elif check is None:
+        # The answer could not be kept across a restart; do not ask.
+        bind["error"] = "local_bind_state_not_saved"
     elif access:
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
@@ -1439,7 +1465,7 @@ async def _store_session(
 
     from main_routers import community_oauth
 
-    refused = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
+    cloud_bind = bind
     bind = _carry_unwritten_hold(bind)
     auth_payload = {
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
@@ -1460,14 +1486,12 @@ async def _store_session(
         local_user_id=local_user_id,
         auth_source=normalized_source,
     )
-    if published:
-        # A login that saved nothing never used this device; it must not
-        # leave a hold behind that pauses the owner's uploads.
-        await asyncio.to_thread(_record_device_hold, bind, local_user_id)
-    elif refused:
-        # The login left in place may be this same account, still recorded
-        # as the owner the cloud just refused.
-        await asyncio.to_thread(community_device_hold.record_unsaved_refusal, _credential_dir(), local_user_id)
+    # A login that saved nothing never used this device; it must not leave a
+    # hold behind that pauses the owner's uploads, unless its answer shows the
+    # login left in place would upload to another account.
+    await asyncio.to_thread(
+        _settle_bind_check, check, cloud_bind, local_user_id, bind if published else None,
+    )
     return bind
 
 
@@ -2037,17 +2061,25 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
                 return JSONResponse(
                     {"detail": "desktop_login_required"}, status_code=409, headers=cors
                 )
-            bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
-            if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-                # Persist repaired binds and terminal conflicts alike, or
-                # /auth-status keeps reporting the stale transient failure and
-                # every later handoff repeats the bind round trip.
-                persisted = await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
+            # Without a hold on disk the answer could be lost to a restart;
+            # skip the retry then, the bind stays as it was.
+            check = await asyncio.to_thread(community_device_hold.begin_bind_check, _credential_dir())
+            if check is not None:
+                bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
+                conflict = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
+                persisted = False
+                if bind.get("bound") or conflict:
+                    # Persist repaired binds and terminal conflicts alike, or
+                    # /auth-status keeps reporting the stale transient failure and
+                    # every later handoff repeats the bind round trip.
+                    persisted = await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
                 # A success only releases the hold when it was recorded for the
                 # still-current login; a stale account's success must not clear a
                 # newer conflict. Recording a conflict is always safe.
-                if persisted or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
-                    await asyncio.to_thread(_record_device_hold, bind, local_user_id)
+                await asyncio.to_thread(
+                    _settle_bind_check, check, bind, local_user_id,
+                    bind if persisted or conflict else None,
+                )
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another
