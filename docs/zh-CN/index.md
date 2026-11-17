@@ -7,7 +7,7 @@ description: Project N.E.K.O. 开源 AI 伙伴的开发者文档，涵盖安装�
 hero:
   name: Project N.E.K.O.
   text: 开发者文档
-  tagline: 主动式多模态 AI 伙伴，提供可选的屏幕上下文交互、持久记忆、智能体通道与具身 Avatar。
+  tagline: 主动式多模态 AI 伙伴，提供可选的屏幕上下文交互、持久记忆、智能体任务与具身 Avatar。
   image:
     src: /logo.jpg
     alt: N.E.K.O. Logo
@@ -48,7 +48,7 @@ features:
     linkText: 工作原理
   - icon: 🤖
     title: 智能体框架
-    details: 通过已启用且就绪的 Computer Use、Browser Use、用户插件与 OpenClaw 通道执行可选后台任务；支持取消单个任务或结束全部活动任务。
+    details: 角色通过工具调用把要办的事交出去：一步能办完的直接调用插件入口，多步的交给使魔，使魔可以使用插件、MCP 工具、键鼠和浏览器；支持取消单个任务或结束全部活动任务。
     link: /zh-CN/architecture/agent-system
     linkText: 探索智能体
   - icon: 🔌

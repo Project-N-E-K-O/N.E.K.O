@@ -68,6 +68,42 @@ test('disable clears pre-hydration and tutorial signals without replay on enabli
   await Promise.resolve();
   assert.equal(h.prompts.length, 0);
 });
+for (const context of ['work', 'play']) {
+  test(`tutorial cannot revive an opted-out queued ${context} prompt`, async () => {
+    const h = boot({deferred: true});
+    const visionChatEnabled = context === 'work';
+    h.window.appState.proactiveVisionChatEnabled = visionChatEnabled;
+    const pending = h.window.appContextPrompt.handle(context);
+    assert.equal(h.prompts.length, 1);
+    h.window.appState.activityContextPromptEnabled = false;
+    h.window.appContextPrompt.syncSetting();
+    h.events.get('neko:home-tutorial-features-suppressed')({detail: {active: true}});
+    h.window.appState.activityContextPromptEnabled = true;
+    h.prompts[0].show();
+    await pending;
+    h.events.get('neko:home-tutorial-features-suppressed')({detail: {active: false}});
+    await tick();
+    assert.equal(h.prompts.length, 1);
+    assert.equal(h.saves, 0);
+    assert.equal(h.window.appState.proactiveVisionChatEnabled, visionChatEnabled);
+  });
+}
+test('tutorial still replays an enabled queued prompt after suppression ends', async () => {
+  const h = boot({deferred: true});
+  const pending = h.window.appContextPrompt.handle('work');
+  h.events.get('neko:home-tutorial-features-suppressed')({detail: {active: true}});
+  h.prompts[0].show();
+  await pending;
+  assert.equal(h.prompts.length, 1);
+  h.events.get('neko:home-tutorial-features-suppressed')({detail: {active: false}});
+  await tick();
+  assert.equal(h.prompts.length, 2);
+  h.prompts[1].show();
+  h.prompts[1].resolve('accept');
+  await tick();
+  assert.equal(h.saves, 1);
+  assert.equal(h.window.appState.proactiveVisionChatEnabled, false);
+});
 for (const deferred of [false, true]) {
   test(`disable dismisses ${deferred ? 'queued' : 'visible'} prompt`, async () => {
     const h = boot({deferred});
@@ -220,7 +256,7 @@ test('MMD popup refresh keeps the model-specific cursor-follow choice', () => {
     activityContextPromptEnabled: true,
     addEventListener(name, fn) {events.set(name, fn);},
   };
-  const document = {querySelector(selector) {
+  const document = {getElementById() {return {};}, querySelector(selector) {
     return selector === '#mmd-activity-context-prompt' ? prompt : null;
   }};
   const sandbox = {window, document, requestAnimationFrame(fn) {fn();}, MMDManager: class {}};

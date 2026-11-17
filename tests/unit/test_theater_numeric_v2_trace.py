@@ -276,22 +276,25 @@ async def test_workflow_traces_retries_reviews_history_and_atomic_commit(tmp_pat
             result = await workflow.execute_numeric_v2_turn(**kwargs)
             stored = result.stored
             assert await runtime.restore_session("same") == stored
-            assert result.performance["performance"] == "最终正文"
+            assert result.performance["performance"] != "最终正文"
+            assert result.diagnostics["safe_delivery_fallback"] is True
+            assert result.diagnostics["model_calls"] == 4
             assert result.performance["suggested_inputs"] == []
         outcomes.append(stored)
         call_counts.append(counts)
     assert outcomes[0] == outcomes[1]
-    assert call_counts == [{"actor": 3, "evaluator": 1, "review": 3}] * 2
+    assert call_counts == [{"actor": 2, "evaluator": 1, "review": 1}] * 2
     rows, = read_traces(tmp_path / "traces")
     assert rows[0]["data"]["state_before"]["revision"] == 0
     assert rows[0]["data"]["state_before"]["session_id"] == "same"
     assert rows[0]["data"]["state_before"]["story_package_hash"] == current.session.story_package_hash
     events = [r["event"] for r in rows]
     assert events.count("actor.rejected") == 1
-    assert events.count("actor.candidate") == 2 and events.count("review.result") == 3
+    assert events.count("actor.candidate") == 1 and events.count("review.result") == 0
+    assert events.count("model.request") == 4
     evidence = next(r["data"]["result"] for r in rows if r["event"] == "history.result")
     assert evidence["status"] == "found" and evidence["evidence"]
-    assert "suggestions.filtered" in events and "turn.finalized" in events
+    assert ("turn.safe_delivery" in events) is not commit_fails
     assert ("turn.committed" in events) is not commit_fails
     assert rows[-1]["data"]["status"] == ("error" if commit_fails else "returned")
     if not commit_fails:

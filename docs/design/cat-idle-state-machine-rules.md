@@ -137,6 +137,8 @@ CAT2/CAT3 猫本体右键不进入上述 CAT1 随机池，而是直接请求原�
 
 `cat1_idle_random` 与六个五维评分动作争夺同一个 Cat Mind 动作槽，但不进入五维评分排序。每个没有用户触发合并的 CAT1 `cat_elapsed` tick，在全局硬门、5 分钟硬 cooldown 和六份资源能力都通过后先掷一次 `20%`；命中则本轮由该动作占用，未命中才继续原有评分候选。统一 runner 再在 `happy / touch / mouse / laugh / love1 / wagging` 六项间按等宽区间各 `1/6` 抽取一次并锁定到终态。硬 cooldown 只从严格 `started` 开始，期间不做 provider 预检、不消耗概率；直接 API 和右键验收不写该 cooldown。该动作的 done/cancelled/interrupted 只结算生命周期，不修改五维、不生成短时 intent、不写 return episode。
 
+CAT2/CAT3 复用同一随机入口时钟、硬门与唯一动作槽，分别以 `cat2_idle_random`、`cat3_idle_random` 作为形态限定的组动作；并不复用 CAT1 的成员池。每个合格自主 tick 也以 `20%` 争夺动作槽；CAT2 硬 cooldown 为 `1m`，CAT3 为 `5m`，都只从严格 `started` 起算。CAT2 组抽 `turn_1 80% / back1_1 20%`，CAT3 组抽 `turn_2 80% / back1_1 10% / back1_2 10%`，只抽一次并保持到终态。随机未命中时，原 `cat2_nap_feedback` 和 `cat3_sleep_feedback` 继续按各自五维评分、软 cooldown 与音频门禁运行；视觉组不要求音频开启，也不领取睡眠反馈的五维或 return episode。turn 完成恢复原形态，back 完成并成功调用既有视觉降级入口才回 CAT1；取消和中断只关闭生命周期。
+
 `cat1_inactive_sad` 是独立的确定性 CAT1 时序动作，不进入五维评分、随机库或 cooldown。自动离开进入 CAT1 时，它沿用全局标准 inactivity 的原始 `lastInteractionAt`，所以通常在全局无交互第 13 分钟获得资格，而不是从第 10 分钟 CAT1 出现后再等 13 分钟；它先于 `cat1_idle_random` 检查并占用同一动作槽。只有 runner 严格确认 `started` 才把本轮 inactivity episode 标为已触发；provider 拒绝、仅 accepted 或启动失败均在下一自主 tick 重试。CAT1 存续期间的标准全局 pointer/key/touch/wheel、消息/语音活动，以及既有猫交互 observation，只重置该动作的计时锚点和已触发标记，不改视觉 tier 的 15/18 分钟时钟；再次持续 13 分钟且届时仍为 CAT1 才可再次触发。done/cancelled/interrupted 不改五维、短时 intent 或 return episode。
 
 ### 3.4 控制与边界 observation
@@ -192,7 +194,7 @@ journey 到达聊天球后选择的局部 `25%` 玩球和独立伸懒腰都不�
 
 ### 4.2 统一评分层
 
-六个五维评分动作全部使用同一套最终分结构，不设置气泡硬间隔、不按连续次数禁用动作，也不到时间强制指定动作；`cat1_idle_random` 使用上一节单独定义的概率与硬 cooldown，`cat1_inactive_sad` 使用确定性 inactivity 门槛，两者都不进入本节分数公式。
+六个五维评分动作全部使用同一套最终分结构，不设置气泡硬间隔、不按连续次数禁用动作，也不到时间强制指定动作；三个形态各自的 `idle_random` 使用上一节单独定义的概率与硬 cooldown，`cat1_inactive_sad` 使用确定性 inactivity 门槛，它们都不进入本节分数公式。
 
 曲线形态采用“短时激活、有界饱和、同动作习惯化后恢复”的统一思路：普通互动通过五维同时提高多个合法候选，避免事件直接指定动作；真正 started 后只建立对应动作的 cooldown 排序位，让其他已达到资格的动作优先接替，而不降低该动作的资格分或造成全局沉默。具体数值以本项目的真实 runner、30 秒 tick、provider、动作终态和场景 harness 校准为准。
 
@@ -293,7 +295,7 @@ final_score = threshold + eligibility_score
 | `cat2_nap_feedback` | 54 | 600 秒 | 1 | 0.9282 | 0.7321 | 0.4211 | 0 |
 | `cat3_sleep_feedback` | 50 | 720 秒 | 1 | 0.9282 | 0.7321 | 0.4211 | 0 |
 
-六个评分动作的软 cooldown 与 `cat1_idle_random` 的硬 cooldown 都只在 runner `started` 后建立，同时重置共享节奏时钟。`cat1_inactive_sad` 不建立 cooldown，只在 `started` 后写本轮 inactivity episode 的一次性标记。provider reject、accepted 后启动失败都不写 cooldown、一次性标记，也不重置节奏。
+六个评分动作的软 cooldown 与三个形态视觉随机组的硬 cooldown 都只在 runner `started` 后建立，同时重置共享节奏时钟。`cat1_inactive_sad` 不建立 cooldown，只在 `started` 后写本轮 inactivity episode 的一次性标记。provider reject、accepted 后启动失败都不写 cooldown、一次性标记，也不重置节奏。
 
 阈值是各动作基础公式的校准基线，不是按交互档位分支。social/eat 的基础输出区间低于移动/玩球，而且它们是在没有移动/玩球 provider 时仍可执行的两个 CAT1 动作；`36 / 40` 让正常和大量交互在能力受限时仍能提前得到回应。动作真实 started 后只建立自己的 cooldown 排序位，对应意图同时被消费；需求与节奏分不被改写。
 
@@ -374,7 +376,7 @@ queued decision
 3. accepted 不等于 started；音频播放失败时无 cooldown，意图仍保留；只有真实 started 同时建立 cooldown、重置节奏并消费对应 Cat Mind 动作的意图。未确认 request 的 `5s` 租约、accepted 未 started 的 `12s` 租约到期后只释放调度，不伪造结果。
 4. done-before-started 记录协议失败并释放 request，但不产生 cooldown、五维完成反馈、episode 或 started 观察标记。
 5. drag end/cancel、walk done/cancel、compact top-edge done、small move done/cancel 的物理负荷只按非空终态 `activityId` 结算一次；取消只结算已发生的位移，不领取成功到达或动作完成反馈；drag/return/tier interruption 元数据不重复修改五维。
-6. 六个五维评分动作使用同一套 `eligibility score / cooldown sort rank` 结构；cooldown 不修改实际分数或出现资格，只对已达到资格的候选排序。只有一个合法评分候选时，新鲜软 cooldown 也不得阻止它执行。`cat1_idle_random` 是明确例外：只在 CAT1 30 秒自主 tick 以 `20%` 争夺动作槽，并使用 5 分钟硬 cooldown。没有证据的动作 intent 为 0，CAT2/CAT3 只开放对应动作。
+6. 六个五维评分动作使用同一套 `eligibility score / cooldown sort rank` 结构；cooldown 不修改实际分数或出现资格，只对已达到资格的候选排序。只有一个合法评分候选时，新鲜软 cooldown 也不得阻止它执行。三个形态的视觉随机组是明确例外：仅在各自形态的 30 秒自主 tick 以 `20%` 争夺动作槽，CAT1/CAT3 使用 5 分钟、CAT2 使用 1 分钟硬 cooldown。没有证据的动作 intent 为 0，CAT2/CAT3 只开放本形态的随机组和原睡眠反馈。
 7. 毛线拖拽 active/settling 时保持 quiet；玩毛线仍要求 settled near-chat。小移动在最小化聊天球 near-chat 时移动猫与球，在聊天窗已展开或 compact surface 可用时沿用既有 solo 模式只移动猫；两者都不可用时 provider hard reject。强毛线意图不能主动 walk-to-chat 或越过 provider；provider-ready 的 walk/stretch 只可唤醒被保留的意图，不得自己成为 selector 候选。
 8. active action 期间的大量用户触发必须去重合并，并在终态恢复后只排入一次异步 reevaluation；不得同步连播，也不得把这段交互全部丢失。
 9. journey 局部玩球 done 只结算 play 五维并消费毛线意图；不写 cooldown、严格 result、started 观察标记或 episode。cancelled 不领取完成反馈。

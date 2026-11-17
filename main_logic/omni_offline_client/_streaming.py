@@ -13,7 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from typing import Sequence
+
+from utils.image_history import replace_history_text
 
 from main_logic.agent_event_bus import conversation_reply_observation
 from main_logic.proactive_delivery import (
@@ -2359,7 +2362,9 @@ class _StreamingMixin:
                     _history, history_replacement_index, user_message,
                 )
                 if _replace_at >= 0:
-                    _history[_replace_at] = HumanMessage(content=history_replacement_text)
+                    _history[_replace_at] = replace(user_message, content=replace_history_text(
+                        user_message.content, _user_text_with_prefix, history_replacement_text,
+                    ))
                     # This turn's resident knowledge blocks follow the replacement message.
                     self._rebind_resident_anchor(user_message, _history[_replace_at])
 

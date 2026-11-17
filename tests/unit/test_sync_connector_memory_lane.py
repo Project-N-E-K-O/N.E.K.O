@@ -2,7 +2,7 @@
 """The sync connector never waits for the memory server (#3601).
 
 Memory writes run on one ordered lane: a hot-reset /renew (whose summary may take minutes)
-must not hold up the loop that forwards the live conversation and dispatches analyzer
+must not hold up the loop that forwards the live conversation and dispatches turn-check
 requests, and must still reach the memory server before the next turn's /cache.
 """
 from __future__ import annotations
@@ -69,16 +69,16 @@ def connector(monkeypatch):
     started = []
 
     def start(memory, *, status_callback=None):
-        analyzer = AsyncMock(return_value=True)
+        turn_check = AsyncMock(return_value=True)
         monkeypatch.setattr(cross_server, "_post_memory_server", memory)
-        monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", analyzer)
+        monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", turn_check)
         queue = asyncio.Queue()
         task = asyncio.create_task(cross_server.run_sync_connector(
             queue, "Lan", config={"monitor": False, "bullet": False},
             status_callback=status_callback,
         ))
         started.append(task)
-        return queue, analyzer
+        return queue, turn_check
 
     yield start
     for task in started:
@@ -88,7 +88,7 @@ def connector(monkeypatch):
 @pytest.mark.asyncio
 async def test_hot_reset_does_not_hold_up_the_live_conversation(connector):
     memory = _Memory(blocked={"renew"})
-    queue, analyzer = connector(memory)
+    queue, turn_check = connector(memory)
 
     for item in _turn("u1", "a1"):
         queue.put_nowait(item)
@@ -100,7 +100,7 @@ async def test_hot_reset_does_not_hold_up_the_live_conversation(connector):
     # The renew summary is still running; the next turn is processed meanwhile.
     for item in _turn("u3", "a3"):
         queue.put_nowait(item)
-    await _until(lambda: analyzer.await_count == 2)
+    await _until(lambda: turn_check.await_count == 2)
     assert memory.endpoints() == ["cache", "renew"]
 
     # Its /cache reaches the memory server only after the renew, as before.
@@ -158,7 +158,7 @@ async def test_failed_cache_is_carried_into_the_hot_reset(connector):
 async def test_session_end_barrier_follows_the_settlement_without_blocking_the_loop(connector):
     # A session end carrying a callback is the language-switch barrier, which writes via /cache.
     memory = _Memory(blocked={"cache"})
-    queue, analyzer = connector(memory)
+    queue, turn_check = connector(memory)
     order = []
     completion = asyncio.get_running_loop().create_future()
 
@@ -173,7 +173,7 @@ async def test_session_end_barrier_follows_the_settlement_without_blocking_the_l
 
     for item in _turn("u2", "a2"):
         queue.put_nowait(item)
-    await _until(lambda: analyzer.await_count == 2)
+    await _until(lambda: turn_check.await_count == 2)
     assert order == [] and not completion.done()
 
     memory.release.set()
@@ -217,7 +217,7 @@ async def test_stopping_connector_sends_queued_settlement(monkeypatch):
 
     memory = _Memory(blocked={"renew"})
     monkeypatch.setattr(cross_server, "_post_memory_server", memory)
-    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", AsyncMock(return_value=True))
+    monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", AsyncMock(return_value=True))
     queue = asyncio.Queue()
     task = asyncio.create_task(cross_server.run_sync_connector(
         queue, "Lan", config={"monitor": False, "bullet": False},

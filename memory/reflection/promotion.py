@@ -83,7 +83,10 @@ class PromotionMixin:
                 continue
             if facts is None:
                 try:
-                    facts = self._facts_by_id(self._fact_store.load_facts_full(lanlan_name))
+                    # Cold facts as stubs: a withdrawn fact still has to count as withdrawn.
+                    facts = self._facts_by_id(
+                        self._fact_store.load_facts_full(lanlan_name, include_cold_stubs=True)
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"[Reflection] {lanlan_name}: 读取事实失败，按已存的来源计数判断: {e}")
                     facts = {}
@@ -128,7 +131,9 @@ class PromotionMixin:
             if not cache:
                 try:
                     cache.append(self._facts_by_id(
-                        await self._fact_store.aload_facts_full(lanlan_name)
+                        await self._fact_store.aload_facts_full(
+                            lanlan_name, include_cold_stubs=True,
+                        )
                     ))
                 except Exception as e:  # noqa: BLE001
                     logger.debug(

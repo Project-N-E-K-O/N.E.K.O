@@ -569,3 +569,36 @@ def test_a_failed_refresh_after_401_stops_without_replaying_the_request(monkeypa
     assert refreshes == [_ACCESS_TOKEN]
     assert len(upstream.requests) == 1
     assert upstream.requests[0].headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+
+
+def test_publication_requests_forward_the_plugin_path_and_request_id(monkeypatch):
+    receipts = [{"id": 12, "status": "verifying", "release_url": "https://x"}]
+    client, upstream, _ = _install(monkeypatch, _ok(receipts))
+    response = client.get(
+        "/market/publication-requests/42",
+        params={**_BRIDGE, "request_id": "12", "extra": "1"},
+    )
+    assert response.status_code == 200
+    assert response.json() == receipts
+    forwarded = upstream.requests[0]
+    assert forwarded.method == "GET"
+    assert forwarded.url.path == "/api/v1/plugins/42/versions/publication-requests"
+    assert dict(forwarded.url.params) == {"request_id": "12"}
+    assert forwarded.headers["authorization"] == f"Bearer {_ACCESS_TOKEN}"
+
+
+@pytest.mark.parametrize("plugin_id", [0, -1, 2**31])
+def test_publication_requests_reject_an_invalid_plugin_id(monkeypatch, plugin_id):
+    client, upstream, _ = _install(monkeypatch, _ok(_EMPTY_PAGE))
+    response = client.get(f"/market/publication-requests/{plugin_id}", params=_BRIDGE)
+    assert response.status_code == 422
+    assert upstream.requests == []
+
+
+def test_publication_requests_map_the_email_gate(monkeypatch):
+    client, _, _ = _install(
+        monkeypatch, _forbidden_with_user({"id": 3, "email_verified": False})
+    )
+    response = client.get("/market/publication-requests/42", params=_BRIDGE)
+    assert response.status_code == 409
+    assert response.json()["code"] == "market_email_unverified"

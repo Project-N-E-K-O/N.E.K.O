@@ -1212,6 +1212,7 @@ async def test_authenticated_market_install_reports_usage(
     from plugin.server.routes import market_bridge as market_bridge_module
 
     reports: list[dict[str, Any]] = []
+    report_received = asyncio.Event()
     real_async_client = load_httpx().AsyncClient
 
     class _RecordingAsyncClient:
@@ -1245,6 +1246,7 @@ async def test_authenticated_market_install_reports_usage(
         ) -> httpx.Response:
             if url == "https://market.test/api/v1/me/installs":
                 reports.append({"headers": headers or {}, "json": json or {}})
+                report_received.set()
                 return httpx.Response(
                     200,
                     json={"ok": True},
@@ -1330,6 +1332,7 @@ async def test_authenticated_market_install_reports_usage(
 
     assert final_status is not None, "task did not reach terminal state"
     assert final_status["status"] == "completed", final_status
+    await asyncio.wait_for(report_received.wait(), timeout=5)
     assert len(reports) == 1
 
     report = reports[0]

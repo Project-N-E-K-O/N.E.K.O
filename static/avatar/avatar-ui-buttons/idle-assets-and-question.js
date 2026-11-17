@@ -472,10 +472,17 @@ function _isNekoCatActionResourceAvailable(actionId) {
     return _getNekoCatActionResourceCapability(actionId).available === true;
 }
 
+function _getNekoCatMindActionTier(actionId) {
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_IDLE_RANDOM) return _NEKO_IDLE_TIER_CAT2;
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_IDLE_RANDOM) return _NEKO_IDLE_TIER_CAT3;
+    return _NEKO_IDLE_TIER_CAT1;
+}
+
 function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {}) {
     const result = decision && typeof decision === 'object' ? decision : _makeNekoCatMindProviderDecision(false, 'provider_rejected');
-    const tier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
-        (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
+    const tier = _getNekoCatMindActionTier(actionId);
     const button = context.button || _findNekoCatMindVisibleButtonForTier(tier);
     const container = _getNekoIdleReturnContainerFromButton(button);
     const journey = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
@@ -542,6 +549,8 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
     if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_IDLE_RANDOM ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_IDLE_RANDOM ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_INACTIVE_SAD) {
         checks.push({ id: 'return_art_ready', passed: facts.hasArt });
     }
@@ -632,8 +641,7 @@ function _canNekoCatMindControlPlayYarn() {
 }
 function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     if (actionId && typeof actionId === 'object') { context = actionId; actionId = context.actionId; }
-    const tier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
-        (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
+    const tier = _getNekoCatMindActionTier(actionId);
     const button = context.button || _findNekoCatMindVisibleButtonForTier(tier);
     const facts = { tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button,
         returnBallVisible: _isNekoCatMindButtonContainerVisible(button), returnPending: _isAnyNekoCatMindReturnPending(),
@@ -657,6 +665,8 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_IDLE_RANDOM ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_IDLE_RANDOM ||
         actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_INACTIVE_SAD) &&
         !button.querySelector('.neko-idle-return-art')) reason = 'missing_art';
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && !facts.nearChat) reason = 'near_chat_unavailable';
@@ -717,6 +727,8 @@ function _dryRunNekoCatMindActionProvider(actionId, context = {}) {
     let decision;
     if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) decision = _dryRunNekoCatMindCat1ButtonProvider(normalizedActionId, context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1));
     else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM) decision = _dryRunNekoCatMindCat1ButtonProvider(normalizedActionId, context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1));
+    else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_IDLE_RANDOM ||
+        normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_IDLE_RANDOM) decision = _evaluateNekoCatMindActionProvider(normalizedActionId, context);
     else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_INACTIVE_SAD) decision = _dryRunNekoCatMindCat1ButtonProvider(normalizedActionId, context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1));
     else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) decision = _dryRunNekoCatMindSocialPingProvider(context);
     else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) decision = _dryRunNekoCatMindPlayYarnProvider(context);
@@ -735,7 +747,10 @@ function _acknowledgeNekoCatMindActionRequest(request, status, detail = {}) {
 }
 
 function _playNekoCatMindVisualAction(button, actionId, actionKey, defaultSource, options = {}) {
-    if (!button || !actionKey || _isNekoCatMindCat1PositionBusy(button)) return false;
+    const profile = _getNekoIdleCat1VisualActionProfile(actionKey);
+    const tier = _getNekoIdleVisualActionTier(profile);
+    if (!button || !profile || tier !== _getNekoCatMindActionTier(actionId) ||
+        (tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button))) return false;
     const startedAt = Date.now();
     const run = {
         actionId,
@@ -743,7 +758,7 @@ function _playNekoCatMindVisualAction(button, actionId, actionKey, defaultSource
         requestId: options.requestId || '',
         startedAt,
         source: options.source || defaultSource,
-        tier: _NEKO_IDLE_TIER_CAT1
+        tier
     };
     let resultReported = false;
     const accepted = _playNekoIdleCat1VisualAction(button, actionKey, {
@@ -768,13 +783,17 @@ function _playNekoCatMindVisualAction(button, actionId, actionKey, defaultSource
 }
 
 function _playNekoCatMindIdleRandomVisualAction(button, options = {}) {
-    if (!button || _isNekoCatMindCat1PositionBusy(button)) return false;
-    const actionKey = _pickNekoIdleCat1RandomVisualActionKey();
+    const tier = options.tier || _NEKO_IDLE_TIER_CAT1;
+    if (!button || (tier === _NEKO_IDLE_TIER_CAT1 && _isNekoCatMindCat1PositionBusy(button))) return false;
+    const actionKey = _pickNekoIdleRandomVisualActionKey(tier);
+    const actionId = tier === _NEKO_IDLE_TIER_CAT2 ? _NEKO_CAT_MIND_ACTION_IDS.CAT2_IDLE_RANDOM :
+        tier === _NEKO_IDLE_TIER_CAT3 ? _NEKO_CAT_MIND_ACTION_IDS.CAT3_IDLE_RANDOM :
+            _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM;
     return _playNekoCatMindVisualAction(
         button,
-        _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM,
+        actionId,
         actionKey,
-        'cat1-idle-random-runner',
+        tier + '-idle-random-runner',
         options
     );
 }
@@ -792,8 +811,7 @@ function _playNekoCatMindInactiveSadAction(button, options = {}) {
 function _runNekoCatMindActionRequest(request) {
     if (!request || request.source !== 'cat_mind' || !request.requestId || !request.actionId || !request.tier) return;
     const actionId = request.actionId;
-    const expectedTier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
-        (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
+    const expectedTier = _getNekoCatMindActionTier(actionId);
     if (request.tier !== expectedTier) { _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: 'request_tier_mismatch' }); return; }
     const provider = _dryRunNekoCatMindActionProvider(actionId, { source: 'cat-mind-action-adapter' });
     if (!provider.allowed) { _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: provider.reason }); return; }
@@ -804,7 +822,9 @@ function _runNekoCatMindActionRequest(request) {
     const button = _findNekoCatMindVisibleButtonForTier(expectedTier);
     let accepted = false;
     if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) accepted = _playNekoIdleCat1EatAction(button, options);
-    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM) accepted = _playNekoCatMindIdleRandomVisualAction(button, options);
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_IDLE_RANDOM ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_IDLE_RANDOM ||
+        actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_IDLE_RANDOM) accepted = _playNekoCatMindIdleRandomVisualAction(button, { ...options, tier: expectedTier });
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_INACTIVE_SAD) accepted = _playNekoCatMindInactiveSadAction(button, options);
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) accepted = _startNekoIdleCat1PairMove(button, options);
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) accepted = _playNekoIdleCat1PlayAction(button, options);

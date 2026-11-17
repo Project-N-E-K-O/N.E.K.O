@@ -57,12 +57,19 @@
         'action/cat-idle-cat1-scared.webp': [512, 512, 27, 1, 434, 512],
         'action/cat-idle-cat1-stroke.webp': [512, 512, 86, 14, 435, 492],
         'action/cat-idle-cat1-wagging.webp': [512, 512, 0, 44, 400, 512],
+        'action/cat-idle-cat2-back1-1.webp': [640, 512, 42, 15, 636, 494],
+        'action/cat-idle-cat2-turn-1.webp': [896, 512, 202, 108, 706, 448],
+        'action/cat-idle-cat3-turn-2.webp': [512, 512, 13, 99, 500, 466],
+        'action/cat-idle-cat3-back1-1.webp': [512, 512, 59, 5, 501, 498],
+        'action/cat-idle-cat3-back1-2.webp': [512, 512, 58, 46, 485, 499],
         'action/cat-idle-cat-play-1.webp': [896, 512, 133, 44, 896, 486]
     };
     const appearanceArtLayouts = Object.freeze({
         'action/cat-idle-cat-play-1.webp': 'wide-centered',
         'action/cat-idle-cat1-mouse.webp': 'wide-centered',
-        'action/cat-idle-cat1-lion_dance.webp': 'tall-bottom'
+        'action/cat-idle-cat1-lion_dance.webp': 'tall-bottom',
+        'action/cat-idle-cat2-back1-1.webp': 'wide-125-centered',
+        'action/cat-idle-cat2-turn-1.webp': 'wide-centered'
     });
     const appearanceDurationsMs = Object.freeze({
         'idle/cat-idle-cat1.webp': 7590,
@@ -93,12 +100,19 @@
         'action/cat-idle-cat1-scared.webp': 4040,
         'action/cat-idle-cat1-stroke.webp': 7980,
         'action/cat-idle-cat1-wagging.webp': 4040,
+        'action/cat-idle-cat2-back1-1.webp': 4040,
+        'action/cat-idle-cat2-turn-1.webp': 5040,
+        'action/cat-idle-cat3-turn-2.webp': 5930,
+        'action/cat-idle-cat3-back1-1.webp': 5040,
+        'action/cat-idle-cat3-back1-2.webp': 5390,
         'action/cat-idle-cat-play-1.webp': 3900
     });
     const appearanceInsets = new Map();
     for (const [asset, [width, height, left, top, right, bottom]] of Object.entries(appearanceBounds)) {
         const artLayout = appearanceArtLayouts[asset] || 'normal';
-        const boxWidth = artLayout === 'wide-centered' ? 1.75 : 1;
+        const boxWidth = artLayout === 'wide-centered'
+            ? 1.75
+            : (artLayout === 'wide-125-centered' ? 1.25 : 1);
         const boxHeight = artLayout === 'tall-bottom' ? 1.375 : 1;
         const scale = Math.min(boxWidth / width, boxHeight / height);
         const x = (1 - width * scale) / 2;
@@ -155,6 +169,11 @@
             'action.cat1.scared': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-scared.webp'],
             'action.cat1.stroke': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-stroke.webp'],
             'action.cat1.wagging': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wagging.webp'],
+            'action.cat2.back1_1': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-back1-1.webp'], metadata: { wideArt: true, artLayout: 'wide-125-centered' } },
+            'action.cat2.turn_1': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-turn-1.webp'], metadata: { wideArt: true, artLayout: 'wide-centered' } },
+            'action.cat3.turn_2': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-turn-2.webp'],
+            'action.cat3.back1_1': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-1.webp'],
+            'action.cat3.back1_2': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-2.webp'],
             'action.cat1.play_yarn': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp'], metadata: { wideArt: true } },
             'playground.cat1.air': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp']
         },
@@ -189,6 +208,11 @@
             'action.cat1.scared': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-scared.webp'],
             'action.cat1.stroke': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-stroke.webp'],
             'action.cat1.wagging': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wagging.webp'],
+            'action.cat2.back1_1': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-back1-1.webp'], metadata: { wideArt: true, artLayout: 'wide-125-centered' } },
+            'action.cat2.turn_1': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-turn-1.webp'], metadata: { wideArt: true, artLayout: 'wide-centered' } },
+            'action.cat3.turn_2': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-turn-2.webp'],
+            'action.cat3.back1_1': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-1.webp'],
+            'action.cat3.back1_2': ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-2.webp'],
             'action.cat1.play_yarn': { urls: ['/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp'], metadata: { wideArt: true } },
             'playground.cat1.air': ['/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp']
         }
@@ -236,6 +260,8 @@
             ],
             voice: []
         },
+        cat2_idle_random: { appearance: ['action.cat2.back1_1', 'action.cat2.turn_1'], voice: [] },
+        cat3_idle_random: { appearance: ['action.cat3.turn_2', 'action.cat3.back1_1', 'action.cat3.back1_2'], voice: [] },
         cat1_inactive_sad: { appearance: ['action.cat1.sad'], voice: [] },
         cat2_nap_feedback: { appearance: ['idle.cat2'], voice: ['cat2.sleep'] },
         cat3_sleep_feedback: { appearance: ['idle.cat3'], voice: ['cat3.sleep'] },
@@ -255,6 +281,11 @@
         cat1_scared: { appearance: ['action.cat1.scared'], voice: [] },
         cat1_stroke: { appearance: ['action.cat1.stroke'], voice: [] },
         cat1_wagging: { appearance: ['action.cat1.wagging'], voice: [] },
+        cat2_back1_1: { appearance: ['action.cat2.back1_1'], voice: [] },
+        cat2_turn_1: { appearance: ['action.cat2.turn_1'], voice: [] },
+        cat3_turn_2: { appearance: ['action.cat3.turn_2'], voice: [] },
+        cat3_back1_1: { appearance: ['action.cat3.back1_1'], voice: [] },
+        cat3_back1_2: { appearance: ['action.cat3.back1_2'], voice: [] },
         cat1_hiss_stretch: { appearance: ['movement.cat1.stretch'], voice: ['cat1.hiss'] }
     };
 

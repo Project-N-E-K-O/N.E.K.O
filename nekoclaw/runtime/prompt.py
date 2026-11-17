@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Assemble the system prompt of a familiar session.
+"""Assemble the system prompt of a task agent session.
 
 The prompt is built once per session and never changes afterwards, so a
 provider can cache it. Anything that changes while the session runs (the time,
@@ -64,7 +64,7 @@ def build_system_prompt(
         .replace("<<PLATFORM>>", _PLATFORM_NAMES.get(platform, platform))
         .replace("<<SHELL>>", shell)
     )
-    parts = [texts.FAMILIAR_IDENTITY, environment]
+    parts = [texts.TASK_AGENT_IDENTITY, environment]
     for name, triggers, text in texts.TOOL_GUIDANCE_SECTIONS:
         if any(trigger in offered for trigger in triggers):
             parts.append(_tool_paragraph(name, text, offered))

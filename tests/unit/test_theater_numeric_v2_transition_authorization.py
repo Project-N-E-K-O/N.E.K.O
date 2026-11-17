@@ -179,10 +179,10 @@ async def test_confirmed_acceptance_keeps_route_during_body_repair(tmp_path, mon
                 turn=TurnRequestV2("go", 1, accept, "suggestion"), ensure_current_binding=lambda _: _binding())
     if mode == "unrepaired":
         with pytest.raises(wf.NumericV2ActorOutputError, match="transition_review_failed"):
-            await wf.execute_numeric_v2_turn(**args)
+            await wf._execute_numeric_v2_turn(**args)
         assert await runtime.restore_session("authorized") == current
     else:
-        result = await wf.execute_numeric_v2_turn(**args)
+        result = await wf._execute_numeric_v2_turn(**args)
         assert result.diagnostics["transition_cancellations"] == int(mode == "bad_invitation")
         assert not result.diagnostics["semantic_review_fallback"]
         assert result.stored.session.current_node_id == ("start" if mode == "bad_invitation" else "ending_leave")

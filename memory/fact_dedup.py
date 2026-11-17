@@ -626,6 +626,19 @@ class FactDedupResolver:
                         and entry_matches_subject(row, memory_subject)
                     )
                 )
+            from memory import cold_store
+            try:
+                cold_stubs = await cold_store.astatus(
+                    self._fact_store._character_dir(name),
+                )
+            except cold_store.ColdStoreUnreadable as exc:
+                raise RuntimeError(
+                    f"cold facts unreadable during dedup forget: {exc}"
+                ) from exc
+            subject_fact_ids.update(
+                row.get('id') for row in cold_stubs
+                if row.get('id') and entry_matches_subject(row, memory_subject)
+            )
 
             def _matches(item: object) -> bool:
                 if not isinstance(item, dict):

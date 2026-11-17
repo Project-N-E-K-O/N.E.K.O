@@ -171,7 +171,7 @@ async def test_disabled_tools_are_withheld_from_one_session(tmp_path: Path) -> N
     try:
         tools = set(events.of("started")[0]["tools"])
         assert "subagent" not in tools and "web_fetch" not in tools
-        # A familiar that may not delegate can still talk to the others.
+        # A task agent that may not delegate can still talk to the others.
         assert {"list_agents", "send_message", "wait_agent"} <= tools
         system = session.harness.config.system
         assert "Start independent delegations" not in system

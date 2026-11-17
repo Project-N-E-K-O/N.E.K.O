@@ -208,7 +208,7 @@
         // 抑制开始时撤回尚未作答的弹窗并重新入队；已决定、只剩淡出的
         // 弹窗仍算本会话已处理，不重新提问。
         const context = _activeContext;
-        if (!context || _activePromptResolved) return;
+        if (!context || _activePromptResolved || _cancelActivePrompt || !_isEnabled()) return;
         if (context === 'play') _shownPlay = false;
         else if (context === 'work') _shownWork = false;
         _pendingContexts.add(context);

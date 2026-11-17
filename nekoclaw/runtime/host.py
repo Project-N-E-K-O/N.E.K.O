@@ -15,7 +15,7 @@
 """Callbacks the host injects into the runtime.
 
 Some tools cannot be carried out inside the runtime: asking the user, filing a
-report, storing a lesson, searching the web and starting further familiars all
+report, storing a lesson, searching the web and starting further task agents all
 belong to the host. The runtime defines those tools and executes them through
 the callbacks below. A tool whose callback is missing is not offered to the
 model at all.
@@ -45,6 +45,24 @@ Callbacks, their payload and their result:
     Result: ``{"allow": bool, "reason": str | None}``. Without this callback
     the default decision applies and ``ask`` is refused, since nobody can be
     asked.
+
+    The dsh runtime (``nekoclaw.dsh``) makes three more kinds of request, for
+    tools the built-in runtime never asks about. All carry
+    ``{"tool": str, "category": ..., "arguments": dict, "workdir": str,
+    "default": "allow"}``:
+
+    * ``category`` ``"gateway"`` (``permissions.GATEWAY_CALL_CATEGORY``): a
+      tool of the host's gateway is about to
+      be called (``tool`` is its name there, ``arguments`` what it is called
+      with). dsh ends such a call after a minute, so a host that has to ask
+      the user for it asks now, before the call, and does not ask again
+      when the call arrives.
+    * ``category`` ``"host_tool"`` (``permissions.HOST_TOOL_CALL_CATEGORY``):
+      one of the host's own tools is about to be called (``tool`` is its
+      name, ``web_search``), for the same reason: what the host would ask
+      the user in that tool's callback it asks now, and not again there.
+    * ``category`` ``"other"``: a tool this runtime does not know, which a
+      dsh plugin brought.
 
 ``ask_user``  (tool ``ask_user_question``)
     Payload: ``{"questions": [{"id", "question", "header"?, "options"?,

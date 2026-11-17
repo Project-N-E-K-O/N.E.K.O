@@ -7,7 +7,7 @@ description: Build, deploy, configure and extend Project N.E.K.O., an open-sourc
 hero:
   name: Project N.E.K.O.
   text: Developer Documentation
-  tagline: A proactive, multimodal AI companion with optional screen-aware interaction, persistent memory, agent channels, and embodied avatars.
+  tagline: A proactive, multimodal AI companion with optional screen-aware interaction, persistent memory, agent tasks, and embodied avatars.
   image:
     src: /logo.jpg
     alt: N.E.K.O. Logo
@@ -48,7 +48,7 @@ features:
     linkText: How it works
   - icon: 🤖
     title: Agent Framework
-    details: Optional background tasks through enabled and ready Computer Use, Browser Use, user-plugin, and OpenClaw channels. Individual tasks and all active tasks can be cancelled.
+    details: The character hands tasks over with a tool call. A one-step task calls a plugin entry directly; a multi-step task goes to a familiar that can use plugins, MCP tools, keyboard-and-mouse, and the browser. Individual tasks and all active tasks can be cancelled.
     link: /architecture/agent-system
     linkText: Explore agents
   - icon: 🔌

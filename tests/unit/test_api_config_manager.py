@@ -2232,6 +2232,49 @@ class TestGptsovitsEnabledSaveMigration:
         assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
 
     @pytest.mark.unit
+    def test_update_core_config_deepseek_keeps_shared_custom_tts_slot(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        shared_slot = {
+            'ttsModelUrl': 'https://speech.example.com/v1/audio/speech',
+            'ttsModelId': 'custom-model',
+            'ttsModelApiKey': 'custom-key',
+        }
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'custom',
+            **shared_slot,
+        })
+        settings = {'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen'}
+        for provider_fields in (
+            {'ttsModelProvider': 'deepseek', 'ttsProvider': 'deepseek'},
+            {},
+        ):
+            response = asyncio.run(config_router.update_core_config(self._FakeRequest({
+                **settings,
+                **provider_fields,
+                'ttsModelUrl': 'wss://api.deepseek.com/v1/tools/tts',
+                'ttsModelId': '',
+                'ttsModelApiKey': '',
+            })))
+            assert response.get('success') is True
+            saved = config_manager.load_json_config('core_config.json', {})
+            assert {field: saved[field] for field in shared_slot} == shared_slot
+
+        response = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            **settings,
+            'ttsModelProvider': 'custom',
+            'ttsProvider': '',
+            'ttsModelUrl': 'https://updated.example.com/v1/audio/speech',
+        })))
+        assert response.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved['ttsModelUrl'] == 'https://updated.example.com/v1/audio/speech'
+        assert saved['ttsModelId'] == 'custom-model'
+        assert saved['ttsModelApiKey'] == 'custom-key'
+
+    @pytest.mark.unit
     def test_update_core_config_doubao_tts_overwrites_stale_shared_tts_key(self, config_manager, monkeypatch):
         config_router, asyncio = self._neutralize_side_effects(monkeypatch)
         _write_core_config(config_manager, {

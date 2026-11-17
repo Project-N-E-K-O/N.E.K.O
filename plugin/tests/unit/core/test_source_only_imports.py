@@ -263,6 +263,61 @@ assert sum(isinstance(f, PluginSourceFinder) for f in sys.meta_path) == 1
     assert process.returncode == 0, process.stderr
 
 
+def test_source_only_import_accepts_a_kebab_case_directory(tmp_path: Path):
+    """A cloned ``kebab-case`` folder must import its ``snake_case`` package (#3724)."""
+    directory = tmp_path / "kebab-probe"
+    directory.mkdir()
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    (directory / "__init__.py").write_text("VALUE = 7\n", encoding="utf-8")
+    code = """
+import sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+root = _import_plugin_module('plugins.kebab_probe', Path(sys.argv[1]), get_logger('probe'), source_only=True)
+assert root.VALUE == 7
+print('KEBAB_OK')
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", code, str(manifest)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert process.returncode == 0, process.stderr
+    assert "KEBAB_OK" in process.stdout
+
+
+def test_source_only_import_still_rejects_an_unrelated_directory(tmp_path: Path):
+    directory = tmp_path / "unrelated"
+    directory.mkdir()
+    manifest = directory / "plugin.toml"
+    manifest.write_text("", encoding="utf-8")
+    (directory / "__init__.py").write_text("VALUE = 7\n", encoding="utf-8")
+    code = """
+import sys
+from pathlib import Path
+from plugin.core.host import _import_plugin_module
+from plugin.logging_config import get_logger
+try:
+    _import_plugin_module('plugins.kebab_probe', Path(sys.argv[1]), get_logger('probe'), source_only=True)
+except ValueError as exc:
+    assert 'match its source directory' in str(exc)
+    print('REJECTED')
+else:
+    raise AssertionError('an unrelated directory must not be imported')
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", code, str(manifest)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert process.returncode == 0, process.stderr
+    assert "REJECTED" in process.stdout
+
+
 def test_host_passes_source_policy_to_child_without_changing_default(monkeypatch, tmp_path: Path):
     from plugin.core import host
     captured = []
