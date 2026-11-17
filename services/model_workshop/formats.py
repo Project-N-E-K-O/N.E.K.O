@@ -36,7 +36,7 @@ class FormatLimits:
     json_depth: int = 64
     binary_records: int = 2000000
     binary_text_bytes: int = 1024 * 1024
-    # Bound zero-filled/sparse backing arrays independently of encoded GLB size.
+    # Bound copied bufferViews plus zero/sparse arrays independently of encoded GLB size.
     vrm_accessor_bytes: int = 256 * 1024 * 1024
 
 
@@ -394,11 +394,16 @@ def _vrm(resources: _Resources) -> None:
         else:
             _require(index == 0 and binary_size - 3 <= length <= binary_size, entry)
         buffer_sizes.append(length)
+    allocated = 0
     for view in views:
         _require(isinstance(view, dict), entry)
         index = _index(view.get("buffer"), buffers, entry)
         offset, length = _uint(view.get("byteOffset", 0), entry), _uint(view.get("byteLength"), entry)
         _require(offset + length <= buffer_sizes[index], entry)
+        # GLTFLoader caches by view index, then slices the full range for each
+        # view. Overlapping ranges do not share their decoded backing storage.
+        allocated += length
+        _require(allocated <= resources.limits.vrm_accessor_bytes, entry, "model_accessor_budget_exceeded")
         if "byteStride" in view:
             _require(4 <= _uint(view["byteStride"], entry) <= 252 and view["byteStride"] % 4 == 0, entry)
     for image in images:
@@ -432,7 +437,6 @@ def _vrm(resources: _Resources) -> None:
     # Validate common graph indices; shader/humanoid behavior still needs rendering.
     accessors, meshes, skins, scenes, animations = (data.get(key, []) for key in ("accessors", "meshes", "skins", "scenes", "animations"))
     _require(all(isinstance(value, list) for value in (accessors, meshes, skins, scenes, animations)), entry)
-    allocated = 0
     for accessor in accessors:
         _require(isinstance(accessor, dict), entry)
         count = _uint(accessor.get("count"), entry)
@@ -495,6 +499,45 @@ def _vrm(resources: _Resources) -> None:
             _require(isinstance(target, dict) and target.get("path") in ("translation", "rotation", "scale", "weights"), entry)
             if "node" in target:
                 _index(target["node"], nodes, entry)
+            sample = samplers[channel["sampler"]]
+            sample_input, output = accessors[sample["input"]], accessors[sample["output"]]
+            path = target["path"]
+            shape = {"translation": "VEC3", "scale": "VEC3", "rotation": "VEC4", "weights": "SCALAR"}[path]
+            _require(output["type"] == shape, entry)
+            # glTF permits normalized integer rotation/weight outputs; forcing
+            # every output to float would reject compatible existing models.
+            floating = output["componentType"] == 5126 and output.get("normalized", False) is False
+            normalized = (path in ("rotation", "weights") and output["componentType"] in (5120, 5121, 5122, 5123)
+                          and output.get("normalized") is True)
+            _require(floating or normalized, entry)
+            cubic = sample.get("interpolation", "LINEAR") == "CUBICSPLINE"
+            _require(not cubic or sample_input["count"] >= 2, entry)
+            expected = sample_input["count"] * (3 if cubic else 1)
+            if path == "weights":
+                if "node" not in target:
+                    # The bundled loader ignores node-less channels; target
+                    # cardinality is unknown, but every keyframe must be whole.
+                    _require(output["count"] % expected == 0, entry)
+                    continue
+                node = nodes[target["node"]]
+                _require(isinstance(node, dict), entry)
+                mesh = meshes[_index(node.get("mesh"), meshes, entry)]
+                _require(isinstance(mesh, dict), entry)
+                primitives = mesh.get("primitives")
+                _require(isinstance(primitives, list) and bool(primitives), entry)
+                counts = []
+                for primitive in primitives:
+                    _require(isinstance(primitive, dict), entry)
+                    morphs = primitive.get("targets")
+                    _require(isinstance(morphs, list) and bool(morphs), entry)
+                    counts.append(len(morphs))
+                    for morph in morphs:
+                        _require(isinstance(morph, dict), entry)
+                        for index in morph.values():
+                            _index(index, accessors, entry)
+                _require(len(set(counts)) == 1, entry)
+                expected *= counts[0]
+            _require(output["count"] == expected, entry)
     for node in nodes:
         _require(isinstance(node, dict) and isinstance(node.get("children", []), list), entry)
         for child in node.get("children", []):
