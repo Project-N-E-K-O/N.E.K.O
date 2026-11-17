@@ -46,6 +46,9 @@ CLOUD_UNREACHABLE = "cloud_unreachable"
 # take this hold, so the tombstone is its copy on disk.
 DEVICE_HOLD_PENDING = "device_hold_pending"
 _UNREADABLE = object()
+# The main server's facts worker and login routes share an event loop. Hold
+# this across each header-only upload or cloud bind and its local commit.
+ownership_lock = asyncio.Lock()
 # Every read-modify-write of the record holds this, so a stale outcome read
 # before a newer one cannot be written after it. Reentrant: callers may hold
 # it around several record operations that each take it too.
@@ -255,7 +258,7 @@ def begin_bind_check(directory: Path | str | None) -> bool | None:
     restarts. Unlike ``begin_ownership_check`` this does not mark a conflict,
     so a login whose answer is recorded leaves no hold behind for the owner.
 
-    Checks run one at a time (under the login layer's device bind lock), so a
+    Checks run one at a time under the ownership lock, so a
     check already on disk never got a definite answer. Returns None when the
     hold cannot be written; the caller must not bind then. Returns False when
     this check takes over such a leftover one, True when it started a new one.
@@ -426,6 +429,7 @@ __all__ = [
     "persist_latched_hold",
     "record_lock",
     "normalize_account",
+    "ownership_lock",
     "UNREADABLE_ACCOUNT",
     "default_directory",
     "device_held",

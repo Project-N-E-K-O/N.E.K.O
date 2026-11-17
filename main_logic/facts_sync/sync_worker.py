@@ -336,13 +336,14 @@ async def _sync_one_lanlan(
 
     # Split into batches.
     for i in range(0, len(candidates), BATCH_SIZE):
-        # A login can learn mid-sweep that this device belongs to another
-        # account; stop before the next header-only batch reaches it.
-        if await asyncio.to_thread(_device_bound_to_other_account):
-            logger.info("facts_sync: device bound to another account; holding remaining facts")
-            break
         batch = candidates[i : i + BATCH_SIZE]
-        ok, _resp = await _post_facts_batch(base_url, client_id, lanlan_name, batch)
+        # A bind may have finished while this batch waited. Check the current
+        # owner under the same lock and keep it until the upload returns.
+        async with community_device_hold.ownership_lock:
+            if await asyncio.to_thread(_device_bound_to_other_account):
+                logger.info("facts_sync: device bound to another account; holding remaining facts")
+                break
+            ok, _resp = await _post_facts_batch(base_url, client_id, lanlan_name, batch)
         if ok:
             for f in batch:
                 synced_set.add(f["fact_hash"])

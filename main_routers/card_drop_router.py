@@ -1504,11 +1504,10 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
     """Complete email/password login by storing JWTs and binding the client."""
     tokens = login_out.get("tokens") or {}
     user = login_out.get("user") or {}
-    from main_routers import community_oauth
 
     try:
         # Device checks run one at a time; see community_device_hold.begin_bind_check.
-        async with community_oauth._device_bind_lock:
+        async with community_device_hold.ownership_lock:
             bind = await _store_session(
                 base,
                 tokens.get("access_token"),
@@ -2063,7 +2062,7 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         # here before it is spent — but only after the session revalidation
         # above, so a superseded account never reaches the cloud bind.
         bind_retried = True
-        async with _co._device_bind_lock:
+        async with community_device_hold.ownership_lock:
             # A login may have replaced this session while the lock was busy;
             # never bind the device with a token that is no longer signed in.
             current = await asyncio.to_thread(_desktop_session_snapshot) or {}
@@ -2356,7 +2355,7 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
         # Same device-bind lock as the login callback, rebind and handoff
         # bind retry: a retry for the previous account must not record its
         # owner after this session switch noted another account on the device.
-        async with community_oauth._device_bind_lock:
+        async with community_device_hold.ownership_lock:
             async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
                 bind = await _store_session(
                     base,

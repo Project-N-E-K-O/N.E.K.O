@@ -1892,6 +1892,7 @@ def test_social_session_init_rechecks_the_session_after_waiting_for_the_device_l
     from contextlib import asynccontextmanager
 
     from main_routers import community_oauth
+    from utils import community_device_hold as hold
 
     auth = tmp_path / "community_auth.json"
     auth.write_text(
@@ -1911,7 +1912,7 @@ def test_social_session_init_rechecks_the_session_after_waiting_for_the_device_l
     async def unexpected_bind(*_args, **_kwargs):
         raise AssertionError("the replaced session's token must not bind the device")
 
-    monkeypatch.setattr(community_oauth, "_device_bind_lock", lock_released_after_another_login())
+    monkeypatch.setattr(hold, "ownership_lock", lock_released_after_another_login())
     monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_bind)
     ticket = _issue_sync_ticket(client)
 
@@ -3172,13 +3173,12 @@ def test_sync_session_waits_for_a_handoff_bind_retry_and_keeps_its_hold(
     import asyncio as _asyncio
     import threading
 
-    from main_routers import community_oauth
     from utils import community_device_hold as hold
 
     _existing_session_files(tmp_path, monkeypatch)
     _cloud_client(monkeypatch)
     hold._set_unrecorded_hold(False)
-    monkeypatch.setattr(community_oauth, "_device_bind_lock", _asyncio.Lock())
+    monkeypatch.setattr(hold, "ownership_lock", _asyncio.Lock())
     ticket = _issue_sync_ticket(client)
     order: list[str] = []
     release_retry = threading.Event()
@@ -3186,7 +3186,7 @@ def test_sync_session_waits_for_a_handoff_bind_retry_and_keeps_its_hold(
     async def handoff_retry_for_owner():
         # Stands in for social-session-init's bind retry for the previous
         # account, which records that account as the owner under the lock.
-        await community_oauth._device_bind_lock.acquire()
+        await hold.ownership_lock.acquire()
         try:
             await _asyncio.to_thread(release_retry.wait, 5)
             await _asyncio.to_thread(
@@ -3194,11 +3194,11 @@ def test_sync_session_waits_for_a_handoff_bind_retry_and_keeps_its_hold(
             )
             order.append("owner-retry-recorded")
         finally:
-            community_oauth._device_bind_lock.release()
+            hold.ownership_lock.release()
 
     retry = client.portal.start_task_soon(handoff_retry_for_owner)
     client.portal.call(_asyncio.sleep, 0.05)
-    assert community_oauth._device_bind_lock.locked()
+    assert hold.ownership_lock.locked()
     results: dict = {}
 
     def sync_other_account():

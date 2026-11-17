@@ -55,13 +55,8 @@ _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 # A rebind of an old device whose cloud row has no proof. Only the owning
 # account can attach one, so the owner must unbind it on the community site.
 LEGACY_DEVICE_OWNED_ELSEWHERE = "legacy_client_owned_by_other_user"
+# Acquire the device ownership lock first when both locks are needed.
 _oauth_start_lock = asyncio.Lock()
-# Serializes every cloud call that can change or report this device's owner
-# with the local records that follow it (login callback, explicit rebind,
-# handoff bind retry). Without it a rebind could land between another
-# login's bind and its save, which would then record a stale owner.
-# Lock order: _device_bind_lock, then _oauth_start_lock.
-_device_bind_lock = asyncio.Lock()
 _oauth_status_lock = asyncio.Lock()
 _oauth_status_tasks: dict[str, asyncio.Task[dict[str, Any]]] = {}
 
@@ -1037,7 +1032,7 @@ async def oauth_rebind_client_endpoint(request: Request, payload: dict | None = 
     # Same fences as login and logout: no other account can be saved, and no
     # logout can clear this one, between reading the session and recording
     # the cloud's answer for it.
-    async with _device_bind_lock, _oauth_start_lock:
+    async with community_device_hold.ownership_lock, _oauth_start_lock:
         saved = await asyncio.to_thread(C._desktop_session_snapshot) or {}
         expected_user = C._normalize_local_user_id(saved.get("local_user_id"))
         # Passing the signed-in account keeps live visits running: ownership
@@ -1342,7 +1337,7 @@ async def _handle_oauth_callback(
             status_code=400,
         )
 
-    async with _device_bind_lock:
+    async with community_device_hold.ownership_lock:
         # A device bound to another account must not block switching accounts.
         # The login still completes; only the one-time guest migration is skipped
         # and the device keeps its owner until the user explicitly rebinds it.
@@ -1527,7 +1522,7 @@ def _response_detail(res: Any) -> Any:
 async def _bind_signed_in_login(social_base: str, access_token: str, local_user_id: str) -> dict | None:
     """Bind the device for the signed-in login and record the cloud's answer.
 
-    Call with ``_device_bind_lock`` held. Returns None without asking the cloud
+    Call with the device ownership lock held. Returns None without asking the cloud
     when the hold could not be written first.
     """
     check = await asyncio.to_thread(community_device_hold.begin_bind_check, C._credential_dir())
@@ -1559,7 +1554,7 @@ async def reconfirm_device_owner() -> None:
     """
     # Serialize ownership changes from the cloud request through its local
     # commit. Starting a new PKCE attempt only writes the pending login file.
-    async with _device_bind_lock:
+    async with community_device_hold.ownership_lock:
         if not await asyncio.to_thread(community_device_hold.check_pending, C._credential_dir()):
             return
         # Refresh-capable: an expired token would be refused on every retry

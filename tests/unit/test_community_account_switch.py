@@ -557,22 +557,22 @@ async def test_facts_sync_stops_between_batches_once_held(tmp_path, monkeypatch)
 # ------------------------------------------------------------ rebind races
 
 
-def test_rebind_waits_for_login_and_logout_lock(oauth_app, monkeypatch):  # noqa: F811
-    """Reading the session, binding, and saving happen under the login lock."""
+def test_rebind_holds_ownership_and_login_locks(oauth_app, monkeypatch):  # noqa: F811
+    """Both facts uploads and login changes wait while a rebind is in flight."""
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, CONFLICT)
     _logged_in(monkeypatch)
-    observed: list[bool] = []
+    observed: list[tuple[bool, bool]] = []
 
     async def bind(_base, _access, *, rebind=False):
-        observed.append(O._oauth_start_lock.locked())
+        observed.append((hold.ownership_lock.locked(), O._oauth_start_lock.locked()))
         return {"bound": True, "error": None}
 
     monkeypatch.setattr(O, "_oauth_guest_bind", bind)
     response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
 
     assert response.status_code == 200
-    assert observed == [True]
+    assert observed == [(True, True)]
 
 
 def test_rebind_refuses_when_signed_in_account_changed(oauth_app, monkeypatch):  # noqa: F811
@@ -742,6 +742,7 @@ async def test_rebind_cannot_land_between_another_logins_bind_and_save(tmp_path,
     """The login callback holds the device-bind lock from its bind through its save."""
     import asyncio
 
+    monkeypatch.setattr(hold, "ownership_lock", asyncio.Lock())
     _pending_login(tmp_path, monkeypatch)
     order: list[str] = []
     bind_started = asyncio.Event()
@@ -758,7 +759,7 @@ async def test_rebind_cannot_land_between_another_logins_bind_and_save(tmp_path,
     await bind_started.wait()
 
     async def rebind_attempt():
-        async with O._device_bind_lock:
+        async with hold.ownership_lock:
             order.append("rebind")
 
     rebind = asyncio.create_task(rebind_attempt())
