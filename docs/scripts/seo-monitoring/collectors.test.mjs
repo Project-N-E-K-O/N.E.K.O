@@ -128,6 +128,12 @@ test('GSC tracks homepage keywords in the final web window and preserves missing
   }
   const window = reportingWindow(new Date('2026-07-23T08:00:00Z'))
   let keywordRequest
+  const keywordRows = [
+    { keys: ['ai数字生命'], clicks: 3, impressions: 10, position: 8 },
+    { keys: ['ai 数字生命'], clicks: 2, impressions: 10, position: 10 },
+    { keys: ['AI\u3000数字生命'], clicks: 1, impressions: 10, position: 12 },
+    { keys: ['开源 AI 数字生命'], clicks: 100, impressions: 200, position: 4 },
+  ]
   const collect = (keywordStatus = 200, overrides = {}) => collectGsc({ ...config, ...overrides }, window, {
     accessToken: 'token',
     fetchImpl: async (url, options) => {
@@ -138,22 +144,20 @@ test('GSC tracks homepage keywords in the final web window and preserves missing
       }
       if (!body.dimensionFilterGroups) return jsonResponse({ rows: [] })
       keywordRequest = body
-      return jsonResponse({
-        rows: [
-          { keys: ['ai数字生命'], clicks: 3, impressions: 10, position: 8 },
-          { keys: ['ai 数字生命'], clicks: 2, impressions: 10, position: 10 },
-        ],
-      }, keywordStatus)
+      const queryFilter = body.dimensionFilterGroups[0].filters.find(filter => filter.dimension === 'query')
+      // Translate RE2's inline case flag and ASCII-only \s for the JS mock.
+      const pattern = queryFilter.expression.slice('(?i)'.length).replaceAll('\\s', '[\\x09\\x0A\\x0C\\x0D ]')
+      const regex = new RegExp(pattern, 'iu')
+      return jsonResponse({ rows: keywordRows.filter(row => regex.test(row.keys[0])) }, keywordStatus)
     },
   })
 
   const result = await collect()
-  assert.deepEqual(keywordRequest.dimensionFilterGroups, [{
-    filters: [
-      { dimension: 'page', operator: 'equals', expression: page },
-      { dimension: 'query', operator: 'includingRegex', expression: '(?i)^(?:数字生命|AI\\s*数字生命)$' },
-    ],
-  }])
+  const [pageFilter, queryFilter] = keywordRequest.dimensionFilterGroups[0].filters
+  assert.deepEqual(pageFilter, { dimension: 'page', operator: 'equals', expression: page })
+  assert.equal(queryFilter.dimension, 'query')
+  assert.equal(queryFilter.operator, 'includingRegex')
+  assert.ok(queryFilter.expression.startsWith('(?i)^'))
   assert.deepEqual(keywordRequest.dimensions, ['query'])
   assert.equal(keywordRequest.type, 'web')
   assert.equal(keywordRequest.dataState, 'final')
@@ -164,8 +168,15 @@ test('GSC tracks homepage keywords in the final web window and preserves missing
     page,
     rows: [
       { query: '数字生命', metrics: null },
-      { query: 'AI 数字生命', metrics: { clicks: 5, impressions: 20, ctr: 0.25, position: 9, rows: 2 } },
+      { query: 'AI 数字生命', metrics: { clicks: 6, impressions: 30, ctr: 0.2, position: 10, rows: 3 } },
     ],
+  })
+
+  keywordRows.push({ keys: ['数字 生命'], clicks: 1, impressions: 5, position: 9 })
+  const spaced = await collect()
+  assert.deepEqual(spaced.trackedHomepageQueries.rows[0], {
+    query: '数字生命',
+    metrics: { clicks: 1, impressions: 5, ctr: 0.2, position: 9, rows: 1 },
   })
 
   const failed = await collect(503)

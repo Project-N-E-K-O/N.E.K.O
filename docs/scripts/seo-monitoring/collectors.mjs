@@ -277,10 +277,13 @@ async function collectGscRange(analyticsUrl, range, options) {
 
 async function collectTrackedHomepageQueries(analyticsUrl, range, { page, queries }, options) {
   try {
-    const queryPatterns = queries.map(query => query.trim().split(/\s+/u)
-      .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .join('\\s*'))
-    const normalize = query => query.toLowerCase().replace(/\s+/gu, '')
+    // RE2's \s is ASCII-only. Use the same whitespace class for both sides.
+    const whitespace = /[\x09-\x0D\p{Z}]/gu
+    const gap = `${whitespace.source}*`
+    const normalize = query => query.toLowerCase().replace(whitespace, '')
+    const queryPatterns = queries.map(query => [...normalize(query)]
+      .map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join(gap))
     const { rows } = await collectGscRows(analyticsUrl, {
       ...range,
       dimensions: ['query'],
@@ -289,7 +292,7 @@ async function collectTrackedHomepageQueries(analyticsUrl, range, { page, querie
       dimensionFilterGroups: [{
         filters: [
           { dimension: 'page', operator: 'equals', expression: page },
-          { dimension: 'query', operator: 'includingRegex', expression: `(?i)^(?:${queryPatterns.join('|')})$` },
+          { dimension: 'query', operator: 'includingRegex', expression: `(?i)^${gap}(?:${queryPatterns.join('|')})${gap}$` },
         ],
       }],
     }, options)
