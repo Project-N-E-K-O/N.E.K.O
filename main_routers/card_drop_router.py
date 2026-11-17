@@ -925,11 +925,15 @@ def _remember_confirmed_owner() -> bool:
     later login whose bind is inconclusive still finds the conflict.
     """
     directory = _credential_dir()
-    # A hold this process could not write (for example a conflict a rebind
-    # found while the login's own bind still says bound) must reach disk
-    # before the login goes, or a restart would forget it.
-    latched_saved = community_device_hold.persist_latched_hold(directory)
-    return _remember_saved_login(directory) and latched_saved
+    # Read the saved login and write what it proved as one step against the
+    # device record: a newer login's outcome, recorded under the same lock,
+    # either lands first (and this reads the newer login) or after.
+    with community_device_hold.record_lock:
+        # A hold this process could not write (for example a conflict a
+        # rebind found while the login's own bind still says bound) must reach
+        # disk before the login goes, or a restart would forget it.
+        latched_saved = community_device_hold.persist_latched_hold(directory)
+        return _remember_saved_login(directory) and latched_saved
 
 
 def _remember_saved_login(directory: Path | None) -> bool:
@@ -980,9 +984,10 @@ def _record_device_hold(bind: dict, local_user_id: str) -> bool:
     that cannot be written is latched in memory instead of opening uploads.
     """
     directory = _credential_dir()
-    recorded = community_device_hold.record_bind_outcome(directory, bind, local_user_id)
-    if not (isinstance(bind, dict) and bind.get("bound") is True):
-        recorded = community_device_hold.record_session_account(directory, local_user_id) and recorded
+    with community_device_hold.record_lock:
+        recorded = community_device_hold.record_bind_outcome(directory, bind, local_user_id)
+        if not (isinstance(bind, dict) and bind.get("bound") is True):
+            recorded = community_device_hold.record_session_account(directory, local_user_id) and recorded
     if not recorded:
         logger.warning("card_drop: device hold record not written; holding uploads in memory")
     return recorded
@@ -1197,18 +1202,10 @@ def _unlink_credentials(paths: list[Path]) -> bool:
 
 
 def _clear_auth() -> bool:
-    hold_saved = _remember_confirmed_owner()
     auth_path = _auth_path()
-    paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
-    tombstone = not hold_saved and auth_path is not None
-    if tombstone:
-        # The device record could not take this login's hold. The auth mirror
-        # becomes a tombstone that drops every credential but keeps the hold,
-        # so it survives a restart. If even that cannot be written, keep the
-        # mirror and report the logout as failed (callers retry it) rather
-        # than let uploads resume. Written under the same lock as the
-        # deletions, so a refresh cannot put its tokens back in between.
-        paths = [path for path in paths if path != auth_path]
+    # The auth mirror is handled under the lock below: deleted, or turned into
+    # a tombstone if its hold could not reach the device record.
+    paths = [path for path in _social_session_paths() if path != auth_path]
     if auth_path is not None:
         # Cancel in-flight OAuth before its credential commit under this same lock.
         paths.append(auth_path.parent / "community_oauth_pending.json")
@@ -1221,8 +1218,20 @@ def _clear_auth() -> bool:
     # logout would clear only the social file while the mirror returns, and clear would incorrectly report failure.
     try:
         with _social_session_locks(_social_session_paths()):
-            if tombstone and not _tombstone_auth_mirror(auth_path):
-                success = False
+            # Read the login and record what it knew about the device owner
+            # under the same lock every login writer takes, so a newer login
+            # cannot change the hold between this read and its write.
+            hold_saved = _remember_confirmed_owner()
+            if auth_path is not None:
+                if hold_saved:
+                    paths.append(auth_path)
+                elif not _tombstone_auth_mirror(auth_path):
+                    # The device record could not take this login's hold. The
+                    # mirror becomes a tombstone that drops every credential
+                    # but keeps the hold across a restart. If even that fails,
+                    # keep the mirror and report the logout as failed (callers
+                    # retry) rather than let uploads resume.
+                    success = False
             success = _unlink_credentials(paths) and success
             for path in paths:
                 try:

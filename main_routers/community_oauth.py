@@ -351,13 +351,21 @@ def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
     credentials = [(path, "token") for path in social_paths]
     if auth_path is not None:
         credentials.append((auth_path, "access_token"))
-    # Like a logout: what the rejected login knew about the device owner must
-    # reach the device record first, or survive in a tombstone mirror.
-    hold_saved = C._remember_confirmed_owner()
     try:
         # Keep conditional reads and deletions in the same critical section as
         # bind repair and identity writes, including the legacy session path.
         with C._social_session_locks(social_paths):
+            # Like a logout: what the rejected login knew about the device
+            # owner must reach the device record first, or survive in a
+            # tombstone mirror. Only while the saved login is still the
+            # rejected one, and under the lock every login writer takes, so a
+            # newer login cannot clear its hold in between and have this
+            # stale outcome restore it.
+            saved_auth = C._read_json_dict(auth_path) if auth_path is not None else None
+            still_rejected = (
+                str((saved_auth or {}).get("access_token") or "").strip() == expected_access
+            )
+            hold_saved = C._remember_confirmed_owner() if still_rejected else True
             for path, token_key in credentials:
                 try:
                     saved = C._read_json_dict(path)

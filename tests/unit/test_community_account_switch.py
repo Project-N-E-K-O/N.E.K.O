@@ -1359,3 +1359,54 @@ async def test_successful_relogin_bind_is_not_overwritten_by_an_unwritten_hold(t
     assert saved_bind == BOUND
     assert not hold.hold_latched()
     assert not hold.device_held(tmp_path, USER_ID, saved_bind=saved_bind)
+
+
+def test_rejected_cleanup_skips_a_login_that_already_replaced_it(oauth_app):  # noqa: F811
+    """Cleanup for A's rejected token runs after B saved a successful login."""
+    _client, auth, social, _pending = oauth_app
+    # B's login is current and owns the device.
+    auth.write_text(
+        json.dumps({"access_token": "b-token", "local_user_id": USER_ID, "auth_source": "oauth", "bind": BOUND}),
+        encoding="utf-8",
+    )
+    social.write_text(json.dumps({"token": "b-token", "local_user_id": USER_ID}), encoding="utf-8")
+    hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
+
+    assert O._clear_rejected_oauth_snapshot({"access_token": "a-token"})
+
+    assert json.loads(auth.read_text(encoding="utf-8"))["access_token"] == "b-token"
+    assert not hold.device_held(auth.parent, USER_ID)
+
+
+def test_stale_cleanup_cannot_restore_a_conflict_a_newer_login_cleared(oauth_app, monkeypatch):  # noqa: F811
+    """Cleanup reads A's conflicted login; B's successful bind tries to land mid-way."""
+    import threading
+
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)  # A's login, still saved
+    read_done = threading.Event()
+    release = threading.Event()
+    real_remember = C._remember_saved_login
+
+    def slow_remember(directory):
+        result = real_remember(directory)
+        read_done.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(C, "_remember_saved_login", slow_remember)
+    cleanup = threading.Thread(target=C._remember_confirmed_owner)
+    cleanup.start()
+    assert read_done.wait(5)
+
+    # B's login finishes with a successful bind while cleanup still runs.
+    newer = threading.Thread(target=C._record_device_hold, args=(dict(BOUND), OWNER_A))
+    newer.start()
+    newer.join(0.2)
+    assert newer.is_alive(), "the newer login must wait for the stale cleanup"
+    release.set()
+    cleanup.join(5)
+    newer.join(5)
+
+    # B's success landed last: B owns the device and is not held.
+    assert not hold.device_held(auth.parent, OWNER_A)

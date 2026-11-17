@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,10 @@ logger = logging.getLogger("neko.community_device_hold")
 HOLD_FILENAME = "community_device_hold.json"
 OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _UNREADABLE = object()
+# Every read-modify-write of the record holds this, so a stale outcome read
+# before a newer one cannot be written after it. Reentrant: callers may hold
+# it around several record operations that each take it too.
+record_lock = threading.RLock()
 # ``signed_in`` values for a login whose account cannot be compared.
 # Unreadable credentials always hold. A pre-v2 session (token, no account id)
 # only holds when there is an owner to compare against or its own bind failed.
@@ -169,26 +174,27 @@ def record_bind_outcome(directory: Path | str | None, bind: Any, account: str | 
     skipped, proof errors) says nothing about the owner and changes nothing.
     Returns False only when a required write failed.
     """
-    if not isinstance(bind, dict):
-        return True
-    record = _read(directory)
-    if not isinstance(record, dict):
-        record = {}
-    account = _account(account)
-    if bind.get("error") == OWNERSHIP_CONFLICT:
-        if record.get("owner") and _account(record.get("owner")) == account:
-            # The cloud says this account is not the owner after all.
-            record["owner"] = None
-        record["conflict"] = True
-    elif bind.get("bound") is True and account:
-        record = {"owner": account, "conflict": False}
-        if _write(directory, record):
-            _set_unrecorded_hold(False)
+    with record_lock:
+        if not isinstance(bind, dict):
             return True
-        return False
-    else:
-        return True
-    return _write_hold(directory, record)
+        record = _read(directory)
+        if not isinstance(record, dict):
+            record = {}
+        account = _account(account)
+        if bind.get("error") == OWNERSHIP_CONFLICT:
+            if record.get("owner") and _account(record.get("owner")) == account:
+                # The cloud says this account is not the owner after all.
+                record["owner"] = None
+            record["conflict"] = True
+        elif bind.get("bound") is True and account:
+            record = {"owner": account, "conflict": False}
+            if _write(directory, record):
+                _set_unrecorded_hold(False)
+                return True
+            return False
+        else:
+            return True
+        return _write_hold(directory, record)
 
 
 def persist_latched_hold(directory: Path | str | None) -> bool:
@@ -196,16 +202,17 @@ def persist_latched_hold(directory: Path | str | None) -> bool:
 
     Returns True when nothing was latched or the hold is now on disk.
     """
-    if not _unrecorded_hold:
-        return True
-    record = _read(directory)
-    if record is _UNREADABLE:
-        return True  # already holds on disk
-    record = record if isinstance(record, dict) else {}
-    if _write(directory, {**record, "conflict": True}):
-        _set_unrecorded_hold(False)
-        return True
-    return False
+    with record_lock:
+        if not _unrecorded_hold:
+            return True
+        record = _read(directory)
+        if record is _UNREADABLE:
+            return True  # already holds on disk
+        record = record if isinstance(record, dict) else {}
+        if _write(directory, {**record, "conflict": True}):
+            _set_unrecorded_hold(False)
+            return True
+        return False
 
 
 def hold_latched() -> bool:
@@ -238,19 +245,20 @@ def record_session_account(directory: Path | str | None, account: str | None) ->
     release the hold, since its unsynced local memories are still on the
     device.
     """
-    account = _account(account)
-    if not account:
-        return True
-    record = _read(directory)
-    if record is _UNREADABLE:
-        return True  # already held
-    record = record if isinstance(record, dict) else {}
-    owner = _account(record.get("owner"))
-    if owner == account or record.get("conflict"):
-        return True
-    # Another account, or nobody confirmed yet: this account's local
-    # memories must not reach whoever the cloud lists as the owner.
-    return _write_hold(directory, {**record, "conflict": True})
+    with record_lock:
+        account = _account(account)
+        if not account:
+            return True
+        record = _read(directory)
+        if record is _UNREADABLE:
+            return True  # already held
+        record = record if isinstance(record, dict) else {}
+        owner = _account(record.get("owner"))
+        if owner == account or record.get("conflict"):
+            return True
+        # Another account, or nobody confirmed yet: this account's local
+        # memories must not reach whoever the cloud lists as the owner.
+        return _write_hold(directory, {**record, "conflict": True})
 
 
 def remember_owner(directory: Path | str | None, account: str | None) -> None:
@@ -258,25 +266,27 @@ def remember_owner(directory: Path | str | None, account: str | None) -> None:
 
     Only fills an empty record; it never overrides a recorded owner or conflict.
     """
-    account = _account(account)
-    if not account or _read(directory) is not None:
-        return
-    _write(directory, {"owner": account, "conflict": False})
+    with record_lock:
+        account = _account(account)
+        if not account or _read(directory) is not None:
+            return
+        _write(directory, {"owner": account, "conflict": False})
 
 
-__all__ = [
-    "HOLD_FILENAME",
-    "OWNERSHIP_CONFLICT",
-    "LEGACY_ACCOUNT",
-    "UNKNOWN_BIND",
-    "hold_latched",
-    "persist_latched_hold",
-    "normalize_account",
-    "UNREADABLE_ACCOUNT",
-    "default_directory",
-    "device_held",
-    "hold_path",
-    "record_bind_outcome",
-    "record_session_account",
-    "remember_owner",
-]
+    __all__ = [
+        "HOLD_FILENAME",
+        "OWNERSHIP_CONFLICT",
+        "LEGACY_ACCOUNT",
+        "UNKNOWN_BIND",
+        "hold_latched",
+        "persist_latched_hold",
+    "record_lock",
+        "normalize_account",
+        "UNREADABLE_ACCOUNT",
+        "default_directory",
+        "device_held",
+        "hold_path",
+        "record_bind_outcome",
+        "record_session_account",
+        "remember_owner",
+    ]
