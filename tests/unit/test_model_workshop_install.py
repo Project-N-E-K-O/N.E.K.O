@@ -330,17 +330,17 @@ def test_completed_record_beats_residual_log_after_local_edits(
     service, tmp_path, monkeypatch
 ):
     path, _ = bundle_path(tmp_path)
-    original = service.installer.cleanup
+    original = service.installer.cleanup_private_stage
     monkeypatch.setattr(
         service.installer,
-        "cleanup",
+        "cleanup_private_stage",
         lambda _journal: (_ for _ in ()).throw(OSError("busy")),
     )
     result = install(service, path)
     assert result["phase"] == "completed"
     entry = service.paths.root / result["result"]["local_entrypoint"]
     entry.write_bytes(b"local adjustment")
-    monkeypatch.setattr(service.installer, "cleanup", original)
+    monkeypatch.setattr(service.installer, "cleanup_private_stage", original)
     assert service.recover()[result["task_id"]] == "completed"
     assert entry.read_bytes() == b"local adjustment"
 
@@ -371,15 +371,15 @@ def test_superseded_old_log_cannot_touch_new_installation(
     service, tmp_path, monkeypatch
 ):
     path, _ = bundle_path(tmp_path, "vrm")
-    original = service.installer.cleanup
+    original = service.installer.cleanup_private_stage
     monkeypatch.setattr(
         service.installer,
-        "cleanup",
+        "cleanup_private_stage",
         lambda _journal: (_ for _ in ()).throw(OSError("busy")),
     )
     first = install(service, path)
     data = journal(service, first["task_id"])
-    monkeypatch.setattr(service.installer, "cleanup", original)
+    monkeypatch.setattr(service.installer, "cleanup_private_stage", original)
     # Remove only this old log while reinstalling, then restore the stale log as a crash fixture.
     service.installer.journal_path(first["task_id"]).unlink()
     target = service.paths.root / first["result"]["target"]

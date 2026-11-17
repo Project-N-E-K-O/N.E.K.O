@@ -227,7 +227,7 @@ class WorkshopTasks:
             if journal is not None:
                 try:
                     with self.installer.mutation():
-                        self.installer.cleanup(journal)
+                        self.installer.cleanup_private_stage(journal)
                 except (OSError, WorkshopError):
                     pass  # Keep recovery evidence; never replace the original receive failure.
             with self._condition:
@@ -261,7 +261,7 @@ class WorkshopTasks:
             if journal["phase"] != "committing":
                 try:
                     with self.installer.mutation():
-                        self.installer.cleanup(journal)
+                        self.installer.cleanup_private_stage(journal)
                 except (OSError, WorkshopError):
                     pass
             with self._condition:

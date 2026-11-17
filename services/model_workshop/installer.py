@@ -92,7 +92,7 @@ class Installer:
             journal["phase"] = value
             self.save_journal(journal)
 
-    def cleanup(self, journal):
+    def cleanup_private_stage(self, journal):
         """Only this journal's private stage is removable; published models are never guessed away."""
         stage = self.stage(journal["task_id"])
         if os.path.lexists(stage):
@@ -256,7 +256,7 @@ class Installer:
                 and attempts.get(bundle.sha256) == previous["install_id"]
                 and self.registry.status(previous) == "installed"
             ):
-                self.cleanup(journal)
+                self.cleanup_private_stage(journal)
                 return dict(previous, status="installed", already_installed=True)
             # An unresolved older publication must be recovered, never replaced by a retry.
             for other in self.registry.journals():
@@ -296,7 +296,7 @@ class Installer:
             self.registry.save(rows, attempts)
             # Once completed, residual logs cannot revoke later local edits.
             try:
-                self.cleanup(journal)
+                self.cleanup_private_stage(journal)
             except OSError:
                 pass
             return dict(record, status="installed", already_installed=False)
@@ -335,7 +335,7 @@ class Installer:
                     if completed and completed["install_id"] == journal["task_id"]:
                         # Same attempt preserves local edits; a newer attempt
                         # supersedes the old log without touching current assets.
-                        self.cleanup(journal)
+                        self.cleanup_private_stage(journal)
                         results[path.stem] = (
                             "completed"
                             if completed["install_id"] == path.stem
@@ -344,15 +344,15 @@ class Installer:
                     elif (
                         record and current is not None and current != journal["task_id"]
                     ):
-                        self.cleanup(journal)
+                        self.cleanup_private_stage(journal)
                         results[path.stem] = "superseded"
                     elif journal["phase"] != "committing":
-                        self.cleanup(journal)
+                        self.cleanup_private_stage(journal)
                         results[path.stem] = "interrupted"
                     else:
                         target = self.paths.checked(record["target"])
                         if not os.path.lexists(target):
-                            self.cleanup(journal)
+                            self.cleanup_private_stage(journal)
                             results[path.stem] = "interrupted"
                             continue
                         if identity(target) != journal["object_identity"]:
@@ -364,7 +364,7 @@ class Installer:
                         if current != journal["task_id"]:
                             raise WorkshopError("model_workshop_recovery_conflict")
                         self.registry.save(rows, attempts)
-                        self.cleanup(journal)
+                        self.cleanup_private_stage(journal)
                         results[path.stem] = "completed"
             except (OSError, WorkshopError) as exc:
                 results[path.stem] = (
