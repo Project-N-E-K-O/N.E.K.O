@@ -96,6 +96,7 @@ import { ElMessage } from 'element-plus'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import MarketConversationThread from './MarketConversationThread.vue'
 import {
+  MarketConversationError,
   changeMarketIssueState,
   isSentAfterAccountChange,
   marketConversationSessionChanged,
@@ -125,6 +126,8 @@ const changing = ref(false)
 let listRequest: AbortController | undefined
 let detailRequest: AbortController | undefined
 let disposed = false
+// Bumped by each close/reopen so an older background read cannot undo it.
+let stateVersion = 0
 
 async function loadList(more = false) {
   if (more && (loading.value || next.value === null)) return
@@ -235,7 +238,10 @@ async function send(draft: MarketMessageDraft) {
   const source = detail.value
   const session = detailSession.value
   const request = detailRequest
-  if (!source?.capabilities.can_reply || !session || !request) return
+  // Throw, not return: the form treats a resolved send as posted and clears the draft.
+  if (!source?.capabilities.can_reply || !session || !request) {
+    throw new MarketConversationError(0, 'market_feedback_unavailable')
+  }
   const message = await sendMarketIssueReply(props.pluginId, source.id, session, draft)
   // The write landed even if the detail view has since closed; badges still need a refresh.
   emit('feedback-changed')
@@ -257,11 +263,14 @@ async function refreshIssue(issueId: number, session: string) {
     return
   }
   if (!request) return
+  const version = stateVersion
   try {
     const result = await readMarketIssue(props.pluginId, issueId, request.signal)
     const current = detail.value
     if (
       request.signal.aborted ||
+      // A newer close/reopen started meanwhile; this read may predate it.
+      version !== stateVersion ||
       current?.id !== issueId ||
       result.data.is_hidden ||
       result.session !== session ||
@@ -269,15 +278,23 @@ async function refreshIssue(issueId: number, session: string) {
     ) {
       return
     }
-    const messages = new Map(current.messages.map((message) => [message.id, message]))
-    for (const message of result.data.messages) messages.set(message.id, message)
-    detail.value = {
-      ...result.data,
-      messages: [...messages.values()].sort((left, right) => left.id - right.id),
-      next_message_cursor: current.next_message_cursor,
-    }
+    detail.value = keepLoadedMessages(current, result.data)
   } catch {
     // The list already shows the new state; a later visit re-reads the detail.
+  }
+}
+
+/** Take the fresh state and capabilities, keeping messages already on screen. */
+function keepLoadedMessages(
+  current: MarketIssueDetail,
+  fresh: MarketIssueDetail
+): MarketIssueDetail {
+  const messages = new Map(current.messages.map((message) => [message.id, message]))
+  for (const message of fresh.messages) messages.set(message.id, message)
+  return {
+    ...fresh,
+    messages: [...messages.values()].sort((left, right) => left.id - right.id),
+    next_message_cursor: current.next_message_cursor,
   }
 }
 
@@ -287,6 +304,7 @@ async function transition(action: 'close' | 'reopen') {
   const request = detailRequest
   if (!source || !session || !request || changing.value) return
   changing.value = true
+  stateVersion += 1
   try {
     const updated = await changeMarketIssueState(props.pluginId, source.id, session, action)
     // A successful write must reach the shared list even after the detail view
@@ -295,7 +313,9 @@ async function transition(action: 'close' | 'reopen') {
       items.value = items.value.map((item) => (item.id === updated.id ? updated : item))
     }
     emit('feedback-changed')
-    if (!request.signal.aborted) detail.value = updated
+    if (!request.signal.aborted && detail.value?.id === updated.id) {
+      detail.value = keepLoadedMessages(detail.value, updated)
+    }
     // The same issue was reopened while the write was in flight; its fresh read
     // may predate the write, so read it again rather than trust either copy.
     else if (!disposed && selected.value === source.id) void refreshIssue(source.id, session)

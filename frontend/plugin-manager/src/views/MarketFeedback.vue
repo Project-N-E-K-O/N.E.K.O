@@ -287,7 +287,8 @@ async function loadPage(append = false, quiet = false): Promise<void> {
     avatars.value = {}
     if (state.value !== 'ready') state.value = 'loading'
   }
-  const deep = keepLoaded && !!previous && loadedPages > 1
+  // An emptied list has nothing to re-read in depth (and limit=0 is not a valid page).
+  const deep = keepLoaded && !!previous?.items.length && loadedPages > 1
   try {
     const result =
       deep && previous
@@ -357,14 +358,18 @@ async function markRead(target: FeedbackItem | 'all'): Promise<void> {
     await markMarketFeedbackRead(target, session)
     const current = page.value
     if (mounted && current?.session === session) {
-      // Clear the marked items here too: a quiet refresh only re-reads the first page.
+      // Apply the write locally first, so the list is right even if the quiet
+      // refresh below fails: under "unread" a read item leaves the list.
+      const marked = (item: FeedbackItem) =>
+        target === 'all' || feedbackKey(item) === feedbackKey(target)
+      const newlyRead = current.items.filter((item) => marked(item) && item.unread).length
       page.value = {
         ...current,
-        items: current.items.map((item) =>
-          target === 'all' || feedbackKey(item) === feedbackKey(target)
-            ? { ...item, unread: false }
-            : item
-        ),
+        unread_total: target === 'all' ? 0 : Math.max(0, current.unread_total - newlyRead),
+        items:
+          status.value === 'unread'
+            ? current.items.filter((item) => !marked(item))
+            : current.items.map((item) => (marked(item) ? { ...item, unread: false } : item)),
       }
       await loadPage(false, true)
     } else if (mounted && !current) {
@@ -392,6 +397,8 @@ async function refresh(quiet = false) {
 
 // Coming back from the Market in a browser must not throw away loaded pages.
 function onFocus() {
+  // Do not abort a "load more" (or any load) the author is waiting on.
+  if (loading.value) return
   void refresh(true)
 }
 

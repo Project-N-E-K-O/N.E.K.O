@@ -38,6 +38,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MarketPluginComments } from '@/api/market'
 import {
+  MarketConversationError,
   marketConversationSessionChanged,
   readMarketComments,
   sendMarketComment,
@@ -99,7 +100,10 @@ async function load(more = false) {
 
 async function send(draft: MarketMessageDraft) {
   const activeSession = session.value
-  if (!activeSession || !thread.value?.can_reply) return
+  // Throw, not return: the form treats a resolved send as posted and clears the draft.
+  if (!activeSession || !thread.value?.can_reply) {
+    throw new MarketConversationError(0, 'market_feedback_unavailable')
+  }
   const message = await sendMarketComment(props.pluginId, activeSession, draft)
   if (session.value === activeSession && thread.value && !request?.signal.aborted) {
     const messages = thread.value.messages

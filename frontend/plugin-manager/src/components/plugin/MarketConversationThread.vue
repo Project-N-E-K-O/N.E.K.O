@@ -38,10 +38,21 @@
     </div>
     <label>
       {{ t('marketFeedback.message') }}
-      <el-input v-model="body" type="textarea" :rows="3" :maxlength="10000" :disabled="sending" />
+      <el-input
+        v-model="body"
+        type="textarea"
+        :rows="3"
+        :maxlength="10000"
+        :disabled="sending || restoring"
+      />
     </label>
     <el-alert v-if="sendError" :title="t(sendError)" type="error" :closable="false" show-icon />
-    <el-button native-type="submit" type="primary" :disabled="!body.trim()" :loading="sending">
+    <el-button
+      native-type="submit"
+      type="primary"
+      :disabled="!body.trim() || restoring"
+      :loading="sending"
+    >
       {{ t('marketFeedback.send') }}
     </el-button>
   </form>
@@ -100,40 +111,49 @@ const replyTo = ref<MarketPluginComment | null>(null)
 const sending = ref(false)
 const sendError = ref('')
 const avatars = ref<Record<string, string>>({})
+// True while a stashed draft waits for the send it raced; editing pauses so
+// the restored text never collides with newly typed text.
+const restoring = ref(false)
 let lastDraft: MarketMessageDraft | undefined
 let inFlight: Promise<boolean> | undefined
 let alive = true
 
-async function restoreDraft(draft: UnsentDraft) {
-  // Wait for a racing send: restoring text it already posted would invite a duplicate.
-  if (draft.posted && (await draft.posted)) return
-  if (!alive) {
-    unsentDrafts.set(props.draftKey, { body: draft.body, replyTo: draft.replyTo })
-    return
+/**
+ * Take over this thread's stashed draft. The entry stays readable in the Map
+ * until a live, writable form has settled it, so a second reload during the
+ * wait, or a read-only mount, never loses it.
+ */
+async function claimDraft() {
+  if (restoring.value) return
+  restoring.value = true
+  try {
+    for (;;) {
+      const draft = unsentDrafts.get(props.draftKey)
+      if (!draft || !alive || !props.canWrite || body.value.trim()) return
+      // Restoring text the racing send already posted would invite a duplicate.
+      const posted = draft.posted ? await draft.posted : false
+      if (!alive) return
+      if (unsentDrafts.get(props.draftKey) !== draft) continue
+      unsentDrafts.delete(props.draftKey)
+      if (!posted) {
+        body.value = draft.body
+        replyTo.value = draft.replyTo
+        return
+      }
+    }
+  } finally {
+    restoring.value = false
   }
-  if (body.value.trim()) return
-  body.value = draft.body
-  replyTo.value = draft.replyTo
 }
 
-// A read-only remount (signed out, guest view) leaves the draft for a later writable one.
-const stashed = props.canWrite ? unsentDrafts.get(props.draftKey) : undefined
-if (stashed) {
-  unsentDrafts.delete(props.draftKey)
-  void restoreDraft(stashed)
-}
-
-/** Ask the parent to reload; the reload remounts this form, so keep what was typed. */
-function reloadKeepingDraft() {
-  if (body.value.trim()) {
-    unsentDrafts.set(props.draftKey, {
-      body: body.value,
-      replyTo: replyTo.value,
-      posted: sending.value ? inFlight : undefined,
-    })
-  }
-  emit('session-updated')
-}
+// Also runs when write access returns in place (e.g. an Issue reopened).
+watch(
+  () => props.canWrite,
+  (canWrite) => {
+    if (canWrite) void claimDraft()
+  },
+  { immediate: true }
+)
 
 /** Only a 4xx proves the Market did not take the write; a lost response might have. */
 function mayHavePosted(error: unknown): boolean {
@@ -141,12 +161,21 @@ function mayHavePosted(error: unknown): boolean {
 }
 
 function onAccountChange() {
-  reloadKeepingDraft()
+  emit('session-updated')
 }
 onMounted(() => window.addEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange))
 onBeforeUnmount(() => {
   alive = false
   window.removeEventListener(MARKET_AUTH_CHANGED_EVENT, onAccountChange)
+  // Every remount (session reload, leaving an Issue, closing the dialog) keeps
+  // what was typed. A send still in flight decides later whether it is restorable.
+  if (body.value.trim() && !restoring.value) {
+    unsentDrafts.set(props.draftKey, {
+      body: body.value,
+      replyTo: replyTo.value,
+      posted: sending.value ? inFlight : undefined,
+    })
+  }
 })
 
 const queried = new Set<string>()
@@ -162,16 +191,10 @@ watch(
     if (!actors.size) return
     const request = new AbortController()
     onCleanup(() => request.abort())
-    const entries = [...actors.values()]
-    for (let offset = 0; offset < entries.length && !request.signal.aborted; offset += 100) {
-      const batch = entries.slice(offset, offset + 100)
-      const values = await fetchCommunityAuthorAvatars(batch, request.signal)
-      if (request.signal.aborted) return
-      for (const actor of batch) {
-        if (actor.community_profile_id) queried.add(actor.community_profile_id)
-      }
-      Object.assign(avatars.value, values)
-    }
+    const values = await fetchCommunityAuthorAvatars([...actors.values()], request.signal)
+    if (request.signal.aborted) return
+    for (const id of actors.keys()) queried.add(id)
+    Object.assign(avatars.value, values)
   },
   { immediate: true }
 )
@@ -199,7 +222,7 @@ function avatarFor(message: MarketPluginComment): string {
 async function submit() {
   const text = body.value.trim()
   const replyId = replyTo.value?.id ?? null
-  if (!text || sending.value || !props.canWrite) return
+  if (!text || sending.value || restoring.value || !props.canWrite) return
   if (!lastDraft || lastDraft.body !== text || lastDraft.reply_to_id !== replyId) {
     lastDraft = { body: text, reply_to_id: replyId, client_message_id: crypto.randomUUID() }
   }
@@ -227,9 +250,12 @@ async function submit() {
       // Nothing was posted. The inline error would vanish with the remount,
       // so say it in a toast and carry the draft over.
       ElMessage.error(t('marketFeedback.notSentSessionChanged'))
-      // If an account-change reload already replaced this form, its stash
-      // carries this send's outcome and the new form restores the text.
-      if (alive) reloadKeepingDraft()
+      // The unmount stash keeps the text. If an account-change reload already
+      // replaced this form, that stash carries this send's outcome instead.
+      if (alive) emit('session-updated')
+    } else if (!alive) {
+      // The inline error has no form left to show in.
+      ElMessage.error(t('marketFeedback.sendFailed'))
     } else {
       sendError.value =
         error instanceof MarketConversationError && error.code === 'market_email_unverified'
