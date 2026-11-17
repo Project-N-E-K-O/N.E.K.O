@@ -326,11 +326,13 @@ TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 4000
 """Cap on everything sent to the model for one review, the instructions
 included."""
 
-TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 1640
+TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 1606
 """Cap on the account of what the task agent did within that input. Of a
 longer one the beginning and the end are kept. With every other part at its
 own cap the whole still fits in ``TASK_AGENT_REVIEW_INPUT_MAX_TOKENS``, so
-nothing is cut off at the end; a test keeps it so."""
+nothing is cut off at the end; a test keeps it so. It is what gives way
+when the review's own instructions grow: 34 tokens went to the sentence
+that asks for the path of the file an entry is about."""
 
 TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS = 60
 """Cap on one line of that account (one tool call, or one thing said)."""

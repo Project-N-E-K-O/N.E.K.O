@@ -125,6 +125,11 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 "content": content,
                 "category": str(args["category"]),
                 "scope": str(args.get("scope", "project")),
+                # How it is known, and the files that show it. The host
+                # looks for the files and tells from both whether the
+                # lesson takes effect; nothing is checked here.
+                "confidence": str(args["confidence"]),
+                "evidence": [str(path) for path in args.get("evidence") or [] if str(path).strip()],
             }
             reply = await ask_host("note_lesson", payload, call)
             return f"lesson submitted.{_host_note(reply)}"

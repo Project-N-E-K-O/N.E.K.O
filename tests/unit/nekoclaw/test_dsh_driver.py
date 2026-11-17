@@ -1074,7 +1074,7 @@ async def test_the_hosts_own_tools_are_not_asked_about(tmp_path: Path, dsh) -> N
 
     driver = dsh(HostCallbacks(decide_permission=decide, note_lesson=lesson))
     await driver.started(make_spec(tmp_path))
-    await driver.run("s1", '!host note_lesson {"title": "t", "content": "c", "category": "lesson"}\n!tool todo_write {"todos": []}')
+    await driver.run("s1", '!host note_lesson {"title": "t", "content": "c", "category": "lesson", "confidence": "verified"}\n!tool todo_write {"todos": []}')
 
     assert asked == []
     assert driver.record("service-call")[0]["asked"] is False and not driver.record("service-call")[0]["failed"]
@@ -1309,7 +1309,7 @@ async def test_the_hosts_tools_reach_dsh_as_a_service_and_keep_their_names_in_ev
     await driver.run(
         "s1",
         '!host report {"status": "progress", "summary": "half way"}\n'
-        '!host note_lesson {"title": "t", "content": "c", "category": "lesson"}\n'
+        '!host note_lesson {"title": "t", "content": "c", "category": "lesson", "confidence": "verified"}\n'
         '!host web_search {"queries": ["q"]}',
     )
 

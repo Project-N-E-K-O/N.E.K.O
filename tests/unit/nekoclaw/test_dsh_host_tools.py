@@ -371,7 +371,7 @@ async def test_a_batch_whose_session_is_opened_again_midway_carries_out_no_more_
     _open(tools, tmp_path)
     batch = [
         _request("tools/call", {"name": "report", "arguments": {"status": "progress", "summary": "x"}}, 1),
-        _request("tools/call", {"name": "note_lesson", "arguments": {"title": "t", "content": "c", "category": "lesson"}}, 2),
+        _request("tools/call", {"name": "note_lesson", "arguments": {"title": "t", "content": "c", "category": "lesson", "confidence": "verified"}}, 2),
     ]
     handling = asyncio.ensure_future(tools.handle("s1", batch))
     await asyncio.wait_for(reporting.wait(), 10)

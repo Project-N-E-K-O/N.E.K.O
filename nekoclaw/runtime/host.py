@@ -79,7 +79,11 @@ Callbacks, their payload and their result:
 ``note_lesson``  (tool ``note_lesson``)
     Payload: ``{"title": str, "content": str, "category": "feedback" |
     "lesson" | "reflection" | "reference" | "progress", "scope": "project" |
-    "global"}``. Result: ``None`` or ``{"message": str}``.
+    "global", "confidence": "verified" | "observed" | "inferred",
+    "evidence": [str, ...]}`` (paths as the model wrote them, possibly
+    none; the host looks for the files). Result: ``None`` or ``{"message":
+    str}``, which says what became of the lesson: kept, already there, not
+    in effect yet, or refused.
 
 ``web_search``  (tool ``web_search``)
     Payload: ``{"queries": [str, ...]}`` (1 to 10, already de-duplicated).

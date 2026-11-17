@@ -98,13 +98,13 @@ async def test_note_lesson_and_web_search_go_through_the_host(tmp_path: Path) ->
         tmp_path,
         HostCallbacks(note_lesson=_recording(None, lessons), web_search=_recording(results, searches)),
         [
-            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson"}, "c1", index=0),
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "confidence": "observed", "evidence": ["uv.lock", " "]}, "c1", index=0),
             call("web_search", {"queries": ["python 3.11 taskgroup", "python 3.11 taskgroup"]}, "c2", index=1),
             finish("tool_calls"),
         ],
     )
     assert lessons == [
-        ("s1", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "scope": "project"})
+        ("s1", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "scope": "project", "confidence": "observed", "evidence": ["uv.lock"]})
     ]
     assert searches == [("s1", {"queries": ["python 3.11 taskgroup"]})]  # duplicates removed
     lesson_end, search_end = events.of("tool_end")

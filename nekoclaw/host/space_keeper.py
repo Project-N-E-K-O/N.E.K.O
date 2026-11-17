@@ -717,30 +717,56 @@ class SpaceKeeper:
             except (SpaceError, OSError) as exc:
                 logger.warning("what a commission filed could not be moved to its project (%s)", type(exc).__name__)
         kept: list[str] = []
+        waiting = 0
         entries = data.get("entries")
+        bases = await self._evidence_bases(commission.workdir, project)
         for item in (entries if isinstance(entries, list) else [])[: self._entries_allowed(commission)]:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "").strip().lower()
             everywhere = str(item.get("scope") or "").strip().lower() == "global" and kind != "progress"
             try:
-                entry, _created = await self._space.file_entry(
+                # Judged like a note of a task agent: the model read an
+                # account and checked nothing, so what it made takes effect
+                # when a file its words name exists where the commission
+                # worked, and waits to be seen again otherwise.
+                entry, _created = await self._space.propose_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
                     content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                     kind=kind if kind in ENTRY_TYPES else "lesson",
                     description=str(item.get("description") or ""),
                     source=commission.id,
+                    observer=commission.parent_id or commission.id,
+                    bases=bases,
                 )
             except (SpaceError, OSError) as exc:
                 logger.warning("an entry of a review could not be kept (%s)", type(exc).__name__)
                 continue
+            if entry is None:
+                waiting += 1
+                continue
             kept.append(entry.id if everywhere else f"{project}/{entry.id}")
         await self._space.write_review(project, commission, text, entries=tuple(kept))
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
+        if waiting:
+            # Made by the review and not in effect yet: in no index, and not among its entries.
+            outcome["waiting"] = waiting
         if refiled:
             outcome["refiled"] = [f"{project}/{entry_id}" for entry_id in refiled]
         return outcome
+
+    async def _evidence_bases(self, workdir: str | None, project: str | None) -> list[str]:
+        """Return the directories in which the files an entry names are looked for: where the work was done, where the project is."""
+        bases = [workdir] if workdir else []
+        if project and project != DEFAULT_PROJECT:
+            try:
+                record = await self._space.get_project(project)
+            except (SpaceError, OSError, ValueError):
+                record = None
+            if record is not None and record.workdir and record.workdir not in bases:
+                bases.append(record.workdir)
+        return bases
 
     def _unreviewed(self, conn: sqlite3.Connection, since: float, before: float, limit: int) -> list[str]:
         """Return the oldest commissions that ended between two times and have no review. Blocking.
@@ -835,6 +861,9 @@ class SpaceKeeper:
                 return False
             self._last_upkeep = now
             for name, step in (
+                # First, and with no model: what is archived and reviewed
+                # after it reads indexes that no longer list what expired.
+                ("evidence", self._check_evidence),
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),
                 ("old sessions", lambda: self._clean_sessions(now, state)),
@@ -848,6 +877,17 @@ class SpaceKeeper:
             return True
         finally:
             self._tidying = False
+
+    async def _check_evidence(self) -> None:
+        """Have the space look whether the files its entries rest on are still there; see ``TaskAgentSpace.check_evidence``."""
+        outcome = await self._space.check_evidence()
+        if any(outcome.values()):
+            logger.info(
+                "task agent space: %d entries expired, %d are in effect again, %d notes that waited were dropped",
+                outcome.get("expired", 0),
+                outcome.get("restored", 0),
+                outcome.get("dropped", 0),
+            )
 
     async def _archive_messages(self, project: Project) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (
@@ -993,12 +1033,16 @@ class SpaceKeeper:
                     continue
                 kind = str(item.get("type") or "").strip().lower()
                 try:
-                    await self._space.file_entry(
+                    # Judged as what a review makes is; see ``_keep_review``.
+                    # The project as a whole is what has seen it.
+                    await self._space.propose_entry(
                         None,
                         title=str(item.get("title") or ""),
                         content=str(item.get("content") or ""),
                         kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
                         description=str(item.get("description") or ""),
+                        observer=f"archive:{project.name}",
+                        bases=[project.workdir] if project.workdir else [],
                     )
                 except (SpaceError, OSError) as exc:
                     logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)
