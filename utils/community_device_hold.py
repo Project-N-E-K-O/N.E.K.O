@@ -24,6 +24,7 @@ Only a successful bind updates ``owner`` and clears ``conflict``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -31,12 +32,16 @@ import secrets
 import threading
 import uuid
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger("neko.community_device_hold")
 
 HOLD_FILENAME = "community_device_hold.json"
 OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
+# A bind request that failed after it may have reached the cloud: the cloud may
+# have bound the device without this install hearing back.
+CLOUD_UNREACHABLE = "cloud_unreachable"
 # Key in a logout tombstone of community_auth.json: the device record could not
 # take this hold, so the tombstone is its copy on disk.
 DEVICE_HOLD_PENDING = "device_hold_pending"
@@ -59,6 +64,9 @@ UNKNOWN_BIND = object()
 # held for the rest of this process even if the login that carried the
 # conflict is replaced or cleared; only a written successful bind resets it.
 _unrecorded_hold = False
+# Installed by the login layer: asks the cloud again with the signed-in login
+# when a check on disk never got a definite answer.
+_check_resolver: Callable[[], Awaitable[None]] | None = None
 
 
 def default_directory() -> Path | None:
@@ -247,10 +255,11 @@ def begin_bind_check(directory: Path | str | None) -> bool | None:
     restarts. Unlike ``begin_ownership_check`` this does not mark a conflict,
     so a login whose answer is recorded leaves no hold behind for the owner.
 
-    Returns None when the hold cannot be written; the caller must not bind
-    then. Returns False when an earlier check that never finished (the process
-    stopped before its answer was recorded) already holds; the caller must not
-    end that one. Otherwise True: pass it to ``end_bind_check``.
+    Checks run one at a time (under the login layer's device bind lock), so a
+    check already on disk never got a definite answer. Returns None when the
+    hold cannot be written; the caller must not bind then. Returns False when
+    this check takes over such a leftover one, True when it started a new one.
+    Pass the result to ``end_bind_check``.
     """
     with record_lock:
         record = _read(directory)
@@ -262,15 +271,54 @@ def begin_bind_check(directory: Path | str | None) -> bool | None:
         return True if _write(directory, {**record, "checking": True}) else None
 
 
-def end_bind_check(directory: Path | str | None) -> bool:
-    """Release the hold of a check whose answer is now recorded."""
+def end_bind_check(directory: Path | str | None, check: bool | None, bind: Any) -> bool:
+    """Release a check's hold once its answer ``bind`` is recorded.
+
+    The hold stays while the answer leaves the owner unknown (the request may
+    have reached the cloud). A check that took over a leftover one only ends
+    on an answer that settles the owner whatever the lost answer was: a bind,
+    or a refusal now held as a conflict. Returns False only when a required
+    write failed.
+    """
     with record_lock:
+        if check is None or not isinstance(bind, dict) or bind.get("error") == CLOUD_UNREACHABLE:
+            return True
         record = _read(directory)
+        if not check and bind.get("bound") is not True and not (
+            bind.get("error") == OWNERSHIP_CONFLICT and isinstance(record, dict) and record.get("conflict")
+        ):
+            return True
         if not isinstance(record, dict):
             return record is None
         if not record.get("checking"):
             return True
         return _write(directory, {key: value for key, value in record.items() if key != "checking"})
+
+
+def check_pending(directory: Path | str | None) -> bool:
+    """Whether a check on disk is still waiting for a definite answer."""
+    record = _read(directory)
+    return isinstance(record, dict) and bool(record.get("checking"))
+
+
+def install_check_resolver(resolver: Callable[[], Awaitable[None]]) -> None:
+    global _check_resolver
+    _check_resolver = resolver
+
+
+async def resolve_pending_check() -> None:
+    """Ask the cloud again when a check on disk never got a definite answer.
+
+    Otherwise a login that stopped mid-check (or lost its answer to a network
+    error) would hold uploads until someone happened to log in again.
+    """
+    resolver = _check_resolver
+    if resolver is None or not await asyncio.to_thread(check_pending, default_directory()):
+        return
+    try:
+        await resolver()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("community_device_hold: re-asking the cloud failed: %s", exc)
 
 
 def hold_latched() -> bool:
@@ -363,6 +411,7 @@ def remember_owner(directory: Path | str | None, account: str | None) -> None:
 
 
 __all__ = [
+    "CLOUD_UNREACHABLE",
     "DEVICE_HOLD_PENDING",
     "HOLD_FILENAME",
     "OWNERSHIP_CONFLICT",
@@ -370,8 +419,10 @@ __all__ = [
     "UNKNOWN_BIND",
     "begin_bind_check",
     "begin_ownership_check",
+    "check_pending",
     "end_bind_check",
     "hold_latched",
+    "install_check_resolver",
     "persist_latched_hold",
     "record_lock",
     "normalize_account",
@@ -382,5 +433,6 @@ __all__ = [
     "record_bind_outcome",
     "record_session_account",
     "record_unsaved_bind",
+    "resolve_pending_check",
     "remember_owner",
 ]

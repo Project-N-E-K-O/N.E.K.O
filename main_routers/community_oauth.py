@@ -1527,6 +1527,53 @@ def _response_detail(res: Any) -> Any:
         return None
 
 
+async def _bind_signed_in_login(access_token: str, local_user_id: str) -> dict | None:
+    """Bind the device for the signed-in login and record the cloud's answer.
+
+    Call with ``_device_bind_lock`` held. Returns None without asking the cloud
+    when the hold could not be written first.
+    """
+    check = await asyncio.to_thread(community_device_hold.begin_bind_check, C._credential_dir())
+    if check is None:
+        return None
+    bind = await _oauth_guest_bind(C._social_base_url(), access_token)
+    conflict = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
+    persisted = False
+    if bind.get("bound") or conflict:
+        # Persist repaired binds and terminal conflicts alike, or /auth-status
+        # keeps reporting the stale transient failure and every later handoff
+        # repeats the bind round trip.
+        persisted = await asyncio.to_thread(C._persist_repaired_bind, access_token, bind)
+    # A success only releases the hold when it was recorded for the
+    # still-current login; a stale account's success must not clear a newer
+    # conflict. Recording a conflict is always safe.
+    await asyncio.to_thread(
+        C._settle_bind_check, check, bind, local_user_id, bind if persisted or conflict else None,
+    )
+    return bind
+
+
+async def reconfirm_device_owner() -> None:
+    """Ask the cloud again with the signed-in login when an earlier answer was lost.
+
+    A login that stopped mid-check, or whose request failed after it may have
+    reached the cloud, leaves the check on disk and uploads held. Nothing else
+    would ask again for a login that already shows as bound.
+    """
+    async with _device_bind_lock:
+        if not await asyncio.to_thread(community_device_hold.check_pending, C._credential_dir()):
+            return
+        snapshot = await asyncio.to_thread(C._desktop_session_snapshot) or {}
+        access_token = str(snapshot.get("access_token") or "").strip()
+        local_user_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
+        if access_token and local_user_id:
+            await _bind_signed_in_login(access_token, local_user_id)
+
+
+# facts_sync asks for this before its upload gate; late-bound so patches reach it.
+community_device_hold.install_check_resolver(lambda: reconfirm_device_owner())
+
+
 async def _oauth_guest_bind(
     social_base: str,
     access_token: str,
@@ -1656,7 +1703,7 @@ async def _oauth_guest_bind(
                 return bind
             bind["error"] = _response_detail(bind_res) or f"http_{bind_res.status_code}"
     except (httpx.HTTPError, OSError) as exc:
-        bind["error"] = "cloud_unreachable"
+        bind["error"] = community_device_hold.CLOUD_UNREACHABLE
         logger.info("community_oauth: guest bind failed: %s", exc)
     return bind
 

@@ -1713,7 +1713,7 @@ def test_unsaved_bind_holds_only_when_it_outdates_the_record(tmp_path, owner, bi
 def test_owner_is_seeded_while_a_check_is_on_disk(tmp_path):
     assert hold.begin_bind_check(tmp_path) is True
     hold.remember_owner(tmp_path, USER_ID)
-    assert hold.end_bind_check(tmp_path)
+    assert hold.end_bind_check(tmp_path, True, {"bound": False, "error": "client_not_registered"})
     assert not hold.device_held(tmp_path, USER_ID)
     assert hold.device_held(tmp_path, OWNER_A)
 
@@ -1733,3 +1733,90 @@ def test_latched_hold_survives_a_read_error_at_logout_and_restart(oauth_app, mon
     monkeypatch.setattr(hold, "default_directory", lambda: auth.parent)
     monkeypatch.setattr(sync_worker, "_signed_in_account", lambda: None)
     assert sync_worker._device_bound_to_other_account()
+
+
+def _answer(monkeypatch, bind):
+    asked = []
+
+    async def answer(_social_base, access_token, *, rebind=False):
+        asked.append(access_token)
+        return dict(bind)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", answer)
+    return asked
+
+
+async def test_check_left_by_a_stopped_login_is_settled_by_the_signed_in_owner(oauth_app, monkeypatch):  # noqa: F811
+    """The bound owner is signed in; another login stops mid-check; after a
+    restart the owner's login asks the cloud again and uploads resume."""
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
+    assert hold.begin_bind_check(auth.parent) is True  # the process stops here
+    hold._set_unrecorded_hold(False)  # restart
+    assert hold.device_held(auth.parent, USER_ID, saved_bind=dict(BOUND))
+
+    asked = _answer(monkeypatch, BOUND)
+    await O.reconfirm_device_owner()
+
+    assert asked == ["account-b-access"]
+    assert not hold.check_pending(auth.parent)
+    assert not hold.device_held(auth.parent, USER_ID, saved_bind=dict(BOUND))
+    await O.reconfirm_device_owner()
+    assert asked == ["account-b-access"]  # nothing left to ask about
+
+
+async def test_unsaved_login_with_an_unknown_answer_holds_until_reconfirmed(tmp_path, monkeypatch):
+    """The bind request failed after it may have reached the cloud, and the
+    login was not saved: the old login must not upload until the cloud answers."""
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    _pending_login(tmp_path, monkeypatch)
+    _answer(monkeypatch, {"bound": False, "error": hold.CLOUD_UNREACHABLE})
+    monkeypatch.setattr(O, "_persist_oauth_credentials", lambda *_args, **_kwargs: False)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+    hold._set_unrecorded_hold(False)  # restart
+    assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
+    (tmp_path / "social_session.json").write_text(
+        json.dumps({"token": "a-token", "local_user_id": OWNER_A, "auth_source": "oauth"}), encoding="utf-8",
+    )
+    _answer(monkeypatch, {"bound": False, "error": hold.CLOUD_UNREACHABLE})
+    await O.reconfirm_device_owner()
+    assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
+
+    # The cloud moved the device to B after all: A is refused and stays held.
+    _answer(monkeypatch, CONFLICT)
+    await O.reconfirm_device_owner()
+    assert not hold.check_pending(tmp_path)
+    assert hold.device_held(tmp_path, OWNER_A, saved_bind=dict(BOUND))
+
+
+def test_taken_over_check_ends_only_on_an_answer_that_settles_the_owner(tmp_path):
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    assert hold.begin_bind_check(tmp_path) is True
+    assert hold.begin_bind_check(tmp_path) is False  # left unfinished, taken over
+    # A refusal for another account says nothing about who the lost answer
+    # bound the device to.
+    hold.record_unsaved_bind(tmp_path, dict(CONFLICT), USER_ID)
+    assert hold.end_bind_check(tmp_path, False, dict(CONFLICT))
+    assert hold.check_pending(tmp_path)
+    assert hold.end_bind_check(tmp_path, False, {"bound": False, "error": "http_401"})
+    assert hold.check_pending(tmp_path)
+    assert hold.end_bind_check(tmp_path, False, dict(BOUND))
+    assert not hold.check_pending(tmp_path)
+
+
+async def test_facts_sync_asks_again_before_its_upload_gate(tmp_path, monkeypatch):
+    _facts_sync_env(tmp_path, monkeypatch)
+    order = []
+
+    async def resolver():
+        order.append("resolve")
+
+    monkeypatch.setattr(hold, "_check_resolver", resolver)
+    monkeypatch.setattr(
+        sync_worker, "_device_bound_to_other_account", lambda: order.append("gate") or True,
+    )
+    hold.begin_bind_check(tmp_path)
+    await sync_worker._sweep_once()
+    assert order == ["resolve", "gate"]

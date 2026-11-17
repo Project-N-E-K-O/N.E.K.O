@@ -1013,8 +1013,8 @@ def _settle_bind_check(
     """Record a login's bind answer, then release the hold its check put on disk.
 
     ``saved_bind`` is the outcome the saved login carries, or None when the
-    login was not saved. While the answer is not on disk the check keeps
-    holding, so a restart cannot forget it.
+    login was not saved. While the answer is not on disk, or leaves the owner
+    unknown, the check keeps holding, so a restart cannot forget it.
     """
     directory = _credential_dir()
     with community_device_hold.record_lock:
@@ -1022,8 +1022,8 @@ def _settle_bind_check(
             recorded = _record_device_hold(saved_bind, local_user_id)
         else:
             recorded = community_device_hold.record_unsaved_bind(directory, cloud_bind, local_user_id)
-        if check and recorded:
-            recorded = community_device_hold.end_bind_check(directory)
+        if recorded:
+            recorded = community_device_hold.end_bind_check(directory, check, cloud_bind)
     return recorded
 
 
@@ -1460,7 +1460,7 @@ async def _store_session(
                     bind["error"] = f"http_{r.status_code}"
                 logger.info("card_drop: bind-client returned %s: %s", r.status_code, bind["error"])
         except (httpx.HTTPError, OSError) as exc:
-            bind["error"] = "cloud_unreachable"
+            bind["error"] = community_device_hold.CLOUD_UNREACHABLE
             logger.info("card_drop: bind-client after login failed: %s", exc)
 
     from main_routers import community_oauth
@@ -1499,14 +1499,18 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
     """Complete email/password login by storing JWTs and binding the client."""
     tokens = login_out.get("tokens") or {}
     user = login_out.get("user") or {}
+    from main_routers import community_oauth
+
     try:
-        bind = await _store_session(
-            base,
-            tokens.get("access_token"),
-            tokens.get("refresh_token"),
-            user,
-            auth_source="legacy",
-        )
+        # Device checks run one at a time; see community_device_hold.begin_bind_check.
+        async with community_oauth._device_bind_lock:
+            bind = await _store_session(
+                base,
+                tokens.get("access_token"),
+                tokens.get("refresh_token"),
+                user,
+                auth_source="legacy",
+            )
     except _InvalidIdentityResponse as exc:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     return user, bind
@@ -2061,25 +2065,9 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
                 return JSONResponse(
                     {"detail": "desktop_login_required"}, status_code=409, headers=cors
                 )
-            # Without a hold on disk the answer could be lost to a restart;
-            # skip the retry then, the bind stays as it was.
-            check = await asyncio.to_thread(community_device_hold.begin_bind_check, _credential_dir())
-            if check is not None:
-                bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
-                conflict = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
-                persisted = False
-                if bind.get("bound") or conflict:
-                    # Persist repaired binds and terminal conflicts alike, or
-                    # /auth-status keeps reporting the stale transient failure and
-                    # every later handoff repeats the bind round trip.
-                    persisted = await asyncio.to_thread(_persist_repaired_bind, access_token, bind)
-                # A success only releases the hold when it was recorded for the
-                # still-current login; a stale account's success must not clear a
-                # newer conflict. Recording a conflict is always safe.
-                await asyncio.to_thread(
-                    _settle_bind_check, check, bind, local_user_id,
-                    bind if persisted or conflict else None,
-                )
+            # None: the hold could not be written first, so the cloud was not
+            # asked and the bind stays as it was.
+            bind = await _co._bind_signed_in_login(access_token, local_user_id) or bind
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another

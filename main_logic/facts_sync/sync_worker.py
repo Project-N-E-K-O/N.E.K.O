@@ -388,6 +388,9 @@ async def _sweep_once() -> None:
         logger.warning("facts_sync: no client credentials available, skipping sweep")
         return
     client_id, client_proof = credentials
+    # A check that never got a definite answer holds uploads until the
+    # signed-in login asks the cloud again.
+    await community_device_hold.resolve_pending_check()
     if await asyncio.to_thread(_device_bound_to_other_account):
         logger.info(
             "facts_sync: this device is bound to another community account; "
