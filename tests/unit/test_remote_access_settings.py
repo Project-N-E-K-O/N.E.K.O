@@ -1,6 +1,8 @@
 """The desktop owner can manage access without granting remote session holders that ability."""
 
+import os
 import secrets
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -36,9 +38,13 @@ async def test_remote_access_settings_apply_and_preserve_the_owner_boundary(monk
 
     endpoint = "/api/runtime/remote-access"
 
-    def desktop_headers():
+    def desktop_headers(*, age=0):
         proof = secrets.token_hex(32)
-        (runtime_dir / f"remote-access-{proof}.token").touch(mode=0o600, exist_ok=False)
+        proof_file = runtime_dir / f"remote-access-{proof}.token"
+        proof_file.touch(mode=0o600, exist_ok=False)
+        if age:
+            timestamp = time.time() - age
+            os.utime(proof_file, (timestamp, timestamp))
         return {"X-Neko-Remote-Access-Token": proof}
 
     async with (
@@ -49,6 +55,8 @@ async def test_remote_access_settings_apply_and_preserve_the_owner_boundary(monk
         ) as remote,
     ):
         assert (await desktop.get(endpoint)).status_code == 403
+        assert (await desktop.get(endpoint, headers=desktop_headers(age=30))).status_code == 403
+        assert (await desktop.get(endpoint, headers=desktop_headers(age=-30))).status_code == 403
         forwarded = await desktop.get(endpoint, headers={**desktop_headers(), "X-Forwarded-For": "192.0.2.4"})
         assert forwarded.status_code == 403
         headers = desktop_headers()
@@ -60,7 +68,9 @@ async def test_remote_access_settings_apply_and_preserve_the_owner_boundary(monk
         invalid = await desktop.put(endpoint, headers=desktop_headers(), json={"hosts": "my-tunnel.cpolar.cn, *"})
         assert invalid.status_code == 400
         saved = await desktop.put(
-            endpoint, headers=desktop_headers(), json={"hosts": "https://my-tunnel.cpolar.cn/chat"},
+            endpoint, headers=desktop_headers(), json={
+                "hosts": "https://my-tunnel.cpolar.cn/chat, MY-TUNNEL.cpolar.cn",
+            },
         )
         assert saved.json() == {"ok": True, "hosts": "my-tunnel.cpolar.cn", "managed_key": False}
         assert (await remote.get(endpoint)).json()["detail"] == "instance_authorization_required"

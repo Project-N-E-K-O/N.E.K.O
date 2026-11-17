@@ -233,9 +233,13 @@ def save_trusted_hosts(value: str) -> str:
             if not url.netloc or url.username is not None or url.password is not None:
                 raise ValueError("Invalid trusted URL")
             entries[i] = url.netloc
-    if len(_read_trusted_hosts(",".join(entries))) != len(entries):
+    trusted = _read_trusted_hosts(",".join(entries))
+    if len(trusted) != len(entries):
         raise ValueError("Invalid trusted hostname")
-    normalized = ", ".join(dict.fromkeys(entries))
+    unique_entries = {}
+    for host, entry in zip(trusted, entries, strict=True):
+        unique_entries.setdefault(host, entry)
+    normalized = ", ".join(unique_entries.values())
     get_config_manager(migrate=False).save_json_config(
         _REMOTE_ACCESS_CONFIG, {"trusted_hosts": normalized},
     )

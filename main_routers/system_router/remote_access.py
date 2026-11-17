@@ -31,7 +31,8 @@ def _consume_desktop_proof(token: str) -> bool:
     try:
         directory_info = directory.stat()
         info = proof.lstat()
-        if not stat.S_ISREG(info.st_mode) or time.time() - info.st_mtime > 20:
+        # Windows file timestamps can lead the current clock slightly.
+        if not stat.S_ISREG(info.st_mode) or not -1 <= time.time() - info.st_mtime <= 20:
             return False
         if os.name == "posix" and (
             directory_info.st_uid != os.getuid() or directory_info.st_mode & 0o077
