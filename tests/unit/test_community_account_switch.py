@@ -1025,3 +1025,74 @@ def test_unreadable_credentials_hold_even_without_an_owner(tmp_path, saved_bind)
     """A corrupt social session next to a never-bound mirror must not upload."""
     assert not (tmp_path / hold.HOLD_FILENAME).exists()
     assert hold.device_held(tmp_path, hold.UNREADABLE_ACCOUNT, saved_bind=saved_bind)
+
+
+
+def test_crash_between_saving_login_and_recording_use_still_holds_after_logout(oauth_app):  # noqa: F811
+    """B's sync-session login was saved, then the process stopped before the device record."""
+    _client, auth, social, _pending = oauth_app
+    hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
+    # What _store_session leaves on disk if it stops right after saving B.
+    auth.write_text(
+        json.dumps({
+            "access_token": "b-token",
+            "local_user_id": USER_ID,
+            "auth_source": "legacy",
+            "bind": {"bound": False, "error": None, "skipped": "native_session_sync"},
+        }),
+        encoding="utf-8",
+    )
+    social.write_text(
+        json.dumps({"token": "b-token", "local_user_id": USER_ID, "auth_source": "legacy"}),
+        encoding="utf-8",
+    )
+    assert hold.device_held(auth.parent, USER_ID)  # B signed in: held by owner comparison
+
+    assert C._clear_auth()
+
+    assert hold.device_held(auth.parent, None)
+
+
+
+async def test_persistent_write_failure_then_logout_then_restart_still_holds(tmp_path, monkeypatch):
+    """Hold writes keep failing, the account logs out, the process restarts: still held."""
+    import asyncio
+
+    _pending_login(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(_social_base, _access_token, *, rebind=False):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+    assert C._clear_auth()
+    auth = json.loads((tmp_path / "community_auth.json").read_text(encoding="utf-8"))
+    assert "access_token" not in auth and "refresh_token" not in auth
+    assert auth[C.DEVICE_HOLD_PENDING] is True
+    assert C.signed_in_account_state() == ("signed_out", None)
+
+    hold._set_unrecorded_hold(False)  # restart
+    real_signed_in_account = sync_worker._signed_in_account
+    _facts_sync_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
+    assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+def test_logout_reports_failure_when_the_hold_cannot_be_kept_anywhere(oauth_app, monkeypatch):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+    real_write_private = C._write_private_json
+
+    def failing_private_write(path, data):
+        if path == auth:
+            raise OSError("disk full")
+        real_write_private(path, data)
+
+    monkeypatch.setattr(C, "_write_private_json", failing_private_write)
+
+    assert not C._clear_auth()
+    # The mirror, and with it the conflict, stays on disk.
+    assert json.loads(auth.read_text(encoding="utf-8"))["bind"] == CONFLICT

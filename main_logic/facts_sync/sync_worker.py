@@ -121,10 +121,9 @@ def _signed_in_account() -> str | None:
     return community_device_hold.UNREADABLE_ACCOUNT
 
 
-def _saved_bind(directory: Path) -> Any:
-    """The signed-in login's own bind outcome, a fallback if the hold record is missing."""
+def _saved_auth(directory: Path) -> dict:
     auth = _read_json(directory / "community_auth.json", {})
-    return auth.get("bind") if isinstance(auth, dict) else None
+    return auth if isinstance(auth, dict) else {}
 
 
 def _device_bound_to_other_account() -> bool:
@@ -146,7 +145,12 @@ def _device_bound_to_other_account() -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("facts_sync: cannot read the signed-in community account: %s", exc)
         return True
-    return community_device_hold.device_held(directory, signed_in, saved_bind=_saved_bind(directory))
+    auth = _saved_auth(directory)
+    if auth.get("device_hold_pending"):
+        # A logout could not write the device record and left this marker
+        # instead; it holds until a later login replaces the mirror.
+        return True
+    return community_device_hold.device_held(directory, signed_in, saved_bind=auth.get("bind"))
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:

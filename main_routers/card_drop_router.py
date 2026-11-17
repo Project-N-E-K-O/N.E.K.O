@@ -930,11 +930,16 @@ def _remember_confirmed_owner() -> bool:
         return True
     if bind.get("bound") is True:
         community_device_hold.remember_owner(directory, account)
-    elif bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        return True
+    recorded = True
+    if bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
         # record_bind_outcome latches the hold in memory if the write fails,
         # so the conflict survives this login being replaced or cleared.
-        return community_device_hold.record_bind_outcome(directory, bind, account)
-    return True
+        recorded = community_device_hold.record_bind_outcome(directory, bind, account)
+    # This login never proved it owns the device. Note that it used it, even
+    # if the process stopped between saving the login and recording that, so
+    # its unsynced memories stay held once it is replaced or logged out.
+    return community_device_hold.record_session_account(directory, account) and recorded
 
 
 def _record_device_hold(bind: dict, local_user_id: str) -> None:
@@ -1130,6 +1135,25 @@ def _persist_session_identity_metadata(
         return False
 
 
+DEVICE_HOLD_PENDING = "device_hold_pending"
+
+
+def _tombstone_auth_mirror(auth_path: Path) -> bool:
+    """Strip every credential from the auth mirror but keep its bind and hold."""
+    auth = _read_json_dict(auth_path) or {}
+    tombstone = {
+        "local_user_id": auth.get("local_user_id"),
+        "bind": auth.get("bind"),
+        DEVICE_HOLD_PENDING: True,
+    }
+    try:
+        _write_private_json(auth_path, tombstone)
+        return True
+    except OSError as exc:
+        logger.warning("card_drop: cannot keep the device hold through logout: %s", exc)
+        return False
+
+
 def _unlink_credentials(paths: list[Path]) -> bool:
     success = True
     for path in paths:
@@ -1142,9 +1166,18 @@ def _unlink_credentials(paths: list[Path]) -> bool:
 
 
 def _clear_auth() -> bool:
-    _remember_confirmed_owner()
+    hold_saved = _remember_confirmed_owner()
     auth_path = _auth_path()
     paths = ([auth_path] if auth_path is not None else []) + _social_session_paths()
+    tombstone_failed = False
+    if not hold_saved and auth_path is not None:
+        # The device record could not take this login's hold. The auth mirror
+        # becomes a tombstone that drops every credential but keeps the hold,
+        # so it survives a restart. If even that cannot be written, keep the
+        # mirror and report the logout as failed (callers retry it) rather
+        # than let uploads resume.
+        paths = [path for path in paths if path != auth_path]
+        tombstone_failed = not _tombstone_auth_mirror(auth_path)
     if auth_path is not None:
         # Cancel in-flight OAuth before its credential commit under this same lock.
         paths.append(auth_path.parent / "community_oauth_pending.json")
@@ -1157,7 +1190,7 @@ def _clear_auth() -> bool:
     # logout would clear only the social file while the mirror returns, and clear would incorrectly report failure.
     try:
         with _social_session_locks(_social_session_paths()):
-            success = _unlink_credentials(paths) and success
+            success = _unlink_credentials(paths) and success and not tombstone_failed
             for path in paths:
                 try:
                     path.lstat()
