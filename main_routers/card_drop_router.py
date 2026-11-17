@@ -750,9 +750,29 @@ def _social_session_locks(paths: list[Path]):
 # Chat sync (services layer) observes the saved session and fences its local
 # commits with the same locks the logout/refresh/login writers hold. The lambdas
 # look up this module's attributes on every call, so patches here reach it too.
+def signed_in_account_state() -> tuple[str, str | None]:
+    """``("signed_in", id)``, ``("signed_out", None)`` or ``("unknown", None)``.
+
+    Signed out means no credential file exists. A file that exists but yields
+    no account (unreadable, corrupt, half-written) is unknown, never a logout,
+    so callers guarding account-scoped writes can fail closed.
+    """
+    snapshot = _desktop_session_snapshot()
+    account = _normalize_local_user_id((snapshot or {}).get("local_user_id"))
+    if account:
+        return "signed_in", account
+    paths = [path for path in [_auth_path(), *_social_session_paths()] if path is not None]
+    try:
+        present = any(path.exists() for path in paths)
+    except OSError:
+        return "unknown", None
+    return ("unknown", None) if present else ("signed_out", None)
+
+
 _chat_sync_host.install_saved_session_store(
     saved_session_snapshot=lambda: _desktop_session_snapshot(),
     saved_session_writer_fence=lambda: _social_session_locks(_social_session_paths()),
+    signed_in_account_state=lambda: signed_in_account_state(),
 )
 
 

@@ -101,13 +101,27 @@ def _get_client_id() -> str | None:
     return credentials[0] if credentials else None
 
 
+class _AccountUnknown(Exception):
+    """Credentials exist but name no account; treated as a hold, never as a logout."""
+
+
 def _signed_in_account() -> str | None:
-    """The community account signed in here, through the credential owner's hook."""
+    """The community account signed in here, or None when nobody is signed in.
+
+    Read through the credential owner's hook. Credentials that exist but
+    cannot be read raise ``_AccountUnknown``: a failed read must not pass for
+    a logout, which would let uploads reach the device's owner.
+    """
     try:
-        snapshot = _chat_sync_host.saved_session_snapshot()
+        state, account = _chat_sync_host.signed_in_account_state()
     except _chat_sync_host.CapabilityNotInstalled:
+        # Main has not installed the credential store; no login can exist yet.
         return None
-    return (snapshot or {}).get("local_user_id") or None
+    if state == "signed_in" and account:
+        return account
+    if state == "signed_out":
+        return None
+    raise _AccountUnknown(state)
 
 
 def _saved_bind(directory: Path) -> Any:
@@ -132,6 +146,9 @@ def _device_bound_to_other_account() -> bool:
         return True
     try:
         signed_in = _signed_in_account()
+    except _AccountUnknown:
+        logger.warning("facts_sync: saved community credentials are unreadable; holding facts")
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("facts_sync: cannot read the signed-in community account: %s", exc)
         return True

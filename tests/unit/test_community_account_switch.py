@@ -766,3 +766,33 @@ async def test_failed_hold_write_is_recovered_before_next_login(tmp_path, monkey
 
     assert response.status_code == 200
     assert hold.device_held(tmp_path, USER_ID)
+
+
+
+def test_signed_in_account_state_tells_unreadable_from_signed_out(oauth_app):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    assert C.signed_in_account_state() == ("signed_out", None)
+    _save_login(auth, social, CONFLICT)
+    assert C.signed_in_account_state() == ("signed_in", USER_ID)
+    auth.write_text("{half-written", encoding="utf-8")
+    social.write_text("{half-written", encoding="utf-8")
+    assert C.signed_in_account_state() == ("unknown", None)
+
+
+async def test_facts_sync_holds_when_credentials_are_unreadable(tmp_path, monkeypatch):
+    """B signed in through sync-session on A's device; then both credential reads fail."""
+    import asyncio
+
+    from services.chat_sync import host as chat_sync_host
+
+    real_signed_in_account = sync_worker._signed_in_account
+    _facts_sync_env(tmp_path, monkeypatch)
+    # Read the account through the real hook, not the environment's stub.
+    monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    monkeypatch.setattr(chat_sync_host, "signed_in_account_state", lambda: ("unknown", None))
+    assert await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+    # A real logout (no credential files) is not a hold: uploads go to the owner.
+    monkeypatch.setattr(chat_sync_host, "signed_in_account_state", lambda: ("signed_out", None))
+    assert not await asyncio.to_thread(sync_worker._device_bound_to_other_account)
