@@ -273,16 +273,42 @@ def test_rejects_input_path_replacement_during_validation(tmp_path, monkeypatch)
     """A later stage must not reopen a different object under a validated path."""
     path = make_bundle(tmp_path)
     original = bundle_module._directory_budget
+    denied = []
+    old = path.with_suffix(".old")
 
     def replace_then_parse(source, size, limits):
-        old = path.with_suffix(".old")
-        path.rename(old)
+        try:
+            path.rename(old)
+        except PermissionError as error:
+            # Some filesystems refuse renaming this still-open input. That is
+            # a safe refusal, not a successful substitution to detect afterward.
+            denied.append(error)
+            raise
         path.write_bytes(old.read_bytes())
         return original(source, size, limits)
 
     monkeypatch.setattr(bundle_module, "_directory_budget", replace_then_parse)
-    with pytest.raises(BundleError, match="model_bundle_changed"):
+    with pytest.raises(BundleError) as failure:
         validate_bundle(path)
+    if denied:
+        assert str(failure.value) == "invalid_model_bundle"
+        assert failure.value.__cause__ is denied[0]
+        assert path.exists() and not old.exists()
+    else:
+        assert str(failure.value) == "model_bundle_changed", repr(failure.value.__cause__)
+        assert old.exists() and path.exists()
+
+
+def test_rejects_filesystem_refusal_during_input_replacement(tmp_path, monkeypatch):
+    """Exercise the locked-input refusal path on every OS without skipping it."""
+    path = make_bundle(tmp_path)
+    denied = PermissionError("input replacement refused by filesystem")
+    def replace_then_parse(_source, _size, _limits):
+        raise denied
+    monkeypatch.setattr(bundle_module, "_directory_budget", replace_then_parse)
+    with pytest.raises(BundleError, match="invalid_model_bundle") as failure:
+        validate_bundle(path)
+    assert failure.value.__cause__ is denied and path.exists()
 
 
 def test_rejects_symbolic_link_input_without_reading_target(tmp_path):
