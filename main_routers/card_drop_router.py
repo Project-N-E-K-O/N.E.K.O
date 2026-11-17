@@ -2016,7 +2016,8 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
     ):
         return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
     snapshot_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
-    if snapshot_base and not _same_originish(snapshot_base, _social_base_url()):
+    social_base = _social_base_url()
+    if snapshot_base and not _same_originish(snapshot_base, social_base):
         # The saved login belongs to another community; refuse rather than ship
         # its bearer to the currently configured one. The session stays on disk
         # so pointing NEKO_SOCIAL_BASE_URL back restores it.
@@ -2072,7 +2073,7 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
                 )
             # None: the hold could not be written first, so the cloud was not
             # asked and the bind stays as it was.
-            bind = await _co._bind_signed_in_login(access_token, local_user_id) or bind
+            bind = await _co._bind_signed_in_login(social_base, access_token, local_user_id) or bind
     if bind_retried:
         # Binding may involve multiple cloud round trips, each up to 30 seconds; the token may be revoked in the cloud
         # while the local file remains unchanged, which a lock-held reread of the local token cannot detect. Run another

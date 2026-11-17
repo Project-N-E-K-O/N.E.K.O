@@ -345,10 +345,11 @@ def _persist_refreshed_oauth_tokens(
 
 def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
     """Clear only the rejected credential snapshot; preserve a concurrent login."""
-    success = True
     social_paths = C._social_session_paths()
     auth_path = C._auth_path()
     expected_access = str(expected.get("access_token") or "").strip()
+    if not expected_access:
+        return False
     credentials = [(path, "token") for path in social_paths]
     if auth_path is not None:
         credentials.append((auth_path, "access_token"))
@@ -362,25 +363,21 @@ def _clear_rejected_oauth_snapshot(expected: dict) -> bool:
             # rejected one, and under the lock every login writer takes, so a
             # newer login cannot clear its hold in between and have this
             # stale outcome restore it.
-            saved_auth = C._read_json_dict(auth_path) if auth_path is not None else None
-            still_rejected = (
-                str((saved_auth or {}).get("access_token") or "").strip() == expected_access
-            )
-            hold_saved = C._remember_confirmed_owner() if still_rejected else True
-            for path, token_key in credentials:
-                try:
-                    saved = C._read_json_dict(path)
-                    if str((saved or {}).get(token_key) or "").strip() == expected_access:
-                        if path == auth_path and not hold_saved:
-                            if not C._tombstone_auth_mirror(path):
-                                success = False
-                        else:
-                            path.unlink(missing_ok=True)
-                except OSError:
-                    success = False
+            rejected_paths = [
+                path for path, token_key in credentials
+                if str((C._read_json_dict(path) or {}).get(token_key) or "").strip() == expected_access
+            ]
+            if not rejected_paths:
+                return True
+            if not C._remember_confirmed_owner():
+                # Never strip a different login's mirror. Keep the rejected
+                # session for a later retry if its hold has no durable copy.
+                if auth_path not in rejected_paths or not C._tombstone_auth_mirror(auth_path):
+                    return False
+                rejected_paths.remove(auth_path)
+            return C._unlink_credentials(rejected_paths)
     except (OSError, TimeoutError):
-        success = False
-    return success
+        return False
 
 
 async def _refresh_oauth_token(
@@ -1527,7 +1524,7 @@ def _response_detail(res: Any) -> Any:
         return None
 
 
-async def _bind_signed_in_login(access_token: str, local_user_id: str) -> dict | None:
+async def _bind_signed_in_login(social_base: str, access_token: str, local_user_id: str) -> dict | None:
     """Bind the device for the signed-in login and record the cloud's answer.
 
     Call with ``_device_bind_lock`` held. Returns None without asking the cloud
@@ -1536,7 +1533,7 @@ async def _bind_signed_in_login(access_token: str, local_user_id: str) -> dict |
     check = await asyncio.to_thread(community_device_hold.begin_bind_check, C._credential_dir())
     if check is None:
         return None
-    bind = await _oauth_guest_bind(C._social_base_url(), access_token)
+    bind = await _oauth_guest_bind(social_base, access_token)
     conflict = bind.get("error") == _BIND_OWNERSHIP_CONFLICT
     persisted = False
     if bind.get("bound") or conflict:
@@ -1560,9 +1557,9 @@ async def reconfirm_device_owner() -> None:
     reached the cloud, leaves the check on disk and uploads held. Nothing else
     would ask again for a login that already shows as bound.
     """
-    # Same fences as the explicit rebind: no login can be saved, and no logout
-    # can clear this one, between reading the session and recording the answer.
-    async with _device_bind_lock, _oauth_start_lock:
+    # Serialize ownership changes from the cloud request through its local
+    # commit. Starting a new PKCE attempt only writes the pending login file.
+    async with _device_bind_lock:
         if not await asyncio.to_thread(community_device_hold.check_pending, C._credential_dir()):
             return
         # Refresh-capable: an expired token would be refused on every retry
@@ -1571,14 +1568,17 @@ async def reconfirm_device_owner() -> None:
         snapshot = status.get("snapshot") or {}
         access_token = str(snapshot.get("access_token") or "").strip()
         local_user_id = C._normalize_local_user_id(snapshot.get("local_user_id"))
-        if not status.get("logged_in") or not access_token or not local_user_id:
+        if (
+            not status.get("logged_in") or snapshot.get("auth_source") != "oauth"
+            or not access_token or not local_user_id
+        ):
             return
         # Never send the token to a community other than its own; the check
         # stays and uploads stay held.
         session_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
-        if session_base and not same_endpoint(session_base, C._social_base_url()):
+        if not same_endpoint(session_base, C._social_base_url()):
             return
-        await _bind_signed_in_login(access_token, local_user_id)
+        await _bind_signed_in_login(session_base, access_token, local_user_id)
 
 
 # facts_sync asks for this before its upload gate; late-bound so patches reach it.

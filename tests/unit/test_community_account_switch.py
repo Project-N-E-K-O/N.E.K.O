@@ -209,6 +209,7 @@ def _logged_in(monkeypatch, *, auth_source="oauth"):
                 "access_token": "account-b-access",
                 "auth_source": auth_source,
                 "local_user_id": USER_ID,
+                "base_url": "https://community.example",
             },
             "auth": {},
         }
@@ -1188,6 +1189,30 @@ def test_rejected_session_cleanup_writes_the_conflict_when_it_can(oauth_app):  #
     assert hold.device_held(auth.parent, None)
 
 
+def test_rejected_social_session_cleanup_preserves_the_mirror_and_device_hold(oauth_app, monkeypatch):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
+    mirror = {"access_token": "a-token", "local_user_id": OWNER_A, "auth_source": "oauth", "bind": BOUND}
+    auth.write_text(json.dumps(mirror), encoding="utf-8")
+    session = {"token": "b-token", "local_user_id": USER_ID, "auth_source": "oauth"}
+    social.write_text(json.dumps(session), encoding="utf-8")
+    rejected = {"access_token": session["token"]}
+
+    # Retain both records until the hold can survive a restart.
+    with monkeypatch.context() as m:
+        m.setattr(hold, "_write", lambda *_args: False)
+        assert not O._clear_rejected_oauth_snapshot(rejected)
+    assert json.loads(social.read_text(encoding="utf-8")) == session
+    assert json.loads(auth.read_text(encoding="utf-8")) == mirror
+
+    hold._set_unrecorded_hold(False)
+    assert O._clear_rejected_oauth_snapshot(rejected)
+    assert not social.exists()
+    assert json.loads(auth.read_text(encoding="utf-8")) == mirror
+    hold._set_unrecorded_hold(False)
+    assert hold.device_held(auth.parent, OWNER_A)
+
+
 def test_logout_tombstone_is_written_inside_the_credential_lock(oauth_app, monkeypatch):  # noqa: F811
     _client, auth, social, _pending = oauth_app
     _save_login(auth, social, CONFLICT)
@@ -1735,11 +1760,9 @@ def test_latched_hold_survives_a_read_error_at_logout_and_restart(oauth_app, mon
     assert sync_worker._device_bound_to_other_account()
 
 
-def _signed_in_as(monkeypatch, account, token, *, base_url=None):
+def _signed_in_as(monkeypatch, account, token, *, base_url="https://community.example", auth_source="oauth"):
     async def resolve():
-        snapshot = {"access_token": token, "auth_source": "oauth", "local_user_id": account}
-        if base_url:
-            snapshot["base_url"] = base_url
+        snapshot = {"access_token": token, "auth_source": auth_source, "local_user_id": account, "base_url": base_url}
         return {"logged_in": True, "snapshot": snapshot, "auth": {}}
 
     monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve)
@@ -1831,12 +1854,19 @@ async def test_facts_sync_asks_again_before_its_upload_gate(tmp_path, monkeypatc
     assert order == ["resolve", "gate"]
 
 
-async def test_recovery_never_sends_the_token_to_another_community(oauth_app, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("session_base,auth_source", [
+    ("https://old-community.example", "oauth"),
+    ("", "oauth"),
+    ("https://community.example", "legacy"),
+])
+async def test_recovery_requires_an_oauth_session_for_the_current_community(
+    oauth_app, monkeypatch, session_base, auth_source,  # noqa: F811
+):
     _client, auth, social, _pending = oauth_app
     _save_login(auth, social, dict(BOUND))
     hold.record_bind_outcome(auth.parent, dict(BOUND), USER_ID)
     hold.begin_bind_check(auth.parent)
-    _signed_in_as(monkeypatch, USER_ID, "account-b-access", base_url="https://old-community.example")
+    _signed_in_as(monkeypatch, USER_ID, "account-b-access", base_url=session_base, auth_source=auth_source)
 
     asked = _answer(monkeypatch, BOUND)
     await O.reconfirm_device_owner()
@@ -1844,6 +1874,36 @@ async def test_recovery_never_sends_the_token_to_another_community(oauth_app, mo
     assert asked == []
     assert hold.check_pending(auth.parent)
     assert hold.device_held(auth.parent, USER_ID, saved_bind=dict(BOUND))
+
+
+async def test_login_can_start_during_an_owner_recheck(oauth_app, monkeypatch):  # noqa: F811
+    import asyncio
+
+    client, auth, social, pending = oauth_app
+    _save_login(auth, social, dict(BOUND))
+    hold.begin_bind_check(auth.parent)
+    _logged_in(monkeypatch)
+    checking, finish = asyncio.Event(), asyncio.Event()
+
+    async def bind(*_args):
+        checking.set()
+        await finish.wait()
+        return dict(BOUND)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", bind)
+    recovery = asyncio.create_task(O.reconfirm_device_owner())
+    try:
+        await asyncio.wait_for(checking.wait(), timeout=3)
+        transport = httpx.ASGITransport(app=client.app, client=("127.0.0.1", 50000))
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as http:
+            response = await asyncio.wait_for(http.post("/api/card-drop/oauth/start"), timeout=3)
+        assert response.status_code == 200
+        assert pending.exists()
+        assert hold.check_pending(auth.parent)
+    finally:
+        finish.set()
+        await recovery
+    assert not hold.check_pending(auth.parent)
 
 
 async def test_recovery_skips_a_signed_out_or_rejected_session(oauth_app, monkeypatch):  # noqa: F811
