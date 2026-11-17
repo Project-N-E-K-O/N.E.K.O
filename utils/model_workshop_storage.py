@@ -76,11 +76,25 @@ def _registry(path: Path):
     return data
 
 
+def _atomic_temporary(path: Path) -> bool:
+    """Recognize the real atomic writer's regular temporaries, never links/dirs."""
+    if not path.name.startswith(".nkatmp"):
+        return False
+    from utils.file_utils import _STALE_TMP_RE
+
+    return bool(_STALE_TMP_RE.fullmatch(path.name)) and stat.S_ISREG(_ordinary(path).st_mode)
+
+
+def _has_transactions(directory: Path) -> bool:
+    """A leftover atomic-write temporary is not a durable install journal."""
+    return any(not _atomic_temporary(child) for child in directory.iterdir())
+
+
 def _layout(directory: Path):
     """Bound traversal and refuse unknown metadata rather than discarding it."""
     if not stat.S_ISDIR(_ordinary(directory).st_mode):
         raise ValueError("unsafe workshop directory")
-    entries = {child.name: child for child in directory.iterdir()}
+    entries = {child.name: child for child in directory.iterdir() if not _atomic_temporary(child)}
     if entries.keys() - {"installed.json", "locks", "staging", "transactions"}:
         raise ValueError("unknown workshop metadata")
     for name in ("locks", "staging", "transactions"):
@@ -110,7 +124,7 @@ def model_workshop_has_user_content(directory: Path) -> bool:
     """Ignore only recognized empty infrastructure and unpublished stage bytes."""
     try:
         entries = _layout(directory)
-        if "transactions" in entries and any(entries["transactions"].iterdir()):
+        if "transactions" in entries and _has_transactions(entries["transactions"]):
             return True  # Pending/unknown logs are evidence, never a disposable cache.
         if "installed.json" in entries:
             data = _registry(entries["installed.json"])
@@ -134,7 +148,7 @@ def inspect_model_workshop_metadata(root: Path):
         raise ModelWorkshopStorageError("model_workshop_state_unreadable") from exc
     try:
         entries = _layout(directory)
-        if "transactions" in entries and any(entries["transactions"].iterdir()):
+        if "transactions" in entries and _has_transactions(entries["transactions"]):
             raise ModelWorkshopStorageError("model_workshop_pending")
         if "installed.json" in entries:
             _registry(entries["installed.json"])
@@ -155,9 +169,12 @@ def assert_model_workshop_stopped(root: Path) -> None:
     directory = root / "model_workshop"
     # Only lstat-confirmed absence is empty. lexists() collapses lookup errors
     # into False, which must not authorize moving unreadable private metadata.
-    entries = inspect_model_workshop_metadata(root)
-    if entries is None:
+    try:
+        _ordinary(directory)
+    except FileNotFoundError:
         return
+    except (OSError, ValueError) as exc:
+        raise ModelWorkshopStorageError("model_workshop_state_unreadable") from exc
     handle = None
     locked = False
     try:
@@ -175,7 +192,8 @@ def assert_model_workshop_stopped(root: Path) -> None:
             locked = True
         except portalocker.exceptions.LockException as exc:
             raise ModelWorkshopStorageError("model_workshop_busy") from exc
-        # Recheck metadata after the probe too; the first read is not a lease.
+        # Probe ownership before examining potentially changing metadata: an
+        # active writer is busy, not corrupt. Never recover or sweep here.
         if inspect_model_workshop_metadata(root) is None:
             raise ModelWorkshopStorageError("model_workshop_state_unreadable")
     except ModelWorkshopStorageError:

@@ -70,6 +70,40 @@ def test_workshop_is_migrated_only_with_the_model_directories():
     assert "model_workshop" not in _V1_CATCH_UP_ENTRIES
 
 
+@pytest.mark.parametrize("location", ["", "transactions"])
+def test_atomic_writer_temp_residue_does_not_claim_user_content_or_block_migration(tmp_path, location):
+    from utils.model_workshop_storage import assert_model_workshop_stopped
+
+    directory = private(tmp_path)
+    temporary = directory / location / ".nkatmpdeadbeef.tmp"
+    temporary.write_bytes(b"uncommitted JSON")
+    before = temporary.read_bytes()
+    assert root_has_migrated_entry_content(tmp_path) is False
+    assert runtime_root_has_user_content(tmp_path) is False
+    assert_model_workshop_stopped(tmp_path)
+    assert temporary.read_bytes() == before  # A read-only probe never sweeps temporaries.
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink", "unrecognized"])
+def test_temp_like_unknown_entries_remain_protected(tmp_path, kind):
+    from utils.model_workshop_storage import ModelWorkshopStorageError, assert_model_workshop_stopped
+
+    directory = private(tmp_path)
+    target = directory / ".nkatmpdeadbeef.tmp"
+    if kind == "directory":
+        target.mkdir()
+    elif kind == "symlink":
+        try:
+            target.symlink_to(tmp_path / "not-present")
+        except OSError:
+            pytest.skip("symlink privilege unavailable")
+    else:
+        (directory / ".nkatmpdead.beef.tmp").write_text("preserve")
+    assert root_has_migrated_entry_content(tmp_path) is True
+    with pytest.raises(ModelWorkshopStorageError):
+        assert_model_workshop_stopped(tmp_path)
+
+
 @pytest.mark.parametrize("side", ["source", "target"])
 def test_checkpoint_refuses_an_owned_workshop_without_writing(service, tmp_path, side):
     config = _DummyConfigManager(tmp_path / "manager")

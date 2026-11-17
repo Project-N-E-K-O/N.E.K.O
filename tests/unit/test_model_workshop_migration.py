@@ -381,8 +381,8 @@ def test_migration_error_codes_are_translated_in_all_eight_locales(code, key):
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
-    script = (root / "static/app/app-storage-location.js").read_text()
+    script = (root / "static/app/app-storage-location.js").read_text(encoding="utf-8")
     assert "case '" + code + "':" in script
     assert "'storage." + key + "'" in script
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
-        assert json.loads((root / "static/locales" / (locale + ".json")).read_text())["storage"][key]
+        assert json.loads((root / "static/locales" / (locale + ".json")).read_text(encoding="utf-8"))["storage"][key]

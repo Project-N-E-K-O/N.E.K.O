@@ -272,6 +272,29 @@ def test_managed_motion_addition_does_not_recreate_deleted_model(legacy, tmp_pat
     assert not target.exists()
 
 
+def test_managed_vrm_emotion_mapping_uses_the_existing_project_config_location(legacy, tmp_path):
+    client, _, service = legacy
+    package, _ = bundle_path(tmp_path, "vrm")
+    row = install(service, package)["result"]
+    name = (service.paths.root / row["target"]).stem
+    response = client.post("/api/model/vrm/emotion_mapping/" + name, json={"happy": ["smile"]})
+    assert response.status_code == 200, response.text
+    config_path = vrm_router._get_emotion_config_path(name)
+    assert not config_path.is_relative_to(service.paths.root)
+    assert json.loads(config_path.read_text()) == {"happy": ["smile"]}
+
+
+def test_managed_vrm_config_exception_does_not_authorize_an_arbitrary_external_file(legacy, tmp_path):
+    _, config, service = legacy
+    package, _ = bundle_path(tmp_path, "vrm")
+    row = install(service, package)["result"]
+    name = (service.paths.root / row["target"]).stem
+    unrelated = tmp_path / (name + "_emotion.json")
+    with pytest.raises(WorkshopError, match="unsafe_path"):
+        runtime.write_managed_json(config, unrelated, {}, kind="vrm", name=name)
+    assert not unrelated.exists()
+
+
 def test_config_edit_started_before_reinstall_cannot_overwrite_new_model(
     legacy, tmp_path, monkeypatch
 ):

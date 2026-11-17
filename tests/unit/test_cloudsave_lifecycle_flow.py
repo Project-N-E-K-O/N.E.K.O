@@ -33,6 +33,8 @@ def _role_state_from_session_managers(session_managers: dict) -> dict:
 import pytest
 
 from utils.cloudsave_autocloud import CloudSaveManager
+
+
 from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
 from utils.cloudsave_runtime import export_cloudsave_character_unit
 from utils.cloudsave_runtime import import_cloudsave_character_unit
@@ -44,6 +46,19 @@ from utils.steam_cloud_bundle import (
 )
 from utils.config_manager import ConfigManager
 from utils.file_utils import atomic_write_json
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_workshop_shutdown(monkeypatch):
+    """Keep real Main shutdown from stopping the next test's model admission."""
+    from services.model_workshop import runtime
+
+    # Main's N3 shutdown now drains this service too. Exercise that real step
+    # against an empty owned registry, then restore the prior process state.
+    monkeypatch.setattr(runtime, "_services", {})
+    monkeypatch.setattr(runtime, "_stopped", False)
+    yield
+    runtime.close_all()
 
 
 def _make_config_manager(tmp_root: Path):

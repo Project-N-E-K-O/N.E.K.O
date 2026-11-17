@@ -476,8 +476,20 @@ def write_managed_json(
         # always use a checked canonical path under that same owned root.
         relative = state.relative(path)
         if relative is None:
-            raise WorkshopError("model_workshop_unsafe_path")
-        checked = service.paths.checked(relative)
+            # VRM emotion maps already live in project static/vrm/configs,
+            # outside app_docs_dir. Permit only that exact existing target,
+            # under the same installation/fence checks, never an arbitrary path.
+            if kind != "vrm":
+                raise WorkshopError("model_workshop_unsafe_path")
+            config_dir = Path(config.project_root).absolute() / "static/vrm/configs"
+            expected = config_dir / (Path(row["local_entrypoint"]).stem + "_emotion.json")
+            if Path(path).absolute() != expected or expected.resolve().parent != config_dir.resolve():
+                raise WorkshopError("model_workshop_unsafe_path")
+            if os.path.lexists(expected):
+                identity(expected)
+            checked = expected
+        else:
+            checked = service.paths.checked(relative)
         atomic_write_json(checked, data, ensure_ascii=False, indent=indent)
         sync_directory(checked.parent)
     return True
