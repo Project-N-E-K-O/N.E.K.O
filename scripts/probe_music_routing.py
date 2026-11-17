@@ -1,7 +1,7 @@
 """Live, assessment-only music routing probe. Never invokes plugin actions.
 
 Loads production routing, prompt, and plugin schemas from --repo. Uses the
-configured summary model unless --tier is explicitly provided. All input is
+production NekoClaw coarse/fine model configuration. All input is
 synthetic; credentials remain in the existing ConfigManager and are not saved.
 """
 import argparse
@@ -156,6 +156,8 @@ def check(c, decision, plugins):
 
 
 async def run(options):
+    if options.tier != "summary":
+        raise ValueError("Use production NekoClaw tiers (summary fine selection, emotion coarse screening)")
     if options.repeat < 1 or options.concurrency < 1:
         raise ValueError("repeat and concurrency must be positive")
     output = options.output.resolve()
@@ -165,8 +167,8 @@ async def run(options):
     sys.path.insert(0, str(repo))
     os.chdir(repo)
     if not options.pipeline:
-        print("Assessment-only mode; use --pipeline for the complete analyze entry", file=sys.stderr)
-    from brain.task_executor import DirectTaskExecutor
+        print("Assessment-only mode; use --pipeline for the read-only triage and selection pipeline", file=sys.stderr)
+    from nekoclaw.host.decision import ConfiguredDecisionLLM, DecisionRequest, LexicalDecisionModel, Triage
     from utils.config_manager import get_config_manager
 
     plugins = load_plugins(repo)
@@ -182,7 +184,7 @@ async def run(options):
     metadata = {"head": head.strip(),
                 "tier": options.tier, "model": api["model"], "lang": options.lang,
                 "repeat": options.repeat, "cases": len(selected), "pipeline": options.pipeline,
-                "prompt_sha256": hashlib.sha256((repo / "config/prompts/prompts_agent.py").read_bytes()).hexdigest(),
+                "prompt_sha256": hashlib.sha256((repo / "config/prompts/prompts_nekoclaw_brain.py").read_bytes()).hexdigest(),
                 "scope": "Real production routing and schemas; two music plugins available; synthetic conversations; no execution, memory lookup, or UI."}
     (output / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=True, indent=2), encoding="utf-8")
     results = []
@@ -196,52 +198,30 @@ async def run(options):
             errors = []
             started = time.monotonic()
             try:
-                executor = DirectTaskExecutor()
-                original_assess = executor._assess_user_plugin
-
-                async def observe_assessment(*args, **kwargs):
-                    assessment = await original_assess(*args, **kwargs)
-                    assessments.append(dataclasses.asdict(assessment))
-                    return assessment
-
-                executor._assess_user_plugin = observe_assessment
-                original_get = executor._get_llm
-                if options.tier != "summary":
-                    executor._get_llm = lambda **kwargs: original_get(**{**kwargs, "tier": options.tier})
-                messages = [{"role": role, "text": text} for role, text in c["history"]]
-                messages.append({"role": "user", "text": c["text"]})
-                if options.pipeline:
-                    async def provider(force_refresh=False):
-                        return plugins
-                    executor.plugin_list_provider = provider
-                    task = await executor.analyze_and_execute(
-                        messages, agent_flags={"user_plugin_enabled": True,
-                                               "computer_use_enabled": False,
-                                               "browser_use_enabled": False}, lang=options.lang)
-                    raw_task = dataclasses.asdict(task) if task else None
-                    data = {"has_task": bool(task and task.has_task),
-                            "can_execute": bool(task and task.execution_method == "user_plugin"),
-                            "plugin_id": task.tool_name if task else None,
-                            "entry_id": task.entry_id if task else None,
-                            "plugin_args": task.tool_args if task else None,
-                            "reason": task.reason if task else None}
+                executor = ConfiguredDecisionLLM()
+                model = LexicalDecisionModel(executor)
+                conversation = "\n".join(f"{role}: {text}" for role, text in c["history"])
+                if conversation:
+                    conversation += "\n"
+                conversation += "user: " + c["text"]
+                request = DecisionRequest(dispatch_text=conversation, user_text=c["text"],
+                    plugins=plugins, lang=options.lang, task_agent_available=False)
+                triage = await model.triage(request) if options.pipeline else Triage(kind="new")
+                raw_task = dataclasses.asdict(triage)
+                if triage.kind in {"new", "unsure"}:
+                    decision = await model.select(request, triage)
+                    assessments.append(dataclasses.asdict(decision))
+                    data = {"has_task": decision.route == "plugin", "can_execute": decision.route == "plugin",
+                            "plugin_id": decision.plugin_id, "entry_id": decision.entry_id,
+                            "plugin_args": decision.plugin_args, "reason": decision.reason}
                 else:
-                    decision = await executor._assess_user_plugin(executor._format_messages(messages), plugins, lang=options.lang)
-                    data = dataclasses.asdict(decision)
+                    data = {"has_task": False, "can_execute": False, "reason": triage.reason}
                 errors = check(c, data, plugins)
-                if not assessments:
-                    errors.append("No model assessment observed")
-                for assessment in assessments:
-                    reason = str(assessment.get("reason", "")).lower()
-                    if reason.startswith(("assessment error:", "json parse error:", "empty llm response")):
-                        errors.append("Model assessment failed: " + reason)
             except Exception as exc:
                 errors.append(f"Case raised {type(exc).__name__}")
             finally:
                 if executor is not None:
-                    executor._close_all_llms()
-                    if executor._cleanup_tasks:
-                        await asyncio.gather(*executor._cleanup_tasks, return_exceptions=True)
+                    await executor.aclose()
             result = {"case": c, "repeat": repeat, "decision": data, "task": raw_task,
                       "assessments": assessments, "errors": errors,
                       "seconds": round(time.monotonic() - started, 2)}
@@ -261,7 +241,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--tier", default="summary")
+    parser.add_argument("--tier", default="summary", choices=["summary"], help="Production fine-selection tier; coarse screening uses its configured emotion tier")
     parser.add_argument("--lang", default="zh")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=3)

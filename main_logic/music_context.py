@@ -8,23 +8,14 @@ from config.prompts.prompts_music_context import MUSIC_RUNTIME_CONTEXT
 
 
 def music_runtime_snapshot(manager):
-    request = getattr(manager, "_music_request", None) or {}
-    playback = getattr(manager, "_music_confirmed_state", None) or {}
-    if not request and not playback:
+    playback = getattr(manager, "_music_confirmed_state", None)
+    if not playback:
         return None
-    command = request.get("command") or {}
-    matching = bool(request.get("id") and request.get("id") == playback.get("request_id"))
-    confirmed = matching and request.get("state") == playback.get("state") and playback.get("state") in {"playing", "paused"}
+    # Upstream receipts establish the current player, not fulfillment of a
+    # particular command. Never invent false request-status claims here.
     return {
         "playback_state": playback.get("state") or "unknown",
         "track": {k: str(playback.get(k) or "")[:120] for k in ("name", "artist")},
-        "request": {
-            "kind": str(command.get("action") or "")[:32],
-            "collection": str(command.get("playlist") or "")[:100],
-            "state": request.get("state") or "unknown",
-            "matched_player": confirmed,
-            "fulfilled": bool(request.get("fulfilled_at") or confirmed),
-        },
     }
 
 

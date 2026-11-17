@@ -48,13 +48,13 @@ def test_offline_factory_binds_dynamic_context_for_start_and_handoff(monkeypatch
     monkeypatch.setattr(lifecycle, "OmniOfflineClient", factory)
     m = Mock(lanlan_name="YUI", master_name="User", user_language="zh-CN")
     m._music_request = manager()._music_request
-    m._music_confirmed_state = {}
+    m._music_confirmed_state = {"state": "playing", "name": "Song"}
     config = {"api_key": "test", "base_url": "http://example.test", "model": "test"}
     session = lifecycle.LifecycleMixin._create_offline_vlm_client(m, conversation_config=config,
         vision_config=config, tool_definitions=[], max_response_length=100, external_tts_enabled=True)
-    assert '"state": "pending"' in session.context_tools_provider()[0].read()['observation']
-    m._music_request["state"] = "failed"
-    assert '"state": "failed"' in session.context_tools_provider()[0].read()['observation']
+    assert '"playback_state": "playing"' in session.context_tools_provider()[0].read()['observation']
+    m._music_confirmed_state["state"] = "error"
+    assert '"playback_state": "error"' in session.context_tools_provider()[0].read()['observation']
     assert 'CURRENT topic' in session.request_policy_provider()
     assert '用户说中文就用中文' in session.request_policy_provider()
     m.user_language = 'zh-TW'
@@ -98,7 +98,7 @@ async def test_player_details_are_read_on_demand_and_expire(provider, proactive,
     if provider == "openai":  # Gemini extracts system policy out of contents.
         policy_texts = [text for _role, text, _calls in _view(client.requests[0], provider)]
         assert "CURRENT topic" in policy_texts[-1]
-    assert "温室暴风雨" in second and "matched_player" in second
+    assert "温室暴风雨" in second and "playback_state" in second
     assert "温室暴风雨" not in _saved(client)
     await client.stream_text("晚饭吃什么？")
     assert "温室暴风雨" not in str(_view(client.requests[-1], provider))
@@ -131,4 +131,17 @@ async def test_passive_player_receipts_cannot_prime_unrelated_chat_but_errors_an
     assert result == [callbacks[4], first_play]
     assert m.pending_agent_callbacks == [callbacks[4], first_play]
     assert music_runtime_snapshot(source)["playback_state"] == "error"
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_real_receipt_without_request_link_does_not_claim_failure_or_fulfillment():
+    m = SimpleNamespace(lanlan_name="YUI", enqueue_agent_callback=Mock())
+    handle_music_playback_state(m, receipt())
+    snapshot = music_runtime_snapshot(m)
+    assert snapshot["playback_state"] == "playing"
+    assert snapshot["track"]["name"] == "温室暴风雨"
+    assert "request" not in snapshot
+    assert "fulfilled" not in snapshot
+    assert "matched_player" not in music_runtime_context(m)
     await asyncio.sleep(0)
