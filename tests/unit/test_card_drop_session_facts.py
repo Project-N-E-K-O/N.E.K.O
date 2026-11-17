@@ -3161,6 +3161,75 @@ def test_sync_session_skips_legacy_client_binding_and_replaces_session(
     assert saved_session["refresh_token"] == "wrong-new-refresh"
 
 
+def test_sync_session_waits_for_a_handoff_bind_retry_and_keeps_its_hold(
+    client, tmp_path, monkeypatch,
+):
+    """A's retry records its owner first; B's later session switch then holds uploads.
+
+    Without the shared device-bind lock, B could switch in between and A's
+    recorded success would wipe the conflict B noted, even after B logs out.
+    """
+    import asyncio as _asyncio
+    import threading
+
+    from main_routers import community_oauth
+    from utils import community_device_hold as hold
+
+    _existing_session_files(tmp_path, monkeypatch)
+    _cloud_client(monkeypatch)
+    hold._set_unrecorded_hold(False)
+    monkeypatch.setattr(community_oauth, "_device_bind_lock", _asyncio.Lock())
+    ticket = _issue_sync_ticket(client)
+    order: list[str] = []
+    release_retry = threading.Event()
+
+    async def handoff_retry_for_owner():
+        # Stands in for social-session-init's bind retry for the previous
+        # account, which records that account as the owner under the lock.
+        await community_oauth._device_bind_lock.acquire()
+        try:
+            await _asyncio.to_thread(release_retry.wait, 5)
+            await _asyncio.to_thread(
+                C._record_device_hold, {"bound": True, "error": None}, USER_B_ID,
+            )
+            order.append("owner-retry-recorded")
+        finally:
+            community_oauth._device_bind_lock.release()
+
+    retry = client.portal.start_task_soon(handoff_retry_for_owner)
+    client.portal.call(_asyncio.sleep, 0.05)
+    assert community_oauth._device_bind_lock.locked()
+    results: dict = {}
+
+    def sync_other_account():
+        results["response"] = client.post(
+            "/api/card-drop/sync-session",
+            headers={"Origin": "https://community.example"},
+            json={
+                "base_url": "https://community.example",
+                "access_token": "other-legacy-token",
+                "refresh_token": "other-legacy-refresh",
+                "sync_ticket": ticket,
+            },
+        )
+        order.append("session-switched")
+
+    worker = threading.Thread(target=sync_other_account)
+    worker.start()
+    worker.join(0.3)
+    assert worker.is_alive(), "sync-session must wait for the device-bind lock"
+    release_retry.set()
+    retry.result(5)
+    worker.join(5)
+
+    assert results["response"].status_code == 200
+    assert order == ["owner-retry-recorded", "session-switched"]
+    # USER_A_ID signed in through sync-session; USER_B_ID is the recorded owner.
+    assert hold.device_held(tmp_path, USER_A_ID)
+    assert C._clear_auth()
+    assert hold.device_held(tmp_path, None)
+
+
 def test_legacy_local_login_returns_410(client, tmp_path, monkeypatch):
     auth, session, old_auth, old_session = _existing_session_files(tmp_path, monkeypatch)
 

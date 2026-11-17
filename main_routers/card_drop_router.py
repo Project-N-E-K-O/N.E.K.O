@@ -2229,15 +2229,19 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
 
     try:
         # When switching to another community account, finish active peer sessions and archive uploaded files; do not admit new sessions while writing
-        async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
-            bind = await _store_session(
-                base,
-                access,
-                refresh,
-                user,
-                auth_source=lookup.identity.auth_source,
-                bind_client=False,
-            )
+        # Same device-bind lock as the login callback, rebind and handoff
+        # bind retry: a retry for the previous account must not record its
+        # owner after this session switch noted another account on the device.
+        async with community_oauth._device_bind_lock:
+            async with community_oauth.visit_account_change(_normalize_local_user_id(user.get("id"))):
+                bind = await _store_session(
+                    base,
+                    access,
+                    refresh,
+                    user,
+                    auth_source=lookup.identity.auth_source,
+                    bind_client=False,
+                )
     except _InvalidIdentityResponse as exc:
         return JSONResponse({"detail": exc.detail}, status_code=502, headers=cors)
     from main_routers import community_oauth
