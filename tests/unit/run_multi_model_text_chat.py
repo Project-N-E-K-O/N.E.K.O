@@ -26,7 +26,7 @@ TEST_TARGETS: List[Dict[str, Optional[str]]] = [
     {"provider": "openai", "model":  "gpt-5-chat-latest"},
     {"provider": "free", "model":  "free-model"},
     {"provider": "step", "model":  "step-1o-turbo-vision"},
-    {"provider": "gemini", "model":  "gemini-3-flash-preview"},
+    {"provider": "gemini", "model":  "gemini-3.8-flash"},
     {"provider": "glm", "model":  "glm-4.7-flash"},
     {"provider": "silicon", "model":  "deepseek-ai/DeepSeek-V3.2"},
 ]

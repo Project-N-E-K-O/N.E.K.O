@@ -46,6 +46,7 @@ For exe-packaged applications, supporting:
 import os
 import sys
 import logging
+import threading
 from collections.abc import Mapping
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -261,8 +262,12 @@ class RobustLoggerConfig:
                 if not dir_path.exists():
                     dir_path.mkdir(exist_ok=True)
             
-            # Try creating a test file.
-            test_file = directory / ".write_test"
+            # Try creating a test file. The name is per process and thread: plugin
+            # processes start concurrently against one log directory, and with a
+            # shared name one probe's unlink races another's write. The loser
+            # read the directory as unwritable and fell back to the next
+            # candidate (Documents/N.E.K.O/logs), even with a selected root set.
+            test_file = directory / f".write_test.{os.getpid()}.{threading.get_ident()}"
             test_file.write_text("test", encoding="utf-8")
             test_file.unlink()
             return True
@@ -512,7 +517,7 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         log_subdir=log_subdir,
     )
     # Use namespaced logger names (e.g. N.E.K.O.Agent)
-    # to avoid collisions with third-party loggers (browser_use internally has an "Agent" logger).
+    # to avoid collisions with third-party loggers (a library may well have an "Agent" logger of its own).
     base_logger = config.setup_logger()
     
     # Attach handlers to the APP_NAME parent logger so cross-service shared modules (utils, config, etc.)

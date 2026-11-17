@@ -1455,6 +1455,28 @@ def test_auth_status_rejects_cross_site_before_cloud_lookup(client, monkeypatch)
     assert calls == 1
 
 
+def test_bind_client_approval_refuses_a_plaintext_non_loopback_base(client, monkeypatch):
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "http://community.example")
+
+    class NoNetwork:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("client_proof must not leave over plaintext HTTP")
+
+    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "p" * 43))
+    monkeypatch.setattr(C.httpx, "AsyncClient", NoNetwork)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/bind-client/approve",
+        headers={"Origin": "http://community.example"},
+        json={"binding_challenge": "C" * 43, "sync_ticket": ticket},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "insecure_transport"}
+    assert C._sync_ticket_is_valid(ticket)
+
+
 def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     client, monkeypatch,
 ):

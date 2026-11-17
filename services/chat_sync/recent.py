@@ -2,6 +2,7 @@
 
 from contextlib import closing
 import json
+import time
 from uuid import uuid4
 
 from services.chat_sync.recent_protocol import canonical, changes, snapshot, view_request, preserve_expired
@@ -11,6 +12,8 @@ from services.chat_sync.writer import store_connection
 class RecentMemorySync:
     def __init__(self, path, adapter):
         self.path, self.adapter = path, adapter
+        # Set when learned memory syncs too: a callable giving the folder for a role.
+        self.received_directory = None
         with closing(store_connection(path)) as conn, conn:
             conn.execute("CREATE TABLE IF NOT EXISTS recent_memory_state "
                          "(domain TEXT PRIMARY KEY, base TEXT NOT NULL, pending TEXT, revision INTEGER NOT NULL DEFAULT 0)")
@@ -70,6 +73,10 @@ class RecentMemorySync:
                     conn.execute("UPDATE recent_memory_preferences SET excluded=? WHERE domain=?",
                                  (canonical(excluded).decode(), domain))
             conn.execute("DELETE FROM recent_memory_apply WHERE domain=? AND receipt=?", (domain, receipt))
+
+    def _keep_received(self, uid, arrived):
+        from memory.received_messages import keep_arrivals
+        keep_arrivals(self.received_directory(uid), arrived, time.time_ns() // 1_000_000)
 
     def recover_apply(self, domain, name):
         with closing(store_connection(self.path)) as conn:
@@ -134,6 +141,15 @@ class RecentMemorySync:
             response = await request('GET', path, None)
         remote = snapshot(response, domain.owner_id, domain.character_uid)
         private = [(index, row) for index, row in enumerate(local['entries']) if row['id'] in state['excluded']]
+        if self.received_directory is not None:
+            # The projection keeps only the last few lines, so what arrives from another
+            # device is copied aside for fact extraction on this one. It is copied before
+            # the projection is applied: once applied, these lines look like ones this
+            # device always had, so a crash in between would lose them for extraction.
+            known = {row['id'] for row in local['entries']} | set(state['excluded'])
+            arrived = [row for row in remote['entries'] if row['id'] not in known]
+            if arrived:
+                await commit(self._keep_received, domain.character_uid, arrived)
         applied = await commit(self.apply, key, name, remote, local["fingerprint"], private, state['excluded'], can_apply)
         return {"uploaded": uploaded, "deletions": removed, "pullPages": 1, "hasMore": not applied,
                 "changed": bool(applied and projected != preserve_expired([row for row in remote['entries'] if row['id'] not in state['excluded']], projected, set(remote.get('expiredIds', []))))}

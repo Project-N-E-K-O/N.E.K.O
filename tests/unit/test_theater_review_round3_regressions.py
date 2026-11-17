@@ -8,9 +8,9 @@ import pytest
 from main_routers.numeric_theater_router import _performance_block_group
 from services.theater.numeric_v2_identity import numeric_v2_catgirl_binding
 from services.theater.numeric_v2_performance import performance_content_blocks
-from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, NumericV2ProjectError
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, NumericV2ProjectError
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.host import InProcessPackageGateway
 from utils import theater_activity
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup
 from tests.unit.test_theater_numeric_v2_router import _client
@@ -18,7 +18,7 @@ from utils.config_manager.characters import CharactersMixin
 from services.theater.numeric_v2_fixed_narration import apply_triggers
 from tests.unit.test_theater_numeric_v2_fixed_narration import _engine, OPENING
 from tests.unit.test_theater_numeric_v2_runtime import _binding
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
 from tests.unit.theater_workshop.test_numeric_v2_branch import branchable_project, _unconditional_route
 
 

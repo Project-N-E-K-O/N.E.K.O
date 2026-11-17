@@ -11,10 +11,11 @@ from services.theater.numeric_v2_budget import numeric_v2_actor_budget
 from services.theater.numeric_v2_context import history_evidence
 from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_usage import numeric_v2_usage_scope, invoke_with_usage, with_numeric_v2_usage
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
 
 
-@pytest.mark.parametrize('profile,limits', [(name, (7000, 8500, 8500, 1500))
+@pytest.mark.parametrize('profile,limits', [(name, (7000, 10000, 10000, 1500))
     for name in ('economy', 'balanced', 'quality')])
 def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
     # Narrative exceeds the old 360-character field cap; trailing negation must reach every tier's messages, and current input must remain complete.
@@ -26,7 +27,7 @@ def test_every_tier_keeps_player_and_candidate_complete(profile, limits):
     evaluated = ev._build_messages(engine, session, player, diagnostics=diagnostic)
     reviewed = ev._build_transition_judge_messages(engine, session, player_input=player,
         actor_performance={'performance': candidate})[0]
-    data = json.loads(reviewed[1].content.split('：', 1)[1])
+    data = prompt_payload(reviewed[1].content)
     assert data['actor_performance'] == candidate
     assert data['player_input'] == player
     assert player in evaluated[1].content
@@ -64,7 +65,7 @@ def test_evaluator_packing_reports_the_history_actually_removed(turns, caplog):
     session = replace(session, revision=turns, node_turn_count=turns, performance_history=history)
     diagnostic = {}
     messages = ev._build_messages(engine, session, '现在呢？', diagnostics=diagnostic)
-    sent = json.loads(messages[1].content.split('：', 1)[1])['scene_context']
+    sent = prompt_payload(messages[1].content)['scene_context']
     included = [record['revision'] for record in sent]
     original = [record['revision'] for record in ev._current_scene_context(session)]
     removed = original[:len(original) - len(included)]

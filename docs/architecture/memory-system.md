@@ -179,6 +179,7 @@ The memory-server startup hook scans pending outbox records and spawns replay ta
 - reflection synthesis;
 - persona and reflection refinement;
 - weekly introspection of the private block and of each group or member subject;
+- a behavior review right after each private introspection (one correction-tier call over a sample of recent conversation and the character card, leaving at most five short reminders whose evidence is counted by code, gated by both the powerful-memory and natural-expression switches; group chat is not reviewed);
 - below-zero evidence tracking and archive sweeps;
 - an about-daily, idle-only recompute of each character's habitual-phrase avoid list (local n-gram mining, then one summary-tier call that judges only candidates without a recent verdict, gated by both the powerful-memory and natural-expression switches);
 - slow migration of legacy fact/reflection event-time schemas;
@@ -199,6 +200,7 @@ The default per-character directory contains the following durable data. Some fi
 | `pinned_facts.json` | Pinned important facts with their expiry, plus a bounded history of replaced, removed, expired and evicted entries |
 | `habitual_phrases.json` | Phrases the character reused across several recent sessions, with counts, first/last-seen times, short excerpts, the model's verdict and the resulting suppression state, plus a cache of recent verdicts; replaced wholesale on each recompute and read at session start as an avoid list |
 | `habitual_phrase_overrides.json` | Phrases the user allowed or suppressed in the memory browser; written only from there, and applied to the stored list whenever it is read |
+| `behavior_notes.json` | Reminders from the weekly behavior review (what to do less of and in which direction), with evidence counts and expiry, plus recently retired ones and an update record of the last 26 reviews (what each changed, model, counts, reason codes, times of the cited messages); never holds the conversation itself, stays out of cloud saves, and is read when `/new_dialog` builds a session, without touching the character card or persona. The update record is for people tracing a note afterwards: neither the session block nor the next review reads it |
 | `reflections.json`, `surfaced.json` | Active reflections and user-feedback/surfacing state |
 | `reflection_archive/` | Sharded archived reflections |
 | `persona.json`, `persona_corrections.json` | Persona view and queued contradiction decisions |

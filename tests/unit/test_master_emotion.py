@@ -461,7 +461,7 @@ def test_to_profile_sample(monkeypatch):
 
 
 def test_gate_signal_for_registry(monkeypatch):
-    # The cross-server analyze_request publisher reads the combined pre-gate
+    # The cross-server turn-check publisher reads the combined pre-gate
     # signal by lanlan_name + current user text (no core handle). Verify the
     # registry bridge, the freshness (turn) match, and the complexity fold.
     from main_logic.activity.master_emotion import gate_signal_for

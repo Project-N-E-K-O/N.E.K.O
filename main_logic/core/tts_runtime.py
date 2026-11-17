@@ -55,8 +55,10 @@ from main_logic.tts_client import (
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
 )
+from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
+from utils.tts import provider_registry
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
@@ -726,6 +728,15 @@ class TtsRuntimeMixin:
                 'tts_custom' if has_custom else 'tts_default'
             )
             api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
+            provider = provider_registry.get(provider_key)
+            # Workers that read the settings-page fallback voice bind it at start,
+            # so a changed fallback voice must restart them.
+            hosted_default_voice = (
+                (core_config.get('TTS_VOICE_ID', ''), core_config.get('ttsVoiceId', ''))
+                if provider and provider.uses_configured_default_voice
+                and not (provider.preset_catalog and provider.preset_catalog.is_voice(route_voice_id))
+                else ''
+            )
             return (
                 provider_key,
                 self.core_api_type,
@@ -735,6 +746,7 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                hosted_default_voice,
                 api_key,
                 tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
             )
@@ -1612,6 +1624,12 @@ class TtsRuntimeMixin:
             self.tts_thread, self.tts_request_queue, self.tts_response_queue,
             supports_runtime_overlap=bool(getattr(tts_worker, "supports_runtime_overlap", True)),
         )
+        if provider_key == "gptsovits":
+            # The browser may drain its local buffers while the worker is
+            # still waiting for GSV, with one frame write in flight.
+            runtime.audio_done_timeout_ms = int(
+                1000 * (GPTSOVITS_END_TIMEOUT_SECONDS + TTS_FRAME_WRITE_TIMEOUT_SECONDS)
+            )
         self._tts_runtimes.append(runtime)
         self._tts_runtime = runtime
         try:
@@ -2118,6 +2136,19 @@ class TtsRuntimeMixin:
                 configured_provider,
             )
             return True
+        hosted_provider = _core_facade.selected_realtime_output_tts_provider_key(
+            core_config_snapshot, self._config_manager, self.voice_id,
+        )
+        if hosted_provider:
+            # Ask the provider itself: some need no key (local OpenAI-compatible
+            # endpoints), others fall back to a silent dummy worker without one.
+            if _core_facade.realtime_output_tts_provider_ready(
+                core_config_snapshot, self._config_manager, self.voice_id, hosted_provider,
+            ):
+                logger.info("%s🔊 语音模式：使用外部 TTS provider=%s", log_prefix, hosted_provider)
+                return True
+            logger.info("%s🔊 语音模式：TTS provider=%s 不可用（如缺少 API Key），使用原生语音", log_prefix, hosted_provider)
+            return False
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True
@@ -2352,6 +2383,9 @@ class TtsRuntimeMixin:
             "type": "audio_chunk",
             "speech_id": effective_speech_id
         }
+        runtime = tts_output_runtime.get()
+        if runtime is not None and runtime.audio_done_timeout_ms is not None:
+            header["audio_done_timeout_ms"] = runtime.audio_done_timeout_ms
         correlation_id = self._game_speech_correlation_for(effective_speech_id)
         if correlation_id:
             header["sdk_speech_correlation_id"] = correlation_id

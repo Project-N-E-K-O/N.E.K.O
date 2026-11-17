@@ -180,8 +180,30 @@ def _extract_timed_role_messages_from_rows(rows: list) -> list[dict]:
     return out
 
 
-def _iter_role_tagged_rows(rows: list):
-    """Yield ``(raw timestamp, 'human'|'ai', text, source metadata)`` for the rows memory may read."""
+def _extract_visible_timed_messages_from_rows(rows: list) -> list[dict]:
+    """The rows memory may read, as what the conversation actually showed.
+
+    Returns ``[{'at': naive local datetime, 'role': 'human'|'ai', 'text': str}, ...]``
+    in row order. A reply keeps only its visible text: the history-only note some
+    replies carry after it was never said to anyone. A row whose time does not
+    parse is skipped, since its place in the conversation is unknown.
+    """
+    from memory.timeindex import _coerce_row_timestamp
+
+    out: list[dict] = []
+    for ts_raw, msg_type, text, _source in _iter_role_tagged_rows(rows, visible_replies_only=True):
+        at = _coerce_row_timestamp(ts_raw)
+        if at is not None:
+            out.append({'at': at, 'role': msg_type, 'text': text})
+    return out
+
+
+def _iter_role_tagged_rows(rows: list, *, visible_replies_only: bool = False):
+    """Yield ``(raw timestamp, 'human'|'ai', text, source metadata)`` for the rows memory may read.
+
+    ``visible_replies_only``: a reply yields only its visible text, and a reply
+    whose boundary cannot be trusted is dropped rather than read past it.
+    """
     for ts_raw, session_id, msg_json in rows:
         try:
             msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
@@ -216,6 +238,12 @@ def _iter_role_tagged_rows(rows: list):
                 continue
             if not text.strip():
                 continue
+            if visible_replies_only and msg_type == 'ai':
+                from memory.timeindex import _assistant_text_from_stored_message
+
+                text = _assistant_text_from_stored_message(msg)
+                if not text:
+                    continue
             from memory.long_term_sync import original_message_source
             identity, millis = original_message_source(msg, session_id, ts_raw)
             source = {'memory_source_id': identity, **({'memory_source_created_at': millis} if millis is not None else {})}

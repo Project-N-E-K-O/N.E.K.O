@@ -670,6 +670,17 @@ async def _periodic_idle_maintenance_loop():
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: fact 向量去重失败: {e}")
 
+                    # -- Task 1c: One-time cleanup of duplicates older versions left. --
+                    # The organizer runs it once; the snapshot tells every other device.
+                    if not gates._is_idle():
+                        break
+                    try:
+                        from . import legacy_dedup
+                        await _run_with_character_language(
+                            name, lambda character: legacy_dedup.run(character, still_idle=gates._is_idle))
+                    except Exception as e:
+                        logger.warning(f"[IdleMaint] {name}: 旧重复事实清理失败: {type(e).__name__}")
+
                     # -- Task 2: Review persona contradictions (skip when strong memory is disabled). --
                     # resolve_corrections came from evidence-RFC. Contradictions may still be queued
                     # by the keyword-overlap heuristic in aadd_fact triggering _aqueue_correction

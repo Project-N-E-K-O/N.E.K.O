@@ -16,6 +16,7 @@ from plugin import settings
 from plugin.core.entry_points import (
     describe_plugin_entry_directory_mismatch,
     normalize_plugin_entry_point,
+    plugin_package_matches_directory,
 )
 from plugin.server.domain.normalization import is_valid_plugin_id
 from plugin.utils.source_paths import iter_plugin_python_files
@@ -75,10 +76,18 @@ def inspect_source_directory(source_dir: Path) -> SourceMetadata:
         raise ValueError(str(exc)) from exc
     if not is_valid_plugin_id(source.plugin_id):
         raise ValueError(f"Invalid plugin ID: {source.plugin_id!r}")
-    if source_dir.name != source.plugin_id:
+    # A plugin ID doubles as the Python package name (cache eviction, CLI paths and
+    # module keys all build ``plugins.<id>`` from it), so it must be an identifier
+    # and may not carry a dash (#3724). Only the *directory* may be kebab-case.
+    if not source.plugin_id.isidentifier():
         raise ValueError(
-            f"Project directory must be named after its plugin ID '{source.plugin_id}', "
-            f"not '{source_dir.name}'"
+            f"Plugin ID must be a snake_case Python identifier without '-': "
+            f"{source.plugin_id!r}"
+        )
+    if not plugin_package_matches_directory(source.plugin_id, source_dir.name):
+        raise ValueError(
+            f"Project directory must be named after its plugin ID '{source.plugin_id}' "
+            f"(a '-' in the directory may stand for '_'), not '{source_dir.name}'"
         )
     entry = source.plugin_toml.get("plugin", {}).get("entry", "")
     if not isinstance(entry, str) or ":" not in entry:
@@ -95,11 +104,14 @@ def inspect_source_directory(source_dir: Path) -> SourceMetadata:
     if (
         parts[0] != "plugins"
         or len(parts) < 2
-        or parts[1] != source_dir.name
+        or parts[1] != source.plugin_id
         or not all(part.isidentifier() for part in parts[2:])
         or not class_name.isidentifier()
     ):
-        raise ValueError("Entry must use plugins.<directory>[.<module>]:<class>")
+        raise ValueError(
+            "Entry must use plugins.<plugin.id>[.<module>]:<class> with a package "
+            "identical to plugin.id"
+        )
     module_dir = source_dir.joinpath(*parts[2:])
     candidates = [module_dir / "__init__.py"]
     if len(parts) > 2:

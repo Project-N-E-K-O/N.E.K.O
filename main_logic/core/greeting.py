@@ -23,6 +23,7 @@ import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _strip_nonverbal_directives
 from main_logic.session_state import SessionEvent, session_reply_in_progress
+from main_logic.agent_event_bus import conversation_reply_origin
 from services.chat_sync.source import mark_turn_origin
 from main_logic.startup_greeting_policy import (
     _STARTUP_GREETING_BURST_SECONDS,
@@ -58,6 +59,7 @@ from uuid import uuid4
 from ._shared import (
     logger,
     _proactive_expected_sid,
+    _reply_observation_owner,
     _proactive_published_text_chunks,
 )
 
@@ -393,6 +395,11 @@ class GreetingMixin:
                 meta=self._pending_turn_meta,
             )
 
+            reply_turn.observation_origin = {
+                "kind": "avatar", "is_proactive": None,
+                "plugin_id": None, "task_id": None,
+            }
+
             async def response_done_callback() -> None:
                 await self.handle_response_complete(reply_turn=reply_turn)
 
@@ -401,6 +408,7 @@ class GreetingMixin:
             # must match _proactive_expected_sid in handle_text_data/handle_output_transcript,
             # discarding mismatches with the same protection as trigger_agent_callbacks.
             _sid_token = _proactive_expected_sid.set(current_turn_id)
+            _observation_token = _reply_observation_owner.set(reply_turn)
             try:
                 try:
                     reply_turn.session = self.session
@@ -424,6 +432,7 @@ class GreetingMixin:
                     await self.send_avatar_interaction_ack(interaction_id, False, "error")
                     return {"accepted": False, "reason": "error", "interaction_id": interaction_id}
             finally:
+                _reply_observation_owner.reset(_observation_token)
                 _proactive_expected_sid.reset(_sid_token)
                 self._end_reply_turn(reply_turn)
 
@@ -866,6 +875,9 @@ class GreetingMixin:
                     )
                     return
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
+                _origin_token = conversation_reply_origin.set({
+                    "kind": "system", "is_proactive": True, "plugin_id": None, "task_id": None,
+                })
                 _published_text_token = _proactive_published_text_chunks.set(
                     greeting_published_text_chunks
                 )
@@ -914,6 +926,7 @@ class GreetingMixin:
                         )
                 finally:
                     _proactive_published_text_chunks.reset(_published_text_token)
+                    conversation_reply_origin.reset(_origin_token)
                     _proactive_expected_sid.reset(_sid_token)
                 logger.info("[%s] trigger_greeting: delivered=%s", self.lanlan_name, delivered)
         finally:
@@ -1079,6 +1092,9 @@ class GreetingMixin:
                 await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
                 await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
+                _origin_token = conversation_reply_origin.set({
+                    "kind": "system", "is_proactive": True, "plugin_id": None, "task_id": None,
+                })
                 try:
                     # Stale-session defense: same captured reference/type check as trigger_greeting.
                     session_ref = self.session
@@ -1091,6 +1107,7 @@ class GreetingMixin:
                         return
                     delivered = await session_ref.prompt_ephemeral(instruction)
                 finally:
+                    conversation_reply_origin.reset(_origin_token)
                     _proactive_expected_sid.reset(_sid_token)
                 logger.info("[%s] trigger_cat_greeting: delivered=%s", self.lanlan_name, delivered)
         finally:
@@ -1197,9 +1214,13 @@ class GreetingMixin:
                 if isinstance(history, list):
                     history_len = len(history)
                 _sid_token = _proactive_expected_sid.set(proactive_sid)
+                _origin_token = conversation_reply_origin.set({
+                    "kind": "system", "is_proactive": True, "plugin_id": None, "task_id": None,
+                })
                 try:
                     delivered = await self.session.prompt_ephemeral(instruction)
                 finally:
+                    conversation_reply_origin.reset(_origin_token)
                     _proactive_expected_sid.reset(_sid_token)
                 if history_len is not None and isinstance(history, list) and len(history) > history_len:
                     appended_snapshot = list(history[history_len:])

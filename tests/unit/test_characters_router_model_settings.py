@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import importlib
 import json
@@ -142,6 +143,43 @@ async def _call_update(monkeypatch, payload, characters=None, init_calls=None):
     )
     body = json.loads(response.body)
     return response, body, config_manager.saved_characters
+
+
+@pytest.mark.asyncio
+async def test_model_selection_waits_for_character_config_transaction(monkeypatch):
+    config_manager = DummyConfigManager(_build_characters_fixture())
+    lock = asyncio.Lock()
+    request_parsed = asyncio.Event()
+    name = '测试角色'
+
+    class ObservedRequest(DummyRequest):
+        async def json(self):
+            request_parsed.set()
+            return await super().json()
+
+    monkeypatch.setattr(characters_router_module, 'character_config_mutation_lock', lock)
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: None)
+    request = ObservedRequest({
+        'model_type': 'live3d',
+        'vrm': '/user_vrm/manual.vrm',
+        'apply_runtime': False,
+    })
+
+    async with lock:
+        selection = asyncio.create_task(characters_router_module.update_catgirl_l2d(name, request))
+        await request_parsed.wait()
+        assert not selection.done()
+        characters = config_manager.load_characters()
+        origin_ref = '/workshop/114514/hero.vrm'
+        set_reserved(characters['猫娘'][name], 'character_origin', 'model_ref', origin_ref)
+        await config_manager.asave_characters(characters)
+
+    response = await selection
+    assert response.status_code == 200
+    saved = config_manager.load_characters()['猫娘'][name]
+    assert get_reserved(saved, 'character_origin', 'model_ref') == origin_ref
+    assert get_reserved(saved, 'avatar', 'vrm', 'model_path') == '/user_vrm/manual.vrm'
 
 
 @pytest.mark.asyncio

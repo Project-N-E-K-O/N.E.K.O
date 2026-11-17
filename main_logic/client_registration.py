@@ -33,6 +33,10 @@ LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 UNREGISTERED_DETAILS = frozenset(
     {"invalid_client_proof", "client_not_registered", "client_not_found"}
 )
+# A row that predates device proofs. Re-registering the same client_id is
+# rejected with ``client_proof_required``; only the owning account can attach
+# this install's proof via ``POST /api/clients/adopt-proof``.
+LEGACY_REBIND_DETAIL = "legacy_client_rebind_required"
 
 _registered: dict[str, bool] = {}
 _register_lock = asyncio.Lock()

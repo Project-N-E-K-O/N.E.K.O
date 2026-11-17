@@ -33,6 +33,7 @@ from utils.external_route_registry import RouteClaim
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
+    _reply_observation_owner,
     _TEXT_SESSION_INPUT_TYPES,
     _IMAGE_INPUT_TYPES,
     _LIVE_VISION_STREAM_INPUT_TYPES,
@@ -97,7 +98,10 @@ class StreamingMixin:
                 "code": "MEMORY_SERVER_COOLDOWN",
                 "details": {"wait_time": time_left}
             })))
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            turn_end_msg = {'type': 'system', 'data': 'turn end'}
+            if self._close_turn_tool_state():
+                turn_end_msg['acted_through_tools'] = True
+            self.sync_message_queue.put(turn_end_msg)
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
         return True
@@ -753,6 +757,8 @@ class StreamingMixin:
                     self._publish_user_utterance_to_plugin_bus(
                         record_data,
                         is_voice_source=False,
+                        **({"input_id": message["_conversation_input_id"]}
+                           if message.get("_conversation_input_id") else {}),
                     )
 
                     # Dispatch above synchronously extracts and persists ban-topic instructions. If it found
@@ -771,36 +777,6 @@ class StreamingMixin:
                     await self._dispatch_mini_game_invite_keyword(
                         record_data,
                     )
-
-                    openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
-                    if (
-                        openclaw_magic_command
-                        and self._is_agent_enabled()
-                        and self.agent_flags.get("openclaw_enabled", False)
-                        and self.agent_flags.get("openclaw_ready", False)
-                    ):
-                        self._session_turn_count += 1
-                        self._clear_text_pending_images()
-                        self._mark_magic_command_image_drop_request(message.get("request_id"))
-                        await self.mirror_user_input(
-                            data,
-                            metadata={
-                                "source": "openclaw",
-                                "kind": "magic_command",
-                                "command": openclaw_magic_command,
-                            },
-                            request_id=message.get("request_id"),
-                        )
-                        await self._emit_agent_callback_turn_end(message.get("request_id"))
-                        # An owed wrap-up is not settled here: typed input only
-                        # reaches this through _process_stream_input, whose hold
-                        # (_with_owed_wrap_up_held) pays it once this input has
-                        # been handled; a settle here would return at once.
-                        self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
-                        logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
-                        if _turn_context_job is not None:
-                            _turn_context_job.cancel()
-                        return
 
                     # Text mode: **prefix this user message's content in place** with pending agent-task
                     # callbacks. LLM treats them as additional context accompanying the user's current utterance,
@@ -888,6 +864,14 @@ class StreamingMixin:
                             speech_id=new_user_sid,
                             request_id=text_request_id,
                         )
+                        reply_turn.observation_input_id = message.get("_conversation_input_id")
+                        reply_turn.observation_audio_expected = bool(self.use_tts)
+                        reply_turn.observation_origin = {
+                            "kind": "user_interaction" if is_chat_input_source(message_source) else "system",
+                            "is_proactive": False,
+                            "plugin_id": None,
+                            "task_id": None,
+                        }
                         # A reply to synthetic input (not typed into the chat
                         # box) is never stored as a chat original.
                         if not is_chat_input_source(message_source):
@@ -1017,7 +1001,11 @@ class StreamingMixin:
                                 from main_logic.reply_tail import reply_tail_registry
 
                                 reply_tail_registry.prepare_reply(self, reply_turn, user_text=record_data)
-                            await self.session.stream_text(data, **stream_text_kwargs)
+                            observation_token = _reply_observation_owner.set(reply_turn)
+                            try:
+                                await self.session.stream_text(data, **stream_text_kwargs)
+                            finally:
+                                _reply_observation_owner.reset(observation_token)
                         finally:
                             # stream_text claims the staged attachments (or puts them
                             # back on failure); release ledger entries for claimed ones.

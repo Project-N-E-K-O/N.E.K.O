@@ -62,6 +62,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
         'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
+        'assistApiKeyAtlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
         'assistApiKeyStandardcompute': 'ASSIST_API_KEY_STANDARDCOMPUTE',
     }
 
@@ -109,6 +110,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
                        'ASSIST_API_KEY_OPPER',
+                       'ASSIST_API_KEY_ATLASCLOUD',
                        'ASSIST_API_KEY_STANDARDCOMPUTE',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
@@ -297,7 +299,7 @@ class TestRequestyResolution:
             'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
-            'agent': 'google/gemini-3-flash-preview',
+            'agent': 'google/gemini-3.8-flash',
         }.items():
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == requesty_key, task
@@ -427,6 +429,59 @@ class TestOpperResolution:
 
 
 
+def _load_provider_catalog() -> dict:
+    path = os.path.join(os.path.dirname(__file__), '../../config/api_providers.json')
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)
+
+
+_PROVIDER_CATALOG = _load_provider_catalog()
+# Selectable assist providers that can never be coreApi; vllm_omni is TTS-only.
+_ASSIST_ONLY_PROVIDERS = sorted(
+    set(_PROVIDER_CATALOG['assist_api_providers'])
+    - set(_PROVIDER_CATALOG['core_api_providers'])
+    - {'vllm_omni'}
+)
+
+
+class TestAtlasCloudResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('atlascloud_key', ['', 'apikey-atlascloud-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, atlascloud_key,
+    ):
+        """Resolve each Atlas Cloud task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'atlascloud',
+            'assistApiKeyAtlascloud': atlascloud_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['ASSIST_API_KEY_ATLASCLOUD'] == atlascloud_key
+        assert cfg['OPENROUTER_API_KEY'] == atlascloud_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == atlascloud_key
+        for task, model in {
+            'conversation': 'google/gemini-3.1-flash-lite',
+            'summary': 'deepseek-ai/deepseek-v4-flash',
+            'correction': 'deepseek-ai/deepseek-v4-flash',
+            'emotion': 'google/gemini-2.5-flash-lite',
+            'vision': 'google/gemini-3.1-flash-lite',
+            'agent': 'google/gemini-3-flash-preview',
+        }.items():
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == atlascloud_key, task
+            assert resolved['base_url'] == 'https://api.atlascloud.ai/v1', task
+            assert resolved['model'] == model, task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+
 class TestStandardComputeResolution:
     @pytest.mark.unit
     @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
@@ -454,27 +509,12 @@ class TestStandardComputeResolution:
             assert resolved['provider_type'] == 'openai_compatible', task
 
 
-def _load_provider_catalog() -> dict:
-    path = os.path.join(os.path.dirname(__file__), '../../config/api_providers.json')
-    with open(path, encoding='utf-8') as f:
-        return json.load(f)
-
-
-_PROVIDER_CATALOG = _load_provider_catalog()
-# Selectable assist providers that can never be coreApi; vllm_omni is TTS-only.
-_ASSIST_ONLY_PROVIDERS = sorted(
-    set(_PROVIDER_CATALOG['assist_api_providers'])
-    - set(_PROVIDER_CATALOG['core_api_providers'])
-    - {'vllm_omni'}
-)
-
-
 class TestAssistOnlyKeyIsolation:
     """coreApiKey always belongs to another vendor when the assist provider is assist-only."""
 
     @pytest.mark.unit
     def test_catalog_has_assist_only_providers(self):
-        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'standardcompute'} <= set(_ASSIST_ONLY_PROVIDERS)
+        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud', 'standardcompute'} <= set(_ASSIST_ONLY_PROVIDERS)
         assert not {'qwen', 'openai', 'free'} & set(_ASSIST_ONLY_PROVIDERS)
 
     @pytest.mark.unit
@@ -1109,6 +1149,7 @@ class TestProviderExclusion:
             'orcarouter',
             'requesty',
             'opper',
+            'atlascloud',
             'standardcompute',
             'elevenlabs',
             'qwen_intl',
@@ -2219,6 +2260,49 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get('assistApiKeyKimiCode') == 'sk-kimi-code-test'
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
+
+    @pytest.mark.unit
+    def test_update_core_config_deepseek_keeps_shared_custom_tts_slot(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        shared_slot = {
+            'ttsModelUrl': 'https://speech.example.com/v1/audio/speech',
+            'ttsModelId': 'custom-model',
+            'ttsModelApiKey': 'custom-key',
+        }
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'custom',
+            **shared_slot,
+        })
+        settings = {'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen'}
+        for provider_fields in (
+            {'ttsModelProvider': 'deepseek', 'ttsProvider': 'deepseek'},
+            {},
+        ):
+            response = asyncio.run(config_router.update_core_config(self._FakeRequest({
+                **settings,
+                **provider_fields,
+                'ttsModelUrl': 'wss://api.deepseek.com/v1/tools/tts',
+                'ttsModelId': '',
+                'ttsModelApiKey': '',
+            })))
+            assert response.get('success') is True
+            saved = config_manager.load_json_config('core_config.json', {})
+            assert {field: saved[field] for field in shared_slot} == shared_slot
+
+        response = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            **settings,
+            'ttsModelProvider': 'custom',
+            'ttsProvider': '',
+            'ttsModelUrl': 'https://updated.example.com/v1/audio/speech',
+        })))
+        assert response.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved['ttsModelUrl'] == 'https://updated.example.com/v1/audio/speech'
+        assert saved['ttsModelId'] == 'custom-model'
+        assert saved['ttsModelApiKey'] == 'custom-key'
 
     @pytest.mark.unit
     def test_update_core_config_doubao_tts_overwrites_stale_shared_tts_key(self, config_manager, monkeypatch):

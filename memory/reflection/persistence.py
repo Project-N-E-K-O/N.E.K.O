@@ -311,10 +311,20 @@ class PersistenceMixin:
                 with consistent_view_read(path):
                     with open(path, encoding='utf-8') as f:
                         data = json.load(f)
-                return self._filter_reflections(data, include_archived, path)
+                return self._without_cold_copies(
+                    name, self._filter_reflections(data, include_archived, path),
+                )
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(f"[Reflection] 加载失败: {e}")
         return []
+
+    def _without_cold_copies(self, name: str, items: list[dict]) -> list[dict]:
+        """Drop reflections also held in the archive shards (cold storage wins)."""
+        from memory import cold_store
+        return cold_store.without_cold_copies(
+            os.path.join(self._config_manager.memory_dir, name), 'reflection', items,
+            lambda row: row.get('entity'),
+        )
 
     async def aload_reflections(self, name: str, include_archived: bool = False) -> list[dict]:
         from memory.long_term_sync import require_consistent_views, consistent_view_read
@@ -328,7 +338,10 @@ class PersistenceMixin:
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[Reflection] 加载失败: {e}")
             return []
-        return self._filter_reflections(data, include_archived, path)
+        return await asyncio.to_thread(
+            self._without_cold_copies, name,
+            self._filter_reflections(data, include_archived, path),
+        )
 
     def _prepare_save_reflections(
         self, name: str, reflections: list[dict], all_on_disk: list[dict],

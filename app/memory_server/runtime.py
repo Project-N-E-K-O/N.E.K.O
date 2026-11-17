@@ -110,6 +110,8 @@ _CHARACTER_SCOPED_WRITE_OPS = frozenset({
     "theater/retract",
     # The memory browser's "recompute now" rewrites habitual_phrases.json.
     "habitual_phrases/recompute",
+    # Restoring what the one-time duplicate cleanup folded away rewrites facts.json.
+    "legacy_dedup/restore",
 })
 _admitted_character_context: ContextVar[frozenset[str]] = ContextVar(
     "admitted_character_context",
@@ -141,13 +143,18 @@ def _character_write_name_from_path(path: str, method: str) -> str | None:
             break
     if (
         raw_name is None
-        and method == "POST"
+        and method in {"POST", "GET"}
         and path.startswith(_CHARACTER_SCOPED_WRITE_PATH_PREFIX)
     ):
         segments = path[len(_CHARACTER_SCOPED_WRITE_PATH_PREFIX):].split("/")
         # Operation names may contain fixed subpaths but still match complete-string allowlists exactly.
         operation = "/".join(segments[1:])
-        if len(segments) >= 2 and operation in _CHARACTER_SCOPED_WRITE_OPS:
+        if len(segments) >= 2 and (
+            (method == "POST" and operation in _CHARACTER_SCOPED_WRITE_OPS)
+            # The private snapshot uses the normal ensure path, which may
+            # initialize, migrate or synchronize and save persona data.
+            or (method == "GET" and operation == "persona")
+        ):
             raw_name = segments[0]
     if not raw_name:
         return None
@@ -1113,6 +1120,7 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         evidence_loops,
         habitual_phrase_loop,
         outbox_infra,
+        received_extraction,
         refine_loops,
         routes,
         signal_extraction,
@@ -1313,6 +1321,12 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(evidence_loops._periodic_idle_maintenance_loop())
             if EVIDENCE_SIGNAL_CHECK_ENABLED:
                 _spawn_background_task(signal_extraction._periodic_signal_extraction_loop())
+            _spawn_background_task(received_extraction._periodic_received_extraction_loop())
+            from memory import organizer
+            from . import long_term_sync
+            # Organizer-only engine work asks this before it runs.
+            organizer.set_gate(long_term_sync.organizes)
+            _spawn_background_task(long_term_sync._periodic_organizer_loop())
             _spawn_background_task(evidence_loops._periodic_archive_sweep_loop())
             # events.ndjson applied-history pruning; first round 300 s after startup.
             _spawn_background_task(evidence_loops._periodic_event_log_compact_loop())

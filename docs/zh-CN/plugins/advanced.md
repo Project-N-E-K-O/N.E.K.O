@@ -76,6 +76,20 @@ class MyProtocolAdapter(NekoAdapterPlugin):
 - 自定义序列化器（`MCPResponseSerializer`）
 - 自定义传输层（`MCPTransportAdapter`）
 
+### Adapter SDK 导出
+
+从 `plugin.sdk.adapter` 导入：
+
+| 类别 | 导出 |
+|------|------|
+| **基类** | `AdapterBase`, `AdapterConfig`, `AdapterContext`, `AdapterMode` |
+| **插件基类** | `NekoAdapterPlugin` |
+| **网关** | `AdapterGatewayCore`, `DefaultPolicyEngine`, `DefaultRouteEngine`, `DefaultRequestNormalizer`, `DefaultResponseSerializer`, `CallablePluginInvoker` |
+| **数据模型** | `ExternalRequest`, `GatewayRequest`, `GatewayResponse`, `GatewayAction`, `GatewayError`, `RouteDecision`, `RouteMode` |
+| **协议** | `TransportAdapter`, `RequestNormalizer`, `PolicyEngine`, `RouteEngine`, `PluginInvoker`, `ResponseSerializer` |
+| **装饰器** | `on_adapter_startup`, `on_adapter_shutdown`, `on_adapter_event`, `on_mcp_tool`, `on_mcp_resource`, `on_nonebot_message` |
+| **类型** | `Protocol`, `RouteTarget`, `AdapterMessage`, `AdapterResponse`, `RouteRule` |
+
 ## 异步编程
 
 运行时入口必须使用 `async def`。同步辅助函数仍可使用，但应通过异步入口暴露：

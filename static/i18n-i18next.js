@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Add the Standard Compute assist API provider names in all eight languages.
-    const LOCALE_VERSION = '2026-11-09-standardcompute-assist-provider';
+    // 合入最新 main 后加上 Standard Compute 辅助 API 提供商名称（八语言），刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-17-standardcompute-assist-provider-main-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

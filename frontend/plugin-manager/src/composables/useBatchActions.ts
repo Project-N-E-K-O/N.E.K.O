@@ -7,6 +7,7 @@ export interface BatchOptions<T> {
   action: (item: T) => Promise<void>
   noItemsKey: string
   confirmKey: string
+  skipConfirm?: boolean
   confirmType?: 'info' | 'warning'
   successKey: string
   partialKey: string
@@ -29,7 +30,7 @@ export function useBatchActions<T>(
       return
     }
     try {
-      await ElMessageBox.confirm(
+      if (!options.skipConfirm) await ElMessageBox.confirm(
         t(options.confirmKey, { count: items.length }),
         t('common.confirm'),
         { type: options.confirmType ?? 'info' },
