@@ -25,6 +25,13 @@ BOUND = {"bound": True, "error": None}
 OWNER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 
+@pytest.fixture(autouse=True)
+def _reset_unrecorded_hold():
+    hold._set_unrecorded_hold(False)
+    yield
+    hold._set_unrecorded_hold(False)
+
+
 def _mark_conflict(directory) -> None:
     hold.record_bind_outcome(directory, dict(CONFLICT), USER_ID)
 
@@ -468,6 +475,11 @@ def test_sync_session_login_on_owned_device_holds_uploads(tmp_path, monkeypatch)
     assert bind.get("skipped") == "native_session_sync"
     assert json.loads(auth.read_text(encoding="utf-8"))["local_user_id"] == USER_ID
     assert hold.device_held(tmp_path, USER_ID)
+    # B's unsynced memories stay on the device, so neither a logout nor A
+    # signing back in releases the hold; only a bind that confirms the owner.
+    assert hold.device_held(tmp_path, None)
+    assert hold.device_held(tmp_path, OWNER_A)
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
     assert not hold.device_held(tmp_path, OWNER_A)
 
 
@@ -691,7 +703,8 @@ def test_rebind_that_finds_a_conflict_records_the_hold(oauth_app, monkeypatch): 
     client, auth, social, _pending = oauth_app
     _save_login(auth, social, {"bound": False, "error": "cloud_unreachable"})
     _logged_in(monkeypatch)
-    assert not hold.device_held(auth.parent, USER_ID)
+    # Nothing recorded yet: the login's bind never reached the cloud.
+    assert not (auth.parent / hold.HOLD_FILENAME).exists()
 
     async def refused(*_args, **_kwargs):
         return {"bound": False, "error": O.LEGACY_DEVICE_OWNED_ELSEWHERE}
@@ -796,3 +809,96 @@ async def test_facts_sync_holds_when_credentials_are_unreadable(tmp_path, monkey
     # A real logout (no credential files) is not a hold: uploads go to the owner.
     monkeypatch.setattr(chat_sync_host, "signed_in_account_state", lambda: ("signed_out", None))
     assert not await asyncio.to_thread(sync_worker._device_bound_to_other_account)
+
+
+
+def test_logout_after_foreign_account_use_keeps_hold(tmp_path):
+    """Owner A on file, B signs in without binding, B logs out: still held."""
+    hold.record_bind_outcome(tmp_path, dict(BOUND), OWNER_A)
+    assert hold.record_session_account(tmp_path, USER_ID)
+    assert hold.device_held(tmp_path, None)
+    # A plain owner record with nobody else ever signed in does not hold.
+    other = tmp_path / "other"
+    hold.record_bind_outcome(other, dict(BOUND), OWNER_A)
+    assert hold.record_session_account(other, OWNER_A)
+    assert not hold.device_held(other, None)
+
+
+@pytest.mark.parametrize("saved_bind,held", [(None, False), (BOUND, False), ({"bound": False, "error": None, "skipped": "native_session_sync"}, True)])
+def test_no_owner_on_file_follows_the_login_bind(tmp_path, saved_bind, held):
+    """Pre-bind sessions count as bound; a login that never bound holds."""
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=saved_bind) is held
+
+
+def test_unbound_legacy_session_seeds_the_owner_before_replacement(oauth_app):  # noqa: F811
+    _client, auth, social, _pending = oauth_app
+    auth.write_text(
+        json.dumps({"access_token": "old-token", "local_user_id": OWNER_A, "auth_source": "legacy"}),
+        encoding="utf-8",
+    )
+    C._remember_confirmed_owner()
+    assert not hold.device_held(auth.parent, OWNER_A)
+    assert hold.device_held(auth.parent, USER_ID)
+
+
+def test_failed_hold_writes_latch_until_a_written_bind(tmp_path, monkeypatch):
+    """Persistent write failures hold uploads for the rest of the process."""
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+    assert not hold.record_bind_outcome(tmp_path, dict(CONFLICT), USER_ID)
+    # The login that carried the conflict is gone (re-login or logout).
+    assert hold.device_held(tmp_path, USER_ID, saved_bind={"bound": False, "error": "cloud_unreachable"})
+    assert hold.device_held(tmp_path, None)
+    # A successful bind that cannot be written does not release it either.
+    assert not hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    assert hold.device_held(tmp_path, USER_ID)
+    monkeypatch.undo()
+    assert hold.record_bind_outcome(tmp_path, dict(BOUND), USER_ID)
+    assert not hold.device_held(tmp_path, USER_ID)
+
+
+def test_rebind_conflict_after_flaky_login_holds_even_if_write_fails(oauth_app, monkeypatch):  # noqa: F811
+    """Login bind was cloud_unreachable, rebind finds a conflict, hold write fails."""
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, {"bound": False, "error": "cloud_unreachable"})
+    _logged_in(monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(*_args, **_kwargs):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+
+    assert response.status_code == 409
+    saved_bind = json.loads(auth.read_text(encoding="utf-8"))["bind"]
+    assert saved_bind["error"] == "cloud_unreachable"
+    assert hold.device_held(auth.parent, USER_ID, saved_bind=saved_bind)
+
+
+def test_rebind_compares_community_endpoints_strictly(oauth_app, monkeypatch):  # noqa: F811
+    """127.0.0.1 and ::1 can be different services; never send the bearer across."""
+    client, auth, social, _pending = oauth_app
+    _save_login(auth, social, CONFLICT)
+    monkeypatch.setattr(C, "_social_base_url", lambda: "http://[::1]:8080")
+
+    async def resolve():
+        return {
+            "logged_in": True,
+            "snapshot": {
+                "access_token": "account-b-access",
+                "auth_source": "oauth",
+                "local_user_id": USER_ID,
+                "base_url": "http://127.0.0.1:8080",
+            },
+            "auth": {},
+        }
+
+    async def unexpected(*_args, **_kwargs):
+        raise AssertionError("the bearer must stay on its own endpoint")
+
+    monkeypatch.setattr(O, "resolve_saved_oauth_status", resolve)
+    monkeypatch.setattr(O, "_oauth_guest_bind", unexpected)
+    response = client.post("/api/card-drop/oauth/rebind-client", json={"confirm": True})
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "community_base_url_changed"}

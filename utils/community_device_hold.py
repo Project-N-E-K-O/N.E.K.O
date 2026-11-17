@@ -35,6 +35,10 @@ logger = logging.getLogger("neko.community_device_hold")
 HOLD_FILENAME = "community_device_hold.json"
 OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _UNREADABLE = object()
+# Set when a hold that had to be recorded could not be written. Uploads stay
+# held for the rest of this process even if the login that carried the
+# conflict is replaced or cleared; only a written successful bind resets it.
+_unrecorded_hold = False
 
 
 def default_directory() -> Path | None:
@@ -112,18 +116,28 @@ def device_held(
     signed-in login's own bind outcome: a refused bind there also holds, so a
     hold record that could not be written does not open the gate.
     """
+    if _unrecorded_hold:
+        return True
     if isinstance(saved_bind, dict) and saved_bind.get("error") == OWNERSHIP_CONFLICT:
         return True
     record = _read(directory)
-    if record is None:
-        return False
     if record is _UNREADABLE:
         return True
-    if record.get("conflict"):
+    if isinstance(record, dict) and record.get("conflict"):
         return True
-    owner = _account(record.get("owner"))
     current = _account(signed_in)
-    return bool(owner and current and owner != current)
+    if current is None:
+        # Nobody signed in: uploads land with the device's owner, and no
+        # other account's use of the device is on record (that would be a
+        # conflict above).
+        return False
+    owner = _account(record.get("owner")) if isinstance(record, dict) else None
+    if owner is not None:
+        return owner != current
+    # No confirmed owner on file. The signed-in login's own bind decides;
+    # sessions saved before bind outcomes existed count as bound, matching
+    # /auth-status. A login that never bound (browser session sync) holds.
+    return not (saved_bind is None or (isinstance(saved_bind, dict) and saved_bind.get("bound") is True))
 
 
 def record_bind_outcome(directory: Path | str | None, bind: Any, account: str | None) -> bool:
@@ -147,9 +161,49 @@ def record_bind_outcome(directory: Path | str | None, bind: Any, account: str | 
         record["conflict"] = True
     elif bind.get("bound") is True and account:
         record = {"owner": account, "conflict": False}
+        if _write(directory, record):
+            _set_unrecorded_hold(False)
+            return True
+        return False
     else:
         return True
-    return _write(directory, record)
+    return _write_hold(directory, record)
+
+
+def _set_unrecorded_hold(value: bool) -> None:
+    global _unrecorded_hold
+    _unrecorded_hold = value
+
+
+def _write_hold(directory: Path | str | None, record: dict) -> bool:
+    """Write a record that holds uploads; latch the hold in memory if it fails."""
+    if _write(directory, record):
+        return True
+    _set_unrecorded_hold(True)
+    return False
+
+
+def record_session_account(directory: Path | str | None, account: str | None) -> bool:
+    """Note that ``account`` now uses this device, whatever its bind showed.
+
+    Unless ``account`` is the confirmed owner, hold uploads until a bind
+    confirms who owns the device. Logging that account out later does not
+    release the hold, since its unsynced local memories are still on the
+    device.
+    """
+    account = _account(account)
+    if not account:
+        return True
+    record = _read(directory)
+    if record is _UNREADABLE:
+        return True  # already held
+    record = record if isinstance(record, dict) else {}
+    owner = _account(record.get("owner"))
+    if owner == account or record.get("conflict"):
+        return True
+    # Another account, or nobody confirmed yet: this account's local
+    # memories must not reach whoever the cloud lists as the owner.
+    return _write_hold(directory, {**record, "conflict": True})
 
 
 def remember_owner(directory: Path | str | None, account: str | None) -> None:
@@ -170,5 +224,6 @@ __all__ = [
     "device_held",
     "hold_path",
     "record_bind_outcome",
+    "record_session_account",
     "remember_owner",
 ]

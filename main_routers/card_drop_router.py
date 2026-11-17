@@ -900,9 +900,14 @@ def _remember_confirmed_owner() -> None:
     auth = _load_auth() or {}
     bind = auth.get("bind")
     account = _normalize_local_user_id(auth.get("local_user_id"))
+    directory = _credential_dir()
+    if bind is None and account and auth.get("access_token"):
+        # Sessions saved before bind outcomes were recorded count as bound,
+        # the same compatibility rule /auth-status applies.
+        community_device_hold.remember_owner(directory, account)
+        return
     if not isinstance(bind, dict):
         return
-    directory = _credential_dir()
     if bind.get("bound") is True:
         community_device_hold.remember_owner(directory, account)
     elif bind.get("error") == _BIND_OWNERSHIP_CONFLICT and not community_device_hold.device_held(
@@ -912,15 +917,19 @@ def _remember_confirmed_owner() -> None:
 
 
 def _record_device_hold(bind: dict, local_user_id: str) -> None:
-    """Record what one bind attempt as ``local_user_id`` proved about the device owner.
+    """Record what a login or bind as ``local_user_id`` proved about the device owner.
 
-    See utils.community_device_hold: header-only uploads wait while the
-    signed-in account is not the confirmed owner.
+    See utils.community_device_hold: header-only uploads wait while a
+    refused bind is on record, and once an account other than the confirmed
+    owner has used this device, until a bind confirms who owns it. A hold
+    that cannot be written is latched in memory instead of opening uploads.
     """
-    if not community_device_hold.record_bind_outcome(_credential_dir(), bind, local_user_id):
-        # The saved login still carries the refused bind, which facts_sync
-        # also treats as a hold, so a failed write here does not open uploads.
-        logger.warning("card_drop: device hold record not written; relying on the saved bind")
+    directory = _credential_dir()
+    recorded = community_device_hold.record_bind_outcome(directory, bind, local_user_id)
+    if not (isinstance(bind, dict) and bind.get("bound") is True):
+        recorded = community_device_hold.record_session_account(directory, local_user_id) and recorded
+    if not recorded:
+        logger.warning("card_drop: device hold record not written; holding uploads in memory")
 
 
 def _save_social_session_unlocked(
@@ -1339,8 +1348,7 @@ async def _store_session(
         local_user_id=local_user_id,
         auth_source=normalized_source,
     )
-    if bind_client:
-        await asyncio.to_thread(_record_device_hold, bind, local_user_id)
+    await asyncio.to_thread(_record_device_hold, bind, local_user_id)
     return bind
 
 

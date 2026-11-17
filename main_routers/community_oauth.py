@@ -35,6 +35,7 @@ from services.chat_sync import host as _chat_sync_host
 # Re-exported: card_drop_router / visit_router.credentials read it as
 # ``community_oauth.status_session_saved``, and tests patch it here.
 from utils.community_session import status_session_saved
+from utils.http.url import same_endpoint
 from utils.social_base import auth_public_url as _configured_auth_public_url
 from utils.instance_access import remote_instance_identity, request_public_origin, _same_origin
 
@@ -1058,7 +1059,7 @@ async def _rebind_current_session(headers: dict[str, str], expected_user: str | 
     # it to a different one that the configuration now points at.
     session_base = str(snapshot.get("base_url") or "").strip().rstrip("/")
     configured_base = C._social_base_url()
-    if session_base and not C._same_originish(session_base, configured_base):
+    if session_base and not same_endpoint(session_base, configured_base):
         return JSONResponse({"detail": "community_base_url_changed"}, status_code=409, headers=headers)
 
     bind = await _oauth_guest_bind(configured_base, access_token, rebind=True)
