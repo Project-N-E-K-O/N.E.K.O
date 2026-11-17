@@ -25,6 +25,16 @@ BOUND = {"bound": True, "error": None}
 OWNER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 
+def await_(awaitable):
+    import asyncio
+
+    return asyncio.run(_identity(awaitable))
+
+
+async def _identity(awaitable):
+    return await awaitable
+
+
 @pytest.fixture(autouse=True)
 def _reset_unrecorded_hold():
     hold._set_unrecorded_hold(False)
@@ -790,6 +800,45 @@ def test_signed_in_account_state_tells_unreadable_from_signed_out(oauth_app):  #
     auth.write_text("{half-written", encoding="utf-8")
     social.write_text("{half-written", encoding="utf-8")
     assert C.signed_in_account_state() == ("unknown", None)
+    # Electron's logout leaves a tokenless social file: that is signed out.
+    social.write_text(json.dumps({"token": ""}), encoding="utf-8")
+    auth.unlink()
+    assert C.signed_in_account_state() == ("signed_out", None)
+
+
+def test_unreadable_social_session_never_falls_back_to_older_files(oauth_app, monkeypatch):  # noqa: F811
+    """B's social file is corrupt; A's auth mirror and legacy file must not decide."""
+    _client, auth, social, _pending = oauth_app
+    legacy = social.with_name("legacy_social_session.json")
+    monkeypatch.setattr(C, "_legacy_social_session_path", lambda: legacy)
+    for path, key in ((auth, "access_token"), (legacy, "token")):
+        path.write_text(json.dumps({key: "a-token", "local_user_id": OWNER_A}), encoding="utf-8")
+    social.write_text("{half-written", encoding="utf-8")
+
+    assert C.signed_in_account_state() == ("unknown", None)
+    hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
+    assert hold.device_held(auth.parent, hold.UNKNOWN_ACCOUNT)
+
+
+def test_pre_v2_session_without_account_id_keeps_uploading(oauth_app, tmp_path, monkeypatch):  # noqa: F811
+    """A single-account install from before local_user_id was saved is not held."""
+    import asyncio
+
+    from services.chat_sync import host as chat_sync_host
+
+    _client, auth, social, _pending = oauth_app
+    social.write_text(json.dumps({"token": "old-token"}), encoding="utf-8")
+    assert C.signed_in_account_state() == ("signed_in", "")
+    real_signed_in_account = sync_worker._signed_in_account
+    _facts_sync_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(sync_worker, "_signed_in_account", real_signed_in_account)
+    monkeypatch.setattr(chat_sync_host, "signed_in_account_state", C.signed_in_account_state)
+    monkeypatch.setattr(hold, "default_directory", lambda: auth.parent)
+
+    assert not await_(asyncio.to_thread(sync_worker._device_bound_to_other_account))
+    # Once an owner is on file, an account that cannot be compared holds.
+    hold.record_bind_outcome(auth.parent, dict(BOUND), OWNER_A)
+    assert await_(asyncio.to_thread(sync_worker._device_bound_to_other_account))
 
 
 async def test_facts_sync_holds_when_credentials_are_unreadable(tmp_path, monkeypatch):
@@ -902,3 +951,31 @@ def test_rebind_compares_community_endpoints_strictly(oauth_app, monkeypatch):  
 
     assert response.status_code == 409
     assert response.json() == {"detail": "community_base_url_changed"}
+
+
+
+async def test_persistent_write_failure_survives_relogin_and_logout(tmp_path, monkeypatch):
+    """Conflict login, writes keep failing, same account re-logs in (flaky), then logs out."""
+    _pending_login(tmp_path, monkeypatch)
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(_social_base, _access_token, *, rebind=False):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+
+    _pending_login(tmp_path, monkeypatch)
+
+    async def flaky(_social_base, _access_token, *, rebind=False):
+        return {"bound": False, "error": "cloud_unreachable"}
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", flaky)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+    saved_bind = json.loads((tmp_path / "community_auth.json").read_text(encoding="utf-8"))["bind"]
+    assert saved_bind["error"] == "cloud_unreachable"
+    assert not (tmp_path / hold.HOLD_FILENAME).exists()
+    assert hold.device_held(tmp_path, USER_ID, saved_bind=saved_bind)
+
+    assert C._clear_auth()
+    assert hold.device_held(tmp_path, None)

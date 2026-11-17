@@ -1883,6 +1883,49 @@ def test_social_session_init_stale_bind_success_keeps_a_newer_device_hold(
     assert hold.device_held(tmp_path, newer_account)
 
 
+def test_social_session_init_rechecks_the_session_after_waiting_for_the_device_lock(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    """A login that lands while the retry waits for the lock must stop the old token's bind."""
+    from contextlib import asynccontextmanager
+
+    from main_routers import community_oauth
+
+    auth = tmp_path / "community_auth.json"
+    auth.write_text(
+        json.dumps({"bind": {"bound": False, "error": "cloud_unreachable"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(C, "_auth_path", lambda: auth)
+    snapshots = [_delegate_session()]
+    monkeypatch.setattr(C, "_desktop_session_snapshot", lambda: snapshots[-1])
+
+    @asynccontextmanager
+    async def lock_released_after_another_login():
+        # Another account's callback held the lock and saved its session.
+        snapshots.append({**_delegate_session(), "access_token": "newer-account-token"})
+        yield
+
+    async def unexpected_bind(*_args, **_kwargs):
+        raise AssertionError("the replaced session's token must not bind the device")
+
+    monkeypatch.setattr(community_oauth, "_device_bind_lock", lock_released_after_another_login())
+    monkeypatch.setattr(community_oauth, "_oauth_guest_bind", unexpected_bind)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/social-session-init",
+        headers={"Origin": "https://community.example"},
+        json={"sync_ticket": ticket},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "desktop_login_required"}
+    assert C._sync_ticket_is_valid(ticket)
+
+
 def test_social_session_init_refuses_to_consume_when_logout_wins_the_lock(
     client,
     monkeypatch,

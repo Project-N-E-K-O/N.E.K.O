@@ -751,28 +751,48 @@ def _social_session_locks(paths: list[Path]):
 # commits with the same locks the logout/refresh/login writers hold. The lambdas
 # look up this module's attributes on every call, so patches here reach it too.
 def signed_in_account_state() -> tuple[str, str | None]:
-    """``("signed_in", id)``, ``("signed_out", None)`` or ``("unknown", None)``.
+    """Who is signed in, read the way the saved session is resolved.
 
-    Signed out means no credential file exists. A file that exists but yields
-    no account (unreadable, corrupt, half-written) is unknown, never a logout,
-    so callers guarding account-scoped writes can fail closed.
+    ``("signed_in", id)``; ``("signed_in", "")`` for a pre-v2 session that
+    carries a token but no account id; ``("signed_out", None)`` when no
+    credential holds a token; ``("unknown", None)`` when the file that would
+    decide cannot be read. Files are consulted in the snapshot's order
+    (social session, its legacy path, then the auth mirror), but a file that
+    exists and cannot be read stops the walk: falling through to an older
+    file could name an account that is no longer signed in.
     """
-    snapshot = _desktop_session_snapshot()
-    account = _normalize_local_user_id((snapshot or {}).get("local_user_id"))
-    if account:
-        return "signed_in", account
-    paths = [path for path in [_auth_path(), *_social_session_paths()] if path is not None]
-    try:
-        present = any(path.exists() for path in paths)
-    except OSError:
-        return "unknown", None
-    return ("unknown", None) if present else ("signed_out", None)
+
+    def read(path: Path) -> tuple[str, dict | None]:
+        try:
+            if not path.exists():
+                return "missing", None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "unreadable", None
+        return ("ok", data) if isinstance(data, dict) else ("unreadable", None)
+
+    sources = [(path, "token") for path in _social_session_paths()]
+    auth_path = _auth_path()
+    if auth_path is not None:
+        sources.append((auth_path, "access_token"))
+    for path, token_key in sources:
+        status, data = read(path)
+        if status == "missing":
+            continue
+        if status == "unreadable":
+            return "unknown", None
+        token = data.get(token_key)
+        if not isinstance(token, str) or not token.strip():
+            # Electron leaves a tokenless file behind on logout.
+            continue
+        return "signed_in", _normalize_local_user_id(data.get("local_user_id"))
+    return "signed_out", None
 
 
 _chat_sync_host.install_saved_session_store(
     saved_session_snapshot=lambda: _desktop_session_snapshot(),
     saved_session_writer_fence=lambda: _social_session_locks(_social_session_paths()),
-    signed_in_account_state=lambda: signed_in_account_state(),
+    signed_in_account_state=signed_in_account_state,
 )
 
 
@@ -888,7 +908,7 @@ def _credential_dir() -> Path | None:
     return path.parent if path is not None else None
 
 
-def _remember_confirmed_owner() -> None:
+def _remember_confirmed_owner() -> bool:
     """Carry what the saved login proved about the owner into the device record.
 
     Runs before that login is replaced or cleared, since its bind outcome goes
@@ -905,15 +925,16 @@ def _remember_confirmed_owner() -> None:
         # Sessions saved before bind outcomes were recorded count as bound,
         # the same compatibility rule /auth-status applies.
         community_device_hold.remember_owner(directory, account)
-        return
+        return True
     if not isinstance(bind, dict):
-        return
+        return True
     if bind.get("bound") is True:
         community_device_hold.remember_owner(directory, account)
-    elif bind.get("error") == _BIND_OWNERSHIP_CONFLICT and not community_device_hold.device_held(
-        directory, account
-    ):
-        community_device_hold.record_bind_outcome(directory, bind, account)
+    elif bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
+        # record_bind_outcome latches the hold in memory if the write fails,
+        # so the conflict survives this login being replaced or cleared.
+        return community_device_hold.record_bind_outcome(directory, bind, account)
+    return True
 
 
 def _record_device_hold(bind: dict, local_user_id: str) -> None:
@@ -1911,6 +1932,13 @@ async def social_session_init_endpoint(request: Request, payload: dict = Body(..
         # above, so a superseded account never reaches the cloud bind.
         bind_retried = True
         async with _co._device_bind_lock:
+            # A login may have replaced this session while the lock was busy;
+            # never bind the device with a token that is no longer signed in.
+            current = await asyncio.to_thread(_desktop_session_snapshot) or {}
+            if str(current.get("access_token") or "").strip() != access_token:
+                return JSONResponse(
+                    {"detail": "desktop_login_required"}, status_code=409, headers=cors
+                )
             bind = await _co._oauth_guest_bind(_social_base_url(), access_token)
             if bind.get("bound") or bind.get("error") == _BIND_OWNERSHIP_CONFLICT:
                 # Persist repaired binds and terminal conflicts alike, or
