@@ -66,10 +66,20 @@ class Snapshot:
     def relative(self, path) -> str | None:
         if self.paths is None:
             return None
-        try:
-            return Path(path).absolute().relative_to(self.paths.root).as_posix()
-        except ValueError:
-            return None
+        candidate = Path(os.path.abspath(path))
+        # Rebase only the configured root alias. Resolving the entire candidate
+        # would follow an injected link inside a model before its safety check.
+        for root in (self.paths.root, self.paths.root_alias):
+            if root is None:
+                continue
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            if root != self.paths.root and root.resolve() != self.paths.root:
+                raise WorkshopError("model_workshop_root_changed")
+            return relative.as_posix()
+        return None
 
     def record_for(self, path) -> dict | None:
         relative = self.relative(path)
@@ -219,6 +229,14 @@ def get_service(config) -> WorkshopTasks:
         return service
 
 
+def snapshot_for_mutation(config) -> Snapshot:
+    """Unknown ownership must never authorize the ordinary write/delete fallback."""
+    state = snapshot(config)
+    if state.errors:
+        raise WorkshopError("model_workshop_unavailable")
+    return state
+
+
 def maintain(config):
     """Main's explicit lazy maintenance; absence and read failures do not disable ordinary models."""
     root = getattr(config, "app_docs_dir", None)
@@ -227,7 +245,7 @@ def maintain(config):
     from utils.cloudsave_runtime import MaintenanceModeError
 
     try:
-        return get_service(config).recover()
+        return get_service(config).recover_if_changed()
     except (
         WorkshopError,
         OSError,
@@ -350,7 +368,7 @@ def write_managed_json(
     config, path, data, *, kind=None, name=None, indent=2, captured=_UNCAPTURED
 ):
     """Serialize existing local edits with managed install/delete; ordinary writers stay unchanged."""
-    state = snapshot(config)
+    state = snapshot_for_mutation(config)
     current = state.identifier(kind, name) if kind else state.record_for(path)
     if captured is not _UNCAPTURED:
         # A read/modify/write request captures its attempt before awaiting the
@@ -379,38 +397,47 @@ def write_managed_json(
             raise WorkshopError("model_workshop_unavailable")
         from utils.file_utils import atomic_write_json
 
-        atomic_write_json(path, data, ensure_ascii=False, indent=indent)
-        sync_directory(Path(path).parent)
+        # The captured root may have an alternate spelling, but managed writes
+        # always use a checked canonical path under that same owned root.
+        relative = state.relative(path)
+        if relative is None:
+            raise WorkshopError("model_workshop_unsafe_path")
+        checked = service.paths.checked(relative)
+        atomic_write_json(checked, data, ensure_ascii=False, indent=indent)
+        sync_directory(checked.parent)
     return True
 
 
 def reject_managed_upload(config, path):
     """Old raw-upload entry points must not replace a managed model through a second writer."""
-    if snapshot(config).record_for(path) is not None:
+    if snapshot_for_mutation(config).record_for(path) is not None:
         raise WorkshopError("model_workshop_install_conflict")
 
 
 def write_managed_blob(config, path, data):
     """Preserve existing motion/expression imports without resurrecting a deleted model."""
-    captured = snapshot(config).record_for(path)
+    state = snapshot_for_mutation(config)
+    captured = state.record_for(path)
     if captured is None:
         return False
     service = get_service(config)
     installer = service.installer
     digest = captured["package_sha256"]
     with installer.lifecycle(digest), installer.registry.lock, installer.mutation():
-        state = installer.registry.read()
-        row = state["installed"].get(digest)
+        current = installer.registry.read()
+        row = current["installed"].get(digest)
         if (
             row is None
             or row["install_id"] != captured["install_id"]
-            or state["attempts"].get(digest) != row["install_id"]
+            or current["attempts"].get(digest) != row["install_id"]
         ):
             raise WorkshopError("model_workshop_install_conflict")
         snapshot(config).require(service.paths.root / row["target"])
         if installer.registry.status(row) != "installed":
             raise WorkshopError("model_workshop_unavailable")
-        relative = Path(path).absolute().relative_to(service.paths.root).as_posix()
+        relative = state.relative(path)
+        if relative is None:
+            raise WorkshopError("model_workshop_unsafe_path")
         checked = service.paths.checked(relative)
         service.paths.mkdir(Path(relative).parent.as_posix())
         with regular(checked, os.O_WRONLY | os.O_CREAT | os.O_EXCL) as handle:

@@ -220,6 +220,47 @@ def test_vrm_old_delete_after_steam_wait_cannot_delete_new_attempt_or_mapping(
     assert json.loads(mapping.read_text()) == {"new": True}
 
 
+@pytest.mark.parametrize("kind", ["live2d", "vrm", "pmx"])
+def test_unreadable_registry_blocks_legacy_deletion_before_any_file_is_removed(legacy, tmp_path, kind):
+    client, _, service = legacy
+    path, _ = bundle_path(tmp_path, kind)
+    row = install(service, path)["result"]
+    from pathlib import Path
+
+    name = Path(row["target"]).name if kind == "live2d" else Path(row["local_entrypoint"]).stem
+    prefix = "/api/live2d" if kind == "live2d" else "/api/model/" + row["model_format"]
+    (service.paths.private / "installed.json").write_bytes(b"{")
+    if kind == "pmx":
+        response = client.request("DELETE", prefix + "/model", json={
+            "url": "/user_mmd/" + Path(row["local_entrypoint"]).relative_to("mmd").as_posix()
+        })
+    else:
+        response = client.delete(prefix + "/model/" + name)
+    assert response.status_code == 409, response.text
+    assert (service.paths.root / row["local_entrypoint"]).is_file()
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_vrm_delete_preserves_uncertain_shared_mapping_when_steam_is_unavailable(legacy, tmp_path, monkeypatch, raises):
+    client, _, service = legacy
+    path, _ = bundle_path(tmp_path, "vrm")
+    row = install(service, path)["result"]
+    target = service.paths.root / row["target"]
+    mapping = vrm_router._get_emotion_config_path(target.stem)
+    mapping.write_text('{"keep":true}')
+
+    async def offline():
+        if raises:
+            raise OSError("Steam unavailable")
+        return {"success": False}
+
+    monkeypatch.setattr(vrm_router, "get_subscribed_workshop_items", offline)
+    response = client.delete("/api/model/vrm/model/" + target.stem)
+    assert response.status_code == 200, response.text
+    assert not target.exists()
+    assert json.loads(mapping.read_text()) == {"keep": True}
+
+
 def test_managed_motion_addition_does_not_recreate_deleted_model(legacy, tmp_path):
     _, config, service = legacy
     package, _ = bundle_path(tmp_path)

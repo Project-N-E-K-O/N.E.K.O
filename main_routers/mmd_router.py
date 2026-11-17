@@ -844,7 +844,7 @@ def _count_and_rmtree(path: Path) -> int:
 async def _delete_managed_mmd(config_mgr, path, model_name):
     """Delete a trusted model and its existing mapping under one lifecycle fence."""
     from services.model_workshop import runtime
-    captured = await _drain_sync(lambda: runtime.snapshot(config_mgr).record_for(path))
+    captured = await _drain_sync(lambda: runtime.snapshot_for_mutation(config_mgr).record_for(path))
     if captured is None:
         return None
     def auxiliary():

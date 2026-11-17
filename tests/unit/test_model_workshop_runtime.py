@@ -30,6 +30,117 @@ def test_read_snapshot_does_not_initialize_workshop(config):
     assert list(config.app_docs_dir.iterdir()) == []
 
 
+@pytest.mark.parametrize("tag,allowed", [(0x9000001A, True), (0xA0000003, False), (0xA000000C, False)])
+def test_identity_distinguishes_cloud_placeholders_from_redirecting_reparse_points(tmp_path, monkeypatch, tag, allowed):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from services.model_workshop.paths import identity
+
+    path = tmp_path / "file"
+    path.write_bytes(b"model")
+    info = path.lstat()
+    fake = SimpleNamespace(st_mode=info.st_mode, st_dev=info.st_dev, st_ino=info.st_ino,
+                           st_file_attributes=0x400, st_reparse_tag=tag)
+    monkeypatch.setattr(Path, "lstat", lambda self: fake)
+    if allowed:
+        assert identity(path)[:2] == [info.st_dev, info.st_ino]
+    else:
+        with pytest.raises(WorkshopError, match="unsafe_path"):
+            identity(path)
+
+
+def test_root_alias_keeps_managed_write_and_delete_protection(owned, tmp_path):
+    path, _ = bundle_path(tmp_path)
+    row = install(owned, path)["result"]
+    alias = tmp_path / "runtime-alias"
+    try:
+        alias.symlink_to(owned.paths.root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink privilege unavailable")
+    cfg = owned.config
+    cfg.app_docs_dir = alias
+    for kind in ("live2d", "vrm", "mmd"):
+        setattr(cfg, kind + "_dir", alias / kind)
+    target = alias / row["target"]
+    state = runtime.snapshot(cfg)
+    assert state.record_for(target)["install_id"] == row["install_id"]
+    with pytest.raises(WorkshopError, match="install_conflict"):
+        runtime.reject_managed_upload(cfg, target)
+    assert runtime.write_managed_blob(cfg, target / "extra.motion3.json", b"{}") is True
+    assert runtime.write_managed_json(cfg, alias / row["local_entrypoint"], {"local": True}) is True
+    runtime.remove_managed_model(cfg, row)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("mutation", ["json", "blob", "upload"])
+def test_unreadable_registry_never_falls_back_to_an_ordinary_writer(owned, tmp_path, mutation):
+    path, _ = bundle_path(tmp_path)
+    row = install(owned, path)["result"]
+    (owned.paths.private / "installed.json").write_bytes(b"{")
+    target = owned.paths.root / row["local_entrypoint"]
+    before = target.read_bytes()
+    # Pure queries continue tolerating this error; mutating adapters must not.
+    assert runtime.snapshot(owned.config).errors
+    with pytest.raises(WorkshopError, match="unavailable"):
+        if mutation == "json":
+            runtime.write_managed_json(owned.config, target, {})
+        elif mutation == "blob":
+            runtime.write_managed_blob(owned.config, target.parent / "new.json", b"{}")
+        else:
+            runtime.reject_managed_upload(owned.config, target.parent)
+    assert target.read_bytes() == before
+
+
+def test_main_maintenance_does_not_retry_unchanged_recovery_conflicts(owned, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path, "vrm")
+    save = fail_registration(owned, monkeypatch)
+    failed = install(owned, path)
+    row = journal(owned, failed["task_id"])["record"]
+    (owned.paths.root / row["target"]).write_bytes(b"changed after crash")
+    monkeypatch.setattr(owned.installer.registry, "save", save)
+    original = owned.installer.recover
+    calls = []
+
+    def recovering(*args):
+        calls.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(owned.installer, "recover", recovering)
+    for _ in range(5):
+        runtime.maintain(owned.config)
+    assert len(calls) == 1
+    log = owned.installer.journal_path(failed["task_id"])
+    log.write_bytes(log.read_bytes())  # A new metadata version permits another explicit attempt.
+    runtime.maintain(owned.config)
+    assert len(calls) == 2
+
+
+def test_maintenance_retries_a_previously_active_task_after_its_worker_fails(owned, tmp_path, monkeypatch):
+    path, _ = bundle_path(tmp_path, "vrm")
+    entered, release = threading.Event(), threading.Event()
+    save = owned.installer.registry.save
+
+    def failed_save(rows, attempts=None):
+        if not rows:
+            return save(rows, attempts)  # Durable intent precedes publication.
+        entered.set()
+        assert release.wait(5)
+        raise OSError("registration interrupted")
+
+    monkeypatch.setattr(owned.installer.registry, "save", failed_save)
+    with path.open("rb") as source:
+        attempt = owned.receive(source)
+    assert entered.wait(5)
+    try:
+        # This recovery skips the active journal, then remembers its version.
+        runtime.maintain(owned.config)
+    finally:
+        release.set()
+    assert owned.wait(attempt, 5)["phase"] == "failed"
+    monkeypatch.setattr(owned.installer.registry, "save", save)
+    assert runtime.maintain(owned.config)[attempt] == "completed"
+
+
 @pytest.mark.parametrize("kind", ["live2d", "vrm", "pmx"])
 def test_only_known_unfinished_resources_are_unavailable(
     owned, tmp_path, monkeypatch, kind
@@ -148,6 +259,9 @@ def test_read_queries_and_mutations_apply_the_current_runtime_root(owned, tmp_pa
     from types import SimpleNamespace
 
     new_root = tmp_path / "new-root"
+    # Real storage migration runs after the owner stops. Windows denies copying
+    # the locked writer file; do not bypass that protection in the test.
+    owned.close()
     shutil.copytree(owned.paths.root, new_root)
     cfg = SimpleNamespace(
         app_docs_dir=new_root,

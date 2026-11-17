@@ -48,7 +48,7 @@ from contextlib import suppress
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_workshop_item_by_id
 from services.model_workshop.catalog import find_models, find_model_directory
-from services.model_workshop.runtime import snapshot as workshop_snapshot
+from services.model_workshop.runtime import snapshot_for_mutation as workshop_snapshot
 from services.model_workshop.paths import WorkshopError
 from services.model_workshop.tasks import _drain_sync
 from utils.logger_config import get_module_logger
@@ -1536,12 +1536,12 @@ def delete_model(model_name: str):
         # A trusted managed directory uses the same delete intent, under the
         # installation lifecycle lock. No prefix-based claim or second uninstall API.
         from services.model_workshop import runtime as model_workshop
-        captured = model_workshop.snapshot(config_mgr).record_for(model_dir)
-        if captured is not None:
-            try:
+        try:
+            captured = model_workshop.snapshot_for_mutation(config_mgr).record_for(model_dir)
+            if captured is not None:
                 return model_workshop.remove_managed_model(config_mgr, captured)
-            except model_workshop.WorkshopError as exc:
-                return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
+        except model_workshop.WorkshopError as exc:
+            return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
 
         # Recursively delete model directory.
         import shutil

@@ -9,6 +9,7 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from itertools import islice
 
 import portalocker
 
@@ -77,6 +78,7 @@ class WorkshopTasks:
         self._closing = False
         self.installer = Installer(config, self.paths, self._assert_owner)
         self.recovery = {}
+        self._recovery_version = None
 
     def _assert_owner(self):
         if self._writer is None or self._writer.closed:
@@ -124,6 +126,7 @@ class WorkshopTasks:
                 self._executor = ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="model-workshop"
                 )
+                self._recovery_version = self._recovery_metadata_version()
             except BaseException:
                 portalocker.unlock(self._writer)
                 self._writer.close()
@@ -299,7 +302,41 @@ class WorkshopTasks:
                 active = frozenset(
                     key for key, task in self._tasks.items() if not task.done.is_set()
                 )
-            return self.installer.recover(active)
+            self.recovery = self.installer.recover(active)
+            self._recovery_version = self._recovery_metadata_version()
+            return self.recovery
+
+    def _recovery_metadata_version(self):
+        """A bounded metadata witness, never a hash of model resources per request."""
+        from .registry import MAX_INSTALLED
+
+        directory = self.paths.checked("model_workshop/transactions")
+        logs = list(islice(directory.glob("*.json"), MAX_INSTALLED + 1))
+        if len(logs) > MAX_INSTALLED:
+            raise WorkshopError("model_workshop_state_unreadable")
+        tokens = []
+        for path in sorted(logs) + [self.paths.checked("model_workshop/installed.json")]:
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                tokens.append((path.name, None))
+            else:
+                tokens.append((path.name, info.st_dev, info.st_ino, info.st_size,
+                               info.st_mtime_ns, info.st_ctime_ns))
+        with self._condition:
+            # A skipped active journal must be retried if its worker later
+            # fails without changing that journal. File mtimes alone miss this.
+            tasks = tuple((key, task.done.is_set()) for key, task in self._tasks.items())
+        return tuple(tokens), tasks
+
+    def recover_if_changed(self):
+        """Retry changed state once; unchanged conflicts remain visible but are not rehashed."""
+        with self._admission:
+            if self._closing:
+                raise WorkshopError("model_workshop_closed")
+            if self._recovery_metadata_version() != self._recovery_version:
+                return self.recover()
+            return self.recovery
 
     def close(self):
         """Wait for actual receivers/workers, then unlock; retained lock inodes are never unlinked."""

@@ -751,7 +751,7 @@ async def _cleanup_vrm_model_configs(model_name: str):
 async def _delete_managed_vrm(config_mgr, target):
     """Keep the original deletion entry points, but fence all managed cleanup together."""
     from services.model_workshop import runtime
-    captured = await _drain_sync(lambda: runtime.snapshot(config_mgr).record_for(target))
+    captured = await _drain_sync(lambda: runtime.snapshot_for_mutation(config_mgr).record_for(target))
     if captured is None:
         return False
     model_name = target.stem
@@ -762,13 +762,19 @@ async def _delete_managed_vrm(config_mgr, target):
     # lifecycle or storage fence while awaiting that independent service.
     workshop = None
     if await _drain_sync(targets):
-        workshop = await get_subscribed_workshop_items()
+        try:
+            workshop = await get_subscribed_workshop_items()
+        except Exception:
+            # Match ordinary deletion: unavailable Steam discovery cannot
+            # prevent model removal, and uncertain shared mappings stay intact.
+            logger.warning("Steam discovery unavailable; preserving VRM mappings")
     def auxiliary():
         current = targets()
         if not current:
             return True
         if not isinstance(workshop, dict) or not workshop.get('success'):
-            return False  # Keep uncertain shared configs and report a partial delete.
+            logger.warning("Steam ownership unknown; preserving shared VRM mappings")
+            return True  # Best-effort config cleanup, as in the original route.
         directories = [config_mgr.project_root / 'static' / 'vrm', config_mgr.vrm_dir]
         for item in workshop.get('items', []):
             if item.get('installedFolder') and item.get('publishedFileId'):

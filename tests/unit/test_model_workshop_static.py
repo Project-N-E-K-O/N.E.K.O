@@ -24,6 +24,30 @@ from tests.unit.test_model_workshop_install import (
 )
 
 
+def test_cloud_data_reparse_tags_do_not_break_ordinary_static_mounts(config, monkeypatch):
+    from types import SimpleNamespace
+
+    config.vrm_dir.mkdir()
+    (config.vrm_dir / "ordinary.vrm").write_bytes(b"cloud model")
+    original = Path.lstat
+
+    def cloud_stat(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+        values.update(st_file_attributes=0x400, st_reparse_tag=0x9000001A)
+        return SimpleNamespace(**values)
+
+    # Cover both eager mount capture and actual descriptor checks. This is a
+    # simulated stat tag; real OneDrive hydration remains a Windows acceptance.
+    monkeypatch.setattr(Path, "lstat", cloud_stat)
+    app = Starlette(routes=[Mount("/", ReadOnlyWorkshopStaticFiles(
+        directory=config.vrm_dir, config_manager=config
+    ))])
+    with TestClient(app) as client:
+        response = client.get("/ordinary.vrm")
+        assert response.status_code == 200 and response.content == b"cloud model"
+
+
 @pytest.mark.parametrize("kind", ["live2d", "vrm", "pmx"])
 def test_monitor_denies_pending_model_resources_until_main_recovers(
     service, tmp_path, monkeypatch, kind
