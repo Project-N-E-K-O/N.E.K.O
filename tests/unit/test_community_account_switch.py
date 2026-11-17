@@ -979,3 +979,26 @@ async def test_persistent_write_failure_survives_relogin_and_logout(tmp_path, mo
 
     assert C._clear_auth()
     assert hold.device_held(tmp_path, None)
+
+
+async def test_conflict_reaches_disk_once_writes_recover_before_logout(tmp_path, monkeypatch):
+    """First hold write fails, disk recovers, logout, restart: still held."""
+    _pending_login(tmp_path, monkeypatch)
+    real_write = hold._write
+    monkeypatch.setattr(hold, "_write", lambda *_args: False)
+
+    async def refused(_social_base, _access_token, *, rebind=False):
+        return dict(CONFLICT)
+
+    monkeypatch.setattr(O, "_oauth_guest_bind", refused)
+    await O._handle_oauth_callback("auth-code", "expected-state")
+    assert not (tmp_path / hold.HOLD_FILENAME).exists()
+    assert hold.device_held(tmp_path, None)  # latched in memory
+
+    monkeypatch.setattr(hold, "_write", real_write)  # disk recovers
+    assert C._clear_auth()  # logout rewrites the conflict before deleting the login
+    assert not (tmp_path / "community_auth.json").exists()
+
+    hold._set_unrecorded_hold(False)  # restart: the in-memory latch is gone
+    assert hold.device_held(tmp_path, None)
+    assert hold.device_held(tmp_path, USER_ID)
