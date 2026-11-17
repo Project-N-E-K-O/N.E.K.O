@@ -37,8 +37,13 @@ export interface OnboardingCopy {
   downloadLabel: string
   tutorialsHeading: string
   openFolderHeading: string
+  /** Fills `{folder}` in AgentConfig.openFolder for each route. */
+  folderRouteA: string
+  folderRouteB: string
   allowActionsHeading: string
   contextNoteHeading: string
+  /** Route A starts from an empty folder, so the per-agent AGENTS.md note does not apply yet. */
+  contextNoteRouteA: string
   promptTitle: string
   promptDesc: string
   routeALabel: string
@@ -47,6 +52,7 @@ export interface OnboardingCopy {
   ideaPlaceholder: string
   copyPrompt: string
   copiedPrompt: string
+  copyFailed: string
   showPrompt: string
   hidePrompt: string
   agents: AgentConfig[]
@@ -60,27 +66,31 @@ export function normalizeDocsLocale(lang: string): DocsLocale {
 }
 
 export async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
       await navigator.clipboard.writeText(text)
       return true
+    } catch {
+      // Permission denied, page not focused, iframe without clipboard-write:
+      // fall through to the legacy path instead of giving up.
     }
-    if (typeof document !== 'undefined') {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.setAttribute('readonly', 'true')
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      return true
-    }
+  }
+  if (typeof document === 'undefined') return false
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  try {
+    textarea.select()
+    // execCommand reports an unsupported / disabled copy by returning false.
+    return document.execCommand('copy')
   } catch {
     return false
+  } finally {
+    document.body.removeChild(textarea)
   }
-  return false
 }
 
 export function buildSetupPrompt(
@@ -192,7 +202,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '打开 DeepSeek Harness 桌面版，点「Choose workspace」，选择刚才新建的插件文件夹。',
+    openFolder: '打开 DeepSeek Harness 桌面版，点「Choose workspace」，选择{folder}。',
     allowActions: 'AI 请求执行操作时点击「Approve / 允许」即可。',
     contextNote: 'dsh 会自动读取项目里的 AGENTS.md。',
   },
@@ -213,7 +223,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '打开 Codex 桌面应用并登录，选择插件文件夹作为工作目录。',
+    openFolder: '打开 Codex 桌面应用并登录，选择{folder}作为工作目录。',
     allowActions: 'Codex 请求执行操作时点击「允许」。',
     contextNote: 'Codex 会自动读取项目里的 AGENTS.md。',
   },
@@ -234,7 +244,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '在 Trae 中点「打开文件夹」，选择插件文件夹。',
+    openFolder: '在 Trae 中点「打开文件夹」，选择{folder}。',
     allowActions: '把右侧 AI 面板切到「Builder」或「SOLO」模式，请求执行时点「运行 / 允许」。',
     contextNote: 'Trae 会自动读取 AGENTS.md；若没有读到，把下方那段话发给它即可。',
   },
@@ -255,7 +265,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '打开 Claude 桌面应用并登录，切到「Code」标签页，选择插件文件夹。',
+    openFolder: '打开 Claude 桌面应用并登录，切到「Code」标签页，选择{folder}。',
     allowActions: 'Claude 请求执行操作时点击允许。',
     contextNote: 'Claude Code 会读取项目里的 CLAUDE.md，它会自动指向 AGENTS.md。',
   },
@@ -271,7 +281,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '在 Cursor 中点「Open Folder」，选择插件文件夹。',
+    openFolder: '在 Cursor 中点「Open Folder」，选择{folder}。',
     allowActions: '确认右侧聊天模式为「Agent」，请求执行时点允许。',
     contextNote: 'Cursor 会自动读取项目里的 AGENTS.md。',
   },
@@ -292,7 +302,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '在 Qoder IDE（或装了通义灵码的 VS Code / PyCharm）中打开插件文件夹。',
+    openFolder: '在 Qoder IDE（或装了通义灵码的 VS Code / PyCharm）中打开{folder}。',
     allowActions: '切到「智能体 / Agent」模式，允许它读写文件并执行操作。',
     contextNote: 'Qoder 会自动读取 AGENTS.md；若没有读到，把下方那段话发给它即可。',
   },
@@ -313,7 +323,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '在 CodeBuddy IDE（或 CodeBuddy 插件）中打开插件文件夹。',
+    openFolder: '在 CodeBuddy IDE（或 CodeBuddy 插件）中打开{folder}。',
     allowActions: '打开侧边栏「Craft 智能体」面板，请求执行时点允许。',
     contextNote: 'CodeBuddy 会自动读取 AGENTS.md；若没有读到，把下方那段话发给它即可。',
   },
@@ -334,7 +344,7 @@ const zhAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: '在 VS Code 中打开插件文件夹。',
+    openFolder: '在 VS Code 中打开{folder}。',
     allowActions: '把 Cline 设为「Act」模式，或把 Copilot Chat 切为「Agent」模式；请求执行时点允许。',
     contextNote: 'Cline 和 Copilot 都会读取 AGENTS.md；若没有读到，把下方那段话发给它即可。',
   },
@@ -342,7 +352,7 @@ const zhAgents: AgentConfig[] = [
     id: 'other',
     label: '其他 Agent',
     title: '其他 Coding Agent（Windsurf / OpenCode / Aider 等）',
-    openFolder: '在你的 AI 编程工具中打开插件文件夹。',
+    openFolder: '在你的 AI 编程工具中打开{folder}。',
     allowActions: '允许它读写文件并执行操作（例如切换到智能体 / Agent 模式）。',
     contextNote: '如果你的工具不会自动读取 AGENTS.md，把下面这段话原样发给它即可。',
   },
@@ -366,7 +376,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Open the Codex desktop app, sign in, and choose the new plugin folder as the workspace.',
+    openFolder: 'Open the Codex desktop app, sign in, and choose {folder} as the workspace.',
     allowActions: 'Click Allow whenever Codex asks to run something.',
     contextNote: 'Codex reads AGENTS.md in the project automatically.',
   },
@@ -382,7 +392,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Open DeepSeek Harness Desktop, click Choose workspace, and select the new plugin folder.',
+    openFolder: 'Open DeepSeek Harness Desktop, click Choose workspace, and select {folder}.',
     allowActions: 'Click Approve when the AI asks to run something.',
     contextNote: 'DeepSeek Harness reads AGENTS.md in the project automatically.',
   },
@@ -403,7 +413,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Open the Claude desktop app, sign in, switch to the Code tab, and select the plugin folder.',
+    openFolder: 'Open the Claude desktop app, sign in, switch to the Code tab, and select {folder}.',
     allowActions: 'Click Allow when Claude asks to run something.',
     contextNote: 'Claude Code reads CLAUDE.md in the project, which points to AGENTS.md.',
   },
@@ -419,7 +429,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'In Cursor, click Open Folder and select the plugin folder.',
+    openFolder: 'In Cursor, click Open Folder and select {folder}.',
     allowActions: 'Make sure the chat is in Agent mode, then click Allow when it asks to run something.',
     contextNote: 'Cursor reads AGENTS.md in the project automatically.',
   },
@@ -435,7 +445,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'In Trae, open the plugin folder.',
+    openFolder: 'In Trae, open {folder}.',
     allowActions: 'Switch the AI panel to Builder or SOLO mode and click Allow when asked to run something.',
     contextNote: 'Trae reads AGENTS.md automatically; if it does not, just send the message below.',
   },
@@ -456,7 +466,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Open the plugin folder in VS Code.',
+    openFolder: 'Open {folder} in VS Code.',
     allowActions: 'Set Cline to Act mode, or switch Copilot Chat to Agent mode; click Allow when it asks to run something.',
     contextNote: 'Cline and Copilot read AGENTS.md; if yours does not, just send the message below.',
   },
@@ -472,7 +482,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Open the plugin folder in Qoder IDE (or in VS Code / PyCharm with the Lingma extension).',
+    openFolder: 'Open {folder} in Qoder IDE (or in VS Code / PyCharm with the Lingma extension).',
     allowActions: 'Switch the assistant to Agent / Quest mode and allow it to edit files and run actions.',
     contextNote: 'Qoder reads AGENTS.md automatically; if it does not, just send the message below.',
   },
@@ -493,7 +503,7 @@ const enAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Open the plugin folder in CodeBuddy IDE (or the CodeBuddy extension).',
+    openFolder: 'Open {folder} in CodeBuddy IDE (or the CodeBuddy extension).',
     allowActions: 'Switch to the Craft agent panel and click Allow when it asks to run something.',
     contextNote: 'CodeBuddy reads AGENTS.md automatically; if it does not, just send the message below.',
   },
@@ -501,7 +511,7 @@ const enAgents: AgentConfig[] = [
     id: 'other',
     label: 'Other Agents',
     title: 'Other Coding Agents (Windsurf, OpenCode, Aider, etc.)',
-    openFolder: 'Open the plugin folder in your AI coding tool.',
+    openFolder: 'Open {folder} in your AI coding tool.',
     allowActions: 'Allow it to edit files and run actions (for example, switch to its agent mode).',
     contextNote: 'If your tool does not read AGENTS.md automatically, just send it the message below.',
   },
@@ -525,7 +535,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Codex デスクトップアプリを開いてログインし、新しいプラグインフォルダをワークスペースにします。',
+    openFolder: 'Codex デスクトップアプリを開いてログインし、{folder}をワークスペースにします。',
     allowActions: 'AI が操作の実行を求めてきたら「許可」を押します。',
     contextNote: 'Codex はプロジェクト内の AGENTS.md を自動で読みます。',
   },
@@ -541,7 +551,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'DeepSeek Harness デスクトップ版を開き、「Choose workspace」で新しいプラグインフォルダを選びます。',
+    openFolder: 'DeepSeek Harness デスクトップ版を開き、「Choose workspace」で{folder}を選びます。',
     allowActions: 'AI が操作の実行を求めてきたら「Approve」を押します。',
     contextNote: 'dsh はプロジェクト内の AGENTS.md を自動で読みます。',
   },
@@ -562,7 +572,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Claude デスクトップアプリを開いてログインし、「Code」タブでプラグインフォルダを選びます。',
+    openFolder: 'Claude デスクトップアプリを開いてログインし、「Code」タブで{folder}を選びます。',
     allowActions: 'AI が操作の実行を求めてきたら許可します。',
     contextNote: 'Claude Code はプロジェクト内の CLAUDE.md を読み、それが AGENTS.md を指します。',
   },
@@ -578,7 +588,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Cursor で「Open Folder」からプラグインフォルダを開きます。',
+    openFolder: 'Cursor で「Open Folder」から{folder}を開きます。',
     allowActions: 'チャットが「Agent」モードになっていることを確認し、実行を求められたら許可します。',
     contextNote: 'Cursor はプロジェクト内の AGENTS.md を自動で読みます。',
   },
@@ -594,7 +604,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Trae でプラグインフォルダを開きます。',
+    openFolder: 'Trae で{folder}を開きます。',
     allowActions: '右側の AI パネルを「Builder」または「SOLO」モードにし、実行を求められたら許可します。',
     contextNote: 'Trae は AGENTS.md を自動で読みます。読まない場合は下のメッセージを送ってください。',
   },
@@ -615,7 +625,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'VS Code でプラグインフォルダを開きます。',
+    openFolder: 'VS Code で{folder}を開きます。',
     allowActions: 'Cline を「Act」モード（または Copilot Chat を「Agent」モード）にし、実行を求められたら許可します。',
     contextNote: 'Cline と Copilot は AGENTS.md を読みます。読まない場合は下のメッセージを送ってください。',
   },
@@ -631,7 +641,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'Qoder でプラグインフォルダを開きます。',
+    openFolder: 'Qoder で{folder}を開きます。',
     allowActions: 'アシスタントを Agent / Quest モードにし、ファイル編集と操作の実行を許可します。',
     contextNote: 'Qoder は AGENTS.md を自動で読みます。読まない場合は下のメッセージを送ってください。',
   },
@@ -652,7 +662,7 @@ const jaAgents: AgentConfig[] = [
         kind: 'docs',
       },
     ],
-    openFolder: 'CodeBuddy でプラグインフォルダを開きます。',
+    openFolder: 'CodeBuddy で{folder}を開きます。',
     allowActions: '「Craft」エージェントパネルを開き、実行を求められたら許可します。',
     contextNote: 'CodeBuddy は AGENTS.md を自動で読みます。読まない場合は下のメッセージを送ってください。',
   },
@@ -660,7 +670,7 @@ const jaAgents: AgentConfig[] = [
     id: 'other',
     label: 'その他の Agent',
     title: 'その他の Coding Agent（Windsurf / OpenCode / Aider など）',
-    openFolder: 'お使いの AI コーディングツールでプラグインフォルダを開きます。',
+    openFolder: 'お使いの AI コーディングツールで{folder}を開きます。',
     allowActions: 'ファイル編集と操作の実行を許可します（Agent モードなどに切り替えます）。',
     contextNote: '使っているツールが AGENTS.md を自動で読まない場合は、下のメッセージをそのまま送ってください。',
   },
@@ -702,9 +712,13 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     tabHint: '不局限于以下工具，任意能读写文件并执行操作的 AI 编程工具均可',
     downloadLabel: '官网下载',
     tutorialsHeading: '官方上手教程',
-    openFolderHeading: '怎样打开插件文件夹',
+    openFolderHeading: '怎样打开文件夹',
+    folderRouteA: '刚才新建的空文件夹',
+    folderRouteB: '「插件制作工作台」生成的插件文件夹',
     allowActionsHeading: '允许 AI 执行操作',
     contextNoteHeading: '小提示',
+    contextNoteRouteA:
+      '空文件夹里还没有 AGENTS.md。AI 创建好插件后，下方那段话会让它去读插件目录里的 AGENTS.md，你不用额外操作。',
     promptTitle: '复制这段话发给 AI',
     promptDesc: '选好路线，把这段话粘贴到 Agent 的对话框里发送即可。',
     routeALabel: '路线 A：全交给 AI',
@@ -713,6 +727,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     ideaPlaceholder: '例如：做一个提醒喝水的插件，猫娘会定时提醒我',
     copyPrompt: '一键复制',
     copiedPrompt: '已复制',
+    copyFailed: '复制失败，请在下方选中全文手动复制',
     showPrompt: '查看完整内容',
     hidePrompt: '收起完整内容',
     agents: zhAgents,
@@ -752,9 +767,13 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     tabHint: 'Any AI coding tool that can edit files and run actions on your computer works',
     downloadLabel: 'Official site',
     tutorialsHeading: 'Official tutorials',
-    openFolderHeading: 'How to open the plugin folder',
+    openFolderHeading: 'How to open the folder',
+    folderRouteA: 'the empty folder you just created',
+    folderRouteB: 'the plugin folder that Plugin studio created',
     allowActionsHeading: 'Let the AI take actions',
     contextNoteHeading: 'Good to know',
+    contextNoteRouteA:
+      'The empty folder has no AGENTS.md yet. Once the AI creates the plugin, the message below tells it to read the AGENTS.md in the plugin folder — nothing extra for you to do.',
     promptTitle: 'Copy this message and send it to the AI',
     promptDesc: 'Pick a route, paste the message into your agent’s chat box and send.',
     routeALabel: 'Route A: let the AI do it all',
@@ -763,6 +782,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     ideaPlaceholder: 'e.g. a plugin where the catgirl reminds me to drink water',
     copyPrompt: 'Copy',
     copiedPrompt: 'Copied',
+    copyFailed: 'Copy failed — select the full text below and copy it manually',
     showPrompt: 'Preview full text',
     hidePrompt: 'Hide full text',
     agents: enAgents,
@@ -802,9 +822,13 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     tabHint: 'この一覧以外でも、ファイル編集と操作の実行ができる AI ツールなら使えます',
     downloadLabel: '公式サイト',
     tutorialsHeading: '公式チュートリアル',
-    openFolderHeading: 'プラグインフォルダの開き方',
+    openFolderHeading: 'フォルダの開き方',
+    folderRouteA: '先ほど作った空のフォルダ',
+    folderRouteB: '「プラグイン制作」で作成したプラグインフォルダ',
     allowActionsHeading: 'AI に操作を許可する',
     contextNoteHeading: '補足',
+    contextNoteRouteA:
+      '空のフォルダにはまだ AGENTS.md がありません。AI がプラグインを作成したあと、下のメッセージがプラグインフォルダ内の AGENTS.md を読むよう指示するので、追加の操作は不要です。',
     promptTitle: 'この文をコピーして AI に送信',
     promptDesc: 'ルートを選び、この文を Agent のチャット欄に貼って送るだけです。',
     routeALabel: 'ルート A：全部 AI に任せる',
@@ -813,6 +837,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     ideaPlaceholder: '例：猫娘が水分補給を教えてくれるプラグイン',
     copyPrompt: 'コピー',
     copiedPrompt: 'コピーしました',
+    copyFailed: 'コピーできませんでした。下の全文を選択して手動でコピーしてください',
     showPrompt: '全文を表示',
     hidePrompt: '全文を閉じる',
     agents: jaAgents,

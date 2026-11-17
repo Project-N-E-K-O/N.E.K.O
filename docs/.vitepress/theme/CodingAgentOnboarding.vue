@@ -30,6 +30,7 @@ const copy = computed(() => ONBOARDING_COPY[locale.value])
 const pluginIdea = ref('')
 const promptExpanded = ref(false)
 const copiedKey = ref<string | null>(null)
+const copyFailedKey = ref<string | null>(null)
 let copyTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeAgent = computed(() => {
@@ -39,6 +40,20 @@ const activeAgent = computed(() => {
 
 const generatedPrompt = computed(() =>
   buildSetupPrompt(locale.value, pluginIdea.value, props.route ?? selectedRoute.value),
+)
+
+// Route A opens an empty folder and the AI creates the plugin later; route B
+// opens the plugin folder Plugin studio generated. The agent card follows the
+// route picked above so its instructions match the steps the reader follows.
+const openFolderText = computed(() =>
+  activeAgent.value.openFolder.replace(
+    '{folder}',
+    selectedRoute.value === 'A' ? copy.value.folderRouteA : copy.value.folderRouteB,
+  ),
+)
+
+const contextNoteText = computed(() =>
+  selectedRoute.value === 'A' ? copy.value.contextNoteRouteA : activeAgent.value.contextNote,
 )
 
 const GIT_URL = 'https://git-scm.com/downloads'
@@ -58,6 +73,23 @@ function selectRoute(id: 'A' | 'B') {
   selectedRoute.value = id
 }
 
+// Radio-group keyboard pattern: only the checked card is in the Tab order,
+// arrow keys move focus and selection together.
+function onRouteKeydown(event: KeyboardEvent, index: number) {
+  const cards = copy.value.routeCards
+  let nextIndex = -1
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    nextIndex = (index + 1) % cards.length
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    nextIndex = (index - 1 + cards.length) % cards.length
+  }
+  if (nextIndex < 0) return
+  event.preventDefault()
+  const next = cards[nextIndex]
+  selectRoute(next.id)
+  document.getElementById(`neko-route-card-${next.id.toLowerCase()}`)?.focus()
+}
+
 watch(
   locale,
   () => {
@@ -71,9 +103,17 @@ watch(
 
 async function writeClipboard(text: string, key: string) {
   const ok = await copyToClipboard(text)
-  copiedKey.value = ok ? key : null
-  if (!ok) return
   if (copyTimer) clearTimeout(copyTimer)
+  copyTimer = null
+  if (!ok) {
+    // Keep the failure visible and show the full text so it can be copied by hand.
+    copiedKey.value = null
+    copyFailedKey.value = key
+    promptExpanded.value = true
+    return
+  }
+  copyFailedKey.value = null
+  copiedKey.value = key
   copyTimer = setTimeout(() => {
     copiedKey.value = null
   }, 2200)
@@ -126,16 +166,18 @@ onBeforeUnmount(() => {
       :aria-label="copy.routesHeading"
     >
       <div
-        v-for="card in copy.routeCards"
+        v-for="(card, cardIdx) in copy.routeCards"
+        :id="`neko-route-card-${card.id.toLowerCase()}`"
         :key="card.id"
         role="radio"
-        tabindex="0"
+        :tabindex="selectedRoute === card.id ? 0 : -1"
         class="NekoRoutePicker-card"
         :class="{ 'is-selected': selectedRoute === card.id }"
         :aria-checked="selectedRoute === card.id"
         @click="selectRoute(card.id)"
-        @keydown.enter.prevent="selectRoute(card.id)"
-        @keydown.space.prevent="selectRoute(card.id)"
+        @keydown.enter.self.prevent="selectRoute(card.id)"
+        @keydown.space.self.prevent="selectRoute(card.id)"
+        @keydown.self="onRouteKeydown($event, cardIdx)"
       >
         <span class="NekoRoutePicker-cardHeader">
           <span class="NekoRoutePicker-cardTitle">{{ card.title }}</span>
@@ -240,7 +282,7 @@ onBeforeUnmount(() => {
         <dl class="NekoAgentOnboarding-fields">
           <div class="NekoAgentOnboarding-field">
             <dt class="NekoAgentOnboarding-fieldLabel">{{ copy.openFolderHeading }}</dt>
-            <dd class="NekoAgentOnboarding-fieldText">{{ activeAgent.openFolder }}</dd>
+            <dd class="NekoAgentOnboarding-fieldText">{{ openFolderText }}</dd>
           </div>
           <div class="NekoAgentOnboarding-field">
             <dt class="NekoAgentOnboarding-fieldLabel">{{ copy.allowActionsHeading }}</dt>
@@ -248,7 +290,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="NekoAgentOnboarding-field">
             <dt class="NekoAgentOnboarding-fieldLabel">{{ copy.contextNoteHeading }}</dt>
-            <dd class="NekoAgentOnboarding-fieldText">{{ activeAgent.contextNote }}</dd>
+            <dd class="NekoAgentOnboarding-fieldText">{{ contextNoteText }}</dd>
           </div>
         </dl>
       </section>
@@ -272,6 +314,14 @@ onBeforeUnmount(() => {
             copiedKey === 'setup-prompt' ? `✓ ${copy.copiedPrompt}` : copy.copyPrompt
           }}</span>
         </button>
+      </div>
+
+      <div
+        v-if="copyFailedKey === 'setup-prompt'"
+        class="NekoAgentOnboarding-copyFailed"
+        role="alert"
+      >
+        {{ copy.copyFailed }}
       </div>
 
       <label class="NekoAgentOnboarding-ideaField">
@@ -561,6 +611,16 @@ onBeforeUnmount(() => {
 .NekoAgentOnboarding-primaryCopy.is-copied {
   border-color: #16a34a;
   background: #16a34a;
+}
+
+.NekoAgentOnboarding-copyFailed {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--vp-c-danger-1);
+  border-radius: 8px;
+  background: var(--vp-c-danger-soft);
+  color: var(--vp-c-danger-1);
+  font-size: 12.5px;
 }
 
 .NekoAgentOnboarding-ideaField {
