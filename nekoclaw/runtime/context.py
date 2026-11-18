@@ -673,6 +673,7 @@ class ContextManager:
         transcript: Transcript,
         *,
         force: bool = False,
+        tight: bool | None = None,
         on_compaction: Callable[[Compaction], None] | None = None,
         pinned: Collection[str] = (),
     ) -> list[Compaction]:
@@ -680,6 +681,12 @@ class ContextManager:
 
         ``force`` is the overflow path: prune everything and summarize even if
         the estimate says the conversation fits. Returns the summaries made.
+
+        ``tight`` says how much the first summary keeps word for word: a
+        quarter of the usual when True. Left out, a forced summary is
+        tight (the conversation was refused as too long) and any other is
+        not. A conversation that is summed up with nothing wrong with its
+        length (``force`` with ``tight`` False) keeps the usual.
 
         ``pinned`` names rows (by entry id) that a summary leaves as they
         are, word for word: the text that opened the commission the session
@@ -718,7 +725,10 @@ class ContextManager:
         for attempt in range(2):
             tokens_before = await self.measure(transcript.messages)
             compaction = await self._compact(
-                transcript.rows(), tokens_before, tight=force or attempt > 0, pinned=pinned
+                transcript.rows(),
+                tokens_before,
+                tight=(force if tight is None else tight) or attempt > 0,
+                pinned=pinned,
             )
             if compaction is None:
                 break

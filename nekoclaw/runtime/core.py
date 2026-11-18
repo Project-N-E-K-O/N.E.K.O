@@ -72,6 +72,19 @@ class AgentRuntime(Protocol):
     async def close(self, session_id: str) -> None:
         """Stop the session and forget it."""
 
+    async def fork(
+        self, session_id: str, *, session_dir: str, source_session_id: str, source_dir: str, upto: str | None = None
+    ) -> None:
+        """Make the record of a new session from another's; see ``protocol.ForkCommand``.
+
+        A ``forked`` event for the new session follows, or an ``error``
+        event whose ``command`` is ``fork``. A runtime that cannot copy a
+        session answers with that error.
+        """
+
+    async def compact(self, session_id: str) -> None:
+        """Sum the conversation of an idle session up now; rejected while a run is in progress."""
+
     async def shutdown(self) -> None:
         """Close every session; a subprocess runtime also ends its process."""
 
@@ -102,6 +115,8 @@ class RuntimeCore:
         self._abandoned: set[str] = set()
         # Keeps the tasks that close sessions alive until they are done.
         self._close_tasks: set[asyncio.Future[None]] = set()
+        # Sessions whose record is being made from another's right now.
+        self._forking: set[str] = set()
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -113,7 +128,7 @@ class RuntimeCore:
     @property
     def idle(self) -> bool:
         """True when no session is being created or closed, runs, or has a running job."""
-        if self._starting or self._closing:
+        if self._starting or self._closing or self._forking:
             return False
         return not any(session.busy for session in self._sessions.values())
 
@@ -138,6 +153,9 @@ class RuntimeCore:
         if isinstance(command, protocol.StartCommand):
             await self.start(command.spec)
             return
+        if isinstance(command, protocol.ForkCommand):
+            await self.fork(command)
+            return
         # A driver may send the next command right after ``start`` without
         # waiting for ``started``. Creating a session takes a while, so such a
         # command waits for it here instead of failing with "unknown session".
@@ -157,8 +175,56 @@ class RuntimeCore:
             self.abort(command.session_id)
         elif isinstance(command, protocol.CloseCommand):
             await self.close(command.session_id)
+        elif isinstance(command, protocol.CompactCommand):
+            self.compact_now(command.session_id)
         else:
             raise TypeError(f"not a session command: {type(command).__name__}")
+
+    async def fork(self, command: protocol.ForkCommand) -> None:
+        """Make the record of a new session from another's and say so; see ``fork.py``.
+
+        The other session may be open here, and at work. What it has said
+        so far is written out first, and the copy ends at the last place
+        where its conversation is whole. One that is on its way in or out
+        is waited for: its record is complete once it is there, or gone.
+        """
+        from pathlib import Path
+
+        from nekoclaw.runtime.fork import ForkError, fork_record
+
+        session_id, source_id = command.session_id, command.source_session_id
+        if self._shutdowns:
+            self._reject(session_id, "fork", "the runtime is shutting down")
+            return
+        if session_id in self._sessions or session_id in self._starting or session_id in self._forking:
+            self._reject(session_id, "fork", f'session "{session_id}" already exists')
+            return
+        self._forking.add(session_id)
+        try:
+            for under_way in (self._starting.get(source_id), self._closing.get(source_id)):
+                if under_way is not None:
+                    await asyncio.shield(under_way)
+            source = self._sessions.get(source_id)
+            if source is not None:
+                await source.flush()
+            result = await asyncio.to_thread(
+                fork_record, Path(command.source_dir), Path(command.session_dir), upto=command.upto
+            )
+        except ForkError as exc:
+            self._reject(session_id, "fork", str(exc))
+        except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
+            logger.exception("could not copy session %s", source_id)
+            self._reject(session_id, "fork", f"{type(exc).__name__}: {exc}")
+        else:
+            self._emit(
+                protocol.dump(
+                    protocol.ForkedEvent(
+                        session_id=session_id, source_session_id=source_id, upto=result.upto, entries=result.entries
+                    )
+                )
+            )
+        finally:
+            self._forking.discard(session_id)
 
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         session_id = spec.session_id
@@ -227,6 +293,18 @@ class RuntimeCore:
         session = self._session(session_id, "abort")
         if session is not None:
             session.abort()
+
+    def compact_now(self, session_id: str) -> None:
+        if self._shutdowns:
+            self._reject(session_id, "compact", "the runtime is shutting down")
+            return
+        session = self._session(session_id, "compact")
+        if session is None:
+            return
+        try:
+            session.compact()
+        except SessionError as exc:
+            self._reject(session_id, "compact", str(exc))
 
     async def close(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
@@ -343,6 +421,22 @@ class InProcessRuntime:
 
     async def close(self, session_id: str) -> None:
         await self._core.handle(protocol.CloseCommand(session_id=session_id))
+
+    async def fork(
+        self, session_id: str, *, session_dir: str, source_session_id: str, source_dir: str, upto: str | None = None
+    ) -> None:
+        await self._core.handle(
+            protocol.ForkCommand(
+                session_id=session_id,
+                session_dir=session_dir,
+                source_session_id=source_session_id,
+                source_dir=source_dir,
+                upto=upto,
+            )
+        )
+
+    async def compact(self, session_id: str) -> None:
+        await self._core.handle(protocol.CompactCommand(session_id=session_id))
 
     async def shutdown(self) -> None:
         # Bounded: a session whose creation hangs must not hold up the host's

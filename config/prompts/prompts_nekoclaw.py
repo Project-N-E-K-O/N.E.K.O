@@ -253,6 +253,10 @@ SUMMARY_CLOSE_TAG = "</compacted-summary>"
 
 # dsh packages/compaction/compaction-basic/src/summarizer.ts, COMPACTION_INSTRUCTION.
 # Delivered as the final user message after the conversation being condensed.
+# Two things are ours: what "Next Step" has to quote, and the rule that keeps
+# what was said about safety and permissions as it was said. A summary that
+# rewords the next step lets the task drift a little with every summary, and
+# one that shortens a restriction lifts it.
 COMPACTION_INSTRUCTION = "\n".join(
     [
         (
@@ -289,7 +293,11 @@ COMPACTION_INSTRUCTION = "\n".join(
         "- [precisely what was in progress at this checkpoint]",
         "",
         "## Next Step",
-        '- [the single next action, directly in line with the most recent request, or "(none)"]',
+        (
+            '- [the single next action, directly in line with the most recent request, or "(none)"; '
+            "quote, word for word, the most recent messages that show what was being worked on and "
+            "where it stopped]"
+        ),
         "",
         "## Critical Context",
         (
@@ -303,6 +311,11 @@ COMPACTION_INSTRUCTION = "\n".join(
             "strings, identifiers, numeric values, function signatures, and syntax fragments."
         ),
         "- Capture user feedback and explicit instructions faithfully, especially corrections.",
+        (
+            "- Keep, exactly as it was said, everything that limits what may be done: what the user "
+            "allowed or refused, what must not be touched, read, run or sent, and every other "
+            "instruction about safety or permissions. Do not shorten, soften or leave out any of it."
+        ),
         "- Do NOT mention this summarization request or that the context was compacted.",
         "- Output only the checkpoint text: do not call any tool or take any other action.",
         "- If the conversation already contains a "

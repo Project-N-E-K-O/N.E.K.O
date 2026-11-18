@@ -48,6 +48,7 @@ from typing import Any
 
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
+from nekoclaw.runtime import fork
 from nekoclaw.runtime.context import (
     Compaction,
     ContextManager,
@@ -134,8 +135,8 @@ from nekoclaw.runtime.tools.todo import TodoState
 
 logger = logging.getLogger(__name__)
 
-TRANSCRIPT_FILE = "transcript.jsonl"
-OUTPUTS_DIRECTORY = "outputs"
+TRANSCRIPT_FILE = fork.TRANSCRIPT_FILE
+OUTPUTS_DIRECTORY = fork.OUTPUTS_DIRECTORY
 TODO_NAMESPACE = "nekoclaw.todos"
 # Which entry holds the text that opened the commission under way (``prompt`` with ``opening``).
 COMMISSION_NAMESPACE = "nekoclaw.commission"
@@ -444,6 +445,8 @@ class TaskAgentSession(SessionInbox):
         self._inputs = 0
         self._closing = False
         self._abort_requested = False
+        # True while what runs is the summing up asked for by ``compact``.
+        self._compacting = False
         self._run_task: asyncio.Task[None] | None = None
         self._abort_timer: asyncio.TimerHandle | None = None
         self._human_in_run = False
@@ -579,6 +582,14 @@ class TaskAgentSession(SessionInbox):
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
+        # A session made from another by copying what was said in it
+        # (``fork.py``) reads the tool output that one kept where it is:
+        # what was said names those files.
+        readable = [spill.directory]
+        for custom in state.custom_entries if state is not None else ():
+            kept_there = custom.data.get("outputs") if custom.namespace == fork.FORK_NAMESPACE else None
+            if isinstance(kept_there, str) and kept_there:
+                readable.append(Path(kept_there))
         # Known before the snapshot is looked at, which says how often the
         # conversation had been summed up when it was made.
         self._compactions = len(state.compaction_entries) if state is not None else 0
@@ -624,7 +635,7 @@ class TaskAgentSession(SessionInbox):
                     is_cancelled=lambda: self.harness.cancelled,
                     # Reading back a result kept there is not reading
                     # outside the working directory.
-                    readable=(spill.directory,),
+                    readable=tuple(readable),
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,
@@ -741,6 +752,12 @@ class TaskAgentSession(SessionInbox):
                 # The last one counts: the commission the session was on.
                 entry_id = custom.data.get("entry_id")
                 self._opening_entry_id = entry_id if isinstance(entry_id, str) and entry_id else None
+            elif custom.namespace == fork.FORK_NAMESPACE:
+                # Everything before this was said in another session, and
+                # copied: its to-do list and its goal were that one's. (The
+                # entries after it are this session's own.)
+                self.todos.restore(None)
+                self.goals.restore(None)
         self._compactions = len(state.compaction_entries)
         self._recorder.last_id = state.active_leaf_id
         replies = [message for message in self.harness.message_list if isinstance(message, AssistantMessage)]
@@ -902,6 +919,14 @@ class TaskAgentSession(SessionInbox):
         from config.nekoclaw_settings import TASK_AGENT_UNSURE_REFUSAL_TOKENS
 
         if signal is None or not signal.is_cancelled():
+            if await self._budget_spent(signal):
+                # The host has ended what this session works on, for what
+                # it used: no further request is made.
+                stopped = AssistantMessage(
+                    model=model, stop_reason="aborted", error_message="stopped: the usage allowed for this work is spent"
+                )
+                yield AssistantErrorEvent(reason="aborted", error=stopped)
+                return
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1037,13 +1062,58 @@ class TaskAgentSession(SessionInbox):
             # the session is managed for the one it had.
             back()
 
-    async def _fit(self, *, force: bool) -> None:
+    async def _budget_spent(self, signal: CancellationToken | None) -> bool:
+        """Ask the host, before a model request, whether what this session works on may use more; True to stop.
+
+        A host that keeps count of what its sessions use (``budget`` among
+        its callbacks) is asked before every request of a run: between two
+        steps, when no tool call of the run is under way. It answers at
+        once while there is room. When there is none it asks the user,
+        which may take as long as the user does, and the request waits.
+        Its answer may carry a ``notice``: said to the model in front of
+        the request (the user allowed no more, and what there is has to be
+        handed over). ``stop`` ends the run without the request.
+
+        A host that cannot answer does not hold the work up.
+        """
+        if "budget" not in self._host.capabilities:
+            return False
+        asking = asyncio.ensure_future(self._host.call(self.session_id, "budget", {}))
+        try:
+            while True:
+                done, _pending = await asyncio.wait({asking}, timeout=_INPUT_POLL_SECONDS)
+                if done:
+                    break
+                if signal is not None and signal.is_cancelled():
+                    # Stopped while it waited: the request that follows says so itself.
+                    return False
+        finally:
+            if not asking.done():
+                asking.cancel()
+                await asyncio.gather(asking, return_exceptions=True)
+        try:
+            verdict = asking.result()
+        except asyncio.CancelledError:
+            # The question was withdrawn: what it was asked for is over.
+            return True
+        except Exception:  # noqa: BLE001 - counting must not stop the work
+            logger.warning("session %s: the host could not say whether more may be used", self.session_id, exc_info=True)
+            return False
+        notice = verdict.get("notice")
+        if isinstance(notice, str) and notice.strip():
+            message = CustomMessage(custom_type="notice:usage", content=notice, display=False)
+            self.harness.message_list.append(message)
+            self._record(message)
+        return bool(verdict.get("stop"))
+
+    async def _fit(self, *, force: bool, tight: bool | None = None) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
         await self.context.fit(
             self.transcript,
             force=force,
+            tight=tight,
             on_compaction=self._persist_compaction,
             # The commission under way stays as it was handed over.
             pinned=self._pinned(),
@@ -1083,6 +1153,23 @@ class TaskAgentSession(SessionInbox):
         )
         self._compactions += 1
         self._tokens_before_compaction = compaction.tokens_before
+        usage = compaction.usage
+        if usage is not None and (usage.input + usage.cache_read + usage.cache_write or usage.output):
+            # The request that wrote the summary is one the session made:
+            # counted with what it used, apart from those of its runs.
+            self._emit(
+                protocol.UsageEvent(
+                    session_id=self.session_id,
+                    input=usage.input,
+                    output=usage.output,
+                    cache_read=usage.cache_read,
+                    cache_write=usage.cache_write,
+                    reasoning=usage.reasoning,
+                    total_tokens=usage.total_tokens,
+                    context_window=self._window,
+                    summary=True,
+                )
+            )
         # What follows a summary is done before the next request, not here:
         # this is called while the conversation is still being fitted.
         self._compaction_due = True
@@ -1369,6 +1456,10 @@ class TaskAgentSession(SessionInbox):
         self._abort_requested = True
         self.harness.clear_queues()
         self.harness.cancel()
+        if self._compacting:
+            # Not a run of the loop: there is no token for it to look at.
+            task.cancel()
+            return True
         if self._abort_timer is None:
             self._abort_timer = asyncio.get_running_loop().call_later(
                 ABORT_GRACE_SECONDS, self._force_stop, task
@@ -1395,6 +1486,8 @@ class TaskAgentSession(SessionInbox):
             self._abort_requested = True
             self.harness.clear_queues()
             self.harness.cancel()
+            if self._compacting:
+                task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(task), CLOSE_GRACE_SECONDS)
             except asyncio.TimeoutError:
@@ -1413,6 +1506,50 @@ class TaskAgentSession(SessionInbox):
         if self._gateway is not None:
             await self._gateway.aclose()
         self._emit(protocol.EndedEvent(session_id=self.session_id, reason="closed"))
+
+    async def flush(self) -> None:
+        """Wait until everything said so far is written to the transcript."""
+        await self._recorder.flush()
+
+    def compact(self) -> None:
+        """Sum the conversation up now, whatever its length; its end is told like that of a run.
+
+        For a session nothing is at work in: what was said is replaced by
+        a summary and the newest part of it, as before a request that
+        would not fit. A ``compacted`` event follows when a summary was
+        made, and an ``ended`` event either way.
+        """
+        if self._closing:
+            raise SessionError("the session is closed")
+        if self.running:
+            raise SessionError("a run is in progress")
+        self._abort_requested = False
+        self._compacting = True
+        self._run_task = asyncio.ensure_future(self._compact())
+
+    async def _compact(self) -> None:
+        reason: protocol.EndReason = "completed"
+        error: str | None = None
+        try:
+            # As much is kept word for word as a summary before a request
+            # keeps: this is not the conversation that was refused as too long.
+            await self._fit(force=True, tight=False)
+            if self._compaction_due:
+                await self._after_compaction()
+            await self._recorder.flush()
+        except asyncio.CancelledError:
+            if not (self._abort_requested or self._closing):
+                self._compacting = False
+                self._run_task = None
+                raise
+            reason = "aborted"
+        except Exception as exc:  # noqa: BLE001 - reported through the ended event
+            logger.exception("session %s: summing the conversation up failed", self.session_id)
+            reason = "error"
+            error = f"{type(exc).__name__}: {exc}"
+        self._compacting = False
+        self._run_task = None
+        self._emit(protocol.EndedEvent(session_id=self.session_id, reason=reason, error=error, inputs=self._inputs))
 
     # ------------------------------------------------------------------
     # Runs

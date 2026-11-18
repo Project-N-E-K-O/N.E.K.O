@@ -214,8 +214,42 @@ def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:
 
     assert "Read an existing file before overwriting it with write." in prompt("write")
     assert "and prefer edit for targeted changes." in prompt("write", "edit")
-    assert prompt("grep").endswith("to search file contents.")
+    # (The paragraph ends there; what follows it is the environment.)
+    assert "to search file contents.\n\nWorking directory: /w" in prompt("grep")
     assert "Use read on a matched file" in prompt("grep", "read")
     assert "Use the returned source snippets when available" in prompt("web_search")
     assert "Follow up with web_fetch" in prompt("web_search", "web_fetch")
     assert texts.TASK_AGENT_IDENTITY in prompt()
+
+
+def test_what_differs_from_one_session_to_the_next_comes_last() -> None:
+    # Two sessions offered the same tools by the same host differ in their
+    # working directory and, it may be, in the language they answer in.
+    # Everything in front of those is the same text for both, so a provider
+    # that kept the head of one session's requests has it for the other's.
+    def prompt(workdir: str, language: str) -> str:
+        return build_system_prompt(
+            tool_names=("read", "grep", "report"),
+            workdir=workdir,
+            platform="win32",
+            reply_language=language,
+            instructions="You work for Lan.\n\nWhat the space holds.",
+        )
+
+    one, other = prompt("C:\\sessions\\a\\work", "Simplified Chinese"), prompt("D:\\photos", "English")
+    shared = len(os.path.commonprefix([one, other]))
+    assert one[:shared].endswith("What the space holds.\n\nWorking directory: ")
+    # In order: identity, the tools, the host's own, the environment, the language.
+    marks = [
+        texts.TASK_AGENT_IDENTITY,
+        "Use the read tool",
+        texts.REPORT_GUIDANCE,
+        "You work for Lan.",
+        "Working directory: C:\\sessions\\a\\work\nPlatform: Windows\nShell tool: (none)",
+        "in Simplified Chinese.",
+    ]
+    places = [one.index(mark) for mark in marks]
+    assert places == sorted(places) and one.endswith("in Simplified Chinese.")
+    # Without a language, the environment is the end of it.
+    plain = build_system_prompt(tool_names=("read",), workdir="/w", platform="linux", instructions="Yours.")
+    assert plain.endswith("Yours.\n\nWorking directory: /w\nPlatform: Linux\nShell tool: (none)")
