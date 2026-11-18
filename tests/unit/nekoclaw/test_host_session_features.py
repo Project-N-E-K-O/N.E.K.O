@@ -2095,7 +2095,7 @@ async def test_shutting_down_removes_the_copies_that_are_on_no_record_and_keeps_
     await host.shutdown()
 
     with pytest.raises(ForkRefused, match="shutting down"):
-        await asking
+        await asyncio.wait_for(asking, 10)
     # On no record, so nothing would ever come by them: removed, now that nothing writes them any more.
     assert not Path(gone).exists() and not Path(waited).exists()
     assert manager._forks_given_up == {} and manager._fork_dirs == {} and manager._forks == {}
@@ -2588,3 +2588,49 @@ async def test_usage_the_ledger_took_in_part_is_taken_back_whole_and_written_onc
     assert (held.requests - session.requests, held.tokens - session.tokens) == (2, 120)
     assert (after.requests - commission.requests, after.tokens - commission.tokens) == (2, 120)
     assert manager._usage_owed == {}
+
+
+async def test_a_copy_that_is_being_put_on_record_when_the_host_shuts_down_is_not_left_on_the_disk_without_a_record(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host import task_agents as task_agents_module
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    # How long shutting down waits for what was started, here: a moment.
+    monkeypatch.setattr(task_agents_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.1)
+    create = host.ledger.create_session
+    entered, go = asyncio.Event(), asyncio.Event()
+    written: list[str] = []
+
+    async def slow(**kwargs: Any) -> Any:
+        # The ledger has much to write, and does not get to this for now.
+        written.append(kwargs["session_dir"])
+        entered.set()
+        await go.wait()
+        return await create(**kwargs)
+
+    host.ledger.create_session = slow
+    try:
+        asking = asyncio.ensure_future(host.fork_session(first.id))
+        await asyncio.wait_for(entered.wait(), 10)
+        assert Path(written[0]).exists()
+
+        await asyncio.wait_for(host.shutdown(), 10)
+
+        # Not cut off by the shutting down: it is still to be put on record, and the session it was
+        # made from is still held for it.
+        assert not asking.done() and len(manager._fork_records) == 1 and manager._copying_from == {first.id: 1}
+        go.set()
+        # The ledger is closed by now and does not take it: what was written is removed.
+        with pytest.raises(ForkRefused, match="could not be put on record"):
+            await asyncio.wait_for(asking, 10)
+    finally:
+        go.set()
+        host.ledger.create_session = create
+    assert not Path(written[0]).exists()
+    assert manager._copying_from == {} and manager._fork_records == set()

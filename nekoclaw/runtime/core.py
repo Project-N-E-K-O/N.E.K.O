@@ -210,12 +210,12 @@ class RuntimeCore:
             source = self._sessions.get(source_id)
             if source is not None:
                 await source.flush()
-        except BaseException as exc:
+        except asyncio.CancelledError:
             # Nothing was written yet.
             self._forking.discard(session_id)
-            if not isinstance(exc, Exception):
-                raise
-            # Reported to the host, never raised into the pump.
+            raise
+        except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
+            self._forking.discard(session_id)
             logger.exception("could not copy session %s", source_id)
             self._reject(session_id, "fork", f"{type(exc).__name__}: {exc}")
             return

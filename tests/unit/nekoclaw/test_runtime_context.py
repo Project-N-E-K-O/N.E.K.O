@@ -1199,7 +1199,7 @@ async def test_a_conversation_that_could_stay_is_whole_again_when_its_summing_up
     await asyncio.wait_for(asked.wait(), 10)
     fitting.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await fitting
+        await asyncio.wait_for(fitting, 10)
     # (They were cut when the summary was asked for.)
     assert cut == [True]
     assert said(messages) == whole
@@ -1220,7 +1220,7 @@ async def test_a_conversation_that_could_stay_is_whole_again_when_its_summing_up
         )
     )
     with pytest.raises(asyncio.CancelledError):
-        await later[0]
+        await asyncio.wait_for(later[0], 10)
     assert any(texts.SUMMARY_OPEN_TAG in text for text in said(messages))
     assert len(messages) < len(whole)
 

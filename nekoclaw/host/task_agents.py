@@ -542,6 +542,10 @@ class TaskAgentManager:
         # Copies the runtime was asked for that are still waited for,
         # each with the directory it is written into.
         self._fork_dirs: dict[str, str] = {}
+        # Copies the runtime has written that are being put on record.
+        # Not among the tasks shutting down gives up on: each is carried
+        # through, to a copy that is on record or to one that is removed.
+        self._fork_records: set[asyncio.Task[Any]] = set()
         # What requests used that the ledger did not take when it was to be
         # written, by session and commission (requests, input, output,
         # cache reads, cache writes, and how long the conversation was as
@@ -3671,11 +3675,16 @@ class TaskAgentManager:
             raise ForkRefused(str(event.get("message") or "the runtime could not copy the session"))
         # With no await since the runtime's word was taken: nothing comes
         # between the copy being written and its being put on record.
-        registering = self._spawn(
+        # A task that shutting down waits for and does not cancel: cut
+        # off before the ledger got to it, the copy would be on the disk
+        # and on no record, with nothing left that knows of it.
+        registering = asyncio.ensure_future(
             self._put_fork_on_record(
                 source, session_id, target_dir, name=name, forked_at=str(event.get("upto") or "") or None
             )
         )
+        self._fork_records.add(registering)
+        registering.add_done_callback(self._fork_records.discard)
         # What it fails with is read here, should whoever asked have left.
         registering.add_done_callback(lambda done: done.cancelled() or done.exception())
         return registering
@@ -4173,6 +4182,12 @@ class TaskAgentManager:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+        if self._fork_records:
+            # Copies that are being put on record: waited for as long as
+            # a start is, and left to go on after that. A ledger that is
+            # closed before it got to one has it fail, and what was
+            # written of that copy is removed.
+            await asyncio.wait(list(self._fork_records), timeout=_SHUTDOWN_START_WAIT_SECONDS)
         # Recorded first: what the closing sessions still say must not turn a
         # commission nobody stopped into a stopped one.
         for commission_id in list(self._sessions):

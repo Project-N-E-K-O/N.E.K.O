@@ -1205,3 +1205,38 @@ async def test_a_session_with_a_background_command_still_running_is_not_summed_u
         assert len(events.of("compacted")) == 1
     finally:
         await session.close()
+
+
+async def test_a_copy_that_could_not_be_begun_is_told_of_and_leaves_its_id_free(tmp_path: Path) -> None:
+    recorder = Recorder()
+    runtime = _runtime({"s1": ScriptedLLM([[say("Done."), finish()]])}, recorder)
+    spec = make_spec(tmp_path)
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do it.")
+        await recorder.wait_ended("s1")
+        copy = make_spec(tmp_path, "copy")
+        source = runtime.core._sessions["s1"]
+        flush = source.flush
+
+        async def unwritable() -> None:
+            raise OSError("the disk is full")
+
+        # What the other session has said so far cannot be written out: nothing is copied.
+        source.flush = unwritable
+        mark = len(recorder.events)
+        try:
+            await runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        finally:
+            source.flush = flush
+        refused = await recorder.wait_for(lambda event: event.get("type") == "error", start=mark)
+        assert (refused["session_id"], refused["command"]) == ("copy", "fork") and "the disk is full" in refused["message"]
+        assert not [event for event in recorder.events[mark:] if event.get("type") == "forked"]
+        # The id is not left taken: the same copy can be asked for again, and is made.
+        assert "copy" not in runtime.core._forking and not runtime.core._copying
+        mark = len(recorder.events)
+        await runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        made = await recorder.wait_for(lambda event: event.get("type") == "forked", start=mark)
+        assert made["session_id"] == "copy" and made["entries"] > 0
+    finally:
+        await runtime.shutdown()
