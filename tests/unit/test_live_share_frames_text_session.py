@@ -199,7 +199,12 @@ async def test_stop_notice_fences_a_live_frame_still_decoding(manager, monkeypat
     assert staged == []
 
     # A later frame (a share restarted, or the voice vision heartbeat) is fresh.
-    await manager._process_stream_data_internal(_frame(live=True, at=time.monotonic()))
+    # Explicitly later: on Windows time.monotonic() ticks every ~15.6 ms, so a
+    # reading taken right after the stop can equal it, and a frame stamped in
+    # the stop's own tick cannot be ordered after it (it is fenced, as it should).
+    await manager._process_stream_data_internal(
+        _frame(live=True, at=manager._live_share_stopped_at + 1.0)
+    )
     assert [kw["request_id"] for kw in staged] == [None]
     # User attachments are never fenced.
     await manager._process_stream_data_internal(
