@@ -19,8 +19,7 @@ Steamworks process-global handle.
 The Steamworks SDK is initialized once during app startup (``app/main_server/__init__.py``)
 and consumed by code at every layer of the dependency stack:
 
-* high-level routers / brain agents (e.g. ``main_routers/workshop_router.py``,
-  ``brain/browser_use_adapter.py``)
+* high-level routers (e.g. ``main_routers/workshop_router.py``)
 * mid-level helpers (e.g. ``utils/config_manager.py``'s GeoIP probe,
   ``utils/language_utils.py``'s Steam-language detection)
 

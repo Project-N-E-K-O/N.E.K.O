@@ -84,15 +84,19 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "筆記", "memo", "record", "メモ"]
 ```
 
-これらの field は host が plugin をロードした後の Agent routing に使われます。
+host が plugin をロードした後、Agent（ネコクロー、NekoClaw）はこれらの field を使って plugin を選びます。
 
-- `description` — plugin metadata と Agent fine assessment に使う完全な説明です。
-- `short_description` — coarse screening 用の短い説明です。省略時は `description` から生成して cache される場合があります。
-- `keywords` — 正規表現 pattern です。hit は Stage 1 candidate に union されますが、Stage 2 を省略したり実行を保証したりしません。
+- `description` — plugin metadata と精選に使う完全な説明です。
+- `short_description` — 粗選別が読む短い説明で、読むのは最大 150 token です。**書いておいてください。** 省略されていて `description` がこの 150 token を超えるときは、ホストがバックグラウンドで小さいモデルに `description` から書かせますデータディレクトリの `nekoclaw/plugin_short_descriptions.json` に保存し、成功すればプラグインと説明の版ごとにモデルへのリクエスト 1 回です。150 token を超えた結果は 150 に切り詰めて保存します。リクエストが失敗した場合は保存せず、10 分後に再試行し、そのたびにリクエストが 1 回かかります。同じ版の `description` には 1 日最大 3 回まで（再起動をまたいでも数えます）で、`description` が変われば数え直します。保存されるまでは `description` の先頭部分を代わりに使います。
+- `keywords` — 正規表現 pattern です。一致した plugin は粗選別の候補に入り、精選では「キーワード一致」の印が付きます。精選を省略したり、実行を保証したりはしません。
+
+選択は二段階です。選択対象の全 plugin と、その可視 entry の説明の合計が 3000 token を超えるときは、先に粗選別を行い、三つの集合の和を残します。keywords が一致した plugin、BM25 のテキスト一致の上位 10 件（plugin の ID、名前、説明と、entry の ID・説明が対象）、小型モデルが短い説明から選んだ plugin です。その後、精選が `plugin_id` と runtime `entry_id` を選び、引数を埋めます。3000 token 以下なら粗選別は行わず、選択対象の plugin すべてが精選に渡ります。
+
+選択が走るのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はなくなったため、「ユーザーが何気なく口にしただけで選ばれる」ことに頼っていた plugin は、選ばれる回数が減ります。keywords と BM25 が照合するテキストは、ユーザーの元の発言と、モデルが dispatch した一文を合わせたものです。ユーザーの発言が keywords に一致することは、そのターンをターン後チェックへ通すシグナルの一つでもあります。
 
 listener/integration を Agent dispatch から完全に外すには `passive = true` を設定します。non-passive plugin も Agent-visible runtime entry が 1 つ以上なければ candidate になりません。
 
-Stage 2 の最終出力は `plugin_id` と runtime `entry_id` です。どちらも今回表示した candidate set と照合され、最初の不正値だけ correction retry を 1 回行い、それでも不正なら拒否されます。
+精選が返した `plugin_id` と `entry_id` は、そのとき見せた candidate set と照合されます。不正な場合は聞き直さず、どの entry も直接は呼ばれません。その用件は task agent に渡され、task agent が使えないときは「できない」と返されます。精選は、誰にもできない用件、またはそもそも片付ける用件ではないもの（`route="none"`）と答えることもでき、その場合は何も始まりません。entry が呼ばれたときの動作は、[エントリーとパラメーター](./entries)の「Agent が entry を呼ぶとき」を参照してください。
 
 ```toml
 version = "1.2.0"
@@ -199,6 +203,25 @@ enabled = true
 
 ---
 
+### `[plugin.shared]` — 他のプラグインの共有ファイルを読む
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+どのプラグインにも共有ディレクトリ `<ユーザーデータルート>/plugin_shared/<プラグイン id>/` があり、他のプラグインに読ませてよいファイルを置けます。持ち主のプラグインは `self.shared_path(...)` で書き込みます。他のプラグインが公開したファイルを読むには、そのプラグインの id を `reads` に書いたうえで `self.shared_path_of("weather", ...)` を呼びます。宣言がないまま呼ぶと `ValidationError` が発生します。
+
+知っておくべき点が 3 つあります。
+
+- **これは取り決めであり、セキュリティ境界ではありません。** プラグイン同士はサンドボックスで隔離されていないため、あるプラグインが他のプラグインのディレクトリに書き込むことを防ぐ仕組みはありません。宣言は、この依存関係をマニフェスト上で見えるようにするためのものです。他のプラグインのファイルは読み取り専用として扱い、自分の共有ディレクトリに秘密情報を置かないでください。
+- **共有ディレクトリはプラグインのプライベートな状態ではありません。** 公開したプラグインが削除されてもディレクトリは残り、ユーザーが保存場所を変更したときはユーザーデータと一緒に移動します。
+- **リンクを置かないでください。** このディレクトリはユーザーデータと一緒に移動するため、中にシンボリックリンクやジャンクションが 1 つでもあると（仮想環境、git のチェックアウト、`node_modules` によく含まれます）、保存場所の変更が全体として失敗します。公開するのは通常のファイルとディレクトリだけにしてください。
+
+公開する側に宣言は要りません。共有ファイルを公開も参照もしないなら、このセクションは書かなくてかまいません。
+
+---
+
 ### `[plugin.ui]` — カスタム UI
 
 ```toml
@@ -272,6 +295,8 @@ plugin/plugins/smart_notes/
 ├── config/plugin.toml      ← 実際に使用される設定
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
+
+<ユーザーデータルート>/plugin_shared/smart_notes/   ← self.shared_path()。宣言したプラグインが読む
 ```
 
 必須なのは `plugin.toml` と `[plugin].entry` が指す、インポート可能な Python モジュールです。一般的には `__init__.py` を使いますが、それに限定されません。インストール済みコードは、これらの書き込み可能な状態データとは別に保存されます。

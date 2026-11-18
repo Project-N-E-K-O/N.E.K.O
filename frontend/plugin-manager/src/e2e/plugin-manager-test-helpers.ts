@@ -156,6 +156,7 @@ export function collectVueResolutionWarnings(page: Page) {
 }
 
 export async function stubCorePluginManagerApis(page: Page) {
+  await page.route('**/plugin-consent/notices*', (route) => route.fulfill({ json: [] }))
   await page.route('**/security/csrf-token', (route) =>
     route.fulfill({ json: { csrf_token: 'e2e-csrf-token' } })
   )

@@ -18,9 +18,15 @@ _DEFAULT_EXCLUDE_DIR_NAMES = {
     "dist",
     "build",
     ".git",
+    # Agent authoring kit: development context, never runtime payload (kept in
+    # step with core/build_rules.py).
+    ".agents",
+    ".claude",
 }
 _DEFAULT_EXCLUDE_FILE_NAMES = {
     ".DS_Store",
+    "AGENTS.md",
+    "CLAUDE.md",
 }
 _DEFAULT_EXCLUDE_SUFFIXES = {
     ".pyc",

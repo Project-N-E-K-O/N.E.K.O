@@ -34,7 +34,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 | ASR、TTS、voice registration | Provider による | 多くの場合あり | 一部の local TTS や vLLM-Omni 経路がある。要件は経路ごとに異なる |
 | Steam、Workshop、Steam Cloud | Steam サービス | あり | オフラインでは利用できない |
 | Browser、Feed、Trend、オンラインコンテンツ | 外部ソース | あり | ネットワークなしでは最新の外部コンテンツを取得できない |
-| リモート Agent channel | Channel による | 多くの場合あり | Computer Use の操作はローカルでも、判断やモデル呼び出しはリモートの場合がある |
+| リモート Agent channel | Channel による | 多くの場合あり | キーボード・マウス操作とブラウザー操作はローカルマシン上で行われるが、各ステップを決めるモデル呼び出しはリモートの場合がある |
 
 ## 既定でローカルに残るもの
 
@@ -55,6 +55,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 - 現在の N.E.K.O. サービス経路を通る無料 API request
 - 選択した cloud ASR、TTS、voice service へ送る音声 sample または text
 - ユーザーが明示的に実行する Steam Cloud / Workshop content
+- タスクがキーボード・マウス操作やブラウザー操作のツールを使っている間に、これらのツールが Agent のモデルへ返すデスクトップのスクリーンショットと Web ページの内容
 - Online feed、Browser request、リモート Agent work
 
 データフローの詳細は、[N.E.K.O. は会話やメモリをどこへ送信しますか？](./data-and-privacy)を参照してください。

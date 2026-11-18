@@ -1,3 +1,4 @@
+import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { authoringMessages } from '../authoring'
@@ -6,6 +7,7 @@ import { authoringMessages } from '../authoring'
  * 中文语言包
  */
 export default {
+  pluginConsent: pluginConsentMessages['zh-CN'],
   authoring: authoringMessages['zh-CN'],
   modelApi: modelApiMessages['zh-CN'],
   modelBindings: modelBindingsMessages['zh-CN'],

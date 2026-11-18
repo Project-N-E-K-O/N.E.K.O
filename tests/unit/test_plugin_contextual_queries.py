@@ -1,218 +1,249 @@
-"""Search assessment keeps resolved arguments separate from the raw user turn."""
+"""Contextual plugin queries on the active TASK / USER_SAID decision path."""
+
 import asyncio
 import json
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
-from brain.task_executor import DirectTaskExecutor
-from config.prompts.prompts_agent import USER_PLUGIN_SYSTEM_PROMPT
-from config.prompts.prompts_plugin_assessment import PLUGIN_CONTEXT_GUIDANCE
+from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_COARSE_SCREEN_PROMPT
+from nekoclaw.host.decision import DecisionRequest, LexicalDecisionModel, Triage
+from nekoclaw.host.selection import routable_plugins
+from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, make_host, pick_plugin, wait_status
+from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, finish, plugin
 
+pytestmark = pytest.mark.unit
 
+LANGUAGES = list(TASK_BRAIN_COARSE_SCREEN_PROMPT)
 QUERY = "Mira Vale Paper Lanterns themes"
-PLUGINS = [{"id": "web_search", "entries": [
-    {"id": "search", "input_schema": {"type": "object", "properties": {
-        "query": {"type": "string", "description": "Standalone keywords for the requested subject"}}, "required": ["query"]}},
-    {"id": "fetch"},
-]}]
+TASK = "Search for the themes of Mira Vale's Paper Lanterns"
+FIELD_DESCRIPTION = "Standalone keywords for the requested subject"
 
 
-@pytest.mark.parametrize("lang", list(USER_PLUGIN_SYSTEM_PROMPT))
+def reference_plugin():
+    return plugin(
+        "reference_lookup",
+        "Search books, songs and other references",
+        [entry("search", input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": FIELD_DESCRIPTION}},
+            "required": ["query"],
+        })],
+    )
+
+
+class CoarseAnswerLLM(FakeDecisionLLM):
+    """The real coarse caller sees provider errors and raw malformed replies."""
+
+    def __init__(self, answer, **kwargs):
+        super().__init__(**kwargs)
+        self.answer = answer
+
+    async def complete(self, tier, messages):
+        if tier != "coarse":
+            return await super().complete(tier, messages)
+        self.calls.append((tier, [dict(message) for message in messages]))
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
 @pytest.mark.parametrize("followup", ["你帮我查一下这本书的主题吧", "还没搜到吗", "你用网络搜索呢"])
-async def test_resolved_query_survives_assessment_and_dispatch(monkeypatch, lang, followup):
-    requests = []
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor._STAGE1_TRIGGER_TOKENS = 100000
-    conversation = (
-        "User: 我在读 Mira Vale 的 Paper Lanterns\n"
-        "User: 你帮我查一下这本书的主题吧\nAssistant: 我试着查资料。\n"
-        f"User: {followup}"
+async def test_resolved_query_survives_assessment_and_dispatch(monkeypatch, tmp_path, lang, followup):
+    server = FakePluginServer.install(monkeypatch)
+
+    async def search(args):
+        return finish({"reply": "Found the requested subject"})
+
+    server.add_plugin(reference_plugin(), search=search)
+    llm = FakeDecisionLLM(fine=[pick_plugin("reference_lookup", "search", {"query": QUERY})])
+    host = make_host(tmp_path, server, decision_llm=llm)
+    try:
+        receipt = await host.dispatch(TASK, user_text=followup, lanlan_name="Lan", lang=lang)
+        assert receipt.kind == "accepted"
+        done = await wait_status(host, receipt.commission_id, "done")
+        assert done.route == "plugin"
+        system, user = (message["content"] for message in llm.last("fine"))
+        assert FIELD_DESCRIPTION in system
+        assert "command/message/query/objective" not in system
+        assert user == f"TASK: {TASK}\nUSER_SAID: {followup}"
+        (sent,) = server.run_requests
+        assert sent["args"]["query"] == QUERY
+        assert sent["args"]["_ctx"]["latest_user_request"] == followup
+        assert llm.fine[0]["plugin_args"] == {"query": QUERY}
+    finally:
+        await host.shutdown()
+
+
+async def test_raw_message_parameter_keeps_its_words_and_newlines(monkeypatch, tmp_path):
+    server = FakePluginServer.install(monkeypatch)
+    original = "Keep My Words\n包括换行，不要翻译。"
+    server.add_plugin(plugin(
+        "raw_message",
+        "Send a message",
+        [entry("send", input_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string", "description": "Original USER_SAID verbatim"}},
+            "required": ["message"],
+        })],
+    ), send=lambda args: _finished())
+    llm = FakeDecisionLLM(fine=[pick_plugin("raw_message", "send", {"message": original})])
+    host = make_host(tmp_path, server, decision_llm=llm)
+    try:
+        receipt = await host.dispatch("Send the original message", user_text=original, lanlan_name="Lan")
+        await wait_status(host, receipt.commission_id, "done")
+        (sent,) = server.run_requests
+        assert sent["args"]["message"] == original
+        assert sent["args"]["_ctx"]["latest_user_request"] == original
+        assert llm.fine[0]["plugin_args"] == {"message": original}
+    finally:
+        await host.shutdown()
+
+
+async def _finished():
+    return finish({"reply": "sent"})
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+async def test_coarse_screen_sends_the_task_and_user_words_only_once(lang):
+    llm = FakeDecisionLLM(coarse=["reference_lookup"])
+    request = DecisionRequest(
+        dispatch_text=TASK, user_text="FOLLOWUP_SENTINEL: 你用网络搜索呢", lang=lang,
+        plugins=[reference_plugin()],
     )
 
-    async def answer(messages):
-        requests.append(messages)
-        return SimpleNamespace(content=json.dumps({
-            "has_task": True, "can_execute": True, "plugin_id": "web_search",
-            "entry_id": "search", "plugin_args": {"query": QUERY},
-        }))
+    selected = await LexicalDecisionModel(llm)._coarse_screen(request.match_text, request.plugins, lang)
 
-    executor._get_llm = lambda **kwargs: SimpleNamespace(ainvoke=answer)
-    decision = await executor._assess_user_plugin(conversation, PLUGINS, lang=lang)
-    assert PLUGIN_CONTEXT_GUIDANCE[lang] in requests[0][0]["content"]
-    assert "Standalone keywords for the requested subject" in requests[0][0]["content"]
-    assert conversation in requests[0][1]["content"]
-    assert "command/message/query/objective" not in requests[0][0]["content"]
-    assert decision.can_execute
-    executor.plugin_list = PLUGINS
-    executor._await_run_completion = AsyncMock(return_value={"success": True, "status": "completed"})
-    sent = []
-
-    def handle(request):
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={"run_id": "search-test", "run_token": "test"})
-
-    original = httpx.AsyncClient
-    monkeypatch.setattr("brain.task_executor.httpx.AsyncClient", lambda **kwargs: original(
-        transport=httpx.MockTransport(handle)))
-    result = await executor._execute_user_plugin(
-        "test-task", plugin_id=decision.plugin_id, entry_id=decision.entry_id,
-        plugin_args=decision.plugin_args, latest_user_request=followup,
-    )
-    assert result.success
-    assert sent[0]["args"]["query"] == QUERY
-    assert sent[0]["args"]["_ctx"]["latest_user_request"] == followup
-    assert decision.plugin_args == {"query": QUERY}
+    assert selected == ["reference_lookup"]
+    messages = llm.last("coarse")
+    assert [message["role"] for message in messages] == ["system", "user"]
+    assert messages[1]["content"] == request.match_text
+    assert request.match_text not in messages[0]["content"]
+    assert sum(message["content"].count("FOLLOWUP_SENTINEL") for message in messages) == 1
+    assert "- reference_lookup:" in messages[0]["content"]
 
 
-def test_schema_descriptions_preserve_field_semantics_with_bounded_text():
-    from config import AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS
-    from utils.tokenize import truncate_to_tokens
-
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    description = "Keep the user's original message verbatim. " * 100
-    catalog = [{"id": "custom_tool", "entries": [{"id": "run", "input_schema": {
-        "properties": {
-            "message": {"type": "string", "description": description},
-            "kind": {"type": "string", "enum": ["raw", "summary"]},
-            "other": {"type": "string", "description": None},
-        }, "required": ["message"],
-    }}]}]
-    rendered = "\n".join(executor._build_plugin_desc_lines(catalog))
-    assert json.dumps(truncate_to_tokens(description.strip(), AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS)) in rendered
-    assert description not in rendered
-    assert "enum=[raw|summary]" in rendered
-    assert "required=['message']" in rendered
-    assert "other:string" in rendered
-
-
-async def test_raw_message_parameter_is_not_rewritten_on_dispatch(monkeypatch):
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor.plugin_list = [{"id": "custom_tool", "entries": [{"id": "run"}]}]
-    executor._await_run_completion = AsyncMock(return_value={"success": True, "status": "completed"})
-    text = "  Keep My Words\n包括换行，不要翻译。  "
-    sent = []
-
-    def handle(request):
-        sent.append(json.loads(request.content))
-        return httpx.Response(200, json={"run_id": "raw-test", "run_token": "test"})
-
-    original = httpx.AsyncClient
-    monkeypatch.setattr("brain.task_executor.httpx.AsyncClient", lambda **kwargs: original(
-        transport=httpx.MockTransport(handle)))
-    result = await executor._execute_user_plugin(
-        "test-task", plugin_id="custom_tool", entry_id="run",
-        plugin_args={"message": text}, latest_user_request=text,
-    )
-    assert result.success
-    assert sent[0]["args"]["message"] == text
-    assert sent[0]["args"]["_ctx"]["latest_user_request"] == text
-
-
-@pytest.mark.parametrize("coarse_result", [TimeoutError("offline"), "invalid JSON", "[]", '["web_search"]'])
-async def test_semantic_screen_gets_dialogue_and_failure_keeps_catalog(monkeypatch, coarse_result):
-    requests = []
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor._STAGE1_TRIGGER_TOKENS = 1
-    # No lexical match. Only the model may resolve what this follow-up means.
-    monkeypatch.setattr("brain.task_executor.stage1_filter", lambda *a, **kw: ([], []))
-    conversation = executor._format_messages([
-        {"role": "user", "content": "请查询 Mira Vale 的 Paper Lanterns 主题"},
-        {"role": "assistant", "content": "目前还没有相关结果。"},
-        {"role": "user", "content": "有眉目了吗？"},
+def visible_catalog():
+    return routable_plugins([
+        reference_plugin(),
+        plugin("other_visible", "A different reference source"),
+        plugin("passive_only", "Not an automatic tool", passive=True),
+        plugin("hidden_only", "Not visible", [entry("hidden", metadata={"agent_hidden": True})]),
     ])
 
-    def llm(**kwargs):
-        async def answer(messages):
-            requests.append((kwargs.get("tier"), messages))
-            if kwargs.get("tier") == "emotion":
-                if isinstance(coarse_result, Exception):
-                    raise coarse_result
-                return SimpleNamespace(content=coarse_result)
-            return SimpleNamespace(content='{"has_task": false, "can_execute": false}')
-        return SimpleNamespace(ainvoke=answer)
 
-    executor._get_llm = llm
-    await executor._assess_user_plugin(conversation, PLUGINS)
-    assert requests[0][0] == "emotion"
-    assert conversation in requests[0][1][1]["content"]
-    assert conversation in requests[1][1][1]["content"]
-    stage2 = requests[1][1][0]["content"]
-    # Valid empty selection remains distinct from timeout/malformed output.
-    assert ("- web_search:" in stage2) == (coarse_result != "[]")
+@pytest.mark.parametrize("path", ["probe", "select"])
+@pytest.mark.parametrize("answer", [
+    TimeoutError("offline"), "invalid JSON", "{}", '[{"id": "reference_lookup"}]',
+    '["reference_lookup", {}]', "[true]", '["reference_lookup", true]',
+])
+async def test_failed_screen_keeps_visible_catalog_and_is_not_paid_for_twice(monkeypatch, path, answer):
+    monkeypatch.setattr("config.AGENT_PLUGIN_DESC_BM25_THRESHOLD", 1)
+    monkeypatch.setattr("nekoclaw.host.decision.stage1_filter", lambda *args, **kwargs: ([], []))
+    catalog = visible_catalog()
+    llm = CoarseAnswerLLM(answer, fine=[pick_plugin("reference_lookup", "search", {"query": QUERY})])
+    model = LexicalDecisionModel(llm)
+    request = DecisionRequest(dispatch_text=TASK, user_text="还没搜到吗", plugins=catalog)
+    triage = await model.probe(request) if path == "probe" else Triage(kind="new")
+    assert triage.kind == "new"
+    if path == "probe":
+        assert triage.candidate_ids == triage.coarse_ids == [item["id"] for item in catalog]
+
+    selection = await model.select(request, triage)
+
+    assert selection.route == "plugin"
+    assert selection.shown_plugin_ids == [item["id"] for item in catalog]
+    assert selection.plugin_args == {"query": QUERY}
+    assert llm.tiers() == ["coarse", "fine"]
+    assert triage.model_calls + selection.model_calls == 2
+    assert "passive_only" not in str(llm.calls) and "hidden_only" not in str(llm.calls)
 
 
-async def test_both_semantic_stages_share_bounded_dialogue(monkeypatch):
-    from config.agent_settings import AGENT_PLUGIN_CONTEXT_MAX_TOKENS
-    from utils.tokenize import count_tokens
-
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor._STAGE1_TRIGGER_TOKENS = 1
-    screened = []
-
-    async def coarse(conversation, plugins, lang="en"):
-        screened.append(conversation)
-        return ["web_search"]
-
-    async def answer(messages):
-        assert screened[0] in messages[1]["content"]
-        return SimpleNamespace(content='{"has_task": false, "can_execute": false}')
-
-    executor._stage1_llm_coarse_screen = coarse
-    executor._get_llm = lambda **kwargs: SimpleNamespace(ainvoke=answer)
-    monkeypatch.setattr("brain.task_executor.stage1_filter", lambda *a, **kw: ([], []))
-    await executor._assess_user_plugin(
-        "LATEST_USER_REQUEST: check new subject\nuser: old subject\n" + "context " * 20000
-        + "\nuser: check new subject", PLUGINS,
+async def test_coarse_screen_preserves_string_and_integer_ids():
+    llm = CoarseAnswerLLM('[7, "reference_lookup"]')
+    selected = await LexicalDecisionModel(llm)._coarse_screen(
+        TASK, [plugin("7", "Numeric identifier"), reference_plugin()], "en",
     )
-    assert count_tokens(screened[0]) <= AGENT_PLUGIN_CONTEXT_MAX_TOKENS
-    assert "LATEST_USER_REQUEST: check new subject" in screened[0]
-    assert screened[0].endswith("user: check new subject")
+    assert selected == ["7", "reference_lookup"]
 
 
-async def test_failed_screen_does_not_restore_passive_or_hidden_tools(monkeypatch):
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor._STAGE1_TRIGGER_TOKENS = 1
-    requests = []
-
-    async def answer(messages):
-        requests.append(messages)
-        return SimpleNamespace(content='{"has_task": false, "can_execute": false}')
-
-    async def failed(*args, **kwargs):
-        raise TimeoutError("screen unavailable")
-
-    executor._stage1_llm_coarse_screen = failed
-    executor._get_llm = lambda **kwargs: SimpleNamespace(ainvoke=answer)
-    monkeypatch.setattr("brain.task_executor.stage1_filter", lambda *a, **kw: ([], []))
-    catalog = PLUGINS + [
-        {"id": "passive_tool", "passive": True, "entries": [{"id": "run"}]},
-        {"id": "hidden_tool", "entries": [{"id": "run", "metadata": {"agent_hidden": True}}]},
-    ]
-    await executor._assess_user_plugin("User: search for a book", catalog)
-    prompt = requests[0][0]["content"]
-    assert "- web_search:" in prompt
-    assert "passive_tool" not in prompt
-    assert "hidden_tool" not in prompt
+@pytest.mark.parametrize("path", ["probe", "select"])
+@pytest.mark.parametrize("ids", [[], ["reference_lookup"]])
+async def test_valid_coarse_result_remains_distinct_from_failure(monkeypatch, path, ids):
+    monkeypatch.setattr("config.AGENT_PLUGIN_DESC_BM25_THRESHOLD", 1)
+    monkeypatch.setattr("nekoclaw.host.decision.stage1_filter", lambda *args, **kwargs: ([], []))
+    llm = CoarseAnswerLLM(json.dumps(ids), fine=[pick_plugin("reference_lookup", "search")])
+    model = LexicalDecisionModel(llm)
+    request = DecisionRequest(dispatch_text="qqqq", plugins=visible_catalog())
+    triage = await model.probe(request) if path == "probe" else Triage(kind="new")
+    if path == "probe" and not ids:
+        assert (triage.kind, triage.coarse_ids, triage.model_calls) == ("none", [], 1)
+    else:
+        selection = await model.select(request, triage)
+        assert selection.shown_plugin_ids == ids
+        assert selection.route == ("plugin" if ids else "none")
+        assert triage.model_calls + selection.model_calls == (2 if ids else 1)
+    assert llm.tiers() == (["coarse", "fine"] if ids else ["coarse"])
 
 
-async def test_cancelled_screen_does_not_start_final_assessment(monkeypatch):
-    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
-    executor._STAGE1_TRIGGER_TOKENS = 1
-    tiers = []
+@pytest.mark.parametrize("path", ["probe", "select"])
+async def test_cancelled_screen_never_starts_fine_selection(monkeypatch, path):
+    monkeypatch.setattr("config.AGENT_PLUGIN_DESC_BM25_THRESHOLD", 1)
+    monkeypatch.setattr("nekoclaw.host.decision.stage1_filter", lambda *args, **kwargs: ([], []))
+    llm = CoarseAnswerLLM(asyncio.CancelledError())
+    model = LexicalDecisionModel(llm)
+    request = DecisionRequest(dispatch_text="qqqq", plugins=visible_catalog())
 
-    def llm(**kwargs):
-        tiers.append(kwargs.get("tier"))
-
-        async def cancelled(messages):
-            raise asyncio.CancelledError()
-
-        return SimpleNamespace(ainvoke=cancelled)
-
-    executor._get_llm = llm
-    monkeypatch.setattr("brain.task_executor.stage1_filter", lambda *a, **kw: ([], []))
     with pytest.raises(asyncio.CancelledError):
-        await executor._assess_user_plugin("User: search for a book", PLUGINS)
-    assert tiers == ["emotion"]
+        if path == "probe":
+            await model.probe(request)
+        else:
+            await model.select(request, Triage(kind="new"))
+    assert llm.tiers() == ["coarse"]
+
+
+async def test_bounded_task_and_user_fields_never_splice_in_old_ledger_text(monkeypatch, tmp_path):
+    from config.nekoclaw_settings import DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    monkeypatch.setattr("config.AGENT_PLUGIN_DESC_BM25_THRESHOLD", 1)
+    matched = []
+
+    def local_candidates(text, plugins, **kwargs):
+        matched.append(text)
+        return [plugins[0]], []
+
+    monkeypatch.setattr("nekoclaw.host.decision.stage1_filter", local_candidates)
+    server = FakePluginServer.install(monkeypatch)
+    server.add_plugin(reference_plugin(), search=lambda args: _finished())
+    llm = FakeDecisionLLM(
+        coarse=["reference_lookup"], fine=[pick_plugin("reference_lookup", "search", {"query": QUERY})],
+    )
+    host = make_host(tmp_path, server, decision_llm=llm)
+    task = "CURRENT_TASK " + "task_detail " * 10000
+    said = "CURRENT_USER " + "user_detail " * 10000
+    expected_task = truncate_to_tokens(task.strip(), DISPATCH_TEXT_MAX_TOKENS)
+    expected_said = truncate_to_tokens(said.strip(), DISPATCH_USER_TEXT_MAX_TOKENS)
+    old = "OLD_LEDGER_TOPIC"
+    try:
+        await host.ledger.create(
+            lanlan_name="Lan", title=old, dispatch_text=old, user_text=old,
+            source="dispatch", status="working", route="plugin",
+        )
+        receipt = await host.dispatch(task, user_text=said, lanlan_name="Lan")
+        assert receipt.kind == "accepted"
+        await wait_status(host, receipt.commission_id, "done")
+
+        coarse = llm.last("coarse")[1]["content"]
+        fine = llm.last("fine")[1]["content"]
+        assert matched and all(text == f"{expected_said}\n{expected_task}" for text in matched)
+        assert coarse == f"{expected_said}\n{expected_task}"
+        assert fine.split("\nACTIVE_TASKS:", 1)[0] == f"TASK: {expected_task}\nUSER_SAID: {expected_said}"
+        assert old in fine.split("\nACTIVE_TASKS:", 1)[1]
+        assert old not in coarse and all(old not in text for text in matched)
+        assert count_tokens(expected_task) <= DISPATCH_TEXT_MAX_TOKENS == 300
+        assert count_tokens(expected_said) <= DISPATCH_USER_TEXT_MAX_TOKENS == 300
+        assert "LATEST_USER_REQUEST" not in coarse
+        assert server.run_requests[0]["args"]["_ctx"]["latest_user_request"] == expected_said
+    finally:
+        await host.shutdown()

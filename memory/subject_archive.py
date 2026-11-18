@@ -224,7 +224,8 @@ async def asweep_scoped_subject_archive(
     if dry_run is None:
         dry_run = SCOPED_SUBJECT_ARCHIVE_DRY_RUN
 
-    facts_full = await fact_store.aload_facts_full(name)
+    # Cold rows as stubs: their timestamps and subject markers still count.
+    facts_full = await fact_store.aload_facts_full(name, include_cold_stubs=True)
     reflections_full = await reflection_engine._aload_reflections_full(name)
     persona = await persona_manager.aensure_persona(name)
     persona_entries = list(_iter_persona_entries(persona))

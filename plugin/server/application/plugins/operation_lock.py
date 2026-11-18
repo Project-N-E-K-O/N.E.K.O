@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 import time
 import errno
@@ -368,6 +369,16 @@ def _release_file_lock_sync(handle: Any) -> None:
         finally:
             handle.close()
             _OPEN_FILE_LOCK_HANDLES.discard(handle)
+
+
+@contextmanager
+def hold_plugin_operation_file_lock(stop: threading.Event) -> Iterator[None]:
+    """Serialize background source reads with operations that move plugin files."""
+    handle = _acquire_file_lock_sync(stop)
+    try:
+        yield
+    finally:
+        _release_file_lock_sync(handle)
 
 
 async def _acquire_file_lock_cancellation_safe(deadline: float | None = None) -> Any:

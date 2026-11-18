@@ -733,6 +733,7 @@
     <!-- 小剧场本体与选择页共用同一份消息和请求协议。 -->
     <script src="/static/js/theater_transport.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-theater-runtime.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/js/theater_market.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-chat-sync.js?v={{ static_asset_version }}"></script>
     <!-- Independent chat windows surface the same retained persona choices. -->
@@ -1546,6 +1547,9 @@
 
         // 拖拽结束检测：轮询 screenX/screenY，位置稳定后触发边界检查
         (function() {
+            // 只有桌面端接管了完整窗的全部边界入口，才停用页面回弹。
+            if (W.managesFullChatWorkArea === true
+                && document.body.matches('.neko-electron-runtime[data-chat-host-kind="full"]')) return;
             var lastX = window.screenX, lastY = window.screenY;
             var wasMoving = false;
             var stableFrames = 0;

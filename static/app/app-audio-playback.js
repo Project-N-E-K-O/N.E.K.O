@@ -401,8 +401,7 @@
     // 权威 audio_done 迟迟不来时的有界放弃时长。必须是独立计时器，不能复用
     // scheduleAssistantTurnCompletionFallback：后者 fire 前有 hasAssistantSpeechActivity
     // 守卫，会把"speech 仍 active 但已 drained、正在等 audio_done"误判成还在说话
-    // 而跳过收尾——那正好是要兜的场景。漏发 audio_done 的 provider 靠它保证
-    // 每轮最多多等这么久，而不是一路卡到 30s 看门狗。
+    // 而跳过收尾。默认沿用短等待，有独立收尾预算的音频流以音频头为准。
     const ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS = 700;
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
@@ -595,6 +594,7 @@
     const playbackPresenterId = newPlaybackObservationId();
     let playbackObservation = null;
     let playbackClosedObservation = null;
+    let fallbackSettledSpeech = null;
 
     function sendVoicePlaybackSignal(action, turnId, stopReason) {
         try {
@@ -936,9 +936,8 @@
         return normalizeAssistantTurnId(S.assistantAudioStreamClosedTurnId) === normalizedTurnId;
     }
 
-    // 音频头只带 speech_id，audio_done 也只能按 speech_id 对账，所以在音频头
-    // 到达时把当时解析出的 turnId 记下来。
-    function rememberAssistantAudioSpeechTurn(speechId, turnId) {
+    // audio_done 按 speech_id 对账，所以在音频头到达时记下当时解析出的 turnId。
+    function rememberAssistantAudioSpeechTurn(speechId, turnId, audioDoneTimeoutMs) {
         var sid = normalizeAssistantTurnId(speechId);
         var normalizedTurnId = normalizeAssistantTurnId(turnId);
         if (!sid || !normalizedTurnId) {
@@ -950,8 +949,20 @@
         audioReceiveSequence += 1;
         S.assistantAudioTurnBySpeechId[sid] = normalizedTurnId;
         audioStreamHeaders.set(normalizedTurnId, {
-            speechId: sid, epoch: S.incomingAudioEpoch, sequence: audioReceiveSequence
+            speechId: sid, epoch: S.incomingAudioEpoch, sequence: audioReceiveSequence,
+            audioDoneTimeoutMs: audioDoneTimeoutMs
         });
+
+        // If the timeout already settled this speech, restore its text-end
+        // marker so late audio can settle when it drains.
+        if (fallbackSettledSpeech && fallbackSettledSpeech.speechId === sid &&
+            fallbackSettledSpeech.turnId === normalizedTurnId &&
+            fallbackSettledSpeech.epoch === S.incomingAudioEpoch) {
+            S.assistantTurnCompletedId = normalizedTurnId;
+            S.assistantTurnCompletionSource = fallbackSettledSpeech.completionSource;
+            S.assistantTurnSettledId = null;
+            fallbackSettledSpeech = null;
+        }
 
         // 宣告关闭之后又收到本轮的音频头 = 那条 audio_done 已经过期。
         // 音频头和 audio_done 走同一条 ws、严格按序，所以这是"后端说完了却
@@ -1027,11 +1038,15 @@
             return;
         }
         clearAudioStreamCloseGiveUp();
+        clearStuckSpeakingFallback();
 
         _audioStreamCloseGiveUpTurnId = normalizedTurnId;
+        const announcedTimeout = audioStreamHeaders.get(normalizedTurnId)?.audioDoneTimeoutMs;
+        const delayMs = Number.isFinite(announcedTimeout) && announcedTimeout > ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS
+            ? announcedTimeout : ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS;
         logAudioLifecycle('audioStreamCloseGiveUp:armed', {
             turnId: normalizedTurnId,
-            delayMs: ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS
+            delayMs: delayMs
         });
         _audioStreamCloseGiveUpTimer = window.setTimeout(function () {
             var pendingTurnId = _audioStreamCloseGiveUpTurnId;
@@ -1053,7 +1068,7 @@
             if (!isAssistantTurnPlaybackDrained(pendingTurnId)) return;
             const header = audioStreamHeaders.get(pendingTurnId);
             enqueueAssistantAudioStreamClose(header ? header.speechId : null, pendingTurnId, true);
-        }, ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS);
+        }, delayMs);
     }
 
     // 4 个队列 + 3 个 in-flight async flag，覆盖所有"音频还在路上"的状态。
@@ -1085,7 +1100,7 @@
     // 因为没收到 turn-end 而 skip 的那一刻），fire 时再 re-check 一次，
     // 期间如果新音频进来或正常 finalize 走完，会被 clearStuckSpeakingFallback 撤掉。
     function maybeArmStuckSpeakingFallback() {
-        if (_stuckSpeakingFallbackTimer) return;
+        if (_stuckSpeakingFallbackTimer || _audioStreamCloseGiveUpTimer) return;
         var flagsSet = !!(S.isPlaying || S.assistantSpeechActiveTurnId);
         if (_hasPendingAudioWork() || !flagsSet) return;
 
@@ -1141,6 +1156,7 @@
     function clearAssistantTurnCompletion() {
         clearAssistantTurnCompletionFallback();
         resetAssistantAudioStreamClose();
+        fallbackSettledSpeech = null;
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
         S.assistantSpeechStartedTurnId = null;
@@ -1342,7 +1358,16 @@
         S.isPlaying = false;
         dispatchAssistantSpeechEnd(normalizedTurnId);
         var completionSource = S.assistantTurnCompletionSource;
+        const header = audioStreamHeaders.get(normalizedTurnId);
+        const timedOut = isAssistantAudioStreamClosed(normalizedTurnId) &&
+            playbackClosedObservation?.reason === 'fallback';
         clearAssistantTurnCompletion();
+        if (timedOut && header) {
+            fallbackSettledSpeech = {
+                speechId: header.speechId, turnId: normalizedTurnId, epoch: header.epoch,
+                completionSource: completionSource
+            };
+        }
         // 这一轮已干净收尾。clearAssistantTurnCompletion 刚把 completedId 清成 null，
         // 但 assistantTurnId 仍指向本轮（要等下条用户消息才清），若不标记 settled，
         // isAssistantTextResponseInFlight 会一直把"已说完的轮"误判成在路上 → 切语音

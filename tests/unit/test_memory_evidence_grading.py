@@ -829,3 +829,133 @@ def test_absolute_words_rule_in_every_language(name):
     assert set(table) == set(LANGS)
     for lang in LANGS:
         assert _ABSOLUTE_RULE[lang] in table[lang], (name, lang)
+
+
+# ── sources counted as the facts stand now ──────────────────────────
+
+
+def _counted(rid: str, counts: dict, fact_ids: list[str], **extra) -> dict:
+    entry = _reflection(rid, f"line {rid}", counts=counts, **extra)
+    entry["source_fact_ids"] = list(fact_ids)
+    entry["counted_fact_ids"] = list(fact_ids)
+    return entry
+
+
+def _withdrawn(fact: dict, superseded_by: str | None = None) -> dict:
+    row = {**fact, "arbitration_archived_at": "2026-11-01T00:00:00", "arbitration_reason": "dedup_arbitration"}
+    if superseded_by:
+        row["superseded_by"] = superseded_by
+    return row
+
+
+def test_sources_are_counted_as_the_facts_stand_now():
+    from memory.evidence import awaits_user_signal, current_fact_source_counts
+
+    said_by_her = _fact("f_ai", "小天说主人怕黑", 5, "ai_disclosure")
+    said_by_user = _fact("f_user", "主人说自己怕黑", 5, "user_observation")
+    # Saved as resting on her words only; one of the two facts has since been
+    # recognized as the user's own words.
+    upgraded = _counted("up", {"user": 0, "ai": 2}, ["f_ai", "f_was_ai"])
+    facts = {"f_ai": said_by_her, "f_was_ai": {**said_by_her, "id": "f_was_ai", "source": "user_observation"}}
+    assert awaits_user_signal(upgraded) is True
+    assert current_fact_source_counts(upgraded, facts) == {"user": 1, "ai": 1}
+    assert awaits_user_signal(upgraded, facts) is False
+    # Saved as backed by the user; that one fact has since been withdrawn.
+    lost = _counted("down", {"user": 1, "ai": 1}, ["f_ai", "f_user"])
+    facts = {"f_ai": said_by_her, "f_user": _withdrawn(said_by_user)}
+    assert awaits_user_signal(lost) is False
+    assert current_fact_source_counts(lost, facts) == {"user": 0, "ai": 1}
+    assert awaits_user_signal(lost, facts) is True
+    # A fact another fact replaced still stands behind the line.
+    facts = {"f_ai": said_by_her, "f_user": _withdrawn(said_by_user, superseded_by="f_newer")}
+    assert current_fact_source_counts(lost, facts) == {"user": 1, "ai": 1}
+    # One counted fact is not at hand: the saved counts hold, not a partial recount.
+    assert current_fact_source_counts(lost, {"f_user": _withdrawn(said_by_user)}) == {"user": 1, "ai": 1}
+    assert current_fact_source_counts(lost, None) == {"user": 1, "ai": 1}
+    # Without the record of what was counted, the whole batch was.
+    whole = _counted("whole", {"user": 0, "ai": 1}, ["f_user"])
+    del whole["counted_fact_ids"]
+    assert current_fact_source_counts(whole, {"f_user": said_by_user}) == {"user": 1, "ai": 0}
+    # No counts at all predates the accounting and stays ungated whatever the facts say.
+    legacy = _reflection("legacy", "t")
+    legacy["source_fact_ids"] = ["f_ai"]
+    assert current_fact_source_counts(legacy, {"f_ai": said_by_her}) is None
+    assert awaits_user_signal(legacy, {"f_ai": said_by_her}) is False
+
+
+def _facts_on_disk(tmp_path, engine) -> None:
+    """f_was_ai now counts as the user's; f_user was withdrawn and moved to the archive."""
+    _write_facts(str(tmp_path), "小天", [
+        _fact("f_ai", "小天说主人怕黑", 5, "ai_disclosure"),
+        _fact("f_was_ai", "主人说自己怕黑", 5, "user_observation"),
+    ])
+    archive = engine._fact_store._facts_archive_path("小天")
+    with open(archive, "w", encoding="utf-8") as f:
+        json.dump([_withdrawn(_fact("f_user", "主人说自己怕冷", 5, "user_observation"))], f, ensure_ascii=False)
+
+
+def _gate_rows(**extra) -> list[dict]:
+    return [
+        _counted("r_up", {"user": 0, "ai": 2}, ["f_ai", "f_was_ai"], **extra),
+        _counted("r_down", {"user": 1, "ai": 1}, ["f_ai", "f_user"], **extra),
+        # A counted fact is nowhere on this device: the saved counts decide.
+        _counted("r_saved", {"user": 0, "ai": 2}, ["f_ai", "f_elsewhere"], **extra),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirmation_gate_counts_sources_as_the_facts_stand_now(tmp_path):
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _facts_on_disk(tmp_path, engine)
+    await engine.asave_reflections("小天", _gate_rows(rein=1.5))
+    await engine.aauto_promote_stale("小天")
+    rows = {r["id"]: r for r in await engine._aload_reflections_full("小天")}
+    assert {rid: row["status"] for rid, row in rows.items()} == {
+        "r_up": "confirmed", "r_down": "pending", "r_saved": "pending"}
+    # The saved counts are left as they were: they are what is used when a fact is missing.
+    assert rows["r_up"]["fact_source_counts"] == {"user": 0, "ai": 2}
+
+
+def test_sync_confirmation_gate_counts_sources_as_the_facts_stand_now(tmp_path):
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _facts_on_disk(tmp_path, engine)
+    engine.save_reflections("小天", _gate_rows(rein=1.5))
+    engine.auto_promote_stale("小天")
+    assert {r["id"]: r["status"] for r in engine.load_reflections("小天")} == {
+        "r_up": "confirmed", "r_down": "pending", "r_saved": "pending"}
+
+
+@pytest.mark.asyncio
+async def test_promotion_gate_counts_sources_as_the_facts_stand_now(tmp_path):
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _facts_on_disk(tmp_path, engine)
+    await engine.asave_reflections("小天", _gate_rows(status="confirmed", rein=2.5))
+    promote = AsyncMock(return_value="promote_fresh")
+    with patch.object(engine, "_apromote_with_merge", promote):
+        await engine._aauto_promote_score_driven("小天")
+    assert [call.args[1]["id"] for call in promote.await_args_list] == ["r_up"]
+
+
+@pytest.mark.asyncio
+async def test_time_driven_gate_counts_sources_as_the_facts_stand_now(tmp_path):
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _facts_on_disk(tmp_path, engine)
+    old = (datetime.now() - timedelta(days=400)).isoformat()
+    rows = _gate_rows()
+    for row in rows:
+        row["created_at"] = old
+    await engine.asave_reflections("小天", rows)
+    await engine.aauto_promote_time_driven("小天")
+    assert {r["id"]: r["status"] for r in await engine._aload_reflections_full("小天")} == {
+        "r_up": "confirmed", "r_down": "pending", "r_saved": "pending"}
+
+
+@pytest.mark.asyncio
+async def test_gates_fall_back_to_saved_counts_when_facts_cannot_be_read(tmp_path):
+    _ev, _fs, _pm, engine, _cm = _install(str(tmp_path))
+    _facts_on_disk(tmp_path, engine)
+    await engine.asave_reflections("小天", _gate_rows(rein=1.5))
+    with patch.object(engine._fact_store, "aload_facts_full", AsyncMock(side_effect=OSError("synthetic"))):
+        await engine.aauto_promote_stale("小天")
+    assert {r["id"]: r["status"] for r in await engine._aload_reflections_full("小天")} == {
+        "r_up": "pending", "r_down": "confirmed", "r_saved": "pending"}

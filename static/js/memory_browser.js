@@ -64,6 +64,7 @@
     };
     let storagePreflightState = null;
     let storagePreflightBusy = false;
+    let storageLocationModalOpener = null;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
@@ -3194,16 +3195,17 @@
         }
 
         document.addEventListener('keydown', function (event) {
-            if (!activeMemoryAuxiliaryPanel) return;
-            const storageModal = document.getElementById('storage-location-modal');
-            if (storageModal && !storageModal.hidden) return;
-            if (event.key === 'Escape') {
+            if (event.key !== 'Tab' && event.key !== 'Escape') return;
+            const storageDialog = document.querySelector('#storage-location-overlay:not([hidden])')
+                || document.querySelector('#storage-location-modal:not([hidden])');
+            if (!storageDialog && !activeMemoryAuxiliaryPanel) return;
+            if (event.key === 'Escape' && !storageDialog) {
                 event.preventDefault();
                 closeMemoryAuxiliaryPanel(true, true);
                 return;
             }
             if (event.key !== 'Tab') return;
-            const panel = getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
+            const panel = storageDialog || getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
             const focusable = getMemoryPanelFocusableElements(panel);
             if (!focusable.length) {
                 event.preventDefault();
@@ -3660,7 +3662,7 @@
         renderStorageRestartButton();
     }
 
-    function openStorageLocationManager() {
+    function openStorageLocationManager(opener) {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
         const blockingReason = String(state.blockingReason || '').trim();
@@ -3671,7 +3673,7 @@
         }
 
         const modal = document.getElementById('storage-location-modal');
-        if (!modal) return;
+        if (!modal || !modal.hidden) return;
         setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
 
         const input = document.getElementById('storage-target-root-input');
@@ -3683,11 +3685,13 @@
         setStoragePreflightBusy(false);
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
+        storageLocationModalOpener = opener;
         modal.hidden = false;
         document.body.classList.add('storage-location-memory-modal-open');
+        (input || document.getElementById('storage-location-modal-close'))?.focus({ preventScroll: true });
     }
 
-    function closeStorageLocationManager() {
+    function closeStorageLocationManager(restoreFocus = true) {
         const modal = document.getElementById('storage-location-modal');
         if (modal) {
             modal.hidden = true;
@@ -3697,6 +3701,35 @@
         if (input) {
             input.disabled = false;
         }
+        if (restoreFocus) restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
+        storageLocationModalOpener = null;
+    }
+
+    function openStorageLocationFromHash() {
+        if (window.location.hash !== '#change-storage-location') return;
+        if (pendingMemorySelection || pendingMemoryClose) return;
+        if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
+        if (activeMemoryAuxiliaryPanel !== 'settings') return;
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        openStorageLocationManager(document.getElementById('storage-location-manage-btn'));
+    }
+
+    function initStorageLocationControls() {
+        document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
+        const manageButton = document.getElementById('storage-location-manage-btn');
+        manageButton?.addEventListener('click', () => openStorageLocationManager(manageButton));
+        document.getElementById('storage-location-modal-close')?.addEventListener('click', () => closeStorageLocationManager());
+        const modal = document.getElementById('storage-location-modal');
+        modal?.addEventListener('click', function (event) {
+            if (event.target === modal) closeStorageLocationManager();
+        });
+        document.getElementById('storage-location-pick-btn')?.addEventListener('click', pickStorageTargetDirectory);
+        document.getElementById('storage-target-root-input')?.addEventListener('input', function () {
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        });
+        document.getElementById('storage-location-restart-btn')?.addEventListener('click', preflightAndRestartWithStorageLocation);
     }
 
     async function pickStorageTargetDirectory() {
@@ -3968,7 +4001,6 @@
                 }
             } catch (_) {}
         }
-        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 
@@ -4011,6 +4043,11 @@
                 && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
             ) {
                 window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+                const overlay = document.querySelector('#storage-location-overlay:not([hidden])');
+                if (overlay) {
+                    closeStorageLocationManager(false);
+                    overlay.querySelector('.storage-location-close')?.focus({ preventScroll: true });
+                }
             }
         } catch (e) {
             console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);
@@ -4961,6 +4998,7 @@
                 if (formatSelect) formatSelect.disabled = false;
                 updateExternalImportButton();
                 syncRepetitionInsightsControls();
+                openStorageLocationFromHash();
             }
         }
     }
@@ -5481,6 +5519,22 @@
         selectMemoryFile(filename, li, catName, options);
     }
 
+    function cancelMemoryUnsavedSwitch() {
+        if (memoryUnsavedSwitchBusy) return;
+        closeMemoryUnsavedSwitchDialog(true);
+        openStorageLocationFromHash();
+    }
+
+    function finishMemoryUnsavedSwitch(selection, closeRequested, suppressUnsavedPrompt) {
+        closeMemoryUnsavedSwitchDialog(false);
+        if (closeRequested) {
+            performCloseMemoryBrowser(suppressUnsavedPrompt);
+            return;
+        }
+        selectMemoryFile(selection.filename, findMemoryRoleListItem(selection.filename), selection.catName);
+        openStorageLocationFromHash();
+    }
+
     function initMemoryUnsavedSwitchDialog() {
         const dialog = document.getElementById('memory-unsaved-switch-dialog');
         const cancel = document.getElementById('memory-unsaved-switch-cancel');
@@ -5488,23 +5542,10 @@
         const save = document.getElementById('memory-unsaved-switch-save');
         if (!dialog || !cancel || !discard || !save) return;
 
-        cancel.addEventListener('click', function () {
-            if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
-        });
+        cancel.addEventListener('click', cancelMemoryUnsavedSwitch);
         discard.addEventListener('click', function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
-            const selection = pendingMemorySelection;
-            const closeRequested = pendingMemoryClose;
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(true);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(pendingMemorySelection, pendingMemoryClose, true);
         });
         save.addEventListener('click', async function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
@@ -5524,23 +5565,14 @@
                 save.focus();
                 return;
             }
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(false);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(selection, closeRequested, false);
         });
         document.addEventListener('keydown', function (event) {
             if (dialog.hidden) return;
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
+                cancelMemoryUnsavedSwitch();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -6062,12 +6094,15 @@
         initRepetitionInsights();
         initVisitMemoryPanel();
         initMemoryAuxiliaryPanels();
+        initStorageLocationControls();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
             chatEditor.addEventListener('scroll', syncMemoryChatScrollMask, { passive: true });
             window.addEventListener('resize', syncMemoryChatScrollMask);
         }
         const storagePanelState = await initStorageLocationPanel();
+        window.addEventListener('hashchange', openStorageLocationFromHash);
+        openStorageLocationFromHash();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
@@ -6191,53 +6226,6 @@
             externalImport.addEventListener('click', importExternalMemory);
         }
         updateExternalImportButton();
-
-        const openStorageBtn = document.getElementById('storage-location-open-btn');
-        if (openStorageBtn) {
-            openStorageBtn.addEventListener('click', function () {
-                openCurrentStorageRoot();
-            });
-        }
-        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
-        if (manageStorageBtn) {
-            manageStorageBtn.addEventListener('click', function () {
-                openStorageLocationManager();
-            });
-        }
-        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
-        if (closeStorageModalBtn) {
-            closeStorageModalBtn.addEventListener('click', function () {
-                closeStorageLocationManager();
-            });
-        }
-        const storageModal = document.getElementById('storage-location-modal');
-        if (storageModal) {
-            storageModal.addEventListener('click', function (event) {
-                if (event.target === storageModal) {
-                    closeStorageLocationManager();
-                }
-            });
-        }
-        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
-        if (pickStorageBtn) {
-            pickStorageBtn.addEventListener('click', function () {
-                pickStorageTargetDirectory();
-            });
-        }
-        const storageTargetInput = document.getElementById('storage-target-root-input');
-        if (storageTargetInput) {
-            storageTargetInput.addEventListener('input', function () {
-                storagePreflightState = null;
-                setStoragePreflightResult('', '');
-                renderStorageRestartButton();
-            });
-        }
-        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
-        if (restartStorageBtn) {
-            restartStorageBtn.addEventListener('click', function () {
-                preflightAndRestartWithStorageLocation();
-            });
-        }
 
         // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');

@@ -248,6 +248,7 @@ function _removeFloatingButtonsElement(el) {
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
+            _cancelNekoIdleCat1VisualAction(returnButton, { restoreArt: false, reason: 'container-removed' });
             _cancelNekoIdleCat1StretchAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1PlayAction(returnButton, { restoreArt: false });
             _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
@@ -385,6 +386,10 @@ const _NEKO_CAT_MIND_ACTION_IDS = Object.freeze({
     CAT1_EAT_SNACK: 'cat1_eat_snack',
     CAT1_SMALL_MOVE: 'cat1_small_move',
     CAT1_PLAY_YARN: 'cat1_play_yarn',
+    CAT1_IDLE_RANDOM: 'cat1_idle_random',
+    CAT2_IDLE_RANDOM: 'cat2_idle_random',
+    CAT3_IDLE_RANDOM: 'cat3_idle_random',
+    CAT1_INACTIVE_SAD: 'cat1_inactive_sad',
     CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
     CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback'
 });
@@ -499,6 +504,12 @@ function _getNekoCatAppearanceUrls(slot) {
     const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getAppearance(slot, { random: false });
     return result && result.available ? result.urls : [];
 }
+function _getNekoCatAppearanceDurationMs(assetUrl) {
+    if (!_NEKO_CAT_RESOURCE_REGISTRY ||
+        typeof _NEKO_CAT_RESOURCE_REGISTRY.getAppearanceDurationMs !== 'function') return 0;
+    const durationMs = Number(_NEKO_CAT_RESOURCE_REGISTRY.getAppearanceDurationMs(assetUrl));
+    return Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+}
 function _getNekoCatVoiceUrls(slot) {
     const result = _NEKO_CAT_RESOURCE_REGISTRY && _NEKO_CAT_RESOURCE_REGISTRY.getVoice(slot, { random: false });
     return result && result.available ? result.urls : [];
@@ -565,6 +576,7 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_GRAVITY_PX_PER_SECOND2 = 2600;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MAX_DELTA_MS = 50;
 const _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING = 0.992;
 const _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988;
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ = 0.90;
 const _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION = 0.42;
 const _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION = 0.52;
 const _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC = 38;
@@ -591,10 +603,16 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS = Object.freeze({
     bottom: 15 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({
-    left: 35 / 963,
-    top: 36 / 930,
-    right: 36 / 963,
-    bottom: 35 / 930
+    left: 62 / 512,
+    top: 62 / 512,
+    right: 62 / 512,
+    bottom: 62 / 512
+});
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS = Object.freeze({
+    left: 20 / 512,
+    top: 20 / 512,
+    right: 20 / 512,
+    bottom: 20 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS = Object.freeze({
     left: 80 / 960,
@@ -606,13 +624,17 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3;
 const _NEKO_IDLE_CAT1_PLAYGROUND_POINTER_SAMPLE_LIMIT = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS = 900;
-const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball-playground.png';
 let _nekoIdleCat1PlaygroundViewportBottomPx = null;
 let _nekoIdleCat1PlaygroundViewportTopPx = null;
 let _nekoIdleCat1PlaygroundViewportLeftPx = null;
 let _nekoIdleCat1PlaygroundViewportRightPx = null;
 let _nekoIdleCat1PlaygroundViewportBottomRefreshSeq = 0;
-const _NEKO_IDLE_CAT1_EAT_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.eat', { random: false });
+const _NEKO_IDLE_CAT1_EAT_ASSET_SLOTS = Object.freeze([
+    'action.cat1.eat',
+    'action.cat1.eat_2',
+    'action.cat1.eat_3'
+]);
 const _NEKO_IDLE_CAT1_EAT_SOUND_VOLUME = 0.12;
 const _NEKO_IDLE_CAT1_EAT_SOUND_FALLBACK_MS = 5000;
 const _NEKO_IDLE_CAT1_PLAY_ASSET_URL = _getNekoCatAppearanceUrl('action.cat1.play_yarn', { random: false });

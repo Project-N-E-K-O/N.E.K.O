@@ -51,39 +51,6 @@ _plugin_name_cache_time: float = 0.0
 _plugin_name_cache_lock = asyncio.Lock()
 
 
-def _bind_deferred_task(plugin_id: str, reminder_id: str, agent_task_id: str) -> None:
-    """Bind agent_task_id to the reminder record via the plugin service, for the callback when the daemon fires.
-    bind_task is a fast operation (file write only); after triggering run, poll briefly for completion."""
-    try:
-        import time as _time
-        with httpx.Client(timeout=5.0, proxy=None, trust_env=False) as client:
-            # 1. Trigger the bind_task entry.
-            resp = client.post(
-                f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs",
-                json={
-                    "plugin_id": plugin_id,
-                    "entry_id": "bind_task",
-                    "args": {"reminder_id": reminder_id, "agent_task_id": agent_task_id},
-                },
-            )
-            if resp.status_code != 200:
-                logger.warning("[Deferred] bind_task start HTTP %s", resp.status_code)
-                return
-            run_id = resp.json().get("run_id")
-            if not run_id:
-                return
-            # 2. Poll briefly for completion (bind_task should finish in <1 s).
-            for _ in range(20):
-                _time.sleep(0.1)
-                r = client.get(f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs/{run_id}")
-                if r.status_code == 200:
-                    if r.json().get("status", "") in ("succeeded", "failed", "canceled", "timeout"):
-                        break
-            logger.info("[Deferred] bind_task done: plugin=%s reminder=%s agent_task=%s", plugin_id, reminder_id, agent_task_id)
-    except Exception as e:
-        logger.warning("[Deferred] bind failed: plugin=%s reminder=%s error=%s", plugin_id, reminder_id, e)
-
-
 async def _get_plugin_friendly_name(plugin_id: str) -> str | None:
     """Get the plugin's friendly name (for HUD display)
 

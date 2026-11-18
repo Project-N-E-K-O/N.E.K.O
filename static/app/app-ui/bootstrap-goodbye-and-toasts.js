@@ -77,7 +77,6 @@ I.mod = window.appUi;
     })();
     I.nekoModelCatTransitionToken = 0;
     I.nekoModelCatTransitionActive = null;
-    I.nekoModelCatRevealPlaybackToken = 0;
     I.nekoGoodbyeIdleAppearance = I.normalizeNekoGoodbyeIdleAppearance(window.__nekoGoodbyeIdleAppearance);
     window.__nekoGoodbyeIdleAppearance = I.nekoGoodbyeIdleAppearance;
     const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended';

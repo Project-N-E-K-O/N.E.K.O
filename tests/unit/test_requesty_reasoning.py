@@ -16,6 +16,7 @@ from utils.llm_client import create_chat_llm
     'google/gemini-2.5-flash',
     'google/gemini-2.5-flash-lite',
     'google/gemini-3-flash-preview',
+    'google/gemini-3.8-flash',
 ])
 @pytest.mark.parametrize('endpoint', [
     'https://router.requesty.ai/v1',

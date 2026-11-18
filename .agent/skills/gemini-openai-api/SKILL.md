@@ -25,7 +25,7 @@ https://generativelanguage.googleapis.com/v1beta/openai/
 
 | 用途                          | 推荐模型                   |
 |-------------------------------|---------------------------|
-| Summary / Correction / Vision | `gemini-3-flash-preview`  |
+| Correction / Agent          | `gemini-3.8-flash`        |
 | Emotion Analysis              | `gemini-2.5-flash`        |
 
 ## 控制 Thinking
@@ -46,7 +46,7 @@ extra_body = {
 }
 ```
 
-### 低级别 Thinking（用于 gemini-3-flash-preview）
+### 低级别 Thinking（用于 Gemini 3 系列，如 gemini-3.8-flash；3.8 不支持 minimal，最低就是 low）
 
 ```python
 extra_body = {
@@ -99,10 +99,10 @@ if result_text.startswith("```"):
   "name": "Gemini（Google）",
   "description": "Google AI 辅助模型，国内无法使用",
   "openrouter_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-  "summary_model": "gemini-3-flash-preview",
-  "correction_model": "gemini-3-flash-preview",
+  "summary_model": "gemini-3.8-flash",
+  "correction_model": "gemini-3.8-flash",
   "emotion_model": "gemini-2.5-flash",
-  "vision_model": "gemini-3-flash-preview"
+  "vision_model": "gemini-3.8-flash"
 }
 ```
 

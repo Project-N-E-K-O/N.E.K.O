@@ -21,6 +21,10 @@ from utils.host_origin_guard import HostOriginGuardMiddleware
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
+from plugin.server.messaging.llm_tool_registry import (
+    release_tool_host_instance,
+    start_tool_host_instance,
+)
 from plugin.server.routes import (
     config_router,
     documents_router,
@@ -43,6 +47,7 @@ from plugin.server.routes import (
     runs_router,
     websocket_router,
 )
+from plugin.server.application.plugins import capability_analysis_service
 from plugin.server.routes.frontend import mount_static_files
 from plugin.server.routes.security import router as security_router
 from plugin.server.routes.plugin_projects import router as plugin_projects_router
@@ -135,6 +140,9 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # An incorrect default in this direction merely leaves standalone-server plugins stopped, visibly and harmlessly.
     manage_lifecycle = bool(getattr(app.state, "manage_plugin_lifecycle", False))
 
+    tool_host_id = await start_tool_host_instance()
+    capability_analysis_service.analysis_service.start()
+
     if _can_register_faulthandler_signal():
         try:
             faulthandler.register(signal.SIGUSR1, all_threads=True)
@@ -224,6 +232,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         from plugin.core.model_gateway_access import model_gateway_access
 
+        await capability_analysis_service.analysis_service.close()
         model_gateway_access.revoke_all()
         from plugin.server.routes.model_gateway import close_model_executor
 
@@ -247,6 +256,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 await lifecycle_shutdown()
             finally:
+                await release_tool_host_instance(tool_host_id)
                 # The knowledge bridge uses the shared loopback client; a
                 # standalone plugin server owns its process, so it closes it.
                 # Embedded in another server, that server does.
@@ -260,6 +270,8 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
                         type(exc).__name__,
                         str(exc),
                     )
+        else:
+            await release_tool_host_instance(tool_host_id)
 
 
 def build_plugin_server_app(
@@ -338,6 +350,11 @@ def build_plugin_server_app(
     app.include_router(health_router)
     app.include_router(documents_router)
     app.include_router(plugins_router)
+    from plugin.server.routes.plugin_consent import (
+        router as plugin_consent_router,
+    )
+
+    app.include_router(plugin_consent_router)
     app.include_router(runs_router)
     app.include_router(messages_router)
     app.include_router(metrics_router)
@@ -367,6 +384,8 @@ def build_plugin_server_app(
     app.include_router(knowledge_market_router)
     app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
+    from plugin.server.routes.theater_market import router as theater_market_router
+    app.include_router(theater_market_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
     from utils.instance_access import InstanceAccessMiddleware

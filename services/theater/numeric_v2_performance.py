@@ -2,10 +2,49 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any, Mapping
 
 
 MAX_CONTENT_BLOCKS = 16
+_DIRECT_SCENE_SPEECH = re.compile(
+    r"(?:^|(?<=[。！？\n”’」]))\s*(?P<lead>[^。！？：“”‘’「」\n]{2,45}?)"
+    r"(?:说道|说|回答道?|答道|接话道?|问道|开口道)\s*[：:]\s*(?P<speech>“[^”]+”|‘[^’]+’|「[^」]+」)"
+)
+_REPORTED_SCENE_SPEECH = re.compile(r"曾|刚才|此前|之前|先前|昨天|据说|听说|转述|回忆|提到过|说过|已经")
+
+
+def is_current_scene_speech(text: str, quote: str, *, excluded_speakers: tuple[str, ...] = ()) -> bool:
+    """Recognize explicit speech delivered in this narration, excluding retrospective attribution."""
+    start = text.find(quote)
+    if start < 0 or not quote:
+        return False
+    end = start + len(quote)
+    for match in _DIRECT_SCENE_SPEECH.finditer(text):
+        lead_start = match.start("lead")
+        inside_speech = match.start("speech") <= start and end <= match.end("speech")
+        includes_lead = start <= lead_start < end and not text[start:lead_start].strip("。！？ \n")
+        if not inside_speech and not includes_lead:
+            continue
+        lead = match["lead"].lstrip()
+        excluded = ("玩家", "你", "我", *excluded_speakers)
+        if _REPORTED_SCENE_SPEECH.search(lead) or any(name and lead.startswith(name) for name in excluded):
+            return False
+        return True
+    return False
+
+
+def performance_fingerprint(performance: Mapping[str, Any]) -> str:
+    """Bind a review to the exact delivered body, independently of suggestions."""
+    fields = {key: performance[key] for key in (
+        "performance", "scene_narration", "scene_update", "segments", "fixed_narrations",
+        "source_performance", "source_scene_narration", "bridge_scene_narration",
+        "target_performance", "target_scene_narration",
+    ) if key in performance}
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
 
 
 def transition_source_dialogue_policy(dialogue_policy: str) -> str:
@@ -33,8 +72,10 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
         if not segment:
             return block_type == "dialogue"
         if block_type == "action":
-            # performance parentheses always contain the current neko's visible micro-actions, not environmental narration.
-            # Explicit typing prevents Evaluator from treating character actions such as raised hands or tilted ears as environment evidence.
+            # An action block belongs to the catgirl, including its stated direct
+            # visible effect; independent NPC/world events belong to narration.
+            # Ownership is not proof of success: evaluation still checks the
+            # wording and evidence instead of treating every gesture as a result.
             blocks.append({"type": "action", "text": segment})
         else:
             blocks.append({
@@ -76,12 +117,22 @@ def fixed_narration_blocks(container: Mapping[str, Any], position: str) -> list[
             for item in container.get("fixed_narrations", []) if item["position"] == position]
 
 
+def scene_narration_text(container: Mapping[str, Any]) -> str:
+    """Omit only an exact dynamic echo of a before-position original in this container."""
+
+    text = str(container.get("scene_narration") or "").strip()
+    if text and any(item["position"] == "before" and item["text"] == text
+                    for item in container.get("fixed_narrations", [])):
+        return ""
+    return text
+
+
 def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
     """Prefer new mixed narrative; read legacy records using existing blocks or separated fields."""  # noqa: DOCSTRING_CJK
 
     if "scene_narration" in container or "performance" in container:
         blocks: list[dict[str, str]] = []
-        scene_narration = str(container.get("scene_narration") or "").strip()
+        scene_narration = scene_narration_text(container)
         if scene_narration:
             blocks.append({"type": "narration", "text": scene_narration})
         blocks.extend(fixed_narration_blocks(container, "before"))
@@ -183,14 +234,18 @@ def valid_ordered_content(
 def valid_mixed_performance_policy(
     container: Mapping[str, Any],
     dialogue_policy: str,
+    *,
+    allow_empty: bool = False,
 ) -> bool:
-    """Validate dialogue against current character state; even when speech is forbidden, visible actions are required, never empty narrative."""  # noqa: DOCSTRING_CJK
+    """Validate dialogue policy; only explicitly permitted optional/forbidden segments may omit acting."""
 
     if dialogue_policy not in {"required", "optional", "forbidden"}:
         return False
     raw = container.get("performance")
-    if not isinstance(raw, str) or not raw.strip():
+    if not isinstance(raw, str):
         return False
+    if not raw.strip():
+        return allow_empty and dialogue_policy in {"optional", "forbidden"}
     blocks = mixed_performance_blocks(raw)
     if not blocks:
         return False
@@ -243,6 +298,7 @@ __all__ = [
     "is_silent_invitation_control",
     "mixed_performance_blocks",
     "performance_content_blocks",
+    "scene_narration_text",
     "transition_source_dialogue_policy",
     "valid_mixed_performance_policy",
     "valid_ordered_content",

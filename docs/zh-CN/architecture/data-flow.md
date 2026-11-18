@@ -60,6 +60,7 @@
 | `status` | 结构化状态或错误载荷 |
 | `expression`、`focus_state`、`focus_charge` | 角色表现状态 |
 | `agent_status_update`、`agent_task_update`、`agent_notification` | Agent 状态和任务投递 |
+| `agent_builtin_activity` | 某个任务开始或停止使用键鼠、浏览器 |
 | `request_screenshot`、`capture_bridge_request` | 客户端截图请求 |
 | `session_ended_by_server`、`reload_page`、`catgirl_switched` | 生命周期恢复或角色变更 |
 | `pong` | 心跳响应 |
@@ -81,19 +82,24 @@
 ## Agent 事件流
 
 ```text
-cross_server 的 turn/session end
-        │ 近期消息 + 当前轮次附件
+主对话模型
+        │ dispatch_task / query_tasks（工具调用）
         ▼
-MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge
+tool_calling.py ── HTTP :48915 /nekoclaw/* ──> 猫爪宿主 ──> 回执交还给模型
+
+cross_server 的 turn end（这一轮没有调用会动手的工具）
+        │ 用户原话 + 她的回复
+        ▼
+MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge ──> 事后检查
         ▲                                      │
-        │ ACK / task_update / task_result      ▼
-        └──────────── ZMQ :48962 ───── 通道分派
+        │ ACK / task_update / 汇报             ▼
+        └──────────── ZMQ :48962 ───── 猫爪宿主（outbox）
         │
         ├─ task_update ──> WebSocket ──> Task HUD
-        └─ task_result ──> LLMSessionManager 回调队列 ──> 聊天投递
+        └─ task_result / proactive_message ──> LLMSessionManager 回调队列 ──> 聊天投递
 ```
 
-会话广播使用独立的 48961 PUB/SUB 地址。分析请求使用 48963 的可靠 PUSH/PULL 队列，并经 48962 的 Agent → 主通道确认。
+派发和查询是主服务器对 Agent Server 的普通 HTTP 调用。会话广播使用独立的 48961 PUB/SUB 地址。事后检查请求使用 48963 的可靠 PUSH/PULL 队列，并经 48962 的 Agent → 主通道确认。宿主收到之后怎么处理，见 [Agent 系统](/zh-CN/architecture/agent-system)。
 
 ## TTS 数据流
 

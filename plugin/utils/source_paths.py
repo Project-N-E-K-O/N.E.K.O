@@ -62,7 +62,7 @@ def is_vendor_sync_path(relative_path: Path) -> bool:
     )
 
 
-def iter_plugin_python_files(plugin_dir: Path) -> Iterator[Path]:
+def iter_plugin_python_files(plugin_dir: Path, *, ordered: bool = False) -> Iterator[Path]:
     """Walk plugin-owned Python files, pruning tool and sync directories before descent."""
 
     def walk_error(exc: OSError) -> None:
@@ -76,6 +76,9 @@ def iter_plugin_python_files(plugin_dir: Path) -> Iterator[Path]:
             if name not in PYTHON_SOURCE_EXCLUDED_DIR_NAMES
             and not is_vendor_sync_path((base / name).relative_to(plugin_dir))
         ]
+        if ordered:
+            directories.sort()
+            files.sort()
         for name in files:
             if name.lower().endswith(".py"):
                 yield base / name

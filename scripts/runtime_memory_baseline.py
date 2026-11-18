@@ -758,6 +758,18 @@ async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _browser_tools_session(*, headless: bool) -> Any:
+    """Return a session of the NekoClaw browser tools on a throwaway profile directory."""
+    import tempfile
+
+    from nekoclaw.builtin.browser.session import BrowserSession
+    from nekoclaw.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
+
+    store = BrowserSettingsStore(Path(tempfile.mkdtemp(prefix="neko-browser-memory-")))
+    store.save(BrowserSettings(headless=headless))
+    return BrowserSession(settings=store)
+
+
 async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
         _in_process_checkpoint(
@@ -766,9 +778,7 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
             interval=args.interval,
         )
     ]
-    from brain.browser_use_adapter import BrowserUseAdapter
-
-    adapter = BrowserUseAdapter(headless=not args.headed)
+    session = _browser_tools_session(headless=not args.headed)
     checkpoints.append(
         _in_process_checkpoint(
             "browser_use_imported",
@@ -776,20 +786,20 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
             interval=args.interval,
         )
     )
-    session = await adapter._get_browser_session()
     try:
+        # Starts a browser installed on this machine on a throwaway profile
+        # and connects to it; the browser itself is another process.
         await session.start()
-        adapter._session_ever_started = True
         checkpoints.append(
             _in_process_checkpoint(
-                "browser_use_playwright_started",
+                "browser_use_started",
                 seconds=args.window,
                 interval=args.interval,
             )
         )
     finally:
-        await adapter.close()
-    del session, adapter
+        await session.close()
+    del session
     checkpoints.append(
         _in_process_checkpoint(
             "browser_use_released",

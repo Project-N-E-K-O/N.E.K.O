@@ -194,6 +194,8 @@ supported = ">=0.1.0,<0.3.0"
 - `entry` names the Python plugin class as `module.path:ClassName`.
 - `[plugin.sdk]` declares the supported SDK versions.
 
+Before others use the plugin, add a `description` and a one-line `short_description` under `[plugin]` (see [Plugin Config](/plugins/plugin-toml)). NekoClaw picks plugins for a task by them; without a `short_description`, a long `description` is summarized by a model, which costs a request.
+
 The scaffold also creates `config.example.toml` as the initial runtime configuration for new users:
 
 ```toml

@@ -60,6 +60,8 @@ __all__ = [
     "count_fact_sources",
     "merge_fact_source_counts",
     "counted_fact_ids",
+    "is_withdrawn_fact",
+    "current_fact_source_counts",
     "awaits_user_signal",
     "others_fact_days",
     "merge_observed_days",
@@ -143,7 +145,39 @@ def merge_fact_source_counts(entries, extra_facts=()) -> dict | None:
     return total
 
 
-def awaits_user_signal(entry: dict) -> bool:
+def is_withdrawn_fact(fact: dict) -> bool:
+    """Whether dedup arbitration took the fact back without another fact replacing it.
+
+    The same rows a learned-memory snapshot publishes as ``retracted``.
+    """
+    return (
+        isinstance(fact, dict)
+        and bool(fact.get("arbitration_archived_at"))
+        and not fact.get("superseded_by")
+    )
+
+
+def current_fact_source_counts(entry: dict, facts_by_id) -> dict | None:
+    """``entry``'s source counts by the facts as they stand now.
+
+    A fact withdrawn since the counts were saved no longer counts, and one
+    since recognized as the user's own words counts as the user's. The
+    saved counts are used when any counted fact is not in ``facts_by_id``,
+    or when it is None: a partial recount would claim a mix nobody counted.
+    None when the entry has no counts at all (it predates them).
+    """
+    counts = entry.get("fact_source_counts") if isinstance(entry, dict) else None
+    if not isinstance(counts, dict) or not facts_by_id:
+        return counts if isinstance(counts, dict) else None
+    ids = counted_fact_ids(entry)
+    if not ids or any(fid not in facts_by_id for fid in ids):
+        return counts
+    return count_fact_sources(
+        [facts_by_id[fid] for fid in ids if not is_withdrawn_fact(facts_by_id[fid])]
+    )
+
+
+def awaits_user_signal(entry: dict, facts_by_id=None) -> bool:
     """Whether a reflection rests only on the AI's own words and the user has
     not backed it yet.
 
@@ -154,10 +188,14 @@ def awaits_user_signal(entry: dict) -> bool:
     (``user_fact_reinforce_count``); an "engaged" reply does not count.
     Entries without ``fact_source_counts`` predate the accounting and are
     never held back.
+
+    With ``facts_by_id`` (every fact of the character by id, archived ones
+    included) the sources are counted as the facts stand now
+    (``current_fact_source_counts``); without it, as they were saved.
     """
     if not isinstance(entry, dict):
         return False
-    counts = entry.get("fact_source_counts")
+    counts = current_fact_source_counts(entry, facts_by_id)
     if not isinstance(counts, dict):
         return False
     try:

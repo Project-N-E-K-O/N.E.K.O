@@ -19,12 +19,15 @@ from plugin.sdk.shared.core.base_runtime import (
     resolve_plugin_data_dir,
     resolve_plugin_dir,
     resolve_plugin_runtime_config_path,
+    resolve_plugin_shared_dir,
+    resolve_shared_reads,
+    join_shared_path,
     resolve_plugin_storage_dir,
 )
 from plugin.sdk.shared.core.events import EventHandler, EventMeta
 from plugin.sdk.shared.core.types import PushMessageResult
 from plugin.sdk.shared.i18n import PluginI18n, load_plugin_i18n_from_meta
-from plugin.sdk.shared.models.exceptions import EntryConflictError
+from plugin.sdk.shared.models.exceptions import EntryConflictError, ValidationError
 
 from .llm_tool import (
     LlmToolMeta,
@@ -140,6 +143,49 @@ class NekoPluginBase(_SharedNekoPluginBase):
         base = resolve_plugin_cache_dir(self.ctx)
         return base.joinpath(*parts) if parts else base
 
+    def shared_path(self, *parts: str) -> Path:
+        """Return a path in the directory this plugin publishes for other plugins.
+
+        ``<data root>/plugin_shared/<this plugin's id>/``. This plugin writes
+        there; other plugins read it with :meth:`shared_path_of`. Unlike the
+        private state it is kept when the plugin is removed. The directory is
+        not created by this call.
+        """
+        path = join_shared_path(resolve_plugin_shared_dir(self.plugin_id), parts)
+        if path is None:
+            raise ValidationError(
+                "a shared path must stay inside the plugin's shared directory",
+                code="shared_bad_path",
+                plugin_id=self.plugin_id,
+            )
+        return path
+
+    def shared_path_of(self, plugin_id: str, *parts: str) -> Path:
+        """Return a path in another plugin's shared directory, for reading.
+
+        The manifest must name that plugin under ``[plugin.shared] reads``;
+        otherwise :class:`ValidationError` is raised. The files belong to the
+        plugin that published them: read them, do not write them. Nothing
+        enforces that (plugins are not sandboxed from each other); it is an
+        agreement between plugins, not a security boundary.
+        """
+        wanted = str(plugin_id or "").strip()
+        if not wanted or wanted not in resolve_shared_reads(self.ctx):
+            raise ValidationError(
+                f"plugin {self.plugin_id!r} does not declare that it reads the shared files of {wanted!r}; "
+                'add it to [plugin.shared] reads in plugin.toml',
+                code="shared_not_declared",
+                plugin_id=self.plugin_id,
+            )
+        path = join_shared_path(resolve_plugin_shared_dir(wanted), parts)
+        if path is None:
+            raise ValidationError(
+                "a shared path must stay inside the publishing plugin's shared directory",
+                code="shared_bad_path",
+                plugin_id=self.plugin_id,
+            )
+        return path
+
     @property
     def metadata(self) -> dict[str, Any]:
         value = self.ctx.metadata
@@ -177,8 +223,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Use this for character-aware text like
         ``\"Immediately describe the latest screen to {MASTER_NAME}...\"`` instead of hardcoded
         ``\"user\"`` / ``\"master\"`` / ``\"owner\"``, which feel generic and
-        misbehave on multi-character setups. See PLUGIN_DEVELOPMENT_GUIDE.md
-        ("Writing role-aware text") for details.
+        misbehave on multi-character setups. See docs/plugins/push-message.md
+        ("Role-aware text") for details.
         """
         return await self.ctx.finish(**kwargs)
 
@@ -189,7 +235,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         any text in ``parts``) MAY contain ``{MASTER_NAME}`` /
         ``{LANLAN_NAME}`` placeholders; the host substitutes them at the
         injection boundary, per session. See :meth:`finish` for the rationale
-        and PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for the
+        and docs/plugins/push-message.md ("Role-aware text") for the
         full guide.
 
         The returned receipt only reports immediate local submission.  It is
