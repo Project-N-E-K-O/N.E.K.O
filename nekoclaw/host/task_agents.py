@@ -1350,6 +1350,10 @@ class TaskAgentManager:
             return
         commission = await self._ledger.get(commission_id)
         waits = commission is not None and commission.status == "waiting_user"
+        if self._held_by.get(session_id) != commission_id:
+            # Let go meanwhile, by another look at the same hold, and maybe
+            # taken by the next commission: its status is that one's to say.
+            return
         try:
             await self._ledger.update_session(session_id, status="waiting" if waits else "closed")
         except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
@@ -1625,10 +1629,16 @@ class TaskAgentManager:
             )
             await self._reporter.note(commission.lanlan_name, about="context_window", text=text, commission=commission)
         except asyncio.CancelledError:
+            # Shutting down: not told, so not on record as told.
+            self._model_capabilities.unclaim_window_reminder(base_url, model)
             raise
         except Exception:  # noqa: BLE001 - not told this time: told with the next refusal
             logger.warning("telling the user of the window of the task agent model failed", exc_info=True)
-            await self._model_capabilities.unclaim_window_reminder(base_url, model)
+            self._model_capabilities.unclaim_window_reminder(base_url, model)
+            return
+        # Written down once it is written out. Stopped in between, the user
+        # is told a second time rather than never.
+        await self._model_capabilities.confirm_window_reminder(base_url, model, window)
 
     async def _on_model_capability(self, session: _Session, event: dict[str, Any]) -> None:
         """Remember what a session learned about its model: that it takes no pictures, or how small its window is."""
@@ -2005,8 +2015,13 @@ class TaskAgentManager:
         # Closing stops the run, kills its background jobs and frees the place.
         await self._close_session(session)
 
-    async def tell(self, commission_id: str, text: str) -> bool:
-        """Pass a sentence on to a commission's task agent. Returns whether it was delivered."""
+    async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
+        """Pass a sentence on to a commission's task agent. Returns whether it was delivered.
+
+        ``still_wanted``, when given, is asked before a commission that is
+        blocked or failed is taken up again, after whatever that had to
+        wait for: False (everything was stopped meanwhile) leaves it as it is.
+        """
         if self._closed:
             return False
         commission = await self._ledger.get(commission_id)
@@ -2020,8 +2035,10 @@ class TaskAgentManager:
             return await self.answer(commission_id, text)
         if commission.status in ("blocked", "failed"):
             # Take it up again where its transcript ends.
+            if still_wanted is not None and not still_wanted():
+                return False
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
-            return await self._take_up_again(commission_id, text)
+            return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
         if commission.status == "queued" or (session is not None and not session.ready and not session.closing):
             # Not started yet, or its session not yet given its work: it goes
             # along with the work when that is given.
@@ -2036,7 +2053,9 @@ class TaskAgentManager:
             return True
         return False
 
-    async def _take_up_again(self, commission_id: str, text: str) -> bool:
+    async def _take_up_again(
+        self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None
+    ) -> bool:
         """Start a commission's task agent again where its transcript ends, ``text`` its next work.
 
         Its old session is gone or on its way out. Without a free place it is
@@ -2054,6 +2073,11 @@ class TaskAgentManager:
             await held.wait()
             if self._closed:
                 return False
+        if still_wanted is not None and not still_wanted():
+            # Everything was stopped while this waited. A stop does not end
+            # a commission that is over; taken up now, it would start its
+            # work after the stop.
+            return False
         # Which session it goes on in is read from the ledger when this
         # process has not had the commission in hand before.
         if not await self._know_session(commission_id) or self._closed:

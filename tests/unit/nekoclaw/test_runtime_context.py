@@ -137,6 +137,9 @@ def test_thresholds_scale_with_the_window() -> None:
         (200_000, 170_000, 170_000),
         (200_000, 150_000, 150_000),
         (200_000, 100_000, 100_000),
+        # As early as it was set (the host takes a point from 1,000 tokens on).
+        (200_000, 15_000, 15_000),
+        (200_000, 1_000, 1_000),
         (200_000, 199_000, 171_808),
         (200_000, 400_000, 171_808),
         # Not told: 17 in 20 of the window.

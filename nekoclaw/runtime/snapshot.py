@@ -78,6 +78,9 @@ class SystemSnapshot:
     made_at: float = 0.0
     # The working directory the system prompt names; empty when not on record.
     workdir: str = ""
+    # How often the conversation had been summed up when this was made; None
+    # when not on record. One made before the latest summary is replaced.
+    compactions: int | None = None
 
     @property
     def tool_names(self) -> frozenset[str]:
@@ -118,13 +121,14 @@ def read_snapshot(session_dir: Path) -> SystemSnapshot | None:
         tools.append(ToolDefinition(name, description, parameters))
     if len({tool.name for tool in tools}) != len(tools):
         return None
-    made_at, workdir = raw.get("made_at"), raw.get("workdir")
+    made_at, workdir, compactions = raw.get("made_at"), raw.get("workdir"), raw.get("compactions")
     return SystemSnapshot(
         system=system,
         tools=tuple(tools),
         reason=str(raw.get("reason") or REASON_OPENED),
         made_at=float(made_at) if isinstance(made_at, (int, float)) and not isinstance(made_at, bool) else 0.0,
         workdir=workdir if isinstance(workdir, str) else "",
+        compactions=compactions if isinstance(compactions, int) and not isinstance(compactions, bool) else None,
     )
 
 
@@ -139,6 +143,7 @@ def write_snapshot(session_dir: Path, snapshot: SystemSnapshot) -> None:
             "reason": snapshot.reason,
             "made_at": snapshot.made_at or time.time(),
             "workdir": snapshot.workdir,
+            "compactions": snapshot.compactions,
             "system": snapshot.system,
             "tools": [
                 {"name": tool.name, "description": tool.description, "parameters": tool.parameters}

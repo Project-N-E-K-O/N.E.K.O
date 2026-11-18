@@ -865,6 +865,101 @@ async def test_a_long_request_refused_in_words_that_are_not_recognized_is_summed
         await session.close()
 
 
+async def test_nothing_is_told_of_a_window_when_the_request_that_was_sent_once_more_did_not_go_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        llm.add(_Refused(400, "Bad Request: the request could not be processed"))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        # Sent once more, it fails for another reason: that ends the stream without raising.
+        llm.add(RuntimeError("the connection was reset"))
+        ended = await _ask(session, events, "Go on.")
+
+        assert ended["reason"] == "error" and "the connection was reset" in ended["error"]
+        # Whether the first refusal was about length was never shown: the host is told nothing,
+        # which it would believe for a month.
+        assert events.of("model_capability") == []
+    finally:
+        await session.close()
+
+
+async def test_a_summary_that_is_refused_while_the_run_is_being_stopped_is_a_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.runtime.model import ContextOverflowError, ModelRequestError, RequestRefusedError
+
+    session, _events = await open_session(make_spec(tmp_path), ScriptedLLM([]))
+    try:
+        stopping = {"yes": True}
+
+        class Signal:
+            def is_cancelled(self) -> bool:
+                return stopping["yes"]
+
+        monkeypatch.setattr(type(session.harness), "current_signal", property(lambda harness: Signal()))
+        for error in (RequestRefusedError("400"), ContextOverflowError("too long"), ModelRequestError("no response")):
+
+            async def refused(error: Exception = error, **kwargs: Any) -> Any:
+                raise error
+
+            monkeypatch.setattr(session._model, "complete", refused)
+            # Taken for a summary that failed, the older part of the conversation would be dropped.
+            stopping["yes"] = True
+            with pytest.raises(asyncio.CancelledError):
+                await session._summarize([], 100)
+            # Not being stopped, it is the failure it is.
+            stopping["yes"] = False
+            with pytest.raises(type(error)):
+                await session._summarize([], 100)
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("behind", [True, False])
+async def test_what_follows_a_summary_is_done_by_a_session_opened_again_when_it_was_left_undone(
+    tmp_path: Path, behind: bool
+) -> None:
+    spec = make_spec(tmp_path, model=_small_model(), instructions="Index of then.")
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(spec, llm)
+    await _ask(session, events, "First commission.")
+    await _seed(session, events, llm)
+    await _sum_up(session, events, llm)
+    await session.close()
+    saved = _saved(spec)
+    assert (saved["reason"], saved["compactions"]) == (REASON_COMPACTED, 1)
+    if behind:
+        # As a run leaves it that was stopped after the summary was written down and before
+        # the system prompt was put together anew: the snapshot is the one from before it.
+        saved.update(reason=REASON_OPENED, compactions=0, system="The system prompt of before the summary.")
+        (Path(spec.session_dir) / SYSTEM_FILE).write_text(json.dumps(saved), encoding="utf-8")
+
+    later = make_spec(tmp_path, model=_small_model(), instructions="Index of now.")
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(later, llm)
+    try:
+        await _ask(session, events, "Second commission.")
+        system = _system_of(llm.requests[0])
+        if behind:
+            # Done before the first request, as it would have been before the next one then.
+            assert "Index of now." in system and "of before the summary" not in system
+            assert [event["count"] for event in events.of("compacted")] == [1]
+            assert (_saved(later)["reason"], _saved(later)["compactions"]) == (REASON_COMPACTED, 1)
+        else:
+            # Made after the summary: kept as it is, as every snapshot.
+            assert "Index of then." in system and events.of("compacted") == []
+            assert _saved(later) == saved
+    finally:
+        await session.close()
+
+
 async def test_a_request_refused_again_after_it_was_summed_up_is_reported_as_it_came(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -957,6 +1052,9 @@ async def test_a_session_opened_again_after_its_last_request_failed_is_summed_up
             assert len(events.of("compacted")) == 1
             # The commission that is opened stays whole.
             assert any(message.get("content") == "Second commission." for message in llm.requests[1])
+            # Fitted to its own length for the summing up only: why the last request failed is
+            # not known, and the session goes on being managed for the window it has.
+            assert session.context.policy.window == 200_000 and session._window == 200_000
         else:
             assert ended["text"] == "## Current Work\n- summed up"
             assert events.of("compacted") == []

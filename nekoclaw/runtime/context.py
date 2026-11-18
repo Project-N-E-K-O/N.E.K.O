@@ -83,9 +83,11 @@ COMPACT_RATIO = 0.85
 
 def compact_ratio(window: int, compact_at: int | None) -> float:
     """Return the part of a window a conversation may fill, given the length it is to be summed up from."""
-    if not compact_at or window <= 0:
+    if not compact_at or compact_at <= 0 or window <= 0:
         return COMPACT_RATIO
-    return max(0.1, min(1.0, compact_at / window))
+    # As early as it was set: a conversation is summed up from 1,000 tokens
+    # on at the earliest whatever this says (``ContextPolicy.threshold``).
+    return min(1.0, compact_at / window)
 
 
 def headroom_of(window: int) -> int:

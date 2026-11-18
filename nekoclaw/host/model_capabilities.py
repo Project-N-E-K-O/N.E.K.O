@@ -113,6 +113,9 @@ class ModelCapabilityStore:
         self._path_source = path
         self._models: dict[str, dict[str, Any]] | None = None
         self._lock = asyncio.Lock()
+        # The models whose smaller window the user is being told of this
+        # moment (``claim_window_reminder``).
+        self._reminding: set[str] = set()
 
     def _path(self) -> Path:
         source = self._path_source
@@ -329,41 +332,49 @@ class ModelCapabilityStore:
         return await self.compact_at(base_url, model)
 
     async def claim_window_reminder(self, base_url: Any, model: Any) -> int | None:
-        """Return the window the user is to be told of for this model, and put on record that they were. Once.
+        """Return the window the user is to be told of for this model, to whoever asks first. Once.
 
         A model whose window was learned to be smaller than its sessions
         were managed for is managed for the smaller one from then on, by
         itself. The user is told so once for each model, to set the model's
         context length themselves: what was learned lapses, and may be
         further from the truth than what they know. None when nothing was
-        learned, or when they were told already. Setting the window
+        learned, when they were told already, or when someone is telling
+        them this moment.
+
+        Whoever gets the window tells the user and then says so
+        (``confirm_window_reminder``), or gives it back
+        (``unclaim_window_reminder``). That the user was told is written
+        down only then: a process that ends in between tells them once
+        more the next time, and never not at all. Setting the window
         (``set_context_window``) clears the record: a model that turns out
         smaller again after that is told of again.
         """
         models = await self._loaded()
         key = model_key(base_url, model)
         async with self._lock:
-            entry = dict(models.get(key) or {})
+            entry = models.get(key) or {}
             learned = self._learned(entry)
-            if learned is None or entry.get("window_reminded_at") is not None:
+            if learned is None or entry.get("window_reminded_at") is not None or key in self._reminding:
                 return None
-            entry["window_reminded"] = learned
-            entry["window_reminded_at"] = int(time.time())
-            models[key] = entry
-            await self._save(models)
+            self._reminding.add(key)
         return learned
 
-    async def unclaim_window_reminder(self, base_url: Any, model: Any) -> None:
-        """Take back what ``claim_window_reminder`` put on record: the user was not told after all."""
+    async def confirm_window_reminder(self, base_url: Any, model: Any, window: int) -> None:
+        """Put on record that the user was told of a model's window (``claim_window_reminder``), and of which."""
         models = await self._loaded()
         key = model_key(base_url, model)
         async with self._lock:
+            self._reminding.discard(key)
             entry = dict(models.get(key) or {})
-            if entry.pop("window_reminded_at", None) is None:
-                return
-            entry.pop("window_reminded", None)
+            entry["window_reminded"] = int(window)
+            entry["window_reminded_at"] = int(time.time())
             models[key] = entry
             await self._save(models)
+
+    def unclaim_window_reminder(self, base_url: Any, model: Any) -> None:
+        """Give back what ``claim_window_reminder`` handed out: the user was not told after all."""
+        self._reminding.discard(model_key(base_url, model))
 
     async def describe_window(self, base_url: Any, model: Any) -> dict[str, Any]:
         """Return what decides a model's window, for showing it.

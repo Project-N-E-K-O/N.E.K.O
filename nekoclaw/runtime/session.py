@@ -80,6 +80,7 @@ from nekoclaw.runtime.loop.messages import (
 )
 from nekoclaw.runtime.loop.provider import CancellationToken
 from nekoclaw.runtime.loop.provider_events import (
+    AssistantDoneEvent,
     AssistantErrorEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -574,6 +575,9 @@ class TaskAgentSession(SessionInbox):
             executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
+        # Known before the snapshot is looked at, which says how often the
+        # conversation had been summed up when it was made.
+        self._compactions = len(state.compaction_entries) if state is not None else 0
         # A session that goes on with a conversation begins its requests as
         # it did before, with the tools it was told of then. A tool that
         # came since is told of after the next summary, when the head of
@@ -582,6 +586,11 @@ class TaskAgentSession(SessionInbox):
         snapshot = await asyncio.to_thread(read_snapshot, session_dir) if state is not None else None
         if snapshot is not None and snapshot.workdir in ("", str(workdir)):
             self._adopt(snapshot)
+            if snapshot.compactions is not None and snapshot.compactions != self._compactions:
+                # Summed up since, and stopped before what follows a summary
+                # was done (the session was closed meanwhile): done before
+                # the first request, as it would have been before the next.
+                self._compaction_due = True
         else:
             # Nothing to go on with, or made for another working directory:
             # the data was moved since, and the system prompt names the
@@ -682,7 +691,12 @@ class TaskAgentSession(SessionInbox):
         )
         self._wire_tools = list(self._executors)
         snapshot = SystemSnapshot(
-            self._system, definitions_of(self._wire_tools), reason, time.time(), workdir=str(self._workdir)
+            self._system,
+            definitions_of(self._wire_tools),
+            reason,
+            time.time(),
+            workdir=str(self._workdir),
+            compactions=self._compactions,
         )
         try:
             await asyncio.to_thread(write_snapshot, self._session_dir, snapshot)
@@ -892,8 +906,19 @@ class TaskAgentSession(SessionInbox):
                 # request would fail the same way if that was about its
                 # length, and so would every commission after this one.
                 logger.warning("session %s: its last request failed and it is long; summed up first", self.session_id)
+                # Fitted to a window of its own length, so that the request
+                # that sums it up is shorter than what failed; and managed
+                # for the window it had from then on. Why the last request
+                # failed is not known (it may have been a timeout): nothing
+                # is concluded of the model's window from it.
+                window, max_output, policy = self._window, self._max_output, self.context.policy
                 self._assume_window(await self._size())
-            await self._fit(force=long)
+                try:
+                    await self._fit(force=True)
+                finally:
+                    self._window, self._max_output, self.context.policy = window, max_output, policy
+            else:
+                await self._fit(force=False)
         retried = False
         # What a retry is to tell the host once it went through: a window
         # concluded from a refusal that did not say it was about length.
@@ -914,6 +939,7 @@ class TaskAgentSession(SessionInbox):
             # Held back until output follows, so a request that is retried after
             # an overflow does not announce two responses.
             held: AssistantStartEvent | None = None
+            answered = False
             try:
                 # Said only when it is less than the model is configured
                 # for, which is what a request asks for unless told otherwise.
@@ -932,9 +958,13 @@ class TaskAgentSession(SessionInbox):
                     if held is not None:
                         yield held
                         held = None
+                    answered = answered or isinstance(event, AssistantDoneEvent)
                     yield event
-                if unsure is not None:
-                    # Shorter, it went through: it was too long.
+                if unsure is not None and answered:
+                    # Shorter, it went through: it was too long. (Not when
+                    # the request that was sent once more ended in an error
+                    # of another kind, or was stopped: the stream ends
+                    # without raising then, and nothing was shown.)
                     self._tell_window(*unsure)
                 return
             except RequestRefusedError as exc:
@@ -1089,10 +1119,12 @@ class TaskAgentSession(SessionInbox):
                 max_tokens=max_tokens,
                 signal=signal,
             )
-        except ModelRequestError:
+        except (ModelRequestError, RequestRefusedError, ContextOverflowError):
             if signal is not None and signal.is_cancelled():
                 # An abort must not be mistaken for a failed summary, which would
-                # drop the older part of the conversation.
+                # drop the older part of the conversation. (A request that is
+                # refused outright, or as too long, raises from the stream
+                # itself: looked at here like any other failure.)
                 raise asyncio.CancelledError from None
             raise
         return reply.text, reply.usage

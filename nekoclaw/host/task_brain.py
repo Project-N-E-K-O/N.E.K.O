@@ -577,7 +577,9 @@ class TaskBrain:
                 return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
             if generation != self._dispatch_generation:
                 return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
-            if await self.tell(earlier.id, text):
+            # Looked at once more where taking it up waits (for its review
+            # to be written down): a stop may come during that as well.
+            if await self.tell(earlier.id, text, still_wanted=lambda: generation == self._dispatch_generation):
                 return Receipt(kind="told", commissions=[earlier], model_calls=calls)
             earlier = None
         if triage.kind in ("stop", "answer", "duplicate"):
@@ -1005,11 +1007,15 @@ class TaskBrain:
             )
         return moved.commission
 
-    async def tell(self, commission_id: str, text: str) -> bool:
-        """Pass a sentence on to a commission. Only a task agent can take one."""
+    async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
+        """Pass a sentence on to a commission. Only a task agent can take one.
+
+        ``still_wanted`` is asked before a commission that is over is taken
+        up again with it, after whatever that had to wait for.
+        """
         if self._task_agents is None:
             return False
-        return await self._task_agents.tell(commission_id, text)
+        return await self._task_agents.tell(commission_id, text, still_wanted=still_wanted)
 
     async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
         """Give the user's answer to a commission that waits for one."""

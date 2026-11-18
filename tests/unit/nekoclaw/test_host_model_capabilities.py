@@ -395,8 +395,15 @@ async def test_the_user_is_to_be_told_of_a_models_smaller_window_once(path):
     assert await store.claim_window_reminder(URL, "m") is None
     assert await store.note_context_window(URL, "m", 131_072) is True
 
+    # To whoever asks first; a second one while the first is telling them gets nothing.
     assert await store.claim_window_reminder(URL, "m") == 131_072
     assert await store.claim_window_reminder(URL, "m") is None
+    # Not on record before they were told: a process that ends in between tells them the
+    # next time, a second time at the worst, and never not at all.
+    assert "reminded" not in await store.describe_window(URL, "m")
+    assert await ModelCapabilityStore(path).claim_window_reminder(URL, "m") == 131_072
+
+    await store.confirm_window_reminder(URL, "m", 131_072)
     # On record for whatever shows the model's settings later.
     described = await store.describe_window(URL, "m")
     assert described["reminded"] == 131_072 and described["reminded_at"] > 0
@@ -409,9 +416,11 @@ async def test_the_user_is_to_be_told_of_a_models_smaller_window_once(path):
     assert await store.claim_window_reminder(URL, "other") == 32_768
 
     # The user was not told after all (it could not be sent): told the next time.
-    await store.unclaim_window_reminder(URL, "other")
+    store.unclaim_window_reminder(URL, "other")
     assert "reminded" not in await store.describe_window(URL, "other")
     assert await store.claim_window_reminder(URL, "other") == 32_768
+    await store.confirm_window_reminder(URL, "other", 32_768)
+    assert await store.claim_window_reminder(URL, "other") is None
 
     # The user set the window themselves: what they were told is done with, and a model
     # that turns out smaller again after that is told of again.

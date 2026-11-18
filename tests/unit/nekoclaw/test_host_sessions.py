@@ -809,6 +809,36 @@ async def test_a_reminder_that_could_not_be_written_is_made_the_next_time(hosts,
     await wait_status(host, first.commission_id, "done")
 
 
+async def test_a_reminder_cut_short_by_a_shutdown_is_not_on_record_as_made(hosts, tmp_path):
+    from tests.unit.nekoclaw.host_fakes import outbox
+
+    release, wait = _gate()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, *_report()]]))
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    before = len(await outbox(host))
+    note = host.task_agents._reporter.note
+
+    async def cancelled(*args: Any, **kwargs: Any) -> int:
+        raise asyncio.CancelledError
+
+    host.task_agents._reporter.note = cancelled
+    learned = {"type": "model_capability", "session_id": first.commission_id, "context_window": 131_072, "reason": "too long"}
+    with pytest.raises(asyncio.CancelledError):
+        await host.task_agents._handle(learned)
+    # Neither written down as told, nor held back as being told.
+    assert "reminded" not in await host.model_capabilities.describe_window(None, "fake-model")
+    assert await host.model_capabilities.claim_window_reminder(None, "fake-model") == 131_072
+    host.model_capabilities.unclaim_window_reminder(None, "fake-model")
+
+    host.task_agents._reporter.note = note
+    await host.task_agents._handle(learned)
+    assert len(await outbox(host)) == before + 1
+    assert (await host.model_capabilities.describe_window(None, "fake-model"))["reminded"] == 131_072
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+
+
 def test_the_reminder_is_there_in_every_language_and_is_short() -> None:
     from utils.tokenize import count_tokens
 
@@ -1041,6 +1071,48 @@ async def test_a_failed_commission_is_not_taken_up_again_by_a_sentence_caught_by
     await host.task_agents.settle()
     assert (await host.ledger.get(first.commission_id)).status == "failed"
     assert host.task_agents.running == [] and len(llm.requests) == 1
+
+
+@pytest.mark.parametrize("waits", [False, True])
+async def test_a_commission_that_is_over_is_not_taken_up_again_when_that_is_no_longer_wanted(hosts, tmp_path, waits):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "sorted")])
+    host = _host(hosts, tmp_path, llm)
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "failed")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+    wanted = {"yes": True}
+
+    if waits:
+        # Its review is being written down: taking it up again waits for that, and everything
+        # is stopped while it waits.
+        assert host.task_agents.hold_session(first.commission_id) is True
+        telling = asyncio.ensure_future(
+            host.task_agents.tell(first.commission_id, "the photos are on drive E: now", still_wanted=lambda: wanted["yes"])
+        )
+        await asyncio.sleep(0.05)
+        assert not telling.done()
+        wanted["yes"] = False
+        host.task_agents.release_session(first.commission_id)
+        told = await telling
+    else:
+        wanted["yes"] = False
+        told = await host.task_agents.tell(
+            first.commission_id, "the photos are on drive E: now", still_wanted=lambda: wanted["yes"]
+        )
+
+    # A stop does not end a commission that is over; taken up now, it would start after the stop.
+    assert told is False
+    await host.task_agents.settle()
+    assert (await host.ledger.get(first.commission_id)).status == "failed"
+    assert host.task_agents.running == [] and host.task_agents.queued == [] and len(llm.requests) == 1
+    if not waits:
+        # Known before anything was done: nothing is on record of words that were not passed on.
+        assert await _events(host, first.commission_id, "told") == []
+
+    # Still wanted, it is taken up as before.
+    assert await host.task_agents.tell(first.commission_id, "the photos are on drive E: now", still_wanted=lambda: True)
+    await wait_status(host, first.commission_id, "done")
 
 
 async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_its_commissions_were(hosts, tmp_path):
