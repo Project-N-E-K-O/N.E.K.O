@@ -3292,13 +3292,15 @@ async def test_a_directory_that_holds_a_record_under_a_second_name_is_not_search
     is_dir = Path.is_dir
 
     def unreachable(self: Path) -> bool:
-        if self == elsewhere:
+        if self in (elsewhere, project / "docs"):
             raise PermissionError("not to be reached")
         return is_dir(self)
 
     monkeypatch.setattr(Path, "is_dir", unreachable)
     await host.permission_store.set_mode("outside_read", "allow")
     assert (await asked("grep", elsewhere))["allow"] is True
+    # The same of a directory in a place of another session.
+    assert (await asked("grep", project / "docs"))["allow"] is True
 
 
 def test_a_directory_is_read_no_further_than_is_looked_at_for_a_second_name(tmp_path, monkeypatch):
@@ -3429,6 +3431,82 @@ def test_what_a_version_control_system_keeps_is_not_gone_into_for_a_second_name(
     assert _lies_in(project, files, set(), 5) is False
     os.link(record, project / "src" / "kept.txt")
     assert _lies_in(project, files, set(), 5) is True
+    # A file of such a name is a file like any other (a working tree of git has one, and a
+    # search reads it): looked at.
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    os.link(record, worktree / ".git")
+    assert _lies_in(worktree, files, set(), 5) is True
+
+
+def test_a_second_name_is_looked_for_through_no_link(tmp_path):
+    import os
+
+    from nekoclaw.host.task_agents import _lies_in
+
+    record = tmp_path / "transcript.jsonl"
+    record.write_text("x", encoding="utf-8")
+    found = os.stat(record)
+    files = {(found.st_dev, found.st_ino)}
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    os.link(record, outside / "kept.txt")
+    work = tmp_path / "work"
+    work.mkdir()
+    linked = False
+    try:
+        (work / "a link").symlink_to(outside, target_is_directory=True)
+        linked = True
+    except OSError:
+        pass  # Not to be made here (it takes a privilege on Windows).
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(outside), str(work / "a junction"))
+        linked = True
+    if not linked:
+        pytest.skip("no link can be made here")
+
+    # Reached from here only through a link or a junction, which a search does not read
+    # through: not looked for there. (It is found where it lies.)
+    assert _lies_in(work, files, set(), 100) is False
+    assert _lies_in(outside, files, set(), 100) is True
+
+
+def test_only_what_must_be_is_asked_of_itself_while_a_second_name_is_looked_for(tmp_path, monkeypatch):
+    import os
+
+    from nekoclaw.host.task_agents import _lies_in
+
+    record = tmp_path / "transcript.jsonl"
+    record.write_text("x", encoding="utf-8")
+    found = os.stat(record)
+    files = {(found.st_dev, found.st_ino)}
+    work = tmp_path / "work"
+    for index in range(5):
+        (work / f"folder {index}").mkdir(parents=True)
+    for index in range(3):
+        (work / "folder 0" / f"file {index}.txt").write_text("x", encoding="utf-8")
+    own = work / "folder 4"
+    there = os.stat(own)
+    stat = os.stat
+    asked: list[str] = []
+
+    def noting(path: Any, *more: Any, **named: Any) -> Any:
+        asked.append(Path(path).name)
+        return stat(path, *more, **named)
+
+    monkeypatch.setattr(os, "stat", noting)
+
+    # A directory is what the listing says it is, and is gone into without a call of its
+    # own; a file is asked which file it is. (A search of a large tree is not held up for a
+    # call for every directory in it.)
+    assert _lies_in(work, files, set(), 100) is False
+    assert sorted(asked) == ["file 0.txt", "file 1.txt", "file 2.txt"]
+    # Only a directory that may be one that is set apart is asked of itself.
+    asked.clear()
+    assert _lies_in(work, files, {(there.st_dev, there.st_ino)}, 100) is False
+    assert sorted(asked) == ["file 0.txt", "file 1.txt", "file 2.txt", "folder 4"]
 
 
 def test_a_sessions_own_directory_is_not_gone_into_for_a_second_name_of_a_record(tmp_path):

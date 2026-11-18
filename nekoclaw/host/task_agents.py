@@ -495,11 +495,15 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, 
 
     The files are told by device and number, which is what a second name
     (a hard link) shares with the first. Read as a search of the
-    directory reads it: through no link, and not into what a version
-    control system keeps of itself. The directories in ``apart`` (told
-    by device and number likewise, however the path to them is written)
-    are not gone into: other sessions' own directories, which are ruled
-    on by themselves. No more than ``limit`` entries are looked at: a
+    directory reads it: through no link and no junction, and not into a
+    directory a version control system keeps of itself (a file of such a
+    name is a file like any other: a working tree of git has one). The
+    directories in ``apart`` (told by device and number likewise,
+    however the path to them is written) are not gone into: other
+    sessions' own directories, which are ruled on by themselves. What
+    kind of entry it is, the directory tells; the entry itself is asked
+    only where more must be known (which file it is), as that costs a
+    call each. No more than ``limit`` entries are looked at: a
     directory that has more is taken to hold one of the files, as it
     cannot be told that it does not. So is one whose reading breaks off
     part of the way; one that cannot be opened at all is passed over, as
@@ -508,10 +512,11 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, 
     whole to find that it has too many.
     """
     import os
-    import stat
 
-    from nekoclaw.runtime.tools.search import VCS_DIRECTORIES
+    # (The search's own test of what a link is, junctions included.)
+    from nekoclaw.runtime.tools.search import VCS_DIRECTORIES, _entry_is_link
 
+    numbers = {number for _device, number in apart}
     looked = 0
     pending = [os.fspath(directory)]
     while pending:
@@ -522,28 +527,29 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, 
         with listing:
             try:
                 for entry in listing:
-                    if entry.name in VCS_DIRECTORIES:
-                        continue
                     looked += 1
                     if looked > limit:
                         return True
                     try:
-                        if entry.is_symlink():
+                        if _entry_is_link(entry):
                             continue
-                        # (Asked of the entry itself: what a directory tells
-                        # of its entries does not have the number on every
-                        # system.)
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name in VCS_DIRECTORIES:
+                                continue
+                            if entry.inode() in numbers:
+                                # May be one that is set apart: asked of
+                                # itself, for the device as well.
+                                found = os.stat(entry.path, follow_symlinks=False)
+                                if (found.st_dev, found.st_ino) in apart:
+                                    continue
+                            pending.append(entry.path)
+                            continue
+                        # Whether it has a second name, and which file it
+                        # is, only the file itself tells on every system.
                         found = os.stat(entry.path, follow_symlinks=False)
                     except OSError:
                         continue
-                    if stat.S_ISDIR(found.st_mode):
-                        if (found.st_dev, found.st_ino) not in apart:
-                            pending.append(entry.path)
-                    elif (
-                        stat.S_ISREG(found.st_mode)
-                        and found.st_nlink > 1
-                        and (found.st_dev, found.st_ino) in files
-                    ):
+                    if found.st_nlink > 1 and (found.st_dev, found.st_ino) in files:
                         return True
             except OSError:
                 # Broken off part of the way (a share that went away, say):
@@ -4910,7 +4916,7 @@ class TaskAgentManager:
             holds = (
                 (in_own or in_work)
                 and not names_only
-                and target.is_dir()
+                and os.path.isdir(target)
                 and any(session_dir and is_inside(Path(session_dir), target) for _id, _workdir, session_dir in places)
             )
             aliased = False
