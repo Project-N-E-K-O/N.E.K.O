@@ -276,9 +276,9 @@
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
         _proactiveStartupDelayApplied: false,
-        proactiveChatInterval: 15,
+        proactiveChatInterval: window.appConst.DEFAULT_PROACTIVE_CHAT_INTERVAL,
         proactiveVisionFrameTimer: null,
-        proactiveVisionInterval: 10,
+        proactiveVisionInterval: window.appConst.DEFAULT_PROACTIVE_VISION_INTERVAL,
         _lastProactiveChatScreenTime: 0,
 
         // --- 角色切换 ---
