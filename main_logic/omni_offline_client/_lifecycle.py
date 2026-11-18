@@ -1228,6 +1228,7 @@ class _LifecycleMixin:
                 self._proactive_image_to_inject = None
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
+                self._proactive_image_consent_check = None
             # Empty-completion diagnostics mirror stream_text's fallback warning.
             # Proactive failures silently abandon without status_message, but one INFO
             # finish_reason line permits diagnosis. Previous incidents could not distinguish
@@ -1606,6 +1607,7 @@ class _LifecycleMixin:
         self._proactive_image_to_inject = None
         self._proactive_image_staged_at = 0.0
         self._proactive_image_history_len = 0
+        self._proactive_image_consent_check = None
         if self.llm:
             try:
                 await self.llm.aclose()

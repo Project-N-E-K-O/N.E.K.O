@@ -1072,7 +1072,9 @@ class _StreamingMixin:
                         )
             # Last consent check: no await from here to the request being built.
             # The fit may have re-encoded the screenshot, so fit again without it
-            # rather than look for it in the result.
+            # rather than look for it in the result. The vision model stays
+            # switched (see above), and a trim notice already sent still counts
+            # the screenshot; both only on this rare race.
             if proactive_image and _proactive_consent_revoked():
                 _drop_revoked_proactive_image()
                 proactive_image = None

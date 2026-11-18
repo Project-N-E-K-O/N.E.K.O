@@ -823,6 +823,8 @@ class ProactiveMixin:
                         else vision_consent_epoch
                     )
 
+                    # Same rule as proactive_chat's _proactive_vision_consent_checker
+                    # (core does not import proactive_chat).
                     def staged_consent_holds() -> bool:
                         return (
                             getattr(self, "_proactive_vision_enabled", None) is not False
