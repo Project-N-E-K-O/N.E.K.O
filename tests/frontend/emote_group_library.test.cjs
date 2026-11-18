@@ -3,30 +3,16 @@ const assert = require('node:assert/strict');
 
 const groups = require('../../static/js/emote_group_library.js');
 
-test('把 YUI_All_191 这种作者手填的名字讲清楚', () => {
-    assert.deepEqual(groups.humanListName('YUI_All_191', 191), { name: 'YUI_All', count: 191 });
-    // 末尾数字不等于数量时它是版本/编号，不能当成张数剥掉
-    assert.deepEqual(groups.humanListName('YUI_All_3', 191), { name: 'YUI_All_3', count: 191 });
-    assert.deepEqual(groups.humanListName('', 0), { name: 'SceneList', count: 0 });
-});
-
-test('模板里的 SceneList 变成只读组，成员是场景', () => {
-    const list = groups.importedGroups({
-        sceneLists: [{
-            id: 'scene-list:a/b/YUI_All_2.json',
-            name: 'YUI_All_2',
-            path: 'a/b/YUI_All_2.json',
-            scenes: [{ id: 'x#0' }, { id: 'x#1' }, { nope: true }],
-        }],
-    });
-    assert.equal(list.length, 1);
-    assert.equal(list[0].name, 'YUI_All');
-    assert.equal(list[0].count, 2);
-    assert.equal(list[0].readOnly, true);
-    assert.deepEqual(list[0].items, [
-        { kind: 'scene', ref: 'x#0' }, { kind: 'scene', ref: 'x#1' },
+test('模板动作生成只读组，名称与数量分别保留', () => {
+    const group = groups.importedAnimationGroup([{ id: 'animation:idle' }, { id: 'animation:wave' }, {}], '动作 2');
+    assert.equal(group.name, '动作 2');
+    assert.equal(group.count, 2);
+    assert.equal(group.readOnly, true);
+    assert.deepEqual(group.items, [
+        { kind: 'scene', ref: 'animation:idle' }, { kind: 'scene', ref: 'animation:wave' },
     ]);
-    assert.ok(list[0].id.startsWith('list:'), '只读组要有自己的命名空间，别和自建组撞 id');
+    assert.equal(group.id, 'list:spine:animations');
+    assert.equal(groups.importedAnimationGroup([], '动作'), null);
 });
 
 test('只读组不许被改：加人、减人、改名都得原样退回', () => {

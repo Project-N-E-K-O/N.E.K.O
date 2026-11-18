@@ -302,10 +302,10 @@ def inspect_spine_zip(data: bytes, *, filename="", model_path="", atlas_path="",
             "catalogs": {"animations": [{"id": name, "displayName": name, "labels": {}} for name in animations],
                          "skinGroups": [{"id": "skin", "displayName": "Skin", "labels": {}}] if skins else [],
                          "slotGroups": parts},
-            "scenes": scenes, "sceneLists": [{"id": "spine:animations", "name": "Animations", "scenes": scenes}] if scenes else [],
+            "scenes": scenes,
             "resources": resources,
             "counts": {"atlasPages": len(pages), "animations": len(animations), "skinGroups": int(bool(skins)),
-                       "slotGroups": len(parts), "sceneLists": int(bool(scenes)), "scenes": len(scenes), "activeSkins": int(bool(default_skin))},
+                       "slotGroups": len(parts), "scenes": len(scenes), "activeSkins": int(bool(default_skin))},
             "capabilities": {"metadata": True, "spineRender": False, "staticPngExport": False, "animatedExport": False,
                              "characterSkinSelection": bool(skins), "characterSlotTint": bool(parts),
                              "characterPartSelection": bool(parts)},
@@ -314,7 +314,7 @@ def inspect_spine_zip(data: bytes, *, filename="", model_path="", atlas_path="",
 
 
 def spine_animation_scene(name):
-    return {"id": "animation:" + name, "name": name, "source": {"sceneList": "spine:animations", "index": 0},
+    return {"id": "animation:" + name, "name": name,
             "animation": {"id": name, "time": 0, "speed": 1, "paused": True}}
 
 

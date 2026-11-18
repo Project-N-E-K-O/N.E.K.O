@@ -5,7 +5,8 @@ const library = require('../../static/js/emote_template_library.js');
 
 function pkg(overrides = {}) {
     return {
-        source: { packageName: 'demo.zip', sharedModelKey: 'Demo' },
+        id: `spine-${'a'.repeat(64)}`,
+        source: { kind: 'spine', packageName: 'demo.zip' },
         model: { displayName: '演示' },
         counts: { scenes: 12, animations: 7 },
         ...overrides,
@@ -35,14 +36,14 @@ test('同一个模板反复导入只占一个条目', () => {
     const a = library.entryKeyFor(pkg());
     const b = library.entryKeyFor(pkg({ model: { displayName: '改了显示名' } }));
     assert.equal(a, b, '显示名不该参与身份：改了名就变成两个模板是错的');
-    assert.notEqual(a, library.entryKeyFor(pkg({ counts: { scenes: 13, animations: 7 } })),
-        '场景数变了就是另一个模板');
+    assert.notEqual(a, library.entryKeyFor(pkg({ id: `spine-${'b'.repeat(64)}` })),
+        '模型资源变了就是另一个模板');
 });
 
 test('认不出身份的模板拒绝入库，而不是挤成同一条', () => {
     assert.equal(library.entryKeyFor(null), '');
     assert.equal(library.entryKeyFor({}), '');
-    assert.equal(library.entryKeyFor({ source: {}, counts: { scenes: 0, animations: 0 } }), '');
+    assert.equal(library.entryKeyFor({ source: { packageName: 'demo.zip' }, counts: { scenes: 12 } }), '');
     assert.throws(() => library.makeEntry({}), { code: 'no_key' });
 });
 
@@ -163,16 +164,15 @@ test('存到一半存储炸了不许把异常留给页面', () => {
 test('老数据只有一份会话快照，升级后应当变成库里的一条', () => {
     const storage = fakeStorage();
     const legacy = {
-        fingerprint: 'demo.zip::Demo::12::7',
-        packageName: 'demo.zip', displayName: '演示', importKind: 'directory',
-        sceneId: 'demo.zip#3', packSceneIds: { idle_image: 'demo.zip#0' },
+        fingerprint: pkg().id,
+        packageName: 'demo.zip', displayName: '演示',
+        sceneId: 'animation:wave', packSceneIds: { idle_image: 'animation:idle' },
         adjustOverwrite: false,
     };
     const store = library.migrateFromLegacy(legacy, storage);
     assert.equal(store.entries.length, 1);
     assert.equal(store.currentKey, legacy.fingerprint);
-    assert.equal(store.entries[0].importKind, 'directory');
-    assert.equal(store.entries[0].session.sceneId, 'demo.zip#3');
+    assert.equal(store.entries[0].session.sceneId, 'animation:wave');
     assert.equal(store.entries[0].session.adjustOverwrite, false);
     // 已经入库过就不该再来一次（否则每次开页都会重播迁移）
     library.save(storage, store);
@@ -196,30 +196,28 @@ test('卡片名按 用户改名 > 来源名 > 包名(去.zip) > 模板自报名 
     const base = { key: 'k', packageName: 'pkg.zip' };
     assert.equal(library.entryLabel({ ...base, displayName: '演示', sourceName: 'YUI 道具风格' }),
         'YUI 道具风格', '来源名优先 —— 用户的心智是"从哪拿来的"');
-    assert.equal(library.entryLabel({ ...base, alias: '我的份', sourceName: '目录' }), '我的份');
+    assert.equal(library.entryLabel({ ...base, alias: '我的份', sourceName: '上传的包' }), '我的份');
     // zip 导入没有来源名：用包名，而不是作者写在 meta 里的内部名
     //（同一作者的整套模型往往全叫一个名字，一排「YUI 道具风格版」没法认）
     assert.equal(library.entryLabel({ ...base, displayName: '演示' }), 'pkg');
     assert.equal(library.entryLabel({ ...base }), 'pkg');
-    // 网页目录导入的临时包名没有信息量，视同没有，退到自报名
-    assert.equal(library.entryLabel(
-        { key: 'k', packageName: 'template-directory.zip', displayName: '演示' }), '演示');
+    assert.equal(library.entryLabel({ key: 'k', displayName: '演示' }), '演示');
     assert.equal(library.entryLabel(null), '');
 });
 
 test('renameEntry 只动 alias，键与来源保持原样；改成空等于回到默认', () => {
     let store = library.emptyStore();
     store = library.upsert(store, library.makeEntry({
-        key: 'k', sourceName: '原始目录', displayName: '演示',
+        key: 'k', sourceName: '原始包名', displayName: '演示',
     }));
     store = library.renameEntry(store, 'k', '我的份 ');
     assert.equal(store.entries[0].alias, '我的份');
-    assert.equal(store.entries[0].sourceName, '原始目录');
+    assert.equal(store.entries[0].sourceName, '原始包名');
     assert.equal(store.entries[0].key, 'k');
     assert.equal(library.entryLabel(store.entries[0]), '我的份');
     store = library.renameEntry(store, 'k', '');
     assert.equal(store.entries[0].alias, '');
-    assert.equal(library.entryLabel(store.entries[0]), '原始目录');
+    assert.equal(library.entryLabel(store.entries[0]), '原始包名');
     // 不存在的键：安静返回，别炸
     assert.equal(library.renameEntry(store, 'nope', 'x').entries.length, 1);
 });

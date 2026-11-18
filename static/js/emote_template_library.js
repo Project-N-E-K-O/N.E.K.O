@@ -58,21 +58,12 @@
     /**
      * 同一个模板反复导入应当命中同一条目（否则库会被重复项塞满）。
      * Spine 使用后端计算的资源内容标识，与 ZIP 文件名无关。
-     * 下方旧键生成方式仅保留给已有库条目的读写。
      */
     function entryKeyFor(pkg) {
         if (!pkg) return '';
         if (pkg.source?.builtIn === true && /^builtin:[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(pkg.id || '')) return pkg.id;
         if (pkg.source?.kind === 'spine' && /^spine-[0-9a-f]{64}$/.test(pkg.id || '')) return pkg.id;
-        const counts = pkg.counts || {};
-        const parts = [
-            text(pkg.source?.packageName),
-            text(pkg.source?.sharedModelKey) || text(pkg.model?.id),
-            text(counts.scenes),
-            text(counts.animations),
-        ];
-        if (parts.every((part) => part === '' || part === '0' || part === 'undefined')) return '';
-        return parts.join('::');
+        return '';
     }
 
     function emptyStore() {
@@ -83,7 +74,6 @@
         const src = session && typeof session === 'object' ? session : {};
         return {
             sceneId: text(src.sceneId),
-            sceneListFilter: text(src.sceneListFilter),
             groupId: text(src.groupId),
             groups: Array.isArray(src.groups) ? [...src.groups] : [],
             shots: Array.isArray(src.shots) ? [...src.shots] : [],
@@ -119,11 +109,10 @@
         return {
             key,
             packageName: text(src.pkg?.source?.packageName) || text(src.packageName),
-            displayName: text(src.pkg?.model?.displayName) || text(src.displayName) || text(src.pkg?.source?.sharedModelKey),
+            displayName: text(src.pkg?.model?.displayName) || text(src.displayName),
             // sourceName 保留上传 ZIP 的显示名，alias 是用户改名后的结果。
             sourceName: text(src.sourceName).slice(0, MAX_LABEL_CHARS),
             alias: text(src.alias).slice(0, MAX_LABEL_CHARS),
-            importKind: src.importKind === 'directory' ? 'directory' : 'file',
             thumb: thumb.length <= MAX_THUMB_CHARS ? thumb : '',
             addedAt: Number(src.addedAt) || Date.now(),
             lastUsedAt: Number(src.lastUsedAt) || Date.now(),
@@ -133,15 +122,13 @@
 
     /**
      * 卡片显示名的唯一裁决处：用户改的名 > 来源名 > 包名（去 .zip）> 模板自报名。
-     * 旧网页目录记录的临时包名 template-directory 没有信息量，视同没有。
      */
     function entryLabel(entry) {
         if (!entry) return '';
         const pkg = text(entry.packageName).replace(/\.zip$/i, '');
-        const generic = pkg === '' || pkg === 'template-directory';
         return text(entry.alias)
             || text(entry.sourceName)
-            || (generic ? '' : pkg)
+            || pkg
             || text(entry.displayName);
     }
 
@@ -289,7 +276,6 @@
             key: legacy.fingerprint,
             packageName: legacy.packageName,
             displayName: legacy.displayName,
-            importKind: legacy.importKind,
             session: {
                 ...legacy,
                 nodeGraph: null,

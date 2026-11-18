@@ -7,6 +7,5 @@ This directory vendors the unmodified UMD browser build of `fflate` 0.8.2.
 - Artifact: `umd/index.js`
 - License: [FFLATE-LICENSE.txt](licenses/FFLATE-LICENSE.txt)
 
-The library is used only for bounded, in-memory ZIP inspection and extraction
-of a user-selected EmoteLab package.  No archive contents are written to
-disk or localStorage by the client asset bridge.
+The editor uses the library to read ZIP assets in memory and to compress
+batch exports and PNGTuber packs. The server manages saved template copies.

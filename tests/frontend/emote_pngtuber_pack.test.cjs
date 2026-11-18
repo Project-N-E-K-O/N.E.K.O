@@ -338,26 +338,25 @@ test('a scene without an animation entry still resolves by id', () => {
 // ── 列表重建签名：决定"切一个选中项要不要重建 407 张卡" ──────────────────────
 test('选中项变了不该重建整张列表', () => {
     const items = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
-    const before = pack.listSignature('scene', items, '');
+    const before = pack.listSignature('scene', items);
     // 卡片外观没变，只是选中态变了 —— 走这条快路径才不会每点一次就重建几百张卡
-    const selected = pack.listSignature('scene', items, '');
+    const selected = pack.listSignature('scene', items);
     assert.equal(before, selected);
 });
 
-test('改名、增删、只剩元数据、换过滤器都必须重建', () => {
+test('改名、增删和只剩元数据都必须重建', () => {
     const base = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];
-    const sig = pack.listSignature('scene', base, '');
-    assert.notEqual(sig, pack.listSignature('scene', [{ id: 'a', name: '改过名' }, { id: 'b', name: 'B' }], ''));
-    assert.notEqual(sig, pack.listSignature('scene', [{ id: 'a', name: 'A' }], ''));
+    const sig = pack.listSignature('scene', base);
+    assert.notEqual(sig, pack.listSignature('scene', [{ id: 'a', name: '改过名' }, { id: 'b', name: 'B' }]));
+    assert.notEqual(sig, pack.listSignature('scene', [{ id: 'a', name: 'A' }]));
     assert.notEqual(sig, pack.listSignature('scene', [
-        { id: 'a', name: 'A', metadataOnly: true }, { id: 'b', name: 'B' }], ''));
-    assert.notEqual(sig, pack.listSignature('scene', base, 'list-2'));
-    assert.notEqual(sig, pack.listSignature('anim', base, ''));
+        { id: 'a', name: 'A', metadataOnly: true }, { id: 'b', name: 'B' }]));
+    assert.notEqual(sig, pack.listSignature('anim', base));
 });
 
 test('空清单与 null 是同一个状态（都不产出卡片），但和"有一项"必须不同', () => {
-    assert.equal(pack.listSignature('scene', [], ''), pack.listSignature('scene', null, ''));
-    assert.notEqual(pack.listSignature('scene', [], ''), pack.listSignature('scene', [{ id: 'a', name: 'A' }], ''));
+    assert.equal(pack.listSignature('scene', []), pack.listSignature('scene', null));
+    assert.notEqual(pack.listSignature('scene', []), pack.listSignature('scene', [{ id: 'a', name: 'A' }]));
 });
 
 // ── state_priority：导出必须写、且只写运行时认得的两个值 ────────────────────

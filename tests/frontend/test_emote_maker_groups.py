@@ -57,7 +57,7 @@ def _shown(page: Page, selector: str) -> bool:
 
 def _options(page: Page) -> list[str]:
     return page.evaluate(
-        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+        """() => [...document.querySelectorAll('#batch-export-group-select option')]
             .map((o) => o.textContent.trim())""")
 
 
@@ -88,10 +88,10 @@ def test_group_section_lives_in_export_settings(group_page: Page) -> None:
     # 下拉里没有"全部场景"这一项了：它不是组，只是以前的过滤器默认值
     assert "全部场景" not in options, options
     assert any("动作" in option for option in options), \
-        f"导入模板自带的 SceneList 没作为一个组出现: {options}"
+        f"导入模板的动作没有生成只读组: {options}"
     # 没选组时自动选上第一组：空值的下拉会渲染成一片空白
     selected = group_page.evaluate(
-        "() => document.querySelector('#template-scene-list-select').value")
+        "() => document.querySelector('#batch-export-group-select').value")
     assert selected.startswith("list:"), f"首组没有自动选中: {selected!r}"
     state = group_page.evaluate("""() => {
         const shown = (sel) => {
@@ -252,28 +252,28 @@ def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
 
 def _open_group_menu(page: Page) -> None:
     page.evaluate("""() => {
-        const menu = document.querySelector('#template-scene-list-select-menu');
+        const menu = document.querySelector('#batch-export-group-select-menu');
         if (!menu || !menu.classList.contains('is-open')) {
-            document.querySelector('#template-scene-list-select-trigger').click();
+            document.querySelector('#batch-export-group-select-trigger').click();
         }
     }""")
-    page.wait_for_selector('#template-scene-list-select-menu.is-open', timeout=10000)
+    page.wait_for_selector('#batch-export-group-select-menu.is-open', timeout=10000)
 
 
 def _rename_group_in_menu(page: Page, current: str, name: str) -> None:
     _open_group_menu(page)
     page.evaluate(
         """(current) => {
-            const row = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')]
+            const row = [...document.querySelectorAll('#batch-export-group-select-menu .emote-select-option')]
                 .find((item) => item.querySelector('.emote-select-option-label')?.textContent.trim() === current);
             row.querySelector('[data-action="rename"]').click();
         }""",
         current,
     )
-    page.wait_for_selector('#template-scene-list-select-menu .emote-select-rename', timeout=10000)
+    page.wait_for_selector('#batch-export-group-select-menu .emote-select-rename', timeout=10000)
     page.evaluate(
         """(name) => {
-            const input = document.querySelector('#template-scene-list-select-menu .emote-select-rename');
+            const input = document.querySelector('#batch-export-group-select-menu .emote-select-rename');
             input.value = name;
             input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
         }""",
@@ -300,18 +300,18 @@ def test_a_typed_name_becomes_the_new_group_name(group_page: Page) -> None:
     assert stacked["actionTop"] >= stacked["triggerTop"] + 20, stacked
     _open_group_menu(group_page)
     imported = group_page.evaluate("""() => {
-        const rows = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')];
+        const rows = [...document.querySelectorAll('#batch-export-group-select-menu .emote-select-option')];
         return rows.map((row) => row.querySelectorAll('[data-action]').length);
     }""")
     assert imported and all(count == 0 for count in imported), imported
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
-        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+        """() => [...document.querySelectorAll('#batch-export-group-select option')]
             .some((option) => option.textContent.trim() === '未命名组')""",
         timeout=10000)
     _open_group_menu(group_page)
     icons = group_page.evaluate("""() => {
-        const row = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')]
+        const row = [...document.querySelectorAll('#batch-export-group-select-menu .emote-select-option')]
             .find((item) => item.querySelector('.emote-select-option-label')?.textContent.trim() === '未命名组');
         const rename = row.querySelector('[data-action="rename"]');
         const remove = row.querySelector('[data-action="delete"]');
@@ -329,12 +329,12 @@ def test_a_typed_name_becomes_the_new_group_name(group_page: Page) -> None:
     assert icons["svgs"] == 2, icons
     _rename_group_in_menu(group_page, "未命名组", "开心组")
     group_page.wait_for_function(
-        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+        """() => [...document.querySelectorAll('#batch-export-group-select option')]
             .some((option) => option.textContent.trim() === '开心组')""",
         timeout=10000)
     _rename_group_in_menu(group_page, "开心组", "改过的组")
     group_page.wait_for_function(
-        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+        """() => [...document.querySelectorAll('#batch-export-group-select option')]
             .some((option) => option.textContent.trim() === '改过的组')""",
         timeout=10000)
     assert "开心组" not in _options(group_page)
@@ -344,14 +344,14 @@ def test_a_created_group_can_be_deleted(group_page: Page) -> None:
     """自建组可以删。取消留着它，确认后组和只属于它的取景一起消失。导入的行没有垃圾桶。"""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
     group_page.wait_for_function(
-        """() => [...document.querySelectorAll('#template-scene-list-select option')]
+        """() => [...document.querySelectorAll('#batch-export-group-select option')]
             .some((option) => option.textContent.trim() === '未命名组')""",
         timeout=10000)
 
     def delete_from_menu() -> None:
         _open_group_menu(group_page)
         group_page.evaluate("""() => {
-            const row = [...document.querySelectorAll('#template-scene-list-select-menu .emote-select-option')]
+            const row = [...document.querySelectorAll('#batch-export-group-select-menu .emote-select-option')]
                 .find((item) => item.querySelector('.emote-select-option-label')?.textContent.trim() === '未命名组');
             row.querySelector('[data-action="delete"]').click();
         }""")
@@ -366,7 +366,7 @@ def test_a_created_group_can_be_deleted(group_page: Page) -> None:
     group_page.wait_for_selector("#emote-confirm:not([hidden])", timeout=10000)
     group_page.evaluate("() => document.querySelector('#emote-confirm-ok').click()")
     group_page.wait_for_function(
-        """() => ![...document.querySelectorAll('#template-scene-list-select option')]
+        """() => ![...document.querySelectorAll('#batch-export-group-select option')]
             .some((option) => option.textContent.trim() === '未命名组')""",
         timeout=10000)
     stored = json.loads(group_page.evaluate("(k) => localStorage.getItem(k)", SESSION_KEY) or "{}")
@@ -374,7 +374,7 @@ def test_a_created_group_can_be_deleted(group_page: Page) -> None:
     assert stored.get("shots") == [] or stored.get("shots") is None
     _open_group_menu(group_page)
     leftover = group_page.evaluate(
-        "() => document.querySelectorAll('#template-scene-list-select-menu [data-action=\"delete\"]').length")
+        "() => document.querySelectorAll('#batch-export-group-select-menu [data-action=\"delete\"]').length")
     assert leftover == 0
 
 
@@ -497,7 +497,7 @@ def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) ->
     """
     group_page.locator("#group-section summary").press("Enter")
     box = group_page.evaluate("""() => {
-        const select = document.querySelector('#template-scene-list-select-trigger');
+        const select = document.querySelector('#batch-export-group-select-trigger');
         const panel = document.querySelector('#inspector-panel-export');
         const s = select.getBoundingClientRect();
         const p = panel.getBoundingClientRect();

@@ -1,10 +1,8 @@
-# Third-party notices for the bundled MMD libraries and visit vendor SDKs
+# Third-party notices for bundled frontend libraries
 
-These notices cover the two three-mmd bundles below, the babylon-mmd code
-embedded in the core bundle, and the two real-time SDKs that the visit
-transport page loads (`trtc.js`, `livekit-client.umd.js`). This is not an inventory of every library in
-`static/libs`. These components retain their upstream licenses; the project's
-root Apache-2.0 license does not replace them.
+These notices cover bundled libraries used by the expression editor, MMD
+renderer, and visit transport. Each component is distributed under its
+upstream license.
 
 ## Esoteric Software Spine Runtimes
 
@@ -17,8 +15,7 @@ root Apache-2.0 license does not replace them.
 - Bundle-specific provenance and loading policy:
   [spine/NOTICE.md](spine/NOTICE.md)
 
-The bundle is lazy-loaded by `spine_runtime_loader.js`; it is not initialized
-on page startup. It does not include any EmoteLab user resources.
+`spine_runtime_loader.js` loads the bundle on demand to preview and render Spine animations.
 
 ## fflate
 
@@ -27,9 +24,7 @@ on page startup. It does not include any EmoteLab user resources.
 - Source: <https://github.com/101arrowz/fflate>
 - License: [FFLATE-LICENSE.txt](licenses/FFLATE-LICENSE.txt)
 
-The bundle is used only by the EmoteLab client asset bridge for bounded,
-in-memory ZIP decoding. Imported archives are not written to disk or
-`localStorage`.
+The editor uses the bundle to read ZIP assets in memory and to write ZIP exports.
 
 ## @moeru/three-mmd
 

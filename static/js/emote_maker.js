@@ -58,7 +58,6 @@
         animationSpeed: 1,
         animationPlaying: false,
         selectedSceneId: '',
-        sceneListFilter: '',
         groupId: '',
         groups: [],
         shots: [],
@@ -74,7 +73,6 @@
     let templatePackage = null;
     let templateAssetStore = null;
     // 上次的导入方式，决定"重新打开"该弹哪个选择器。
-    let lastImportKind = 'file';
     const groupLibrary = window.NekoEmoteGroupLibrary;
     // 整组导出会一路烘到底，中途不接受再来一次导出或改设置
     let groupExportBusy = false;
@@ -131,7 +129,7 @@
     const templateCanvasStatusText = $('#template-canvas-status-text');
     const canvasImportButton = $('#canvas-import-btn');
     const inspectorEmptyState = $('#inspector-empty-state');
-    const templateSceneListSelect = $('#template-scene-list-select');
+    const batchExportGroupSelect = $('#batch-export-group-select');
     const templateSkinControls = $('#template-skin-controls');
 
     const fallbackText = {
@@ -760,9 +758,8 @@
 
     function populateSpineMetadata(pkg, renderer) {
         const animations = renderer.animations();
-        const scenes = animations.map((animation, index) => ({
+        const scenes = animations.map((animation) => ({
             id: 'animation:' + animation.name, name: animation.name,
-            source: { sceneList: 'spine:animations', index },
             animation: { id: animation.name, time: 0, speed: 1, paused: true },
         }));
         const skins = renderer.skinOptions().skin?.options || [];
@@ -771,8 +768,7 @@
         pkg.catalogs.skinGroups = skins.length ? [{ id: 'skin', displayName: t('emoteMaker.spineSkin'), labels: {} }] : [];
         pkg.character.skins = defaultSkin ? [{ group: 'skin', value: defaultSkin }] : [];
         pkg.scenes = scenes;
-        pkg.sceneLists = scenes.length ? [{ id: 'spine:animations', name: t('emoteMaker.segmentAnimations'), scenes }] : [];
-        Object.assign(pkg.counts, { animations: animations.length, scenes: scenes.length, sceneLists: Number(!!scenes.length),
+        Object.assign(pkg.counts, { animations: animations.length, scenes: scenes.length,
             skinGroups: Number(!!skins.length), activeSkins: Number(!!skins.length) });
         Object.assign(pkg.capabilities, { spineRender: true, staticPngExport: true, animatedExport: !!animations.length,
             characterSkinSelection: !!skins.length });
@@ -1163,10 +1159,10 @@
 
     // 下拉只有一处构建者：以前这里和 renderGroupBar 各写一份，renderAnimations 之后
     // 跑到哪儿就把选项盖回哪份，界面上出现的是"场景列表 / ModelA (3)"这种老文案。
-    function renderSceneListFilter() {
-        if (!templateSceneListSelect) return;
+    function renderBatchExportGroupSelect() {
+        if (!batchExportGroupSelect) return;
         if (!templatePackage) {
-            templateSceneListSelect.replaceChildren();
+            batchExportGroupSelect.replaceChildren();
             return;
         }
         // 预览下方那份动画列表不再跟组联动：组只管"导出哪几张"，看动作归看动作
@@ -1186,8 +1182,8 @@
             }
             options.push(option);
         });
-        templateSceneListSelect.replaceChildren(...options);
-        templateSceneListSelect.value = state.groupId;
+        batchExportGroupSelect.replaceChildren(...options);
+        batchExportGroupSelect.value = state.groupId;
     }
 
     function renderAssetGrid() {
@@ -3342,9 +3338,9 @@
     function listsSignature(items, kind) {
         const packModule = window.NekoEmotePngtuberPack;
         if (!packModule || typeof packModule.listSignature !== 'function') {
-            return `${kind}|${state.sceneListFilter || ''}|${(items || []).length}`;
+            return `${kind}|${(items || []).length}`;
         }
-        return packModule.listSignature(kind, items, state.sceneListFilter);
+        return packModule.listSignature(kind, items);
     }
 
     function replaceAnimationList(...children) {
@@ -3380,8 +3376,9 @@
 
     function allGroups() {
         if (!groupLibrary) return [];
-        const imported = templatePackage ? groupLibrary.importedGroups(templatePackage) : [];
-        return [...imported, ...ownGroups()];
+        const imported = groupLibrary.importedAnimationGroup(getImportedScenes(), t('emoteMaker.segmentAnimations'));
+        const groups = ownGroups();
+        return imported ? [imported, ...groups] : groups;
     }
 
     function activeGroup() {
@@ -3407,16 +3404,6 @@
 
     function selectGroup(id) {
         state.groupId = String(id || '');
-        const group = activeGroup();
-        // 导入的组沿用原来的 path 过滤器：同一份判定，别在两条路上各写一半
-        let filterPath = '';
-        if (group && group.readOnly) {
-            const lists = Array.isArray(templatePackage?.sceneLists) ? templatePackage.sceneLists : [];
-            const match = lists.find((list) => (
-                groupLibrary.importedGroups({ sceneLists: [list] })[0]?.id === group.id));
-            filterPath = match?.path || '';
-        }
-        state.sceneListFilter = filterPath;
         renderAnimations();
         renderGroupBar();
     }
@@ -4000,7 +3987,7 @@
         // 说明交给跟着光标的气泡，不用原生 title（要等半秒）、也不弹底部 toast
         if (help) help.dataset.tip = t('emoteMaker.newGroupHelp');
         if (!templatePackage || !groupLibrary) return;
-        renderSceneListFilter();
+        renderBatchExportGroupSelect();
         const active = activeGroup();
         const writable = Boolean(active && !active.readOnly);
         const summary = $('#group-summary-state');
@@ -6211,15 +6198,7 @@
     let lastTemplate = null;
 
     function templateFingerprint(pkg) {
-        if (!pkg) return '';
-        if (pkg.source?.kind === 'spine') return pkg.id || '';
-        const counts = pkg.counts || {};
-        return [
-            pkg.source?.packageName || '',
-            pkg.source?.sharedModelKey || pkg.model?.id || '',
-            String(counts.scenes ?? ''),
-            String(counts.animations ?? ''),
-        ].join('::');
+        return pkg?.id || '';
     }
 
     function snapshotTemplateSession() {
@@ -6230,9 +6209,7 @@
             fingerprint: templateFingerprint(templatePackage),
             packageName: templatePackage.source?.packageName || '',
             displayName: templatePackage.model?.displayName || '',
-            importKind: lastImportKind,
             sceneId: state.selectedSceneId || '',
-            sceneListFilter: state.sceneListFilter || '',
             groupId: state.groupId || '',
             groups: (Array.isArray(state.groups) ? state.groups : []).map((group) => ({ ...group })),
             shots: (Array.isArray(state.shots) ? state.shots : []).map((shot) => ({ ...shot })),
@@ -6267,9 +6244,6 @@
             saved = null;
         }
         lastTemplate = saved && saved.schemaVersion === 1 && saved.fingerprint ? saved : null;
-        // 快照里有 importKind，但 lastImportKind 是模块变量：不回填的话，老条目
-        // （还没有本地副本的那种）退回重新定位时会弹错选择器。
-        if (lastTemplate) lastImportKind = lastTemplate.importKind === 'file' ? 'file' : 'directory';
     }
 
     function currentTemplateKey() {
@@ -6288,9 +6262,7 @@
         if (entry) return templateLibraryModule.entryLabel(entry);
         const pkgName = String(templatePackage.source?.packageName || '')
             .replace(/\.zip$/i, '');
-        return pkgName && pkgName !== 'template-directory'
-            ? pkgName
-            : (templatePackage.model?.displayName || '');
+        return pkgName || templatePackage.model?.displayName || '';
     }
 
     /** 注册表里还活着的 store 不能释放：清字节是不可逆的，切回去就得重新读盘。 */
@@ -6347,8 +6319,7 @@
             let next = templateLibraryModule.upsert(templateLibraryState, templateLibraryModule.makeEntry({
                 key,
                 pkg: templatePackage,
-                importKind: lastImportKind,
-                // 来源名：这次导入带来了就用这次的（目录改名后再导一次，名字跟着走），
+                // 来源名：这次导入带来了就用这次的（ZIP 改名后再导一次，名字跟着走），
                 // 没带来（切回/重绘触发的保存）沿用库里那份。alias 只有双击改名才写，
                 // 这里永远沿用，别把用户改的名冲掉
                 sourceName: templatePackage.source?.builtIn
@@ -6516,7 +6487,6 @@
             const file = new File([blob], fileName, { type: 'application/zip' });
             return await importTemplateFile(file, {
                 displayName: builtinPackage ? '' : templateLibraryModule.entryLabel(entry) || '',
-                kind: entry?.importKind === 'directory' ? 'directory' : 'file',
                 fromArchive: true,
                 restoreKey: key,
                 builtinPackage,
@@ -6551,7 +6521,6 @@
         disposeSpineRenderer();
         templatePackage = held.pkg;
         templateAssetStore = held.store;
-        lastImportKind = entry.importKind === 'file' ? 'file' : 'directory';
         lastTemplate = {
             ...entry.session,
             fingerprint: templateFingerprint(held.pkg),
@@ -6724,11 +6693,6 @@
         if (scene) {
             state.selectedSceneId = scene.id;
             state.animationId = scene.animation?.id || state.animationId;
-        }
-        if (lastTemplate.sceneListFilter && manifest.sceneLists?.some((list) => (
-            (list.id || list.path || list.name) === lastTemplate.sceneListFilter
-        ))) {
-            state.sceneListFilter = lastTemplate.sceneListFilter;
         }
         // 组/取景跟着模板回来。成员如果在这个包里已经不存在（模板换了版本、
         // 场景数变了），就把它从组里剔掉，而不是留着一条烘不出来的引用。
@@ -7136,7 +7100,7 @@
         // 导出路径不传，仍取全局值。
         const edge = Math.min(previewEdge || state.exportResolution || PACK_MAX_EDGE, PACK_MAX_EDGE);
         const fps = previewFps || state.exportFps || GIF_EXPORT_FPS;
-        const sceneList = getImportedScenes();
+        const sourceScenes = getImportedScenes();
         const results = [];
         const imageFrames = new Map();
         const resizedImageFrames = new WeakMap();
@@ -7200,7 +7164,7 @@
                     });
                     continue;
                 }
-                const scene = sceneList.find((item) => item.id === job.sceneId);
+                const scene = sourceScenes.find((item) => item.id === job.sceneId);
                 if (!scene) continue;
                 if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
                 await yieldToBrowser();
@@ -7471,7 +7435,7 @@
         renderInspectorTabs();
         syncExportControls();
         renderPackPanel();
-        renderSceneListFilter();
+        renderBatchExportGroupSelect();
         renderGroupBar();
         renderAssetGrid();
         renderPartGroups();
@@ -7520,7 +7484,7 @@
         // Keep implementation/provider terminology out of the normal editor
         // surface. Detailed diagnostics remain available in the package data
         // and developer tools, while users get one neutral notice.
-        const technicalPattern = /(\bcharacter\b|\bspine\b|atlas(?:\.txt)?|scenelist|scenes\s*数组|slider|skin|slotgroup|角色数据|当前模型.*不一致|模型.*不一致)/i;
+        const technicalPattern = /(\bcharacter\b|\bspine\b|atlas(?:\.txt)?|skin|角色数据|模型.*不一致)/i;
         return technicalPattern.test(text)
             ? t('emoteMaker.templateCompatibilityWarning')
             : text;
@@ -8210,12 +8174,11 @@
      * 决定要不要退回下一条路，所以失败路径也必须返回 false 而不是静默。
      */
     async function importTemplateFile(file, {
-        displayName = '', kind = 'file', fromArchive = false, restoreKey = '', sourceName = '', selection = {},
+        displayName = '', fromArchive = false, restoreKey = '', sourceName = '', selection = {},
         builtinPackage = null,
     } = {}) {
         if (!file) return false;
         sourceName = sourceName || (fromArchive ? displayName : String(file.name || '').replace(/\.zip$/i, ''));
-        lastImportKind = kind === 'directory' ? 'directory' : 'file';
         if (templateArchiveButton) templateArchiveButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
         let nextAssetStore = null;
@@ -8238,7 +8201,7 @@
                 if (payload.code === 'selection_required') {
                     const path = await chooseSpineResource(payload);
                     if (!path) return false;
-                    return await importTemplateFile(file, { displayName, kind, fromArchive, restoreKey, sourceName,
+                    return await importTemplateFile(file, { displayName, fromArchive, restoreKey, sourceName,
                         selection: { ...selection, [payload.role]: path } });
                 }
                 if (!response.ok || !payload.success || !payload.package) {
@@ -8326,7 +8289,6 @@
                 localAssets: true,
                 assetTransport: 'client-memory',
             };
-            state.sceneListFilter = '';
             state.templateSkins = nextTemplateSkins;
             state.templateSlots = nextTemplateSlots;
             state.templateSlotDefaults = nextTemplateSlotDefaults;
@@ -8340,7 +8302,6 @@
             state.groups = [];
             state.shots = [];
             state.groupId = '';
-            state.sceneListFilter = '';
             // 多选集合里是上一个模板的动画 id，留着会把旧动作一起加进新模板的组
             setPickedAnimations([]);
             const saved = restoreKey && templateLibraryModule?.find(templateLibraryState, restoreKey);
@@ -8481,12 +8442,10 @@
             state.assetQuery = event.target.value || '';
             renderAssetGrid();
         });
-        templateSceneListSelect?.addEventListener('change', (event) => {
-            // 这个下拉现在是"组"：选导入组时 selectGroup 会写回 sceneListFilter，
-            // 选自建组时改成按成员过滤。
+        batchExportGroupSelect?.addEventListener('change', (event) => {
             selectGroup(event.target.value);
         });
-        templateSceneListSelect?.addEventListener('emote-select-action', (event) => {
+        batchExportGroupSelect?.addEventListener('emote-select-action', (event) => {
             const detail = event.detail || {};
             if (detail.action === 'rename') renameGroupById(detail.value, detail.name);
             else if (detail.action === 'delete') void deleteGroupById(detail.value);

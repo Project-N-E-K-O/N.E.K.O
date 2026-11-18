@@ -610,7 +610,7 @@ def test_content_ids_name_directories_and_keep_original_name_as_metadata(store):
     assert meta["sourceName"] == "external-file.zip"
 
 
-def test_reimport_keeps_session_artwork_and_rejects_external_model_textures(client):
+def test_reimport_keeps_session_artwork_and_rejects_external_model_textures(client, store):
     from tests.emote_fixtures import spine_zip
     from main_logic.emote_template_adapter import inspect_spine_zip
     data = spine_zip()
@@ -625,6 +625,10 @@ def test_reimport_keeps_session_artwork_and_rejects_external_model_textures(clie
                        files={"textures": ("page.png", b"texture")}, data={"texture_paths": "outside/page.png"}).status_code == 400
     assert client.post("/api/emote-maker/library/textures", params={"key": key},
                        files={"textures": ("page.png", b"texture")}).status_code == 400
+    saved_key = "previously-saved-template"
+    store.save(saved_key, data)
+    assert client.post("/api/emote-maker/library/textures", params={"key": saved_key},
+                       files={"textures": ("page.png", b"texture")}, data={"texture_paths": "outside/page.png"}).status_code == 400
     assert client.post(endpoint, params={"key": key}, files={"file": ("one.rar", data)}).status_code == 400
 
 

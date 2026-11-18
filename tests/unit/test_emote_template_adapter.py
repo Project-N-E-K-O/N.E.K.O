@@ -37,9 +37,8 @@ def test_identity_is_independent_of_archive_filename_and_unrelated_files():
     with zipfile.ZipFile(io.BytesIO(data)) as old, zipfile.ZipFile(stream, "w") as new:
         for path in old.namelist():
             new.writestr(path, old.read(path))
-        new.writestr("Characters/ignored.json", '{"ActiveSkins":{"Items":[]}}')
-        new.writestr("SceneLists/ignored.json", '{"scenes":[{"animationName":"fake"}]}')
-        new.writestr("not-used.csv", "anything")
+        new.writestr("metadata/ignored.json", '{"scenes":[{"animationName":"fake"}]}')
+        new.writestr("metadata/ignored.csv", "anything")
     package = inspect_spine_zip(stream.getvalue())
     assert package["id"] == first["id"]
     assert len(package["scenes"]) == 2

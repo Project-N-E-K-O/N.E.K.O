@@ -34,9 +34,7 @@ def test_imports_plain_spine_and_lists_unprefixed_animations(page: Page, running
     expect(page.locator("#animation-list")).to_contain_text("idle0")
     expect(page.locator("#export-png-btn")).to_be_enabled()
     assert _entries(page)[0]["key"].startswith("spine-")
-    assert page.locator("#emotelab-template-directory").count() == 0
     assert page.locator("input[webkitdirectory]").count() == 0
-    assert page.evaluate("typeof window.NekoEmoteTemplateDirectory") == "undefined"
 
 
 def test_same_resource_zip_renamed_does_not_duplicate_library_entry(page: Page, running_server: str):

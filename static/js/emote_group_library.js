@@ -1,10 +1,6 @@
 /*
  * 组（分组导出用的那层）与「存下来的取景」的数据规则。
  *
- * 为什么不叫场景列表：源头 EmoteLab 的那个东西叫 SceneList，名字是作者手填的文件名
- * （`YUI_All_191` 这种），直接当标题显示没人看得懂。这里把它统一成"组"，并且把
- * 文件名里那个尾数还原成它真正的意思（组里有几张）。
- *
  * 和上一轮的模板库一样：只做数据，不碰 DOM、不读文件，规则能在 Node 里单测。
  *
  * 两类成员要分清，不然导出时会打架：
@@ -41,38 +37,17 @@
         return `${prefix}${Date.now().toString(36)}-${idSeed.toString(36)}`;
     }
 
-    /**
-     * 把 `YUI_All_191` 这类作者手填的名字讲清楚：末尾数字如果正好等于组内数量，
-     * 那它就是"有几张"，从名字里剥出来单独显示；不等就原样保留（可能是版本号）。
-     */
-    function humanListName(rawName, count) {
-        const name = text(rawName) || 'SceneList';
-        const total = Number(count);
-        if (!Number.isFinite(total) || total <= 0) return { name, count: 0 };
-        const match = name.match(/^(.*)[_\s-](\d+)$/);
-        if (match && Number(match[2]) === total && text(match[1])) {
-            return { name: text(match[1]), count: total };
-        }
-        return { name, count: total };
-    }
-
-    /** 模板包里已有的 SceneList → 只读的组。 */
-    function importedGroups(templatePackage) {
-        const lists = Array.isArray(templatePackage?.sceneLists) ? templatePackage.sceneLists : [];
-        return lists.map((list) => {
-            const scenes = (Array.isArray(list.scenes) ? list.scenes : [])
-                .map((scene) => scene?.id)
-                .filter(Boolean);
-            const human = humanListName(list.name || list.path, scenes.length);
-            return {
-                id: `${IMPORTED_PREFIX}${text(list.id || list.path)}`,
-                name: human.name,
-                rawName: text(list.name || list.path),
-                count: human.count,
-                readOnly: true,
-                items: scenes.map((sceneId) => ({ kind: 'scene', ref: sceneId })),
-            };
-        });
+    /** 将从模板动作生成的组设为只读。 */
+    function importedAnimationGroup(scenes, name) {
+        const sceneIds = scenes.map((scene) => scene?.id).filter(Boolean);
+        if (!sceneIds.length) return null;
+        return {
+            id: `${IMPORTED_PREFIX}spine:animations`,
+            name,
+            count: sceneIds.length,
+            readOnly: true,
+            items: sceneIds.map((sceneId) => ({ kind: 'scene', ref: sceneId })),
+        };
     }
 
     /** 组记下的那一套换装/位移。之后加进来的每一条都用它预览和导出，不跟屏幕上后来的滑杆。 */
@@ -347,8 +322,7 @@
         MAX_GROUP_NAME,
         MAX_ITEMS_PER_GROUP,
         IMPORTED_PREFIX,
-        humanListName,
-        importedGroups,
+        importedAnimationGroup,
         makeGroup,
         makeShot,
         groupsFrom,

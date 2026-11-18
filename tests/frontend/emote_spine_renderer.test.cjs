@@ -220,7 +220,7 @@ function store() {
 }
 
 test('renderer exports safe path and atlas helpers', () => {
-    assert.equal(normalizePath('pkg\\SpineModels\\Demo\\Demo.skel.bytes'), 'pkg/SpineModels/Demo/Demo.skel.bytes');
+    assert.equal(normalizePath('pkg\\assets\\Demo\\Demo.skel.bytes'), 'pkg/assets/Demo/Demo.skel.bytes');
     assert.equal(normalizePath('../outside.png'), '');
     assert.deepEqual(
         extractAtlasPageNames('Page.png\nsize: 2, 2\n\nPage.png\nOther.png\n'),

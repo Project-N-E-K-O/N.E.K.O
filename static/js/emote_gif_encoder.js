@@ -69,7 +69,7 @@
     function normalizeColorCount(value) {
         const requested = Math.round(Number(value));
         if (requested === 256) return 256;
-        // EmoteLab's profile is 128 colours. Keep unsupported values on the
+        // The default palette has 128 colours. Keep unsupported values on the
         // nearest safe default instead of emitting a malformed table size.
         return DEFAULT_COLOR_COUNT;
     }
@@ -550,7 +550,7 @@
         writeU16(output, width);
         writeU16(output, height);
         // Global colour table present; 8 bits per primary colour.  The table
-        // size is 128 by default (EmoteLab's profile) or 256 in quality mode.
+        // size is 128 by default or 256 in quality mode.
         output.push(0xf0 | colorTableBits | 0x80, TRANSPARENT_INDEX, 0);
         for (let index = 0; index < palette.length; index += 1) output.push(palette[index]);
 

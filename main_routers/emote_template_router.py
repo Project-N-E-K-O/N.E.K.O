@@ -614,7 +614,7 @@ async def merge_template_library_textures(
         for index, texture in enumerate(textures or []):
             relative = paths[index] if index < len(paths) else (texture.filename or "")
             prefixes = _BUILTIN_USER_TEXTURE_PREFIXES if key == _BUILTIN_KEY else ("StageImages/",)
-            if (key == _BUILTIN_KEY or key.startswith("spine-")) and not normalize_texture_path(relative).startswith(prefixes):
+            if not normalize_texture_path(relative).startswith(prefixes):
                 raise EmoteTemplateStoreError("Spine 模型贴图必须随 ZIP 提供；这里只接受会话图片")
             blobs.append((relative, await _read_upload_bytes(
                 texture, MAX_ARCHIVE_BYTES, "附带贴图")))

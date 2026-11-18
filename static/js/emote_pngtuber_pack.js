@@ -126,13 +126,12 @@
     /**
      * 列表卡片的"要不要重建"签名。刻意不含选中态：选中某一项不该重建整张列表
      * （真实包有 407 个场景），但任何会影响卡片外观的东西都必须让它重建 ——
-     * 少一项、多一项、改名、只剩元数据、换了过滤器，都要重建。
+     * 少一项、多一项、改名、只剩元数据，都要重建。
      */
-    function listSignature(kind, items, filter) {
+    function listSignature(kind, items) {
         const list = Array.isArray(items) ? items : [];
         return [
             'kind=' + String(kind || ''),
-            'filter=' + String(filter || ''),
             'n=' + list.length,
             // 每一项只取"会影响这张卡长什么样"的字段；选中态刻意不在这里
             list.map((item) => [
