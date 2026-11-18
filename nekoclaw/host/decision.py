@@ -113,6 +113,10 @@ class DecisionRequest:
     # questions reach the user too, so an answer can be about them; a stop,
     # a repeat or an addition never is.
     answerable: list[Commission] = field(default_factory=list)
+    # Her commissions a task agent worked on that are over (done, failed or
+    # stopped) and not long so, newest first. A sentence that adds to one of
+    # them goes on with it in its session.
+    recent: list[Commission] = field(default_factory=list)
     task_agent_available: bool = False
     # Rendered task preferences for the fine selection (already within budget).
     preferences: str = ""
@@ -132,7 +136,8 @@ class Triage:
     """Conclusion of the first round."""
 
     # "new", "duplicate", "stop", "tell", "answer", "ambiguous",
-    # "nothing_active", "none" (nothing can do this) or, from a probe that may
+    # "nothing_active", "none" (nothing can do this), "continue" (it goes on
+    # with a commission that is over: the target) or, from a probe that may
     # not ask a model, "unsure".
     kind: str
     # Commission ids this is about; several for "ambiguous".
@@ -549,22 +554,68 @@ def read_repeat_or_addition(request: DecisionRequest) -> Triage | None:
 
     if not has_cue("supplement", text):
         return None
+    content = token_set(strip_cues("vague", strip_cues("supplement", text)))
     # An addition can only be passed on to a task agent; a plugin run takes none.
     task_agents = [commission for commission in request.active if commission.route == "task_agent"]
-    if not task_agents:
+    if task_agents:
+        scored = [(_coverage(content, commission), commission) for commission in task_agents]
+        related = [item for item in scored if item[0] >= SUPPLEMENT_MIN_OVERLAP]
+        if len(task_agents) == 1 and (related or not content):
+            return Triage(kind="tell", targets=[task_agents[0].id])
+        target = _single_best(related)
+        if target is not None:
+            return Triage(kind="tell", targets=[target.id])
+        if related:
+            top = max(score for score, _ in related)
+            return Triage(kind="ambiguous", targets=[commission.id for score, commission in related if score == top])
+    return read_follow_up(request, anything_under_way=bool(task_agents))
+
+
+def read_follow_up(request: DecisionRequest, *, anything_under_way: bool) -> Triage | None:
+    """Read a sentence that adds something as going on with a commission that is over.
+
+    Called for a sentence with a cue of an addition that is about nothing
+    under way. One of the commissions a task agent worked on lately
+    (``request.recent``) takes it when enough of the sentence's own words
+    (``FOLLOW_UP_MIN_OVERLAP``; without the cue, words that point at
+    something unnamed, and words every request has) occur in what that
+    commission was, or came to: the one that shares most, and of several
+    that share as much, the newest. A sentence that says nothing but that
+    it adds something is about the one such commission there is, when
+    there is one only and nothing is under way. Words are read as for an
+    addition to a commission under way, and as bluntly: a follow-up that is
+    put in other words is missed and is a commission of its own, as before;
+    and a sentence that is none can be taken for one.
+    """
+    from config.nekoclaw_settings import FOLLOW_UP_MIN_OVERLAP
+
+    if not request.task_agent_available:
         return None
-    content = token_set(strip_cues("vague", strip_cues("supplement", text)))
-    scored = [(_coverage(content, commission), commission) for commission in task_agents]
-    related = [item for item in scored if item[0] >= SUPPLEMENT_MIN_OVERLAP]
-    if len(task_agents) == 1 and (related or not content):
-        return Triage(kind="tell", targets=[task_agents[0].id])
-    target = _single_best(related)
-    if target is not None:
-        return Triage(kind="tell", targets=[target.id])
-    if related:
-        top = max(score for score, _ in related)
-        return Triage(kind="ambiguous", targets=[commission.id for score, commission in related if score == top])
-    return None
+    said = strip_cues("vague", strip_cues("supplement", request.dispatch_text))
+    content = token_set(strip_cues("generic", said))
+    ended = [
+        commission
+        for commission in request.recent
+        if commission.route == "task_agent" and commission.parent_id is None and commission.session_id
+    ]
+    if not ended:
+        return None
+    if not content:
+        if len(ended) == 1 and not anything_under_way:
+            return Triage(kind="continue", targets=[ended[0].id])
+        return None
+
+    def shared(commission: Commission) -> float:
+        known = token_set(f"{commission_text(commission)} {commission.result_summary or ''}")
+        return len(content & known) / len(content)
+
+    scored = [(shared(commission), commission) for commission in ended]
+    top = max(score for score, _commission in scored)
+    if top < FOLLOW_UP_MIN_OVERLAP:
+        return None
+    # The first of them: ``recent`` is newest first.
+    target = next(commission for score, commission in scored if score == top)
+    return Triage(kind="continue", targets=[target.id])
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +728,13 @@ class LexicalDecisionModel:
             return answer
         repeat = read_repeat_or_addition(request)
         if repeat is not None:
+            if repeat.kind == "continue":
+                # It becomes a commission of its own: the plugins its words
+                # point at go along, as they do for any new one. No model.
+                match_text = request.match_text
+                repeat.keyword_hit_ids = keyword_hits(match_text, request.plugins)
+                kept, _ = stage1_filter(match_text, request.plugins)
+                repeat.candidate_ids = [str(plugin.get("id")) for plugin in kept]
             return repeat
         return await self.probe(request)
 

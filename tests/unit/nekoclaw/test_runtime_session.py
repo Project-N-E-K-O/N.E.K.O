@@ -724,6 +724,7 @@ def test_what_a_session_learned_about_its_model_is_an_event_of_the_protocol() ->
         "session_id": "s1",
         "seq": 7,
         "supports_images": False,
+        "context_window": None,
         "reason": "",
         "lasting": True,
     }
@@ -732,6 +733,10 @@ def test_what_a_session_learned_about_its_model_is_an_event_of_the_protocol() ->
     )
     assert protocol.parse_event(protocol.dump(told)) == told
     assert protocol.parse_event(dumped) == event
+    # A window the provider stated is told the same way, and says nothing about pictures.
+    window = protocol.ModelCapabilityEvent(session_id="s1", context_window=32_768, reason="maximum context length")
+    assert protocol.dump(window)["supports_images"] is None
+    assert protocol.parse_event(protocol.dump(window)) == window
     # It says what was learned, or it is not this event.
     with pytest.raises(ValidationError):
         protocol.parse_event({"type": "model_capability", "session_id": "s1", "seq": 7})

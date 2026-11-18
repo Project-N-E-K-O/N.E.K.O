@@ -7,8 +7,44 @@ name: Random Order Tests
 # unit-tests.yml 因此在 pytest.ini 里钉死 seed 保持确定性，把"持续找新的顺序依赖"
 # 这件事挪到这里：它不是任何 PR 的必需检查，红了是一条独立信号，不挡任何人合并。
 #
-# 失败怎么办：日志头部会打印 `Using --randomly-seed=<N>`，拿那个数字本地复现
-#   uv run pytest tests/unit -q --randomly-seed=<N>
+# 为什么并行：tests/unit 已有 5 万多条用例，在 windows-latest 上串行一遍远超 30
+# 分钟，这个 job 曾经连续 20 次超时被取消、一次结果都没产出过。现在分两步跑，
+# 分法照抄 PR CI（unit-tests.yml + unit-test-shards.yml）对用例的分类：
+#   1. 主体用 `-n auto --dist loadfile --no-loadscope-reorder` 多进程并行；
+#   2. integration_serial（子进程 / socket / HTTP）和 frontend_contract 两类，
+#      PR CI 里本来就用 `-n 0` 单进程跑，这里也单进程跑，不在多 worker 下互相抢
+#      端口和进程。
+# 两步用同一个 seed；第一步红了第二步照样跑，两步任一红则整个 job 红。
+# 这份 marker 划分抄自 unit-test-shards.yml：那边新增或调整需要 `-n 0` 的 marker 时，
+# 这里的两个 -m 表达式要同步改。
+#
+# 两步各有 step 级时限：某个 seed 下用例卡死时，超时的那一步记为 failure 而不是
+# 整个 job 被 cancelled，另一步照样跑完、产出结果。`-o faulthandler_timeout` 让单条
+# 用例跑过 10 分钟时打印所有线程的调用栈，方便定位卡在哪（xdist worker 的 stderr
+# 不保证都能回到日志里，所以兜底的是 step 时限）。
+#
+# 并行时 seed 的语义：pytest-randomly 让 controller 把 seed 下发给每个 worker，
+# 所有 worker 洗出同一份顺序（xdist 也要求各 worker 收集结果一致）。loadfile 把
+# 同一个文件的用例整组派给一个 worker，文件内顺序 = 这个 seed 下的洗牌顺序，
+# 文件之间的派发顺序也由 seed 决定——前提是 `--no-loadscope-reorder`：xdist 默认
+# 会把文件按用例数从多到少重排派发队列，那样每晚的文件先后基本固定，跨文件的随机
+# 压力就没了。但"哪几个文件落在同一个 worker 上、前后挨着"取决于运行时谁先空闲，
+# 不是 seed 能钉住的。
+#
+# 失败怎么办：seed 在 "Pick seed" 一步里打印为 `randomly-seed = <N>`（pytest 带
+# `-q` 时不打印 `Using --randomly-seed=<N>` 那行表头，所以以这一行为准）。复现：
+#   1. 先单跑出错的文件——文件内顺序只取决于 seed 和用例 id，单跑也一样：
+#        uv run pytest tests/unit/<出错文件>.py -q --randomly-seed=<N>
+#   2. 单跑不红，说明是同一步里别的文件写脏了状态。用和出错那一步完全相同的 -m
+#      表达式复现（两步是两个独立进程，不要把两组混在一起跑）：
+#      并行步红了——先串行跑同一组（同一进程里按 seed 的文件顺序依次跑，比 CI 上
+#      分 worker 的相邻关系更苛刻，可能多暴露问题），还不红再照 CI 原样并行跑：
+#        uv run pytest tests/unit -q --randomly-seed=<N> -m "not integration_serial and not frontend_contract"
+#        uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=<N> -m "not integration_serial and not frontend_contract"
+#      串行步红了——这条和 CI 完全一致：
+#        uv run pytest tests/unit -q --randomly-seed=<N> -m "integration_serial or frontend_contract"
+#   不要用不带 -m 的全量串行命令复现：它把两组放进同一进程按 seed 交错跑，文件先后
+#   和状态隔离都和 CI 不同。
 # 顺序依赖的典型形态是"产品代码里的进程级可变全局被前一条用例写脏"，修法通常是给
 # 那个模块加一条 autouse fixture 做前后清理（见 tests/unit/test_music_router.py 的
 # _reset_music_proxy_cache）。
@@ -36,7 +72,10 @@ jobs:
     # 与 unit-tests.yml 同平台：换平台会引入与顺序无关的差异，那样红了没法判断
     # 是顺序依赖还是平台差异。
     runs-on: windows-latest
-    timeout-minutes: 30
+    # PR CI 里同一批用例分散在 unit-tests.yml 的主 job（并行，job 总时长含装依赖
+    # 约 28 分钟）和 unit-test-shards.yml 的几个 shard（各 6–10 分钟）里同时跑；这里塞进一个 job
+    # 顺序跑完，预计 40–50 分钟。90 分钟是给慢 runner 留的余量，不是预期耗时。
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
@@ -58,15 +97,18 @@ jobs:
         # deps/rapidocr_pillow 的四条用例 skip 掉，这边同样需要它们真的跑。
         run: uv pip install pyclipper==1.4.0
 
-      - name: Run unit test suite in a random order
+      - name: Install CAM++ frontend parity oracle
+        # 与 unit-tests.yml 同一个 pin：不装的话 CAM++ 前端对齐测试会 importorskip，
+        # 每晚都静默跳过。
+        run: uv pip install kaldi-native-fbank==1.22.3
+
+      - name: Pick seed
+        id: seed
         shell: pwsh
         env:
           # 经 env 传，不要在 run: 里直接 ${{ inputs.seed }} 插值——
           # workflow_dispatch 的输入是外部可控字符串，插值等于让它参与拼脚本。
           SEED_INPUT: ${{ inputs.seed }}
-        # pytest.ini 的 addopts 里钉着 --randomly-seed=<固定值>，命令行上再给一次
-        # 会覆盖它（同名选项后者生效）。不要改成 `-p no:randomly` 去关插件——插件
-        # 被屏蔽后 addopts 里的 --randomly-seed 会变成无法识别的参数直接报错。
         run: |
           $seed = $env:SEED_INPUT
           if ([string]::IsNullOrWhiteSpace($seed)) {
@@ -76,4 +118,32 @@ jobs:
             throw "seed 必须是十进制整数，收到: $seed"
           }
           Write-Host "randomly-seed = $seed"
-          uv run pytest tests/unit -q --randomly-seed=$seed
+          "value=$seed" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # 下面两步的 pytest 命令行都显式给 --randomly-seed：pytest.ini 的 addopts 里
+      # 钉着 --randomly-seed=<固定值>，命令行上再给一次会覆盖它（同名选项后者生效）。
+      # 不要改成 `-p no:randomly` 去关插件——插件被屏蔽后 addopts 里的
+      # --randomly-seed 会变成无法识别的参数直接报错。
+      # seed 已在上一步校验过是纯数字，这里仍经 env 传入，不在 run: 里插值。
+
+      - name: Run unit test suite in a random order (parallel)
+        # Linux 4 worker 实测约 8 分钟；PR CI 同一批用例在 Windows 上合计约 30–40 分钟（含装依赖）。
+        timeout-minutes: 60
+        shell: pwsh
+        env:
+          SEED: ${{ steps.seed.outputs.value }}
+        run: |
+          Write-Host "randomly-seed = $env:SEED"
+          uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=$env:SEED -o faulthandler_timeout=600 -m "not integration_serial and not frontend_contract"
+
+      - name: Run serial-only markers in a random order
+        # 上一步红了也要跑：两步合起来才是完整的 tests/unit。
+        if: ${{ !cancelled() && steps.seed.outcome == 'success' }}
+        # PR CI 里这两类分别约 10 / 6 分钟（含装依赖）。
+        timeout-minutes: 20
+        shell: pwsh
+        env:
+          SEED: ${{ steps.seed.outputs.value }}
+        run: |
+          Write-Host "randomly-seed = $env:SEED"
+          uv run pytest tests/unit -q --randomly-seed=$env:SEED -o faulthandler_timeout=600 -m "integration_serial or frontend_contract"

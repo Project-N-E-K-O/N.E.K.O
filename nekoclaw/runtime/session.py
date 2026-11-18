@@ -24,16 +24,23 @@ around it:
 * it implements the commands (prompt, steer, follow-up, abort, close) and keeps
   a run going while its goal or queued notices call for it.
 
-A session whose transcript file already exists continues that conversation.
+A session whose transcript file already exists continues that conversation,
+with the system prompt and the tool definitions it was opened with before
+(``snapshot.py``): the head of its requests stays the same from one
+commission to the next. They are put together anew after the conversation
+was summed up, and not before: a tool that came since the session was first
+opened is told of from then on.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from pathlib import Path
@@ -47,7 +54,10 @@ from nekoclaw.runtime.context import (
     ContextPolicy,
     RowKind,
     Transcript,
+    compact_ratio,
+    estimate_tokens,
     kind_of,
+    output_allowance,
 )
 from nekoclaw.runtime.guards import GoalRound, RepeatToolGuard, next_goal_round
 from nekoclaw.runtime.host import HostBridge
@@ -71,6 +81,7 @@ from nekoclaw.runtime.loop.messages import (
 )
 from nekoclaw.runtime.loop.provider import CancellationToken
 from nekoclaw.runtime.loop.provider_events import (
+    AssistantDoneEvent,
     AssistantErrorEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -90,11 +101,27 @@ from nekoclaw.runtime.loop.session.entries import new_entry_id
 from nekoclaw.runtime.loop.tool_history import repair_tool_history
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.loop.turns import AgentTurnContext, AgentTurnDecision
-from nekoclaw.runtime.model import ContextOverflowError, LLMClientProvider, ModelRequestError
+from nekoclaw.runtime.model import (
+    ContextOverflowError,
+    LLMClientProvider,
+    ModelRequestError,
+    RequestRefusedError,
+    window_from_overflow,
+)
 from nekoclaw.runtime.permissions import make_permission_hook
 from nekoclaw.runtime.prompt import build_system_prompt
+from nekoclaw.runtime.snapshot import (
+    REASON_COMPACTED,
+    REASON_MOVED,
+    REASON_OPENED,
+    SystemSnapshot,
+    ToolDefinition,
+    definitions_of,
+    read_snapshot,
+    write_snapshot,
+)
 from nekoclaw.runtime.tools import build_tools
-from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolContext
+from nekoclaw.runtime.tools.base import SessionInbox, SpillStore, ToolContext, ToolError, define_tool
 from nekoclaw.runtime.tools.goal import GOAL_NAMESPACE, GoalState
 from nekoclaw.runtime.tools.jobs import (
     Job,
@@ -110,6 +137,10 @@ logger = logging.getLogger(__name__)
 TRANSCRIPT_FILE = "transcript.jsonl"
 OUTPUTS_DIRECTORY = "outputs"
 TODO_NAMESPACE = "nekoclaw.todos"
+# Which entry holds the text that opened the commission under way (``prompt`` with ``opening``).
+COMMISSION_NAMESPACE = "nekoclaw.commission"
+# The smallest window a session is managed for; ``protocol.ModelConfig`` takes no less.
+MIN_CONTEXT_WINDOW = protocol.MIN_CONTEXT_WINDOW
 # After an abort the run is given this long to unwind before its task is cancelled.
 ABORT_GRACE_SECONDS = 15.0
 CLOSE_GRACE_SECONDS = 5.0
@@ -126,6 +157,28 @@ EventSink = protocol.EventSink
 
 class SessionError(Exception):
     """A session could not be created or a command could not be accepted."""
+
+
+def _stand_in(definition: ToolDefinition) -> AgentTool:
+    """Return a tool that answers for one the session was opened with and that is not there now.
+
+    The model is still told of it (the tool definitions of a session stay
+    as they were), so a call has to be answered: with what it can do about it.
+    """
+
+    async def unavailable(args: dict[str, Any], call: Any) -> str:
+        del args, call
+        raise ToolError(texts.TOOL_UNAVAILABLE.replace("<<NAME>>", definition.name))
+
+    return define_tool(
+        {
+            "name": definition.name,
+            "description": definition.description,
+            # Anything is taken: the call is refused for what it is, not for how it was written.
+            "parameters": {"type": "object", "properties": {}},
+        },
+        unavailable,
+    )
 
 
 def _drive(coroutine: Any) -> Any:
@@ -401,7 +454,39 @@ class TaskAgentSession(SessionInbox):
         self._output_nudges = 0
         self._repeat = RepeatToolGuard()
         self._system = ""
+        # Every tool a call can be carried out by: those there are now, and a
+        # stand-in for each the session was opened with that is not.
         self._tools: list[AgentTool] = []
+        # Those there are now.
+        self._executors: list[AgentTool] = []
+        # What the model is told of, as the snapshot has it.
+        self._wire_tools: list[AgentTool] = []
+        self._workdir = Path(".")
+        self._session_dir = Path(".")
+        # How often the conversation has been summed up, and whether what
+        # follows a summary (a new snapshot) is still to be done.
+        self._compactions = 0
+        self._compaction_due = False
+        self._tokens_before_compaction = 0
+        # The entry of the text that opened the commission under way, which a
+        # summary leaves as it is; and that text as a message, from the
+        # moment it is handed over until it is in the transcript.
+        self._opening_entry_id: str | None = None
+        self._opening_message: AgentMessage | None = None
+        # Whether the last request of the conversation the session was
+        # opened with failed (``_restore``); looked at before its first one.
+        self._last_request_failed = False
+        # Whether the goal the session has was given with this start of it
+        # (``spec.goal``): that one is the goal of what is opened next.
+        self._goal_of_this_start = False
+        # Whether the goal the session was started with has been made the
+        # session's goal, or the commission it was for has been opened.
+        self._goal_given = False
+        # The window the conversation is managed for.
+        self._window = spec.model.context_window
+        # The output a request asks for: what the model is configured for,
+        # less in a small window (``output_allowance``).
+        self._max_output = output_allowance(spec.model.context_window, spec.model.max_output_tokens)
         self._gateway: Any = None
         # Set in _open.
         self._recorder: SessionRecorder
@@ -476,7 +561,7 @@ class TaskAgentSession(SessionInbox):
             emit_report=self._emit_report,
             top_level=spec.top_level,
         )
-        self._tools = build_tools(tool_context, disabled=spec.disabled_tools)
+        executors = build_tools(tool_context, disabled=spec.disabled_tools)
         if spec.gateway is not None:
             # Capabilities the host serves (plugin entries, MCP tools) join the
             # built-in tools. The host decides permissions for them itself.
@@ -486,19 +571,42 @@ class TaskAgentSession(SessionInbox):
                 self._gateway, gateway_tools = await connect_gateway(
                     spec.gateway.url,
                     spec.gateway.token,
-                    reserved={tool.name for tool in self._tools},
+                    reserved={tool.name for tool in executors},
                     disabled=spec.disabled_tools,
                 )
             except GatewayError as exc:
                 raise SessionError(f"the capability gateway cannot be reached: {exc}") from exc
-            self._tools = sorted([*self._tools, *gateway_tools], key=lambda tool: tool.name)
-        self._system = build_system_prompt(
-            tool_names=[tool.name for tool in self._tools],
-            workdir=str(workdir),
-            platform=self._platform,
-            reply_language=spec.reply_language,
-            instructions=spec.instructions,
-        )
+            executors = sorted([*executors, *gateway_tools], key=lambda tool: tool.name)
+        self._executors = executors
+        self._workdir, self._session_dir = workdir, session_dir
+        # Known before the snapshot is looked at, which says how often the
+        # conversation had been summed up when it was made.
+        self._compactions = len(state.compaction_entries) if state is not None else 0
+        # A session that goes on with a conversation begins its requests as
+        # it did before, with the tools it was told of then. A tool that
+        # came since is told of after the next summary, when the head of
+        # the requests changes anyway. One that has nothing said yet is put
+        # together from what there is now.
+        snapshot = await asyncio.to_thread(read_snapshot, session_dir) if state is not None else None
+        if snapshot is not None and snapshot.workdir in ("", str(workdir)):
+            self._adopt(snapshot)
+            if snapshot.compactions is not None and snapshot.compactions != self._compactions:
+                # Summed up since, and stopped before what follows a summary
+                # was done (the session was closed meanwhile): done before
+                # the first request, as it would have been before the next.
+                self._compaction_due = True
+        else:
+            # Nothing to go on with, or made for another working directory:
+            # the data was moved since, and the system prompt names the
+            # directory the tools work in.
+            await self._renew_snapshot(REASON_OPENED if snapshot is None else REASON_MOVED)
+        # Fixed for as long as the session is open: a run looks its tools up
+        # here by name. Every tool there is now, and a stand-in for each the
+        # model is still told of that is not there. What the model is told
+        # of (``_wire_tools``) changes after a summary, and never names a
+        # tool that is not among these.
+        there = {tool.name for tool in executors}
+        self._tools = [*executors, *(tool for tool in self._wire_tools if tool.name not in there)]
 
         self.harness = SessionHarness(
             AgentHarnessConfig(
@@ -530,32 +638,87 @@ class TaskAgentSession(SessionInbox):
             self._recorder.link(SessionInfoEntry(cwd=str(workdir)))
         self.harness.subscribe(self._on_harness_event)
 
-        fixed_text = self._system + json.dumps(
-            [[tool.name, tool.description, dict(tool.parameters)] for tool in self._tools],
-            ensure_ascii=False,
-        )
-        from utils.tokenize import acount_tokens
-
         self.context = ContextManager(
             policy=ContextPolicy(
-                window=spec.model.context_window, max_output=spec.model.max_output_tokens
+                window=spec.model.context_window,
+                max_output=self._max_output,
+                # The part of the window it is summed up from: kept when the
+                # session comes to be managed for a smaller window.
+                threshold_ratio=compact_ratio(spec.model.context_window, spec.model.compact_at),
             ),
             spill=spill,
             summarize=self._summarize,
             new_entry_id=new_entry_id,
-            fixed_tokens=await acount_tokens(fixed_text),
+            fixed_tokens=await self._fixed_tokens(),
             image_retention=dict(spec.image_retention),
             image_pools=dict(spec.image_pools),
         )
+        if self._gateway is not None:
+            self._gateway.compactions = self._compactions
         if spec.goal is not None and self.goals.current is None:
             self.goals.create(spec.goal.objective, spec.goal.max_rounds)
+            self._goal_of_this_start = True
+            self._goal_given = True
         self._emit(
             protocol.StartedEvent(
                 session_id=self.session_id,
                 resumed=state is not None,
-                tools=[tool.name for tool in self._tools],
+                tools=[tool.name for tool in self._wire_tools],
             )
         )
+
+    def _adopt(self, snapshot: SystemSnapshot) -> None:
+        """Use the system prompt and the tool definitions the session was opened with before.
+
+        A tool is carried out by what there is now and described as it was
+        then. One that is not there now gets a stand-in, which says so when
+        it is called.
+        """
+        by_name = {tool.name: tool for tool in self._executors}
+        wire: list[AgentTool] = []
+        for definition in snapshot.tools:
+            tool = by_name.get(definition.name) or _stand_in(definition)
+            wire.append(
+                dataclasses.replace(tool, description=definition.description, parameters=definition.parameters)
+            )
+        self._system = snapshot.system
+        self._wire_tools = wire
+
+    async def _renew_snapshot(self, reason: str) -> None:
+        """Put the system prompt and the tool definitions together from what there is now, and keep them."""
+        spec = self.spec
+        self._system = build_system_prompt(
+            tool_names=[tool.name for tool in self._executors],
+            workdir=str(self._workdir),
+            platform=self._platform,
+            reply_language=spec.reply_language,
+            instructions=spec.instructions,
+        )
+        self._wire_tools = list(self._executors)
+        snapshot = SystemSnapshot(
+            self._system,
+            definitions_of(self._wire_tools),
+            reason,
+            time.time(),
+            workdir=str(self._workdir),
+            compactions=self._compactions,
+        )
+        try:
+            await asyncio.to_thread(write_snapshot, self._session_dir, snapshot)
+        except Exception:  # noqa: BLE001 - the session works without the file
+            # Opened again, it finds the snapshot from before or none, and
+            # goes on with that or with one put together then.
+            logger.warning("the system snapshot of session %s could not be written", self.session_id, exc_info=True)
+
+    async def _fixed_tokens(self) -> int:
+        """Return the size of what every request begins with: the system prompt and the tool definitions."""
+        from utils.tokenize import acount_tokens
+
+        fixed_text = self._system + json.dumps(
+            [[tool.name, tool.description, dict(tool.parameters)] for tool in self._wire_tools],
+            ensure_ascii=False,
+        )
+        return await acount_tokens(fixed_text)
 
     def _restore(self, state: SessionState) -> None:
         by_id = {entry.id: entry for entry in state.entries}
@@ -574,7 +737,14 @@ class TaskAgentSession(SessionInbox):
                 self.todos.restore(custom.data.get("items"))
             elif custom.namespace == GOAL_NAMESPACE:
                 self.goals.restore(custom.data)
+            elif custom.namespace == COMMISSION_NAMESPACE:
+                # The last one counts: the commission the session was on.
+                entry_id = custom.data.get("entry_id")
+                self._opening_entry_id = entry_id if isinstance(entry_id, str) and entry_id else None
+        self._compactions = len(state.compaction_entries)
         self._recorder.last_id = state.active_leaf_id
+        replies = [message for message in self.harness.message_list if isinstance(message, AssistantMessage)]
+        self._last_request_failed = bool(replies) and replies[-1].stop_reason == "error"
 
     # ------------------------------------------------------------------
     # Events and persistence
@@ -621,6 +791,12 @@ class TaskAgentSession(SessionInbox):
             kind = kind_of(message)
         self._recorder.link(entry)
         self.transcript.register(message, entry.id, kind)
+        if message is self._opening_message:
+            # Noted in the transcript, so that a session opened later knows
+            # which text a summary is to leave alone.
+            self._opening_message = None
+            self._opening_entry_id = entry.id
+            self._recorder.link(CustomEntry(namespace=COMMISSION_NAMESPACE, data={"entry_id": entry.id}))
 
     def _on_harness_event(self, event: AgentEvent) -> None:
         sid = self.session_id
@@ -692,7 +868,7 @@ class TaskAgentSession(SessionInbox):
                         reasoning=usage.reasoning,
                         total_tokens=usage.total_tokens,
                         context_tokens=prompt_tokens + usage.output,
-                        context_window=self.spec.model.context_window,
+                        context_window=self._window,
                     )
                 )
 
@@ -712,61 +888,187 @@ class TaskAgentSession(SessionInbox):
     ) -> AsyncIterator[AssistantMessageEvent]:
         # The loop passes a copy of its history. Context management may rewrite
         # the history just before the request, so the request is built from the
-        # live list instead.
-        del messages, session_id
-        return self._model_request(model, system, tools, signal)
+        # live list instead. Likewise the system prompt and the tools: what
+        # the model is told of is what the session holds (``_wire_tools``),
+        # which is put together anew after a summary.
+        del messages, session_id, system, tools
+        return self._model_request(model, signal)
 
     async def _model_request(
         self,
         model: str,
-        system: str,
-        tools: list[AgentTool],
         signal: CancellationToken | None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        from config.nekoclaw_settings import TASK_AGENT_UNSURE_REFUSAL_TOKENS
+
         if signal is None or not signal.is_cancelled():
             self._inject_runtime_context()
-            await self._fit(force=False)
+            failed_before, self._last_request_failed = self._last_request_failed, False
+            long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
+            if long:
+                # The session was opened again with a conversation whose
+                # last request failed, and it is long. Sent as it is, the
+                # request would fail the same way if that was about its
+                # length, and so would every commission after this one.
+                logger.warning("session %s: its last request failed and it is long; summed up first", self.session_id)
+                # Fitted to a window of its own length, so that the request
+                # that sums it up is shorter than what failed; and managed
+                # for the window it had from then on. Why the last request
+                # failed is not known (it may have been a timeout): nothing
+                # is concluded of the model's window from it.
+                window, max_output, policy = self._window, self._max_output, self.context.policy
+                self._assume_window(await self._size())
+                try:
+                    await self._fit(force=True)
+                finally:
+                    self._window, self._max_output, self.context.policy = window, max_output, policy
+            else:
+                await self._fit(force=False)
         retried = False
-        while True:
-            history = _provider_context(self.harness.message_list)
-            # Held back until output follows, so a request that is retried after
-            # an overflow does not announce two responses.
-            held: AssistantStartEvent | None = None
-            try:
-                async for event in self._model.stream_response(
-                    model=model, system=system, messages=history, tools=tools, signal=signal
-                ):
-                    if isinstance(event, AssistantStartEvent):
-                        held = event
-                        continue
-                    if held is not None:
-                        yield held
-                        held = None
-                    yield event
-                return
-            except ContextOverflowError as exc:
-                if retried:
-                    failure = AssistantMessage(
+        # What the session was managed for before a window was assumed for
+        # a retry (after a refusal that did not say it was about length),
+        # to go back to when the retry does not go through.
+        before: tuple[int, int, ContextPolicy] | None = None
+
+        def back() -> None:
+            nonlocal before
+            if before is not None:
+                self._window, self._max_output, self.context.policy = before
+            before = None
+
+        try:
+            while True:
+                for _again in range(2):
+                    if not self._compaction_due:
+                        break
+                    await self._after_compaction()
+                    # What every request begins with was put together anew, and
+                    # may be longer than what the conversation was just fitted
+                    # next to (more to tell, more tools): fitted again, which
+                    # sums up further only if it no longer fits.
+                    await self._fit(force=False)
+                # How much is about to be sent, as the conversation is measured.
+                sent = await self._size()
+                history = _provider_context(self.harness.message_list)
+                # Held back until output follows, so a request that is retried after
+                # an overflow does not announce two responses.
+                held: AssistantStartEvent | None = None
+                answered = False
+                try:
+                    # Said only when it is less than the model is configured
+                    # for, which is what a request asks for unless told otherwise.
+                    less = self._max_output < self.spec.model.max_output_tokens
+                    async for event in self._model.stream_response(
                         model=model,
-                        stop_reason="error",
-                        error_message=(
-                            "the conversation does not fit the model's context window even "
-                            f"after compaction: {exc}"
-                        ),
-                    )
-                    yield AssistantErrorEvent(reason="error", error=failure)
+                        system=self._system,
+                        messages=history,
+                        tools=self._wire_tools,
+                        signal=signal,
+                        **({"max_tokens": self._max_output} if less else {}),
+                    ):
+                        if isinstance(event, AssistantStartEvent):
+                            held = event
+                            continue
+                        if held is not None:
+                            yield held
+                            held = None
+                        answered = answered or isinstance(event, AssistantDoneEvent)
+                        yield event
+                    if answered:
+                        # Shorter, it went through. That does not show it
+                        # was too long: summing up rewrites what was said,
+                        # and a refusal for something in it (a turn the
+                        # provider does not take, words it screens out)
+                        # goes away with that as well. So the session keeps
+                        # the smaller window for as long as it is open,
+                        # which is all it needs to go on, and the host is
+                        # told nothing: it would manage every session with
+                        # the model for that window for a month, and tell
+                        # the user that the model's window is smaller than
+                        # was set.
+                        before = None
+                    # (Not answered: the request ended in an error of
+                    # another kind, or was stopped. The stream ends without
+                    # raising then.)
                     return
-                retried = True
-                logger.warning("context overflow reported by the provider; compacting and retrying")
-                await self._fit(force=True)
+                except RequestRefusedError as exc:
+                    if retried or sent <= TASK_AGENT_UNSURE_REFUSAL_TOKENS:
+                        # Not long enough to be about length, or refused again
+                        # after it was made shorter: reported as it came.
+                        logger.warning("model request failed: %s", exc)
+                        failure = AssistantMessage(model=model, stop_reason="error", error_message=str(exc))
+                        yield AssistantErrorEvent(reason="error", error=failure)
+                        return
+                    retried = True
+                    logger.warning(
+                        "a request of about %d tokens was refused in words that were not recognized; "
+                        "taken for too long, summed up and sent once more: %s",
+                        sent,
+                        exc,
+                    )
+                    managed = (self._window, self._max_output, self.context.policy)
+                    if self._assume_window(sent):
+                        before = managed
+                    await self._fit(force=True)
+                except ContextOverflowError as exc:
+                    # What the provider says of its window now stands in the
+                    # place of one that was only assumed.
+                    back()
+                    self._learn_window(str(exc), sent)
+                    if retried:
+                        failure = AssistantMessage(
+                            model=model,
+                            stop_reason="error",
+                            error_message=(
+                                "the conversation does not fit the model's context window even "
+                                f"after compaction: {exc}"
+                            ),
+                        )
+                        yield AssistantErrorEvent(reason="error", error=failure)
+                        return
+                    retried = True
+                    logger.warning("context overflow reported by the provider; compacting and retrying")
+                    await self._fit(force=True)
+        finally:
+            # However this ended without an answer to the request that was
+            # sent once more (refused again, an error of another kind, a
+            # stop, also one while the conversation was summed up for it):
+            # the window that was assumed was not shown to be anything, and
+            # the session is managed for the one it had.
+            back()
 
     async def _fit(self, *, force: bool) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
         await self.context.fit(
-            self.transcript, force=force, on_compaction=self._persist_compaction
+            self.transcript,
+            force=force,
+            on_compaction=self._persist_compaction,
+            # The commission under way stays as it was handed over.
+            pinned=self._pinned(),
         )
+
+    def _pinned(self) -> tuple[str, ...]:
+        """Return the row a summary leaves word for word: the text that opened the commission under way.
+
+        Not when it is longer than half of what a conversation may fill of
+        the window: kept whole next to what every request begins with, it
+        would leave a summary nothing to shorten, and the request would be
+        refused as too long however often it was summed up. (What a task
+        agent hands to one it starts has no cap, and a window may turn out
+        small.) It is then cut down and summed up like what the user said
+        before it.
+        """
+        opening = self._opening_entry_id
+        if not opening:
+            return ()
+        row = next((row for row in self.transcript.rows() if row.entry_id == opening), None)
+        if row is None:
+            return ()
+        policy = self.context.policy
+        room = (policy.threshold - self.context.fixed_tokens) // 2
+        return (opening,) if estimate_tokens(row.message, policy.image_tokens) <= room else ()
 
     def _persist_compaction(self, compaction: Compaction) -> None:
         self._recorder.link(
@@ -779,6 +1081,86 @@ class TaskAgentSession(SessionInbox):
                 model=self.spec.model.model,
             )
         )
+        self._compactions += 1
+        self._tokens_before_compaction = compaction.tokens_before
+        # What follows a summary is done before the next request, not here:
+        # this is called while the conversation is still being fitted.
+        self._compaction_due = True
+        if self._gateway is not None:
+            # From the next call on the gateway knows that what it handed
+            # over before (a group of tools and how they are used) may be gone.
+            self._gateway.compactions = self._compactions
+
+    async def _after_compaction(self) -> None:
+        """Do what follows a summary of the conversation, before the next request.
+
+        The head of the request changes with a summary anyway, so this is
+        when the system prompt and the tool definitions are put together
+        anew: what the host's instructions hold by now, and the tools there
+        are now, take effect.
+        """
+        await self._renew_snapshot(REASON_COMPACTED)
+        self.context.fixed_tokens = await self._fixed_tokens()
+        self.context.invalidate()
+        # Only now: stopped while the snapshot was written, the next run
+        # does all of this again, and measures against what it sends.
+        self._compaction_due = False
+        self._emit(
+            protocol.CompactedEvent(
+                session_id=self.session_id,
+                count=self._compactions,
+                tokens_before=self._tokens_before_compaction,
+            )
+        )
+
+    async def _size(self) -> int:
+        """Return how long the conversation is, with what every request begins with."""
+        return await self.context.measure(self.transcript.messages)
+
+    def _learn_window(self, said: str, sent: int) -> None:
+        """Manage the conversation for the window a refusal of a request as too long tells of.
+
+        The window the provider stated, if it stated one. If it stated
+        none, the length of the request it refused (``sent``): the window
+        is smaller than that, whatever it is, and without a number the
+        conversation would go on being summed up for the window the session
+        was started with, in requests as long as the one just refused.
+
+        Only for a window smaller than the session's: the request is then
+        fitted to it and sent again, the host is told, and sessions it
+        starts for this model later are given that window from the start.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_INFERRED_WINDOW_MIN_TOKENS
+
+        stated = window_from_overflow(said)
+        if stated is None:
+            if sent < TASK_AGENT_INFERRED_WINDOW_MIN_TOKENS:
+                return
+            stated = sent
+        if self._assume_window(stated):
+            self._tell_window(self._window, said)
+
+    def _assume_window(self, tokens: int) -> bool:
+        """Manage the conversation for a window of ``tokens``, if that is smaller than the one it is managed for."""
+        window = max(int(tokens), MIN_CONTEXT_WINDOW)
+        if window >= self._window:
+            return False
+        logger.info("session %s: managed for a window of %d tokens now", self.session_id, window)
+        self._window = window
+        # The output asked for shrinks with it: the provider counts it
+        # against the window too, and what the conversation is fitted to
+        # (``ContextPolicy``) is the window less the output.
+        self._max_output = min(self._max_output, output_allowance(window, self.spec.model.max_output_tokens))
+        self.context.policy = dataclasses.replace(self.context.policy, window=window, max_output=self._max_output)
+        return True
+
+    def _tell_window(self, window: int, said: str) -> None:
+        """Tell the host the window this session came to be managed for, and what the provider said."""
+        self._emit(
+            protocol.ModelCapabilityEvent(
+                session_id=self.session_id, context_window=window, reason=" ".join(said.split())[:300]
+            )
+        )
 
     async def _summarize(self, messages: list[AgentMessage], max_tokens: int) -> tuple[str, Usage | None]:
         request = [*messages, UserMessage(content=texts.COMPACTION_INSTRUCTION)]
@@ -788,14 +1170,17 @@ class TaskAgentSession(SessionInbox):
             reply = await self._model.complete(
                 system=self._system,
                 messages=repaired,
-                tools=self._tools,
+                # As the requests before it: what a provider cached of them is used.
+                tools=self._wire_tools,
                 max_tokens=max_tokens,
                 signal=signal,
             )
-        except ModelRequestError:
+        except (ModelRequestError, RequestRefusedError, ContextOverflowError):
             if signal is not None and signal.is_cancelled():
                 # An abort must not be mistaken for a failed summary, which would
-                # drop the older part of the conversation.
+                # drop the older part of the conversation. (A request that is
+                # refused outright, or as too long, raises from the stream
+                # itself: looked at here like any other failure.)
                 raise asyncio.CancelledError from None
             raise
         return reply.text, reply.usage
@@ -911,13 +1296,46 @@ class TaskAgentSession(SessionInbox):
         """True while a run is in progress or a background job is still running."""
         return self.running or bool(self.jobs.running())
 
-    def prompt(self, text: str) -> None:
+    def prompt(self, text: str, *, opening: bool = False) -> None:
+        """Hand the session work. ``opening`` marks the text that opens a commission.
+
+        A session takes several commissions, one after the other. The text
+        that opens the one under way stays in the conversation word for
+        word when the rest is summed up: what the commission is, what was
+        said of it and what was picked for it is all in that text.
+        """
         if self._closing:
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress; use steer or follow_up to add to it")
         self._inputs += 1
-        self._begin_run(UserMessage(content=text))
+        message = UserMessage(content=text)
+        if opening:
+            # Its entry is known once the run has taken it (``_record``).
+            self._opening_message = message
+            self._leave_behind()
+        self._begin_run(message)
+
+    def _leave_behind(self) -> None:
+        """Drop what the commission before this one left unfinished: its to-do list and its goal.
+
+        A session is opened again with both as they were, which is right
+        for a commission that goes on. One that is opened now is another
+        piece of work: told of the other's open items before its first
+        request, it would take them for its own, and the other's goal would
+        stand in the way of one of its own.
+        """
+        self.todos.clear()
+        if not self._goal_of_this_start:
+            self.goals.drop()
+            goal = self.spec.goal
+            if goal is not None and not self._goal_given:
+                # The session was started with a goal, and had one from
+                # before that stood in its way: this is the commission the
+                # goal was given for.
+                self.goals.create(goal.objective, goal.max_rounds)
+        self._goal_of_this_start = False
+        self._goal_given = True
 
     def steer(self, text: str) -> None:
         if self._closing:

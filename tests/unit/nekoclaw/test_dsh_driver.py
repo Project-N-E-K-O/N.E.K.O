@@ -363,7 +363,7 @@ async def test_a_session_resumes_in_a_new_process_without_being_told_again(tmp_p
     started = await second.started(spec)
     await second.run("s1", "go on")
 
-    assert started["resumed"] is True
+    assert started["resumed"] is True and second.runtime.resumed("s1") is True
     resumed = second.record("session/resume")
     assert [row["session"] for row in resumed] == [dsh_session] and resumed[0]["pid"] != first.record("session/new")[0]["pid"]
     assert len(second.record("session/new")) == 1
@@ -490,6 +490,8 @@ async def test_a_session_whose_log_is_gone_starts_anew(tmp_path: Path, dsh) -> N
     await second.run("s1", "begin again")
 
     assert started["type"] == "started" and started["resumed"] is False
+    # Told to the host as well, which opens the commission in it anew.
+    assert second.runtime.resumed("s1") is False and second.runtime.resumed("no such session") is False
     assert len(second.record("session/new")) == 2
     assert second.record("session/prompt")[-1]["text"].startswith("[From the host, for this commission]")
     kept = json.loads(Path(spec.session_dir, SESSION_FILE).read_text(encoding="utf-8"))
@@ -1672,3 +1674,74 @@ async def test_the_gateway_is_handed_to_dsh_with_the_sessions_token(tmp_path: Pa
         # In events the tool has the name the gateway gives it, as with the built-in runtime.
         assert driver.events.of("tool_start")[0]["tool_name"] == "capability_call"
         assert driver.events.of("tool_end")[0]["text"] == "first\nsecond"
+
+
+# ---------------------------------------------------------------------------
+# Sessions that take several commissions
+# ---------------------------------------------------------------------------
+
+
+async def test_a_session_that_goes_on_with_another_commission_is_given_its_opening_message_and_nothing_else(
+    tmp_path: Path, dsh
+) -> None:
+    driver = dsh()
+    spec = make_spec(tmp_path, instructions="You work for Lan.", reply_language="English")
+    await driver.started(spec)
+    position = len(driver.events.events)
+    await driver.runtime.prompt("s1", "Commission 1\ntidy the desk", opening=True)
+    await driver.events.wait_ended("s1", start=position)
+    await driver.closed("s1")
+
+    # Opened again for the next commission of the session, with other instructions by now.
+    again = make_spec(tmp_path, instructions="You work for Lan. Index: three entries.", reply_language="English")
+    started = await driver.started(again)
+    position = len(driver.events.events)
+    await driver.runtime.prompt("s1", "Commission 2\nwater the plants", opening=True)
+    await driver.events.wait_ended("s1", start=position)
+
+    assert started["resumed"] is True
+    said = [row["text"] for row in driver.record("session/prompt")]
+    # What the host tells the session was said once, when it began; a commission is the message that opens it.
+    assert "You work for Lan." in said[0] and said[0].rstrip().endswith("Commission 1\ntidy the desk")
+    assert said[1] == "Commission 2\nwater the plants"
+
+
+def test_the_shape_of_a_dsh_process_tells_where_its_conversations_are_summed_up_from() -> None:
+    from nekoclaw.dsh.driver import _shape_tag, shape_of
+
+    preset = shape_of(ModelConfig(model="m", api_key="k", context_window=200_000))
+    told = shape_of(ModelConfig(model="m", api_key="k", context_window=200_000, compact_at=170_000))
+    earlier = shape_of(ModelConfig(model="m", api_key="k", context_window=200_000, compact_at=150_000))
+
+    assert preset.compact_ratio == told.compact_ratio == 0.85 and earlier.compact_ratio == 0.75
+    # A process is started for one shape: sessions that differ in this do not share one.
+    assert _shape_tag(preset) == _shape_tag(told) != _shape_tag(earlier)
+
+
+async def test_a_window_a_sessions_model_endpoint_states_is_told_to_the_host_once(tmp_path: Path, dsh) -> None:
+    driver = dsh()
+    model = ModelConfig(model="model-a", base_url="http://model.test/v1", api_key="k", context_window=200_000)
+    await driver.started(make_spec(tmp_path, "s1", model=model))
+
+    # As the forwarder hands it on when the endpoint refused a request as too long.
+    driver.runtime._on_window("s1", model, 32_768, "The maximum context length is 32768 tokens.")
+    driver.runtime._on_window("s1", model, 32_768, "The maximum context length is 32768 tokens.")
+    # As large as the session's own, or larger: nothing to learn. Of a session that is gone: nobody to tell.
+    driver.runtime._on_window("s1", model, 200_000, "maximum context length is 200000 tokens")
+    driver.runtime._on_window("s1", model, 400_000, "maximum context length is 400000 tokens")
+    driver.runtime._on_window("gone", model, 8_000, "maximum context length is 8000 tokens")
+    # From a request that outlasted its session: under the id there is another by now, with
+    # another model or another endpoint, and the window is not about that one's.
+    other = ModelConfig(model="model-b", base_url="http://model.test/v1", api_key="k", context_window=200_000)
+    elsewhere = ModelConfig(model="model-a", base_url="http://other.test/v1", api_key="k", context_window=200_000)
+    driver.runtime._on_window("s1", other, 16_000, "maximum context length is 16000 tokens")
+    driver.runtime._on_window("s1", elsewhere, 16_000, "maximum context length is 16000 tokens")
+    # Smaller than a session can be managed for: the smallest that can.
+    driver.runtime._on_window("s1", model, 2_048, "maximum context length is 2048 tokens")
+
+    told = driver.events.of("model_capability")
+    assert [(event["session_id"], event["context_window"], event["supports_images"]) for event in told] == [
+        ("s1", 32_768, None),
+        ("s1", 4_000, None),
+    ]
+    assert "maximum context length is 32768" in told[0]["reason"]

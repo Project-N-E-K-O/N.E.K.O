@@ -180,6 +180,8 @@ class Shape:
     context_window: int
     max_output_tokens: int
     supports_images: bool
+    # The part of the window a conversation may fill before dsh sums it up.
+    compact_ratio: float = 0.85
 
 
 def slot_model(index: int) -> str:
@@ -206,7 +208,9 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
 
     # The built-in runtime's margin (design section 8.9): dsh's fixed 65536
     # leaves nothing, or less than nothing, of a small window.
-    headroom = min(65_536, shape.context_window // 8)
+    from nekoclaw.runtime.context import headroom_of
+
+    headroom = headroom_of(shape.context_window)
     models = [
         {
             "id": slot_model(index),
@@ -270,7 +274,14 @@ def build_patch(*, shape: Shape, endpoint: str, slots: int, home: Path) -> list[
         },
         {
             "id": "compaction-basic",
-            "config": {"headroomTokens": headroom, "maxTokens": min(shape.max_output_tokens, max(1, headroom))},
+            "config": {
+                # As in the built-in runtime: summed up from this part of the
+                # window on, and no later than where the output and the
+                # margin begin.
+                "thresholdRatio": shape.compact_ratio,
+                "headroomTokens": headroom,
+                "maxTokens": min(shape.max_output_tokens, max(1, headroom)),
+            },
         },
         {"id": "spill-local", "config": {"root": str(spill_dir(home)), "cleanupPeriodDays": DSH_SPILL_KEPT_DAYS}},
         *({"id": row, "disabled": True} for row in DISABLED_ROWS),
