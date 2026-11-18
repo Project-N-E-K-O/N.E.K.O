@@ -24,6 +24,7 @@ should receive the standard OpenAI body unless it is explicitly recognized by
 from __future__ import annotations
 
 from email.message import Message
+from typing import NamedTuple
 from urllib.parse import parse_qsl, urlparse, urlunparse
 
 
@@ -136,43 +137,61 @@ def openai_tts_extra_body(base_url: str) -> dict[str, int | bool]:
     return {}
 
 
-def openai_tts_pcm_format(content_type: str | None) -> tuple[int | None, int]:
-    """Read ``(sample_rate, channels)`` advertised by a raw PCM ``Content-Type``.
+class OpenAITtsPcmFormat(NamedTuple):
+    """Raw PCM layout advertised by a speech response ``Content-Type``."""
+
+    # ``None`` when the header states no usable rate; callers then fall back
+    # to ``OPENAI_TTS_PCM_SAMPLE_RATE``.
+    sample_rate: int | None
+    channels: int
+    # ``audio/L16`` is network byte order (RFC 2586); OpenAI ``pcm`` is little-endian.
+    big_endian: bool
+
+
+def _bounded_int(raw: str | None, low: int, high: int) -> int | None:
+    try:
+        value = int(str(raw or "").strip())
+    except ValueError:
+        return None
+    return value if low <= value <= high else None
+
+
+def openai_tts_pcm_format(content_type: str | None) -> OpenAITtsPcmFormat:
+    """Read the raw PCM layout advertised by a speech response ``Content-Type``.
 
     Some compatible providers ignore the 24 kHz contract and describe the real
     format in the header instead, e.g. ``audio/pcm; rate=44100``. ``rate`` (or
-    ``sample_rate``) and ``channels`` are honored; the rate is ``None`` when the
-    header does not state a usable one, so callers can fall back to
-    ``OPENAI_TTS_PCM_SAMPLE_RATE``. Channels default to mono.
+    ``sample_rate``) and ``channels`` are honored; a malformed header yields the
+    OpenAI defaults rather than failing synthesis. Samples are 16-bit either way.
     """
 
     message = Message()
     message["Content-Type"] = str(content_type or "")
+    try:
+        raw_params = message.get_params() or []
+    except Exception:
+        # Malformed RFC 2231 continuations can raise inside the stdlib parser;
+        # the body may still be playable, so keep the default contract.
+        raw_params = []
+    media_type = message.get_content_type().lower() if raw_params else ""
     params = {
-        str(key).lower(): str(value).strip()
-        for key, value in (message.get_params() or [])[1:]
+        str(key).lower(): value
+        for key, value in raw_params[1:]
+        if isinstance(value, str)
     }
 
     sample_rate = None
-    raw_rate = params.get("rate") or params.get("sample_rate")
-    if raw_rate:
-        try:
-            parsed_rate = int(raw_rate)
-        except ValueError:
-            parsed_rate = 0
-        if _PCM_HEADER_MIN_SAMPLE_RATE <= parsed_rate <= _PCM_HEADER_MAX_SAMPLE_RATE:
-            sample_rate = parsed_rate
+    for key in ("rate", "sample_rate"):
+        sample_rate = _bounded_int(
+            params.get(key),
+            _PCM_HEADER_MIN_SAMPLE_RATE,
+            _PCM_HEADER_MAX_SAMPLE_RATE,
+        )
+        if sample_rate is not None:
+            break
 
-    channels = 1
-    raw_channels = params.get("channels")
-    if raw_channels:
-        try:
-            parsed_channels = int(raw_channels)
-        except ValueError:
-            parsed_channels = 0
-        if 1 <= parsed_channels <= _PCM_HEADER_MAX_CHANNELS:
-            channels = parsed_channels
-    return sample_rate, channels
+    channels = _bounded_int(params.get("channels"), 1, _PCM_HEADER_MAX_CHANNELS) or 1
+    return OpenAITtsPcmFormat(sample_rate, channels, media_type == "audio/l16")
 
 
 def build_openai_tts_payload(text: str, model: str, voice: str) -> dict[str, str]:
