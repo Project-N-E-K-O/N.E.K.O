@@ -687,12 +687,19 @@ async def shutdown():
     # now, local and quick, ahead of the steps that may spend the cancellation
     # budget; like ``aclose``, keys first and the browser afterwards.
     keys_released = False
+    keys_tried = False
 
     async def release_held_keys():
-        nonlocal keys_released
+        nonlocal keys_released, keys_tried
+        keys_tried = True
         keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
 
     await step(release_held_keys, "Agent held keys release")
+    if not keys_tried:
+        # The host's cleanup took all of the cancellation budget, so the step
+        # was skipped. Releasing the keys must not be: it is handed to a
+        # thread of its own and not waited for, like queueing the final save.
+        builtin_provider.release_keys_unwaited()
 
     for t in list(Modules._persistent_tasks):
         if not t.done():

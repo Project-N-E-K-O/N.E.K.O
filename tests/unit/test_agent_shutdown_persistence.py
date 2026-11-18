@@ -41,6 +41,7 @@ def shutdown_fixture(tmp_path, monkeypatch):
         browser_unclosed=lambda: False,
         kill_browser=lambda: events.append("browser-killed"),
         release_keys=lambda: phase("keys"),
+        release_keys_unwaited=lambda: events.append("keys-unwaited"),
     )
     monkeypatch.setattr(api_runtime, "builtin_provider", provider)
     monkeypatch.setattr(api_runtime, "_loop_stall_watchdog", SimpleNamespace(stop=lambda: events.append("watchdog-stop")))
@@ -70,6 +71,7 @@ def shutdown_fixture(tmp_path, monkeypatch):
 def assert_cleaned(fixture):
     assert fixture.events[:2] == ["tools-stop", "watchdog-stop"]
     assert set(fixture.events) >= {"host", "plugin", "embedded", "bridge", "browser", "keys", "status"}
+    assert "keys-unwaited" not in fixture.events, "only for a skipped release step"
     assert fixture.modules.agent_bridge is None
     assert not fixture.modules._persistent_tasks
     assert not fixture.modules._background_tasks
@@ -328,6 +330,10 @@ async def test_agent_submits_stats_after_cancel_budget_expires(shutdown_fixture,
         with pytest.raises(asyncio.CancelledError, match="exit"):
             task.result()
         assert len(submitted) == 1
+        # The host took the whole budget: the release step was skipped, the
+        # release itself was still handed off.
+        assert "keys" not in fixture.events
+        assert "keys-unwaited" in fixture.events
     finally:
         release.set()
         task.cancel()

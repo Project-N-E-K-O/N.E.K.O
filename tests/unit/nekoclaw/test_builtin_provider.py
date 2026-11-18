@@ -751,6 +751,21 @@ async def test_letting_go_of_the_keys_says_whether_anything_is_left_held(rig: Ri
     assert await BuiltinToolProvider(state=Switches()).release_keys() is True
 
 
+async def test_letting_go_of_the_keys_unwaited_does_it_on_a_daemon_thread(rig: Rig) -> None:
+    rig.provider.release_keys_unwaited()
+    for _ in range(200):
+        if rig.desktop.release_threads:
+            break
+        await asyncio.sleep(.01)
+    assert len(rig.desktop.release_threads) == 1
+    thread = rig.desktop.release_threads[0]
+    assert thread is not threading.current_thread() and thread.daemon
+    rig.desktop.release_error = RuntimeError("keyUp failed")
+    rig.provider.release_keys_unwaited()  # A failure stays in its thread.
+    # Never made a desktop: nothing to hand off.
+    BuiltinToolProvider(state=Switches()).release_keys_unwaited()
+
+
 async def test_a_browser_counts_as_unclosed_only_while_the_browser_tools_still_hold_one() -> None:
     bare = BuiltinToolProvider(state=Switches())
     # No browser tools were made: nothing can have been left unclosed.

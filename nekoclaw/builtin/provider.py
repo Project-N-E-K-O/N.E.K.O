@@ -479,6 +479,25 @@ class BuiltinToolProvider:
             logger.debug("releasing held keys failed", exc_info=True)
             return False
 
+    def release_keys_unwaited(self) -> None:
+        """Hand letting go of held keys and buttons to a thread of its own, not waited for.
+
+        For a shutdown with no time left to wait for ``release_keys``: the
+        release is still tried, and nothing waits for it. A daemon thread, so
+        it cannot hold up the process's exit either.
+        """
+        desktop = self._desktop
+        if desktop is None:
+            return
+
+        def release() -> None:
+            try:
+                desktop.release_held()
+            except Exception:  # noqa: BLE001 - shutting down goes on
+                logger.debug("releasing held keys failed", exc_info=True)
+
+        threading.Thread(target=release, name="nekoclaw-release-keys", daemon=True).start()
+
     async def aclose(self) -> None:
         """Let go of everything; for shutting down."""
         await self.release_keys()
