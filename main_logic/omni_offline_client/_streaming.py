@@ -847,26 +847,48 @@ class _StreamingMixin:
         #    greeting / agent callback via prompt_ephemeral), so this reply isn't
         #    answering the screen-based talk anymore. History only grows by
         #    appends between staging and this read (the user hasn't been appended
-        #    yet), so a length change means an intervening AI turn (Codex P2).
+        #    yet), so a length change means an intervening AI turn (Codex P2); or
+        #  - revoked: the screen consent it was staged under no longer holds.
+        #    Checked again after the last await before message assembly:
+        #    clearing the slot does not reach the copy this turn already holds.
         # A few lightweight callers/tests intentionally construct the client via
         # ``__new__`` and wire only the fields needed for one streaming turn.
         # Treat an absent staging slot exactly like an empty slot so the optional
         # proactive-vision feature does not break those legacy construction paths.
         proactive_image = getattr(self, "_proactive_image_to_inject", None)
+        _proactive_consent_check = getattr(self, "_proactive_image_consent_check", None)
+
+        def _proactive_consent_revoked() -> bool:
+            if _proactive_consent_check is None:
+                return False
+            try:
+                return not _proactive_consent_check()
+            except Exception:
+                # Unreadable consent must not let the screenshot through.
+                return True
+
+        def _drop_revoked_proactive_image() -> None:
+            logger.info("Proactive screenshot dropped: screen consent revoked")
+            # Leave a screenshot staged by a newer round alone.
+            if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                self.set_proactive_screenshot(None)
+
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
                 > _PROACTIVE_SCREENSHOT_TTL_SECONDS
             )
             _superseded = len(self._conversation_history) != self._proactive_image_history_len
-            if _expired or _superseded:
+            _revoked = _proactive_consent_revoked()
+            if _expired or _superseded or _revoked:
                 logger.info(
-                    "Proactive screenshot dropped (expired=%s superseded=%s)",
-                    _expired, _superseded,
+                    "Proactive screenshot dropped (expired=%s superseded=%s revoked=%s)",
+                    _expired, _superseded, _revoked,
                 )
                 self._proactive_image_to_inject = None
                 self._proactive_image_staged_at = 0.0
                 self._proactive_image_history_len = 0
+                self._proactive_image_consent_check = None
                 proactive_image = None
         # Plugin `read` frames sit in their own quota-bounded list. Instances
         # built via __new__ (tests, legacy callers) never ran __init__, so read
@@ -988,14 +1010,17 @@ class _StreamingMixin:
                     if _queue is not None:
                         _queue[0:0] = plugin_images
 
-            try:
-                _attached_images, _budget_notice = await fit_images_to_turn_budget(
-                    _ordered_images,
-                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
-                )
-            except BaseException:
-                _restore_consumed_queues()
-                raise
+            async def _fit_ordered_images():
+                try:
+                    return await fit_images_to_turn_budget(
+                        _ordered_images,
+                        TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                    )
+                except BaseException:
+                    _restore_consumed_queues()
+                    raise
+
+            _attached_images, _budget_notice = await _fit_ordered_images()
             # Frame-bus labels correspond by index and remain valid only with unchanged counts: rung 0
             # normalization and recompression map images one-to-one; sampling/dropping change counts,
             # and outputs do not reveal their original indices. Fall back to unknown then: labeling
@@ -1045,6 +1070,20 @@ class _StreamingMixin:
                             "could not report the image trim to the user: %s",
                             _notice_error,
                         )
+            # Last consent check: no await from here to the request being built.
+            # The fit may have re-encoded the screenshot, so fit again without it
+            # rather than look for it in the result.
+            if proactive_image and _proactive_consent_revoked():
+                _drop_revoked_proactive_image()
+                proactive_image = None
+                _ordered_images = _ordered_images[1:]
+                _ordered_sources = _ordered_sources[1:]
+                _attached_images, _ = await _fit_ordered_images()
+                _attached_sources = (
+                    _ordered_sources
+                    if len(_attached_images) == len(_ordered_images)
+                    else [_FRAME_SOURCE_UNKNOWN] * len(_attached_images)
+                )
             for img_b64 in _attached_images:
                 content.append({
                     "type": "image_url",
@@ -1059,7 +1098,10 @@ class _StreamingMixin:
                 "text": _user_text_with_prefix,
             })
 
-            user_message = HumanMessage(content=content)
+            # Only the proactive screenshot was staged and it was dropped above.
+            user_message = HumanMessage(
+                content=content if _attached_images else _user_text_with_prefix
+            )
             # Report what was ATTACHED, not what was staged. The trim above
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
@@ -1087,6 +1129,7 @@ class _StreamingMixin:
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
+            self._proactive_image_consent_check = None
         else:
             # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
