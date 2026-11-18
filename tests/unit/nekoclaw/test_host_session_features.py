@@ -1570,6 +1570,24 @@ async def test_a_copy_that_was_no_longer_waited_for_is_removed_when_it_is_made_a
     assert not Path(target).exists()
     assert await host.ledger.forks_of(first.id) == []
 
+    # The same when whoever asked for the copy is cancelled while the runtime is waited for.
+    asked.clear()
+    runtime.fork = slow
+    monkeypatch.setattr(settings, "TASK_AGENT_FORK_SECONDS", 30.0)
+    asking = asyncio.ensure_future(host.fork_session(first.id))
+    await wait_until(lambda: asked, what="the runtime being asked for the copy")
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+    runtime.fork = fork
+    assert asking.cancelled() and manager._copying_from == {} and manager._forks == {}
+    (target,) = manager._forks_given_up.values()
+    (args, kwargs), = asked
+    await fork(*args, **kwargs)
+    await wait_until(lambda: manager._forks_given_up == {}, what="the late copy being taken note of")
+    await manager.settle()
+    assert not Path(target).exists()
+    assert await host.ledger.forks_of(first.id) == []
+
 
 async def test_what_was_kept_for_a_commission_goes_when_it_is_stopped_before_it_had_a_place(hosts, tmp_path):
     release, wait = _gate()

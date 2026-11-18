@@ -880,6 +880,9 @@ async def test_a_session_is_not_started_while_its_record_is_being_copied(tmp_pat
                 break
             await asyncio.sleep(0.01)
         assert "copy" not in runtime.core._forking
+        # What became of it is said all the same, for whoever still has to know that a record was written.
+        made = [event for event in recorder.of("forked") if event["session_id"] == "copy"]
+        assert len(made) == 1 and made[0]["source_session_id"] == "s1" and made[0]["entries"] > 0
         # Written whole, it is started like any.
         mark = len(recorder.events)
         await runtime.start(copy)

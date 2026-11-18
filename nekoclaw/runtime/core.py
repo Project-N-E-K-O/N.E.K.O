@@ -231,11 +231,28 @@ class RuntimeCore:
             if copying is not None and not copying.done():
                 # Whoever waited was cancelled, and the thread still
                 # writes: the session is not to be copied or started
-                # again before it is through.
+                # again before it is through. What became of the copy
+                # is said then, as it would have been: a host that no
+                # longer waits for it still has to learn that a record
+                # was written, to remove it.
                 def written(done: "asyncio.Future[Any]") -> None:
                     self._forking.discard(session_id)
-                    if not done.cancelled():
-                        done.exception()
+                    if done.cancelled():
+                        return
+                    failed = done.exception()
+                    if failed is None:
+                        made = done.result()
+                        self._emit(
+                            protocol.dump(
+                                protocol.ForkedEvent(
+                                    session_id=session_id, source_session_id=source_id, upto=made.upto, entries=made.entries
+                                )
+                            )
+                        )
+                    elif isinstance(failed, ForkError):
+                        self._reject(session_id, "fork", str(failed))
+                    else:
+                        self._reject(session_id, "fork", f"{type(failed).__name__}: {failed}")
 
                 copying.add_done_callback(written)
             else:

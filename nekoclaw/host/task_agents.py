@@ -3506,6 +3506,11 @@ class TaskAgentManager:
             # It may still write the copy: removed when it says it has.
             self._forks_given_up[session_id] = str(target_dir)
             raise ForkRefused("the runtime did not answer in time") from None
+        except asyncio.CancelledError:
+            # Whoever asked for the copy is gone, and the runtime may write
+            # it all the same: likewise removed when it says it has.
+            self._forks_given_up[session_id] = str(target_dir)
+            raise
         finally:
             self._forks.pop(session_id, None)
         if event.get("type") != "forked":
@@ -3923,6 +3928,7 @@ class TaskAgentManager:
         for waiting in list(self._forks.values()):
             if not waiting.done():
                 waiting.set_exception(ForkRefused("the host is shutting down"))
+        self._forks_given_up.clear()
         queued = list(self._queue)
         self._queue.clear()
         for commission_id in queued:
