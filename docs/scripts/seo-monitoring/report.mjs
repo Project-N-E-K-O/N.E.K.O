@@ -1244,7 +1244,8 @@ function renderBingMarkdown(sites, rankings) {
   lines.push('', '| 关键词组 | 关键词 | 状态 | 自然排名 | 命中 URL |', '|---|---|---|---:|---|')
   for (const segment of rankings) {
     for (const row of segment.rows) {
-      const rank = row.status === 'OBSERVED' ? row.rank ?? '本次采样未命中' : 'N/A'
+      const rank = row.status === 'OBSERVED' ? row.rank ?? '本次采样未命中'
+        : row.confirmedRank ? `已见第 ${row.confirmedRank} 名，最佳名次未确认` : 'N/A'
       lines.push(`| ${escapeCell(segment.label)} | ${escapeCell(row.keyword)} | ${searchStatusCell(row)} | ${rank} | ${escapeCell(row.matchedUrl ?? 'N/A')} |`)
     }
   }
@@ -1309,7 +1310,8 @@ function renderRegionalSearch(sites, baiduRanking) {
   ]
   for (const engine of sources) {
     const verification = searchStatusCell(engine.verification)
-    const proof = engine.verification.url ? `${verification} · ${escapeCell(engine.verification.url)}` : verification
+    const urls = [...new Set([engine.verification.url, engine.verification.finalUrl].filter(Boolean))]
+    const proof = [verification, ...urls.map(escapeCell)].join(' · ')
     lines.push(`| ${escapeCell(engine.site)} | ${escapeCell(engine.label)} | ${searchStatusCell(engine.rankings)} | ${searchStatusCell(engine.performance)} | ${proof} | ${escapeCell(engine.crawler)} · ${searchStatusCell(engine.robots)} | ${searchStatusCell(engine.sitemap)} |`)
   }
   for (const baidu of sources.filter(engine => engine.id === 'baidu')) {

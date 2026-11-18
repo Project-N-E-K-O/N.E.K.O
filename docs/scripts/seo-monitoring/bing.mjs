@@ -195,16 +195,19 @@ export async function collectBingRankings(definition, {
       const match = ranked
         .filter(item => domainMatchesTarget(item.candidate, config.targetDomain))
         .sort((left, right) => left.rank - right.rank)[0]
-      if (organic.some(item => (
+      const missingTargetRank = organic.some(item => (
         (!Number.isInteger(item.rank) || item.rank <= 0) && domainMatchesTarget(item.candidate, config.targetDomain)
-      ))) {
-        rows.push({ ...row, status: 'UNKNOWN', reason: '目标域名结果缺少有效自然排名' })
-        continue
-      }
-      if (organic.some(item => !item.candidate && (
+      ))
+      const missingDomain = organic.some(item => !item.candidate && (
         !Number.isInteger(item.rank) || item.rank <= 0 || item.rank < (match?.rank ?? SERP_DEPTH + 1)
-      ))) {
-        rows.push({ ...row, status: 'UNKNOWN', reason: '部分自然结果缺少可识别的域名' })
+      ))
+      if (missingTargetRank || missingDomain) {
+        rows.push({
+          ...row,
+          ...(match ? { confirmedRank: match.rank, matchedUrl: match.url ?? null } : {}),
+          status: 'UNKNOWN',
+          reason: missingTargetRank ? '目标域名结果缺少有效自然排名' : '部分自然结果缺少可识别的域名',
+        })
         continue
       }
       rows.push({ ...row, status: 'OBSERVED', rank: match?.rank ?? null, matchedUrl: match?.url ?? null })

@@ -76,6 +76,7 @@ async function jsonRequest(url, {
   fetchImpl = globalThis.fetch,
   signal,
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  strictJson = false,
   ...options
 } = {}) {
   const response = await fetchImpl(url, {
@@ -93,6 +94,7 @@ async function jsonRequest(url, {
   try {
     payload = JSON.parse(source)
   } catch {
+    if (response.ok && strictJson) throw new Error('Invalid JSON response')
     // The status code is sufficient for a sanitized diagnostic.
   }
   if (!response.ok) {
@@ -280,6 +282,7 @@ async function collectGscPropertyDay(analyticsUrl, range, { accessToken, fetchIm
     const payload = await jsonRequest(analyticsUrl, {
       accessToken,
       fetchImpl,
+      strictJson: true,
       method: 'POST',
       body: JSON.stringify({
         ...range,

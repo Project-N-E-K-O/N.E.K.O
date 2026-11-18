@@ -296,4 +296,6 @@ test('Bing cannot confirm ranks when an unresolved result could rank the target 
   assert.deepEqual(report.rows.map(({ status, rank }) => [status, rank]), [
     ['UNKNOWN', null], ['UNKNOWN', null], ['UNKNOWN', null], ['OBSERVED', 6],
   ])
+  assert.equal(report.rows[1].confirmedRank, 6)
+  assert.equal(report.rows[2].confirmedRank, 6)
 })

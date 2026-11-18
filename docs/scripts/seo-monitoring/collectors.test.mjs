@@ -164,7 +164,7 @@ test('GSC collector paginates each requested period', async () => {
       if (body.dataState === 'all' && body.dimensions?.[0] === 'date') {
         return jsonResponse({ metadata: { first_incomplete_date: '2026-07-21' }, rows: [] })
       }
-      if (body.aggregationType === 'byProperty') return jsonResponse({}, 403)
+      if (body.aggregationType === 'byProperty') return new Response('<html>Error page</html>')
       starts.push(`${body.startDate}:${body.startRow}`)
       if (body.startRow === 0) {
         return jsonResponse({ rows: [

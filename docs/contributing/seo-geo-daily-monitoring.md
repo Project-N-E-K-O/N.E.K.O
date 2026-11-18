@@ -80,6 +80,7 @@ CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.
 - 轮询到期时，日报保留已报告费用和每个已接收任务的 `taskId`，待取结果标记 `UNKNOWN`。用原 DataForSEO 账号和该 ID 调用 `GET /v3/serp/baidu/organic/task_get/advanced/{taskId}`，30 天内可免费续查。重新运行 `paid` 会提交新任务并再次计费。 [百度结果查询](https://docs.dataforseo.com/v3/serp/baidu/organic/task_get/advanced/)
 - 公开探针检查官网的验证文件、robots.txt 对首页的规则和 sitemap。百度还检查首页及最新生产推送回执，复用已有的 `SEO_REPORTS_TOKEN` 读取官网仓库有权限的 Actions 产物。如果没有可读取的回执，日报显示 `UNKNOWN`。收录和搜索表现可在站长平台人工查看。 [百度站长平台工具说明](https://ziyuan.baidu.com/college/articleinfo?id=3170)
 - 搜狗、360、头条的站长排名与搜索表现显示 `UNSUPPORTED`，验证数据来自官网公开探针。
+- 公开探针从配置的官网地址发起请求，并跟随 HTTP 重定向。验证文件探针记录初始和最终地址，两者一致且内容符合当前文件格式时才显示 `OBSERVED`。
 
 ## 各搜索引擎每日统计
 
