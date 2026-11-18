@@ -1292,7 +1292,7 @@ async def test_a_copy_holds_what_is_on_the_record_and_not_what_the_other_session
     spec = make_spec(tmp_path)
     try:
         await runtime.start(spec)
-        await runtime.prompt("s1", "Do the first.")
+        await runtime.prompt("s1", "Do the first.", opening=True)
         await recorder.wait_ended("s1")
         writer = runtime.core._sessions["s1"]._recorder
         append = writer._append_blocking
@@ -1319,7 +1319,13 @@ async def test_a_copy_holds_what_is_on_the_record_and_not_what_the_other_session
         copied = (Path(copy.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
         assert "The first is done." in on_record and "The second is done." not in on_record
         assert "The first is done." in copied and "The second is done." not in copied and "Do the second." not in copied
-        assert made["entries"] == len([entry for entry in _entries(Path(spec.session_dir)) if entry.type != "custom"])
+        there = [entry for entry in _entries(Path(spec.session_dir)) if entry.type != "leaf"]
+        here = [entry for entry in _entries(Path(copy.session_dir)) if entry.type != "leaf"]
+        # Every entry of the record, the mark of the commission that was opened among them, and
+        # then the mark of the copy; the count is of what was copied.
+        assert any(entry.type == "custom" for entry in there)
+        assert [entry.id for entry in here[:-1]] == [entry.id for entry in there]
+        assert here[-1].type == "custom" and made["entries"] == len(there)
     finally:
         await runtime.shutdown()
 
@@ -1354,8 +1360,10 @@ async def test_a_copy_that_was_still_being_prepared_when_the_runtime_shut_down_i
         # The runtime is shut down meanwhile, and that is over: whoever asked for the copy may have
         # tidied up after it, and listens no longer.
         await runtime.core.shutdown(timeout=0.05)
-        go.set()
+        # Let go of then and there, while what it waited for is still not through: it says once
+        # that it is not made, and its id is free.
         await asyncio.wait_for(forking, 10)
+        assert not go.is_set()
 
         refused = await recorder.wait_for(
             lambda event: event.get("type") == "error" and event.get("command") == "fork", start=mark
@@ -1364,7 +1372,12 @@ async def test_a_copy_that_was_still_being_prepared_when_the_runtime_shut_down_i
         # Nothing was written behind its back, and the id is not left taken.
         assert not [event for event in recorder.events[mark:] if event.get("type") == "forked"]
         assert not (Path(copy.session_dir) / TRANSCRIPT_FILE).exists()
-        assert "copy" not in runtime.core._forking and not runtime.core._copying
+        assert "copy" not in runtime.core._forking and not runtime.core._copying and not runtime.core._preparing
+        # The same copy can be asked for again: the other session is closed by now, and its record is there.
+        mark = len(recorder.events)
+        await runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        made = await recorder.wait_for(lambda event: event.get("type") == "forked", start=mark)
+        assert made["session_id"] == "copy" and made["entries"] > 0
     finally:
         go.set()
         await runtime.shutdown()
@@ -1426,6 +1439,7 @@ async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
     session, events = await open_session(spec, llm)
     try:
         await _seed(session, events, llm)
+        length = len(session.harness.message_list)
         writer = session._recorder
         append = writer._append_blocking
 
@@ -1439,18 +1453,111 @@ async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
         mark = len(events.events)
         session.compact()
         assert (await events.wait_ended(start=mark))["reason"] == "completed"
-        # The summary is in this conversation, and not on the record: a session opened from the
-        # record later finds what was said before it. The host is not told that it was summed up.
-        assert session._compactions == 1 and not events.of("compacted")
+        # The record did not take the summary: the conversation is what it was, as the record has
+        # it and as a session opened from the record later finds it. It is not counted, here or
+        # in the snapshot, and the host is not told that the conversation was summed up.
+        assert not events.of("compacted")
+        assert len(session.harness.message_list) == length and session._compactions == 0
+        assert session._compaction_due is False and not read_snapshot(Path(spec.session_dir)).compactions
         assert '"type":"compaction"' not in (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
 
-        # One the record takes is told of, as before. (More is said first: there is something to sum up.)
+        # Summed up again once the record takes it: told of, and the summary stands for what was
+        # said, all of which is on the record.
         writer._append_blocking = append
-        await _seed(session, events, llm)
-        llm.add(say("## Current Work\n- eight steps are done"), finish())
+        llm.add(say("## Current Work\n- said again: the four steps are done"), finish())
         mark = len(events.events)
         session.compact()
         await events.wait_ended(start=mark)
-        assert len(events.of("compacted")) == 1
+        assert len([event for event in events.events[mark:] if event.get("type") == "compacted"]) == 1
+        on_record = _entries(Path(spec.session_dir))
+        (summary,) = [entry for entry in on_record if entry.type == "compaction"]
+        assert "said again: the four steps are done" in summary.summary
+        assert set(summary.replaces_entry_ids) <= {entry.id for entry in on_record}
     finally:
         await session.close()
+
+
+# ---------------------------------------------------------------------------
+# The eleventh batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_a_copy_of_a_copy_that_ends_in_what_the_first_session_said_reads_what_that_one_kept(tmp_path: Path) -> None:
+    # A long result is cut in the conversation and kept whole in a file of the first session.
+    first = make_spec(tmp_path)
+    session, events = await open_session(first, ScriptedLLM([[say("Read."), finish()]]))
+    await _ask(session, events, "Read the long file.")
+    await session.close()
+    kept = Path(first.session_dir) / "outputs" / "pwsh-call-1.txt"
+    kept.parent.mkdir(parents=True, exist_ok=True)
+    kept.write_text("the whole of a long result\n", encoding="utf-8")
+    said_then = [entry.id for entry in _entries(Path(first.session_dir)) if entry.type == "message"][-1]
+
+    # A copy of it, in which more is said; and a copy of that one which ends where the first did.
+    second = make_spec(tmp_path, "second")
+    fork_record(Path(first.session_dir), Path(second.session_dir))
+    session, events = await open_session(second, ScriptedLLM([[say("More."), finish()]]))
+    await _ask(session, events, "Say more.")
+    await session.close()
+    third = make_spec(tmp_path, "third")
+    fork_record(Path(second.session_dir), Path(third.session_dir), upto=said_then)
+
+    # The mark of where the first kept its output lies behind where this copy ends: carried along.
+    mark = _entries(Path(third.session_dir))[-1]
+    assert mark.data["outputs"] == str(Path(second.session_dir) / "outputs")
+    assert mark.data["outputs_behind"] == [str(kept.parent)]
+    # (A copy of all of it holds that mark itself, and names nothing behind it.)
+    whole = make_spec(tmp_path, "whole")
+    fork_record(Path(second.session_dir), Path(whole.session_dir))
+    assert "outputs_behind" not in _entries(Path(whole.session_dir))[-1].data
+
+    asks: list[dict[str, Any]] = []
+
+    async def decide(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        asks.append({"session": session_id, **payload})
+        return {"allow": payload["category"] == "workdir_files", "reason": "the user said no"}
+
+    reader = ScriptedLLM([[call("read", {"file_path": str(kept)}), finish("tool_calls")], [say("Seen."), finish()]])
+    copy, copy_events = await open_session(third, reader, HostCallbacks(decide_permission=decide))
+    try:
+        await _ask(copy, copy_events, "Look at what was kept.")
+        (read,) = [event for event in copy_events.of("tool_end") if event["tool_name"] == "read"]
+        # Read without anybody being asked, as the copy it was made from reads it.
+        assert read["is_error"] is False and "the whole of a long result" in read["text"]
+        assert not [ask for ask in asks if ask.get("category") == "outside_read"]
+    finally:
+        await copy.close()
+
+
+async def test_a_copy_whose_preparing_ends_just_as_the_runtime_begins_to_shut_down_is_not_made(tmp_path: Path) -> None:
+    recorder = Recorder()
+    runtime = _runtime({"s1": ScriptedLLM([[say("Done."), finish()]])}, recorder)
+    spec = make_spec(tmp_path)
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do it.")
+        await recorder.wait_ended("s1")
+        source = runtime.core._sessions["s1"]
+        flush = source.flush
+
+        async def written_as_the_shutdown_begins() -> None:
+            await flush()
+            # A shutdown begins in this moment: after everything the copy waited for, and before
+            # the copying is handed to its thread.
+            runtime.core._shutdowns_begun += 1
+
+        source.flush = written_as_the_shutdown_begins
+        copy = make_spec(tmp_path, "copy")
+        mark = len(recorder.events)
+        try:
+            await runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        finally:
+            source.flush = flush
+        refused = await recorder.wait_for(
+            lambda event: event.get("type") == "error" and event.get("command") == "fork", start=mark
+        )
+        assert refused["session_id"] == "copy" and "shutting down" in refused["message"]
+        assert not (Path(copy.session_dir) / TRANSCRIPT_FILE).exists()
+        assert "copy" not in runtime.core._forking and not runtime.core._copying and not runtime.core._preparing
+    finally:
+        await runtime.shutdown()

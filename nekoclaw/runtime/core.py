@@ -123,6 +123,10 @@ class RuntimeCore:
         # for it, so that it is said what became of each.
         self._forking: set[str] = set()
         self._copying: set[asyncio.Future[Any]] = set()
+        # Copies that still wait for the session they are made from: let
+        # go of when the runtime shuts down, so that each says at once
+        # that it is not made, and its id is free.
+        self._preparing: set[asyncio.Future[None]] = set()
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -207,16 +211,30 @@ class RuntimeCore:
             return
         self._forking.add(session_id)
         shutdowns = self._shutdowns_begun
-        try:
+
+        async def prepare() -> None:
             for under_way in (self._starting.get(source_id), self._closing.get(source_id)):
                 if under_way is not None:
                     await asyncio.shield(under_way)
             source = self._sessions.get(source_id)
             if source is not None:
                 await source.flush()
+
+        # A task of its own, which a shutdown lets go of: what it waits
+        # for (the other session coming in, going out, writing) is not
+        # cancelled with it.
+        preparing = asyncio.ensure_future(prepare())
+        self._preparing.add(preparing)
+        try:
+            await preparing
         except asyncio.CancelledError:
             # Nothing was written yet.
             self._forking.discard(session_id)
+            caller = asyncio.current_task()
+            if self._shutdowns_begun != shutdowns and not (caller is not None and caller.cancelling()):
+                # Let go of by a shutdown, and not by whoever asked.
+                self._reject(session_id, "fork", "the runtime is shutting down")
+                return
             raise
         except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
             self._forking.discard(session_id)
@@ -224,6 +242,8 @@ class RuntimeCore:
             self._reject(session_id, "fork", f"{type(exc).__name__}: {exc}")
             return
 
+        finally:
+            self._preparing.discard(preparing)
         if self._shutdowns_begun != shutdowns:
             # The runtime was shut down while this waited for the other
             # session, and that is over by now or still under way:
@@ -416,6 +436,9 @@ class RuntimeCore:
         deadline = None if timeout is None else loop.time() + timeout
         self._shutdowns += 1
         self._shutdowns_begun += 1
+        for preparing in list(self._preparing):
+            # Copies that have not begun: not made after this, and told so now.
+            preparing.cancel()
         try:
             while True:
                 for session_id, session in list(self._sessions.items()):

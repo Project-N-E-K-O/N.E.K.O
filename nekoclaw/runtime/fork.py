@@ -211,6 +211,7 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
         raise ForkError(f"the record of the session cannot be read: {exc}") from exc
     # How often the other session was summed up, as its record has it.
     summed_up_there = sum(1 for entry in path if entry.type == "compaction")
+    whole = path
     if upto is not None:
         end = next((index for index, entry in enumerate(path) if entry.id == upto), None)
         if end is None:
@@ -220,10 +221,29 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
     if not any(entry.type in ("message", "compaction") for entry in path):
         raise ForkError("nothing was said in the session up to there")
     last = path[-1].id
+    # The other session may be a copy itself, of one whose tool output
+    # it reads where that one kept it. Where that is, is said by a mark
+    # in its record, which lies behind where this copy ends when the
+    # copy ends early; what is copied still names those files. So the
+    # places such marks name go into this copy's own.
+    copied = {entry.id for entry in path}
+    behind: list[str] = []
+    for entry in whole:
+        if entry.type != "custom" or entry.id in copied or getattr(entry, "namespace", None) != FORK_NAMESPACE:
+            continue
+        more = entry.data.get("outputs_behind")
+        for kept_there in (entry.data.get("outputs"), *(more if isinstance(more, list) else ())):
+            if isinstance(kept_there, str) and kept_there and kept_there not in behind:
+                behind.append(kept_there)
     marker = CustomEntry(
         namespace=FORK_NAMESPACE,
         parent_id=last,
-        data={"source_dir": str(source_dir), "outputs": str(source_dir / OUTPUTS_DIRECTORY), "upto": last},
+        data={
+            "source_dir": str(source_dir),
+            "outputs": str(source_dir / OUTPUTS_DIRECTORY),
+            "upto": last,
+            **({"outputs_behind": behind} if behind else {}),
+        },
     )
     target_dir.mkdir(parents=True, exist_ok=True)
     # All of it or none: a copy that stopped half way would be opened as a

@@ -594,9 +594,14 @@ class TaskAgentSession(SessionInbox):
         # what was said names those files.
         readable = [spill.directory]
         for custom in state.custom_entries if state is not None else ():
-            kept_there = custom.data.get("outputs") if custom.namespace == fork.FORK_NAMESPACE else None
-            if isinstance(kept_there, str) and kept_there:
-                readable.append(Path(kept_there))
+            if custom.namespace != fork.FORK_NAMESPACE:
+                continue
+            # Where the session it was made from kept its output, and
+            # where the ones that one was made from kept theirs.
+            behind = custom.data.get("outputs_behind")
+            for kept_there in (custom.data.get("outputs"), *(behind if isinstance(behind, list) else ())):
+                if isinstance(kept_there, str) and kept_there:
+                    readable.append(Path(kept_there))
         # Known before the snapshot is looked at, which says how often the
         # conversation had been summed up when it was made.
         self._compactions = len(state.compaction_entries) if state is not None else 0
@@ -1615,14 +1620,23 @@ class TaskAgentSession(SessionInbox):
             # the conversation stays as it is. What the host said about
             # usage in a run that is over is not part of what is summed up.
             self._drop_usage_notices()
-            before = self._compactions
+            before, due_before = self._compactions, self._compaction_due
+            as_it_was = self.transcript.rows()
             await self._fit(force=True, tight=False, or_drop=False)
-            # Whether a summary was made now, and is on the record: one
-            # the record did not take (the disk refused it, after the
-            # retries) is in this conversation and in no other that is
-            # opened from the record, so the host is not told of it.
             await self._recorder.flush()
-            made = self._compactions > before and not self._recorder.gave_up_on(self._compaction_entry_id)
+            made = self._compactions > before
+            if made and self._recorder.gave_up_on(self._compaction_entry_id):
+                # The record did not take the summary (the disk refused
+                # it, after the retries). The conversation goes back to
+                # what the record has. Left with the summary, a later one
+                # would stand for it and not for what it had replaced,
+                # and a session opened from the record would be handed
+                # that later summary and the old replies both. Nor is it
+                # counted, here or in the snapshot, or told to the host.
+                self.transcript.rewrite(as_it_was)
+                self.context.invalidate()
+                self._compactions, self._compaction_due = before, due_before
+                made = False
             if self._compaction_due:
                 # Also when no summary was made now and one from before the
                 # session was last closed still waits for what follows it:

@@ -2284,9 +2284,14 @@ async def test_what_a_request_used_is_written_once_though_whoever_noted_it_was_c
             manager._note_usage(first.id, first.id, {"input": 1_000, "output": 1, "context_tokens": 50_000})
         )
         await asyncio.wait_for(entered.wait(), 10)
-        await manager._note_usage(first.id, first.id, {"input": 20, "output": 2, "context_tokens": 60_000})
+        # (One write of a session at a time: the second waits for the first to be through.)
+        next_one = asyncio.ensure_future(
+            manager._note_usage(first.id, first.id, {"input": 20, "output": 2, "context_tokens": 60_000})
+        )
+        await asyncio.sleep(0.05)
+        assert not next_one.done() and len(failing) == 1
         go.set()
-        await asyncio.wait_for(slow_one, 10)
+        await asyncio.wait_for(asyncio.gather(slow_one, next_one), 10)
     finally:
         go.set()
         host.ledger.add_usage = add
@@ -3037,7 +3042,8 @@ async def test_what_is_added_while_a_commission_is_being_taken_up_again_does_not
         kept = [turn.text for turn in manager._excerpts[first.id]]
         # Said after the round began, and then a sentence that is added to it.
         said.note("Lan", ROLE_USER, "and what about the videos")
-        assert await host.tell(first.id, "the ones from Rome first")
+        # (Not left waiting for the round to begin, should it come to that: it would never end here.)
+        assert await asyncio.wait_for(host.tell(first.id, "the ones from Rome first"), 10)
         # The round keeps what was said before it began.
         assert [turn.text for turn in manager._excerpts[first.id]] == kept
         assert kept == ["the photos are on the desktop", "the folder is unlocked now"]
@@ -3046,3 +3052,291 @@ async def test_what_is_added_while_a_commission_is_being_taken_up_again_does_not
         go.set()
     assert await asyncio.wait_for(taking_up, 10)
     await wait_status(host, first.id, "done")
+
+
+# ---------------------------------------------------------------------------
+# The eleventh batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_told_to_hand_over_an_answer_its_session_closed_before_taking_goes_on_with_the_same_round(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.none"}), _used(900, 200), finish("tool_calls")],
+            [call("report", {"status": "waiting", "summary": "Which folder do the sorted ones go in?"}, "call-2"), _used(950, 60), finish("tool_calls")],
+            [call("report", {"status": "blocked", "summary": "half of the photos are sorted, in Sorted"}, "call-3"), _used(960, 40), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await _asked(host, first.id)
+    assert await host.answer(first.id, "no", choice="deny")
+
+    async def asks() -> bool:
+        commission = await host.ledger.get(first.id)
+        return commission.status == "waiting_user" and (commission.question() or {}).get("kind") == "report"
+
+    async def run_over() -> bool:
+        return any(event.payload.get("reason") == "completed" for event in await _events(host, first.id, "ended"))
+
+    await wait_until(asks, what="its question to the user")
+    await wait_until(run_over, what="the asking run ending")
+    left = settings.TASK_AGENT_USAGE_WIND_UP_REQUESTS
+    runtime = manager._runtimes.builtin()
+    prompt = runtime.prompt
+    closed: list[str] = []
+
+    async def closed_before_it_took_it(session_id: str, text: str, **kwargs: Any) -> None:
+        # The session is open when the user answers, and the runtime, idle, closes it just as the
+        # answer is on its way to it.
+        del text, kwargs
+        runtime.prompt = prompt
+        closed.append(session_id)
+        await runtime.close(session_id)
+
+    runtime.prompt = closed_before_it_took_it
+    try:
+        assert (await _dispatch(host, "answer: in the folder Sorted")).kind == "answered"
+        stuck = await wait_status(host, first.id, "blocked")
+    finally:
+        runtime.prompt = prompt
+    await _let_go(host)
+    assert closed == [first.id]
+    said = _user_messages(llm.requests[2])
+    # The same round: not asked about usage again, told again, with what it had left.
+    assert said[-1] == brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=left - 1)
+    assert stuck.result_summary == "half of the photos are sorted, in Sorted"
+    assert len(await _events(host, first.id, "usage_refused")) == 1
+
+
+async def test_a_length_that_was_said_earlier_is_not_written_over_one_whose_writing_is_still_under_way(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    manager = host.task_agents
+    add = host.ledger.add_usage
+    failing = [RuntimeError("the ledger is locked")]
+    entered, go = asyncio.Event(), asyncio.Event()
+    asked: list[dict[str, Any]] = []
+
+    async def sometimes(**kwargs: Any) -> None:
+        if failing:
+            raise failing.pop()
+        asked.append(kwargs)
+        if len(asked) == 1:
+            # The first that gets as far as the ledger takes its time there.
+            entered.set()
+            await go.wait()
+        await add(**kwargs)
+
+    host.ledger.add_usage = sometimes
+    try:
+        # An older request, which the ledger did not take: it said the conversation is long.
+        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10, "context_tokens": 120_000})
+        # A newer one says it is shorter by now; its writing is under way ...
+        newer = asyncio.ensure_future(manager._note_usage(first.id, None, {"input": 7, "output": 3, "context_tokens": 40_000}))
+        await asyncio.wait_for(entered.wait(), 10)
+        # ... when the older is tried again.
+        older = asyncio.ensure_future(manager._write_owed_usage(first.id))
+        await asyncio.sleep(0.05)
+        # One write of a session at a time: the older has not got to the ledger.
+        assert len(asked) == 1
+        go.set()
+        await asyncio.wait_for(asyncio.gather(newer, older), 10)
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    # Both are counted; the length is what the newer said, and the older did not write its own.
+    assert [told["context_tokens"] for told in asked] == [40_000, None]
+    assert (await host.ledger.get_session(first.id)).context_tokens == 40_000
+    assert manager._usage_owed == {}
+
+
+async def test_usage_that_turns_out_not_to_be_written_while_the_host_shuts_down_is_tried_again_then(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    manager = host.task_agents
+    add = host.ledger.add_usage
+    entered, go = asyncio.Event(), asyncio.Event()
+    taken: list[tuple[Any, Any, int]] = []
+    calls: list[Any] = []
+
+    async def first_slow_and_failing(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            # Under way when the host shuts down, and not taken in the end.
+            entered.set()
+            await go.wait()
+            raise RuntimeError("the ledger is locked")
+        await add(**kwargs)
+        taken.append((kwargs["session_id"], kwargs["commission_id"], kwargs["tokens_in"]))
+
+    host.ledger.add_usage = first_slow_and_failing
+    try:
+        noting = asyncio.ensure_future(manager._note_usage(first.id, first.id, {"input": 100, "output": 10}))
+        await asyncio.wait_for(entered.wait(), 10)
+        # And something that is owed already, of another session.
+        manager._usage_owed[("another-session", None)] = (1, 5, 5, 0, 0, None, 0)
+        shutting = asyncio.ensure_future(host.shutdown())
+        await wait_until(lambda: taken, what="what was owed already being written")
+        # Only now does the write that was under way turn out to have failed.
+        go.set()
+        await asyncio.wait_for(shutting, 10)
+        await asyncio.wait_for(noting, 10)
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    # Tried again before the host was gone, and taken: nothing is owed.
+    assert taken == [("another-session", None, 5), (first.id, first.id, 100)]
+    assert manager._usage_owed == {} and manager._usage_writes == set()
+
+
+async def test_a_commission_that_is_queued_stays_the_task_agents_though_that_could_not_be_noted(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([[wait, *_report("ready", "sorted")]]),
+        "check the mail": ScriptedLLM([_report("ready", "no mail")]),
+    }
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said, max_task_agents=1)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_until(lambda: scripts["sort the photos"].requests, what="its first request")
+    said.note("Lan", ROLE_USER, "the mail is in the other account")
+    append = host.ledger.append_event
+    refused: list[str] = []
+
+    async def not_queued(commission_id: str, kind: str, payload: dict[str, Any] | None = None) -> int:
+        if kind == "queued":
+            refused.append(commission_id)
+            raise RuntimeError("the ledger is locked")
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = not_queued
+    try:
+        second = (await _dispatch(host, "check the mail")).commissions[0]
+        await host.brain.settle()
+    finally:
+        host.ledger.append_event = append
+    # Queued, and not put down as failed for a note that was not taken; what was kept for it is kept.
+    assert refused == [second.id] and list(manager._queue) == [second.id]
+    assert (await host.ledger.get(second.id)).status == "queued" and second.id in manager._excerpts
+    release.set()
+    await wait_status(host, first.id, "done")
+    await wait_status(host, second.id, "done")
+    assert "User: the mail is in the other account" in _user_messages(scripts["check the mail"].requests[0])[0]
+
+
+async def test_nothing_having_been_said_when_a_commission_was_filed_is_what_is_kept_for_it(hosts, tmp_path):
+    import time
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    decision = host.brain._decision
+    select = decision.select
+
+    async def told_of_late(*args: Any, **kwargs: Any) -> Any:
+        # While it is chosen who does it, a message is told of that was said before the sentence
+        # was dispatched. What was kept then is what the commission gets: nothing.
+        said.note("Lan", ROLE_USER, "the photos are on the desktop", at=time.time() - 5.0)
+        return await select(*args, **kwargs)
+
+    decision.select = told_of_late
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "done")
+    finally:
+        decision.select = select
+    assert [turn.text for turn in said.recent("Lan")] == ["the photos are on the desktop"]
+    assert "the photos are on the desktop" not in _user_messages(scripts["sort the photos"].requests[0])[0]
+
+
+async def test_what_the_runtime_left_of_a_copy_it_could_not_make_is_removed(hosts, tmp_path, monkeypatch):
+    from nekoclaw.runtime import fork as fork_module
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    sessions = Path((await host.ledger.get_session(first.id)).session_dir).parent
+    there = sorted(path.name for path in sessions.iterdir())
+    left: list[Path] = []
+
+    def leaves_its_snapshot(source_dir: Path, target_dir: Path, **kwargs: Any) -> Any:
+        # The record could not be put in its place, and the snapshot written for it not removed.
+        del source_dir, kwargs
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / "system.json").write_text("{}", encoding="utf-8")
+        left.append(target_dir)
+        raise fork_module.ForkError("the record of the copy could not be put in its place: the file is in use")
+
+    monkeypatch.setattr(fork_module, "fork_record", leaves_its_snapshot)
+    with pytest.raises(ForkRefused, match="could not be put in its place"):
+        await host.fork_session(first.id)
+    # The directory was set aside for this copy, and is on no record: the host removes it.
+    assert len(left) == 1 and not left[0].exists()
+    assert sorted(path.name for path in sessions.iterdir()) == there
+    assert manager._forks_given_up == {} and manager._copying_from == {}
+
+
+async def test_a_sentence_for_a_commission_that_is_queued_already_goes_along_with_it(hosts, tmp_path):
+    scripts = {"sort the photos": ScriptedLLM([_report("blocked", "the folder is locked")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    # An earlier sentence took it up again, and it waits for a place by now; this one read the
+    # commission before that was written.
+    manager._queue.append(first.id)
+    manager._resume[first.id] = "go on"
+    try:
+        assert await manager._take_up_again(first.id, "the ones from Rome first")
+        # Not queued a second time, and the first sentence stands: this one is added to it.
+        assert list(manager._queue) == [first.id] and manager._resume[first.id] == "go on"
+        assert manager._notes[first.id] == ["the ones from Rome first"]
+        assert first.id not in manager._requeueing and first.id not in manager._taking_up
+    finally:
+        manager._queue.remove(first.id)
+        manager._resume.pop(first.id, None)
+        manager._notes.pop(first.id, None)
+
+
+async def test_a_directory_that_cannot_be_removed_while_the_host_shuts_down_is_tried_again_a_few_times(
+    hosts, tmp_path, monkeypatch
+):
+    import shutil
+
+    from nekoclaw.host import task_agents as task_agents_module
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    manager = host.task_agents
+    await host.shutdown()
+    monkeypatch.setattr(task_agents_module, "_FORK_REMOVE_RETRY_SECONDS", 0.01)
+    left = tmp_path / "left-of-a-copy"
+    left.mkdir()
+    (left / "system.json").write_text("{}", encoding="utf-8")
+    remove = shutil.rmtree
+    attempts: list[str] = []
+
+    def in_use_twice(path: Any, *args: Any, **kwargs: Any) -> None:
+        attempts.append(str(path))
+        if len(attempts) > 2:
+            remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", in_use_twice)
+    # The host is shutting down, or has: nothing comes by later to remove it, so this does.
+    await manager._remove_fork_dir("a-copy", left)
+    assert len(attempts) == 3 and not left.exists() and manager._forks_given_up == {}
