@@ -1049,3 +1049,29 @@ def test_registered_schema_is_detached_from_the_callers_dict():
 
     schema["properties"]["count"]["type"] = "string"
     assert _meta_of(entry).output_schema["properties"]["count"]["type"] == "integer"
+
+
+class SplitAliases(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    count: int = Field(validation_alias="incoming")
+    total: int = Field(validation_alias="inTotal", serialization_alias="outTotal")
+
+
+async def test_validation_and_serialization_aliases_that_differ_pass_strict():
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> SplitAliases:
+        return build_finish_envelope(  # type: ignore[return-value]
+            data=SplitAliases(incoming=3, inTotal=5), delivery="silent"
+        )
+
+    meta = _meta_of(entry)
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    result = await runtime.invoke("plugin_entry", "entry", {})
+    # Published keys == emitted keys, and the strict check accepts them.
+    assert set(result["data"]) == set(meta.output_schema["properties"]) == {"count", "outTotal"}
+    check = build_output_check(meta)
+    # The other direction: validation-alias keys are not what the contract
+    # publishes, so they do not satisfy it.
+    assert [i.type for i in check({"incoming": 3, "inTotal": 5})] == ["missing", "missing"]

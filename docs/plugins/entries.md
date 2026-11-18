@@ -182,7 +182,7 @@ async def search(self, query: str):
     return Ok({"summary": "...", "count": 3})
 ```
 
-An inferred schema uses the keys `model_dump()` and `finish()` emit (field names, or aliases when the model sets `serialize_by_alias`); the check looks values up by those same keys. An explicit `output_schema` wins over the annotation. An entry with neither has no output contract, and nothing about it changes; `strict_output=True` alone has no effect. With `Model | None`, returning `None` matches the contract.
+An inferred schema uses the keys `model_dump()` and `finish()` emit (field names, or serialization aliases when the model sets `serialize_by_alias`); the check looks values up by those same keys. An explicit `output_schema` wins over the annotation. An entry with neither has no output contract, and nothing about it changes; `strict_output=True` alone has no effect. With `Model | None`, returning `None` matches the contract.
 
 **What is checked.** After each successful call the return value is checked against the contract: the value inside `Ok(...)`, a bare return value, or the `data` of `self.finish(...)`. An `Err(...)` is a failure already and is not checked.
 

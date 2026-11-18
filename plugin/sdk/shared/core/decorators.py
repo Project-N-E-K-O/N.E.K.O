@@ -287,7 +287,9 @@ def _output_contract_from_signature(
         # (llm_result_schema keeps its own spelling).
         config = getattr(model, "model_config", None)
         by_alias = bool(config.get("serialize_by_alias", False)) if isinstance(config, Mapping) else False
-        schema = dict(model.model_json_schema(by_alias=by_alias))  # type: ignore[attr-defined]
+        # Serialization mode: with by_alias it names serialization aliases,
+        # which can differ from validation aliases.
+        schema = dict(model.model_json_schema(by_alias=by_alias, mode="serialization"))  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001 - keep the inferred schema
         schema = dict(schema)
     if _hint_allows_none(hints.get("return", signature.return_annotation)):

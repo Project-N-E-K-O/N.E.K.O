@@ -133,13 +133,15 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     from pydantic import TypeAdapter, ValidationError
 
     adapter = TypeAdapter(model)
-    lookup = _key_rule(model)
+    wire_to_name = _wire_key_map(model)
+    lookup = _BY_NAME_ONLY if _LOOKUP_OPTIONS_SUPPORTED else {}
     # Field names (what model_dump()/finish() put on the wire, and what the
     # published schema uses) plus aliases (what Pydantic puts in a loc).
     declared = _declared_names(schema) if schema is not None else frozenset()
     try:
         declared = declared | _declared_names(model.model_json_schema())  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - alias names only refine paths
+        declared = declared | frozenset(getattr(model, "model_fields", {}) or {})
+    except Exception:  # noqa: BLE001 - extra names only refine paths
         pass
     # ``Model | None`` publishes a nullable schema; the model alone rejects None.
     nullable = schema is not None and not _JsonSchemaCheck(schema)(None)
@@ -159,6 +161,10 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         except Exception as exc:  # noqa: BLE001 - uncopyable data cannot be checked safely
             return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         try:
+            if wire_to_name and isinstance(probe, Mapping):
+                # Output keys back to field names (top level; nested models
+                # are looked up by field name, their default output).
+                probe = {wire_to_name.get(key, key): item for key, item in probe.items()}
             adapter.validate_python(probe, **lookup)
         except ValidationError as exc:
             # include_input/include_context off: only loc and type are read,
@@ -203,19 +209,31 @@ def _supports_lookup_options() -> bool:
 _LOOKUP_OPTIONS_SUPPORTED = _supports_lookup_options()
 
 
-def _key_rule(model: type) -> dict[str, bool]:
-    """Validate with the key rule the contract is published with.
+def _wire_key_map(model: type) -> dict[str, str]:
+    """Output key -> field name for a model's top-level fields.
 
-    model_dump() (and so finish()) emits field names, or aliases when the
-    model sets ``serialize_by_alias``; the inferred schema uses the same keys.
-    Accepting both spellings at once lets one field's alias shadow another
-    field's real value, so only the published spelling is looked up.
+    model_dump() (and so finish()) emits field names, or each field's
+    serialization alias when the model sets ``serialize_by_alias``. The
+    published schema uses the same keys. Validation aliases may differ from
+    both, so payloads are renamed to field names and validated by name only;
+    looking up names and aliases at once would let one field's alias shadow
+    another field's value.
     """
-    if not _LOOKUP_OPTIONS_SUPPORTED:
-        return {}
     config = getattr(model, "model_config", None)
-    by_alias = bool(config.get("serialize_by_alias", False)) if isinstance(config, Mapping) else False
-    return {"by_alias": by_alias, "by_name": not by_alias}
+    if not (isinstance(config, Mapping) and config.get("serialize_by_alias")):
+        return {}
+    fields = getattr(model, "model_fields", None)
+    if not isinstance(fields, Mapping):
+        return {}
+    mapping: dict[str, str] = {}
+    for name, info in fields.items():
+        wire = getattr(info, "serialization_alias", None) or name
+        if isinstance(wire, str) and wire != name:
+            mapping[wire] = name
+    return mapping
+
+
+_BY_NAME_ONLY = {"by_alias": False, "by_name": True}
 _CUSTOM_ERROR_TYPE = "custom_error"
 
 
