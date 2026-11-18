@@ -75,6 +75,30 @@ SUMMARY_FALLBACK = (
 # ---------------------------------------------------------------------------
 
 
+# The part of the window a conversation may fill before it is cut down and
+# summed up, unless the session is told another (``compact_ratio``): 170,000
+# of the preset 200,000 tokens.
+COMPACT_RATIO = 0.85
+
+
+def compact_ratio(window: int, compact_at: int | None) -> float:
+    """Return the part of a window a conversation may fill, given the length it is to be summed up from."""
+    if not compact_at or window <= 0:
+        return COMPACT_RATIO
+    return max(0.1, min(1.0, compact_at / window))
+
+
+def headroom_of(window: int) -> int:
+    """Return what is kept free of a window besides the output: a tenth of it, 65,536 tokens at the most.
+
+    The conversation is measured before every request, so this is not room
+    for what a turn adds; it is for what the measuring is off by. (An
+    eighth, until the preset window became 200,000 summed up from 170,000:
+    with an eighth kept free, and the output, that point would lie in it.)
+    """
+    return min(65_536, window // 10)
+
+
 # The largest part of the window a request's output may take: one in this many.
 OUTPUT_WINDOW_SHARE = 4
 
@@ -97,7 +121,7 @@ class ContextPolicy:
 
     window: int
     max_output: int
-    threshold_ratio: float = 0.8
+    threshold_ratio: float = COMPACT_RATIO
     retain_ratio: float = 0.16
     headroom_tokens: int | None = None
     result_inline_tokens: int = 12_500
@@ -112,12 +136,12 @@ class ContextPolicy:
     def headroom(self) -> int:
         if self.headroom_tokens is not None:
             return self.headroom_tokens
-        return min(65_536, self.window // 8)
+        return headroom_of(self.window)
 
     @property
     def threshold(self) -> int:
         """Conversation size above which pruning and summarizing start."""
-        by_ratio = int(self.window * self.threshold_ratio)
+        by_ratio = round(self.window * self.threshold_ratio)
         by_reserve = self.window - self.max_output - self.headroom
         return max(1_000, min(by_ratio, by_reserve))
 

@@ -685,13 +685,13 @@ def test_what_a_local_server_says_of_a_request_that_is_too_long_is_recognized(sa
 
 
 async def test_a_session_is_managed_for_the_smaller_window_its_provider_states(tmp_path: Path) -> None:
-    spec = make_spec(tmp_path, model=_small_model(256_000))
+    spec = make_spec(tmp_path, model=_small_model(200_000))
     llm = ScriptedLLM([[say("ok"), finish()]])
     session, events = await open_session(spec, llm)
     try:
         await _ask(session, events, "Start.")
         await _seed(session, events, llm)
-        assert session.context.policy.window == 256_000
+        assert session.context.policy.window == 200_000
 
         llm.add(RuntimeError("Error code: 400 - This model's maximum context length is 32768 tokens."))
         llm.add(say("## Current Work\n- summed up"), finish())
@@ -723,7 +723,7 @@ async def test_a_session_is_managed_for_the_smaller_window_its_provider_states(t
 
 async def test_the_output_asked_for_shrinks_with_the_window_the_provider_states(tmp_path: Path) -> None:
     # Configured for 8192 tokens of output, in a window that holds that many times over.
-    model = ModelConfig(model="fake-model", api_key="k", context_window=256_000, max_output_tokens=8_192)
+    model = ModelConfig(model="fake-model", api_key="k", context_window=200_000, max_output_tokens=8_192)
     llm = ScriptedLLM([[say("ok"), finish()]])
     session, events = await open_session(make_spec(tmp_path, model=model), llm)
     try:
@@ -768,6 +768,29 @@ async def test_a_session_opened_in_a_small_window_asks_for_less_output_from_the_
         await session.close()
 
 
+async def test_a_session_sums_its_conversation_up_from_where_it_was_told(tmp_path: Path) -> None:
+    # The owner's numbers (2026-11-18): managed for 200,000 tokens, summed up from 170,000 on.
+    model = ModelConfig(model="fake-model", api_key="k", context_window=200_000, max_output_tokens=8_192)
+    (tmp_path / "preset").mkdir()
+    session, _events = await open_session(make_spec(tmp_path / "preset", model=model), ScriptedLLM([]))
+    try:
+        assert session.context.policy.threshold == 170_000
+    finally:
+        await session.close()
+
+    # Another point was set for the model.
+    (tmp_path / "told").mkdir()
+    told = model.model_copy(update={"compact_at": 150_000})
+    session, _events = await open_session(make_spec(tmp_path / "told", model=told), ScriptedLLM([]))
+    try:
+        assert session.context.policy.threshold == 150_000
+        # The model turns out to take less: summed up from the same part of the smaller window.
+        assert session._assume_window(100_000) is True
+        assert session.context.policy.threshold == 75_000
+    finally:
+        await session.close()
+
+
 class _Refused(Exception):
     """What a model client raises for a request its provider answered with an error status."""
 
@@ -783,7 +806,7 @@ async def test_a_refusal_for_length_that_states_no_window_still_tells_that_it_is
 
     monkeypatch.setattr(settings, "TASK_AGENT_INFERRED_WINDOW_MIN_TOKENS", 5_000)
     llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
     try:
         await _ask(session, events, "Start.")
         await _seed(session, events, llm)
@@ -798,7 +821,7 @@ async def test_a_refusal_for_length_that_states_no_window_still_tells_that_it_is
 
         assert ended["reason"] == "completed" and ended["text"] == "Went on."
         # The window is not known, but it is smaller than what was refused: the conversation
-        # is managed for that from here on, not for the 256,000 the session was started with.
+        # is managed for that from here on, not for the 200,000 the session was started with.
         (learned,) = events.of("model_capability")
         window = learned["context_window"]
         assert before < window < before + 300
@@ -819,7 +842,7 @@ async def test_a_long_request_refused_in_words_that_are_not_recognized_is_summed
 
     monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000)
     llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
     try:
         await _ask(session, events, "Start.")
         await _seed(session, events, llm)
@@ -851,7 +874,7 @@ async def test_a_request_refused_again_after_it_was_summed_up_is_reported_as_it_
     # begins with is more than this by itself.
     monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 1_000)
     llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
     try:
         await _ask(session, events, "Start.")
         await _seed(session, events, llm)
@@ -889,7 +912,7 @@ async def test_a_refusal_that_is_not_taken_for_one_of_length_fails_the_run_as_be
 
     monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", threshold)
     llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
     try:
         await _ask(session, events, "Start.")
         await _seed(session, events, llm)
@@ -900,7 +923,7 @@ async def test_a_refusal_that_is_not_taken_for_one_of_length_fails_the_run_as_be
         assert ended["reason"] == "error" and str(refusal) in ended["error"]
         assert len(llm.requests) - mark == 1
         assert events.of("compacted") == [] and events.of("model_capability") == []
-        assert session.context.policy.window == 256_000
+        assert session.context.policy.window == 200_000
     finally:
         await session.close()
 
@@ -913,7 +936,7 @@ async def test_a_session_opened_again_after_its_last_request_failed_is_summed_up
 
     monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000 if long else 10_000_000)
     first_llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), first_llm)
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), first_llm)
     await _ask(session, events, "First commission.", opening=True)
     await _seed(session, events, first_llm)
     # Not recognized as anything: the run fails, and the commission with it.
@@ -923,7 +946,7 @@ async def test_a_session_opened_again_after_its_last_request_failed_is_summed_up
 
     # The next commission of the session finds the conversation as it was left.
     llm = ScriptedLLM([[say("## Current Work\n- summed up"), finish()], [say("Fine now."), finish()]])
-    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
     try:
         ended = await _ask(session, events, "Second commission.", opening=True)
         if long:

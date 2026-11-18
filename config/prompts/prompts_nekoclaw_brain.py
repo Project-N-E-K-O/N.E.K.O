@@ -649,6 +649,52 @@ HOST_RESTART_FAILED_TEXT = {
     'pt': "O NekoClaw reiniciou no meio disto, então não foi concluído.",
 }
 
+# What she is told, along with her next turn and once for each model, when a
+# model turned out to take less context than its sessions were managed for and
+# NekoClaw went on with the smaller number by itself: for her to pass on to the
+# user. It names no place where the number is set: there is no screen for it.
+# Rendered with str.format (model, was, window).
+MODEL_WINDOW_REMINDER_TEXT = {
+    'zh': (
+        "「{model}」这个模型能接收的上下文比原先按的 {was} token 小，猫爪已经自动改成按 {window} token 来算了。"
+        "之后需要用户自己把这个模型的上下文长度设好；目前还没有可以改这个数的界面。"
+    ),
+    'zh-TW': (
+        "「{model}」這個模型能接收的上下文比原先按的 {was} token 小，貓爪已經自動改成按 {window} token 來算了。"
+        "之後需要使用者自己把這個模型的上下文長度設好；目前還沒有可以改這個數的介面。"
+    ),
+    'en': (
+        "The model \"{model}\" takes less context than the {was} tokens it was counted with, so NekoClaw now "
+        "counts with {window} tokens for it by itself. The user will need to set this model's context length "
+        "themselves later; there is no screen for changing that number yet."
+    ),
+    'ja': (
+        "モデル「{model}」が受け取れるコンテキストは、これまで前提にしていた {was} token より小さいため、"
+        "猫爪は自動的に {window} token として扱うようにしました。今後、このモデルのコンテキスト長はユーザー自身で"
+        "設定する必要があります。この数値を変更する画面はまだありません。"
+    ),
+    'ko': (
+        "모델 \"{model}\"이(가) 받을 수 있는 컨텍스트가 지금까지 기준으로 삼던 {was} token보다 작아서, "
+        "네코클로가 자동으로 {window} token 기준으로 바꾸었습니다. 앞으로 이 모델의 컨텍스트 길이는 사용자가 직접 "
+        "설정해야 합니다. 이 숫자를 바꾸는 화면은 아직 없습니다."
+    ),
+    'ru': (
+        "Модель «{model}» принимает меньше контекста, чем {was} токенов, из которых исходили до сих пор, "
+        "поэтому NekoClaw сам перешёл на расчёт из {window} токенов. В дальнейшем пользователю нужно будет "
+        "самому задать длину контекста этой модели; экрана для изменения этого числа пока нет."
+    ),
+    'es': (
+        "El modelo «{model}» admite menos contexto que los {was} tokens con los que se contaba, así que "
+        "NekoClaw ha pasado por sí mismo a contar con {window} tokens para él. Más adelante el usuario tendrá "
+        "que fijar por su cuenta la longitud de contexto de este modelo; todavía no hay pantalla para cambiar ese número."
+    ),
+    'pt': (
+        "O modelo «{model}» aceita menos contexto do que os {was} tokens com que se contava, por isso o "
+        "NekoClaw passou por si mesmo a contar com {window} tokens para ele. Mais tarde o usuário terá de "
+        "definir por conta própria o comprimento de contexto deste modelo; ainda não há tela para alterar esse número."
+    ),
+}
+
 # =====================================================================
 # ======= Turn check (what she said against what was done) =======
 # =====================================================================

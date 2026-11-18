@@ -687,7 +687,8 @@ async def test_a_session_is_managed_for_the_window_of_the_setting_unless_another
     host = _host(hosts, tmp_path, pick)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "done")
-    assert specs[0].model.context_window == 256_000
+    # The owner's numbers (2026-11-18): managed for 200,000 tokens, summed up from 170,000 on.
+    assert (specs[0].model.context_window, specs[0].model.compact_at) == (200_000, 170_000)
 
     await host.model_capabilities.set_context_window(None, "fake-model", 64_000)
     second = await _dispatch(host, "back up the notes")
@@ -736,7 +737,88 @@ async def test_what_a_session_learns_of_its_models_window_is_used_for_the_sessio
     await wait_status(host, first.commission_id, "done")
     second = await _dispatch(host, "back up the notes")
     await wait_status(host, second.commission_id, "done")
-    assert [spec.model.context_window for spec in specs] == [256_000, 32_768]
+    assert [spec.model.context_window for spec in specs] == [200_000, 32_768]
+    # Summed up from the same part of the smaller window.
+    assert [spec.model.compact_at for spec in specs] == [170_000, 27_853]
+
+
+async def test_the_user_is_told_once_that_a_model_takes_less_context_than_was_assumed(hosts, tmp_path):
+    from tests.unit.nekoclaw.host_fakes import outbox
+
+    release, wait = _gate()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, *_report()]]))
+    first = await _dispatch(host, "sort the photos", lang="zh-CN")
+    await wait_status(host, first.commission_id, "working")
+    before = len(await outbox(host))
+
+    # As the runtime says when the provider refused a request as too long.
+    learned = {"type": "model_capability", "session_id": first.commission_id, "context_window": 131_072, "reason": "too long"}
+    await host.task_agents._handle(learned)
+
+    (note,) = (await outbox(host))[before:]
+    # Said to her, along with her next turn: nothing wakes her, and no model is called for it.
+    assert note.kind == "receipt"
+    assert note.payload["delivery_mode"] == "passive" and note.payload["receipt"] == "context_window"
+    assert note.payload["lanlan_name"] == "Lan" and note.payload["task_id"] is None
+    # In the language of the commission, with the model and both numbers; and it names no
+    # place to set the number in, there being none yet.
+    assert note.payload["text"] == brain_texts.MODEL_WINDOW_REMINDER_TEXT["zh"].format(
+        model="fake-model", was=200_000, window=131_072
+    )
+    assert "fake-model" in note.payload["text"] and "131072" in note.payload["text"]
+    described = await host.model_capabilities.describe_window(None, "fake-model")
+    assert described["reminded"] == 131_072
+
+    # Once for the model: not when the same is learned again, nor when it turns out smaller still.
+    await host.task_agents._handle(learned)
+    await host.task_agents._handle({**learned, "context_window": 64_000})
+    assert len(await outbox(host)) == before + 1
+    assert await host.model_capabilities.context_window(None, "fake-model") == 64_000
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+
+
+async def test_a_reminder_that_could_not_be_written_is_made_the_next_time(hosts, tmp_path):
+    from tests.unit.nekoclaw.host_fakes import outbox
+
+    release, wait = _gate()
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, *_report()]]))
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    before = len(await outbox(host))
+    note = host.task_agents._reporter.note
+
+    async def broken(*args: Any, **kwargs: Any) -> int:
+        raise OSError("the ledger is busy")
+
+    host.task_agents._reporter.note = broken
+    learned = {"type": "model_capability", "session_id": first.commission_id, "context_window": 131_072, "reason": "too long"}
+    await host.task_agents._handle(learned)
+    # The window is used all the same; that the user was told is not on record.
+    assert await host.model_capabilities.context_window(None, "fake-model") == 131_072
+    assert "reminded" not in await host.model_capabilities.describe_window(None, "fake-model")
+
+    host.task_agents._reporter.note = note
+    await host.task_agents._handle(learned)
+    (made,) = (await outbox(host))[before:]
+    # What its sessions were managed for before anything was learned, not what was learned meanwhile.
+    assert made.payload["text"] == brain_texts.MODEL_WINDOW_REMINDER_TEXT["en"].format(
+        model="fake-model", was=200_000, window=131_072
+    )
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+
+
+def test_the_reminder_is_there_in_every_language_and_is_short() -> None:
+    from utils.tokenize import count_tokens
+
+    texts = brain_texts.MODEL_WINDOW_REMINDER_TEXT
+    assert set(texts) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    for lang, text in texts.items():
+        said = text.format(model="some-model", was=200_000, window=131_072)
+        assert "some-model" in said and "200000" in said and "131072" in said, lang
+        # What it costs her next turn, once for a model.
+        assert count_tokens(said) <= 130, (lang, count_tokens(said))
 
 
 async def test_that_a_sessions_conversation_was_summed_up_is_on_record_with_the_session(hosts, tmp_path):

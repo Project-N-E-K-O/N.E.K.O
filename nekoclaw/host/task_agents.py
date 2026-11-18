@@ -954,6 +954,8 @@ class TaskAgentManager:
                 config = {**config, "supports_images": await self._sees_images(config)}
             if "context_window" not in config:
                 config = {**config, "context_window": await self._context_window(config)}
+            if "compact_at" not in config:
+                config = {**config, "compact_at": await self._compact_at(config)}
             model = ModelConfig(**config)
             session.model = (config.get("base_url"), config.get("model"))
 
@@ -1209,6 +1211,22 @@ class TaskAgentManager:
         except Exception:  # noqa: BLE001 - not knowing is the same as nothing set and nothing learned
             logger.warning("looking up the window of the task agent model failed", exc_info=True)
             return TASK_AGENT_CONTEXT_WINDOW
+
+    async def _compact_at(self, config: dict[str, Any]) -> int | None:
+        """Return the length from which a session with the task agent model is summed up; see ``model_capabilities.py``.
+
+        None leaves it to the runtime, which takes the same part of the
+        window as the presets are of each other.
+        """
+        if self._model_capabilities is None:
+            return None
+        try:
+            return int(await self._model_capabilities.compact_at(config.get("base_url"), config.get("model")))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not knowing is the same as nothing set
+            logger.warning("looking up where a conversation with the task agent model is summed up failed", exc_info=True)
+            return None
 
     @staticmethod
     def _image_retention(capabilities: list[Any]) -> tuple[dict[str, int], dict[str, str]]:
@@ -1584,6 +1602,34 @@ class TaskAgentManager:
         if self._leases is not None:
             self._leases.release(commission_id)
 
+    async def _remind_of_window(self, session: _Session, base_url: Any, model: Any, was: int) -> None:
+        """Have the user told, once for each model, that its window is smaller than was assumed.
+
+        The sessions of the model are managed for the smaller window from
+        now on without anyone doing anything; the user is told so that
+        they set the model's context length themselves. Said to her, with
+        her next turn (``Reporter.note``): no model is called for it.
+        """
+        from config.prompts.prompts_nekoclaw_brain import MODEL_WINDOW_REMINDER_TEXT
+        from nekoclaw.host.task_brain import _texts
+
+        window = await self._model_capabilities.claim_window_reminder(base_url, model)
+        if window is None:
+            return
+        try:
+            commission = await self._ledger.get(session.commission_id)
+            if commission is None:
+                raise LookupError("the commission that learned it is gone")
+            text = _texts(MODEL_WINDOW_REMINDER_TEXT, commission.lang or "en").format(
+                model=str(model or ""), was=was, window=window
+            )
+            await self._reporter.note(commission.lanlan_name, about="context_window", text=text, commission=commission)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not told this time: told with the next refusal
+            logger.warning("telling the user of the window of the task agent model failed", exc_info=True)
+            await self._model_capabilities.unclaim_window_reminder(base_url, model)
+
     async def _on_model_capability(self, session: _Session, event: dict[str, Any]) -> None:
         """Remember what a session learned about its model: that it takes no pictures, or how small its window is."""
         window = event.get("context_window")
@@ -1592,8 +1638,13 @@ class TaskAgentManager:
             # sessions started for this model later are given it from the start.
             base_url, model = session.model
             try:
+                # What its sessions are managed for when nothing was learned:
+                # what the user set, else the preset.
+                described = await self._model_capabilities.describe_window(base_url, model)
+                was = int(described.get("set") or described["default"])
                 if await self._model_capabilities.note_context_window(base_url, model, window):
                     logger.info("task agent model %s states a window of %s tokens; used from now on", model, window)
+                await self._remind_of_window(session, base_url, model, was)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - learned again from the next refusal

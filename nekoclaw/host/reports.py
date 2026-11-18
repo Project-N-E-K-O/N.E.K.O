@@ -340,6 +340,23 @@ class Reporter:
         }
         return await self._add(commission, KIND_RECEIPT, payload)
 
+    async def note(self, lanlan_name: str, *, about: str, text: str, commission: Commission | None = None) -> int:
+        """Tell her something that needs no answer and is nobody's trouble: it comes along with her next turn.
+
+        Never wakes her, so it costs no model call of its own; the text is
+        in what she reads on her next turn, once. Not tied to a commission
+        in what she is sent: it is about the host, and is not to be put
+        together with what a commission's own lines say.
+        """
+        payload = {
+            "lanlan_name": lanlan_name,
+            "task_id": None,
+            "receipt": about,
+            "text": text,
+            "delivery_mode": "passive",
+        }
+        return await self._add(commission, KIND_RECEIPT, payload)
+
     async def turn_notice(
         self,
         lanlan_name: str,

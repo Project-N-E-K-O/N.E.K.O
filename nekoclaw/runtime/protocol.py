@@ -102,6 +102,10 @@ class ModelConfig(_Strict):
     api_key: str | None = Field(default=None, repr=False)
     provider_type: str | None = None
     context_window: int = Field(default=128_000, ge=MIN_CONTEXT_WINDOW)
+    # The length of the conversation from which it is summed up, for the
+    # window above; None for the runtime's own part of the window. A window
+    # the session comes to be managed for later keeps the same part.
+    compact_at: int | None = Field(default=None, ge=1_000)
     max_output_tokens: int = Field(default=8_192, ge=256)
     request_timeout_seconds: float = Field(default=300.0, gt=0)
     max_retries: int = Field(default=2, ge=0)

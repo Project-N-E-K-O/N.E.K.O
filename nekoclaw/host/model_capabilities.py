@@ -71,7 +71,14 @@ logger = logging.getLogger(__name__)
 
 _FILE_VERSION = 1
 # What an entry says about a model's window; kept when the rest of it is replaced.
-_WINDOW_FIELDS = ("context_window", "learned_window", "window_noted_at")
+_WINDOW_FIELDS = (
+    "context_window",
+    "learned_window",
+    "window_noted_at",
+    "compact_at",
+    "window_reminded",
+    "window_reminded_at",
+)
 
 
 # What a scheme is made of: a letter, then letters, digits, "+", "-" and ".".
@@ -270,6 +277,94 @@ class ModelCapabilityStore:
         known = TASK_AGENT_KNOWN_CONTEXT_WINDOWS.get(str(model or "").strip())
         return int(known) if known else TASK_AGENT_CONTEXT_WINDOW
 
+    async def compact_at(self, base_url: Any, model: Any) -> int:
+        """Return the length of a conversation with this model from which it is summed up, in tokens.
+
+        What the user set for the model, when that lies inside the window
+        its sessions are managed for. Else the same part of that window as
+        the presets are of each other (``TASK_AGENT_COMPACT_AT_TOKENS`` of
+        ``TASK_AGENT_CONTEXT_WINDOW``): a window that turned out smaller
+        than the one the user's number was meant for is summed up in
+        proportion, not at a point beyond its end.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_COMPACT_AT_TOKENS, TASK_AGENT_CONTEXT_WINDOW
+
+        window = await self.context_window(base_url, model)
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        wanted = self._point((entry or {}).get("compact_at"))
+        if wanted is not None and wanted < window:
+            return wanted
+        return max(1_000, round(window * TASK_AGENT_COMPACT_AT_TOKENS / TASK_AGENT_CONTEXT_WINDOW))
+
+    @staticmethod
+    def _point(value: Any) -> int | None:
+        """Return a length read from an entry, or None when it is not a usable number."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value < 1_000:
+            return None
+        return int(value)
+
+    async def set_compact_at(self, base_url: Any, model: Any, tokens: int | None) -> int:
+        """Set the length from which conversations with this model are summed up; None goes back to the preset.
+
+        Returns what is used from now on (``compact_at``). Sessions that
+        are open keep what they were started with.
+        """
+        if tokens is not None and self._point(tokens) is None:
+            raise ValueError("the length a conversation is summed up from is a number of tokens, 1000 at the least")
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            if tokens is None:
+                entry.pop("compact_at", None)
+            else:
+                entry["compact_at"] = self._point(tokens)
+            if entry:
+                models[key] = entry
+            else:
+                models.pop(key, None)
+            await self._save(models)
+        return await self.compact_at(base_url, model)
+
+    async def claim_window_reminder(self, base_url: Any, model: Any) -> int | None:
+        """Return the window the user is to be told of for this model, and put on record that they were. Once.
+
+        A model whose window was learned to be smaller than its sessions
+        were managed for is managed for the smaller one from then on, by
+        itself. The user is told so once for each model, to set the model's
+        context length themselves: what was learned lapses, and may be
+        further from the truth than what they know. None when nothing was
+        learned, or when they were told already. Setting the window
+        (``set_context_window``) clears the record: a model that turns out
+        smaller again after that is told of again.
+        """
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            learned = self._learned(entry)
+            if learned is None or entry.get("window_reminded_at") is not None:
+                return None
+            entry["window_reminded"] = learned
+            entry["window_reminded_at"] = int(time.time())
+            models[key] = entry
+            await self._save(models)
+        return learned
+
+    async def unclaim_window_reminder(self, base_url: Any, model: Any) -> None:
+        """Take back what ``claim_window_reminder`` put on record: the user was not told after all."""
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            if entry.pop("window_reminded_at", None) is None:
+                return
+            entry.pop("window_reminded", None)
+            models[key] = entry
+            await self._save(models)
+
     async def describe_window(self, base_url: Any, model: Any) -> dict[str, Any]:
         """Return what decides a model's window, for showing it.
 
@@ -277,6 +372,10 @@ class ModelCapabilityStore:
         none: the model's own if that is written down, else the setting),
         ``set`` (what the user set, or None), and ``learned`` with ``learned_at`` and
         ``lapses_at`` when a provider stated one that is still believed.
+        ``compact_at`` (the length a conversation is summed up from) and
+        ``compact_at_set`` (what the user set for it, or None). ``reminded``
+        and ``reminded_at`` when the user was told that the model's window
+        is smaller than was assumed: the window they were told of.
         """
         from config.nekoclaw_settings import MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS
 
@@ -285,7 +384,12 @@ class ModelCapabilityStore:
             "window": await self.context_window(base_url, model),
             "default": self._default_window(model),
             "set": self._tokens((entry or {}).get("context_window")),
+            "compact_at": await self.compact_at(base_url, model),
+            "compact_at_set": self._point((entry or {}).get("compact_at")),
         }
+        if entry is not None and entry.get("window_reminded_at") is not None:
+            described["reminded"] = entry.get("window_reminded")
+            described["reminded_at"] = int(entry["window_reminded_at"])
         learned = self._learned(entry)
         if learned is not None and entry is not None:
             described["learned"] = learned
@@ -309,6 +413,9 @@ class ModelCapabilityStore:
                 entry.pop("context_window", None)
             else:
                 entry["context_window"] = self._tokens(tokens)
+            # The user has looked at it: what they were told is done with.
+            entry.pop("window_reminded", None)
+            entry.pop("window_reminded_at", None)
             if entry:
                 models[key] = entry
             else:

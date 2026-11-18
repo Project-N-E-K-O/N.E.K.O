@@ -170,12 +170,18 @@ FOLLOW_UP_ROWS = 8
 TASK_AGENT_MAX_CONCURRENT = 10
 """Task agents at work at the same time; further commissions wait in the queue."""
 
-TASK_AGENT_CONTEXT_WINDOW = 256_000
-"""Context window a task agent's session is managed for, in tokens, unless the
-user set another for its model (``ModelCapabilityStore.set_context_window``).
-A conversation is cut down and summed up when it nears four fifths of it. A
-model whose window is known to be smaller is given its own: what is used is
-the smaller of the two."""
+TASK_AGENT_CONTEXT_WINDOW = 200_000
+"""Preset context window a task agent's session is managed for, in tokens,
+unless the user set another for its model
+(``ModelCapabilityStore.set_context_window``). A model whose window is known
+to be smaller is given its own: what is used is the smaller of the two."""
+
+TASK_AGENT_COMPACT_AT_TOKENS = 170_000
+"""Preset length of a conversation from which it is cut down and summed up,
+in a window of ``TASK_AGENT_CONTEXT_WINDOW``. In a window of another size
+the point lies at the same part of it (17 in 20), and never so near its end
+that the output and a summary have no room. The user may set another for a
+model (``ModelCapabilityStore.set_compact_at``)."""
 
 TASK_AGENT_KNOWN_CONTEXT_WINDOWS = {"free-agent-model": 128_000}
 """Windows of models that are known and cannot be learned, by model name.
@@ -187,10 +193,10 @@ request as too long. The free tier's agent model refuses none: measured on
 2026-11-18, it takes about 131,000 tokens of input and cuts a longer
 request off without a word (requests of about 250,000 and of about 500,000
 tokens, by its own count, both came back as 131,276 tokens of input, and
-were answered). Managed
-for 256,000, a session with it would be sent requests of up to four fifths
-of that, and lose part of every one above 131,000 without anything to tell
-it. This is the model a user who configured nothing has."""
+were answered). Managed for the preset window, a session with it would be
+sent requests of up to ``TASK_AGENT_COMPACT_AT_TOKENS``, and lose part of
+every one above 131,000 without anything to tell it. This is the model a
+user who configured nothing has."""
 
 TASK_AGENT_CONTEXT_WINDOW_MIN = 4_000
 """The smallest window a session is managed for. A model that takes less

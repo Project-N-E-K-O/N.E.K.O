@@ -1704,22 +1704,34 @@ async def test_a_session_that_goes_on_with_another_commission_is_given_its_openi
     assert said[1] == "Commission 2\nwater the plants"
 
 
+def test_the_shape_of_a_dsh_process_tells_where_its_conversations_are_summed_up_from() -> None:
+    from nekoclaw.dsh.driver import _shape_tag, shape_of
+
+    preset = shape_of(ModelConfig(model="m", api_key="k", context_window=200_000))
+    told = shape_of(ModelConfig(model="m", api_key="k", context_window=200_000, compact_at=170_000))
+    earlier = shape_of(ModelConfig(model="m", api_key="k", context_window=200_000, compact_at=150_000))
+
+    assert preset.compact_ratio == told.compact_ratio == 0.85 and earlier.compact_ratio == 0.75
+    # A process is started for one shape: sessions that differ in this do not share one.
+    assert _shape_tag(preset) == _shape_tag(told) != _shape_tag(earlier)
+
+
 async def test_a_window_a_sessions_model_endpoint_states_is_told_to_the_host_once(tmp_path: Path, dsh) -> None:
     driver = dsh()
-    model = ModelConfig(model="model-a", base_url="http://model.test/v1", api_key="k", context_window=256_000)
+    model = ModelConfig(model="model-a", base_url="http://model.test/v1", api_key="k", context_window=200_000)
     await driver.started(make_spec(tmp_path, "s1", model=model))
 
     # As the forwarder hands it on when the endpoint refused a request as too long.
     driver.runtime._on_window("s1", model, 32_768, "The maximum context length is 32768 tokens.")
     driver.runtime._on_window("s1", model, 32_768, "The maximum context length is 32768 tokens.")
     # As large as the session's own, or larger: nothing to learn. Of a session that is gone: nobody to tell.
-    driver.runtime._on_window("s1", model, 256_000, "maximum context length is 256000 tokens")
+    driver.runtime._on_window("s1", model, 200_000, "maximum context length is 200000 tokens")
     driver.runtime._on_window("s1", model, 400_000, "maximum context length is 400000 tokens")
     driver.runtime._on_window("gone", model, 8_000, "maximum context length is 8000 tokens")
     # From a request that outlasted its session: under the id there is another by now, with
     # another model or another endpoint, and the window is not about that one's.
-    other = ModelConfig(model="model-b", base_url="http://model.test/v1", api_key="k", context_window=256_000)
-    elsewhere = ModelConfig(model="model-a", base_url="http://other.test/v1", api_key="k", context_window=256_000)
+    other = ModelConfig(model="model-b", base_url="http://model.test/v1", api_key="k", context_window=200_000)
+    elsewhere = ModelConfig(model="model-a", base_url="http://other.test/v1", api_key="k", context_window=200_000)
     driver.runtime._on_window("s1", other, 16_000, "maximum context length is 16000 tokens")
     driver.runtime._on_window("s1", elsewhere, 16_000, "maximum context length is 16000 tokens")
     # Smaller than a session can be managed for: the smallest that can.

@@ -182,15 +182,18 @@ class _Session:
 
 
 def shape_of(model: protocol.ModelConfig) -> Shape:
+    from nekoclaw.runtime.context import compact_ratio
+
     return Shape(
         context_window=model.context_window,
         max_output_tokens=model.max_output_tokens,
         supports_images=model.supports_images,
+        compact_ratio=round(compact_ratio(model.context_window, model.compact_at), 4),
     )
 
 
 def _shape_tag(shape: Shape) -> str:
-    text = f"{shape.context_window}:{shape.max_output_tokens}:{int(shape.supports_images)}"
+    text = f"{shape.context_window}:{shape.max_output_tokens}:{int(shape.supports_images)}:{shape.compact_ratio}"
     return hashlib.sha256(text.encode("ascii")).hexdigest()[:8]
 
 

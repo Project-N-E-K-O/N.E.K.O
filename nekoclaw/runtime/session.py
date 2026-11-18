@@ -54,6 +54,7 @@ from nekoclaw.runtime.context import (
     ContextPolicy,
     RowKind,
     Transcript,
+    compact_ratio,
     kind_of,
     output_allowance,
 )
@@ -626,7 +627,11 @@ class TaskAgentSession(SessionInbox):
 
         self.context = ContextManager(
             policy=ContextPolicy(
-                window=spec.model.context_window, max_output=self._max_output
+                window=spec.model.context_window,
+                max_output=self._max_output,
+                # The part of the window it is summed up from: kept when the
+                # session comes to be managed for a smaller window.
+                threshold_ratio=compact_ratio(spec.model.context_window, spec.model.compact_at),
             ),
             spill=spill,
             summarize=self._summarize,
