@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -390,6 +391,18 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
         side_effect=lambda: SimpleNamespace(close=AsyncMock())
     )
 
+    # Record the limit each runtime step actually waits with, so that one step
+    # on a wrong limit fails even when the others keep the total short.
+    step_timeouts = []
+    real_wait_for = asyncio.wait_for
+
+    def spy_wait_for(awaitable, timeout):
+        if sys._getframe(1).f_globals is runtime_module.__dict__:
+            step_timeouts.append(timeout)
+        return real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", spy_wait_for)
+
     outcome = await runtime._reject_speaker_candidate(
         _shadow_candidate(),
         activation_generation="profile-generation",
@@ -409,6 +422,9 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
     assert detector.replace_speaker_verifier.await_count == (
         1 + runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
     )
+    # Every step, the swaps and the reset alike, waited with the patched limit.
+    assert len(step_timeouts) >= 1 + runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
+    assert set(step_timeouts) == {0.02}
     assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
     assert runtime._speaker_verifier_degraded
     assert runtime._asr_candidate_rejection is None

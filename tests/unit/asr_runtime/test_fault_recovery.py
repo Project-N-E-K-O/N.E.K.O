@@ -1,6 +1,8 @@
 """Exercise owned fault recovery with the real runtime and lifecycle."""
 
 import asyncio
+import sys
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -287,9 +289,34 @@ async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch)
 
     sessions[0].close.side_effect = close
     runtime._asr_recovery_budget.total_seconds = 0.03
+    # Record each timeout scope the runtime opens and whether the old
+    # transport's close was entered inside it, so that a close bounded by
+    # anything but the 30 ms total deadline fails instead of merely finishing
+    # under the hang guard.
+    scopes = []
+    real_timeout = asyncio.timeout
+
+    @asynccontextmanager
+    async def spy_timeout(delay):
+        scope = {"delay": delay, "close_before": close_entered.is_set(), "close_inside": False}
+        scopes.append(scope)
+        try:
+            async with real_timeout(delay):
+                yield
+        finally:
+            scope["close_inside"] = close_entered.is_set() and not scope["close_before"]
+
+    def timeout_for_runtime(delay):
+        if sys._getframe(1).f_globals is asr_runtime_module.__dict__:
+            return spy_timeout(delay)
+        return real_timeout(delay)
+
+    monkeypatch.setattr(asyncio, "timeout", timeout_for_runtime)
     try:
         await _recover(runtime, guard=10)
         assert close_entered.is_set()
+        covering = [scope["delay"] for scope in scopes if scope["close_inside"]]
+        assert covering and all(delay <= 0.03 for delay in covering)
         assert len(callbacks) == 1
         assert runtime._asr_recovery_budget.attempts_used == 0
         observers["on_failure"].assert_awaited_once()

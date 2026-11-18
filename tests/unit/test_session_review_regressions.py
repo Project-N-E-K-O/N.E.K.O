@@ -63,12 +63,27 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
             retired_poll.set()
 
     monkeypatch.setattr(manager, "_check_start_operation", observe_start_poll)
+    if outcome == "timeout":
+        # The TTS wait gives up 0.1 s before the shared startup deadline, and
+        # that tail is all publication gets. Show the TTS step a deadline
+        # 2 s earlier than the real one, so a stalled runner neither spends
+        # the startup budget before the fallback is reached nor runs out of
+        # tail after the TTS wait gives up. Every other step sees the real
+        # deadline, and the TTS wait still ends by timing out.
+        real_start_deadline = manager._current_start_deadline
+
+        def start_deadline_seen_by_tts():
+            task = asyncio.current_task()
+            deadline = real_start_deadline()
+            if task is not None and task.get_coro().__name__ == "_start_session_start_tts_if_needed":
+                return deadline - 2.0
+            return deadline
+
+        monkeypatch.setattr(manager, "_current_start_deadline", start_deadline_seen_by_tts)
     starting = asyncio.create_task(manager.start_session(
         socket, request_id="tts-fallback",
-        # In the timeout case the deadline has to outlast the setup up to the
-        # fallback: at 1 s a stalled runner spent it before the retired
-        # runtime was ever polled. The waits below are hang guards.
-        _deadline=asyncio.get_running_loop().time() + (3 if outcome == "timeout" else 5),
+        # The waits below are hang guards.
+        _deadline=asyncio.get_running_loop().time() + 5,
     ))
     try:
         client = await asyncio.wait_for(created.get(), 10)

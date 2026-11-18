@@ -26,8 +26,7 @@ async def test_start_timeout_does_not_wait_for_retired_connection_close(monkeypa
     ))
     # The startup budget has to outlast the setup up to the input gate: at
     # 0.3 s a stalled runner spent it before the client was even created. The
-    # waits below are hang guards; the close is held for the whole case, so
-    # the start ending at all shows the close did not extend its budget.
+    # waits below are hang guards; the close is held for the whole case.
     try:
         client = await asyncio.wait_for(created.get(), 10)
         await manager.input_cache_lock.acquire()
@@ -39,8 +38,14 @@ async def test_start_timeout_does_not_wait_for_retired_connection_close(monkeypa
         )
         manager.input_cache_lock.release()
         await asyncio.wait_for(client.close_entered.wait(), 10)
-        done, _ = await asyncio.wait({starting}, timeout=10)
-        assert starting in done, "retired close must not extend the failed startup budget"
+        # Yield without letting time pass: a start that waited on the held
+        # close with any timeout, however short, needs a timer to fire and
+        # cannot finish here. A correct one is already done.
+        for _ in range(100):
+            if starting.done():
+                break
+            await asyncio.sleep(0)
+        assert starting.done(), "retired close must not extend the failed startup budget"
         assert manager._starting_session_count == 0
         record = manager._connection_record(client)
         assert record.retired and not record.closed

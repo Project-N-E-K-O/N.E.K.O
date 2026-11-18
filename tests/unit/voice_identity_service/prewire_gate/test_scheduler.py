@@ -86,13 +86,14 @@ class _RecordingBackend:
 
 
 class _BlockedBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, hold_s: float = 2.0) -> None:
         self.started = threading.Event()
         self.release = threading.Event()
+        self.hold_s = hold_s
 
     def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
         self.started.set()
-        self.release.wait(2.0)
+        self.release.wait(self.hold_s)
         return 0.5
 
 
@@ -308,7 +309,10 @@ async def test_queued_cancellation_is_distinct_and_never_scores() -> None:
 
 @pytest.mark.asyncio
 async def test_execution_timeout_is_reported_before_late_score_finishes() -> None:
-    backend = _BlockedBackend()
+    # Held until released below: with the clock injected, a score that came
+    # back on its own while the loop was stalled would pass the deadline
+    # re-check and be accepted.
+    backend = _BlockedBackend(hold_s=60.0)
     # The deadline is read from the injected clock, so the queue part of it
     # can be spent without waiting: with a 10 ms deadline on the real clock, a
     # runner that is slow to start the worker expired the job in the queue
@@ -316,14 +320,16 @@ async def test_execution_timeout_is_reported_before_late_score_finishes() -> Non
     # real-time queue timer out of the way; only 10 ms are left to execute.
     now = [0.0]
     scheduler = _scheduler(backend, deadline_seconds=30.0, clock=lambda: now[0])
-    receipt = scheduler.submit(_request("timeout"))
-    now[0] = 30.0 - 0.01
+    try:
+        receipt = scheduler.submit(_request("timeout"))
+        now[0] = 30.0 - 0.01
 
-    result = await scheduler.await_result(receipt)
-    assert result.status is ScoreResultStatus.TIMED_OUT
-    assert result.error_code == "execution_deadline_expired"
-    backend.release.set()
-    await scheduler.close()
+        result = await scheduler.await_result(receipt)
+        assert result.status is ScoreResultStatus.TIMED_OUT
+        assert result.error_code == "execution_deadline_expired"
+    finally:
+        backend.release.set()
+        await scheduler.close()
 
 
 @pytest.mark.asyncio

@@ -1921,6 +1921,10 @@ async def test_a_seal_wrapper_left_by_shutdown_is_retired_by_stop_all(tmp_path, 
 
 
 async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tmp_path, monkeypatch):
+    # The visit's own 0.5 s wait still runs out first (the flush is held until
+    # the handover); a long total budget leaves stop_all's later wait enough
+    # room that a stalled runner cannot make it cancel the cleanup instead.
+    monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 10.0)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     real_flush = rt.outbox.flush

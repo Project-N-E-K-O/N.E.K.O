@@ -24,6 +24,7 @@ desktop or a browser either.
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -2054,6 +2055,16 @@ async def test_shutting_the_host_down_is_bounded_and_the_steps_still_finish(wiri
     monkeypatch.setattr(host, "shutdown", slow_shutdown)
     monkeypatch.setattr(settings, "HOST_SHUTDOWN_BUDGET_SECONDS", 0.05)
     monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
+    # Record the budget the shutdown actually waits with.
+    budgets = []
+    real_wait_for = asyncio.wait_for
+
+    def spy_wait_for(awaitable, timeout):
+        if sys._getframe(1).f_globals is wiring.mount_module.__dict__:
+            budgets.append(timeout)
+        return real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(asyncio, "wait_for", spy_wait_for)
 
     # The steps cannot finish before ``release``, so returning at all proves
     # the caller stopped waiting at its budget; one that waited for the steps
@@ -2062,6 +2073,7 @@ async def test_shutting_the_host_down_is_bounded_and_the_steps_still_finish(wiri
     try:
         await asyncio.wait_for(wiring.mount_module.shutdown_nekoclaw_host(), 3)
         assert not finished.is_set()
+        assert budgets == [0.05]
     finally:
         release.set()
     # Not cancelled by the caller that stopped waiting: it runs to its end.

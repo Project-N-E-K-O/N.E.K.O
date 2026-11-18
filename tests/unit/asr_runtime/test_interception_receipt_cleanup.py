@@ -31,9 +31,10 @@ pytestmark = pytest.mark.runtime
 
 async def _output(ingress):
     scorer = CandidateScorer()
-    selector = make_selector(scorer)
-    # The runtime's own 1 s scoring and prefix deadlines are pushed out for the
-    # same reason as the bridge allowances below.
+    # The candidate selector's and the runtime's own 1 s scoring and prefix
+    # deadlines are pushed out for the same reason as the bridge allowances
+    # below.
+    selector = make_selector(scorer, deadline_seconds=30.0)
     config = replace(
         _config(), scoring_deadline_seconds=30.0, scoring_close_timeout_seconds=30.0,
         prefix_deadline_seconds=30.0,
