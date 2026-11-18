@@ -423,6 +423,19 @@ def forget_turns_for_task_agents() -> None:
         logger.debug("[NekoClaw] dropping the messages kept for task agents failed")
 
 
+def forget_turns_if_nekoclaw_is_off() -> None:
+    """Drop what was kept for task agents if NekoClaw is off now: called wherever a switch has gone off.
+
+    NekoClaw is off with the master switch off, and as much so with
+    the last capability switch off (``nekoclaw_on``). A capability
+    switch goes off by the user's hand and by itself (a model that
+    cannot be reached, a tool that is not there any more), and each
+    of those places calls this once the switches stand as they will.
+    """
+    if not nekoclaw_on():
+        forget_turns_for_task_agents()
+
+
 def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
     """Forward an observed fact; never run plugin callbacks in this receive path."""
     if not _user_plugins_enabled():

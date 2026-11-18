@@ -107,6 +107,9 @@ _SERVICE_HANDOVER_SECONDS = 30.0
 # is tried again when it could not be removed and the host is shutting down.
 _FORK_REMOVE_RETRIES = 3
 _FORK_REMOVE_RETRY_SECONDS = 1.0
+# How often the account of a commission is read again because a write of
+# usage began while it was read (``_cb_budget``).
+_USAGE_READ_TRIES = 5
 _SESSION_NOT_GIVEN_BACK = (
     "its session is still being closed after the host had it open to sum it up; "
     "it can be handed in again in a moment"
@@ -565,6 +568,9 @@ class TaskAgentManager:
         # gives up on: what such a write comes to (written, or owed) is
         # for it alone to tell.
         self._usage_writes: set[asyncio.Task[Any]] = set()
+        # How many writes of usage were begun: one that begins while the
+        # account is read makes what was read of no use (``_cb_budget``).
+        self._usage_write_serial = 0
         # Commissions whose task agent was told to hand over what it has,
         # each with the requests it has left for that: kept apart from
         # the session it was told in, which an idle runtime closes while
@@ -2315,6 +2321,7 @@ class TaskAgentManager:
         whoever was cancelled, what was written all the same would be
         written a second time.
         """
+        self._usage_write_serial += 1
         owed = self._usage_owed.pop(key, None)
         if owed is not None:
             amounts = (
@@ -2378,6 +2385,15 @@ class TaskAgentManager:
             else:
                 if newest:
                     self._context_written[key[0]] = max(said, self._context_written.get(key[0], 0))
+
+    async def _usage_at_rest(self) -> None:
+        """Wait until no write of usage is under way: what was used is on the account then, or owed.
+
+        While one is under way it is neither: taken from what is
+        owed, and not in the ledger yet.
+        """
+        while self._usage_writes:
+            await asyncio.wait(list(self._usage_writes))
 
     async def _settle_usage(self) -> None:
         """Write what is owed of usage before the host is gone, as far as that can be done in the time a start gets.
@@ -3689,12 +3705,22 @@ class TaskAgentManager:
             if commission is None or commission.status != "working":
                 # It has reported how it ended, or waits for the user as it is.
                 return None
-            standing = await self._ledger.usage_standing(commission_id)
-            if standing is None:
-                return None
             # With what was used and is not in the ledger yet (it did not
             # take it): used all the same, and counted once, here or there.
-            owed = await self._owed_tokens(standing.root)
+            # Read with no write of usage under way, which would have it
+            # in neither place (a session that was let go of has what it
+            # owes written by a task of its own), and read again when
+            # one began meanwhile.
+            standing, owed = None, 0
+            for _attempt in range(_USAGE_READ_TRIES):
+                await self._usage_at_rest()
+                began = self._usage_write_serial
+                standing = await self._ledger.usage_standing(commission_id)
+                if standing is None:
+                    return None
+                owed = await self._owed_tokens(standing.root)
+                if began == self._usage_write_serial:
+                    break
             if owed:
                 standing = dataclasses.replace(standing, used=standing.used + owed)
             allowed = standing.allowed if standing.allowed is not None else limit
@@ -3717,7 +3743,16 @@ class TaskAgentManager:
                         detail={"used": tokens_text(standing.used), "more": tokens_text(limit)},
                     )
                     if decision.allow:
-                        await self._ledger.allow_usage(commission_id, limit)
+                        # As much again from what the user was told was
+                        # used: what the ledger did not take is tried
+                        # once more (the user may have taken a while),
+                        # and what it still does not take is allowed on
+                        # top. Left out, that much of what was allowed
+                        # would be gone the moment it is written.
+                        await self._write_owed_usage()
+                        await self._usage_at_rest()
+                        owed = await self._owed_tokens(standing.root)
+                        await self._ledger.allow_usage(commission_id, limit + owed)
                         return None
                     self._refused_more.add(standing.root)
         if self._sessions.get(commission_id) is not session or session.closing:
@@ -4479,8 +4514,6 @@ class TaskAgentManager:
 
     async def shutdown(self) -> None:
         """Stop the runtime and every session. Commissions under way end as failed."""
-        import shutil
-
         self._closed = True
         for session_id in list(self._idle_timers):
             self._drop_idle_timer(session_id)
@@ -4538,10 +4571,14 @@ class TaskAgentManager:
         # became of them before it stopped: they are on no record, and
         # nothing would ever come by them to remove them. No runtime
         # writes them from here on. (One that is on record stays: it was
-        # waited for, and is not among these.)
+        # waited for, and is not among these.) Each is seen to be gone,
+        # and tried again a few times when it is not: nothing comes by
+        # after this (``_remove_fork_dir``).
         given_up, self._forks_given_up = self._forks_given_up, {}
-        for target in given_up.values():
-            await asyncio.to_thread(shutil.rmtree, target, True)
+        if given_up:
+            await asyncio.gather(
+                *(self._remove_fork_dir(session_id, target) for session_id, target in given_up.items())
+            )
         if self._idle_over:
             # Sessions the host had open by itself that are being given
             # back: each waits for its runtime no longer than this, and
@@ -4560,3 +4597,20 @@ class TaskAgentManager:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
         await self._settle_usage()
+
+    async def forks_settled(self) -> None:
+        """Wait for what is still being done about copies once the ledger is closed, for no longer than that takes.
+
+        A copy whose record was being written when the host shut down
+        is left to go on (``shutdown``). With the ledger closed its
+        record fails, and what was written of it is removed, tried
+        again a few times (``_remove_fork_dir``). The process may end
+        right after the host has shut down, and would cut that off:
+        so whoever closes the ledger waits here, for as long as a
+        start gets and the tries take.
+        """
+        if self._fork_records:
+            await asyncio.wait(
+                list(self._fork_records),
+                timeout=_SHUTDOWN_START_WAIT_SECONDS + _FORK_REMOVE_RETRIES * _FORK_REMOVE_RETRY_SECONDS,
+            )

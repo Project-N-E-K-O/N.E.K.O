@@ -995,3 +995,188 @@ async def test_switching_the_master_switch_off_drops_what_was_kept_of_the_main_d
     # switch is handed to a task agent when it is switched on again.
     assert stage.state.analyzer_enabled is False
     assert kept.recent("Lan") == []
+
+
+# ---------------------------------------------------------------------------
+# The last capability switch went off: NekoClaw is off as with the master switch off
+# ---------------------------------------------------------------------------
+
+
+def _kept_for_task_agents(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from nekoclaw.host import conversation
+
+    kept = conversation.RecentConversation()
+    monkeypatch.setattr(conversation, "_recent", kept)
+    assert kept.note("Lan", conversation.ROLE_USER, "sort the photos please")
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
+    return kept
+
+
+async def test_switching_the_last_capability_switch_off_drops_what_was_kept_of_the_main_dialogue_for_task_agents(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+
+    # Only the browser tools are on (the fixture): with them off NekoClaw is off, whatever the
+    # master switch says.
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+
+    # Then and there, with no message of the main dialogue coming by: nothing from before is
+    # handed to a task agent when a switch is put on again.
+    assert stage.state.analyzer_enabled is True
+    assert kept.recent("Lan") == []
+
+
+async def test_switching_one_of_two_capability_switches_off_keeps_what_was_kept_for_task_agents(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.agent_flags["user_plugin_enabled"] = True
+
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+
+    # NekoClaw is still on: the commission that is dispatched next is handed what was said.
+    assert stage.state.agent_flags["browser_use_enabled"] is False
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
+
+
+@pytest.mark.parametrize("result", [(False, "AGENT_API_KEY_INVALID"), RuntimeError("the probe itself broke")])
+async def test_a_model_that_stops_answering_drops_what_was_kept_when_it_puts_the_last_switch_off(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, result: Any
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.model_probe = Probe(result)
+
+    await capabilities._fire_agent_llm_connectivity_check()
+
+    # Put off for the user, and the last one on: off is off.
+    assert stage.state.agent_flags["browser_use_enabled"] is False
+    assert kept.recent("Lan") == []
+
+
+@pytest.mark.parametrize("found", ["no probe", "not usable"])
+async def test_the_keyboard_and_mouse_found_unusable_drops_what_was_kept_when_theirs_was_the_last_switch_on(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, found: str
+) -> None:
+    from fastapi import HTTPException
+
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.agent_flags.update({"computer_use_enabled": True, "browser_use_enabled": False})
+
+    async def nothing(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(api_routes, "_fire_agent_llm_connectivity_check", nothing)
+    monkeypatch.setattr(api_routes, "_model_images_status", nothing)
+    monkeypatch.setattr(api_routes, "_try_refresh_model_probe", lambda **_options: False)
+    monkeypatch.setattr(
+        api_routes, "_keyboard_mouse_availability", lambda: {"enabled": True, "ready": False, "reasons": ["AGENT_NO_DISPLAY"]}
+    )
+    if found == "no probe":
+        stage.state.model_probe = None
+        with pytest.raises(HTTPException):
+            await api_routes.computer_use_availability()
+    else:
+        await api_routes.computer_use_availability()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert stage.state.agent_flags["computer_use_enabled"] is False
+    assert kept.recent("Lan") == []
+
+
+async def test_user_plugins_that_do_not_come_up_drop_what_was_kept_when_theirs_was_the_last_switch_on(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage.state.agent_flags.update({"browser_use_enabled": False})
+    monkeypatch.setattr(stage.state, "user_plugin_lifecycle_seq", stage.state.user_plugin_lifecycle_seq)
+    monkeypatch.setattr(stage.state, "_persistent_tasks", set())
+    started = asyncio.Event()
+
+    async def does_not_come_up(**_options: Any) -> bool:
+        await started.wait()
+        return False
+
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_started", does_not_come_up)
+
+    await api_routes.set_agent_flags({"user_plugin_enabled": True, "_persist_intent": False})
+    # On while it is found out whether they come up, and something is said meanwhile.
+    assert stage.state.agent_flags["user_plugin_enabled"] is True
+    kept = _kept_for_task_agents(monkeypatch)
+    started.set()
+    pending = list(stage.state._persistent_tasks)
+    assert pending
+    await asyncio.wait(pending, timeout=10.0)
+
+    assert stage.state.agent_flags["user_plugin_enabled"] is False
+    assert kept.recent("Lan") == []
+
+
+def test_every_place_that_puts_a_switch_off_looks_whether_nekoclaw_is_off_now() -> None:
+    import ast
+    from pathlib import Path
+
+    switches = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}
+    looks = {"forget_turns_if_nekoclaw_is_off", "_forget_turns_if_nekoclaw_is_off", "forget_turns_for_task_agents"}
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+    def own(function: ast.AST) -> list[ast.AST]:
+        """The nodes of a function, without those of the functions defined inside it."""
+        found: list[ast.AST] = []
+        todo = list(ast.iter_child_nodes(function))
+        while todo:
+            node = todo.pop()
+            found.append(node)
+            if not isinstance(node, functions):
+                todo.extend(ast.iter_child_nodes(node))
+        return found
+
+    def puts_a_switch_off(node: ast.AST) -> bool:
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and node.value.value is False):
+            return False
+        for target in node.targets:
+            if isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled":
+                return True
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Attribute)
+                and target.value.attr == "agent_flags"
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value in switches
+            ):
+                return True
+        return False
+
+    def called(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Call):
+            return None
+        return getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+
+    putting_off: list[str] = []
+    not_looking: list[str] = []
+    for path in sorted(Path(api_routes.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            nodes = own(function)
+            if not any(puts_a_switch_off(node) for node in nodes):
+                continue
+            putting_off.append(f"{path.name}:{function.name}")
+            if not looks & {called(node) for node in nodes}:
+                not_looking.append(f"{path.name}:{function.name}")
+
+    # With the master switch off, or the last capability switch, NekoClaw is off: what was kept of
+    # the main dialogue for task agents is dropped by whoever put the switch off, and not only by
+    # the next message that happens to come by.
+    assert sorted(putting_off) == [
+        "api_routes.py:_bg_plugin_enable",
+        "api_routes.py:admin_control",
+        "api_routes.py:agent_command",
+        "api_routes.py:computer_use_availability",
+        "api_routes.py:set_agent_flags",
+        "capabilities.py:_fire_agent_llm_connectivity_check",
+    ]
+    assert not_looking == []

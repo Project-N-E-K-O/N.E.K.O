@@ -61,6 +61,7 @@ from .api_runtime import (  # noqa: F401
     _voice_transcript_plugin_gate_reason,
     cancel_task,
     forget_turns_for_task_agents,
+    forget_turns_if_nekoclaw_is_off,
     complete_deferred_task,
     get_task,
     health,
@@ -406,6 +407,8 @@ async def set_agent_flags(payload: Dict[str, Any]):
                         Modules.notification = json.dumps({"code": "AGENT_PLUGIN_SERVER_ERROR"})
                         logger.error("[Agent] Background plugin enable failed: %s", exc)
                 finally:
+                    # (The switch may have gone off above, and been the last one on.)
+                    forget_turns_if_nekoclaw_is_off()
                     if _owns_generation():
                         _bump_state_revision()
                         await _emit_agent_status_update(lanlan_name=_ln)
@@ -470,6 +473,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 # else: requested=True but capability rejected → leave intent untouched
         except Exception as exc:
             logger.warning("[Agent] Failed to persist agent flag intent: %s", exc)
+
+    # A capability switch that went off, by this request or because what it
+    # needs is not there, may have been the last one on: NekoClaw is off
+    # then as with the master switch off, and nothing of the main dialogue
+    # is kept for task agents.
+    forget_turns_if_nekoclaw_is_off()
 
     changed = Modules.agent_flags != old_flags or bool(Modules.analyzer_enabled) != old_analyzer_enabled
     if changed:
@@ -840,6 +849,7 @@ async def computer_use_availability():
         if Modules.agent_flags.get("computer_use_enabled"):
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.notification = json.dumps({"code": "AGENT_CU_AUTO_CLOSED"})
+            forget_turns_if_nekoclaw_is_off()
         raise HTTPException(503, "ComputerUse not ready")
     if not getattr(Modules.model_probe, "init_ok", False):
         asyncio.ensure_future(_fire_agent_llm_connectivity_check())
@@ -859,6 +869,7 @@ async def computer_use_availability():
             logger.info("[Agent] Computer Use capability lost, disabling flag")
             Modules.agent_flags["computer_use_enabled"] = False
             Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
+            forget_turns_if_nekoclaw_is_off()
 
     # The tool works from screenshots: whether the model is sent any, and why not.
     status["model_images"] = await _model_images_status()

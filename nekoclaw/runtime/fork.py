@@ -190,6 +190,13 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
     there is nothing to copy, when ``upto`` is no entry of the
     conversation, or when ``target_dir`` holds a record already.
     """
+    try:
+        # Where the record is read from, links followed, and named so in
+        # the copy's mark: folding a ``link/..`` away without looking
+        # (``abspath``) names a place nothing was read from.
+        source_dir = source_dir.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ForkError(f"the directory of the session cannot be found: {exc}") from exc
     source_path = source_dir / TRANSCRIPT_FILE
     target_path = target_dir / TRANSCRIPT_FILE
     try:
@@ -241,8 +248,8 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
         # Whole paths: a session opened from the copy, or from a copy of
         # it, may be one of a process that works somewhere else.
         data={
-            "source_dir": os.path.abspath(source_dir),
-            "outputs": os.path.abspath(source_dir / OUTPUTS_DIRECTORY),
+            "source_dir": str(source_dir),
+            "outputs": str(source_dir / OUTPUTS_DIRECTORY),
             "upto": last,
             **({"outputs_behind": behind} if behind else {}),
         },

@@ -531,3 +531,11 @@ class NekoClawHost:
             await self.ledger.close()
         except Exception:  # noqa: BLE001 - nothing more can be done for it
             logger.exception("closing the ledger failed")
+        # Copies whose record was still being written: with the ledger
+        # closed that fails, and what was written of them is removed by
+        # tasks of their own. Waited for, for no longer than they try: a
+        # process that ends right after this would cut them off.
+        try:
+            await self.task_agents.forks_settled()
+        except Exception:  # noqa: BLE001 - what is left is left; the host is shut down all the same
+            logger.exception("waiting for the copies that were being put on record failed")

@@ -51,6 +51,7 @@ from nekoclaw.runtime.loop.messages import (
     UserMessage,
     message_text,
 )
+from nekoclaw.runtime.loop.tool_history import repair_tool_history
 from nekoclaw.runtime.loop.tools import AgentToolResult
 from nekoclaw.runtime.tools.base import SpillStore
 
@@ -842,13 +843,14 @@ class ContextManager:
         # then drop the oldest messages of the part being condensed.
         room = policy.window - policy.summary_cap - self.fixed_tokens - 2_000
         prepared, size = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
-        if not or_drop and (len(prepared) < len(region) or size > room or _answers_a_call_twice(prepared)):
+        if not or_drop and (len(prepared) < len(region) or size > room or _leaves_results_out(prepared)):
             # The oldest messages do not fit into the request, so a summary
             # would stand for a part it was never shown; or what is left
             # (one message, which is never left out) is too long for the
             # request by itself, and the request would be refused; or a
-            # tool call has two results there, of which a request is
-            # sent one, and the summary would stand for both.
+            # request would not be sent some tool result there (one with
+            # no call, or the second of two of one call), and the
+            # summary would stand for it all the same.
             logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
             return None, None
         try:
@@ -874,15 +876,17 @@ class ContextManager:
         return summary, usage
 
 
-def _answers_a_call_twice(messages: Sequence[AgentMessage]) -> bool:
-    """Whether some tool call has more than one result among ``messages``; a request is sent only one of them."""
-    answered: set[str] = set()
-    for message in messages:
-        if isinstance(message, ToolResultMessage):
-            if message.tool_call_id in answered:
-                return True
-            answered.add(message.tool_call_id)
-    return False
+def _leaves_results_out(messages: Sequence[AgentMessage]) -> bool:
+    """Whether a request made of ``messages`` would not be sent some tool result among them.
+
+    What a request is sent is put right first (``repair_tool_history``,
+    as the session does before it asks for the summary): a result
+    whose call is not there is left out, and so is one more than a
+    call has. Asked of that, and not of the ids alone: two calls of
+    one id, each with its own result, lose nothing.
+    """
+    repair = repair_tool_history(tuple(messages))
+    return bool(repair.dropped_orphan_results or repair.dropped_duplicate_results)
 
 
 def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> tuple[list[AgentMessage], int]:

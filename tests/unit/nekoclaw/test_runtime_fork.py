@@ -35,7 +35,6 @@ from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime.context import SUMMARY_CUT_SHORT_NOTE
 from nekoclaw.runtime.core import InProcessRuntime
-from nekoclaw.runtime.loop.session import SessionState
 from nekoclaw.runtime.fork import FORK_NAMESPACE, REASON_FORKED, ForkError, fork_record, whole_prefix
 from nekoclaw.runtime.host import HostCallbacks
 from nekoclaw.runtime.loop.messages import (
@@ -1618,15 +1617,38 @@ async def test_a_summing_up_that_is_stopped_is_not_over_before_the_record_took_i
 
         writer._append_blocking = slow_and_refused
         llm.add(say("## Current Work\n- the four steps are done"), finish())
+        settle = session._summary_on_record
+        settled_after_the_stop: list[int] = []
+        stopped: list[int] = []
+
+        async def seen(*args: Any, **kwargs: Any) -> bool:
+            if stopped:
+                settled_after_the_stop.append(1)
+            return await settle(*args, **kwargs)
+
+        session._summary_on_record = seen
         mark = len(events.events)
         session.compact()
         assert await asyncio.to_thread(writing.wait, 10)
         # The summary is in the conversation, and on its way to the record, when the summing up is stopped.
         assert len(session.harness.message_list) < length
         assert session.abort()
-        await asyncio.sleep(0.1)
+        stopped.append(1)
+        # Until what was stopped looks whether the record takes the summary: the record is still at it.
+        for _attempt in range(1000):
+            if settled_after_the_stop:
+                break
+            await asyncio.sleep(0.01)
+        assert settled_after_the_stop == [1] and not refuse.is_set()
         # Not over yet: another run would go on from a summary the record may not take.
         assert session.running and not [event for event in events.events[mark:] if event.get("type") == "ended"]
+        # Nor when it is stopped once more while it waits (being stopped is all there is to it):
+        # over then, nothing would be left that undoes a summary the record refuses in the end.
+        assert session.abort()
+        for _attempt in range(20):
+            await asyncio.sleep(0)
+        assert session.running and not [event for event in events.events[mark:] if event.get("type") == "ended"]
+        assert settled_after_the_stop == [1]
         refuse.set()
         assert (await events.wait_ended(start=mark))["reason"] == "aborted"
         # The record did not take it: the conversation is what the record has.
@@ -1654,5 +1676,56 @@ async def test_the_mark_of_a_copy_names_where_the_other_kept_its_output_by_its_w
     fork_record(source, Path("sessions") / "copy-from-here")
     mark = _entries(tmp_path / "sessions" / "copy-from-here")[-1]
     # A session opened from the copy, or from a copy of it, may be one of a process that works elsewhere.
-    assert mark.data["outputs"] == os.path.abspath(Path(spec.session_dir) / "outputs")
-    assert mark.data["source_dir"] == os.path.abspath(spec.session_dir)
+    assert mark.data["outputs"] == str(Path(spec.session_dir).resolve() / "outputs")
+    assert mark.data["source_dir"] == str(Path(spec.session_dir).resolve())
+    assert Path(mark.data["outputs"]).is_absolute() and Path(mark.data["source_dir"]).is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# The fourteenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_the_mark_of_a_copy_names_the_directory_the_record_was_read_from_with_links_followed(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, ScriptedLLM([[say("Done."), finish()]]))
+    await _ask(session, events, "Do it.")
+    await session.close()
+    real = Path(spec.session_dir).resolve()
+    # Another way to the directory the sessions are kept in: a link to it.
+    link = tmp_path / "another-way"
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(real.parent), str(link))
+    else:
+        link.symlink_to(real.parent, target_is_directory=True)
+    try:
+        assert (link / real.name / TRANSCRIPT_FILE).exists() and (link / real.name) != real
+        fork_record(link / real.name, tmp_path / "sessions" / "copy-by-the-link")
+        mark = _entries(tmp_path / "sessions" / "copy-by-the-link")[-1]
+        # Named as where it is, not as the way that was taken to it.
+        assert mark.data["source_dir"] == str(real)
+        assert mark.data["outputs"] == str(real / "outputs")
+        if os.name != "nt":
+            # A way that goes into a link and back out of it is where the system takes it, which is
+            # not where folding the two away without looking would have it.
+            elsewhere = tmp_path / "elsewhere" / "inside"
+            elsewhere.mkdir(parents=True)
+            (tmp_path / "work").mkdir()
+            (tmp_path / "work" / "link").symlink_to(elsewhere, target_is_directory=True)
+            (tmp_path / "elsewhere" / "source").symlink_to(real, target_is_directory=True)
+            fork_record(tmp_path / "work" / "link" / ".." / "source", tmp_path / "sessions" / "copy-by-the-way-back")
+            mark = _entries(tmp_path / "sessions" / "copy-by-the-way-back")[-1]
+            assert mark.data["source_dir"] == str(real)
+            assert mark.data["outputs"] == str(real / "outputs")
+    finally:
+        # (The link only: what it leads to is the session's own directory.)
+        if os.name == "nt":
+            os.rmdir(link)
+        else:
+            link.unlink()

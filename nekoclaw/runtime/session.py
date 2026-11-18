@@ -1646,11 +1646,26 @@ class TaskAgentSession(SessionInbox):
                 # this moment. Whether the record takes it is settled
                 # before this is over: the next run goes on from the
                 # conversation as it is then. (No longer than the record
-                # tries to write an entry.)
-                try:
-                    await self._summary_on_record(before, due_before, as_it_was)
-                except asyncio.CancelledError:
-                    logger.debug("session %s: stopped again while a summary was settled", self.session_id)
+                # tries to write an entry.) In a task of its own, and
+                # waited for however often this one is stopped again
+                # meanwhile (a second abort, a close that ran out of
+                # time): over before then, the next run would go on
+                # from a summary the record may still refuse, with
+                # nothing left that would undo it.
+                settling = asyncio.ensure_future(self._summary_on_record(before, due_before, as_it_was))
+                while not settling.done():
+                    try:
+                        await asyncio.shield(settling)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:  # noqa: BLE001 - told below
+                        break
+                if not settling.cancelled() and settling.exception() is not None:
+                    logger.warning(
+                        "session %s: whether the record took a summary could not be settled: %s",
+                        self.session_id,
+                        settling.exception(),
+                    )
         except Exception as exc:  # noqa: BLE001 - reported through the ended event
             logger.exception("session %s: summing the conversation up failed", self.session_id)
             reason = "error"
