@@ -585,6 +585,9 @@ class ServerLifecycleService:
         # so it must be released after restart or every plugin startup returns 409.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = False
+        # The call audit was closed by a previous shutdown in this process.
+        from plugin.server.application.plugins import capability_gate as _capability_gate
+        _capability_gate.reopen()
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -1023,6 +1026,15 @@ class ServerLifecycleService:
 
         # Phase 3: resource cleanup
         self._close_conversation_service()
+        # Hosts are stopped, so no delivery is still being recorded. The audit
+        # writer is a daemon thread: give it a bounded flush, never block exit.
+        try:
+            from plugin.server.application.plugins import capability_gate
+
+            if not await asyncio.to_thread(capability_gate.flush_and_close, 1.0):
+                logger.warning("plugin call audit flush did not finish before shutdown")
+        except Exception as exc:
+            logger.warning("failed to flush plugin call audit: error_type={}", type(exc).__name__)
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:

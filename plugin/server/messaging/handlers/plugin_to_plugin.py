@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from plugin.core.call_registry import delivery_link
+from plugin.core.capability_policy import policy_enabled
 from plugin.core.rpc import RpcContext, RpcRemoteError
+from plugin.server.application.plugins import capability_gate
 from plugin.logging_config import get_logger
 from plugin.server.application.plugins.dispatch_service import PluginDispatchService
 from plugin.server.messaging.handlers.common import (
@@ -40,11 +43,17 @@ async def handle_plugin_to_plugin(ctx: RpcContext, request: dict[str, object]) -
         event_id,
         ctx.request_id,
     )
-    result = await plugin_dispatch_service.trigger_custom_event(
-        to_plugin=to_plugin,
-        event_type=event_type,
-        event_id=event_id,
-        args=args,
-        timeout=ctx.remaining(),
-    )
+    # Attribute the delivery from the host's registry only: the caller is the
+    # connection identity and its parent id is just a key into its own calls.
+    link = None
+    if policy_enabled():
+        link = capability_gate.link_for_plugin_call(ctx.from_plugin, ctx.parent_request_id)
+    with delivery_link(link):
+        result = await plugin_dispatch_service.trigger_custom_event(
+            to_plugin=to_plugin,
+            event_type=event_type,
+            event_id=event_id,
+            args=args,
+            timeout=ctx.remaining(),
+        )
     return result

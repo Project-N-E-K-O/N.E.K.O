@@ -695,6 +695,15 @@ if _sync_policy not in ("warn", "reject"):
     _sync_policy = "warn"
 SYNC_CALL_IN_HANDLER_POLICY = _sync_policy
 
+# Capability checks along plugin call chains (docs/design/plugin-call-chain.md).
+# - off: no call registry, no checks, no audit.
+# - observe: record would-deny decisions in the audit; never block.
+# - enforce: reserved for the enforcing stages; behaves like observe for now.
+# Env: NEKO_PLUGIN_CAPABILITY_POLICY, default="observe"
+PLUGIN_CAPABILITY_POLICY = os.getenv("NEKO_PLUGIN_CAPABILITY_POLICY", "observe").strip().lower()
+if PLUGIN_CAPABILITY_POLICY not in ("off", "observe", "enforce"):
+    PLUGIN_CAPABILITY_POLICY = "observe"
+
 # ========== Plugin-state persistence ==========
 
 # Shared plugin-state persistence backend for freeze and autosave.
@@ -975,6 +984,7 @@ __all__ = [
     "PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS",
     "PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS",
     "SYNC_CALL_IN_HANDLER_POLICY",
+    "PLUGIN_CAPABILITY_POLICY",
 
     # Message plane
     "MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from .cards import ChatCard, PluginView, create_card, create_view
 from .bus_context import SdkBusContext, ensure_sdk_bus_context
@@ -26,6 +26,9 @@ from .types import (
     ReplyTailProtocol,
     PushMessageResult,
 )
+
+if TYPE_CHECKING:
+    from .call_chain_view import CallChainView
 
 _UNSET = object()
 _SDK_CONTEXT_ATTR_NAMES = ("plugin_id", "metadata", "logger", "config_path", "bus", "images", "models")
@@ -227,6 +230,20 @@ class SdkContext:
     @property
     def plugin_id(self) -> str:
         return str(getattr(self._host_ctx, "plugin_id", "plugin"))
+
+    @property
+    def call_chain(self) -> "CallChainView":
+        """Read-only view of the chain that led to this invocation; never None.
+
+        ``allows()`` is advisory and answers False when the rights are
+        unknown. The host makes the final decision on every use.
+        """
+        view = getattr(self._host_ctx, "call_chain", None)
+        if view is not None:
+            return cast("CallChainView", view)
+        from .call_chain_view import self_only_view
+
+        return self_only_view(self.plugin_id)
 
     @property
     def metadata(self) -> Metadata:

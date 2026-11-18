@@ -14,6 +14,8 @@ from typing import Any, Awaitable, Callable, ClassVar, Dict, Optional, TypeVar
 
 from plugin._types.entry_metadata import entry_contract_fields
 from plugin._types.exceptions import PluginExecutionError
+from plugin.core.call_registry import CallLink, current_delivery_link
+from plugin.core.capability_policy import policy_enabled
 from plugin.core.rpc import RpcPeer, RpcRemoteError
 from plugin.core.zmq_transport import (
     CH_COMM,
@@ -346,16 +348,62 @@ class PluginCommunicationResourceManager:
         )
 
     async def trigger(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
-        return await self._run_on_owner_loop(self._trigger_local(entry_id, args, timeout))
+        # Read the call site's link on its own loop, then pass it explicitly.
+        return await self._run_on_owner_loop(
+            self._trigger_local(entry_id, args, timeout, call_link=current_delivery_link())
+        )
 
-    async def _trigger_local(self, entry_id: str, args: dict, timeout: float | None = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+    async def _trigger_local(
+        self,
+        entry_id: str,
+        args: dict,
+        timeout: float | None = PLUGIN_TRIGGER_TIMEOUT,
+        *,
+        call_link: CallLink | None = None,
+    ) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.debug(
             "[CommManager] TRIGGER plugin_id={}, entry_id={}, req_id={}",
             self.plugin_id, entry_id, req_id,
         )
         msg = {"type": "TRIGGER", "req_id": req_id, "entry_id": entry_id, "args": args, "timeout": timeout}
-        return await self._send_command_and_wait_local(req_id, msg, timeout, f"entry {entry_id}")
+        return await self._send_delivery(
+            req_id, msg, timeout, f"entry {entry_id}",
+            event_type="plugin_entry", event_id=entry_id, call_link=call_link,
+        )
+
+    async def _send_delivery(
+        self,
+        req_id: str,
+        msg: dict,
+        timeout: float | None,
+        error_context: str,
+        *,
+        event_type: str,
+        event_id: str,
+        call_link: CallLink | None,
+    ) -> Any:
+        """Send one TRIGGER / TRIGGER_CUSTOM, registered for the call chain."""
+        if not policy_enabled():
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        from plugin.server.application.plugins import capability_gate
+
+        record = capability_gate.begin_call(self.plugin_id, req_id, event_type, event_id, call_link)
+        if record is None:
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        # Next to args, never inside them: entry arguments and _ctx are unchanged.
+        msg["_call_chain"] = capability_gate.chain_payload(record)
+        started = time.monotonic()
+        failure: BaseException | None = None
+        try:
+            return await self._send_command_and_wait_local(req_id, msg, timeout, error_context)
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            capability_gate.end_call(
+                record, capability_gate.result_code(failure), time.monotonic() - started
+            )
 
     async def trigger_custom_event(
         self,
@@ -365,7 +413,9 @@ class PluginCommunicationResourceManager:
         timeout: float = PLUGIN_TRIGGER_TIMEOUT,
     ) -> Any:
         return await self._run_on_owner_loop(
-            self._trigger_custom_event_local(event_type, event_id, args, timeout)
+            self._trigger_custom_event_local(
+                event_type, event_id, args, timeout, call_link=current_delivery_link()
+            )
         )
 
     async def get_ui_context(self, context_id: str = "main", timeout: float = 5.0) -> Any:
@@ -386,6 +436,8 @@ class PluginCommunicationResourceManager:
         event_id: str,
         args: dict,
         timeout: float = PLUGIN_TRIGGER_TIMEOUT,
+        *,
+        call_link: CallLink | None = None,
     ) -> Any:
         req_id = str(uuid.uuid4())
         self.logger.info(
@@ -400,8 +452,9 @@ class PluginCommunicationResourceManager:
             "args": args,
             "timeout": timeout,
         }
-        return await self._send_command_and_wait_local(
+        return await self._send_delivery(
             req_id, msg, timeout, f"custom event {event_type}.{event_id}",
+            event_type=event_type, event_id=event_id, call_link=call_link,
         )
 
     async def send_freeze_command(self, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Dict[str, Any]:
@@ -729,7 +782,27 @@ class PluginCommunicationResourceManager:
         se = self._shutdown_event
         if se and se.is_set():
             return
+        if msg.get("type") == "MESSAGE_PUSH" and policy_enabled():
+            self._check_message_push(msg)
         await self._forward_message(msg)
+
+    def _check_message_push(self, msg: dict) -> None:
+        # The SDK adds the parent id only for this check; drop it so the
+        # stored record and the message plane see the same bytes as before.
+        parent = msg.pop("_rpc_parent_request_id", None)
+        from plugin.server.application.plugins import capability_gate
+
+        try:
+            capability_gate.check(
+                self.plugin_id, parent, capability_gate.MESSAGE_PUSH_CAPABILITY, "MESSAGE_PUSH"
+            )
+        except Exception as exc:
+            # Observe stage: a failing check must never cost the message.
+            self.logger.warning(
+                "message push capability check failed: plugin_id={}, error_type={}",
+                self.plugin_id,
+                type(exc).__name__,
+            )
 
     def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
         """Write one plugin message into the message plane. Best effort.
