@@ -609,9 +609,11 @@ class TaskBrain:
 
         follows: dict[str, Any] = {}
         if earlier is not None:
-            # It goes on in the session of the commission it follows up: with
-            # what was said there, in the same working directory, under the
-            # same project. That one stays as it ended.
+            # Where it goes on when a task agent takes it: in the session of
+            # the commission it follows up, with what was said there, in the
+            # same working directory, under the same project. That one
+            # stays as it ended. Written down in the second round, which
+            # chooses for this sentence as for any other.
             follows = {"session_id": earlier.session_id, "continues": earlier.id, "project": earlier.project}
         commission, created = await self._ledger.create(
             unless=lambda active: find_duplicate(text, user_text, active),
@@ -622,37 +624,36 @@ class TaskBrain:
             source=source,
             conversation_id=conversation_id,
             lang=lang,
-            **follows,
         )
         if not created:
             return Receipt(kind="duplicate", commissions=[commission], model_calls=calls)
         request.active = [item for item in request.active if item.id != commission.id]
-        self._spawn(self._second_round(commission, request, triage), commission_id=commission.id)
+        self._spawn(self._second_round(commission, request, triage, follows=follows), commission_id=commission.id)
         return Receipt(kind="accepted", commissions=[commission], model_calls=calls)
 
-    async def _second_round(self, commission: Commission, request: DecisionRequest, triage: Triage) -> None:
+    async def _second_round(
+        self,
+        commission: Commission,
+        request: DecisionRequest,
+        triage: Triage,
+        *,
+        follows: dict[str, Any] | None = None,
+    ) -> None:
+        """Choose who does a commission, and hand it over.
+
+        ``follows`` is where the commission goes on when it adds to one a
+        task agent did (the session, the commission, the project). It is
+        chosen for like any other: a plugin that is picked does it, and
+        what the sentence states for good is kept. Only handed to a task
+        agent does it become part of that session; done by a plugin, or by
+        nothing, it has no part in it, and holds nothing of it.
+        """
         try:
-            if commission.continues and self._task_agents is not None:
-                # It goes on with what a task agent did, in that one's
-                # session: there is nothing to choose, and no model is asked.
-                # The plugins its words point at are told to the task agent
-                # as they are for any commission.
-                await self._ledger.append_event(
-                    commission.id,
-                    "decision",
-                    {
-                        "route": "task_agent",
-                        "plugin_id": None,
-                        "entry_id": None,
-                        "reason": "it follows up an earlier commission",
-                        "continues": commission.continues,
-                        "model_calls": triage.model_calls,
-                    },
-                )
-                await self._task_agents.submit(commission, candidate_plugin_ids=triage.candidate_ids)
-                return
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
+            goes_on = bool(follows) and selection.route == "task_agent" and self._task_agents is not None
+            if goes_on:
+                commission = await self._ledger.update(commission.id, **(follows or {})) or commission
             await self._ledger.append_event(
                 commission.id,
                 "decision",
@@ -662,6 +663,8 @@ class TaskBrain:
                     "entry_id": selection.entry_id,
                     "reason": selection.reason,
                     "model_calls": triage.model_calls + selection.model_calls,
+                    # Which commission it goes on with, in that one's session.
+                    **({"continues": commission.continues} if goes_on else {}),
                 },
             )
             if selection.preference:

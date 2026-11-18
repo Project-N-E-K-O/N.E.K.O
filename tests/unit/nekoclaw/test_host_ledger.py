@@ -932,6 +932,50 @@ async def test_a_session_is_as_old_as_the_last_change_of_a_commission_in_it(ledg
     assert (await ledger.get_session(other.id)).last_active_at == 3000.0
 
 
+async def test_where_a_session_stands_is_written_by_what_its_commission_is_then(ledger):
+    session = await ledger.create_session(lanlan_name="Lan", name="a")
+    commission = await _file(ledger, route="task_agent", session_id=session.id)
+
+    async def stands() -> str:
+        return (await ledger.get_session(session.id)).status
+
+    # At work, which was written with the commission's status: a look that began before it
+    # was taken up again (the user answered) writes nothing over that.
+    assert (await ledger.transition(commission.id, "working")).applied
+    await ledger.settle_session(session.id, commission.id)
+    assert await stands() == "running"
+
+    # It waits for the user, its runtime session closed.
+    assert (await ledger.transition(commission.id, "waiting_user")).applied
+    await ledger.update_session(session.id, status="running")
+    await ledger.settle_session(session.id, commission.id)
+    assert await stands() == "waiting"
+
+    # Queued to be taken up again: not written over either.
+    assert (await ledger.transition(commission.id, "queued")).applied
+    await ledger.update_session(session.id, status="running")
+    await ledger.settle_session(session.id, commission.id)
+    assert await stands() == "running"
+
+    # Over.
+    assert (await ledger.transition(commission.id, "working")).applied
+    assert (await ledger.transition(commission.id, "done")).applied
+    await ledger.settle_session(session.id, commission.id)
+    assert await stands() == "closed"
+
+    # What was said in it was removed since, being old, and the next commission of it failed
+    # before a runtime had the session open: nothing is in it, which is what it says.
+    await ledger.mark_session_cleared(session.id)
+    late = await _file(ledger, title="late", route="task_agent", session_id=session.id)
+    assert (await ledger.transition(late.id, "failed")).applied
+    await ledger.settle_session(session.id, late.id)
+    assert await stands() == "cleared"
+    # A commission nobody knows of is over as well.
+    await ledger.update_session(session.id, status="running")
+    await ledger.settle_session(session.id, "no-such-commission")
+    assert await stands() == "closed"
+
+
 async def test_commissions_are_found_by_their_session(ledger):
     session = await ledger.create_session(lanlan_name="Lan", name="a")
     first = await _file(ledger, title="first", session_id=session.id)

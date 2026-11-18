@@ -1425,30 +1425,18 @@ class TaskAgentManager:
         if commission_id is None or self._closed or self._in_hand(commission_id):
             return
         commission = await self._ledger.get(commission_id)
-        waits = commission is not None and commission.status == "waiting_user"
-        # What was said in it was removed, being old, and no runtime had it
-        # open since (a commission that gets to work in it writes that it
-        # is at work): the commission that held it failed, or was stopped,
-        # before that. Nothing is in it still, which ``cleared`` says, and
-        # which stands. (Held, it cannot be cleared between this look and
-        # what is written below.)
-        empty = False
-        try:
-            kept = await self._ledger.get_session(session_id)
-            empty = kept is not None and kept.status == "cleared" and not waits
-        except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
-            # Taken for one with something in it, which nearly every one
-            # has. The hold is let go all the same: left here, nothing
-            # else would ever start in the session.
-            logger.warning("reading where a session stands failed", exc_info=True)
         if self._held_by.get(session_id) != commission_id:
             # Let go meanwhile, by another look at the same hold, and maybe
             # taken by the next commission: its status is that one's to say.
             return
         try:
-            if not empty:
-                await self._ledger.update_session(session_id, status="waiting" if waits else "closed")
+            # By what the commission is when this is written, not by what
+            # was read above: it may have been taken up again since (an
+            # answer came), and is then at work, which is on record.
+            await self._ledger.settle_session(session_id, commission_id)
         except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
+            # The hold is let go all the same: left here, nothing else
+            # would ever start in the session.
             logger.warning("noting where a session stands failed", exc_info=True)
         # Looked at again: it may have been taken up, or let go, meanwhile.
         if self._held_by.get(session_id) != commission_id or self._closed or self._in_hand(commission_id):

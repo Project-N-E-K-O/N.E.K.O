@@ -33,11 +33,14 @@ from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
     fake_model,
     make_host,
+    pick_plugin,
     scripted_runtime,
     scripts_by_commission,
     wait_status,
     wait_until,
 )
+from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, plugin
+from tests.unit.nekoclaw.plugin_server_fake import finish as plugin_result
 
 
 @pytest.fixture
@@ -921,7 +924,7 @@ async def test_a_dispatched_sentence_that_adds_to_a_commission_that_is_done_goes
     assert (done.session_id, done.continues, done.route) == (first.commission_id, first.commission_id, "task_agent")
     assert (done.workdir, done.session_dir) == (earlier.workdir, earlier.session_dir)
     assert (await host.ledger.get(first.commission_id)).status == "done"
-    # No model was asked where it goes.
+    # No plugin is installed: there is nothing to choose between, and no model is asked.
     assert host.decision._llm.calls == []
     (decision,) = await _events(host, receipt.commission_id, "decision")
     assert (decision.payload["route"], decision.payload["continues"]) == ("task_agent", first.commission_id)
@@ -931,6 +934,107 @@ async def test_a_dispatched_sentence_that_adds_to_a_commission_that_is_done_goes
         _opens(receipt.commission_id, "also rename the photos by date\nWhat the user said: oh and rename the photos too")
     )
     assert "follows up the earlier commission" in said[-1]
+
+
+def _renamer(server: FakePluginServer, calls: list[Any]) -> None:
+    async def rename(args: dict[str, Any]) -> dict[str, Any]:
+        calls.append(args)
+        return plugin_result({"reply": "renamed 12 photos"})
+
+    server.add_plugin(
+        plugin(
+            "renamer",
+            "Renames files by a pattern",
+            [entry("rename", "Rename the files of a folder", llm_result_fields=[])],
+            keywords=["rename"],
+        ),
+        rename=rename,
+    )
+
+
+async def test_a_sentence_that_adds_to_a_commission_is_chosen_for_like_any_other_before_it_goes_on_there(
+    hosts, tmp_path, monkeypatch
+):
+    server, calls = FakePluginServer.install(monkeypatch), []
+    _renamer(server, calls)
+    decision = FakeDecisionLLM(
+        fine=[{"route": "task_agent"}, {"route": "task_agent", "preference": "name photos by the date they were taken"}]
+    )
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("ready", "sorted 12 photos by month")]),
+        "rename the photos": ScriptedLLM([_report("ready", "renamed")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), client_factory=server.client, decision_llm=decision)
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "done")
+    await _released(host, first.commission_id)
+    assert decision.tiers() == ["fine"]
+    # A commission that adds to none says nothing of one it goes on with.
+    (plain,) = await _events(host, first.commission_id, "decision")
+    assert plain.payload["route"] == "task_agent" and "continues" not in plain.payload
+
+    receipt = await _dispatch(host, "also rename the photos by date")
+
+    assert receipt.kind == "accepted"
+    done = await wait_status(host, receipt.commission_id, "done")
+    # With a plugin that could do it installed, the model is asked, as for any sentence.
+    assert decision.tiers() == ["fine", "fine"] and calls == []
+    # Handed to a task agent, it goes on where the other was done.
+    assert (done.session_id, done.continues, done.route) == (first.commission_id, first.commission_id, "task_agent")
+    (chosen,) = await _events(host, receipt.commission_id, "decision")
+    assert (chosen.payload["route"], chosen.payload["continues"]) == ("task_agent", first.commission_id)
+    assert chosen.payload["model_calls"] == 1
+    # What the sentence states for good is kept, which that request reads.
+    (kept,) = await host.preferences.list()
+    assert kept.text == "name photos by the date they were taken"
+    # The plugins it was shown go along, to be called through the gateway.
+    said = _user_messages(scripts["rename the photos"].requests[0])
+    assert "follows up the earlier commission" in said[-1] and '"name": "plugin__renamer__rename"' in said[-1]
+    # And what was just stated is among how the user wants such things done.
+    assert "- name photos by the date they were taken" in said[-1]
+
+
+@pytest.mark.parametrize("chosen", ["a plugin", "nothing"])
+async def test_a_sentence_that_adds_to_a_commission_and_is_not_for_a_task_agent_has_no_part_in_its_session(
+    hosts, tmp_path, monkeypatch, chosen
+):
+    server, calls = FakePluginServer.install(monkeypatch), []
+    _renamer(server, calls)
+    second = (
+        pick_plugin("renamer", "rename", {"pattern": "date"})
+        if chosen == "a plugin"
+        else {"route": "none", "reason": "nothing here renames photos"}
+    )
+    decision = FakeDecisionLLM(fine=[{"route": "task_agent"}, second])
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted 12 photos by month")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), client_factory=server.client, decision_llm=decision)
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    earlier = await wait_status(host, first.commission_id, "done")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+
+    receipt = await _dispatch(host, "also rename the photos by date")
+
+    assert receipt.kind == "accepted"
+    ended = await wait_status(host, receipt.commission_id, "done", "failed")
+    await host.brain.settle()
+    if chosen == "a plugin":
+        # The plugin does it by itself.
+        assert (ended.status, ended.route, ended.plugin_id) == ("done", "plugin", "renamer")
+        assert [args["pattern"] for args in calls] == ["date"]
+    else:
+        assert ended.status == "failed" and "nothing here renames photos" in ended.status_reason
+        assert calls == []
+    # It is no part of the session of the commission it adds to, and holds nothing of it:
+    # the next commission of that session does not wait for it.
+    assert (ended.session_id, ended.continues, ended.project) == (None, None, earlier.project)
+    (written,) = await _events(host, receipt.commission_id, "decision")
+    assert "continues" not in written.payload
+    assert [item.id for item in await host.ledger.select(session_id=earlier.session_id)] == [first.commission_id]
+    assert host.task_agents._held_by == {} and host.task_agents.running == [] and host.task_agents.queued == []
+    assert len(scripts["sort the photos"].requests) == 1
+    assert host.task_agents.hold_files(earlier.session_id) is True
+    host.task_agents.release_files(earlier.session_id)
 
 
 async def test_a_dispatched_sentence_about_something_else_is_a_commission_in_a_session_of_its_own(hosts, tmp_path):
@@ -1510,7 +1614,7 @@ async def test_a_session_that_was_cleared_stays_cleared_until_a_commission_gets_
     assert (await host.ledger.get_session(session_id)).status == "cleared"
 
 
-async def test_a_session_is_let_go_also_when_where_it_stands_cannot_be_read(hosts, tmp_path):
+async def test_a_session_is_let_go_also_when_where_it_stands_cannot_be_written(hosts, tmp_path):
     import sqlite3
 
     release, wait = _gate()
@@ -1518,25 +1622,27 @@ async def test_a_session_is_let_go_also_when_where_it_stands_cannot_be_read(host
     host = _host(hosts, tmp_path, llm)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
-    reading = host.ledger.get_session
+    settling = host.ledger.settle_session
 
-    async def unreadable(session_id: str | None) -> Any:
+    async def locked(session_id: str, commission_id: str) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    host.ledger.get_session = unreadable
+    host.ledger.settle_session = locked
     try:
         release.set()
         done = await wait_status(host, first.commission_id, "done")
         await _released(host, first.commission_id)
         # What the session's status says is for showing. Held on because that could not be
-        # read, nothing else would ever start in the session.
+        # written, nothing else would ever start in the session.
         await _let_go(host)
     finally:
-        host.ledger.get_session = reading
-    assert (await host.ledger.get_session(done.session_id)).status == "closed"
+        host.ledger.settle_session = settling
 
     second = await _follow_up(host, done, "sort the videos as well")
     await wait_status(host, second.id, "done")
+    await _released(host, second.id)
+    await _let_go(host)
+    assert (await host.ledger.get_session(done.session_id)).status == "closed"
 
 
 async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_its_commissions_were(hosts, tmp_path):

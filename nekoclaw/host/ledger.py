@@ -1051,6 +1051,34 @@ class Ledger:
 
         return await self.run(work)
 
+    async def settle_session(self, session_id: str, commission_id: str) -> None:
+        """Write where a session stands once the commission that holds it has left its runtime.
+
+        ``waiting`` when that commission waits for the user, ``closed``
+        when it is over. Read and written together: a commission that was
+        taken up again meanwhile (the user answered, say) is queued or at
+        work, which was written of the session with its own status, and
+        that stands; a look that began before it is not to write over it.
+
+        A session whose conversation was removed, being old, and that no
+        runtime had open since stays ``cleared``: a commission that gets
+        to work in it writes that it is at work, so one that is still
+        ``cleared`` was held by a commission that failed, or was stopped,
+        before that. Nothing is in it.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            row = conn.execute("SELECT status FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+            status = row["status"] if row is not None else None
+            if status in ("queued", "working"):
+                return
+            if status == "waiting_user":
+                conn.execute("UPDATE sessions SET status = 'waiting' WHERE id = ?", (session_id,))
+            else:
+                conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status != 'cleared'", (session_id,))
+
+        await self.run(work)
+
     async def mark_session_cleared(self, session_id: str) -> None:
         """Put on record that what was said in a session is gone, being old.
 
