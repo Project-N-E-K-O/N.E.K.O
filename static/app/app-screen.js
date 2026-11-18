@@ -1876,12 +1876,21 @@
         var shouldRestart = isScreenSharingActiveForSourceChange();
         releaseActiveScreenCaptureForSourceChange();
         if (!shouldRestart) return;
+        // A stop during the restart (e.g. the user cancels it) already sent the
+        // notice; only a restart that ends without a share and without one sends it.
+        var noticeSeqAtRestart = screenShareStopNoticeSeq;
+        function notifyIfRestartEndedWithoutShare() {
+            if (!isScreenShareRunningOrStarting()
+                && screenShareStopNoticeSeq === noticeSeqAtRestart) {
+                notifyScreenShareStopped();
+            }
+        }
         Promise.resolve(startScreenSharing()).then(function () {
             // The restart handles its own failures and resolves without a share;
             // the old source's frames then need the stop notice it skipped.
-            if (!isScreenShareRunningOrStarting()) notifyScreenShareStopped();
+            notifyIfRestartEndedWithoutShare();
         }, function (error) {
-            if (!isScreenShareRunningOrStarting()) notifyScreenShareStopped();
+            notifyIfRestartEndedWithoutShare();
             console.warn('[屏幕源] 标题恢复后重启流捕获失败:', error);
             window.showStatusToast(
                 safeT(
@@ -2016,7 +2025,9 @@
     // frames (the voice session's cached frame, frames still buffered or being
     // validated). Sent however the share ends; a temporary pause of the sender
     // (pauseScreenFrameSender) does not send it.
+    var screenShareStopNoticeSeq = 0;
     function notifyScreenShareStopped() {
+        screenShareStopNoticeSeq += 1;
         try {
             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                 S.socket.send(JSON.stringify({ action: 'screen_share_stopped' }));

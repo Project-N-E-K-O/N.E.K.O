@@ -49,6 +49,17 @@ def _b64(url: str) -> str:
     return url.split(",", 1)[1]
 
 
+def _dominant_channel(url: str) -> str:
+    """Which of red/blue dominates the decoded image (the test images are flat colours)."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    r, _g, b = Image.open(io.BytesIO(base64.b64decode(_b64(url)))).convert("RGB").getpixel((5, 5))
+    return "red" if r > b else "blue"
+
+
 async def _turn(client, text, **kwargs):
     """Run one turn; return the image URLs its request carried, read right away."""
     client.script = [[_text("ok"), _text("", "stop")]]
@@ -83,16 +94,14 @@ async def test_live_frames_keep_pixels_only_for_their_own_turn():
         client, "what am I looking at?",
         turn_images=(live, photo), turn_source="screen", turn_source_count=1,
     )
-    assert len(first) == 2
+    assert sorted(_dominant_channel(u) for u in first) == ["blue", "red"]
     message = next(m for m in client._conversation_history if image_count(m.content))
     assert message.metadata["image_kinds"] == ["live", "user"]
 
     second = await _turn(client, "and now?")
-    urls = second
-    # The live frame left; the photo the user attached is still there.
-    assert len(urls) == 1
-    assert _b64(urls[0]) != _b64(first[0])
-    assert _b64(urls[0]) == _b64(first[1])
+    # The live frame (red) left; the photo the user attached (blue) is still there,
+    # identified by content rather than position.
+    assert [_dominant_channel(u) for u in second] == ["blue"]
     first_turn = next(
         m for m in client._conversation_history
         if isinstance(m.content, list)
@@ -285,3 +294,54 @@ async def test_revocation_mid_turn_strips_the_unsent_proactive_screenshot_synchr
     urls = _urls(client.requests[-1])
     # Turn A's own request: only the user's photo.
     assert urls == [kept_url]
+
+
+@pytest.mark.asyncio
+async def test_revocation_drops_a_staged_proactive_screenshot_not_yet_in_history():
+    client = _client()
+    client.set_proactive_screenshot(_png_b64(40, 40, (1, 2, 3)))
+    client.discard_auto_captured_history_images()
+    assert client._proactive_image_to_inject is None
+    assert await _turn(client, "reply after privacy mode turned on") == []
+
+
+@pytest.mark.asyncio
+async def test_revocation_while_the_turn_fits_its_images_keeps_the_screenshot_out(monkeypatch):
+    """The turn already took the screenshot; consent is revoked during its image fit."""
+    import asyncio
+
+    from main_logic.omni_offline_client import _streaming as offline_streaming
+
+    real_fit = offline_streaming.fit_images_to_turn_budget
+    fitting = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def paused_fit(images, budget):
+        fitting.set()
+        await resume.wait()
+        return await real_fit(images, budget)
+
+    monkeypatch.setattr(offline_streaming, "fit_images_to_turn_budget", paused_fit)
+    client = _client()
+    client.set_proactive_screenshot(_png_b64(40, 40, (1, 2, 3)))
+    client._pending_images = [_png_b64(41, 41, (4, 5, 6))]
+    client.script = [[_text("ok"), _text("", "stop")]]
+    turn = asyncio.create_task(client.stream_text("reply with my photo"))
+    await asyncio.wait_for(fitting.wait(), timeout=5)
+    client.discard_auto_captured_history_images()
+    resume.set()
+    await asyncio.wait_for(turn, timeout=5)
+
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    assert message.metadata["image_kinds"] == ["user"]
+    assert len(_urls(client.requests[-1])) == 1
+
+
+@pytest.mark.asyncio
+async def test_sampled_frame_count_marks_live_frames_without_a_bus_channel():
+    client = _client()
+    await _turn(
+        client, "look", turn_images=(_png_b64(40, 40), _png_b64(41, 41)), turn_source_count=1,
+    )
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    assert message.metadata["image_kinds"] == ["live", "user"]

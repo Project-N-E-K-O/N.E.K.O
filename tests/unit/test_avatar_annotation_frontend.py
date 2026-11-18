@@ -881,7 +881,8 @@ const stopScreenSharing = async () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
 const isManualScreenShareEngaged = () => true;
 const isScreenShareRunningOrStarting = () => true;
-const notifyScreenShareStopped = () => { results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
+let screenShareStopNoticeSeq = 0;
+const notifyScreenShareStopped = () => { screenShareStopNoticeSeq += 1; results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 function stopScreening() {
   nativeCaptureGeneration += 1;
   activeNativeCaptureSourceId = null;
@@ -953,6 +954,7 @@ def _run_active_media_stream_reconciliation(
     *,
     play_pending: bool = False,
     restart_starts: bool = True,
+    cancelled_during_restart: bool = False,
 ) -> dict:
     screen_src = _screen_src()
     script = """
@@ -1015,7 +1017,8 @@ const rememberScreenSourceLabel = () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
 const isManualScreenShareEngaged = () => true;
 const isScreenShareRunningOrStarting = () => true;
-const notifyScreenShareStopped = () => { results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
+let screenShareStopNoticeSeq = 0;
+const notifyScreenShareStopped = () => { screenShareStopNoticeSeq += 1; results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 const stopButton = () => ({ disabled: false });
 const screenButton = () => ({ classList: { contains: () => true } });
 const cancelPendingScreenSharingStart = () => false;
@@ -1048,6 +1051,12 @@ __RECONCILE__
   console.log(JSON.stringify(results));
 })();
 """
+    if cancelled_during_restart:
+        # The user stops while the restart waits: the stop path sends its own notice.
+        script = script.replace(
+            "const startScreenSharing = async () => { results.restarted = true; };",
+            "const startScreenSharing = async () => { results.restarted = true; notifyScreenShareStopped(); };",
+        )
     script = script.replace(
         "const isScreenShareRunningOrStarting = () => true;",
         "const isScreenShareRunningOrStarting = () => %s;" % ("true" if restart_starts else "false"),
@@ -1118,6 +1127,17 @@ def test_title_remap_whose_restart_ends_without_a_share_notifies_backend():
     out = _run_active_media_stream_reconciliation(
         [{"id": "window:new", "name": "Editor"}],
         restart_starts=False,
+    )
+    assert out["restarted"] is True
+    assert out.get("shareStopNotices") == 1
+
+
+@pytest.mark.unit
+def test_title_remap_restart_cancelled_by_the_user_sends_one_notice():
+    out = _run_active_media_stream_reconciliation(
+        [{"id": "window:new", "name": "Editor"}],
+        restart_starts=False,
+        cancelled_during_restart=True,
     )
     assert out["restarted"] is True
     assert out.get("shareStopNotices") == 1

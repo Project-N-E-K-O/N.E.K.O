@@ -192,7 +192,7 @@ async def test_stop_notice_fences_a_live_frame_still_decoding(manager, monkeypat
     old = asyncio.create_task(
         manager._process_stream_data_internal(_frame(live=True, at=time.monotonic()))
     )
-    await decoding.wait()
+    await asyncio.wait_for(decoding.wait(), timeout=5)
     manager.handle_screen_share_stopped()
     resume.set()
     await old
@@ -285,7 +285,7 @@ async def test_stop_notice_drops_a_non_native_frame_description(manager, monkeyp
     monkeypatch.setattr(screenshot_utils, "analyze_image_with_vision_model", slow_analysis)
     client._latest_image_b64 = "frame"
     task = asyncio.create_task(client._analyze_image_with_vision_model("frame"))
-    await started.wait()
+    await asyncio.wait_for(started.wait(), timeout=5)
     manager.handle_screen_share_stopped()
     release.set()
     assert await task == "the old game screen"
@@ -360,6 +360,20 @@ async def test_hang_up_then_typing_never_attaches_share_frames(manager, monkeypa
     manager.session_ready = True
     assert [m["input_type"] for m in manager.pending_input_data] == ["text"]
     assert offline._pending_images == []
+
+    # The real replay entry sends what was typed, and nothing else.
+    offline.script = [[_text("hi"), _text("", "stop")]]
+    replayed = []
+
+    async def recording_stream_text(text, **kwargs):
+        replayed.append(text)
+        return await type(offline).stream_text(offline, text, **kwargs)
+
+    monkeypatch.setattr(offline, "stream_text", recording_stream_text)
+    await manager._flush_pending_input_data()
+    assert replayed == ["hello"]
+    assert len(offline.requests) == 1
+    assert _image_urls(offline.requests[-1]) == []
 
     for i in range(4):
         offline.script = [[_text(f"reply {i}"), _text("", "stop")]]

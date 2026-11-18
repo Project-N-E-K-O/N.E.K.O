@@ -863,6 +863,10 @@ class _StreamingMixin:
         # Treat an absent staging slot exactly like an empty slot so the optional
         # proactive-vision feature does not break those legacy construction paths.
         proactive_image = getattr(self, "_proactive_image_to_inject", None)
+        # A revocation during this turn's awaits (vision switch, image fit)
+        # cannot reach a message that does not exist yet; re-checked once the
+        # message is in history.
+        _auto_capture_epoch = getattr(self, "_auto_capture_discard_epoch", 0)
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
@@ -960,6 +964,13 @@ class _StreamingMixin:
                     else max(0, min(int(turn_source_count), len(own_images)))
                 )
             )
+            # History provenance does not depend on the optional bus channel:
+            # an explicit sampled-frame count marks the live prefix by itself.
+            _live_prefix = (
+                max(0, min(int(turn_source_count), len(own_images)))
+                if turn_source_count is not None
+                else _channelled
+            )
             _own_image_sources = (
                 [turn_source] * _channelled
                 + [_FRAME_SOURCE_USER] * (len(own_images) - _channelled)
@@ -986,9 +997,9 @@ class _StreamingMixin:
                     _IMAGE_KIND_USER
                     if index < len(turn_image_user_flags) and turn_image_user_flags[index]
                     else _IMAGE_KIND_LIVE
-                    for index in range(_channelled)
+                    for index in range(_live_prefix)
                 ]
-                + [_IMAGE_KIND_USER] * (len(own_images) - _channelled)
+                + [_IMAGE_KIND_USER] * (len(own_images) - _live_prefix)
                 + [_IMAGE_KIND_USER] * len(attachment_images)
             )
             # Each source has separate image-count quotas (cannot spend another's allowance), but all enter
@@ -1128,6 +1139,10 @@ class _StreamingMixin:
         # so a frame of a share that has since ended is not resent every turn.
         self._strip_answered_live_frames()
         self._conversation_history.append(user_message)
+        if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
+            # Consent was revoked while this turn was being assembled: its
+            # proactive screenshot must not go out (no await since append).
+            self.discard_auto_captured_history_images()
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history

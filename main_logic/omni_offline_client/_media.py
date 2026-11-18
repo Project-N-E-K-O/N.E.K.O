@@ -646,8 +646,14 @@ class _MediaMixin:
         Live share / voice vision frames and proactive screenshots keep only a
         receipt; images the user attached are untouched. A turn whose image
         mapping the budget ladder lost is stripped whole if it held any
-        automatically captured image (fail closed).
+        automatically captured image (fail closed). A proactive screenshot
+        staged for the user's next reply is dropped too, and a turn being
+        assembled right now re-checks after committing its message.
         """
+        self._auto_capture_discard_epoch = (
+            getattr(self, "_auto_capture_discard_epoch", 0) + 1
+        )
+        self.set_proactive_screenshot(None)
         stripped = self._strip_history_images(
             lambda kind, prefit: kind in _AUTO_CAPTURED_IMAGE_KINDS
             or (
