@@ -101,10 +101,19 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
     receipt = await _dispatch(host, "sort the photos", user_text="can you sort my photos")
     await wait_status(host, receipt.commission_id, "done")
 
+    from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_BRIEF_GATEWAY_NOTE, TASK_AGENT_SESSION_FRAME
+
     system = _system(llm)
     assert SPACE_NOTE not in system and "task_agent_space" not in system
-    # What the host adds ends with the brief of before, word for word.
-    assert system.endswith("Commission: sort the photos\nWhat the user said: can you sort my photos")
+    # What the host adds is whom the task agent works for and how the gateway is used, word
+    # for word, and says nothing of the commission, which is the message that opens it.
+    assert system.endswith(
+        TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan") + "\n\n" + TASK_AGENT_BRIEF_GATEWAY_NOTE
+    )
+    assert "sort the photos" not in system
+    assert llm.requests[0][-1]["content"].startswith(
+        f"Commission {receipt.commission_id}\nsort the photos\nWhat the user said: can you sort my photos"
+    )
 
 
 async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):
@@ -142,8 +151,10 @@ async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):
     system = _system(second)
     assert SPACE_NOTE in system and str(root) in system
     assert "Index of project _daily:\n- [Photo dates](memory/photo-dates.md) — Use the EXIF date, not the file date." in system
-    # After the brief of before, which is still whole.
-    assert system.index("Commission: rename the videos by date") < system.index(SPACE_NOTE)
+    # After what the host says of whom the task agent works for, which is still whole.
+    assert system.index("You work for Lan") < system.index(SPACE_NOTE)
+    assert "rename the videos by date" not in system
+    assert second.requests[0][-1]["content"].startswith(f"Commission {again.commission_id}\nrename the videos by date\n")
 
 
 async def test_a_lesson_rests_on_the_files_of_the_folder_the_task_agent_works_in(hosts, tmp_path):
@@ -186,7 +197,7 @@ async def test_a_lesson_rests_on_the_files_of_the_folder_the_task_agent_works_in
     assert "Videos" not in await host.space.read_index(DEFAULT_PROJECT)
 
 
-async def test_the_space_cannot_push_the_commission_out_of_the_instructions(hosts, tmp_path):
+async def test_the_space_and_the_commission_each_keep_within_a_cap_of_their_own(hosts, tmp_path):
     from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS, TASK_AGENT_BRIEF_MAX_TOKENS
     from utils.tokenize import count_tokens
 
@@ -201,10 +212,16 @@ async def test_the_space_cannot_push_the_commission_out_of_the_instructions(host
     await wait_status(host, receipt.commission_id, "done")
 
     system = _system(llm)
-    brief = system[system.index("You are working on one commission for Lan") :]
+    brief = system[system.index("You work for Lan") :]
     own, kept = brief.split(SPACE_NOTE, 1)
     assert count_tokens(own) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2
     assert count_tokens(SPACE_NOTE + kept) <= SPACE_BRIEF_MAX_TOKENS
+    # What the commission is has the same cap, in the message that opens it; the
+    # sentence about the language to answer in follows it.
+    opening = llm.requests[0][-1]["content"]
+    said, language = opening.rsplit("\n\n", 1)
+    assert said.startswith(f"Commission {receipt.commission_id}\nsort the photos")
+    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language.endswith("in English.")
     assert "Index of project _daily:\n- [Daily 149 d149]" in kept
 
 

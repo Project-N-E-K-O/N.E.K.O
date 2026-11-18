@@ -53,6 +53,12 @@ DEFAULT_PROJECT = "_daily"
 # looks whether it is there, and a test keeps the two names the same.
 TRANSCRIPT_NAME = "transcript.jsonl"
 
+# The system prompt and tool definitions a session was opened with, in its
+# directory. The runtime writes it and names it
+# (``nekoclaw.runtime.snapshot.SYSTEM_FILE``); the host removes it with what
+# was said, and a test keeps the two names the same.
+SYSTEM_SNAPSHOT_NAME = "system.json"
+
 # In the directory of a session that ran in dsh: which of dsh's sessions is
 # this one's. dsh keeps what was said itself; the dsh driver writes this note
 # and names it (``nekoclaw.dsh.profile.SESSION_FILE``). The host only looks

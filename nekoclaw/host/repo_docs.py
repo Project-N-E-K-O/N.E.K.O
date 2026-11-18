@@ -32,8 +32,8 @@ sentence is in ``config/prompts/prompts_nekoclaw_brain.py``.
 ``listing`` is the one function the host calls: it takes a working
 directory and returns the text, empty when there is nothing to list. It
 reads the file system, so it is called in a worker thread. Where the text
-goes is the caller's business: today it follows a task agent's brief
-(``TaskAgentManager._start``).
+goes is the caller's business: today it is part of the message that opens
+a commission in its session (``TaskAgentManager._opening``).
 """
 
 from __future__ import annotations

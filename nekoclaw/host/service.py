@@ -205,6 +205,8 @@ class NekoClawHost:
             session_dir_of=self.task_agents.session_dir_of,
             hold_session=self.task_agents.hold_session,
             release_session=self.task_agents.release_session,
+            hold_files=self.task_agents.hold_files,
+            release_files=self.task_agents.release_files,
             forget_dsh_session=self.dsh.forget_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)

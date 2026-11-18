@@ -524,7 +524,18 @@ def _host(hosts: list[Any], tmp_path: Path, llm: Any) -> Any:
     return host
 
 
-async def test_a_task_agent_that_works_in_a_repository_is_given_the_list_after_its_brief(hosts, tmp_path):
+def _opening(llm: Any, request: int = 0) -> str:
+    """Return the message that opens a commission in its session, without the sentence on the language to answer in."""
+    said, language = llm.requests[request][-1]["content"].rsplit("\n\n", 1)
+    assert language.startswith("Write everything meant for the user")
+    return said
+
+
+def _system(llm: Any, request: int = 0) -> str:
+    return llm.requests[request][0]["content"]
+
+
+async def test_a_task_agent_that_works_in_a_repository_is_given_the_list_with_its_commission(hosts, tmp_path):
     root = _repository(tmp_path, {"AGENTS.md": "Always answer in French.", ".agent/rules/guide.md": "g" * 5000})
     llm = ScriptedLLM([_report()])
     host = _host(hosts, tmp_path, llm)
@@ -535,13 +546,16 @@ async def test_a_task_agent_that_works_in_a_repository_is_given_the_list_after_i
     done = await wait_status(host, receipt.commission_id, "done")
 
     assert done.workdir == str(root)
-    system = llm.requests[0][0]["content"]
+    system, opening = _system(llm), _opening(llm)
     listed = NOTE.format(root=root.as_posix()) + "\n- AGENTS.md (24 B)\n- .agent/rules/guide.md (4.9 KB)"
-    # Last of what the host adds: after the commission and after what the task agent space holds.
-    assert system.endswith(listed)
-    assert system.index("Commission: add an export to the Budget app") < system.index("From the task agent space.") < system.index(listed)
-    # Listed, not read: what the file says is not in the instructions.
-    assert "Always answer in French." not in system
+    # In the message that opens the commission, after what the commission is; the language to answer in follows.
+    assert opening.endswith(listed)
+    assert opening.index("add an export to the Budget app") < opening.index(listed)
+    # Not in the system prompt, which a session keeps from one commission to the next; what the task
+    # agent space holds is there.
+    assert "Files written for agents" not in system and "From the task agent space." in system
+    # Listed, not read: what the file says is in neither.
+    assert "Always answer in French." not in system and "Always answer in French." not in opening
 
 
 async def test_a_task_agent_that_works_in_no_such_repository_is_given_nothing_more(hosts, tmp_path, monkeypatch):
@@ -552,9 +566,8 @@ async def test_a_task_agent_that_works_in_no_such_repository_is_given_nothing_mo
     receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en", user_text="can you sort my photos")
     await wait_status(host, receipt.commission_id, "done")
 
-    system = llm.requests[0][0]["content"]
-    assert system.endswith("Commission: sort the photos\nWhat the user said: can you sort my photos")
-    assert "Files written for agents" not in system
+    assert _opening(llm).endswith("sort the photos\nWhat the user said: can you sort my photos")
+    assert "Files written for agents" not in _system(llm)
 
 
 async def test_a_folder_that_cannot_be_listed_does_not_keep_a_task_agent_from_starting(hosts, tmp_path, monkeypatch):
@@ -568,7 +581,8 @@ async def test_a_folder_that_cannot_be_listed_does_not_keep_a_task_agent_from_st
     receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
     done = await wait_status(host, receipt.commission_id, "done")
 
-    assert done.status == "done" and "Files written for agents" not in llm.requests[0][0]["content"]
+    assert done.status == "done"
+    assert "Files written for agents" not in _opening(llm) and "Files written for agents" not in _system(llm)
 
 
 async def test_the_list_is_made_off_the_event_loop(hosts, tmp_path, monkeypatch):
@@ -604,7 +618,7 @@ async def test_a_folder_the_host_made_for_a_commission_is_in_no_repository(hosts
     # It named no folder and works in one of the host's own, below that repository. Nobody chose to work
     # in the repository, and it is not told of its files.
     assert Path(done.workdir).is_relative_to(root)
-    assert "Files written for agents" not in llm.requests[0][0]["content"]
+    assert "Files written for agents" not in _opening(llm) and "Files written for agents" not in _system(llm)
     # Told by where the host keeps its data alone, too.
     assert await host.task_agents._repository_documents(done.workdir) == ""
 
@@ -618,7 +632,7 @@ async def test_a_folder_the_user_named_is_in_the_repository_above_it(hosts, tmp_
     receipt = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
 
-    assert llm.requests[0][0]["content"].endswith(NOTE.format(root=root.as_posix()) + "\n- AGENTS.md (1 B)")
+    assert _opening(llm).endswith(NOTE.format(root=root.as_posix()) + "\n- AGENTS.md (1 B)")
 
 
 async def test_a_folder_the_host_made_before_its_data_were_kept_elsewhere_is_in_no_repository_either(hosts, tmp_path):
@@ -654,3 +668,24 @@ async def test_where_the_session_is_kept_is_told_when_the_list_is_made(hosts, tm
     done = await wait_status(host, receipt.commission_id, "done")
 
     assert asked == [(done.workdir, done.session_dir)] and done.session_dir
+
+
+async def test_every_commission_of_a_session_is_given_the_list(hosts, tmp_path):
+    root = _repository(tmp_path, {"AGENTS.md": "a"})
+    llm = ScriptedLLM([_report(), _report()])
+    host = _host(hosts, tmp_path, llm)
+    await host.space.touch_project("Budget app", workdir=str(root))
+    listed = NOTE.format(root=root.as_posix()) + "\n- AGENTS.md (1 B)"
+
+    first = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
+    await wait_status(host, first.commission_id, "done")
+    second = await host.dispatch("add a chart to the Budget app", lanlan_name="Lan", lang="en")
+    done = await wait_status(host, second.commission_id, "done")
+
+    # The second is worked on in the session of the project, which the first opened. What was said before
+    # is summed up in time, and the message that opens the commission under way is what is kept: each has it.
+    assert done.session_id == first.commission_id
+    assert _opening(llm, 0).endswith(listed) and _opening(llm, 1).endswith(listed)
+    assert "add a chart to the Budget app" in _opening(llm, 1)
+    # Once in each: the system prompt of the session does not have it.
+    assert str(llm.requests[1]).count("Files written for agents") == 2 and "Files written for agents" not in _system(llm, 1)

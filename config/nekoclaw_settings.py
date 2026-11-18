@@ -36,10 +36,10 @@ answers a dispatch within ``DISPATCH_FIRST_ROUND_SECONDS`` and a query at
 once; the rest is room for the local request. When it runs out she is told
 that the task system did not respond, never that the task was taken."""
 
-DISPATCH_TEXT_MAX_TOKENS = 300
+DISPATCH_TEXT_MAX_TOKENS = 600
 """Cap on the sentence she dispatches, as stored and as shown to the decision model."""
 
-DISPATCH_USER_TEXT_MAX_TOKENS = 300
+DISPATCH_USER_TEXT_MAX_TOKENS = 800
 """Cap on the user's own words that come with a dispatch."""
 
 COMMISSION_TITLE_MAX_TOKENS = 24
@@ -113,7 +113,7 @@ DECISION_LEDGER_ROWS = 3
 DECISION_LEDGER_ROW_MAX_TOKENS = 60
 """Cap on one ledger row in the fine-selection prompt."""
 
-PREFERENCE_PROMPT_MAX_TOKENS = 150
+PREFERENCE_PROMPT_MAX_TOKENS = 300
 """Cap on the task preferences injected into the fine selection and into a
 task agent's instructions (design section 5.1)."""
 
@@ -148,6 +148,21 @@ not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length."""
 QUERY_RECENT_SECONDS = 24 * 3600.0
 """How far back finished commissions are still listed by a query."""
 
+FOLLOW_UP_RECENT_SECONDS = 24 * 3600.0
+"""How long after a commission a task agent worked on is over a sentence that
+adds to it still goes on with it, in its session. A sentence about something
+longer ago is a commission of its own (unless its project takes it)."""
+
+FOLLOW_UP_MIN_OVERLAP = 0.25
+"""Least share of a sentence's own words that must occur in a commission that
+is over, or in what came of it, for the sentence to go on with it. Higher
+than for an addition to a commission under way (``SUPPLEMENT_MIN_OVERLAP``):
+taken for a follow-up, a sentence is worked on with all that was said in the
+earlier commission's session in front of it."""
+
+FOLLOW_UP_ROWS = 8
+"""Most commissions that are over a dispatched sentence is compared with."""
+
 # ---------------------------------------------------------------------------
 # Task agents
 # ---------------------------------------------------------------------------
@@ -155,8 +170,82 @@ QUERY_RECENT_SECONDS = 24 * 3600.0
 TASK_AGENT_MAX_CONCURRENT = 10
 """Task agents at work at the same time; further commissions wait in the queue."""
 
-TASK_AGENT_BRIEF_MAX_TOKENS = 1200
-"""Cap on the host's instructions appended to a task agent's system prompt."""
+TASK_AGENT_CONTEXT_WINDOW = 200_000
+"""Preset context window a task agent's session is managed for, in tokens,
+unless the user set another for its model
+(``ModelCapabilityStore.set_context_window``). A model whose window is known
+to be smaller is given its own: what is used is the smaller of the two."""
+
+TASK_AGENT_COMPACT_AT_TOKENS = 170_000
+"""Preset length of a conversation from which it is cut down and summed up,
+in a window of ``TASK_AGENT_CONTEXT_WINDOW``. In a window of another size
+the point lies at the same part of it (17 in 20), and never so near its end
+that the output and a summary have no room. The user may set another for a
+model (``ModelCapabilityStore.set_compact_at``)."""
+
+TASK_AGENT_KNOWN_CONTEXT_WINDOWS = {"free-agent-model": 128_000}
+"""Windows of models that are known and cannot be learned, by model name.
+Used in place of ``TASK_AGENT_CONTEXT_WINDOW`` for a model named here,
+unless the user set one for it.
+
+A window is otherwise learned from what a provider says when it refuses a
+request as too long. The free tier's agent model refuses none: measured on
+2026-11-18, it takes about 131,000 tokens of input and cuts a longer
+request off without a word (requests of about 250,000 and of about 500,000
+tokens, by its own count, both came back as 131,276 tokens of input, and
+were answered). Managed for the preset window, a session with it would be
+sent requests of up to ``TASK_AGENT_COMPACT_AT_TOKENS``, and lose part of
+every one above 131,000 without anything to tell it. This is the model a
+user who configured nothing has."""
+
+TASK_AGENT_CONTEXT_WINDOW_MIN = 4_000
+"""The smallest window a session is managed for. A model that takes less
+cannot hold a task agent's instructions and tools."""
+
+TASK_AGENT_INFERRED_WINDOW_MIN_TOKENS = 32_000
+"""A provider that refuses a request as too long without stating its window
+still tells one thing: the window is smaller than that request. The size of
+the refused request is taken for the window from then on, when it is at
+least this much. Below it nothing is concluded: a refusal of so short a
+request is more likely about something else, and a window taken that small
+by mistake would be believed for ``MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS``."""
+
+TASK_AGENT_UNSURE_REFUSAL_TOKENS = 100_000
+"""A request of more than this that a provider refuses outright, in words
+that are not recognized, is taken for one that was too long: the
+conversation is summed up and the request is sent once more. Likewise a
+session opened again whose last request failed, with a conversation of more
+than this: it is summed up before its first request.
+
+It is the size at which a conversation was summed up while every session
+was managed for 128,000 tokens. A model that task agents worked with then
+never saw a longer request, so nothing is known of how it answers one;
+without this, a session that outlasts a commission would fail every
+commission from the first such refusal on, having grown past what its model
+takes without anything to say so."""
+
+MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS = 30 * 24 * 3600
+"""How long a model's window, learned from what its provider said when a
+request was too long, is believed. After that the setting counts again: if
+the model still takes less, one request is refused, the conversation is
+summed up, and the window is written down anew."""
+
+TASK_AGENT_BRIEF_MAX_TOKENS = 2400
+"""Cap on what the host says of one commission in the message that opens it
+(what was dispatched, what the user said, how the user wants such things
+done), and likewise on its own part of a task agent's system prompt. What
+the task agent space adds to the system prompt and the entries picked for a
+commission have caps of their own (``SPACE_BRIEF_MAX_TOKENS``,
+``GATEWAY_TOOL_LIST_MAX_TOKENS``)."""
+
+TASK_AGENT_SESSION_NAME_MAX_TOKENS = 16
+"""Cap on the name a session is given from the title of its first commission."""
+
+TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS = 500
+"""Cap on what a commission is told of the outcome of the one it follows up,
+when the session's record of that one was removed since. More than a result
+summary is stored with (``TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS``), so one is
+told whole."""
 
 REPO_DOCUMENTS: tuple[tuple[str, str], ...] = (
     ("file", "AGENTS.md"),
@@ -178,10 +267,12 @@ REPO_DOCUMENTS_MAX_LINES = 15
 many were left out."""
 
 REPO_DOCUMENTS_MAX_TOKENS = 600
-"""Cap on the whole of it, the sentence in front included. It follows a
-task agent's brief, after the caps of the brief and of the task agent
-space, and is paid with every request of the session. Fifteen lines of
-ordinary paths are some 330 tokens; the cap leaves room for long ones."""
+"""Cap on the whole of it, the sentence in front included. It goes with the
+message that opens a commission, after what the commission is and the
+entries picked for it, each of which has a cap of its own; from then on it
+is part of what was said in the session, and paid with every request until
+that is summed up. Fifteen lines of ordinary paths are some 330 tokens; the
+cap leaves room for long ones."""
 
 REPO_DOCUMENT_PATH_MAX_TOKENS = 60
 """Cap on one path of that list as it is written out. A file may be called
@@ -213,7 +304,7 @@ TASK_AGENT_EVENT_TEXT_MAX_CHARS = 4000
 """Size of one stored ``text`` or ``tool_update`` event row (display only,
 never sent to a model). Longer runs of output are split into several rows."""
 
-TASK_AGENT_CHILD_RESULT_MAX_TOKENS = 1500
+TASK_AGENT_CHILD_RESULT_MAX_TOKENS = 3000
 """Cap on a child task agent's result when it is handed back to its parent."""
 
 DEFERRED_COMMISSION_SECONDS = 3600.0
@@ -390,9 +481,7 @@ when the review's own instructions grow.
 
 It is what is left of the input when what she dispatched may be 600 tokens
 and what the user said 800 (``DISPATCH_TEXT_MAX_TOKENS``,
-``DISPATCH_USER_TEXT_MAX_TOKENS``). While those two are 300 each, 800
-tokens of the input are not used: they are kept for the day the two are
-raised, which is decided and done elsewhere."""
+``DISPATCH_USER_TEXT_MAX_TOKENS``)."""
 
 TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS = 100
 """Cap on one line of that account (one tool call, or one thing said)."""
@@ -507,6 +596,14 @@ GATEWAY_SEARCH_RESULTS = 8
 
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
+
+GATEWAY_COMPACTIONS_META_KEY = "nekoclaw/compactions"
+"""Where a task agent's runtime tells, under a ``tools/call``'s ``_meta``, how
+often the session's conversation has been summed up so far. A group of
+built-in tools handed over before a summary is not in the conversation after
+it: when the number has changed, the gateway hands the group over anew the
+next time one of its tools is called. A client that names none is taken to
+hold what it was handed."""
 
 GATEWAY_REPLY_META_KEY = "nekoclaw/reply"
 """Where a task agent's runtime names the model reply a ``tools/call`` was

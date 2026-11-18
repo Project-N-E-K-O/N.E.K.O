@@ -112,6 +112,11 @@ class World:
         values.setdefault("route", "task_agent")
         values.setdefault("lang", "en")
         commission, _created = await self.ledger.create(dispatch_text=text, **values)
+        if commission.route == "task_agent" and commission.session_id is None:
+            # As when it is handed to a task agent: a session of its own, under its id.
+            commission, _session = await self.ledger.give_session(
+                commission.id, kind="child" if commission.parent_id else "single", name=commission.title
+            )
         return commission
 
     async def work(self, commission_id: str, calls: int = 3, tool: str = "bash") -> None:
@@ -1078,7 +1083,7 @@ async def test_a_commission_taken_up_again_since_the_query_keeps_its_transcript(
     for commission in (resumed, other):
         _fill_session(world.paths.session_dir(commission.id))
     world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
-    found = world.keeper._ended_long_ago
+    found = world.keeper._closed_long_ago
 
     def query(conn: Any, after: float, after_id: str, until: float) -> Any:
         rows = found(conn, after, after_id, until)
@@ -1086,7 +1091,7 @@ async def test_a_commission_taken_up_again_since_the_query_keeps_its_transcript(
         conn.execute("UPDATE commissions SET status = 'working' WHERE id = ?", (resumed.id,))
         return rows
 
-    world.keeper._ended_long_ago = query
+    world.keeper._closed_long_ago = query
 
     await world.keeper.tidy(force=True)
 
@@ -1118,8 +1123,8 @@ async def test_a_session_in_use_is_not_cleaned_and_a_cleaned_one_is_held_meanwhi
         seen_held_while_removing.append(commission_id in held and commission_id not in released)
         return remove(directory, commission_id)
 
-    world.keeper._hold_session = hold
-    world.keeper._release_session = released.append
+    world.keeper._hold_files = hold
+    world.keeper._release_files = released.append
     world.keeper._clean_session = removing
 
     await world.keeper.tidy(force=True)
@@ -1132,7 +1137,7 @@ async def test_a_session_in_use_is_not_cleaned_and_a_cleaned_one_is_held_meanwhi
     # status changing, and then it is as old as it was.
     assert (await world.space.read_state())["sessions_to_retry"] == [in_use.id]
 
-    world.keeper._hold_session = lambda commission_id: True
+    world.keeper._hold_files = lambda commission_id: True
     world.clock.now += 3600
     await world.keeper.tidy(force=True)
 
@@ -1178,6 +1183,75 @@ async def test_a_session_whose_files_could_not_be_removed_is_tried_again_next_ro
     assert state["sessions_to_retry"] == []
     assert state["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
     assert [event.type for event in await world.ledger.events(stuck.id)][-1] == "session_cleaned"
+
+
+async def test_the_system_prompt_stays_with_a_transcript_that_could_not_be_removed(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    commission = await world.finished("its transcript is open in an editor", calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    (directory / "system.json").write_text("{}", encoding="utf-8")
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    unlink = Path.unlink
+
+    def held_open(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "transcript.jsonl":
+            raise PermissionError("in use")
+        unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+    await world.keeper.tidy(force=True)
+
+    # What was said is still there, so the session goes on with the system prompt it was
+    # opened with: without the file it would be put together anew in the middle of a conversation.
+    assert (directory / "transcript.jsonl").is_file() and (directory / "system.json").is_file()
+    assert (await world.space.read_state())["sessions_to_retry"] == [commission.id]
+    assert (await world.ledger.get_session(commission.id)).status != "cleared"
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert not (directory / "transcript.jsonl").exists() and not (directory / "system.json").exists()
+    assert (await world.ledger.get_session(commission.id)).status == "cleared"
+
+
+async def test_a_session_of_which_only_the_system_prompt_was_left_is_cleared_by_the_round_that_removes_it(
+    world, monkeypatch
+):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    commission = await world.finished("its system prompt is open in an editor", calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    (directory / "system.json").write_text("{}", encoding="utf-8")
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    unlink = Path.unlink
+
+    def held_open(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "system.json":
+            raise PermissionError("in use")
+        unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+    await world.keeper.tidy(force=True)
+
+    # The transcript and the tool output are gone, the system prompt is not: tried again.
+    assert not (directory / "transcript.jsonl").exists() and not (directory / "outputs").exists()
+    assert (directory / "system.json").is_file()
+    assert (await world.space.read_state())["sessions_to_retry"] == [commission.id]
+    assert (await world.ledger.get_session(commission.id)).status != "cleared"
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    # The round that removes what was left puts on record that the session is cleared.
+    assert not (directory / "system.json").exists()
+    assert (await world.space.read_state())["sessions_to_retry"] == []
+    assert (await world.ledger.get_session(commission.id)).status == "cleared"
+    assert [event.type for event in await world.ledger.events(commission.id)][-1] == "session_cleaned"
 
 
 async def test_a_session_that_never_lets_go_does_not_hold_the_later_ones_back(world, monkeypatch):
@@ -1266,8 +1340,8 @@ async def test_a_cleaning_that_is_cancelled_holds_the_session_until_the_removing
         return remove(directory, commission_id)
 
     world.keeper._clean_session = slow
-    world.keeper._hold_session = lambda commission_id: True
-    world.keeper._release_session = released.append
+    world.keeper._hold_files = lambda commission_id: True
+    world.keeper._release_files = released.append
 
     task = asyncio.ensure_future(world.keeper.tidy(force=True))
     await asyncio.to_thread(removing.wait, 10)
@@ -1366,8 +1440,8 @@ async def test_closing_waits_a_bounded_time_for_a_thread_that_removes_files(worl
         return remove(directory, commission_id)
 
     world.keeper._clean_session = stuck
-    world.keeper._hold_session = lambda commission_id: True
-    world.keeper._release_session = released.append
+    world.keeper._hold_files = lambda commission_id: True
+    world.keeper._release_files = released.append
     world.keeper._spawn(world.keeper.tidy(force=True))
     await asyncio.to_thread(removing.wait, 10)
 
@@ -3027,3 +3101,89 @@ async def test_an_entry_of_a_summary_for_the_archive_is_cut_and_rests_on_the_fil
     said = (await world.space.read_entry("date-formats")).content
     assert count_tokens(said) <= TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
     assert said.endswith("Dates are kept in one module.") and 10 < said.count("Dates are kept in one module.") < 60
+
+
+# ---------------------------------------------------------------------------
+# Sessions that took several commissions
+# ---------------------------------------------------------------------------
+
+
+async def _joined(world: Any, session_id: str, text: str, **values: Any) -> Any:
+    """File a commission that is worked on in a session another commission opened."""
+    return await world.file(text, session_id=session_id, **values)
+
+
+async def test_a_session_keeps_what_was_said_while_any_commission_of_it_is_young(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    first = await world.finished("add a CSV export", calls=0)
+    alone = await world.finished("sort the photos", calls=0)
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS - 3600
+    # A second commission was worked on in the first one's session, a month later.
+    second = await _joined(world, first.id, "add a chart")
+    await world.work(second.id, 0)
+    await world.end(second.id)
+    for commission in (first, alone):
+        _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += 7200
+
+    await world.keeper.tidy(force=True)
+
+    # The first commission ended long ago; its session was in use an hour ago.
+    assert (world.paths.session_dir(first.id) / "transcript.jsonl").is_file()
+    assert not (world.paths.session_dir(alone.id) / "transcript.jsonl").exists()
+    assert (await world.ledger.get_session(first.id)).status != "cleared"
+    assert (await world.ledger.get_session(alone.id)).status == "cleared"
+
+    # Old as a whole, it is cleaned as a whole, and every commission of it has that on record.
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS
+    await world.keeper.tidy(force=True)
+    assert not (world.paths.session_dir(first.id) / "transcript.jsonl").exists()
+    assert (await world.ledger.get_session(first.id)).status == "cleared"
+    for commission in (first, second):
+        cleaned = [event for event in await world.ledger.events(commission.id) if event.type == "session_cleaned"]
+        assert [event.payload for event in cleaned] == [{"session_id": first.id}]
+    # Nothing is under the id of the commission that joined: its session is the first one's.
+    assert not world.paths.session_dir(second.id).exists()
+
+
+@pytest.mark.parametrize("status", ["blocked", "waiting_user", "working", "queued"])
+async def test_a_session_with_a_commission_that_is_not_over_is_left_alone_however_old(world, status):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    first = await world.finished("add a CSV export", calls=0)
+    second = await _joined(world, first.id, "add a chart")
+    if status != "queued":
+        await world.work(second.id, 0)
+    if status in ("blocked", "waiting_user"):
+        await world.ledger.transition(second.id, status, reason="test")
+    _fill_session(world.paths.session_dir(first.id))
+    world.clock.now += 3 * SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    await world.keeper.tidy(force=True)
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert (world.paths.session_dir(first.id) / "transcript.jsonl").is_file()
+    assert (await world.ledger.get_session(first.id)).status != "cleared"
+
+
+async def test_the_system_prompt_a_session_was_opened_with_goes_with_what_was_said(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+    from nekoclaw.host.paths import SYSTEM_SNAPSHOT_NAME
+    from nekoclaw.runtime.snapshot import SYSTEM_FILE
+
+    # The host removes what the runtime names.
+    assert SYSTEM_SNAPSHOT_NAME == SYSTEM_FILE
+    commission = await world.finished("sort the photos", calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    (directory / SYSTEM_FILE).write_text("{}", encoding="utf-8")
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert not (directory / SYSTEM_FILE).exists() and not (directory / "transcript.jsonl").exists()
+    assert (directory / "work" / "sub" / "result.txt").is_file()

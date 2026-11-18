@@ -108,6 +108,59 @@ async def no_model() -> None:
     return None
 
 
+class _ScriptOfTheCommission:
+    """A session's model that answers from the script of the commission the session is at work on."""
+
+    def __init__(self, scripts: dict[str, ScriptedLLM], seen: list[str] | None) -> None:
+        self._scripts = scripts
+        self._seen = seen
+        self._current: str | None = None
+
+    def _key(self, messages: list[dict[str, Any]]) -> str:
+        # The last message that names a commission decides: what a commission
+        # is stands in the message that opens it, which stays in the conversation.
+        for message in reversed(messages):
+            if message.get("role") == "system":
+                continue
+            text = json.dumps(message.get("content"), ensure_ascii=False)
+            found = [key for key in self._scripts if key in text]
+            if found:
+                # The one named first: a commission's opening message begins with
+                # what was dispatched, and may go on to name the one it follows up.
+                return min(found, key=text.index)
+        raise AssertionError(f"no script for a session asked: {messages[-1].get('content')!r}")
+
+    async def astream(self, messages: list[dict[str, Any]], **overrides: Any):  # noqa: ANN201
+        key = self._key(messages)
+        if key != self._current:
+            self._current = key
+            if self._seen is not None:
+                self._seen.append(key)
+        async for chunk in self._scripts[key].astream(messages, **overrides):
+            yield chunk
+
+    async def aclose(self) -> None:
+        return None
+
+
+def scripts_by_commission(scripts: dict[str, ScriptedLLM], seen: list[str] | None = None) -> Callable[[Any], Any]:
+    """Return a ``pick`` for ``scripted_runtime``: every session answers from the script of its commission.
+
+    ``scripts`` maps a text that occurs in what was dispatched to the model
+    that commission talks to. A session's spec says nothing of a commission
+    (its system prompt is the same whichever commission is worked on in
+    it), so the script is chosen when a request arrives, by the commission
+    the request is about. ``seen`` collects the keys in the order the
+    commissions were first asked about.
+    """
+
+    def pick(spec: Any) -> Any:
+        del spec
+        return _ScriptOfTheCommission(scripts, seen)
+
+    return pick
+
+
 def scripted_runtime(pick: Callable[[Any], ScriptedLLM]) -> Callable[[Any, Any], Any]:
     """Return a runtime factory: the in-process runtime whose sessions use scripted models.
 
