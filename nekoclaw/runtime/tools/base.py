@@ -20,7 +20,7 @@ import asyncio
 import logging
 import os
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -310,14 +310,26 @@ def define_tool(
     implementation: ToolImplementation,
     *,
     parallel: bool = False,
+    newer: Collection[str] = (),
 ) -> AgentTool:
     """Wrap an implementation as a loop tool using a definition from config.
 
     ``parallel`` marks a read-only tool: the loop may run adjacent calls to
     such tools together.
+
+    ``newer`` names required arguments that an earlier definition of the
+    tool did not ask for. A session goes on with the definitions it was
+    opened with, so the model of one that was opened before has not been
+    told of them. The definition says they are required all the same; a
+    call that leaves one out is carried out, and the implementation says
+    what a missing one means.
     """
     name = str(schema["name"])
     parameters: Mapping[str, Any] = schema["parameters"]
+    # What a call is checked against.
+    demanded = parameters
+    if newer:
+        demanded = {**parameters, "required": [item for item in parameters.get("required") or () if item not in newer]}
 
     async def execute(
         tool_call_id: str,
@@ -326,7 +338,7 @@ def define_tool(
         on_update: ToolUpdateCallback | None = None,
     ) -> AgentToolResult:
         call = ToolCallInfo(id=tool_call_id, name=name, signal=signal, on_update=on_update)
-        cleaned = validate_arguments(parameters, arguments)
+        cleaned = validate_arguments(demanded, arguments)
         try:
             outcome = await implementation(cleaned, call)
         except (ToolError, asyncio.CancelledError):

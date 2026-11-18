@@ -378,3 +378,58 @@ async def test_a_lesson_from_a_session_that_was_opened_before_the_tool_asked_how
         ("s1", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "scope": "project", "confidence": "", "evidence": []})
     ]
     assert events.of("tool_end")[0]["text"] == "lesson submitted."
+
+
+async def test_a_session_that_is_opened_again_with_the_definition_it_kept_can_file_a_lesson_that_says_nothing_of_how_it_is_known(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import copy
+
+    from config.prompts.prompts_nekoclaw_tools import NEKOCLAW_TOOL_SCHEMAS
+
+    # Opened when the tool did not ask how a lesson is known, nor for files: that is the definition
+    # the session keeps.
+    earlier = copy.deepcopy(NEKOCLAW_TOOL_SCHEMAS["note_lesson"])
+    for name in ("confidence", "evidence"):
+        del earlier["parameters"]["properties"][name]
+    earlier["parameters"]["required"] = [name for name in earlier["parameters"]["required"] if name != "confidence"]
+    with monkeypatch.context() as then:
+        then.setitem(NEKOCLAW_TOOL_SCHEMAS, "note_lesson", earlier)
+        await _run(tmp_path, HostCallbacks(note_lesson=_recording(None)))
+    assert "confidence" in NEKOCLAW_TOOL_SCHEMAS["note_lesson"]["parameters"]["required"]
+    lessons: list = []
+
+    # Opened again by a host whose tool asks for it. The model is told of the tool as it was.
+    events, llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    assert events.of("started")[0]["resumed"] is True
+    told = {tool["function"]["name"]: tool["function"]["parameters"] for tool in llm.overrides[0]["tools"]}
+    assert "confidence" not in told["note_lesson"]["properties"]
+    # The call is carried out, not turned down for what the model was never told to give.
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is False and end["text"] == "lesson submitted."
+    assert [payload["confidence"] for _session, payload in lessons] == [""]
+
+
+async def test_a_lesson_whose_way_of_being_known_is_none_of_the_three_is_turned_down_all_the_same(tmp_path: Path) -> None:
+    lessons: list = []
+
+    events, _llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock.", "category": "lesson", "confidence": "certain"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    # Leaving it out is let through; saying something else is not.
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is True and "confidence must be one of" in end["text"] and lessons == []

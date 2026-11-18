@@ -5572,3 +5572,133 @@ async def test_a_file_named_from_the_only_working_directory_when_that_does_not_a
     finally:
         answered.set()
     await _until(lambda: not module._OUT)
+
+
+# ---------------------------------------------------------------------------
+# Review round 19
+# ---------------------------------------------------------------------------
+
+
+async def test_a_file_found_gone_for_a_pending_entry_stays_on_the_record_of_the_entry_its_text_goes_into(space, root, workdir):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "observed", ["src/app.py"]))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry, waiting = _memory(root) / "photo-dates.md", _memory(root) / "photo-dates-2.md"
+    assert _rests_on(entry)[0] == (app,) and _rests_on(waiting)[0] == (app,)
+    (workdir / "src" / "app.py").unlink()
+
+    # Checked by hand and filed again: it takes effect, and goes into the entry of its title.
+    reply = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "verified"))
+
+    assert reply.startswith("added to photo-dates.md") and not waiting.exists()
+    assert "Videos may have none." in entry.read_text(encoding="utf-8")
+    # The file was asked about for the guess, and found gone for it. What the entry itself rests on stays
+    # on its record: whether it expired is told by the look at it, which could not tell without that.
+    assert _rests_on(entry)[0] == (app,)
+
+
+async def test_a_note_judged_with_a_file_that_is_gone_as_its_pending_entry_goes_into_an_entry_is_judged_anew(
+    space, root, workdir, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+    real = module._recorded
+    asked: list[int] = []
+
+    def then_removed(*args: Any) -> Any:
+        found = real(*args)
+        if not asked:
+            # There as the note is judged; removed right after.
+            (workdir / "src" / "app.py").unlink()
+        asked.append(1)
+        return found
+
+    monkeypatch.setattr(module, "_recorded", then_removed)
+
+    # Filed again as observed with no file named: the file on record with the guess speaks for it.
+    reply = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "observed"))
+
+    # Asked about once more as the guess was to go into the entry, the file is gone. Of two answers the
+    # later one counts: judged anew, nothing speaks for the note, and it waits.
+    assert len(asked) >= 3 and reply.startswith("not in effect yet")
+    assert "Videos may have none." not in entry.read_text(encoding="utf-8") and _rests_on(entry)[0] == ()
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("photo-dates-2", [])]
+
+
+async def test_a_file_that_is_gone_as_the_note_is_judged_is_not_put_on_the_record_of_the_commission_as_counted(
+    space, root, workdir, events, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    real = module._recorded
+
+    def removed_by_then(*args: Any) -> Any:
+        # There when the files the note names were looked at; gone as what waited is asked about.
+        (workdir / "src" / "app.py").unlink(missing_ok=True)
+        return real(*args)
+
+    monkeypatch.setattr(module, "_recorded", removed_by_then)
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"])
+    )
+
+    # In effect, as two commissions have filed it; by no file, and none is said to have counted.
+    assert reply.startswith("kept in") and "not found" in reply
+    assert _in_effect(root) == ["entry-point"] and _rests_on(_memory(root) / "entry-point.md")[0] == ()
+    payload = [row[2] for row in events.rows if row[0] == "c2" and row[1] == "lesson"][-1]
+    assert payload["kept"] is True and "evidence_counted" not in payload
+
+
+async def test_whether_files_outside_may_be_looked_for_is_asked_once_the_turn_at_their_place_has_come(
+    open_space, setting, root, workdir, outside, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    setting.allowed = True
+    real_place, real_look = module._place_of, module.evidence_of
+    looked: list[bool] = []
+
+    def taken_back(path: Any) -> str:
+        # While the note waits for its turn at the place, the user takes it back.
+        setting.allowed = False
+        return real_place(path)
+
+    def look(raw: Any, *rest: Any, **how: Any) -> Any:
+        looked.append(bool(how.get("outside")))
+        return real_look(raw, *rest, **how)
+
+    monkeypatch.setattr(module, "_place_of", taken_back)
+    monkeypatch.setattr(module, "evidence_of", look)
+
+    reply = await open_space.submit(_commission(workdir), _lesson("Drive", "It is drive E.", "observed", [str(outside)]))
+
+    # Not looked for out there: nothing is asked of the file system that the user no longer lets be asked.
+    assert looked and not any(looked)
+    assert reply.startswith("not in effect yet") and "outside the working directory" in reply
+
+
+async def test_a_pending_entry_that_took_effect_and_was_removed_right_after_gets_no_line(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none."))
+    waiting = _memory(root) / "video-dates.md"
+    editing = space._edit_text
+
+    def then_removed(path: Path, change: Any) -> bool:
+        changed = editing(path, change)
+        if path == waiting and changed:
+            # The user, in a file manager, right after it was written.
+            waiting.unlink()
+        return changed
+
+    monkeypatch.setattr(space, "_edit_text", then_removed)
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Video dates", "Use the EXIF date.", "verified"))
+
+    # Not to be read back because it is gone, not because it is held: no line for a file that is not there.
+    assert reply is not None and not waiting.exists()
+    assert "video-dates.md" not in _index(root)

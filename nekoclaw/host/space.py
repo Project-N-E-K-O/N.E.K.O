@@ -352,6 +352,9 @@ class _Taken:
     # there already uses none, nor does one of the commission's own that
     # waited and is filed again (it used its place when it began to wait).
     charged: bool = True
+    # Files that were found gone as it was judged: one of them that the
+    # note named did not count, though it was there a moment before.
+    gone: tuple[str, ...] = ()
 
 
 def _one_line(text: Any) -> str:
@@ -1520,11 +1523,15 @@ class _NotAsWritten(OSError):
 class _LineNotAdded(OSError):
     """An entry is in its file, and its index could not be read or written, so no line was added for it."""
 
-    def __init__(self, entry: Any, how: str, *, charged: bool | None = None) -> None:
+    def __init__(
+        self, entry: Any, how: str, *, charged: bool | None = None, gone: tuple[str, ...] = ()
+    ) -> None:
         super().__init__(f"the index has no line for {entry.id}")
         self.entry = entry
         self.entry_id = str(entry.id)
         self.how = how
+        # As ``_Taken.gone``.
+        self.gone = gone
         # Whether it used one of its commission's places; by default every
         # filing does that put something into the entry.
         self.charged = how != _THERE if charged is None else charged
@@ -1621,12 +1628,11 @@ class TaskAgentSpace:
         unasked is asked for the look, and again once the write's turn
         has come (``_at_its_turn``).
         """
-        asked = await self._outside_allowed()
         roots = [str(base) for base in bases if base]
         named = [item for item in (raw if isinstance(raw, (list, tuple)) else []) if isinstance(item, str) and item.strip()]
         if not named:
             # No file is named: there is nothing to ask.
-            return asked, ([], [], [])
+            return await self._outside_allowed(), ([], [], [])
         from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS
 
         first = named[: looked_at or SPACE_EVIDENCE_MAX_PATHS]
@@ -1642,6 +1648,10 @@ class TaskAgentSpace:
                 lock = self._asking_about.setdefault(place, asyncio.Lock())
                 await lock.acquire()
                 held.append(lock)
+            # Asked once its turn at these places has come, not before it
+            # waited for it: the user may have taken it back meanwhile,
+            # and a file out there is not looked for then.
+            asked = await self._outside_allowed()
             return asked, await self._looked_for(first, roots, asked)
         finally:
             for lock in reversed(held):
@@ -2606,10 +2616,17 @@ class TaskAgentSpace:
             return pending, None
         entry = self._entry_from(path, project, with_content=True)
         if entry is None and took:
-            # Written, and not to be read back just now (held by another
-            # program): it took effect all the same, and is listed as what
-            # was written. Nothing else would give it its line.
-            entry = self._entry_of(took[0], path.stem, project, self._clock(), with_content=True)
+            # Written, and not to be read back just now. Held by another
+            # program, it took effect all the same, and is listed as what
+            # was written: nothing else would give it its line. Removed
+            # since (the user, in a file manager), it gets none: the line
+            # would point at nothing, and no look would take it out.
+            try:
+                there = path.is_file()
+            except OSError:
+                there = True
+            if there:
+                entry = self._entry_of(took[0], path.stem, project, self._clock(), with_content=True)
         if entry is None or entry.status != ENTRY_ACTIVE:
             return entry or pending, None
         target = f"{paths.MEMORY_DIR}/{entry.id}.md"
@@ -2674,6 +2691,11 @@ class TaskAgentSpace:
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
         rested, untold = _recorded(pending.evidence, pending.evidence_outside, allowed)
+        if by_text is not None and any(path in known.evidence and path not in rested for path in pending.evidence):
+            # Asked about once more, a file the note was judged with is
+            # gone: of two answers the later one counts, and the note is
+            # judged anew, without it.
+            raise _Rewritten("a file the note was judged with is gone by now")
         carried = _Known(
             confidence=pending.confidence or INFERRED,
             evidence=tuple(rested),
@@ -2892,7 +2914,11 @@ class TaskAgentSpace:
             # and the writing: a text that waited and was taken out is
             # added again, and one that was not there may be by then.
             return _Taken(
-                entry, _HELD, confidence=known.confidence, charged=not paid and how in (_CREATED, _ADDED)
+                entry,
+                _HELD,
+                confidence=known.confidence,
+                charged=not paid and how in (_CREATED, _ADDED),
+                gone=tuple(gone),
             )
         charged = not paid and not there
         if charged and not may_use_place:
@@ -2943,7 +2969,11 @@ class TaskAgentSpace:
                 description=note.description,
                 source=note.source,
                 into=home,
-                known=known,
+                # What was found gone was asked about for the pending entry
+                # that has the text, and goes from its record. Another
+                # entry the text goes into keeps what it rests on: whether
+                # that expires is told by the look at it.
+                known=known if home is own else replace(known, gone=()),
                 may_add=may_use_place or paid,
                 allowed=allowed,
                 # It takes effect by having this text: see ``_take_note``.
@@ -2964,10 +2994,11 @@ class TaskAgentSpace:
             # It was a guess that waited, and is an entry from now on.
             how = _CREATED
         if unlisted is not None:
-            raise _LineNotAdded(entry, how, charged=charged) from unlisted
+            raise _LineNotAdded(entry, how, charged=charged, gone=tuple(gone)) from unlisted
         return _Taken(
             entry,
             how,
+            gone=tuple(gone),
             # Counted in the entry itself: one the user wrote keeps no count.
             counted=entry.seen > (was.seen if was is not None else 1),
             revived=was is not None and was.status == ENTRY_EXPIRED,
@@ -3086,12 +3117,22 @@ class TaskAgentSpace:
                     observer=counted,
                 ),
             )
+            def as_judged(gone: tuple[str, ...]) -> None:
+                # Asked about once more as the note was judged, a file it
+                # named may be gone that was there a moment before: it did
+                # not count, and is told with the others that did not.
+                dropped = [path for path in counted_files if path in gone]
+                counted_files[:] = [path for path in counted_files if path not in gone]
+                other_files.extend((path, "not found") for path in dropped)
+
             try:
                 taken = self._take_note(project, note, may_use_place=reserved, allowed=allowed)
             except _LineNotAdded as exc:
                 charged.append(exc.charged)
+                as_judged(exc.gone)
                 raise
             charged.append(taken.charged)
+            as_judged(taken.gone)
             return taken
 
         listed = True
