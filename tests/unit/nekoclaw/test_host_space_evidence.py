@@ -913,6 +913,19 @@ async def test_what_was_said_of_a_note_that_waits_counts_with_what_is_said_later
     assert json.loads(head["evidence"]) == [(workdir / "src" / "app.py").as_posix()]
 
 
+async def test_a_file_named_while_a_note_waited_speaks_for_it_when_it_is_said_to_be_observed(space, root, workdir):
+    first = await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"])
+    )
+    # Said more strongly now, with no file named: the one that was named while it waited is still there.
+    again = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    assert first == _held("entry-point") and again == "kept in project _daily as entry-point.md"
+    head = _head(_memory(root) / "entry-point.md")
+    assert head["confidence"] == "observed"
+    assert json.loads(head["evidence"]) == [(workdir / "src" / "app.py").as_posix()]
+
+
 async def test_a_note_that_waits_uses_one_of_the_places_of_its_commission(space, root, workdir, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 2)
     commission = _commission(workdir)
