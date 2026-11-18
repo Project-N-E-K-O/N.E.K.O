@@ -281,14 +281,14 @@ SESSION_COMMISSION_TITLE = {
 # its time has come, and it could not be woken yet. Rendered with
 # str.format (time / count, time / count).
 SESSION_QUERY_TEXTS = {
-    'zh': {"due": "歇着，已到点，等着被叫醒", "resting": "歇着，{time} 再接着办", "wakes": "定了 {count} 个闹钟，最近一个 {time}", "notes": "有 {count} 条别的会话发来的消息在等"},
-    'zh-TW': {"due": "歇著，已到點，等著被叫醒", "resting": "歇著，{time} 再接著辦", "wakes": "定了 {count} 個鬧鐘，最近一個 {time}", "notes": "有 {count} 則別的會話發來的訊息在等"},
-    'en': {"due": "resting, its time has come, waiting to be woken", "resting": "resting, goes on at {time}", "wakes": "{count} wake(s) set, the next at {time}", "notes": "{count} note(s) from other sessions waiting"},
-    'ja': {"due": "待機中、時刻になり再開待ち", "resting": "待機中、{time} に再開", "wakes": "タイマー {count} 件、次は {time}", "notes": "ほかのセッションからのメッセージ {count} 件が待機中"},
-    'ko': {"due": "쉬는 중, 시간이 되어 재개 대기", "resting": "쉬는 중, {time}에 이어서 진행", "wakes": "알람 {count}개, 다음은 {time}", "notes": "다른 세션에서 온 메시지 {count}건 대기 중"},
-    'ru': {"due": "ждёт, время пришло, ожидает запуска", "resting": "ждёт, продолжит в {time}", "wakes": "будильников: {count}, ближайший в {time}", "notes": "ждут сообщения от других сессий: {count}"},
-    'es': {"due": "en pausa, ya es la hora, a la espera de reanudarse", "resting": "en pausa, sigue a las {time}", "wakes": "{count} aviso(s) programado(s), el próximo a las {time}", "notes": "{count} mensaje(s) de otras sesiones en espera"},
-    'pt': {"due": "em pausa, já está na hora, à espera de ser retomada", "resting": "em pausa, continua às {time}", "wakes": "{count} alarme(s) marcado(s), o próximo às {time}", "notes": "{count} mensagem(ns) de outras sessões à espera"},
+    'zh': {"due": "歇着，已到点，等着被叫醒", "resting": "歇着，{time} 再接着办", "wakes": "定了 {count} 个闹钟，最近一个 {time}", "notes": "有 {count} 条别的会话发来的消息在等", "wakes_due": "{count} 个闹钟已到点，等它能接着办时再叫醒"},
+    'zh-TW': {"due": "歇著，已到點，等著被叫醒", "resting": "歇著，{time} 再接著辦", "wakes": "定了 {count} 個鬧鐘，最近一個 {time}", "notes": "有 {count} 則別的會話發來的訊息在等", "wakes_due": "{count} 個鬧鐘已到點，等它能接著辦時再叫醒"},
+    'en': {"due": "resting, its time has come, waiting to be woken", "resting": "resting, goes on at {time}", "wakes": "{count} wake(s) set, the next at {time}", "notes": "{count} note(s) from other sessions waiting", "wakes_due": "{count} wake(s) whose time has come, waiting until it can go on"},
+    'ja': {"due": "待機中、時刻になり再開待ち", "resting": "待機中、{time} に再開", "wakes": "タイマー {count} 件、次は {time}", "notes": "ほかのセッションからのメッセージ {count} 件が待機中", "wakes_due": "タイマー {count} 件が時刻になり、再開できるまで待機中"},
+    'ko': {"due": "쉬는 중, 시간이 되어 재개 대기", "resting": "쉬는 중, {time}에 이어서 진행", "wakes": "알람 {count}개, 다음은 {time}", "notes": "다른 세션에서 온 메시지 {count}건 대기 중", "wakes_due": "알람 {count}개가 시간이 되어, 이어서 진행할 수 있을 때까지 대기 중"},
+    'ru': {"due": "ждёт, время пришло, ожидает запуска", "resting": "ждёт, продолжит в {time}", "wakes": "будильников: {count}, ближайший в {time}", "notes": "ждут сообщения от других сессий: {count}", "wakes_due": "будильников сработало: {count}, ждут, пока можно будет продолжить"},
+    'es': {"due": "en pausa, ya es la hora, a la espera de reanudarse", "resting": "en pausa, sigue a las {time}", "wakes": "{count} aviso(s) programado(s), el próximo a las {time}", "notes": "{count} mensaje(s) de otras sesiones en espera", "wakes_due": "{count} aviso(s) ya en hora, a la espera de poder continuar"},
+    'pt': {"due": "em pausa, já está na hora, à espera de ser retomada", "resting": "em pausa, continua às {time}", "wakes": "{count} alarme(s) marcado(s), o próximo às {time}", "notes": "{count} mensagem(ns) de outras sessões à espera", "wakes_due": "{count} alarme(s) já na hora, à espera de poder continuar"},
 }
 
 

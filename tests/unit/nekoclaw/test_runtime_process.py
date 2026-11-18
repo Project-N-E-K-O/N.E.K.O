@@ -926,6 +926,7 @@ async def test_a_text_that_is_refused_says_the_number_it_was_sent_under(tmp_path
     from nekoclaw.runtime.session import SessionError
 
     emitted: list[dict[str, Any]] = []
+    closing, let_close = asyncio.Event(), asyncio.Event()
 
     class Busy:
         busy = False
@@ -937,7 +938,8 @@ async def test_a_text_that_is_refused_says_the_number_it_was_sent_under(tmp_path
             return None
 
         async def close(self) -> None:
-            return None
+            closing.set()
+            await let_close.wait()
 
     async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
         del spec, host, emit
@@ -962,10 +964,14 @@ async def test_a_text_that_is_refused_says_the_number_it_was_sent_under(tmp_path
     runtime = InProcessRuntime(emitted.append, open_session=open_session)
     await runtime.steer("ghost", "hello", serial=9)
     assert refused()[-1] == ("steer", 9)
-    await core.shutdown()
-    # And once it is shutting down.
+    # And while it is shutting down: its session is being closed, and is still there.
+    stopping = asyncio.ensure_future(core.shutdown())
+    await asyncio.wait_for(closing.wait(), 5.0)
     core.prompt("busy", "one more thing", serial=7)
-    assert refused()[-1] == ("prompt", 7)
+    last = [event for event in emitted if event["type"] == "error"][-1]
+    assert (last["command"], last["message"], last["serial"]) == ("prompt", "the runtime is shutting down", 7)
+    let_close.set()
+    await asyncio.wait_for(stopping, 5.0)
 
 
 async def test_a_text_the_runtime_process_cannot_be_sent_is_refused_under_its_number() -> None:

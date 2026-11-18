@@ -84,6 +84,26 @@ ON_ANSWERED: contextvars.ContextVar[list[Callable[[bool], None]] | None] = conte
 )
 
 
+class Answered(list):  # type: ignore[type-arg]
+    """Those to tell whether an answer reached dsh (``ON_ANSWERED``); one that joins late is told at once.
+
+    The work of a call may go on after dsh gave the call up (it is not
+    cut off in the middle of what it writes), and hand something over
+    then: whoever serves the request has told the others by that time.
+    ``outcome`` is what they were told; with it set, one that is added is
+    told the same on the spot, and is not left waiting for word that was
+    given already.
+    """
+
+    outcome: bool | None = None
+
+    def append(self, tell: Callable[[bool], None]) -> None:
+        if self.outcome is None:
+            super().append(tell)
+        else:
+            tell(self.outcome)
+
+
 class _Cancelled:
     """Cancellation token of one call: set when dsh gives the call up."""
 

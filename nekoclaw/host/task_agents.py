@@ -383,6 +383,15 @@ def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
     return True
 
 
+def _named_like_a_record(path: str) -> bool:
+    """Return whether a path has the name of a file a session keeps of itself (its record among them)."""
+    from pathlib import Path
+
+    from nekoclaw.runtime.snapshot import SYSTEM_FILE
+
+    return Path(path).name in (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME)
+
+
 def _has_second_name(path: str) -> bool:
     """Whether a path is a file that has more than one name (a hard link). Blocking."""
     import os
@@ -2149,6 +2158,13 @@ class TaskAgentManager:
             try:
                 await self._act_on_end(session, event)
             except asyncio.CancelledError:
+                if self._closed:
+                    # Cut off as the host shuts down (whoever handles the
+                    # events was stopped while the ledger was asked). The
+                    # run is over and took what it took: kept, with its
+                    # words, where shutting down writes it before the
+                    # ledger is closed.
+                    self._owe_turn(session, said, upto)
                 raise
             except Exception:
                 # What the end means could not be made out (the ledger was
@@ -2306,13 +2322,25 @@ class TaskAgentManager:
         # and the senders of its notes would hear nothing.)
         try:
             started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
-            for child in started:
-                await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
-                await self.abort(child.id)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - its own end stands, and its session is closed
             logger.warning("ending what a commission that is over had started failed", exc_info=True)
+            started = []
+        for child in started:
+            # Each by itself, and each step of it: one that cannot be ended
+            # this moment does not leave the others at work, and one whose
+            # end is written is still stopped where that write failed.
+            for what, step in (
+                ("ending", lambda child=child: self._ledger.transition(child.id, "cancelled", reason="its parent finished")),
+                ("stopping", lambda child=child: self.abort(child.id)),
+            ):
+                try:
+                    await self._looked(step)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - the other step, and the others, are still done
+                    logger.warning("%s a task agent whose parent is over failed", what, exc_info=True)
         await self._close_session(session)
 
     @staticmethod
@@ -2601,6 +2629,38 @@ class TaskAgentManager:
         stopped_upto = getattr(self._waker, "stopped_upto", None)
         await self._ledger.wakes_unfire(wake_ids, stopped_upto=stopped_upto, reason=STOPPED_REASON)
 
+    @staticmethod
+    def _told(said: str, commission: Commission | None) -> tuple[str, str]:
+        """Return what the senders of the notes a turn took are told: what it ended on, and how its commission stood.
+
+        What it ended on is its last words, or what was reported where
+        it ended with none.
+        """
+        from config.nekoclaw_settings import SESSION_NOTICE_TEXT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        words = said.strip()
+        if not words and commission is not None:
+            words = (commission.result_summary or "").strip()
+        words = truncate_to_tokens(words, SESSION_NOTICE_TEXT_MAX_TOKENS)
+        if commission is None:
+            return words, "over"
+        return words, "resting" if commission.resting else commission.status
+
+    def _owe_turn(self, session: _Session, said: str, upto: int | None) -> None:
+        """Keep what the senders of the notes a run took are to be told, where it cannot be told now.
+
+        For a run whose end was cut off as the host shuts down: written
+        by ``_settle_at_close``, with how the commission stood as the
+        ledger last told of it.
+        """
+        numbers = sorted(number for number in session.took if upto is None or number <= upto)
+        took = [wake for number in numbers for wake in session.took.pop(number)]
+        if took:
+            self._turns_owed.append(
+                (session.commission_id, *self._told(said, session.stands), took, sorted(self._unconfirmed))
+            )
+
     async def _turn_over(self, session: _Session, said: str, upto: int | None = None) -> None:
         """Tell the sessions that wrote to a commission and asked to hear back that its turn is over.
 
@@ -2617,9 +2677,6 @@ class TaskAgentManager:
         of the last text the session had taken when the run ended: what
         a later text brought is a later run's.
         """
-        from config.nekoclaw_settings import SESSION_NOTICE_TEXT_MAX_TOKENS
-        from utils.tokenize import truncate_to_tokens
-
         commission_id = session.commission_id
         # This turn's from here on: what the session takes while the ledger
         # is asked is the next one's.
@@ -2629,16 +2686,7 @@ class TaskAgentManager:
             # It took no note: nobody waits to hear of it.
             return
         def told(commission: Commission | None) -> tuple[str, str]:
-            # What the senders are told: what the turn ended on (what was
-            # reported, where it ended with no words), and how the
-            # commission stood.
-            words = said.strip()
-            if not words and commission is not None:
-                words = (commission.result_summary or "").strip()
-            words = truncate_to_tokens(words, SESSION_NOTICE_TEXT_MAX_TOKENS)
-            if commission is None:
-                return words, "over"
-            return words, "resting" if commission.resting else commission.status
+            return self._told(said, commission)
 
         def cut_off(commission: Commission | None) -> None:
             # Cut off before it was written: the host is shutting down, and
@@ -3385,6 +3433,12 @@ class TaskAgentManager:
                 # working directory already.) Only such a file is looked
                 # at: the others are read as ever, with nothing asked.
                 or (category == "workdir_files" and await asyncio.to_thread(_has_second_name, path))
+                # And a search (it reads what is in a directory) or a file
+                # named like one a session keeps of itself: another
+                # session's own directory may lie in the working directory,
+                # and its record is not read by way of that either. Told
+                # by the tool and the name alone, with nothing read.
+                or (category == "workdir_files" and (payload.get("tool") == "grep" or _named_like_a_record(path)))
             )
         ):
             # What another session left is read without asking, and its own
@@ -4645,8 +4699,16 @@ class TaskAgentManager:
         if inside or (not in_own and not in_work):
             # Among the caller's own files, or in no place of another
             # session: the usual rules, unless it is another session's
-            # record under a second name.
-            return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED} if record else None
+            # record (under a second name, or where that session's own
+            # directory lies in the caller's working directory), or a
+            # search of that directory, which would open the record with
+            # the rest. A search of a directory further up is left alone:
+            # that is the working directory itself, or a folder in it.
+            if record:
+                return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED}
+            if inside and in_own and holds:
+                return {"allow": False, "reason": SESSION_RECORD_SEARCH_REFUSED}
+            return None
         if await self._permissions.forbidden("outside_read"):
             return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
         if record:
@@ -4668,27 +4730,38 @@ class TaskAgentManager:
         await self._settle_at_close(TURNS_OWED_CLOSE_WAIT_SECONDS)
         queued = list(self._queue)
         self._queue.clear()
-        for commission_id in queued:
-            self._resume.pop(commission_id, None)
-            # Refused for one that was stopped meanwhile, and rightly so.
-            await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
-        if self._starting:
-            # Sessions on their way in are let in, so they are closed with the rest.
-            _done, pending = await asyncio.wait(list(self._starting), timeout=_SHUTDOWN_START_WAIT_SECONDS)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        # Recorded first: what the closing sessions still say must not turn a
-        # commission nobody stopped into a stopped one.
-        for commission_id in list(self._sessions):
+
+        async def recorded(what: str, step: Callable[[], Awaitable[Any]]) -> None:
+            # How the commissions under way end is written to the ledger.
+            # Where that fails (it cannot be read or written this moment)
+            # the rest of shutting down is done all the same: the runtimes
+            # are closed, the events handled, what is owed written. What
+            # is left unwritten is as a process that went away leaves it,
+            # and is put right by the next (``Ledger._reconcile``): what
+            # was at work is failed, what rests is left to rest.
+            try:
+                await step()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - shutting down goes on regardless
+                logger.warning("writing down %s as the host shuts down failed", what, exc_info=True)
+
+        async def fail_queued() -> None:
+            for commission_id in queued:
+                self._resume.pop(commission_id, None)
+                # Refused for one that was stopped meanwhile, and rightly so.
+                await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
+
+        async def fail_open(commission_id: str) -> None:
             commission = await self._ledger.get(commission_id)
             if commission is not None and commission.resting:
                 # It came to rest and its session is on its way out of the
                 # runtime: nobody is at work on it. It rests on, and what it
                 # waits for wakes it in the next process.
-                continue
+                return
             await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
-        if self._runtimes.started:
+
+        async def fail_closed() -> None:
             # A parent whose idle session was closed while its task agents
             # worked holds no session and is in no queue, yet is this host's
             # and under way. (With no runtime ever started there is none, and
@@ -4703,11 +4776,34 @@ class TaskAgentManager:
                     and not item.resting
                 ):
                     await self._ledger.transition(item.id, "failed", reason=_SHUT_DOWN_REASON)
+
+        await recorded("that what was queued failed", fail_queued)
+        if self._starting:
+            # Sessions on their way in are let in, so they are closed with the rest.
+            _done, pending = await asyncio.wait(list(self._starting), timeout=_SHUTDOWN_START_WAIT_SECONDS)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Recorded first: what the closing sessions still say must not turn a
+        # commission nobody stopped into a stopped one. Each by itself: one
+        # that cannot be read does not leave the others unrecorded.
+        for commission_id in list(self._sessions):
+            await recorded("that a commission under way failed", lambda commission_id=commission_id: fail_open(commission_id))
+        if self._runtimes.started:
+            await recorded("that what waited for task agents failed", fail_closed)
         for _name, runtime in self._runtimes.take_all():
             try:
                 await runtime.shutdown()
             except Exception:  # noqa: BLE001 - shutting down goes on regardless
                 logger.exception("shutting the runtime down failed")
+        # What the runtimes said as they closed (the ends of the turns that
+        # were under way among it) is handled before the sessions are let
+        # go, a bounded while: let go first, the end of a turn would find
+        # no session, and the senders of the notes it took no word.
+        try:
+            await asyncio.wait_for(self._events.join(), TURNS_OWED_CLOSE_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("what the runtimes said as they closed was not all handled in time as the host shuts down")
         for commission_id in list(self._sessions):
             self._discard(commission_id)
         self._held_by.clear()

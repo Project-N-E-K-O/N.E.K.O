@@ -627,6 +627,8 @@ class Ledger:
         self._clock = clock
         self._reconcile_report = reconcile_report
         self._listeners: list[Listener] = []
+        # Told that a note was written (``subscribe_notes``).
+        self._note_listeners: list[Callable[[], None]] = []
         # Counts the times wake requests were put on record as handed over
         # (``fired_order``): what was handed over earlier and what later is
         # told by it, and not by the clock of the computer, which is set
@@ -673,6 +675,22 @@ class Ledger:
                 listener(commission, previous)
             except Exception:  # noqa: BLE001 - a listener must not undo or block a stored change
                 logger.exception("a ledger listener failed")
+
+    def subscribe_notes(self, listener: Callable[[], None]) -> None:
+        """Call ``listener()`` on the event loop whenever a note of one session for another is on record.
+
+        Whoever hands the notes over is told by this that there is one to
+        hand over: not by whoever asked for the note, who may have been
+        cancelled while it was written and is not there to say so.
+        """
+        self._note_listeners.append(listener)
+
+    def _note_written(self) -> None:
+        for listener in list(self._note_listeners):
+            try:
+                listener()
+            except Exception:  # noqa: BLE001 - a listener must not undo or block a stored note
+                logger.exception("a listener for written notes failed")
 
     # -- lifecycle --------------------------------------------------------
 
@@ -901,15 +919,21 @@ class Ledger:
         its place. Cut off half way, the next process would find no note
         at all, and none of the stops.
         """
-        if self.path is None:
-            raise RuntimeError("the ledger was never opened")
-        target = self._stop_owed_file(self.path)
-        noted = self._stop_owed(self.path)
-        # By its number: the next process is not to take "all that was
-        # there when the ledger was opened" for all that is there by then.
-        upto = self._upto(upto)
+        # Next to where the ledger is, opened or not: a ledger that could
+        # not be opened (its file is locked, say) is the very case in which
+        # the stop cannot be written into it.
+        path = self._where()
+        target = self._stop_owed_file(path)
+        noted = self._stop_owed(path)
+        # By its number, where that is known: the next process is not to
+        # take "all that was there when the ledger was opened" for all
+        # that is there by then. (Where the file was never read, that is
+        # what stays noted, and the next process, which reads it, drops
+        # what is there: this one wrote nothing.)
+        upto = self._marked(upto)
         if noted is not None and noted[0] >= upto:
             return
+        target.parent.mkdir(parents=True, exist_ok=True)
         beside = target.with_name(target.name + ".tmp")
         with beside.open("w", encoding="utf-8") as file:
             file.write(json.dumps({"upto": upto, "reason": str(reason)}))
@@ -924,13 +948,23 @@ class Ledger:
         that stop or an earlier one: what a later stop noted meanwhile is
         that stop's to forget.
         """
-        if self.path is None:
-            return
+        path = self._where()
         if upto is not None:
-            noted = self._stop_owed(self.path)
-            if noted is not None and noted[0] > self._upto(upto):
+            noted = self._stop_owed(path)
+            if noted is not None and noted[0] > self._marked(upto):
                 return
-        self._forget_stop_owed(self.path)
+        self._forget_stop_owed(path)
+
+    def _where(self) -> Path:
+        """Return where the file of the ledger is, whether or not it was opened."""
+        if self.path is not None:
+            return self.path
+        source = self._path_source
+        return Path(source() if callable(source) else source)
+
+    def _marked(self, mark: int) -> int:
+        """Return a mark as it is noted next to the ledger: by its number once the file was read, else as it is."""
+        return self._upto(mark) if self._opened_high is not None else int(mark)
 
     def _upto(self, mark: int) -> int:
         """Return the number of the wake request that a mark of ``notes_mark`` stands for."""
@@ -1745,33 +1779,40 @@ class Ledger:
                     return None, "over", 0.0
             digest = body_hash(body)
             # What counts against a note is what was written in the time
-            # before it, up to now. A note with a later time than now was
-            # written before the clock of the computer was set back: counted
-            # as of a moment ago, it would keep its session from writing
-            # for as long as the clock was set back by.
+            # before it. A note with a later time than now was written
+            # before the clock of the computer was set back. Set back by a
+            # little, the note is of a moment ago and counts as that: each
+            # of these looks as far ahead as it looks back. Set back by
+            # more, it is left out: counted, it would keep its session
+            # from writing for as long as the clock was set back by.
             same = conn.execute(
                 "SELECT 1 FROM messages WHERE from_session = ? AND to_session = ? AND kind = 'note' "
                 "AND body_hash = ? AND created_at >= ? AND created_at <= ? AND status != 'void' LIMIT 1",
-                (from_session, to_session, digest, now - limits.dedup_seconds, now),
+                (from_session, to_session, digest, now - limits.dedup_seconds, now + limits.dedup_seconds),
             ).fetchone()
             if same is not None:
                 return None, "same", 0.0
             last = conn.execute(
                 "SELECT MAX(created_at) AS at FROM messages WHERE from_session = ? AND to_session = ? "
                 "AND kind = 'note' AND created_at <= ?",
-                (from_session, to_session, now),
+                (from_session, to_session, now + limits.target_interval),
             ).fetchone()
             if last is not None and last["at"] is not None and now - last["at"] < limits.target_interval:
-                return None, "too_soon", limits.target_interval - (now - last["at"])
+                # (Never longer than the whole of it: a note of a time to
+                # come is no further back than now.)
+                return None, "too_soon", min(limits.target_interval, limits.target_interval - (now - last["at"]))
             sent = conn.execute(
                 "SELECT COUNT(*) AS n, MIN(created_at) AS first FROM messages "
                 "WHERE from_session = ? AND kind = 'note' AND created_at >= ? AND created_at <= ?",
-                (from_session, now - 3600.0, now),
+                (from_session, now - 3600.0, now + 3600.0),
             ).fetchone()
             if sent is not None and sent["n"] >= limits.per_hour:
-                return None, "too_many", max(0.0, float(sent["first"]) + 3600.0 - now)
+                return None, "too_many", min(3600.0, max(0.0, float(sent["first"]) + 3600.0 - now))
+            # The notes that wait, and not what else waits for the session
+            # (word that a turn is over is a message too).
             waiting = conn.execute(
-                "SELECT COUNT(*) AS n FROM messages WHERE to_session = ? AND status = 'queued'", (to_session,)
+                "SELECT COUNT(*) AS n FROM messages WHERE to_session = ? AND status = 'queued' AND kind = 'note'",
+                (to_session,),
             ).fetchone()
             if waiting is not None and waiting["n"] >= limits.queue_max:
                 return None, "queue_full", 0.0
@@ -1835,7 +1876,14 @@ class Ledger:
             # and the note is written all the same.
             if written and result[0] is not None:
                 self._notes_high = max(self._notes_high or 0, written[-1])
+                try:
+                    # And whoever hands notes over is told, likewise without
+                    # the one that asked for it.
+                    loop.call_soon_threadsafe(self._note_written)
+                except RuntimeError:
+                    pass  # The loop is gone: nobody is left to hand anything over.
 
+        loop = asyncio.get_running_loop()
         return await self.run(work, written=on_record)
 
     async def message_get(self, message_id: int) -> Message | None:

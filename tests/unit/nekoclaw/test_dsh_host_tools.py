@@ -581,6 +581,7 @@ async def test_whoever_handed_dsh_something_is_told_whether_the_answer_reached_i
     token = listener.issue("s1")
     told: list[tuple[str, bool]] = []
     handed, answered, hanging_up = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    steps: Any = None
     # Whether whoever watches the request had heard that dsh hung up, as an answer was dropped.
     watcher: list[int] = []
     heard: list[bool] = []
@@ -588,6 +589,7 @@ async def test_whoever_handed_dsh_something_is_told_whether_the_answer_reached_i
 
     async def handle(session_id: str, payload: Any, **options: Any) -> Any:
         # As two ``wait_agent`` calls of one request, each handing dsh the texts that arrived.
+        nonlocal steps
         steps = ON_ANSWERED.get()
         assert steps is not None
         steps.append(lambda delivered: told.append(("the first", delivered)))
@@ -666,9 +668,12 @@ async def test_whoever_handed_dsh_something_is_told_whether_the_answer_reached_i
 
     # (What the call adds to is not the caller's own to see: the call runs in a task of its own.)
     assert ON_ANSWERED.get() is None
-    # Both are told, the last to hand over first: what is queued again goes to the front,
-    # and so ends up in the order it came in.
+    # Both are told, the last to hand over first.
     assert told == [("the second", reached), ("the first", reached)]
+    # And one that hands something over after that (the work of a call dsh gave up may still
+    # be at it) is told the same on the spot, and is not left without word.
+    steps.append(lambda delivered: told.append(("a late one", delivered)))
+    assert told[-1] == ("a late one", reached)
 
 
 async def test_a_wait_that_cannot_be_answered_takes_nothing(tmp_path: Path) -> None:

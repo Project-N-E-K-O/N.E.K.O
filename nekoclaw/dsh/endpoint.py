@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from nekoclaw.dsh.forward import ModelForwarder, respond_json
-from nekoclaw.dsh.host_tools import ON_ANSWERED, HostTools
+from nekoclaw.dsh.host_tools import ON_ANSWERED, Answered, HostTools
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +274,7 @@ class LocalEndpoint:
         # never gets there (the texts a ``wait_agent`` takes): whoever
         # handed it over is told below whether the answer was sent to a dsh
         # that was still listening.
-        told: list[Callable[[bool], None]] = []
+        told = Answered()
         marked = ON_ANSWERED.set(told)
         try:
             work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
@@ -325,9 +325,11 @@ class LocalEndpoint:
                     work.cancel()
         finally:
             # Whoever handed dsh something with this answer is told whether
-            # it got there. The last to hand over first: what is queued
-            # again goes to the front, and so ends up in the order it came.
-            for tell in reversed(told):
+            # it got there, the last to hand over first. And whoever hands
+            # something over from here on (the work of a call dsh gave up
+            # may still be at it) is told the same as it does.
+            telling, told.outcome = list(reversed(told)), delivered
+            for tell in telling:
                 try:
                     tell(delivered)
                 except Exception:  # noqa: BLE001 - the others are still told

@@ -1930,8 +1930,9 @@ async def test_a_text_whose_answer_got_to_dsh_is_told_of_as_taken_with_the_end_o
     assert _taken(driver) == [1, 2] and len(driver.record("session/prompt")) == 1
 
 
-async def test_a_text_whose_answer_is_never_heard_of_is_neither_told_of_as_taken_nor_queued_again(
-    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("reached", [False, True])
+async def test_a_text_whose_answer_is_heard_of_after_its_turn_ended_is_dealt_with_then(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch, reached: bool
 ) -> None:
     from config import nekoclaw_settings
 
@@ -1940,10 +1941,38 @@ async def test_a_text_whose_answer_is_never_heard_of_is_neither_told_of_as_taken
     go.write_text("", encoding="utf-8")
     ended = await driver.events.wait_ended("s1")
 
-    # Whether dsh has it is not known: whoever sent it finds it untaken, and sends it again in time.
+    # Whether dsh has it is not known as the turn ends: it is not told of as taken.
     assert ended["reason"] == "completed" and _taken(driver) == [1]
-    # Heard of only now, with the run over: it is left at that (queued again by the run's own
-    # hand it would be sent though its sender may send it again as well).
-    told[0](False)
-    assert session.queue == [] and session.run is None
-    assert len(driver.record("session/prompt")) == 1
+    assert session.run is None and len(session.unsettled) == 1
+    mark = len(driver.events.events)
+    # Heard of only now, with the run over and the session still open.
+    told[0](reached)
+    assert session.unsettled == []
+    if reached:
+        # It got there after all: told of as taken now, and not sent again.
+        assert _taken(driver) == [1, 2] and session.run is None
+        assert len(driver.record("session/prompt")) == 1
+        return
+    # It did not: nobody else would give the session the text while it stays open, so it is
+    # queued again and goes to dsh as a turn of its own.
+    _sent_again(driver, await driver.events.wait_ended("s1", start=mark))
+
+
+async def test_what_two_calls_were_handed_is_queued_again_in_the_order_it_was_given(tmp_path: Path, dsh) -> None:
+    from nekoclaw.dsh.driver import _Given
+
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh)
+    try:
+        # A second call of the turn was handed the next text; and one more waits.
+        later, waiting = _Given("a second note", 3), _Given("a third note", 4)
+        session.given = 4
+        session.queue = [waiting]
+        # Both answers went nowhere, and the one of the later call is heard of first.
+        driver.runtime._give_back(session, [later], session.runs)
+        told[0](False)
+        assert [text.number for text in session.queue] == [2, 3, 4]
+    finally:
+        session.queue = [text for text in session.queue if text.number == 2]
+        go.write_text("", encoding="utf-8")
+
+    _sent_again(driver, await driver.events.wait_ended("s1"))

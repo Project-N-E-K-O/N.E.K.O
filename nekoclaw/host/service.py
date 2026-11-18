@@ -203,6 +203,9 @@ class NekoClawHost:
         # does work, never at startup.
         self.wakes = SessionWakes(self.ledger, self.task_agents)
         self.task_agents.set_waker(self.wakes)
+        # A note that is on record is handed over whether or not whoever
+        # wrote it is still there to say that it wrote one.
+        self.ledger.subscribe_notes(self.wakes.kick)
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
         self.space_keeper = SpaceKeeper(

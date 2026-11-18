@@ -172,6 +172,9 @@ class _Session:
     # Of those, the ones whose answer is still on its way to dsh: whether
     # it got there (set by whoever serves the call), and their numbers.
     answering: list[tuple[asyncio.Future[bool], list[int]]] = field(default_factory=list)
+    # Those the end of a turn did not wait out (``_answers_settled``): not
+    # told of as taken, and dealt with when it is known after all.
+    unsettled: list[asyncio.Future[bool]] = field(default_factory=list)
     # Counts the runs that are over. A call dsh makes belongs to the run
     # under way as it is made, and is handed nothing once that run is over.
     runs: int = 0
@@ -1142,11 +1145,24 @@ class DshRuntime:
     def _answered(
         self, session: _Session, texts: list[str], of_run: int, outcome: asyncio.Future[bool], delivered: bool
     ) -> None:
-        """Take note of whether the answer that carried some texts reached dsh; queue them again where it did not."""
+        """Take note of whether the answer that carried some texts reached dsh; queue them again where it did not.
+
+        Heard of after the turn ended without it (``unsettled``), the
+        texts were not told of as taken. Where the answer got there after
+        all, they are told of now; where it did not, they are queued
+        again, and start a turn if none is under way: left at that, a
+        session that stays open (its commission waits for task agents)
+        would never be given them.
+        """
         if not outcome.done():
             outcome.set_result(delivered)
+        late = outcome in session.unsettled
+        if late:
+            session.unsettled.remove(outcome)
         if not delivered:
-            self._give_back(session, texts, of_run)
+            self._give_back(session, texts, of_run, late=late)
+        elif late and self._sessions.get(session.id) is session and session.closing is None:
+            self._say_taken(session, _numbers_of(texts))
 
     async def _answers_settled(self, session: _Session) -> None:
         """Wait, a bounded while, until it is known of every answer that carried texts whether it reached dsh.
@@ -1164,20 +1180,36 @@ class DshRuntime:
         unknown = {number for outcome, numbers in session.answering if not outcome.done() for number in numbers}
         if unknown:
             session.awaited = [number for number in session.awaited if number not in unknown]
+        session.unsettled.extend(outcome for outcome, _numbers in session.answering if not outcome.done())
         session.answering = []
 
-    def _give_back(self, session: _Session, texts: list[str], of_run: int) -> None:
-        """Queue again the texts a call was handed whose answer did not reach dsh."""
+    def _give_back(self, session: _Session, texts: list[str], of_run: int, *, late: bool = False) -> None:
+        """Queue again the texts a call was handed whose answer did not reach dsh.
+
+        ``late`` says that the turn of that call ended without knowing
+        (``_answered``): they were not told of as taken, and go with a
+        turn that is under way or begin one.
+        """
         if self._sessions.get(session.id) is not session or session.closing is not None:
             return
-        if session.runs != of_run or session.run is None or session.aborting:
-            # The run is over, or is being stopped: what it was handed is
-            # dealt with as its end deals with it.
+        if session.aborting:
+            # Being stopped: what it was handed is dealt with as the stop
+            # deals with it.
+            return
+        if not late and (session.runs != of_run or session.run is None):
+            # The run is over: what it was handed is dealt with as its end
+            # dealt with it.
             return
         numbers = set(_numbers_of(texts))
         session.awaited = [number for number in session.awaited if number not in numbers]
-        session.queue = [*texts, *session.queue]
+        # In the order they were given, whichever of several answers is
+        # heard of first: what is queued again was given before what
+        # waits, and what one call was handed before what the next was.
+        session.queue = sorted([*texts, *session.queue], key=lambda text: getattr(text, "number", 0))
         session.arrived.set()
+        if session.run is None:
+            session.aborting = False
+            session.run = asyncio.ensure_future(self._run(session))
 
     def _say_taken(self, session: _Session, numbers: list[int]) -> None:
         """Say of the texts with these numbers that dsh has them in its conversation; one ``taken`` each."""

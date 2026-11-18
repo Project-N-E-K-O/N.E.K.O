@@ -1231,8 +1231,15 @@ class TaskBrain:
             parts.append(words["due"] if due <= now else words["resting"].format(time=at(due)))
         else:
             timers = [wake for wake in own if wake.reason == "timer"]
-            if timers:
-                parts.append(words["wakes"].format(count=len(timers), time=at(timers[0].due_at)))
+            # One whose time has come and that cannot go on yet (the
+            # commission waits for its user's answer, say) is not "the
+            # next": told apart from those that are still to come.
+            due = [wake for wake in timers if wake.due_at <= now]
+            ahead = [wake for wake in timers if wake.due_at > now]
+            if due:
+                parts.append(words["wakes_due"].format(count=len(due)))
+            if ahead:
+                parts.append(words["wakes"].format(count=len(ahead), time=at(ahead[0].due_at)))
         if notes:
             parts.append(words["notes"].format(count=notes))
         return seen, "; ".join(parts)
