@@ -6360,6 +6360,8 @@ async def test_a_note_that_confirms_a_pending_entry_of_its_title_by_a_file_is_ju
     assert reply.startswith("not in effect yet") and "src/app.py (not found)" in reply
     assert _in_effect(root) == [] and "entry-point.md" not in _index(root)
     assert "It is started from the command line." in waiting.read_text(encoding="utf-8")
+    # Found gone as this very entry was asked about: off its record too.
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [])]
     assert [row[2]["kept"] for row in events.rows if row[0] == "c2" and row[1] == "lesson"] == [False]
 
 
@@ -6396,3 +6398,152 @@ async def test_a_note_judged_anew_over_a_file_of_which_nothing_is_told_takes_eff
     assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
     assert sorted(_rests_on(waiting)[0]) == sorted([app, readme])
     assert _lesson_event(events, "c2")["evidence_counted"] == [readme]
+
+
+# ---------------------------------------------------------------------------
+# Review round 23
+# ---------------------------------------------------------------------------
+
+
+def _told_in_turn(monkeypatch: Any, path: str, answers: list[Any]) -> list[int]:
+    """Have the disk answer about ``path`` as ``answers`` say, one look after another, and as it is after those.
+
+    An answer is None (nothing is told), or something to do before the disk is asked as ever. Returns
+    the list that counts the looks.
+    """
+    from nekoclaw.host import space as module
+
+    real = module._stood
+    looks: list[int] = []
+
+    def in_turn(paths: Any) -> Any:
+        paths = list(paths)
+        if path not in paths:
+            return real(paths)
+        looks.append(1)
+        answer = answers[len(looks) - 1] if len(looks) <= len(answers) else "as it is"
+        if answer is None:
+            return {**real([item for item in paths if item != path]), path: None}
+        if callable(answer):
+            answer()
+        return real(paths)
+
+    monkeypatch.setattr(module, "_stood", in_turn)
+    return looks
+
+
+async def test_what_a_write_that_was_done_again_was_told_first_is_not_what_is_told_of_the_note(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    waiting = _memory(root) / "entry-point.md"
+
+    def gone_and_saved() -> None:
+        # As the entry is read to be written the file is gone; the user saves the entry at that moment
+        # (so it is read and written again), and by then the file is back.
+        (workdir / "src" / "app.py").unlink()
+        stamp = waiting.stat().st_mtime + 5
+        os.utime(waiting, (stamp, stamp))
+
+    def back() -> None:
+        (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+
+    looks = _told_in_turn(monkeypatch, app, ["as it is", "as it is", gone_and_saved, back])
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "verified", ["src/app.py"])
+    )
+
+    # The write that stands found the file: it is on record, counted, and not said to be missing.
+    assert len(looks) == 4 and reply.startswith("kept in") and "not found" not in reply
+    assert _rests_on(waiting)[0] == (app,)
+    assert _lesson_event(events, "c2")["evidence_counted"] == [app]
+
+
+async def test_a_file_of_which_nothing_is_told_as_the_note_is_written_stays_on_record_and_is_not_said_to_have_counted(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    # There when the write's turn came and as the note was judged; nothing is told of it as the entry is written.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", "as it is", None])
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "verified", ["src/app.py"])
+    )
+
+    # Checked by hand, so in effect; the file is not gone, so it stays; and it is not what the note took effect by.
+    assert len(looks) == 3 and reply.startswith("kept in") and "not found" not in reply
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+    assert "evidence_counted" not in _lesson_event(events, "c2")
+
+
+async def test_a_file_found_only_as_the_note_is_judged_is_put_on_the_record_of_the_commission_as_counted(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    # Nothing is told of it when the write's turn comes; it is found as what waited is asked about, and after.
+    looks = _told_in_turn(monkeypatch, app, [None])
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+
+    # It is what the note takes effect by, and is told as that.
+    assert len(looks) == 3 and reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert _lesson_event(events, "c1")["evidence_counted"] == [app]
+
+
+async def test_a_file_that_is_back_as_the_note_is_judged_anew_counts_and_is_not_said_to_be_missing(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    def back() -> None:
+        (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+
+    # Gone as the entry was to take effect by it, so the note is judged anew; back by then.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", "as it is", gone, back])
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+
+    # Of the answers about one file the last one counts: in effect by it, and told so.
+    assert len(looks) == 5 and reply.startswith("kept in") and "not found" not in reply
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+    assert _lesson_event(events, "c1")["evidence_counted"] == [app]
+
+
+async def test_two_names_that_differ_by_a_space_are_told_apart_where_there_is_nothing_to_read_them_against(space, root):
+    from nekoclaw.host.space import _not_looked_at
+
+    reply = await space.submit(
+        _commission(None), _lesson("Notes", "The notes are kept in two files.", "observed", ["notes/a b.txt", "notes/a  b.txt"])
+    )
+
+    assert "notes/a b.txt (no working directory to read it against)" in reply
+    assert "notes/a  b.txt (no working directory to read it against)" in reply
+    # Nor are they one name when the disk does not answer.
+    assert [name for name, _why in _not_looked_at(["notes/a b.txt", " notes/a  b.txt\n"])] == ["notes/a b.txt", "notes/a  b.txt"]
+
+
+async def test_a_file_of_which_nothing_is_told_as_the_note_is_judged_anew_stays_on_the_record_of_what_waits(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There as the note is judged; gone as the entry was to take effect by it; not told of as it is judged anew.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone, None])
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    # It waits. Asked about again, the file is told by that look: not known to be gone, it stays on record.
+    assert len(looks) == 3 and reply.startswith("not in effect yet")
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [app])]

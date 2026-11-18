@@ -356,9 +356,9 @@ class _Taken:
     # was written: one of them that the note named did not count, though
     # it was there a moment before.
     gone: tuple[str, ...] = ()
-    # Files the note named of which nothing was told as it was written,
-    # so that it was judged anew: on record, and they did not count.
-    untold: tuple[str, ...] = ()
+    # Of the files the note named, the ones that spoke for it in the
+    # end: found, and not found gone or untold of by any later look.
+    spoke: tuple[str, ...] = ()
 
 
 def _one_line(text: Any) -> str:
@@ -781,7 +781,8 @@ def evidence_of(
                 reason = "no working directory to read it against"
             else:
                 reason = "not found" if within or outside else "outside the working directory"
-            others.append((text, reason))
+            # Told as it was named: a name keeps the spaces it has.
+            others.append((named, reason))
     return _joined(counted, (), SPACE_EVIDENCE_MAX_PATHS), others
 
 
@@ -1046,7 +1047,12 @@ def _not_looked_at(named: list[str], looked_at: int | None = None) -> list[tuple
     """Return what is said of the files a note names when the file system did not answer: none was looked at."""
     from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS
 
-    unseen = [_one_line(item.strip()) for item in named[: looked_at or SPACE_EVIDENCE_MAX_PATHS]]
+    # As they were named: a name keeps the spaces it has. On one line
+    # where it has more than one.
+    unseen = [
+        _one_line(item) if "\n" in item.strip() or "\r" in item.strip() else item.strip()
+        for item in named[: looked_at or SPACE_EVIDENCE_MAX_PATHS]
+    ]
     # Told by its end, where its name is (``_shown``).
     return [(_shown(text, 24), "not looked at, the disk does not answer") for text in unseen if text]
 
@@ -1337,7 +1343,7 @@ def _keep_known(
     *,
     pending: bool = False,
     judged: bool = False,
-    found_gone: list[str] | None = None,
+    told: dict[str, bool | None] | None = None,
 ) -> bool:
     """Write into an entry what a filing adds to what is known of it. Returns whether anything changed.
 
@@ -1363,9 +1369,9 @@ def _keep_known(
     entries it confirmed by its title before that have taken effect,
     each by itself (``_judged``). A note that takes effect by
     something else (checked by hand, seen by enough commissions) is
-    not held up: it is written, without the files found gone. Those
-    are added to ``found_gone``, for whoever tells what became of the
-    note.
+    not held up: it is written, without the files found gone. What
+    was told of each file that was asked about is put into ``told``,
+    for whoever tells what became of the note.
     """
     from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_SEEN_BY_KEPT
 
@@ -1385,15 +1391,12 @@ def _keep_known(
         # one of which nothing is told stays, like one that cannot be told.
         asked = [path for path in rested if allowed or path not in apart]
         there = _stood(asked)
-        if judged and known is not None and _speaks_no_more(known, {path: there.get(path) for path in asked}):
-            raise _Rewritten(
-                "a file the note was judged with does not speak for it by now",
-                gone=[path for path in asked if there.get(path) is False],
-                untold=[path for path in asked if there.get(path) is None],
-            )
-        gone_now = {path for path in asked if there.get(path) is False}
-        if found_gone is not None:
-            found_gone.extend(path for path in asked if path in gone_now)
+        answers = {path: there.get(path) for path in asked}
+        if judged and known is not None and _speaks_no_more(known, answers):
+            raise _Rewritten("a file the note was judged with does not speak for it by now", told=answers)
+        gone_now = {path for path, stands in answers.items() if stands is False}
+        if told is not None:
+            told.update(answers)
         _set_evidence(document, [path for path in rested if path not in gone_now], apart)
         changed = True
     if known is None:
@@ -1622,14 +1625,15 @@ class _Rewritten(SpaceError):
 
     A pending entry it was found in by its text no longer says that
     text; or a file that spoke for it is gone, or not told of, now that
-    it was asked about once more. ``gone`` and ``untold`` are what that
-    last look told of the files it asked about.
+    it was asked about once more. ``told`` is what that last look told
+    of each file it asked about (True, False, or None for nothing), and
+    ``of`` the entry whose record those files are on.
     """
 
-    def __init__(self, reason: str, *, gone: Iterable[str] = (), untold: Iterable[str] = ()) -> None:
+    def __init__(self, reason: str, *, told: dict[str, bool | None] | None = None, of: str = "") -> None:
         super().__init__(reason)
-        self.gone = tuple(gone)
-        self.untold = tuple(untold)
+        self.told = dict(told or {})
+        self.of = of
 
 
 class _NotAsWritten(OSError):
@@ -1640,15 +1644,21 @@ class _LineNotAdded(OSError):
     """An entry is in its file, and its index could not be read or written, so no line was added for it."""
 
     def __init__(
-        self, entry: Any, how: str, *, charged: bool | None = None, gone: tuple[str, ...] = ()
+        self,
+        entry: Any,
+        how: str,
+        *,
+        charged: bool | None = None,
+        gone: tuple[str, ...] = (),
+        spoke: tuple[str, ...] = (),
     ) -> None:
         super().__init__(f"the index has no line for {entry.id}")
         self.entry = entry
         self.entry_id = str(entry.id)
         self.how = how
-        # As ``_Taken.gone`` and ``_Taken.untold``.
+        # As ``_Taken.gone`` and ``_Taken.spoke``.
         self.gone = gone
-        self.untold: tuple[str, ...] = ()
+        self.spoke = spoke
         # Whether it used one of its commission's places; by default every
         # filing does that put something into the entry.
         self.charged = how != _THERE if charged is None else charged
@@ -2272,7 +2282,7 @@ class TaskAgentSpace:
         allowed: bool = True,
         must_say: bool = False,
         by_files: bool = False,
-        found_gone: list[str] | None = None,
+        told: dict[str, bool | None] | None = None,
     ) -> tuple[Entry, str]:
         """Keep one entry. Returns it and what became of it: a new file, added to one, or there already.
 
@@ -2382,9 +2392,19 @@ class TaskAgentSpace:
                 # What is known of it beyond its words is kept on the same
                 # terms: only in an entry the host made. One the user wrote
                 # is theirs; it is given no evidence, no count and no state.
-                noted = bool(marks) and _keep_known(
-                    document, known, allowed, pending=pending, judged=by_files, found_gone=found_gone
-                )
+                # What this look tells is of this attempt: the file is
+                # read again, and all of it done again, when it was saved
+                # meanwhile. Only what the write that stands was made
+                # with is told (below).
+                at_write.clear()
+                try:
+                    noted = bool(marks) and _keep_known(
+                        document, known, allowed, pending=pending, judged=by_files, told=at_write
+                    )
+                except _Rewritten as exc:
+                    # The files that were asked about are on the record of this entry.
+                    exc.of = existing.id
+                    raise
                 redated = False
                 if dated is not None:
                     # Brought along: it was not filed today, and has not
@@ -2410,7 +2430,12 @@ class TaskAgentSpace:
                     document.set("sources", ", ".join([*filed_by, *others]))
                 return _render_document(document)
 
+            # What was told of the files the entry rests on, as it was
+            # read to be written.
+            at_write: dict[str, bool | None] = {}
             self._edit_text(path, add)
+            if told is not None:
+                told.update(at_write)
             how = _ADDED if fresh_text and fresh_text[0] else _THERE
             if pending:
                 # Not in effect: no index has a line for it.
@@ -2780,7 +2805,7 @@ class TaskAgentSpace:
         may_add: bool = True,
         by_text: str | None = None,
         by_files: bool = False,
-        found_gone: list[str] | None = None,
+        told: dict[str, bool | None] | None = None,
     ) -> tuple[Entry, bool, OSError | None]:
         """Put what a pending entry says into an entry that is not pending, and remove its file.
 
@@ -2826,21 +2851,21 @@ class TaskAgentSpace:
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
         rested, untold = _recorded(pending.evidence, pending.evidence_outside, allowed)
-        told = {path: (None if path in untold else True) if path in rested else False for path in pending.evidence}
-        if by_text is not None and by_files and _speaks_no_more(known, told):
+        answers: dict[str, bool | None] = {
+            path: (None if path in untold else True) if path in rested else False for path in pending.evidence
+        }
+        if by_text is not None and by_files and _speaks_no_more(known, answers):
             # In effect by its files and nothing else (``by_files``), and
             # asked about once more, a file that spoke for the note is
             # gone, or nothing is told of it: of two answers the later
             # one counts, and the note is judged anew, without it.
             raise _Rewritten(
-                "a file the note was judged with does not speak for it by now",
-                gone=[path for path, there in told.items() if there is False],
-                untold=[path for path, there in told.items() if there is None],
+                "a file the note was judged with does not speak for it by now", told=answers, of=pending.id
             )
-        if found_gone is not None:
-            # For whoever writes what the note brings along after this:
-            # these are not what anything rests on any more.
-            found_gone.extend(path for path in pending.evidence if path not in rested)
+        if told is not None:
+            # For whoever writes what the note brings along after this,
+            # and tells what became of the note.
+            told.update(answers)
         carried = _Known(
             confidence=pending.confidence or INFERRED,
             evidence=tuple(rested),
@@ -2895,38 +2920,21 @@ class TaskAgentSpace:
             return self._judged(project, note, may_use_place=may_use_place, allowed=allowed)
         except _Rewritten as exc:
             since = exc
-        # Of the files the note itself named, as the last look told: one
-        # that is gone is no longer what it rests on, and one of which
-        # nothing is told stays and speaks for nothing. (What a pending
-        # entry rested on is asked about again as the note is judged.)
-        known = note.known
-        silent = [path for path in since.untold if path in known.evidence and path not in since.gone]
-        again = replace(
-            note,
-            known=replace(
-                known,
-                evidence=tuple(path for path in known.evidence if path not in since.gone),
-                outside=tuple(path for path in known.outside if path not in since.gone),
-                untold=tuple(dict.fromkeys((*(path for path in known.untold if path not in since.gone), *silent))),
-            ),
-        )
+        # With what the last look told (``since``): it holds for every
+        # file that is not asked about again as the note is judged.
         try:
-            taken = self._judged(project, again, may_use_place=may_use_place, allowed=allowed)
+            return self._judged(project, note, may_use_place=may_use_place, allowed=allowed, since=since)
         except _Rewritten as exc:
             raise SpaceError("an entry kept changing while the note was judged") from exc
-        except _LineNotAdded as exc:
-            exc.gone = tuple(dict.fromkeys((*exc.gone, *since.gone)))
-            exc.untold = tuple(dict.fromkeys((*exc.untold, *silent)))
-            raise
-        # Told with what became of the note: none of these counted.
-        return replace(
-            taken,
-            gone=tuple(dict.fromkeys((*taken.gone, *since.gone))),
-            untold=tuple(dict.fromkeys((*taken.untold, *silent))),
-        )
 
     def _judged(
-        self, project: str | None, note: _Note, *, may_use_place: bool = True, allowed: bool = False
+        self,
+        project: str | None,
+        note: _Note,
+        *,
+        may_use_place: bool = True,
+        allowed: bool = False,
+        since: _Rewritten | None = None,
     ) -> _Taken:
         """Judge a note and keep it: as an entry in effect when it takes effect, as a pending one when it does not.
 
@@ -3017,14 +3025,30 @@ class TaskAgentSpace:
         # Asked about just now, after the note's own files were: a file
         # that is found gone here is gone, though the note found it.
         gone = {path for path in (own.evidence if own is not None else ()) if path not in on_record}
+        # Judged anew (``since``): what the look told that had it judged
+        # anew holds for the files that were not asked about again just
+        # now. One that was found gone then does not count, and one of
+        # which nothing was told speaks for nothing.
+        earlier = {
+            path: stands
+            for path, stands in (since.told.items() if since is not None else ())
+            if own is None or path not in own.evidence
+        }
+        earlier_gone = {path for path, stands in earlier.items() if stands is False}
         evidence = _joined(
-            on_record, [path for path in note.known.evidence if path not in gone], SPACE_EVIDENCE_MAX_PATHS
+            on_record,
+            [path for path in note.known.evidence if path not in gone and path not in earlier_gone],
+            SPACE_EVIDENCE_MAX_PATHS,
         )
         apart = {*(own.evidence_outside if own is not None else ()), *note.known.outside}
         # And one that is found there here is there, though nothing was
         # told of it when the note asked.
         there_now = {path for path in on_record if path not in untold}
-        untold_now = {*untold, *(path for path in note.known.untold if path not in there_now)}
+        untold_now = {
+            *untold,
+            *(path for path in note.known.untold if path not in there_now),
+            *(path for path, stands in earlier.items() if stands is None),
+        }
         known = _Known(
             confidence=_stronger(note.known.confidence, own.confidence if own is not None else ""),
             evidence=tuple(evidence),
@@ -3056,6 +3080,23 @@ class TaskAgentSpace:
         # is written whatever became of the files.
         by_files = not settled and known.confidence != VERIFIED and seen < SPACE_SEEN_TO_TAKE_EFFECT
 
+        def spoke(later: dict[str, bool | None]) -> tuple[str, ...]:
+            # Of the files the note named, the ones that spoke for it in
+            # the end: found, told of, and not found otherwise by a look
+            # after that (``later``).
+            return tuple(
+                path
+                for path in note.known.evidence
+                if path in known.evidence and path not in known.untold and later.get(path, True) is True
+            )
+
+        def found_gone(later: dict[str, bool | None]) -> tuple[str, ...]:
+            # All that was found gone: as the note was judged, before
+            # that when it is judged anew, and after, as it was written.
+            return tuple(
+                dict.fromkeys((*gone, *earlier_gone, *(path for path, stands in later.items() if stands is False)))
+            )
+
         def taken_along(pending: Entry) -> bool:
             # Checked by hand under its title, or seen by a commission that had not seen it.
             return known.confidence == VERIFIED or any(item not in pending.seen_by for item in arriving)
@@ -3074,7 +3115,13 @@ class TaskAgentSpace:
                 description=note.description,
                 source=note.source,
                 into=lead,
-                known=known,
+                # Judged anew over a file that was found gone as this very
+                # entry was asked about: it goes from its record.
+                known=(
+                    replace(known, gone=tuple(dict.fromkeys((*known.gone, *earlier_gone))))
+                    if lead is not None and since is not None and lead.id == since.of
+                    else known
+                ),
                 may_add=may_use_place or paid,
                 pending=True,
                 dated=note.waited,
@@ -3095,7 +3142,8 @@ class TaskAgentSpace:
                 _HELD,
                 confidence=known.confidence,
                 charged=not paid and how in (_CREATED, _ADDED),
-                gone=tuple(gone),
+                gone=found_gone({}),
+                spoke=spoke({}),
             )
         charged = not paid and not there
         if charged and not may_use_place:
@@ -3106,10 +3154,10 @@ class TaskAgentSpace:
         # with the commission that confirms it counted already, and what
         # did not is pending still.
         unlisted: OSError | None = None
-        # Files the pending entry rested on that were found gone after
-        # the note was judged: as it went into another entry, or as it
-        # took effect where it is.
-        later_gone: list[str] = []
+        # What was told of the files a pending entry rested on after the
+        # note was judged: as it went into another entry, or as it took
+        # effect where it is.
+        later: dict[str, bool | None] = {}
         # Whether its text went from a pending entry into one that is not.
         moved = False
         # Where the text of this note is, or goes, and what that was before.
@@ -3128,7 +3176,7 @@ class TaskAgentSpace:
                 may_add=may_use_place or paid,
                 by_text=content,
                 by_files=by_files,
-                found_gone=later_gone,
+                told=later,
             )
             waits = [item for item in waits if item[0] is not own]
         elif own is not None or same is not None:
@@ -3156,6 +3204,7 @@ class TaskAgentSpace:
             # the text goes into keeps what it rests on (whether that
             # expires is told by the look at it), and is not given what
             # was found gone since the note was judged.
+            later_gone = {path for path, stands in later.items() if stands is False}
             brought = replace(
                 known,
                 gone=(),
@@ -3180,7 +3229,7 @@ class TaskAgentSpace:
                 by_files=by_files,
                 # Where it takes effect where it is, the files it rested
                 # on are asked about once more as it is written.
-                found_gone=later_gone,
+                told=later,
             )
         except _LineNotAdded as exc:
             entry, how, unlisted = exc.entry, exc.how, exc
@@ -3196,15 +3245,13 @@ class TaskAgentSpace:
         if became:
             # It was a guess that waited, and is an entry from now on.
             how = _CREATED
-        # All that was found gone: as the note was judged, and since, as
-        # it was written. None of it counted.
-        told_gone = tuple(dict.fromkeys((*gone, *later_gone)))
         if unlisted is not None:
-            raise _LineNotAdded(entry, how, charged=charged, gone=told_gone) from unlisted
+            raise _LineNotAdded(entry, how, charged=charged, gone=found_gone(later), spoke=spoke(later)) from unlisted
         return _Taken(
             entry,
             how,
-            gone=told_gone,
+            gone=found_gone(later),
+            spoke=spoke(later),
             # Counted in the entry itself: one the user wrote keeps no count.
             counted=entry.seen > (was.seen if was is not None else 1),
             revived=was is not None and was.status == ENTRY_EXPIRED,
@@ -3323,24 +3370,25 @@ class TaskAgentSpace:
                     observer=counted,
                 ),
             )
-            def as_judged(gone: tuple[str, ...], silent: tuple[str, ...]) -> None:
-                # Asked about once more as the note was judged, a file it
-                # named may be gone that was there a moment before: it did
-                # not count, and is told with the others that did not. Nor
-                # did one of which nothing was told by then; that one is
-                # on record, like any of which nothing is told.
-                dropped = [path for path in counted_files if path in gone]
-                counted_files[:] = [path for path in counted_files if path not in gone and path not in silent]
+            def as_judged(gone: tuple[str, ...], spoke: tuple[str, ...]) -> None:
+                # The files that count are the ones that spoke for the note
+                # in the end, as it was judged and written: one that was
+                # not told of when the write's turn came may have been
+                # found since, and one that was there may be gone, or not
+                # told of any more. One that is gone is told with the
+                # others that did not count.
+                dropped = [path for path in counted_files if path in gone and path not in spoke]
+                counted_files[:] = list(spoke)
                 other_files.extend((path, "not found") for path in dropped)
 
             try:
                 taken = self._take_note(project, note, may_use_place=reserved, allowed=allowed)
             except _LineNotAdded as exc:
                 charged.append(exc.charged)
-                as_judged(exc.gone, exc.untold)
+                as_judged(exc.gone, exc.spoke)
                 raise
             charged.append(taken.charged)
-            as_judged(taken.gone, taken.untold)
+            as_judged(taken.gone, taken.spoke)
             return taken
 
         listed = True
