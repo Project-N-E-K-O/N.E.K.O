@@ -277,23 +277,82 @@ async def test_revocation_mid_turn_strips_the_unsent_proactive_screenshot_synchr
     turn_a = asyncio.create_task(
         client.stream_text("reply with my photo", input_transcript_callback=transcript_callback)
     )
-    await parked.wait()
-    message = next(m for m in client._conversation_history if image_count(m.content))
-    assert message.metadata["image_kinds"] == ["auto_screenshot", "user"]
-    assert image_count(message.content) == 2
+    try:
+        await _until_parked(parked, turn_a)
+        message = next(m for m in client._conversation_history if image_count(m.content))
+        assert message.metadata["image_kinds"] == ["auto_screenshot", "user"]
+        assert image_count(message.content) == 2
 
-    manager = SimpleNamespace(_proactive_vision_enabled=True, session=client, lanlan_name="T")
-    LLMSessionManager.update_proactive_vision_consent(manager, False)
-    # No await since the revocation: what turn B would read right now.
-    assert image_count(message.content) == 1
-    assert message.metadata["image_kinds"] == ["user"]
-    kept_url = next(p["image_url"]["url"] for p in message.content if p.get("type") == "image_url")
+        manager = SimpleNamespace(_proactive_vision_enabled=True, session=client, lanlan_name="T")
+        LLMSessionManager.update_proactive_vision_consent(manager, False)
+        # No await since the revocation: what turn B would read right now.
+        assert image_count(message.content) == 1
+        assert message.metadata["image_kinds"] == ["user"]
+        kept_url = next(p["image_url"]["url"] for p in message.content if p.get("type") == "image_url")
 
-    resume.set()
-    await turn_a
+        resume.set()
+        await asyncio.wait_for(turn_a, timeout=5)
+    finally:
+        resume.set()
+        if not turn_a.done():
+            turn_a.cancel()
     urls = _urls(client.requests[-1])
     # Turn A's own request: only the user's photo.
     assert urls == [kept_url]
+    # Plugins get what the provider got: the snapshot taken before the
+    # revocation must not publish the stripped screenshot.
+    published_images, published_sources = client._publish_provider_frames.call_args.args[:2]
+    assert len(published_images) == 1 and list(published_sources) == ["user"]
+
+
+async def _until_parked(parked, task):
+    """Wait for the turn to park; surface its own exception if it ends first."""
+    import asyncio
+
+    waiter = asyncio.ensure_future(parked.wait())
+    done, _ = await asyncio.wait({waiter, task}, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+    if task in done:
+        waiter.cancel()
+        task.result()
+        raise AssertionError("turn finished before parking on its transcript callback")
+    if waiter not in done:
+        waiter.cancel()
+        raise AssertionError("turn never parked on its transcript callback")
+
+
+@pytest.mark.asyncio
+async def test_proactive_reply_keeps_live_frames_of_a_turn_still_heading_to_the_provider():
+    """A user turn is in history but parked on its transcript callback; a proactive reply runs."""
+    import asyncio
+
+    client = _client()
+    live = _png_b64(40, 40, (200, 10, 10))
+    parked = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def transcript_callback(_text):
+        parked.set()
+        await resume.wait()
+
+    client.script = [
+        [_text("proactive"), _text("", "stop")],
+        [_text("user reply"), _text("", "stop")],
+    ]
+    turn = asyncio.create_task(client.stream_text(
+        "what is on screen?", turn_images=(live,), turn_source="screen", turn_source_count=1,
+        input_transcript_callback=transcript_callback,
+    ))
+    try:
+        await _until_parked(parked, turn)
+        await client.prompt_ephemeral("callback")
+        resume.set()
+        await asyncio.wait_for(turn, timeout=5)
+    finally:
+        resume.set()
+        if not turn.done():
+            turn.cancel()
+    # The user turn's own request still carries its live frame.
+    assert [_dominant_channel(u) for u in _urls(client.requests[-1])] == ["red"]
 
 
 @pytest.mark.asyncio

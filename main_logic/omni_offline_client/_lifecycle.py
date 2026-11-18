@@ -890,8 +890,9 @@ class _LifecycleMixin:
         # Same rule as stream_text: live frames of earlier turns keep receipts
         # only. Only once this reply may start: a declined callback must not
         # touch a turn that is still replying. Edited in place, so the request
-        # view built above sees it too.
-        self._strip_answered_live_frames()
+        # view built above sees it too. A user turn not yet answered (still
+        # heading to the provider) keeps its frames.
+        self._strip_answered_live_frames(answered_only=True)
 
         # Retry policy mirrors stream_text: max_retries=3, delays [1,2] seconds.
         # Proactive semantics differ: users await no reply, so **silently swallow** exhausted retries,

@@ -1432,6 +1432,26 @@ class _StreamingMixin:
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
+                                # Only images the message still carries: a consent
+                                # revocation since the snapshot (e.g. while the
+                                # transcript callback ran) stripped them from the
+                                # request, so plugins must not get them either.
+                                _carried = {
+                                    part.get("image_url", {}).get("url")
+                                    for part in (
+                                        user_message.content
+                                        if isinstance(user_message.content, list)
+                                        else ()
+                                    )
+                                    if isinstance(part, dict) and part.get("type") == "image_url"
+                                }
+                                _kept = [
+                                    index for index, image in enumerate(_bus_images)
+                                    if f"data:image/jpeg;base64,{image}" in _carried
+                                ]
+                                if len(_kept) != len(_bus_images):
+                                    _bus_images = [_bus_images[i] for i in _kept]
+                                    _bus_sources = [_bus_sources[i] for i in _kept]
                                 # Publish without waiting. This hop may cross loops (see
                                 # _fire_bus_task), and this is the user's first response chunk:
                                 # a stalled bridge must not produce a silent turn.

@@ -374,6 +374,14 @@ async def test_hang_up_then_typing_never_attaches_share_frames(manager, monkeypa
     assert replayed == ["hello"]
     assert len(offline.requests) == 1
     assert _image_urls(offline.requests[-1]) == []
+    first_request_users = [
+        m for m in _normalize_messages(offline.requests[0]) if m.get("role") == "user"
+    ]
+    last_user = first_request_users[-1]["content"]
+    last_user_text = last_user if isinstance(last_user, str) else " ".join(
+        p.get("text", "") for p in last_user if isinstance(p, dict)
+    )
+    assert "hello" in last_user_text
 
     for i in range(4):
         offline.script = [[_text(f"reply {i}"), _text("", "stop")]]

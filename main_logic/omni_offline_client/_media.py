@@ -34,6 +34,7 @@ from main_logic.proactive_delivery import (
 )
 
 from ._shared import (
+    AIMessage,
     asyncio,
     HumanMessage,
     logger,
@@ -592,7 +593,7 @@ class _MediaMixin:
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
 
-    def _strip_history_images(self, should_strip) -> int:
+    def _strip_history_images(self, should_strip, *, answered_only: bool = False) -> int:
         """Drop the pixels of history images for which ``should_strip(kind, prefit_kinds)`` holds.
 
         A receipt replaces them, like ``_evict_old_images``. Messages without
@@ -604,8 +605,16 @@ class _MediaMixin:
         that message by identity.
         """
         stripped = 0
-        for msg in self._conversation_history:
-            if not isinstance(msg, HumanMessage):
+        history = self._conversation_history
+        # answered_only: skip user turns no reply has followed yet (one may
+        # still be on its way to the provider, e.g. awaiting its transcript
+        # callback).
+        last_reply = max(
+            (i for i, m in enumerate(history) if isinstance(m, AIMessage)),
+            default=-1,
+        ) if answered_only else len(history)
+        for position, msg in enumerate(history):
+            if not isinstance(msg, HumanMessage) or position > last_reply:
                 continue
             count = image_count(msg.content)
             metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
@@ -626,7 +635,7 @@ class _MediaMixin:
             stripped += count - len(keep)
         return stripped
 
-    def _strip_answered_live_frames(self) -> None:
+    def _strip_answered_live_frames(self, *, answered_only: bool = False) -> None:
         """Live share frames serve the turn they rode; the next turn keeps only a receipt.
 
         A turn whose mapping the budget ladder lost is stripped whole when it
@@ -635,7 +644,8 @@ class _MediaMixin:
         """
         stripped = self._strip_history_images(
             lambda kind, prefit: kind == _IMAGE_KIND_LIVE
-            or (kind == _IMAGE_KIND_UNKNOWN and _IMAGE_KIND_LIVE in prefit)
+            or (kind == _IMAGE_KIND_UNKNOWN and _IMAGE_KIND_LIVE in prefit),
+            answered_only=answered_only,
         )
         if stripped:
             logger.info("🖼️ Stripped %d live frame(s) from history after their turn", stripped)
