@@ -235,6 +235,11 @@ class ProactiveMixin:
 
         Returns True if the text turn was sent, False if skipped.
         """
+        # Same rule as the text path's consent checker: a revocation during
+        # this nudge, including while it waits for the lock below, ends its
+        # vision for good, even if consent is granted again before the frame
+        # would be sent.
+        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
         # Share the callback-inject lock so a scheduled nudge cannot register a
         # second no-id fallback while an agent callback inject is unresolved.
         async with self._voice_proactive_inject_lock:
@@ -260,10 +265,6 @@ class ProactiveMixin:
                 language or self.user_language,
                 format='full',
             ) or 'en'
-            # Same rule as the text path's consent checker: a revocation
-            # during this nudge ends its vision for good, even if consent is
-            # granted again before the frame would be sent.
-            vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
             delivered = await session.prompt_ephemeral(
                 language=_lang,
                 user_turn_active=self._independent_asr_user_turn_active,

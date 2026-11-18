@@ -1586,10 +1586,12 @@ class _TransportMixin:
         frame_captured_at = (
             float(captured_at) if has_ingress_order else time.monotonic()
         )
-        if has_ingress_order and frame_captured_at <= getattr(
-            self,
-            "_latest_image_captured_at",
-            0.0,
+        # Compare against the last discard too: a visual-route switch resets
+        # the cache ordering time, which must not readmit frames captured
+        # before a consent revocation.
+        if has_ingress_order and frame_captured_at <= max(
+            getattr(self, "_latest_image_captured_at", 0.0),
+            getattr(self, "_visual_context_discard_at", 0.0),
         ):
             return ImageStageResult(
                 accepted=False,

@@ -331,7 +331,8 @@ test('overlapping tutorial sources keep vision stopped until the final release',
     const listeners = new Map();
     let intervalCount = 0;
     const window = {
-        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: false },
+        // The voice-call heartbeat needs Proactive Chat and its Screen Share option on.
+        appState: { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true },
         appConst: {},
         addEventListener(type, listener) { listeners.set(type, listener); }
     };
@@ -342,6 +343,7 @@ test('overlapping tutorial sources keep vision stopped until the final release',
         console,
         setInterval() { intervalCount += 1; return intervalCount; },
         clearInterval() {},
+        setTimeout() { return 0; },
         clearTimeout() {}
     });
     const emit = (active, source) => listeners.get('neko:home-tutorial-features-suppressed')({

@@ -846,6 +846,12 @@
             if (S.screenCaptureStream && S.screenCaptureStreamLastUsed) {
                 var idleTime = Date.now() - S.screenCaptureStreamLastUsed;
                 if (idleTime >= IDLE_TIMEOUT) {
+                    // A manual share still starting may be about to use this
+                    // stream; releasing it here would cancel that start.
+                    if (isScreenSharingStartPending()) {
+                        scheduleScreenCaptureIdleCheck();
+                        return;
+                    }
                     // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）。
                     // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面，
                     // 不得据设置值保留流。

@@ -245,6 +245,24 @@ async def test_voice_nudge_gate_stays_closed_after_revoke_and_regrant():
     assert vision_allowed() is False
 
 
+@pytest.mark.unit
+async def test_voice_nudge_revocation_while_waiting_for_the_lock_closes_vision():
+    session = _voice_session()
+    mgr = _voice_manager(session)
+    mgr._proactive_vision_revocation_epoch = 0
+    await mgr._voice_proactive_inject_lock.acquire()
+
+    nudge = asyncio.create_task(LLMSessionManager.trigger_voice_proactive_nudge(mgr))
+    await asyncio.sleep(0)
+    LLMSessionManager.update_proactive_vision_consent(mgr, False)
+    LLMSessionManager.update_proactive_vision_consent(mgr, True)
+    mgr._voice_proactive_inject_lock.release()
+    assert await nudge is True
+
+    vision_allowed = session.prompt_ephemeral.await_args.kwargs["vision_allowed"]
+    assert vision_allowed() is False
+
+
 # ── service voice fast path: enabled_modes decides allow_vision ─────────────
 
 

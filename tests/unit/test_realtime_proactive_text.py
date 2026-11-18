@@ -2498,3 +2498,21 @@ async def test_moderation_block_after_discard_still_notifies_the_frontend(monkey
     client.on_status_message.assert_awaited_once()
     assert "IMAGE_BLOCKED" in client.on_status_message.await_args.args[0]
     await client.close()
+
+
+@pytest.mark.unit
+async def test_route_switch_after_revocation_does_not_readmit_older_frames():
+    client = _make_client()
+    captured_before_revoke = time.monotonic()
+    client.discard_cached_visual_context()
+    client.set_visual_delivery_mode(VisualDeliveryMode.EXTERNAL_DESCRIPTION)
+    assert client._latest_image_captured_at == 0.0  # the route switch reset it
+
+    late = client.stage_multimodal_frame(
+        DUMMY_IMAGE_B64, source="screen", captured_at=captured_before_revoke,
+    )
+
+    assert late.accepted is False
+    assert late.rejection_reason == "stale_frame"
+    assert client._latest_image_b64 is None
+    await client.close()

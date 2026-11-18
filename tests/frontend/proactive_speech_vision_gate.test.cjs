@@ -141,7 +141,6 @@ test('releaseProactiveVisionStream releases during a call once the gate blocks',
     assert.equal(blocked.S.screenCaptureStream, null);
 
     const allowed = loadProactive({ privacyAllowsVision: true });
-    allowed.S.proactiveVisionChatEnabled = false;
     const kept = fakeStream();
     allowed.S.screenCaptureStream = kept;
 
@@ -288,6 +287,7 @@ function entryWindow(gate) {
             t: (key) => key,
             isNekoHomeTutorialProactiveSuppressed: () => false,
             canProactiveVisionRunDuringSpeech: () => gate,
+            holdsProactiveVisionStream: () => gate,
             acquireProactiveVisionStream: async () => { calls.push('acquire'); },
             startProactiveVisionDuringSpeech: () => { calls.push('start'); },
             releaseProactiveVisionStream: () => { calls.push('release'); },
@@ -472,26 +472,27 @@ test('user scenario, privacy mode on: stopping the share releases the stream and
     assert.equal(h.frames(), 0);
 });
 
-// Current rule (part 1): only privacy mode decides. Update together with the
-// todo case below when the gate changes.
-test('user scenario, privacy mode off: the heartbeat takes over the kept stream', async () => {
+// The reported case: privacy mode off, only music recommendations on, the
+// Screen Share option off. Stopping the manual share must not hand the stream
+// to the speech heartbeat.
+test('user scenario, privacy mode off but screen sub-switch off: no frames after stopping the share', async () => {
     const h = loadUserScenario({ privacyAllowsVision: true });
+    await stopSharingThenTick(h, 6);
+    assert.equal(h.trackStops(), 1);
+    assert.equal(h.S.screenCaptureStream, null);
+    assert.equal(h.heartbeat(), undefined);
+    assert.equal(h.frames(), 0);
+});
+
+test('user scenario, privacy mode off and Screen Share on: the heartbeat takes over the kept stream', async () => {
+    const h = loadUserScenario({ privacyAllowsVision: true });
+    h.S.proactiveVisionChatEnabled = true;
+    h.settings.proactiveVisionChatEnabled = true;
     await stopSharingThenTick(h, 6);
     assert.equal(h.trackStops(), 0);
     assert.ok(h.heartbeat(), 'heartbeat resumes on the kept stream');
     assert.equal(h.frames(), 6);
 });
-
-// Pending product decision (part 2): the screen sub-switch is off here, so
-// the heartbeat should not take over after the share stops.
-test('user scenario, privacy mode off but screen sub-switch off: no frames after stopping the share',
-    { todo: 'part 2: gate also requires proactive chat + screen sub-switch' },
-    async () => {
-        const h = loadUserScenario({ privacyAllowsVision: true });
-        await stopSharingThenTick(h, 6);
-        assert.equal(h.trackStops(), 1);
-        assert.equal(h.frames(), 0);
-    });
 
 // ── races between capture and a revocation ─────────────────────────────────
 
@@ -599,6 +600,7 @@ test('text-chat vision does not keep the stream after another window revoked', a
     const kept = loadUserScenario({ privacyAllowsVision: true });
     kept.S.isRecording = false;
     kept.S.proactiveVisionChatEnabled = true;
+    kept.settings.proactiveVisionChatEnabled = true;
     await kept.window.stopScreenSharing();
     assert.equal(kept.trackStops(), 0, 'text vision still holds the stream while allowed');
 });
@@ -699,5 +701,101 @@ test('failed save: a revocation during the backend probe stops before any stream
         });
         assert.equal(await h.window.acquireProactiveVisionStream(), false, `probe=${probe}`);
         assert.equal(streamCalls, 0, `probe=${probe}`);
+    }
+});
+
+// ── the switches: Proactive Chat and its Screen Share option ────────────────
+
+function runningCall() {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.proactiveChatEnabled = true;
+    h.S.proactiveVisionChatEnabled = true;
+    const stream = fakeStream();
+    h.S.screenCaptureStream = stream;
+    h.window.startProactiveVisionDuringSpeech();
+    assert.ok(h.heartbeat(), 'heartbeat runs before the switch changes');
+    return { h, stream };
+}
+
+for (const key of ['proactiveChatEnabled', 'proactiveVisionChatEnabled']) {
+    test(`turning ${key} off stops the heartbeat and releases the stream at once`, async () => {
+        const { h, stream } = runningCall();
+        const timer = h.heartbeat();
+        h.S[key] = false;
+        h.window.syncProactiveVisionDuringSpeech();
+        assert.equal(h.heartbeat(), undefined, 'heartbeat timer cleared');
+        assert.equal(stream.stopped, 1, 'capture stopped, indicator goes out');
+        assert.equal(h.S.screenCaptureStream, null);
+        await timer.fn(); // a tick already queued must not send either
+        assert.equal(h.frames(), 0);
+    });
+
+    test(`${key} closed in another window stops this window's heartbeat`, () => {
+        const { h, stream } = runningCall();
+        h.settings[key] = false; // saved elsewhere; this window not synced yet
+        assert.equal(h.window.canProactiveVisionRunDuringSpeech(), false);
+        h.window.syncProactiveVisionDuringSpeech();
+        assert.equal(h.heartbeat(), undefined);
+        assert.equal(stream.stopped, 1);
+    });
+}
+
+test('turning the switch back on during a call restarts the heartbeat', async () => {
+    const { h } = runningCall();
+    h.S.proactiveVisionChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(h.heartbeat(), undefined);
+
+    h.S.proactiveVisionChatEnabled = true;
+    h.window.syncProactiveVisionDuringSpeech();
+    const timer = h.heartbeat();
+    assert.ok(timer, 'heartbeat restarted');
+    await timer.fn();
+    assert.equal(h.frames(), 1);
+});
+
+test('turning the switch on outside a call does not start the heartbeat', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.isRecording = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(h.heartbeat(), undefined);
+});
+
+test('repeated syncs while off release only once and spare a manual share being started', () => {
+    const { h, stream } = runningCall();
+    h.S.proactiveChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(stream.stopped, 1);
+
+    const later = fakeStream(); // e.g. a stream a manual share obtained afterwards
+    h.S.screenCaptureStream = later;
+    h.window.syncProactiveVisionDuringSpeech(); // any later settings save
+    assert.equal(later.stopped, 0);
+
+    const pending = runningCall();
+    pending.h.window.isScreenSharingStartPending = () => true;
+    pending.h.S.proactiveChatEnabled = false;
+    pending.h.window.syncProactiveVisionDuringSpeech();
+    assert.equal(pending.h.heartbeat(), undefined, 'heartbeat still stops');
+    assert.equal(pending.stream.stopped, 0, 'the stream a manual share is about to use stays');
+});
+
+// app-settings is too large to load here. Its two write paths (every save and
+// every cross-window sync) must run the switch reconcile right after the
+// privacy check; see syncSpeechVisionWithSwitches in app-settings.js.
+test('app-settings reconciles the heartbeat after every save and cross-window sync', () => {
+    const settingsSource = read('static/app/app-settings.js');
+    const calls = settingsSource.match(/stopVisionAfterPrivacyEnabled\(\);\s*\n\s*syncSpeechVisionWithSwitches\(\);/g) || [];
+    assert.equal(calls.length, 2);
+    assert.match(settingsSource, /function syncSpeechVisionWithSwitches\(\) \{[\s\S]*?window\.syncProactiveVisionDuringSpeech\(\)/);
+});
+
+test('turning privacy mode off grabs a stream only when proactive vision will use it', async () => {
+    for (const holds of [true, false]) {
+        const { calls, globals } = entryWindow(holds);
+        globals.toggle = { id: 'proactive-vision', inverted: true };
+        globals.isChecked = false;
+        await runBlock(privacyToggleBlock, globals);
+        assert.deepEqual(calls.filter((name) => name === 'acquire'), holds ? ['acquire'] : [], `holds=${holds}`);
     }
 });

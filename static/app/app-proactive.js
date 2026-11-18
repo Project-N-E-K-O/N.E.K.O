@@ -130,11 +130,26 @@
     // Whether the speech-time vision heartbeat may look at the screen right now.
     // Every heartbeat start entry, the per-tick re-check and every "keep the
     // screen stream during a call" decision use this one function; change the
-    // rule here only. Today it follows privacy mode alone. A revocation wins
-    // from either side: the latest saved setting (another window may have
-    // revoked first) or this window's own value (the save may have failed).
+    // rule here only. It requires privacy mode off, Proactive Chat on and its
+    // Screen Share option on. Turning any of them off wins from either side:
+    // the latest saved setting (another window may have saved first) or this
+    // window's own value (the local save may have failed).
     function canProactiveVisionRunDuringSpeech() {
-        return isVisionConsentHeldNow();
+        return isVisionConsentHeldNow()
+            && isSwitchOnNow('proactiveChatEnabled')
+            && isSwitchOnNow('proactiveVisionChatEnabled');
+    }
+
+    function isSwitchOnNow(key) {
+        if (!S[key]) return false;
+        try {
+            var raw = localStorage.getItem('project_neko_settings');
+            if (raw) {
+                var saved = JSON.parse(raw);
+                if (saved && saved[key] === false) return false;
+            }
+        } catch (_) { }
+        return true;
     }
 
     // Screen consent alone, shared by text-chat vision and stream acquisition;
@@ -151,7 +166,11 @@
     // for app-screen and releaseProactiveVisionStream.
     function holdsProactiveVisionStream() {
         if (S.isRecording && canProactiveVisionRunDuringSpeech()) return true;
-        return !!(S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isVisionConsentHeldNow());
+        // Text-chat screenshots: their own switches, read like the speech
+        // gate so a switch turned off in another window counts here too.
+        return isSwitchOnNow('proactiveVisionChatEnabled')
+            && isSwitchOnNow('proactiveChatEnabled')
+            && isVisionConsentHeldNow();
     }
     mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
@@ -2259,6 +2278,31 @@
     }
     mod.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
 
+    // Bring the speech heartbeat in line with the switches after any of them
+    // changed (this window's save or another window's saved settings). Off:
+    // stop the heartbeat and, on the allowed -> not allowed change, release
+    // the screen stream so the capture indicator goes out. On: start it when
+    // in a call. Settings are saved often, so this must be idempotent.
+    var _speechVisionAllowedLast = null;
+    function syncProactiveVisionDuringSpeech() {
+        var allowed = canProactiveVisionRunDuringSpeech();
+        var wasAllowed = _speechVisionAllowedLast;
+        _speechVisionAllowedLast = allowed;
+        if (!allowed) {
+            stopProactiveVisionDuringSpeech();
+            var manualStartPending = typeof window.isScreenSharingStartPending === 'function'
+                && window.isScreenSharingStartPending() === true;
+            if (wasAllowed !== false && !manualStartPending) {
+                releaseProactiveVisionStream();
+            }
+            return;
+        }
+        if (S.isRecording && !S.proactiveVisionFrameTimer) {
+            startProactiveVisionDuringSpeech();
+        }
+    }
+    mod.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
+
     function stopProactiveChatSchedule() {
         if (S.proactiveChatTimer) {
             clearTimeout(S.proactiveChatTimer);
@@ -2747,6 +2791,7 @@
     window.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
     window.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
     window.holdsProactiveVisionStream = holdsProactiveVisionStream;
+    window.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;

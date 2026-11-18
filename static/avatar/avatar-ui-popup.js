@@ -3039,7 +3039,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 window.saveNEKOSettings();
             }
             if (visionEnabled) {
-                if (typeof window.acquireProactiveVisionStream === 'function') {
+                // Only prefetch the screen stream when something will use it
+                // (speech heartbeat or text-chat screenshots); otherwise this
+                // would prompt for capture and leave the indicator on for nothing.
+                if (typeof window.acquireProactiveVisionStream === 'function'
+                    && typeof window.holdsProactiveVisionStream === 'function'
+                    && window.holdsProactiveVisionStream() === true) {
                     window.acquireProactiveVisionStream();
                 }
                 if (typeof window.resetProactiveChatBackoff === 'function') {
