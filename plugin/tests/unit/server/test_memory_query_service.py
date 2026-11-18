@@ -169,6 +169,51 @@ async def test_query_memory_rejects_malformed_response(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_query_memory_rejects_non_object_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed hit is an upstream fault, not an ordinary "no memories"."""
+    _install_transport(
+        monkeypatch,
+        _router(query_json={"results": [_hit("Likes green tea"), "invalid"]}),
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.details == {"upstream_code": "invalid_response"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_maps_truncated_json_to_upstream_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b'{"results": [',
+            headers={"content-type": "application/json"},
+        )
+
+    _install_transport(monkeypatch, handler)
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.details == {"upstream_code": "invalid_json"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_query_memory_maps_503_to_not_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -91,7 +91,23 @@ def _extract_results(payload: object) -> list[Mapping[str, object]]:
     results = payload.get("results")
     if not isinstance(results, list):
         raise _upstream_error(upstream_code="invalid_response")
-    return [item for item in results if isinstance(item, Mapping)]
+    # Every hit must be an object. Dropping malformed ones would turn a broken
+    # response into an ordinary "no memories" answer, the same silent failure.
+    if not all(isinstance(item, Mapping) for item in results):
+        raise _upstream_error(upstream_code="invalid_response")
+    return results
+
+
+def _decode_upstream_json(response) -> object:
+    """Decode the recall response body; a malformed body is an upstream fault.
+
+    Kept local to the upstream response so a local rendering error is never
+    reported as the memory server's fault.
+    """
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise _upstream_error(upstream_code="invalid_json") from exc
 
 
 def _render_results(results: list[Mapping[str, object]], lang: object) -> str:
@@ -195,7 +211,7 @@ class MemoryQueryService:
                         json=body,
                     )
                     response.raise_for_status()
-                    results = _extract_results(response.json())
+                    results = _extract_results(_decode_upstream_json(response))
                     if not results:
                         return {"result": ""}
                     lang = await _fetch_render_language(
