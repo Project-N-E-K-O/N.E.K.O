@@ -3045,13 +3045,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 window.saveNEKOSettings();
             }
             if (visionEnabled) {
-                // Only prefetch the screen stream when something will use it
-                // (speech heartbeat or text-chat screenshots); otherwise this
-                // would prompt for capture and leave the indicator on for nothing.
-                if (typeof window.acquireProactiveVisionStream === 'function'
-                    && typeof window.holdsProactiveVisionStream === 'function'
-                    && window.holdsProactiveVisionStream() === true) {
-                    window.acquireProactiveVisionStream();
+                // Same click entry as the two switches: it prefetches the screen
+                // stream only when something will use it (speech heartbeat or
+                // text-chat screenshots), skips an open manual-share picker or
+                // a pending acquisition, and sends a frame once it arrives.
+                if (typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+                    window.acquireProactiveVisionAfterUserEnable();
                 }
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();

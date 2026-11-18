@@ -791,13 +791,15 @@ test('app-settings reconciles the heartbeat after every save and cross-window sy
     assert.match(settingsSource, /function syncSpeechVisionWithSwitches\(\) \{[\s\S]*?window\.syncProactiveVisionDuringSpeech\(\)/);
 });
 
-test('turning privacy mode off grabs a stream only when proactive vision will use it', async () => {
+test('turning privacy mode off acquires through the shared click entry', async () => {
     for (const holds of [true, false]) {
         const { calls, globals } = entryWindow(holds);
         globals.toggle = { id: 'proactive-vision', inverted: true };
         globals.isChecked = false;
+        globals.acquireProactiveVisionAfterUserEnable = () => { calls.push('acquireAfterEnable'); };
         await runBlock(privacyToggleBlock, globals);
-        assert.deepEqual(calls.filter((name) => name === 'acquire'), holds ? ['acquire'] : [], `holds=${holds}`);
+        // The shared click entry decides (it checks the keep-the-stream rule).
+        assert.deepEqual(calls.filter((name) => name.startsWith('acquire')), ['acquireAfterEnable'], `holds=${holds}`);
     }
 });
 
@@ -1024,23 +1026,28 @@ test('text-chat vision modes use the shared keep-the-stream rule', () => {
 });
 
 test('a click-acquired stream asks for a fresh frame even while a capture is in flight', async () => {
-    const h = loadProactive({ privacyAllowsVision: true });
-    const stream = fakeStream();
-    h.S.screenCaptureStream = stream;
-    h.window.appScreen.acquireOrReuseCachedStream = async () => stream;
-    const pending = [];
-    h.window.appScreen.captureFrameFromStream = () => new Promise((resolve) => { pending.push(resolve); });
-    h.window.startProactiveVisionDuringSpeech();
-    const inFlight = h.heartbeat().fn();
-    for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(pending.length, 1, 'a capture is in flight');
+    for (const inFlightResult of [{ dataUrl: null }, { dataUrl: 'data:image/jpeg;base64,AAAA' }]) {
+        const sent = !!inFlightResult.dataUrl;
+        const h = loadProactive({ privacyAllowsVision: true });
+        const stream = fakeStream();
+        h.S.screenCaptureStream = stream;
+        h.window.appScreen.acquireOrReuseCachedStream = async () => stream;
+        const pending = [];
+        h.window.appScreen.captureFrameFromStream = () => new Promise((resolve) => { pending.push(resolve); });
+        h.window.startProactiveVisionDuringSpeech();
+        const inFlight = h.heartbeat().fn();
+        for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(pending.length, 1, 'a capture is in flight');
 
-    h.window.acquireProactiveVisionAfterUserEnable();
-    for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(pending.length, 1, 'no second capture while one is in flight');
+        h.window.acquireProactiveVisionAfterUserEnable();
+        for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(pending.length, 1, 'no second capture while one is in flight');
 
-    pending[0]({ dataUrl: 'data:image/jpeg;base64,AAAA' });
-    await inFlight;
-    for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(pending.length, 2, 'the fresh frame is captured right after');
+        pending[0](inFlightResult);
+        await inFlight;
+        for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(h.frames(), sent ? 1 : 0, `sent=${sent}`);
+        assert.equal(pending.length, sent ? 1 : 2,
+            sent ? 'the frame in flight went out: no second frame' : 'nothing went out: a fresh frame is captured right after');
+    }
 });

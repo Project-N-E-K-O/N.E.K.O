@@ -2046,6 +2046,7 @@
     async function sendOneProactiveVisionFrame() {
         if (proactiveVisionFrameInFlight) return;
         proactiveVisionFrameInFlight = true;
+        var frameSent = false;
         try {
             if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
@@ -2213,6 +2214,7 @@
                 S.socket.send(JSON.stringify(
                     buildStreamDataMessage(dataUrl, visionInputType, null, captureType)
                 ));
+                frameSent = true;
                 console.log('[ProactiveVision] 发送单帧屏幕数据');
             }
         } catch (e) {
@@ -2221,7 +2223,9 @@
             proactiveVisionFrameInFlight = false;
             if (proactiveVisionFrameRetryAfterInFlight) {
                 proactiveVisionFrameRetryAfterInFlight = false;
-                if (S.proactiveVisionFrameTimer) {
+                // The frame in flight already went out (it was not voided):
+                // that is the fresh frame, do not send a second one.
+                if (!frameSent && S.proactiveVisionFrameTimer) {
                     sendOneProactiveVisionFrame();
                 }
             }
