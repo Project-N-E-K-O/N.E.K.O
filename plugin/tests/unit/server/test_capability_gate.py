@@ -127,6 +127,56 @@ def test_using_a_narrower_own_record_is_possible_laundering(gate, monkeypatch, t
     capability_gate.audit.close(1.0)
 
 
+def test_concurrent_multi_hop_chains_are_not_flagged(gate):
+    gate.update({"a": {"memory.read"}, "b": {"memory.read"}, "c": {"memory.read"}})
+    ra = capability_gate.begin_call("a", "ra", "plugin_entry", "x", CallLink(Origin.of(ORIGIN_RUN)))
+    rc = capability_gate.begin_call("c", "rc", "plugin_entry", "x", CallLink(Origin.of(ORIGIN_RUN)))
+    b1 = capability_gate.begin_call("b", "b1", "plugin_entry", "y", capability_gate.link_for_plugin_call("a", "ra"))
+    b2 = capability_gate.begin_call("b", "b2", "plugin_entry", "y", capability_gate.link_for_plugin_call("c", "rc"))
+    capability_gate.check("b", "b1", "memory.read", "MEMORY_SEARCH")
+    capability_gate.check("b", "b2", "memory.read", "MEMORY_SEARCH")
+    assert _decisions() == []
+    for record in (b2, b1, rc, ra):
+        capability_gate.end_call(record, "ok", 0)
+
+
+def test_a_finished_failed_call_does_not_flag_the_next_sequential_use(gate):
+    gate.update({"a": {"memory.read"}, "b": {"memory.read"}})
+    ra = capability_gate.begin_call("a", "ra", "plugin_entry", "x", CallLink(Origin.of(ORIGIN_RUN)))
+    b1 = capability_gate.begin_call("b", "b1", "plugin_entry", "y", capability_gate.link_for_plugin_call("a", "ra"))
+    capability_gate.end_call(b1, "PLUGIN_EXECUTION_FAILED", 0)  # the plugin answered
+    capability_gate.end_call(ra, "ERROR", 0)
+    run = capability_gate.begin_call("b", "r2", "plugin_entry", "z", CallLink(Origin.of(ORIGIN_RUN)))
+    capability_gate.check("b", "r2", "memory.read", "MEMORY_SEARCH")
+    assert _decisions() == []
+    assert len(capability_gate.registry) == 1
+    capability_gate.end_call(run, "ok", 0)
+
+
+def test_a_timed_out_callee_does_not_count_as_live_after_it_ended(gate):
+    gate.update({"a": {"memory.read"}, "b": {"memory.read"}})
+    ra = capability_gate.begin_call("a", "ra", "plugin_entry", "x", CallLink(Origin.of(ORIGIN_RUN)))
+    b1 = capability_gate.begin_call("b", "b1", "plugin_entry", "y", capability_gate.link_for_plugin_call("a", "ra"))
+    capability_gate.end_call(b1, "TIMEOUT", 0)
+    assert capability_gate.registry.has_live_chain("b") is False
+    capability_gate.check("b", None, "memory.read", "MEMORY_SEARCH")
+    assert _decisions() == []
+    capability_gate.end_call(ra, "ok", 0)
+
+
+def test_lingering_records_are_capped_and_do_not_fill_the_live_budget():
+    registry = CallRegistry(max_live=2)
+    registry.MAX_LINGERING = 2
+    records = []
+    for index in range(5):
+        record = registry.register(target="a", call_id=str(index), event_type="e", event_id="x", link=None)
+        assert record is not None
+        registry.remove(record, linger=30)
+        records.append(record)
+    assert len(registry) == 2  # only the two newest still linger
+    assert registry.lookup("a", "4") is records[4] and registry.lookup("a", "0") is None
+
+
 @pytest.mark.parametrize("broken", ["consent", "registry"])
 async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken):
     if broken == "consent":

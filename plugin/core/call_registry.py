@@ -133,6 +133,7 @@ class CallRegistry:
     """
 
     MAX_LIVE = 4096
+    MAX_LINGERING = 1024
 
     def __init__(self, *, max_live: int = MAX_LIVE, clock: Callable[[], float] = time.monotonic):
         self._lock = threading.Lock()
@@ -200,7 +201,7 @@ class CallRegistry:
             if key in self._records:
                 self.duplicates += 1
                 return None
-            if len(self._records) >= self._max_live:
+            if len(self._records) - len(self._lingering) >= self._max_live:
                 self.registry_full += 1
                 return None
             self._records[key] = record
@@ -216,6 +217,9 @@ class CallRegistry:
             uses, record.uses = record.uses, {}
             if linger > 0:
                 record.ended_at = self._clock()
+                if len(self._lingering) >= self.MAX_LINGERING:
+                    _, oldest = self._lingering.popleft()
+                    self._drop_locked(oldest)
                 self._lingering.append((record.ended_at + linger, record))
             else:
                 self._drop_locked(record)
@@ -244,23 +248,20 @@ class CallRegistry:
             self._prune_locked()
             return self._records.get((plugin_id, parent))
 
-    def has_wider_live_chain(self, plugin_id: str, chain: tuple[str, ...]) -> bool:
-        """Whether another delivery to the plugin carries callers outside ``chain``.
+    def has_live_chain(self, plugin_id: str) -> bool:
+        """Whether the plugin is currently being called by another plugin.
 
-        A request attributed to a narrower chain while such a delivery is in
-        flight may be dropping its callers on purpose (possible laundering).
+        Only deliveries still in flight count; a lingering record has ended.
+        A use attributed to the plugin alone (no parent, or one of its own
+        single-hop deliveries) while this holds may be dropping its callers
+        on purpose: possible laundering.
         """
-        members = set(chain)
         with self._lock:
             self._prune_locked()
             return any(
-                not members.issuperset(record.chain)
+                record.ended_at is None and len(record.chain) > 1
                 for record in self._by_target.get(plugin_id, ())
             )
-
-    def has_live_chain(self, plugin_id: str) -> bool:
-        """Whether the plugin is currently being called by another plugin."""
-        return self.has_wider_live_chain(plugin_id, (plugin_id,))
 
     def note_use(self, record: CallRecord, capability: str) -> bool:
         """Count an allowed use for the end-of-call summary (live records only)."""

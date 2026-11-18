@@ -103,8 +103,8 @@ Origin 只存指针，不存原文；`speaker` 字段预留为 `None`。Origin �
 - **记录** `CallRecord`（frozen）：`call_id`（= `req_id`）、`trace_id`、`depth`、`target`、`event_type`、`event_id`、`caller`（来源插件，宿主投递时为 `None`）、`parent_call_id`、`chain`（从根到自己的插件 id 元组，登记时一次算好）、`origin`（kind、ref）、`started`（monotonic）、`flags`（如 `possible_laundering`）。另有可变的 `uses: Counter[capability]`，只在登记表锁内改。
 - **登记**：在 `_trigger_local` / `_trigger_custom_event_local` 生成 `req_id` 之后、发送之前登记；`finally` 里摘除（成功、失败、超时、取消都摘）。摘除时写一条「转发」审计（结果码、耗时）和一条「放行聚合」审计（按能力计数）。
 - **查找**：`lookup(plugin_id, parent_request_id)`。`plugin_id` 永远是连接绑定的身份（`RpcContext.from_plugin` 或 `_route_message` 覆写后的 `plugin_id`），`parent_request_id` 只是查表的键。插件把父 id 伪造成别的插件的 `req_id`，键里的 `plugin_id` 对不上，查不到，按「插件自发」处理：借不到别人的权限，也不能把别人卷进自己的链。
-- **存活判断**：`has_wider_live_chain(plugin_id, chain)`：该插件当前是否还有另一条存活记录，其链上有 `chain` 里没有的插件。用于 `possible_laundering`：没带父 id（链 = 自己）时等价于「它正被别的插件调用」；带的是**自己另一条更窄的记录**的 id 时也算（例如 B 同时在处理一个直接的 run 和 A 发来的调用，用 run 的 id 读记忆，就把 A 从链上甩掉了）。并发时合法的调用也会被这样标出来，只记不拦。
-- **结束但可能还在跑**：调用方超时、取消、传输出错时，插件里的入口可能还没停。这类记录不立即删除，标上结束时间后保留 30 秒（`LINGER_SECONDS`），期间的使用仍按它的链判定并打 `after_return`；插件已经回了结果（成功或报错）的记录立即删除。
+- **存活判断**：`has_live_chain(plugin_id)`：该插件当前是否作为「被别的插件调用的一方」存在于某条**还没结束**的记录里。用于 `possible_laundering`：一次使用只归到插件自己（没带父 id，或带的是它自己一条单跳记录的 id，例如 B 同时在处理一个直接的 run 和 A 发来的调用，拿 run 的 id 读记忆，就把 A 甩掉了），而它此时正被别的插件调用，就打这个标记。两条并发的多跳链（A→B 和 C→B）之间不互相比较，这个留给 P2。并发时合法的单跳调用也可能被标出来，只记不拦。
+- **结束但可能还在跑**：宿主在插件回结果之前就不等了（超时、取消、传输出错），插件里的入口可能还没停。这类记录不立即删除，标上结束时间后保留 30 秒（`LINGER_SECONDS`），期间的使用仍按它的链判定并打 `after_return`；保留中的记录不算「正在被调用」，不占存活上限，最多 1024 条（超出时最早的先删）。插件已经回了结果（成功或报错）的记录立即删除。
 - **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`，并写一条去重后的 `not_registered` 审计，调用照常进行（这时候它的子调用按插件自发处理）。P2 要定满了以后是拒绝投递还是把这类请求一律当作可疑。
 - **并发**：宿主里多个 owner loop 和路由 loop 都会碰它，用 `threading.Lock`，临界区只有字典操作。
 

@@ -42,9 +42,10 @@ _CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 # A delivery that ended without the plugin's reply may still be running in
 # the plugin; keep its record that long so late uses keep their chain.
 LINGER_SECONDS = 30.0
+# Only ends where the host stopped waiting before the plugin answered; an
+# error reply means the entry is over.
 _MAY_STILL_RUN = frozenset({
-    "CANCELLED", "TIMEOUT", "DEADLINE_EXCEEDED", "TRANSPORT_TIMEOUT",
-    "OPERATION_TIMEOUT", "TRANSPORT_ERROR", "BUSY", "ERROR",
+    "CANCELLED", "TIMEOUT", "DEADLINE_EXCEEDED", "TRANSPORT_TIMEOUT", "TRANSPORT_ERROR",
 })
 
 registry = CallRegistry()
@@ -108,13 +109,14 @@ def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink | N
 
     ``caller`` is the connection-bound identity. The parent id is only a key
     into the caller's own records, so another plugin's id finds nothing; a
-    narrower record of its own is flagged when a wider one is in flight.
+    single-hop record of its own is flagged while it is also being called
+    by another plugin.
     """
     try:
         parent = registry.lookup(caller, parent_request_id)
         if parent is not None:
             flags = set(parent.flags & {FLAG_POSSIBLE_LAUNDERING})
-            if registry.has_wider_live_chain(caller, parent.chain):
+            if len(parent.chain) == 1 and registry.has_live_chain(caller):
                 flags.add(FLAG_POSSIBLE_LAUNDERING)
             return CallLink(origin=parent.origin, caller=caller, parent=parent, flags=frozenset(flags))
         flags = frozenset({FLAG_POSSIBLE_LAUNDERING}) if registry.has_live_chain(caller) else frozenset()
@@ -227,7 +229,9 @@ def _judge(plugin_id: str, parent_request_id: object, capability: str, operation
         flags.update(record.flags & {FLAG_POSSIBLE_LAUNDERING})
         if record.ended_at is not None:
             flags.add(FLAG_AFTER_RETURN)
-    if registry.has_wider_live_chain(plugin_id, chain):
+    # Attributed to the plugin alone while another plugin is calling it.
+    # Two concurrent multi-hop chains are not compared (a P2 question).
+    if len(chain) == 1 and registry.has_live_chain(plugin_id):
         flags.add(FLAG_POSSIBLE_LAUNDERING)
     cache: dict[str, frozenset[str]] = {}
 
