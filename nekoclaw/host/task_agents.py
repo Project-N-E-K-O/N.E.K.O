@@ -728,7 +728,7 @@ class TaskAgentManager:
         """Wait until every event received so far has been handled."""
         await self._events.join()
 
-    async def _caught_up(self) -> None:
+    async def _caught_up(self, within: float = _CAUGHT_UP_SECONDS) -> None:
         """Wait until what the runtimes have said up to now is handled, and no longer than a moment.
 
         For a callback of a session whose answer depends on what the
@@ -741,7 +741,7 @@ class TaskAgentManager:
         reached: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._events.put_nowait({_REACHED: reached})
         try:
-            await asyncio.wait_for(reached, _CAUGHT_UP_SECONDS)
+            await asyncio.wait_for(reached, within)
         except asyncio.TimeoutError:
             logger.warning("the runtime's events were not caught up with in time; going on")
 
@@ -1952,10 +1952,10 @@ class TaskAgentManager:
             # through with it now: what it wrote is on no record, and
             # nothing would ever come by it to remove it.
             del self._forks_given_up[spoken_of]
-            if kind == "forked":
-                import shutil
-
-                await asyncio.shield(asyncio.to_thread(shutil.rmtree, given_up, True))
+            # Whichever it said: a copy that failed may have left what
+            # it could not remove itself. And what cannot be removed now
+            # either is still this host's to remove (``_remove_fork_dir``).
+            await asyncio.shield(self._remove_fork_dir(spoken_of, given_up))
             return
         service = self._service.get(spoken_of)
         if service is not None:
@@ -3584,6 +3584,29 @@ class TaskAgentManager:
 
     # -- what a commission may use ----------------------------------------
 
+    async def _owed_tokens(self, root: str) -> int:
+        """Return what the work a commission belongs to used that the ledger has not taken yet.
+
+        Of the commission no task agent started (``root``) and of those
+        that descend from it. Reported by a runtime, and not in what
+        the ledger says was used: left out, the work would go past
+        what it may use without the user being asked.
+        """
+        total = 0
+        for (_session_id, commission_id), owed in list(self._usage_owed.items()):
+            if commission_id is None:
+                # A request the host made by itself: no commission's.
+                continue
+            if commission_id != root:
+                try:
+                    standing = await self._ledger.usage_standing(commission_id)
+                except Exception:  # noqa: BLE001 - whose work it is cannot be told: not counted
+                    continue
+                if standing is None or standing.root != root:
+                    continue
+            total += owed[1] + owed[2] + owed[3] + owed[4]
+        return total
+
     def _usage_settled(self, commission: Commission) -> None:
         """Forget what was noted of the usage of a commission that is over: whether more was refused for it."""
         self._winding_up.pop(commission.id, None)
@@ -3645,6 +3668,12 @@ class TaskAgentManager:
         if self._sessions.get(commission_id) is not session or session.closing:
             # Over meanwhile: its run ends by itself.
             return None
+        if any(key[0] == session_id for key in self._usage_owed):
+            # What requests of this session used that the ledger did not
+            # take: tried once more before the account is looked at.
+            await self._write_owed_usage(session_id)
+            if self._sessions.get(commission_id) is not session or session.closing:
+                return None
         if session.wind_up_left is None and commission_id in self._winding_up:
             # More of a round in which it was told to hand over, in a
             # session opened anew (the one it was told in was closed
@@ -3663,6 +3692,11 @@ class TaskAgentManager:
             standing = await self._ledger.usage_standing(commission_id)
             if standing is None:
                 return None
+            # With what was used and is not in the ledger yet (it did not
+            # take it): used all the same, and counted once, here or there.
+            owed = await self._owed_tokens(standing.root)
+            if owed:
+                standing = dataclasses.replace(standing, used=standing.used + owed)
             allowed = standing.allowed if standing.allowed is not None else limit
             return standing if standing.used >= allowed else None
 
@@ -3855,6 +3889,12 @@ class TaskAgentManager:
         source_dir = await asyncio.to_thread(self._session_dir_of, source)
         if not await asyncio.to_thread(_in_builtin, source_dir):
             raise ForkRefused("nothing was said in the session yet")
+        if self._closed:
+            # Shut down while the session's files were looked at. Shutting
+            # down did not see this (it was neither started nor waited
+            # for yet), and is over or all but: no runtime is made for
+            # it now, and nothing is copied.
+            raise ForkRefused("the host is shutting down")
         session_id = new_session_id()
         target_dir = self._paths.session_dir(session_id, source.project)
         runtime = self._runtimes.builtin()
@@ -3874,12 +3914,12 @@ class TaskAgentManager:
             event = await asyncio.wait_for(answer, TASK_AGENT_FORK_SECONDS)
         except asyncio.TimeoutError:
             # It may still write the copy: removed when it says it has.
-            self._forks_given_up[session_id] = str(target_dir)
+            self._fork_given_up(session_id, target_dir, answer)
             raise ForkRefused("the runtime did not answer in time") from None
         except asyncio.CancelledError:
             # Whoever asked for the copy is gone, and the runtime may write
             # it all the same: likewise removed when it says it has.
-            self._forks_given_up[session_id] = str(target_dir)
+            self._fork_given_up(session_id, target_dir, answer)
             raise
         finally:
             self._forks.pop(session_id, None)
@@ -3905,6 +3945,23 @@ class TaskAgentManager:
         # What it fails with is read here, should whoever asked have left.
         registering.add_done_callback(lambda done: done.cancelled() or done.exception())
         return registering
+
+    def _fork_given_up(self, session_id: str, target_dir: Any, answer: "asyncio.Future[dict[str, Any]]") -> None:
+        """Note that a copy is no longer waited for: what the runtime writes of it is removed when it says it is through.
+
+        It may have said so already, in the moment whoever waited left
+        (the runtime in this process says it before its command
+        returns). Nothing more is said of the copy then, so what there
+        is of it is removed now, by a task of its own.
+        """
+        if answer.done() and not answer.cancelled() and answer.exception() is None:
+            removing = asyncio.ensure_future(self._remove_fork_dir(session_id, target_dir))
+            # (Kept with the copies that are being put on record: shutting
+            # down waits for these, and does not cut them off.)
+            self._fork_records.add(removing)
+            removing.add_done_callback(self._fork_records.discard)
+            return
+        self._forks_given_up[session_id] = str(target_dir)
 
     async def _put_fork_on_record(
         self, source: Session, session_id: str, target_dir: Any, *, name: str | None, forked_at: str | None
@@ -4279,7 +4336,10 @@ class TaskAgentManager:
             # it waits (this is where a stop or a commission finds a
             # summing up that is all but over), this leaves, and the
             # giving back is carried through all the same.
-            over = self._spawn(
+            # (Not a task shutting down gives up on, ``_spawn``: cut off
+            # there, the gateway would keep its token and the ledger
+            # would not be told that the session was summed up.)
+            over = asyncio.ensure_future(
                 self._idle_compact_over(
                     session_id, task, runtime=runtime, events=events, opened=opened, grant=grant,
                     marked=marked, compacted=compacted, too_early=too_early, stops=stops,
@@ -4384,13 +4444,23 @@ class TaskAgentManager:
             # commission's. (A commission that is to be worked on in it
             # does not wait as long: ``_stop_compacting``.) A host that
             # shuts down stops its runtimes next and gives the session
-            # to nobody: it waits the first stretch and no longer.
+            # to nobody: it waits as long as it waits for anything then,
+            # and what is left to do for the session is done all the same.
             waiting = asyncio.ensure_future(gone())
             try:
-                done, _pending = await asyncio.wait({waiting}, timeout=_SERVICE_CLOSE_SECONDS)
-                if not done:
-                    logger.warning("the runtime has not said that session %s is closed; still waited for", session_id)
-                while not done and not self._closed:
+                loop = asyncio.get_running_loop()
+                asked = loop.time()
+                noted = False
+                done: set[Any] = set()
+                while not done:
+                    waited = loop.time() - asked
+                    if self._closed and waited >= _SHUTDOWN_START_WAIT_SECONDS:
+                        break
+                    if not noted and waited >= _SERVICE_CLOSE_SECONDS:
+                        noted = True
+                        logger.warning(
+                            "the runtime has not said that session %s is closed; still waited for", session_id
+                        )
                     done, _pending = await asyncio.wait({waiting}, timeout=_SERVICE_CLOSE_POLL_SECONDS)
                 if done:
                     # What the waiting failed with, if it did, is raised here.
@@ -4460,6 +4530,10 @@ class TaskAgentManager:
                 await runtime.shutdown()
             except Exception:  # noqa: BLE001 - shutting down goes on regardless
                 logger.exception("shutting the runtime down failed")
+        # What the runtimes said as they stopped is handled before the
+        # sessions are forgotten and nobody listens any more: what the
+        # last requests used is among it, and would be on no account.
+        await self._caught_up(within=_SHUTDOWN_START_WAIT_SECONDS)
         # Copies nobody waited for any more, of which no runtime said what
         # became of them before it stopped: they are on no record, and
         # nothing would ever come by them to remove them. No runtime
@@ -4468,6 +4542,15 @@ class TaskAgentManager:
         given_up, self._forks_given_up = self._forks_given_up, {}
         for target in given_up.values():
             await asyncio.to_thread(shutil.rmtree, target, True)
+        if self._idle_over:
+            # Sessions the host had open by itself that are being given
+            # back: each waits for its runtime no longer than this, and
+            # then does what is left (the gateway's token taken back, the
+            # ledger told). Waited for, so that the ledger is still open.
+            await asyncio.wait(
+                list(self._idle_over.values()),
+                timeout=_SHUTDOWN_START_WAIT_SECONDS + _SERVICE_CLOSE_POLL_SECONDS,
+            )
         for commission_id in list(self._sessions):
             self._discard(commission_id)
         self._held_by.clear()

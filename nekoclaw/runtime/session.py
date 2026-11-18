@@ -1613,6 +1613,10 @@ class TaskAgentSession(SessionInbox):
     async def _compact(self) -> None:
         reason: protocol.EndReason = "completed"
         error: str | None = None
+        # The conversation as it stands before anything is done to it: what
+        # it goes back to when the record does not take the summary.
+        as_it_was: list[Any] | None = None
+        before, due_before = self._compactions, self._compaction_due
         try:
             # As much is kept word for word as a summary before a request
             # keeps: this is not the conversation that was refused as too
@@ -1623,25 +1627,7 @@ class TaskAgentSession(SessionInbox):
             before, due_before = self._compactions, self._compaction_due
             as_it_was = self.transcript.rows()
             await self._fit(force=True, tight=False, or_drop=False)
-            await self._recorder.flush()
-            made = self._compactions > before
-            if made and self._recorder.gave_up_on(self._compaction_entry_id):
-                # The record did not take the summary (the disk refused
-                # it, after the retries). The conversation goes back to
-                # what the record has. Left with the summary, a later one
-                # would stand for it and not for what it had replaced,
-                # and a session opened from the record would be handed
-                # that later summary and the old replies both. Nor is it
-                # counted, here or in the snapshot, or told to the host.
-                self.transcript.rewrite(as_it_was)
-                self.context.invalidate()
-                self._compactions, self._compaction_due = before, due_before
-                if self._gateway is not None:
-                    # Nor is the gateway to take what it handed over before
-                    # (a group of tools and how they are used) for gone:
-                    # the conversation that is back holds it.
-                    self._gateway.compactions = before
-                made = False
+            made = await self._summary_on_record(before, due_before, as_it_was)
             if self._compaction_due:
                 # Also when no summary was made now and one from before the
                 # session was last closed still waits for what follows it:
@@ -1655,6 +1641,16 @@ class TaskAgentSession(SessionInbox):
                 self._run_task = None
                 raise
             reason = "aborted"
+            if as_it_was is not None:
+                # Stopped, and a summary may be on its way to the record
+                # this moment. Whether the record takes it is settled
+                # before this is over: the next run goes on from the
+                # conversation as it is then. (No longer than the record
+                # tries to write an entry.)
+                try:
+                    await self._summary_on_record(before, due_before, as_it_was)
+                except asyncio.CancelledError:
+                    logger.debug("session %s: stopped again while a summary was settled", self.session_id)
         except Exception as exc:  # noqa: BLE001 - reported through the ended event
             logger.exception("session %s: summing the conversation up failed", self.session_id)
             reason = "error"
@@ -1662,6 +1658,32 @@ class TaskAgentSession(SessionInbox):
         self._compacting = False
         self._run_task = None
         self._emit(protocol.EndedEvent(session_id=self.session_id, reason=reason, error=error, inputs=self._inputs))
+
+    async def _summary_on_record(self, before: int, due_before: bool, as_it_was: list[Any]) -> bool:
+        """Wait for what was said to be written, and return whether a summary was made since ``before`` and is on the record.
+
+        One the record did not take (the disk refused it, after the
+        retries) is undone: the conversation goes back to ``as_it_was``,
+        which is what the record has. Left with the summary, a later
+        one would stand for it and not for what it had replaced, and a
+        session opened from the record would be handed that later
+        summary and the old replies both. Nor is it counted, here, in
+        the snapshot or with the gateway, or told to the host.
+        """
+        await self._recorder.flush()
+        if self._compactions <= before:
+            return False
+        if not self._recorder.gave_up_on(self._compaction_entry_id):
+            return True
+        self.transcript.rewrite(as_it_was)
+        self.context.invalidate()
+        self._compactions, self._compaction_due = before, due_before
+        if self._gateway is not None:
+            # Nor is the gateway to take what it handed over before (a
+            # group of tools and how they are used) for gone: the
+            # conversation that is back holds it.
+            self._gateway.compactions = before
+        return False
 
     # ------------------------------------------------------------------
     # Runs

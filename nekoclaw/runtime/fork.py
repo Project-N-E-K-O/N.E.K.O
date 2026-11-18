@@ -238,9 +238,11 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
     marker = CustomEntry(
         namespace=FORK_NAMESPACE,
         parent_id=last,
+        # Whole paths: a session opened from the copy, or from a copy of
+        # it, may be one of a process that works somewhere else.
         data={
-            "source_dir": str(source_dir),
-            "outputs": str(source_dir / OUTPUTS_DIRECTORY),
+            "source_dir": os.path.abspath(source_dir),
+            "outputs": os.path.abspath(source_dir / OUTPUTS_DIRECTORY),
             "upto": last,
             **({"outputs_behind": behind} if behind else {}),
         },

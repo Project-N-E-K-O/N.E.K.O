@@ -35,6 +35,7 @@ from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime.context import SUMMARY_CUT_SHORT_NOTE
 from nekoclaw.runtime.core import InProcessRuntime
+from nekoclaw.runtime.loop.session import SessionState
 from nekoclaw.runtime.fork import FORK_NAMESPACE, REASON_FORKED, ForkError, fork_record, whole_prefix
 from nekoclaw.runtime.host import HostCallbacks
 from nekoclaw.runtime.loop.messages import (
@@ -1033,10 +1034,17 @@ async def test_shutting_down_waits_for_a_record_that_is_being_copied(tmp_path: P
         copying = asyncio.ensure_future(
             runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
         )
-        await asyncio.to_thread(entered.wait, 10)
+        assert await asyncio.to_thread(entered.wait, 10)
 
         shutting = asyncio.ensure_future(runtime.shutdown())
-        await asyncio.sleep(0.2)
+        # Until the other session is closed and the copy is all that the shutting down waits for.
+        for _attempt in range(500):
+            if not (runtime.core._sessions or runtime.core._closing or runtime.core._starting):
+                break
+            await asyncio.sleep(0.01)
+        assert not (runtime.core._sessions or runtime.core._closing or runtime.core._starting)
+        assert len(runtime.core._copying) == 1
+        await asyncio.sleep(0.05)
         # The thread still writes: the runtime is not gone before it is said what became of the copy.
         assert not shutting.done() and not recorder.of("forked")
         go.set()
@@ -1479,6 +1487,11 @@ async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
         (summary,) = [entry for entry in on_record if entry.type == "compaction"]
         assert "said again: the four steps are done" in summary.summary
         assert set(summary.replaces_entry_ids) <= {entry.id for entry in on_record}
+        # A session opened from the record finds the conversation this one holds: no reply the
+        # summary stands for is in it beside the summary.
+        replayed = [message.model_dump(exclude={"timestamp"}) for message in SessionState.from_entries(on_record).messages]
+        held = [message.model_dump(exclude={"timestamp"}) for message in session.harness.message_list]
+        assert replayed == held
         assert gateway.compactions == 1
     finally:
         session._gateway = None
@@ -1569,3 +1582,77 @@ async def test_a_copy_whose_preparing_ends_just_as_the_runtime_begins_to_shut_do
         assert "copy" not in runtime.core._forking and not runtime.core._copying and not runtime.core._preparing
     finally:
         await runtime.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# The thirteenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_a_summing_up_that_is_stopped_is_not_over_before_the_record_took_its_summary_or_did_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from nekoclaw.runtime import session as session_module
+
+    # (No waiting between the attempts to write an entry.)
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", ())
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    writing, refuse = threading.Event(), threading.Event()
+    try:
+        await _seed(session, events, llm)
+        length = len(session.harness.message_list)
+        writer = session._recorder
+        append = writer._append_blocking
+
+        def slow_and_refused(entry: Any) -> None:
+            if entry.type == "compaction":
+                # The disk takes its time over the summary, and refuses it in the end.
+                writing.set()
+                assert refuse.wait(10)
+                raise OSError("the disk is full")
+            append(entry)
+
+        writer._append_blocking = slow_and_refused
+        llm.add(say("## Current Work\n- the four steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        assert await asyncio.to_thread(writing.wait, 10)
+        # The summary is in the conversation, and on its way to the record, when the summing up is stopped.
+        assert len(session.harness.message_list) < length
+        assert session.abort()
+        await asyncio.sleep(0.1)
+        # Not over yet: another run would go on from a summary the record may not take.
+        assert session.running and not [event for event in events.events[mark:] if event.get("type") == "ended"]
+        refuse.set()
+        assert (await events.wait_ended(start=mark))["reason"] == "aborted"
+        # The record did not take it: the conversation is what the record has.
+        assert len(session.harness.message_list) == length and session._compactions == 0
+        assert not [event for event in events.events[mark:] if event.get("type") == "compacted"]
+        writer._append_blocking = append
+    finally:
+        refuse.set()
+        await session.close()
+
+
+async def test_the_mark_of_a_copy_names_where_the_other_kept_its_output_by_its_whole_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, ScriptedLLM([[say("Done."), finish()]]))
+    await _ask(session, events, "Do it.")
+    await session.close()
+    # The record is named from where the process works, and so is where the copy goes.
+    monkeypatch.chdir(tmp_path)
+    source = Path(os.path.relpath(spec.session_dir, tmp_path))
+    assert not source.is_absolute()
+    fork_record(source, Path("sessions") / "copy-from-here")
+    mark = _entries(tmp_path / "sessions" / "copy-from-here")[-1]
+    # A session opened from the copy, or from a copy of it, may be one of a process that works elsewhere.
+    assert mark.data["outputs"] == os.path.abspath(Path(spec.session_dir) / "outputs")
+    assert mark.data["source_dir"] == os.path.abspath(spec.session_dir)

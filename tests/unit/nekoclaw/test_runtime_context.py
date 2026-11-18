@@ -1254,3 +1254,30 @@ async def test_a_conversation_that_could_stay_is_not_summed_up_from_a_part_too_l
     asked = []
     assert await _manager(tmp_path, narrow, asked).fit(Transcript(conversation(), _counter()), force=True)
     assert len(asked) >= 1 and long_reply in asked[0][0]
+
+
+async def test_a_conversation_that_could_stay_is_not_summed_up_from_a_part_in_which_a_call_has_two_results(
+    tmp_path: Path,
+) -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+
+    def conversation() -> list:
+        made: list = [UserMessage(content="go")]
+        for index in range(1, 9):
+            made.extend(_call_turn(index, _words(625, f"big{index}x")))
+        # One call is answered twice (its result was written to the record twice, say): a request
+        # is sent one of the two, and a summary would stand for both.
+        made.insert(3, ToolResultMessage(tool_call_id="call-1", tool_name="grep", content="answered a second time"))
+        return made
+
+    messages = conversation()
+    before = [getattr(message, "text", None) or str(message.content) for message in messages]
+    asked: list = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == before
+
+    # (Where it has to get shorter the request is made all the same, as before.)
+    asked = []
+    assert await _manager(tmp_path, policy, asked).fit(Transcript(conversation(), _counter()), force=True)
+    assert len(asked) >= 1

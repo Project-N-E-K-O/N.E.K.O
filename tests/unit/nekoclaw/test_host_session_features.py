@@ -92,6 +92,25 @@ async def _events(host: Any, commission_id: str, kind: str | None = None) -> lis
     return [event for event in await host.ledger.events(commission_id) if kind is None or event.type == kind]
 
 
+class _WatchedLock:
+    """A lock like the one it stands in for, which says when somebody has to wait for it."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self.waited_for = asyncio.Event()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    async def __aenter__(self) -> None:
+        if self._lock.locked():
+            self.waited_for.set()
+        await self._lock.acquire()
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        self._lock.release()
+
+
 def _owed(manager: Any) -> dict[Any, Any]:
     """What the ledger did not take of what requests used, without the count that tells when a length was said."""
     return {key: owed[:6] for key, owed in manager._usage_owed.items()}
@@ -2278,6 +2297,8 @@ async def test_what_a_request_used_is_written_once_though_whoever_noted_it_was_c
             await go.wait()
         raise RuntimeError("the ledger is locked")
 
+    lock = _WatchedLock()
+    manager._usage_locks[first.id] = lock
     host.ledger.add_usage = first_slow_then_failing
     try:
         slow_one = asyncio.ensure_future(
@@ -2288,7 +2309,7 @@ async def test_what_a_request_used_is_written_once_though_whoever_noted_it_was_c
         next_one = asyncio.ensure_future(
             manager._note_usage(first.id, first.id, {"input": 20, "output": 2, "context_tokens": 60_000})
         )
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(lock.waited_for.wait(), 10)
         assert not next_one.done() and len(failing) == 1
         go.set()
         await asyncio.wait_for(asyncio.gather(slow_one, next_one), 10)
@@ -2969,6 +2990,8 @@ async def test_told_to_hand_over_a_task_agent_whose_session_was_closed_while_it_
     stuck = await wait_status(host, first.id, "blocked")
     await _let_go(host)
     said = _user_messages(llm.requests[2])
+    # What the user answered is what the session that was opened anew is handed.
+    assert any("in the folder Sorted" in message for message in said)
     # Not asked about usage a second time: what was refused for the round stands, the task agent
     # goes on with what it had left, and is told again to hand over.
     assert said[-1] == brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=left - 1)
@@ -3113,93 +3136,6 @@ async def test_told_to_hand_over_an_answer_its_session_closed_before_taking_goes
     assert len(await _events(host, first.id, "usage_refused")) == 1
 
 
-async def test_a_length_that_was_said_earlier_is_not_written_over_one_whose_writing_is_still_under_way(hosts, tmp_path):
-    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
-    first = (await _dispatch(host, "sort the photos")).commissions[0]
-    await wait_status(host, first.id, "done")
-    await _let_go(host)
-    await host.brain.settle()
-    manager = host.task_agents
-    add = host.ledger.add_usage
-    failing = [RuntimeError("the ledger is locked")]
-    entered, go = asyncio.Event(), asyncio.Event()
-    asked: list[dict[str, Any]] = []
-
-    async def sometimes(**kwargs: Any) -> None:
-        if failing:
-            raise failing.pop()
-        asked.append(kwargs)
-        if len(asked) == 1:
-            # The first that gets as far as the ledger takes its time there.
-            entered.set()
-            await go.wait()
-        await add(**kwargs)
-
-    host.ledger.add_usage = sometimes
-    try:
-        # An older request, which the ledger did not take: it said the conversation is long.
-        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10, "context_tokens": 120_000})
-        # A newer one says it is shorter by now; its writing is under way ...
-        newer = asyncio.ensure_future(manager._note_usage(first.id, None, {"input": 7, "output": 3, "context_tokens": 40_000}))
-        await asyncio.wait_for(entered.wait(), 10)
-        # ... when the older is tried again.
-        older = asyncio.ensure_future(manager._write_owed_usage(first.id))
-        await asyncio.sleep(0.05)
-        # One write of a session at a time: the older has not got to the ledger.
-        assert len(asked) == 1
-        go.set()
-        await asyncio.wait_for(asyncio.gather(newer, older), 10)
-    finally:
-        go.set()
-        host.ledger.add_usage = add
-    # Both are counted; the length is what the newer said, and the older did not write its own.
-    assert [told["context_tokens"] for told in asked] == [40_000, None]
-    assert (await host.ledger.get_session(first.id)).context_tokens == 40_000
-    assert manager._usage_owed == {}
-
-
-async def test_usage_that_turns_out_not_to_be_written_while_the_host_shuts_down_is_tried_again_then(hosts, tmp_path):
-    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
-    first = (await _dispatch(host, "sort the photos")).commissions[0]
-    await wait_status(host, first.id, "done")
-    await _let_go(host)
-    await host.brain.settle()
-    manager = host.task_agents
-    add = host.ledger.add_usage
-    entered, go = asyncio.Event(), asyncio.Event()
-    taken: list[tuple[Any, Any, int]] = []
-    calls: list[Any] = []
-
-    async def first_slow_and_failing(**kwargs: Any) -> None:
-        calls.append(kwargs)
-        if len(calls) == 1:
-            # Under way when the host shuts down, and not taken in the end.
-            entered.set()
-            await go.wait()
-            raise RuntimeError("the ledger is locked")
-        await add(**kwargs)
-        taken.append((kwargs["session_id"], kwargs["commission_id"], kwargs["tokens_in"]))
-
-    host.ledger.add_usage = first_slow_and_failing
-    try:
-        noting = asyncio.ensure_future(manager._note_usage(first.id, first.id, {"input": 100, "output": 10}))
-        await asyncio.wait_for(entered.wait(), 10)
-        # And something that is owed already, of another session.
-        manager._usage_owed[("another-session", None)] = (1, 5, 5, 0, 0, None, 0)
-        shutting = asyncio.ensure_future(host.shutdown())
-        await wait_until(lambda: taken, what="what was owed already being written")
-        # Only now does the write that was under way turn out to have failed.
-        go.set()
-        await asyncio.wait_for(shutting, 10)
-        await asyncio.wait_for(noting, 10)
-    finally:
-        go.set()
-        host.ledger.add_usage = add
-    # Tried again before the host was gone, and taken: nothing is owed.
-    assert taken == [("another-session", None, 5), (first.id, first.id, 100)]
-    assert manager._usage_owed == {} and manager._usage_writes == set()
-
-
 async def test_a_commission_that_is_queued_stays_the_task_agents_though_that_could_not_be_noted(hosts, tmp_path):
     release, wait = _gate()
     scripts = {
@@ -3237,8 +3173,6 @@ async def test_a_commission_that_is_queued_stays_the_task_agents_though_that_cou
 
 
 async def test_nothing_having_been_said_when_a_commission_was_filed_is_what_is_kept_for_it(hosts, tmp_path):
-    import time
-
     scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
     said = RecentConversation()
     host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
@@ -3248,7 +3182,9 @@ async def test_nothing_having_been_said_when_a_commission_was_filed_is_what_is_k
     async def told_of_late(*args: Any, **kwargs: Any) -> Any:
         # While it is chosen who does it, a message is told of that was said before the sentence
         # was dispatched. What was kept then is what the commission gets: nothing.
-        said.note("Lan", ROLE_USER, "the photos are on the desktop", at=time.time() - 5.0)
+        (filed,) = host.task_agents._excerpts
+        filed_at = (await host.ledger.get(filed)).created_at
+        said.note("Lan", ROLE_USER, "the photos are on the desktop", at=filed_at - 5.0)
         return await select(*args, **kwargs)
 
     decision.select = told_of_late
@@ -3351,3 +3287,360 @@ async def test_counting_a_summing_up_lets_go_of_those_older_than_a_day(hosts, tm
     # is not kept.
     manager._count_idle_compact(day + 10.0)
     assert list(manager._idle_compacted_at) == [day + 5.0, day + 10.0]
+
+
+# ---------------------------------------------------------------------------
+# The thirteenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_a_length_that_was_said_earlier_is_not_written_over_one_whose_writing_is_still_under_way(hosts, tmp_path):
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("ready", "export added")]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    await host.space.touch_project("Budget app")
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    second = (await _dispatch(host, "add a chart to the budget app")).commissions[0]
+    done = await wait_status(host, second.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    # Two commissions of one session.
+    assert done.session_id == first.id
+    manager = host.task_agents
+    lock = _WatchedLock()
+    manager._usage_locks[first.id] = lock
+    add = host.ledger.add_usage
+    failing = [RuntimeError("the ledger is locked")]
+    entered, go = asyncio.Event(), asyncio.Event()
+    asked: list[dict[str, Any]] = []
+
+    async def sometimes(**kwargs: Any) -> None:
+        if failing:
+            raise failing.pop()
+        asked.append(kwargs)
+        if len(asked) == 1:
+            # The first that gets as far as the ledger takes its time there.
+            entered.set()
+            await go.wait()
+        await add(**kwargs)
+
+    host.ledger.add_usage = sometimes
+    try:
+        # A request of the first commission, which the ledger did not take: it said the conversation is long.
+        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10, "context_tokens": 120_000})
+        # A request of the second says it is shorter by now; its writing is under way ...
+        newer = asyncio.ensure_future(
+            manager._note_usage(first.id, second.id, {"input": 7, "output": 3, "context_tokens": 40_000})
+        )
+        await asyncio.wait_for(entered.wait(), 10)
+        # ... when the first's is tried again: it waits, one write of a session at a time.
+        older = asyncio.ensure_future(manager._write_owed_usage(first.id))
+        await asyncio.wait_for(lock.waited_for.wait(), 10)
+        assert len(asked) == 1
+        go.set()
+        await asyncio.wait_for(asyncio.gather(newer, older), 10)
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    # Both are counted; the length is what the newer said, and the older did not write its own.
+    assert [(told["commission_id"], told["context_tokens"]) for told in asked] == [(second.id, 40_000), (first.id, None)]
+    assert (await host.ledger.get_session(first.id)).context_tokens == 40_000
+    assert manager._usage_owed == {}
+
+
+async def test_usage_that_turns_out_not_to_be_written_while_the_host_shuts_down_is_tried_again_then(hosts, tmp_path):
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("ready", "sorted")]),
+        "check the mail": ScriptedLLM([_report("ready", "no mail")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    second = (await _dispatch(host, "check the mail")).commissions[0]
+    await wait_status(host, second.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    manager = host.task_agents
+    before = {item.id: (await host.ledger.get(item.id)).tokens for item in (first, second)}
+    add = host.ledger.add_usage
+    entered, go = asyncio.Event(), asyncio.Event()
+    taken: list[tuple[str, int]] = []
+    calls: list[Any] = []
+
+    async def first_slow_and_failing(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            # Under way when the host shuts down, and not taken in the end.
+            entered.set()
+            await go.wait()
+            raise RuntimeError("the ledger is locked")
+        await add(**kwargs)
+        # (Read while the ledger is still open: what the account says by now.)
+        commission_id = kwargs["commission_id"]
+        taken.append((commission_id, (await host.ledger.get(commission_id)).tokens - before[commission_id]))
+
+    host.ledger.add_usage = first_slow_and_failing
+    try:
+        noting = asyncio.ensure_future(manager._note_usage(first.id, first.id, {"input": 100, "output": 10}))
+        await asyncio.wait_for(entered.wait(), 10)
+        # And something that is owed already, of another session and its commission.
+        manager._usage_owed[(second.id, second.id)] = (1, 5, 5, 0, 0, None, 0)
+        shutting = asyncio.ensure_future(host.shutdown())
+        await wait_until(lambda: taken, what="what was owed already being written")
+        # Only now does the write that was under way turn out to have failed.
+        go.set()
+        await asyncio.wait_for(shutting, 10)
+        await asyncio.wait_for(noting, 10)
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    # Each is on the account before the host was gone, in that order, and once: nothing is owed.
+    assert taken == [(second.id, 10), (first.id, 110)]
+    assert manager._usage_owed == {} and manager._usage_writes == set()
+
+
+async def test_a_copy_is_not_begun_by_a_host_that_shut_down_while_the_session_was_looked_at(hosts, tmp_path):
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    runtime = manager._runtimes.builtin()
+    fork = runtime.fork
+    asked: list[Any] = []
+
+    async def counted(*args: Any, **kwargs: Any) -> None:
+        asked.append(kwargs)
+        await fork(*args, **kwargs)
+
+    where = manager._session_dir_of
+
+    def shut_down_meanwhile(session: Any) -> Any:
+        # The session's files are looked at (in a thread), and the host shuts down meanwhile.
+        manager._closed = True
+        return where(session)
+
+    runtime.fork = counted
+    manager._session_dir_of = shut_down_meanwhile
+    try:
+        with pytest.raises(ForkRefused, match="shutting down"):
+            await host.fork_session(first.id)
+    finally:
+        manager._closed = False
+        manager._session_dir_of = where
+        runtime.fork = fork
+    # Nothing was asked of a runtime, and nothing is left of the request.
+    assert asked == [] and manager._forks == {} and manager._fork_dirs == {} and manager._copying_from == {}
+
+
+async def test_what_the_ledger_did_not_take_counts_against_what_a_commission_may_use(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.a"}), _used(500, 100), finish("tool_calls")],
+            [call("glob", {"pattern": "*.b"}, "call-2"), _used(500, 100), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted"}, "call-3"), _used(500, 30), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    add = host.ledger.add_usage
+    calls: list[Any] = []
+
+    async def second_not_taken(**kwargs: Any) -> None:
+        calls.append(kwargs)
+        if len(calls) in (2, 3):
+            # What the second request used, and the try at it before the account is looked at.
+            raise RuntimeError("the ledger is locked")
+        await add(**kwargs)
+
+    host.ledger.add_usage = second_not_taken
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        question = await _asked(host, first.id)
+        # 600 are on the account and 600 are not: used all the same, and that is over what it may use.
+        assert (await host.ledger.get(first.id)).tokens == 600
+        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_200)
+        assert len(llm.requests) == 2
+        assert await host.answer(first.id, "ok", choice="once")
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        host.ledger.add_usage = add
+    # All of it is on the account in the end, each request once.
+    after = await host.ledger.get(first.id)
+    assert (after.requests, after.tokens) == (3, 600 + 600 + 530)
+    assert host.task_agents._usage_owed == {}
+
+
+async def test_a_copy_that_was_written_as_whoever_asked_for_it_left_is_removed_then_and_there(hosts, tmp_path):
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    runtime = manager._runtimes.builtin()
+    fork = runtime.fork
+    asking: list[Any] = []
+    written: list[str] = []
+
+    async def answered_as_whoever_asked_leaves(session_id: str, **kwargs: Any) -> None:
+        await fork(session_id, **kwargs)
+        written.append(kwargs["session_dir"])
+        # The runtime's word that the copy is written is in (it says so before its command
+        # returns) when whoever asked is cancelled.
+        await wait_until(lambda: manager._forks[session_id].done(), what="the runtime's word being taken")
+        asking[0].cancel()
+        await asyncio.sleep(0)
+
+    runtime.fork = answered_as_whoever_asked_leaves
+    try:
+        asking.append(asyncio.ensure_future(host.fork_session(first.id)))
+        await asyncio.wait(asking, timeout=10)
+    finally:
+        runtime.fork = fork
+    assert asking[0].cancelled() and len(written) == 1
+    # Nothing more will be said of it: what was written is removed now, and not kept until the
+    # host shuts down for a word that does not come.
+    await wait_until(lambda: not manager._fork_records, what="what was written being removed")
+    assert not Path(written[0]).exists()
+    assert manager._forks_given_up == {} and manager._copying_from == {} and manager._forks == {}
+    assert await host.ledger.forks_of(first.id) == []
+
+
+async def test_what_is_left_of_a_copy_nobody_waited_for_is_removed_when_the_runtime_says_it_failed(
+    hosts, tmp_path, monkeypatch
+):
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    runtime = manager._runtimes.builtin()
+    fork = runtime.fork
+
+    async def slow(*args: Any, **kwargs: Any) -> None:
+        # The runtime does not get to it for now.
+        del args, kwargs
+
+    runtime.fork = slow
+    monkeypatch.setattr(settings, "TASK_AGENT_FORK_SECONDS", 0.05)
+    try:
+        with pytest.raises(ForkRefused, match="did not answer in time"):
+            await host.fork_session(first.id)
+    finally:
+        runtime.fork = fork
+    ((session_id, target),) = manager._forks_given_up.items()
+    # It gets to it after all, cannot put the record in its place, and leaves the snapshot it wrote.
+    Path(target).mkdir(parents=True, exist_ok=True)
+    (Path(target) / "system.json").write_text("{}", encoding="utf-8")
+    manager._events.put_nowait(
+        {"type": "error", "command": "fork", "session_id": session_id, "message": "the record could not be put in its place"}
+    )
+    await wait_until(lambda: manager._forks_given_up == {}, what="the late word being taken note of")
+    await manager.settle()
+    # On no record, and no longer on the list of what the host removes when it shuts down: removed now.
+    assert not Path(target).exists()
+
+
+async def test_giving_a_session_back_is_carried_through_when_the_host_shuts_down(hosts, tmp_path, monkeypatch):
+    from nekoclaw.host import task_agents as task_agents_module
+
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    # How long shutting down waits for what was started, here: a moment.
+    monkeypatch.setattr(task_agents_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(task_agents_module, "_SERVICE_CLOSE_POLL_SECONDS", 0.05)
+    runtime = manager._runtimes.builtin()
+    close = runtime.close
+    closing = asyncio.Event()
+
+    async def slow(session_id: str) -> None:
+        # Told to close the session, the runtime takes longer than shutting down waits for anything.
+        del session_id
+        closing.set()
+
+    told: list[tuple[str, bool]] = []
+    end = host.ledger.end_compacting
+
+    async def noted(session_id: str, *, compacted: bool) -> Any:
+        told.append((session_id, compacted))
+        return await end(session_id, compacted=compacted)
+
+    runtime.close = slow
+    host.ledger.end_compacting = noted
+    try:
+        manager._spawn(manager._idle_compact(first.id))
+        await asyncio.wait_for(closing.wait(), 10)
+        # The summary is written, and the session is being given back.
+        assert len(export.requests) == 6 and first.id in manager._idle_over
+
+        await asyncio.wait_for(host.shutdown(), 10)
+    finally:
+        runtime.close = close
+        host.ledger.end_compacting = end
+    # Not cut off with what was started: the ledger was told that the session was summed up, and
+    # nothing of the claim on it is left.
+    assert told == [(first.id, True)]
+    assert manager._idle_over == {} and manager._compacting == {} and manager._service == {}
+    assert f"session:{first.id}" not in host.gateway._by_commission
+
+
+async def test_what_a_runtime_says_as_it_stops_is_handled_before_the_host_stops_listening(hosts, tmp_path):
+    release, wait = _gate()
+    llm = ScriptedLLM([[wait, *_report("ready", "sorted")]])
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_until(lambda: llm.requests, what="its first request")
+    runtime = manager._runtimes.builtin()
+    shutdown = runtime.shutdown
+    handle = manager._handle
+    add = host.ledger.add_usage
+    heard = asyncio.Event()
+    heard.set()
+    taken: list[tuple[Any, Any, int]] = []
+
+    async def noted(**kwargs: Any) -> None:
+        taken.append((kwargs["session_id"], kwargs["commission_id"], kwargs["tokens_in"]))
+        await add(**kwargs)
+
+    async def when_it_gets_to_them(event: dict[str, Any]) -> None:
+        # (What the runtime says while it stops is not got to before it has stopped.)
+        await heard.wait()
+        await handle(event)
+
+    async def says_what_was_used_as_it_stops() -> None:
+        heard.clear()
+        # The last it says of the session: what the request that was under way used, and then that it is closed.
+        manager._events.put_nowait({"type": "usage", "session_id": first.id, "input": 40, "output": 2})
+        await shutdown()
+        heard.set()
+
+    host.ledger.add_usage = noted
+    manager._handle = when_it_gets_to_them
+    runtime.shutdown = says_what_was_used_as_it_stops
+    try:
+        await asyncio.wait_for(host.shutdown(), 15)
+    finally:
+        release.set()
+        heard.set()
+        host.ledger.add_usage = add
+    # On the account: handled before the sessions were forgotten and the host stopped listening.
+    assert (first.id, first.id, 40) in taken

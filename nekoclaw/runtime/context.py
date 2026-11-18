@@ -842,11 +842,13 @@ class ContextManager:
         # then drop the oldest messages of the part being condensed.
         room = policy.window - policy.summary_cap - self.fixed_tokens - 2_000
         prepared, size = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
-        if not or_drop and (len(prepared) < len(region) or size > room):
+        if not or_drop and (len(prepared) < len(region) or size > room or _answers_a_call_twice(prepared)):
             # The oldest messages do not fit into the request, so a summary
             # would stand for a part it was never shown; or what is left
             # (one message, which is never left out) is too long for the
-            # request by itself, and the request would be refused.
+            # request by itself, and the request would be refused; or a
+            # tool call has two results there, of which a request is
+            # sent one, and the summary would stand for both.
             logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
             return None, None
         try:
@@ -870,6 +872,17 @@ class ContextManager:
         if not summary.strip():
             return (SUMMARY_FALLBACK if or_drop else None), usage
         return summary, usage
+
+
+def _answers_a_call_twice(messages: Sequence[AgentMessage]) -> bool:
+    """Whether some tool call has more than one result among ``messages``; a request is sent only one of them."""
+    answered: set[str] = set()
+    for message in messages:
+        if isinstance(message, ToolResultMessage):
+            if message.tool_call_id in answered:
+                return True
+            answered.add(message.tool_call_id)
+    return False
 
 
 def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> tuple[list[AgentMessage], int]:
