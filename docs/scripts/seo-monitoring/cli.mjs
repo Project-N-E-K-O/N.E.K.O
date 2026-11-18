@@ -207,7 +207,7 @@ async function main() {
         apiKey: process.env.BING_WEBMASTER_API_KEY,
       }),
       definition.regionalSearch?.some(engine => engine.id === 'baidu')
-        ? readOptionalJson(process.env.BAIDU_PUSH_REPORT_PATH, 'No Baidu submission evidence')
+        ? readOptionalJson(process.env.BAIDU_PUSH_REPORT_PATH, 'No Baidu submission evidence', { missingStatus: 'not_run' })
         : null,
     ])
     const baiduSubmission = baiduReceipt
@@ -228,12 +228,18 @@ async function main() {
       client,
       paid,
       includeCn: process.env.INCLUDE_BING_CN === 'true',
-    })))
+    }).catch(() => ({
+      id: definition.id, label: definition.label, status: 'FAILED', rows: [],
+      reason: 'Bing 排名采集异常', billingUncertain: paid,
+    }))))
   const baiduDefinition = definitions.find(definition => definition.baiduRanking)
   const [siteInputs, bingRankings, baiduRanking] = await Promise.all([
     siteInputsPromise,
     bingRankingsPromise,
-    baiduDefinition ? collectBaiduRankings(baiduDefinition, { client, paid }) : null,
+    baiduDefinition ? collectBaiduRankings(baiduDefinition, { client, paid }).catch(() => ({
+      id: baiduDefinition.id, label: baiduDefinition.label, status: 'FAILED', rows: [],
+      reason: '百度排名采集异常', billingUncertain: paid,
+    })) : null,
   ])
 
   const report = buildMonitoringReport({

@@ -233,16 +233,19 @@ test('the daily engine table keeps webmaster metrics and GA4 sessions on their o
         latestPropertyDay: { status: 'OBSERVED', date: '2026-07-26', clicks: 4, impressions: 50, ctr: 0.08 },
       }),
       ga4: unavailable('no GA4 overview fixture'),
-      ga4SearchEngineSessions: { status: 'OBSERVED', date: '2026-07-28', sessions: { google: 2, bing: 3, baidu: 0 } },
+      ga4SearchEngineSessions: {
+        status: 'OBSERVED', date: '2026-07-28', sessions: { google: 2, bing: 3, baidu: 0 },
+        referralSessions: { google: 0, bing: 0, baidu: 2 },
+      },
       technical: technical('https://project-neko.cn'),
       bing: { traffic: { status: 'OBSERVED', rows: [{ date: '2026-07-27', clicks: 2, impressions: 20 }] } },
     }],
   })
   const markdown = renderMarkdown(report)
   assert.match(markdown, /## 各搜索引擎每日统计/u)
-  assert.ok(markdown.includes('| Google | 2026-07-26 | 4 | 50 | 8.00% | OBSERVED | 2026-07-28 | 2 | OBSERVED |'))
-  assert.ok(markdown.includes('| Bing | 2026-07-27 | 2 | 20 | 10.00% | OBSERVED | 2026-07-28 | 3 | OBSERVED |'))
-  assert.ok(markdown.includes('| 百度 | N/A | N/A | N/A | N/A | UNSUPPORTED | 2026-07-28 | 0 | OBSERVED |'))
+  assert.ok(markdown.includes('| Google | 2026-07-26 | 4 | 50 | 8.00% | OBSERVED | 2026-07-28 | 2 | 0 | OBSERVED |'))
+  assert.ok(markdown.includes('| Bing | 2026-07-27 | 2 | 20 | 10.00% | OBSERVED | 2026-07-28 | 3 | 0 | OBSERVED |'))
+  assert.ok(markdown.includes('| 百度 | N/A | N/A | N/A | N/A | UNSUPPORTED | 2026-07-28 | 0 | 2 | OBSERVED |'))
 })
 
 test('regional search report exposes ranking availability separately from public probes', () => {

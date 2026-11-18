@@ -1,5 +1,5 @@
 import { DATAFORSEO_ENDPOINTS, DataForSeoApiError } from '../dataforseo/client.mjs'
-import { createSerpRequester, domainMatchesTarget, validateConfig } from '../dataforseo/report.mjs'
+import { candidateDomain, createSerpRequester, domainMatchesTarget, validateConfig } from '../dataforseo/report.mjs'
 
 const WEBMASTER_ORIGIN = 'https://ssl.bing.com'
 const SERP_DEPTH = 10
@@ -10,9 +10,10 @@ function bingDate(value) {
   if (typeof value !== 'string') return null
   const wrapped = /^\/Date\((-?\d+)(?:([+-])(\d{2})(\d{2}))?\)\/$/u.exec(value)
   if (!wrapped) {
-    return /^\d{4}-\d{2}-\d{2}(?:T|$)/u.test(value) && Number.isFinite(Date.parse(value))
-      ? value.slice(0, 10)
-      : null
+    if (!/^\d{4}-\d{2}-\d{2}(?:T|$)/u.test(value) || !Number.isFinite(Date.parse(value))) return null
+    const day = value.slice(0, 10)
+    const date = new Date(`${day}T00:00:00.000Z`)
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === day ? day : null
   }
   const [, milliseconds, sign, hours, minutes] = wrapped
   const offset = sign ? (Number(hours) * 60 + Number(minutes)) * (sign === '-' ? -1 : 1) : 0
@@ -139,6 +140,7 @@ export async function collectBingRankings(definition, {
     return { ...segment, status: 'FAILED', reason: 'Bing 排名配置无效', rows: [] }
   }
   if (definition.bingRanking === 'china-opt-in' || config.locationCode === CHINA_LOCATION_CODE) {
+    if (!includeCn) return { ...segment, status: 'UNKNOWN', reason: '中文组开关未开启', rows: [] }
     const location = await checkChinaLocation(client, config.locationCode)
     if (location.status !== 'OBSERVED') return { ...segment, ...location, rows: [] }
   }
@@ -181,11 +183,11 @@ export async function collectBingRankings(definition, {
       const organic = items.filter(item => item?.type === 'organic').map(item => ({
         rank: item.rank_group,
         url: item.url,
-        candidate: (typeof item.domain === 'string' && item.domain.trim()) || item.url,
+        candidate: candidateDomain(item.domain) ?? candidateDomain(item.url),
       }))
       const ranked = organic.filter(item => Number.isInteger(item.rank)
         && item.rank > 0 && item.rank <= SERP_DEPTH
-        && typeof item.candidate === 'string' && item.candidate.trim())
+        && item.candidate)
       if (ranked.length === 0) {
         rows.push({ ...row, status: 'UNKNOWN', reason: 'DataForSEO 未返回有效自然搜索结果' })
         continue
@@ -193,10 +195,16 @@ export async function collectBingRankings(definition, {
       const match = ranked
         .filter(item => domainMatchesTarget(item.candidate, config.targetDomain))
         .sort((left, right) => left.rank - right.rank)[0]
-      if (!match && organic.some(item => (
+      if (organic.some(item => (
         (!Number.isInteger(item.rank) || item.rank <= 0) && domainMatchesTarget(item.candidate, config.targetDomain)
       ))) {
         rows.push({ ...row, status: 'UNKNOWN', reason: '目标域名结果缺少有效自然排名' })
+        continue
+      }
+      if (organic.some(item => !item.candidate && (
+        !Number.isInteger(item.rank) || item.rank <= 0 || item.rank < (match?.rank ?? SERP_DEPTH + 1)
+      ))) {
+        rows.push({ ...row, status: 'UNKNOWN', reason: '部分自然结果缺少可识别的域名' })
         continue
       }
       rows.push({ ...row, status: 'OBSERVED', rank: match?.rank ?? null, matchedUrl: match?.url ?? null })

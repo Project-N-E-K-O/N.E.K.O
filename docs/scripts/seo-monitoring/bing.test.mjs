@@ -93,6 +93,7 @@ test('Bing keeps the latest API query date when its rows are all invalid', async
       ? Response.json({ d: [
         { Date: '2011-09-09', Query: 'valid older row', Clicks: 1, Impressions: 10 },
         { Date: date, Query: 'invalid newest row', Clicks: '1', Impressions: 10 },
+        { Date: '2026-02-30', Query: 'invalid calendar date', Clicks: 1, Impressions: 10 },
       ] })
       : Response.json({ d: [] }),
   })
@@ -133,6 +134,11 @@ test('Bing SERP keeps zero-cost dry runs and the optional Chinese group offline'
     { client, includeCn: true },
   )
   assert.match(optedInDryRun.reason, /dry-run/u)
+
+  const chinaByLocation = await collectBingRankings({
+    ...definition, keywordConfig: { ...definition.keywordConfig, locationCode: 2156 },
+  }, { client, paid: true })
+  assert.match(chinaByLocation.reason, /开关未开启/u)
 
   const missing = await collectBingRankings(definition, { paid: true })
   assert.match(missing.reason, /未配置/u)
@@ -271,4 +277,23 @@ test('a fatal Bing SERP failure preserves earlier observations and skips the rem
   assert.equal(calls, 2)
   assert.equal(report.knownCostUsd, 0.002)
   assert.deepEqual(report.rows.map(row => row.status), ['OBSERVED', 'FAILED', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN'])
+})
+
+test('Bing cannot confirm ranks when an unresolved result could rank the target higher', async () => {
+  const target = { type: 'organic', rank_group: 6, url: origin }
+  const unknownDomain = { type: 'organic', rank_group: 2 }
+  const report = await collectBingRankings({
+    ...definition, keywordConfig: { ...definition.keywordConfig, keywords: ['miss', 'higher', 'unranked', 'lower'] },
+  }, {
+    paid: true,
+    client: { post: async (_endpoint, [{ keyword }]) => ({ cost: 0.002, tasks: [{ result: [{ items: {
+      miss: [unknownDomain, { type: 'organic', rank_group: 3, domain: 'other.test' }],
+      higher: [unknownDomain, target],
+      unranked: [target, { ...target, rank_group: null }],
+      lower: [target, { ...unknownDomain, rank_group: 9 }],
+    }[keyword] }] }] }) },
+  })
+  assert.deepEqual(report.rows.map(({ status, rank }) => [status, rank]), [
+    ['UNKNOWN', null], ['UNKNOWN', null], ['UNKNOWN', null], ['OBSERVED', 6],
+  ])
 })

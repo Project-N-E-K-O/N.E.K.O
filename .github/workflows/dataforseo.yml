@@ -169,7 +169,8 @@ jobs:
             exit 0
           fi
           repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
-          run_id="$(gh api "repos/${repository}/actions/artifacts?name=baidu-cn-submission&per_page=100" --jq '.artifacts | map(select(.expired == false and .workflow_run.head_branch == "main")) | sort_by(.created_at) | last | .workflow_run.id // empty')"
+          run_id="$(gh api --paginate --slurp "repos/${repository}/actions/artifacts?name=baidu-cn-submission&per_page=100" |
+            jq -r '[.[].artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")] | max_by(.created_at) | .workflow_run.id // empty')"
           if [[ -z "$run_id" ]]; then
             echo "No unexpired production Baidu submission receipt."
             exit 0
@@ -436,3 +437,4 @@ jobs:
           report=".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
           node scripts/seo-monitoring/assert-report.mjs --input "$report" --level bing-dry-run
           node scripts/seo-monitoring/assert-report.mjs --input "$report" --level baidu-dry-run
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level search-dry-run

@@ -44,7 +44,7 @@ export async function collectBaiduRankings(definition, {
   paid = false,
   now = Date.now,
   sleep = delay => new Promise(resolve => setTimeout(resolve, delay)),
-  maxWaitMs = 6 * 60_000,
+  maxWaitMs = 18 * 60_000,
 } = {}) {
   const report = { id: definition.id, label: definition.label, depth: DEPTH, rows: [] }
   if (!paid) return { ...report, status: 'UNKNOWN', reason: 'dry-run 未提交百度付费排名任务' }
@@ -85,18 +85,20 @@ export async function collectBaiduRankings(definition, {
       billingUncertain: !(error instanceof DataForSeoApiError) || error.billingUncertain,
     }
   }
-  if (Array.isArray(submission.tasks)) {
-    report.knownCostUsd = payloadCost(submission)
-  } else {
+  if (!Array.isArray(submission?.tasks)) {
+    if (submission?.cost != null && Number.isFinite(Number(submission.cost))) {
+      report.knownCostUsd = Number(submission.cost)
+    }
     return { ...report, status: 'FAILED', reason: '百度排名任务响应缺少任务列表', billingUncertain: true }
   }
+  report.knownCostUsd = payloadCost(submission)
   const byTag = new Map(submission.tasks.map(task => [task?.data?.tag, task]))
   const pending = new Map()
   report.rows = entries.map((entry, index) => {
     const task = byTag.get(tasks[index].tag)
     if (task?.status_code === 20100 && TASK_ID.test(task.id)) {
       pending.set(index, task.id)
-      return { ...entry, status: 'UNKNOWN', reason: '等待 DataForSEO 排队结果' }
+      return { ...entry, taskId: task.id, status: 'UNKNOWN', reason: '等待 DataForSEO 排队结果' }
     }
     return {
       ...entry,
@@ -112,15 +114,19 @@ export async function collectBaiduRankings(definition, {
       try {
         const response = await client.get(`${DATAFORSEO_ENDPOINTS.baiduTaskGet}/${id}`, { timeoutMs })
         const result = response.tasks?.[0]?.result?.[0]
-        report.rows[index] = summarizeResult(entries[index], result?.items, config.targetDomain)
+        report.rows[index] = summarizeResult({ ...entries[index], taskId: id }, result?.items, config.targetDomain)
       } catch (error) {
-        if (QUEUED_CODES.has(error?.statusCode) || error?.retryable) return
-        report.rows[index] = { ...entries[index], status: 'FAILED', reason: `读取百度排队结果失败${statusCode(error)}` }
+        if (QUEUED_CODES.has(error?.statusCode) || error?.retryable
+            || (error?.billingUncertain && !error.fatal)) return
+        report.rows[index] = { ...entries[index], taskId: id, status: 'FAILED', reason: `读取百度排队结果失败${statusCode(error)}` }
       }
       pending.delete(index)
     }))
     const remaining = deadline - now()
     if (pending.size > 0 && remaining > 0) await sleep(Math.min(20_000, remaining))
+  }
+  for (const index of pending.keys()) {
+    report.rows[index].reason = '轮询已到期，可用原任务 ID 免费续查'
   }
   const observed = report.rows.filter(row => row.status === 'OBSERVED').length
   return {
@@ -133,8 +139,11 @@ export async function collectBaiduRankings(definition, {
 }
 
 export function summarizeBaiduSubmission(receipt, origin, evidence) {
-  if (receipt?.status === 'not_run' || !receipt?.provider) {
+  if (receipt == null || receipt.status === 'not_run') {
     return { status: 'UNKNOWN', reason: '暂无可读取的正式百度推送回执' }
+  }
+  if (receipt.status === 'unavailable' || !receipt.provider) {
+    return { status: 'FAILED', reason: '正式百度推送回执无法读取或格式无效' }
   }
   if (receipt.provider !== 'Baidu' || ![origin, `${origin}/`].includes(receipt.site)) {
     return { status: 'FAILED', reason: '百度推送回执站点不匹配' }

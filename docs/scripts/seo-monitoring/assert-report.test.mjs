@@ -395,6 +395,7 @@ test('the Bing dry-run contract requires both unspent ranking groups and permits
   for (const invalid of [
     { id: 'cn', status: 'UNKNOWN' },
     { ...cn, knownCostUsd: 0 },
+    { ...cn, billingUncertain: true },
     { ...cn, rows: [{ keyword: 'unexpected' }] },
     { ...cn, rows: null },
     { ...cn, status: 'OBSERVED' },
@@ -409,7 +410,42 @@ test('Baidu dry-run requires the configured ranking group with no tasks or repor
   assert.deepEqual(requiredFailures({ baiduRanking: planned }, 'baidu-dry-run'), [])
   assert.notEqual(requiredFailures({}, 'baidu-dry-run').length, 0)
   assert.notEqual(requiredFailures({ baiduRanking: { ...planned, knownCostUsd: 0 } }, 'baidu-dry-run').length, 0)
+  assert.notEqual(requiredFailures({ baiduRanking: { ...planned, billingUncertain: true } }, 'baidu-dry-run').length, 0)
   assert.notEqual(requiredFailures({ baiduRanking: { ...planned, rows: [{ keyword: 'unexpected' }] } }, 'baidu-dry-run').length, 0)
+})
+
+test('search dry-run requires both sites and explicit statuses for all six engines', () => {
+  const unknown = { status: 'UNKNOWN' }
+  const unsupported = { status: 'UNSUPPORTED' }
+  const organic = { google: 1, bing: 2, baidu: 0, sogou: 0, 360: 0, toutiao: 0 }
+  const site = {
+    gsc: { status: 'unavailable' },
+    bing: { traffic: unknown, queries: { status: 'FAILED' } },
+    ga4SearchEngineSessions: {
+      status: 'OBSERVED', date: '2026-07-28', sessions: organic,
+      referralSessions: { ...organic, toutiao: 2 },
+    },
+  }
+  const regionalSearch = ['baidu', 'sogou', '360', 'toutiao'].map(id => ({
+    id, verification: unknown, robots: unknown, sitemap: unknown, performance: unsupported,
+    rankings: id === 'baidu' ? unknown : unsupported, homepage: unknown, submission: unknown,
+  }))
+  const report = {
+    sites: [{ ...site, id: 'cn', regionalSearch }, {
+      ...site, id: 'online', ga4SearchEngineSessions: { ...unknown, date: '2026-07-28' },
+    }],
+  }
+  assert.deepEqual(requiredFailures(report, 'search-dry-run'), [])
+
+  const invalid = structuredClone(report)
+  delete invalid.sites[0].ga4SearchEngineSessions.referralSessions.toutiao
+  delete invalid.sites[0].regionalSearch[1].robots
+  invalid.sites[0].regionalSearch.pop()
+  delete invalid.sites[1].ga4SearchEngineSessions.status
+  const failures = requiredFailures(invalid, 'search-dry-run')
+  for (const diagnostic of [/GA4 toutiao/u, /sogou robots/u, /toutiao verification/u, /online GA4/u]) {
+    assert.ok(failures.some(failure => diagnostic.test(failure)))
+  }
 })
 
 test('a fully populated report passes core, daily, and all contracts', () => {

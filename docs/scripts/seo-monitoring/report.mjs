@@ -748,7 +748,7 @@ function buildBlockerActions(blockers, sites, automationOwner) {
   }).sort(compareGrowthActions)
 }
 
-function buildTrustRows(sites, segments, rankComparison, bingRankings) {
+function buildTrustRows(sites, segments, rankComparison, bingRankings, baiduRanking) {
   const rows = []
   for (const segment of segments) {
     rows.push({
@@ -828,6 +828,40 @@ function buildTrustRows(sites, segments, rankComparison, bingRankings) {
         },
       )
     }
+    const ga4Engines = site.ga4SearchEngineSessions
+    if (ga4Engines) {
+      rows.push({
+        source: 'GA4 引擎会话', target: site.label, status: ga4Engines.status,
+        result: ga4Engines.reason ?? `${ga4Engines.date} · 自然搜索及引荐会话`,
+        evidence: 'runReport',
+      })
+    }
+    for (const engine of site.regionalSearch) {
+      const probes = [engine.verification, engine.robots, engine.sitemap]
+      rows.push({
+        source: `${engine.label} 公开探针`, target: site.label,
+        status: probes.every(probe => probe.status === 'OBSERVED') ? 'OBSERVED'
+          : probes.some(probe => probe.status === 'FAILED') ? 'FAILED' : 'UNKNOWN',
+        collectedAt: site.technical?.collectedAt ?? null,
+        result: `验证文件 ${engine.verification.status} / robots.txt ${engine.robots.status} / sitemap ${engine.sitemap.status}`,
+        evidence: engine.verification.url ?? null,
+      })
+      if (engine.submission) {
+        rows.push({
+          source: '百度推送', target: site.label, status: engine.submission.status,
+          result: engine.submission.reason ?? `接收 ${engine.submission.accepted} 条网址`,
+          collectedAt: engine.submission.submittedAt ?? null, evidence: engine.submission.evidence ?? null,
+        })
+      }
+    }
+  }
+  if (baiduRanking) {
+    rows.push({
+      source: 'DataForSEO 百度', target: baiduRanking.label, status: baiduRanking.status,
+      collectedAt: baiduRanking.collectedAt ?? null,
+      result: baiduRanking.reason ?? `有效结果 ${baiduRanking.observed}/${baiduRanking.rows.length}`,
+      evidence: 'Baidu Organic SERP Standard',
+    })
   }
   for (const segment of bingRankings) {
     rows.push({
@@ -898,6 +932,8 @@ export function buildMonitoringReport({
   const segments = rankComparisonResult.segments
   const rankComparison = rankComparisonResult.summary
   const topTenChange = buildTopTenChange(segments)
+  const baiduRankingSiteId = config.dataForSeoSegments?.find(segment => segment.id === baiduRanking?.id)?.siteId
+    ?? baiduRanking?.id
   const sites = siteInputs.map(input => {
     const siteSegments = segments.filter(segment => segment.siteId === input.definition.id)
     const { regionalSearch, ...technical } = input.technical ?? {}
@@ -911,7 +947,7 @@ export function buildMonitoringReport({
       indexNow: normalizedIndexNow(input.indexNow),
       bing: input.bing,
       ga4SearchEngineSessions: input.ga4SearchEngineSessions,
-      regionalSearch: buildRegionalSearch(input, regionalSearch, baiduRanking),
+      regionalSearch: buildRegionalSearch(input, regionalSearch, input.definition.id === baiduRankingSiteId ? baiduRanking : null),
     }
   })
   const keywordMaster = segments.flatMap(segment => segment.keywordRows)
@@ -961,7 +997,7 @@ export function buildMonitoringReport({
     topTenChange,
     dataForSeoCost,
     blockers,
-    trust: buildTrustRows(sites, segments, rankComparison, bingRankings),
+    trust: buildTrustRows(sites, segments, rankComparison, bingRankings, baiduRanking),
   }
 }
 
@@ -1239,19 +1275,19 @@ function renderDailySearchEngines(sites) {
   const lines = [
     '## 各搜索引擎每日统计',
     '',
-    '| 站点 | 引擎 | 站长数据日 | 点击 | 曝光 | CTR | 站长数据状态 | GA4 会话数据日 | 自然搜索会话 | GA4 状态 |',
-    '|---|---|---|---:|---:|---:|---|---|---:|---|',
+    '| 站点 | 引擎 | 站长数据日 | 点击 | 曝光 | CTR | 站长数据状态 | GA4 会话数据日 | 自然搜索会话 | 引荐会话 | GA4 状态 |',
+    '|---|---|---|---:|---:|---:|---|---|---:|---:|---|',
   ]
   for (const site of sites) {
     const onsite = site.ga4SearchEngineSessions
     for (const engine of SEARCH_ENGINES) {
       const search = dailyWebmasterMetrics(site, engine.id) ?? {}
-      lines.push(`| ${escapeCell(site.label)} | ${escapeCell(engine.label)} | ${search.date ?? 'N/A'} | ${display(search.clicks)} | ${display(search.impressions)} | ${percentage(search.ctr)} | ${statusLabel(search.status)} | ${onsite?.date ?? 'N/A'} | ${display(onsite?.sessions?.[engine.id])} | ${statusLabel(onsite?.status)} |`)
+      lines.push(`| ${escapeCell(site.label)} | ${escapeCell(engine.label)} | ${search.date ?? 'N/A'} | ${display(search.clicks)} | ${display(search.impressions)} | ${percentage(search.ctr)} | ${statusLabel(search.status)} | ${onsite?.date ?? 'N/A'} | ${display(onsite?.sessions?.[engine.id])} | ${display(onsite?.referralSessions?.[engine.id])} | ${statusLabel(onsite?.status)} |`)
     }
   }
   lines.push(
     '',
-    '- Google 使用 Search Console 网页搜索的属性级汇总。Bing 使用站长工具的全部来源流量。GA4 列按站点和来源统计归类为自然搜索的站内会话，每列采用对应的数据日期。',
+    '- Google 使用 Search Console 网页搜索的属性级汇总。Bing 使用站长工具的全部来源流量。GA4 按渠道显示自然搜索与引荐会话，引荐可能来自搜索结果或资讯等来源页面。',
     '',
   )
   for (const site of sites) {
@@ -1263,27 +1299,26 @@ function renderDailySearchEngines(sites) {
 }
 
 function renderRegionalSearch(sites, baiduRanking) {
-  const sources = sites.flatMap(site => site.regionalSearch ?? [])
+  const sources = sites.flatMap(site => site.regionalSearch.map(engine => ({ ...engine, site: site.label })))
   if (sources.length === 0 && !baiduRanking) return []
   const lines = [
     '## 国内搜索引擎',
     '',
-    '| 引擎 | 自然排名 | 搜索表现 | 公开验证文件 | robots.txt 抓取首页 | sitemap |',
-    '|---|---|---|---|---|---|',
+    '| 站点 | 引擎 | 自然排名 | 搜索表现 | 公开验证文件 | robots.txt 抓取首页 | sitemap |',
+    '|---|---|---|---|---|---|---|',
   ]
   for (const engine of sources) {
     const verification = searchStatusCell(engine.verification)
     const proof = engine.verification.url ? `${verification} · ${escapeCell(engine.verification.url)}` : verification
-    lines.push(`| ${escapeCell(engine.label)} | ${searchStatusCell(engine.rankings)} | ${searchStatusCell(engine.performance)} | ${proof} | ${escapeCell(engine.crawler)} · ${searchStatusCell(engine.robots)} | ${searchStatusCell(engine.sitemap)} |`)
+    lines.push(`| ${escapeCell(engine.site)} | ${escapeCell(engine.label)} | ${searchStatusCell(engine.rankings)} | ${searchStatusCell(engine.performance)} | ${proof} | ${escapeCell(engine.crawler)} · ${searchStatusCell(engine.robots)} | ${searchStatusCell(engine.sitemap)} |`)
   }
-  const baidu = sources.find(engine => engine.id === 'baidu')
-  if (baidu) {
+  for (const baidu of sources.filter(engine => engine.id === 'baidu')) {
     const receipt = baidu.submission
     const result = receipt.status === 'OBSERVED'
       ? ` 接收 ${receipt.accepted} 条网址（${receipt.submittedAt}${receipt.partial ? '，部分接收' : ''}）`
       : ''
     const link = receipt.evidence ? ` · [推送记录](${receipt.evidence})` : ''
-    lines.push('', `- 百度首页探针 · ${searchStatusCell(baidu.homepage)}`, `- 百度推送 · ${searchStatusCell(receipt)}${result}${link}`)
+    lines.push('', `- ${escapeCell(baidu.site)} 百度首页探针 · ${searchStatusCell(baidu.homepage)}`, `- ${escapeCell(baidu.site)} 百度推送 · ${searchStatusCell(receipt)}${result}${link}`)
   }
   lines.push('', '公开验证文件、robots.txt、sitemap 与推送回执仅展示可访问性或提交状态。收录量在各站长平台查看。')
   if (baiduRanking) {
@@ -1295,10 +1330,10 @@ function renderRegionalSearch(sites, baiduRanking) {
     lines.push('', '### 百度自然排名（DataForSEO）', '',
       `- 深度 ${baiduRanking.depth} · ${searchStatusCell(baiduRanking)}${coverage}${cost}${unknownCost}`)
     if (baiduRanking.rows.length > 0) {
-      lines.push('', '| 关键词 | 状态 | 自然排名 | 命中 URL |', '|---|---|---:|---|')
+      lines.push('', '| 关键词 | 状态 | 自然排名 | 命中 URL | 任务 ID |', '|---|---|---:|---|---|')
       for (const row of baiduRanking.rows) {
         const rank = row.status === 'OBSERVED' ? row.rank ?? '本次采样未命中' : 'N/A'
-        lines.push(`| ${escapeCell(row.keyword)} | ${searchStatusCell(row)} | ${rank} | ${escapeCell(row.matchedUrl ?? 'N/A')} |`)
+        lines.push(`| ${escapeCell(row.keyword)} | ${searchStatusCell(row)} | ${rank} | ${escapeCell(row.matchedUrl ?? 'N/A')} | ${escapeCell(row.taskId ?? 'N/A')} |`)
       }
     }
   }

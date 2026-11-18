@@ -53,7 +53,7 @@
 | `DATAFORSEO_PASSWORD` | DataForSEO API 密码 |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | 同时拥有两站 GSC 只读权限、两个 GA4 Viewer 权限的完整服务账号 JSON |
 | `BING_WEBMASTER_API_KEY` | 对已验证站点有访问权限的 Bing 站长账号 API Key |
-| `SEO_REPORTS_TOKEN` | 只授予私有仓库 `Project-N-E-K-O/N.E.K.O.OfficialWebsite` **Actions: Read** 的 fine-grained token，用于读取 `.cn` 排名与 IndexNow artifact |
+| `SEO_REPORTS_TOKEN` | 只授予私有仓库 `Project-N-E-K-O/N.E.K.O.OfficialWebsite` **Actions: Read** 的 fine-grained token，用于读取 `.cn` 排名、IndexNow 和百度推送回执 artifact |
 
 禁止把上述凭证提交到 Git、Markdown、`docs/public` 或任何 `VITE_*` 变量。Measurement ID 可以公开，API 密码和服务账号私钥不可以。
 
@@ -76,13 +76,16 @@ CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.
 
 ## 百度、搜狗、360 和头条搜索
 
-- 百度自然排名复用现有 `.cn` 关键词组，位置码为 2156，语言码为 `zh_CN`。付费运行提交一次 Standard 队列任务，最多等待 6 分钟。每个词采首个结果页（深度 10）并要求直达网址，以识别结果实际指向的站点。当前 8 个词预计每次 **$0.048**。等待超时的结果记为 `UNKNOWN`，保留已报告费用。`dry-run` 校验排名任务未提交。 [任务提交](https://docs.dataforseo.com/v3/serp/baidu/organic/task_post/) · [百度定价](https://dataforseo.com/pricing/serp/baidu-organic-serp-api)
+- 百度自然排名复用现有 `.cn` 关键词组，位置码为 2156，语言码为 `zh_CN`。每次付费运行提交一批 Standard 队列任务，最多等待 18 分钟。临时网络失败会继续查询原任务。每个词采首个结果页（深度 10）并要求直达网址，当前 8 个词预计每批 **$0.048**。Bing 与百度在 Google 基线之外默认合计增加 **$0.086**，Bing 中文组开启后再增加 **$0.016**。 [任务提交](https://docs.dataforseo.com/v3/serp/baidu/organic/task_post/) · [百度定价](https://dataforseo.com/pricing/serp/baidu-organic-serp-api)
+- 轮询到期时，日报保留已报告费用和每个已接收任务的 `taskId`，待取结果标记 `UNKNOWN`。用原 DataForSEO 账号和该 ID 调用 `GET /v3/serp/baidu/organic/task_get/advanced/{taskId}`，30 天内可免费续查。重新运行 `paid` 会提交新任务并再次计费。 [百度结果查询](https://docs.dataforseo.com/v3/serp/baidu/organic/task_get/advanced/)
 - 公开探针检查官网的验证文件、robots.txt 对首页的规则和 sitemap。百度还检查首页及最新生产推送回执，复用已有的 `SEO_REPORTS_TOKEN` 读取官网仓库有权限的 Actions 产物。如果没有可读取的回执，日报显示 `UNKNOWN`。收录和搜索表现可在站长平台人工查看。 [百度站长平台工具说明](https://ziyuan.baidu.com/college/articleinfo?id=3170)
 - 搜狗、360、头条的站长排名与搜索表现显示 `UNSUPPORTED`，验证数据来自官网公开探针。
 
 ## 各搜索引擎每日统计
 
-日报自动读取 Search Console 网页搜索的属性级汇总和 Bing Webmaster Tools 的全部来源流量，同时用已授权的 GA4 Data API 按 `sessionSource` 汇总 Google、Bing、百度、搜狗、360 和头条搜索的自然搜索站内会话。站长指标与站内会话采用各自的数据日期。GA4 以站点主机名和 `Organic Search` 渠道为过滤条件。缺失、抽样、合并或截断的来源数据在日报中显示对应状态。 [Search Console 搜索分析](https://developers.google.com/webmaster-tools/v1/searchanalytics/query) · [GA4 数据 API 字段](https://developers.google.com/analytics/devguides/reporting/data/v1/api-schema)
+日报自动读取 Search Console 网页搜索的属性级汇总和 Bing Webmaster Tools 的全部来源流量。GA4 Data API 按站点主机名和 `sessionSource` 匹配 Google、Bing、百度、搜狗、360（含 `360.cn`）和头条搜索，分别展示 `Organic Search` 与 `Referral` 渠道。引荐可能来自搜索结果或资讯等来源页面。站长指标与站内会话使用各自的数据日期。 [Search Console 搜索分析](https://developers.google.com/webmaster-tools/v1/searchanalytics/query) · [GA4 默认渠道组](https://support.google.com/analytics/answer/9756891)
+
+`dry-run` 校验零费用排名计划，并要求两站 Google、Bing、GA4 及已配置的国内引擎探针报告状态。缺权限或请求失败时保留 `UNKNOWN` 或 `FAILED`。真实连通验收需核对工作流的实际回执。
 
 ## 时间窗口
 

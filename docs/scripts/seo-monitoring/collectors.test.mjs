@@ -270,13 +270,17 @@ test('GA4 keeps docs-to-home metrics N/A when the event is not applicable to a s
   assert.equal(result.docsToHomeEvent, null)
 })
 
-test('GA4 engine sessions use the exact host and Organic Search channel and keep observed zeros', async () => {
+test('GA4 engine sessions use the exact host and report organic and referral channels independently', async () => {
   const range = { startDate: '2026-07-22', endDate: '2026-07-22' }
   const rows = [
     ['google', '4'], ['www.google.co.uk', '2'], ['cn.bing.com', '3'], ['m.baidu.com', '5'],
-    ['sogou', '1'], ['www.so.com', '7'], ['so.toutiao.com', '2'], ['lookalike.bing.com.invalid', '11'],
-  ].map(([source, sessions]) => ({ dimensionValues: [{ value: source }], metricValues: [{ value: sessions }] }))
-  const headers = { dimensionHeaders: [{ name: 'sessionSource' }], metricHeaders: [{ name: 'sessions' }] }
+    ['sogou', '1'], ['www.so.com', '7'], ['so.toutiao.com', '2', 'Referral'], ['lookalike.bing.com.invalid', '11'],
+    ['www.360.cn', '9'], ['360.cn.invalid', '3', 'Referral'],
+  ].map(([source, sessions, channel = 'Organic Search']) => ({
+    dimensionValues: [{ value: source }, { value: channel }], metricValues: [{ value: sessions }],
+  }))
+  const dimensions = [{ name: 'sessionSource' }, { name: 'sessionDefaultChannelGroup' }]
+  const headers = { dimensionHeaders: dimensions, metricHeaders: [{ name: 'sessions' }] }
   const site = { propertyId: '123456789', hostname: 'project-neko.cn' }
   const success = await collectGa4SearchEngineSessions(site, range, {
     accessToken: 'fixture-auth',
@@ -284,16 +288,19 @@ test('GA4 engine sessions use the exact host and Organic Search channel and keep
       assert.match(url, /properties\/123456789:runReport$/u)
       const request = JSON.parse(options.body)
       assert.deepEqual(request.dateRanges, [range])
-      assert.deepEqual(request.dimensions, [{ name: 'sessionSource' }])
-      assert.deepEqual(request.dimensionFilter.andGroup.expressions.map(item => [
+      assert.deepEqual(request.dimensions, dimensions)
+      const [host, channels] = request.dimensionFilter.andGroup.expressions
+      assert.deepEqual(host.filter, { fieldName: 'hostName', stringFilter: { value: 'project-neko.cn', matchType: 'EXACT' } })
+      assert.deepEqual(channels.orGroup.expressions.map(item => [
         item.filter.fieldName, item.filter.stringFilter.value,
-      ]), [['hostName', 'project-neko.cn'], ['sessionDefaultChannelGroup', 'Organic Search']])
+      ]), [['sessionDefaultChannelGroup', 'Organic Search'], ['sessionDefaultChannelGroup', 'Referral']])
       return Response.json({ ...headers, rowCount: rows.length, rows, metadata: { timeZone: 'Asia/Shanghai' } })
     },
   })
   assert.deepEqual(success, {
     status: 'OBSERVED', date: '2026-07-22', timeZone: 'Asia/Shanghai', unmappedSessions: 11,
-    sessions: { google: 6, bing: 3, baidu: 5, sogou: 1, 360: 7, toutiao: 2 },
+    sessions: { google: 6, bing: 3, baidu: 5, sogou: 1, 360: 16, toutiao: 0 },
+    referralSessions: { google: 0, bing: 0, baidu: 0, sogou: 0, 360: 0, toutiao: 2 },
   })
 
   const empty = await collectGa4SearchEngineSessions(site, range, {
@@ -301,6 +308,14 @@ test('GA4 engine sessions use the exact host and Organic Search channel and keep
   })
   assert.equal(empty.status, 'OBSERVED')
   assert.ok(Object.values(empty.sessions).every(value => value === 0))
+  assert.ok(Object.values(empty.referralSessions).every(value => value === 0))
+
+  const stillOpen = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth', now: new Date('2026-07-23T02:00:00Z'),
+    fetchImpl: async () => Response.json({ ...headers, metadata: { timeZone: 'America/Los_Angeles' } }),
+  })
+  assert.equal(stillOpen.status, 'UNKNOWN')
+  assert.equal(stillOpen.sessions, undefined)
 
   const thresholded = await collectGa4SearchEngineSessions(site, range, {
     accessToken: 'fixture-auth',
@@ -378,6 +393,7 @@ test('regional verification and crawler probes distinguish site evidence from fa
     regionalSearch: [
       { id: 'sogou', label: '搜狗', crawler: 'Sogou web spider', verificationPath: '/sogou.txt' },
       { id: 'toutiao', label: '头条搜索', crawler: 'Bytespider', verificationPath: '/verify.html' },
+      { id: '360', label: '360', crawler: '360Spider', verificationPath: '//[' },
     ],
   }, {
     fetchImpl: async url => {
@@ -387,13 +403,15 @@ test('regional verification and crawler probes distinguish site evidence from fa
       return new Response('<html>Unexpected page fallback</html>')
     },
   })
-  const [sogou, toutiao] = result.regionalSearch
+  const [sogou, toutiao, engine360] = result.regionalSearch
   assert.equal(sogou.verification.status, 'OBSERVED')
   assert.equal(sogou.robots.status, 'FAILED')
   assert.equal(sogou.robots.allowed, false)
   assert.equal(toutiao.verification.status, 'FAILED')
   assert.equal(toutiao.robots.allowed, true)
   assert.equal(toutiao.sitemap.status, 'OBSERVED')
+  assert.equal(engine360.verification.status, 'FAILED')
+  assert.match(engine360.verification.reason, /URL 配置无效/u)
   assert.doesNotMatch(JSON.stringify(result.regionalSearch), /tokenFixture/u)
 })
 

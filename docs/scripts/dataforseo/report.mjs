@@ -217,7 +217,7 @@ export function mergeKeywordMetrics(config, searchVolumePayload, difficultyPaylo
   })
 }
 
-function candidateDomain(value) {
+export function candidateDomain(value) {
   if (typeof value !== 'string' || value.trim() === '') return null
   const raw = value.trim()
   try {

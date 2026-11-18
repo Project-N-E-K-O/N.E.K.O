@@ -40,11 +40,10 @@ test('Baidu posts one batch, polls accepted tasks, and preserves partial errors'
       const path = new URL(url).pathname
       calls.push([method, path])
       if (method === 'POST') {
-        const [task] = JSON.parse(body)
-        assert.deepEqual(task, {
-          keyword: 'AI 桌面助手', tag: 'baidu-0', location_code: 2156, language_code: 'zh_CN',
+        assert.deepEqual(JSON.parse(body), ['AI 桌面助手', '数字生命', '桌面伴侣'].map((keyword, index) => ({
+          keyword, tag: `baidu-${index}`, location_code: 2156, language_code: 'zh_CN',
           device: 'desktop', depth: 10, get_website_url: true,
-        })
+        })))
         return Response.json({
           status_code: 20000,
           cost: 0.012,
@@ -56,8 +55,12 @@ test('Baidu posts one batch, polls accepted tasks, and preserves partial errors'
           ],
         })
       }
-      if (path.endsWith(firstId) && ++firstPolls === 1) {
-        return Response.json({ status_code: 20000, tasks_error: 1, tasks: [{ status_code: 40602 }] })
+      if (path.endsWith(firstId)) {
+        firstPolls += 1
+        if (firstPolls === 1) throw new DOMException('Request timed out', 'TimeoutError')
+        if (firstPolls === 2) {
+          return Response.json({ status_code: 20000, tasks_error: 1, tasks: [{ status_code: 40602 }] })
+        }
       }
       const items = path.endsWith(firstId)
         ? [{ type: 'organic', rank_group: 3, url: 'https://example.test/download/' }]
@@ -73,12 +76,14 @@ test('Baidu posts one batch, polls accepted tasks, and preserves partial errors'
     ['GET', `${DATAFORSEO_ENDPOINTS.baiduTaskGet}/${firstId}`],
     ['GET', `${DATAFORSEO_ENDPOINTS.baiduTaskGet}/${secondId}`],
     ['GET', `${DATAFORSEO_ENDPOINTS.baiduTaskGet}/${firstId}`],
+    ['GET', `${DATAFORSEO_ENDPOINTS.baiduTaskGet}/${firstId}`],
   ])
   assert.equal(report.status, 'OBSERVED')
   assert.equal(report.knownCostUsd, 0.012)
   assert.equal(report.pending, 0)
   assert.deepEqual(report.rows.map(row => [row.status, row.rank]), [['OBSERVED', 3], ['UNKNOWN', null], ['FAILED', null]])
   assert.equal(report.rows[0].matchedUrl, 'https://example.test/download/')
+  assert.equal(report.rows[0].taskId, firstId)
 })
 
 test('Baidu stops polling at the deadline and never retries an uncertain billed submission', async () => {
@@ -97,6 +102,14 @@ test('Baidu stops polling at the deadline and never retries an uncertain billed 
   assert.equal(report.pending, 1)
   assert.equal(report.status, 'UNKNOWN')
   assert.equal(report.knownCostUsd, 0.018)
+  assert.equal(report.rows[0].taskId, firstId)
+  assert.match(report.rows[0].reason, /续查/u)
+
+  const malformed = await collectBaiduRankings(oneKeyword, {
+    paid: true, client: { post: async () => ({ cost: 0.018, tasks: {} }) },
+  })
+  assert.equal(malformed.knownCostUsd, 0.018)
+  assert.equal(malformed.billingUncertain, true)
 
   for (const error of [
     new DataForSeoApiError('credential fixture', { statusCode: 401, fatal: true }),
@@ -123,5 +136,7 @@ test('Baidu submission evidence discloses accepted counts and excludes private r
     status: 'OBSERVED', accepted: 2, submittedAt: receipt.submittedAt, partial: true, evidence,
   })
   assert.equal(summarizeBaiduSubmission({ ...receipt, status: 'not_run' }, origin).status, 'UNKNOWN')
+  assert.equal(summarizeBaiduSubmission({ status: 'unavailable' }, origin).status, 'FAILED')
+  assert.equal(summarizeBaiduSubmission({}, origin).status, 'FAILED')
   assert.doesNotMatch(JSON.stringify(summarizeBaiduSubmission({ ...receipt, status: 'failed' }, origin)), /fixture/u)
 })

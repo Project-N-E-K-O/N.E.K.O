@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import monitoringConfig from '../../seo/monitoring.config.json' with { type: 'json' }
+import { SEARCH_ENGINES } from './collectors.mjs'
 
 const REQUIRED_SEGMENTS = new Map([
   ['cn', {
@@ -690,9 +691,51 @@ function unspentRanking(segment) {
     && Array.isArray(segment.rows)
     && segment.rows.length === 0
     && !Object.hasOwn(segment, 'knownCostUsd')
+    && segment.billingUncertain !== true
+}
+
+function validateSearchDryRun(report) {
+  const failures = []
+  const sources = ['OBSERVED', 'UNKNOWN', 'FAILED']
+  const sites = Array.isArray(report?.sites) ? report.sites : []
+  for (const definition of monitoringConfig.sites) {
+    const site = sites.find(item => item?.id === definition.id)
+    const label = definition.id
+    const google = site?.gsc?.latestPropertyDay
+    add(failures, sources.includes(google?.status) || (google == null && site?.gsc?.status === 'unavailable'),
+      `${label} Google must report a daily search status`)
+    for (const key of ['traffic', 'queries']) {
+      add(failures, sources.includes(site?.bing?.[key]?.status), `${label} Bing ${key} must report a status`)
+    }
+    const ga4 = site?.ga4SearchEngineSessions
+    add(failures, sources.includes(ga4?.status) && isDate(ga4.date), `${label} GA4 engine sessions must report a dated status`)
+    if (ga4?.status === 'OBSERVED') {
+      for (const { id } of SEARCH_ENGINES) {
+        const counts = [ga4.sessions?.[id], ga4.referralSessions?.[id]]
+        add(failures, counts.every(count => Number.isSafeInteger(count) && count >= 0),
+          `${label} GA4 ${id} must report organic and referral session counts`)
+      }
+    }
+    for (const engine of definition.regionalSearch ?? []) {
+      const regional = Array.isArray(site?.regionalSearch) ? site.regionalSearch : []
+      const entry = regional.find(item => item?.id === engine.id)
+      const required = ['verification', 'robots', 'sitemap']
+      if (engine.id === 'baidu') required.push('homepage', 'submission')
+      for (const field of required) {
+        add(failures, sources.includes(entry?.[field]?.status),
+          `${label} ${engine.id} ${field} must report a status`)
+      }
+      add(failures, entry?.performance?.status === 'UNSUPPORTED',
+        `${label} ${engine.id} must report its search performance availability`)
+      add(failures, engine.id === 'baidu' ? sources.includes(entry?.rankings?.status) : entry?.rankings?.status === 'UNSUPPORTED',
+        `${label} ${engine.id} must report its ranking availability`)
+    }
+  }
+  return failures
 }
 
 export function requiredFailures(report, level = 'core') {
+  if (level === 'search-dry-run') return validateSearchDryRun(report)
   if (level === 'baidu-dry-run') {
     const expected = monitoringConfig.dataForSeoSegments.find(segment => segment.baiduRanking)
     return expected && report?.baiduRanking?.id === expected.id && unspentRanking(report.baiduRanking)
@@ -756,8 +799,8 @@ function parseArgs(argv) {
     else throw new TypeError(`Unknown argument: ${argv[index]}`)
   }
   if (!options.input) throw new TypeError('--input is required')
-  if (!['core', 'daily', 'all', 'bing-dry-run', 'baidu-dry-run'].includes(options.level)) {
-    throw new TypeError('--level must be core, daily, all, bing-dry-run, or baidu-dry-run')
+  if (!['core', 'daily', 'all', 'bing-dry-run', 'baidu-dry-run', 'search-dry-run'].includes(options.level)) {
+    throw new TypeError('--level must be core, daily, all, bing-dry-run, baidu-dry-run, or search-dry-run')
   }
   return options
 }
