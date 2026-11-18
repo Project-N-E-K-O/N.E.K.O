@@ -1770,6 +1770,7 @@ async def test_closing_a_session_whose_summing_up_waits_for_the_record_waits_for
         llm.add(say("## Current Work\n- the four steps are done"), finish())
         mark = len(events.events)
         session.compact()
+        summing_up = session._run_task
         assert await asyncio.to_thread(writing.wait, 10)
 
         closing = asyncio.ensure_future(session.close())
@@ -1777,8 +1778,15 @@ async def test_closing_a_session_whose_summing_up_waits_for_the_record_waits_for
         # still on its way to the record, and the session is not said to be closed before the
         # record has taken it or has not. (As long as the record takes over one entry, and no
         # longer: a runtime that shuts down gives all of its sessions a time of its own.)
-        await asyncio.sleep(0.3)
-        assert not closing.done()
+        for _attempt in range(1000):
+            if summing_up.cancelling() >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert summing_up.cancelling() >= 2
+        for _attempt in range(20):
+            await asyncio.sleep(0)
+        # The summing up itself is not over (closing would wait for the record in any case).
+        assert not summing_up.done() and not closing.done()
         assert "closed" not in [event.get("reason") for event in events.events[mark:] if event.get("type") == "ended"]
 
         refuse.set()

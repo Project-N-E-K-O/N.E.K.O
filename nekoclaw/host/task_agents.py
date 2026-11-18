@@ -3789,7 +3789,13 @@ class TaskAgentManager:
                         # once more (the user may have taken a while),
                         # and what it still does not take is allowed on
                         # top. Left out, that much of what was allowed
-                        # would be gone the moment it is written.
+                        # would be gone the moment it is written. And
+                        # what the runtimes said up to the answer is
+                        # handled first: what a task agent of the
+                        # commission used meanwhile was used before
+                        # more was allowed, and is not to come out of
+                        # it either. (What is used from here on is.)
+                        await self._caught_up()
                         await self._write_owed_usage()
                         async with self._usage_read():
                             # (What is owed and what the ledger counts
@@ -4006,8 +4012,10 @@ class TaskAgentManager:
         if event.get("type") != "forked":
             # It may have written a part of it and not got to remove that
             # (a snapshot something had open): the directory was set aside
-            # for this copy, and is on no record.
-            await self._remove_fork_dir(session_id, target_dir)
+            # for this copy, and is on no record. Removed by a task of
+            # its own: whoever asked may be cancelled while it is, and
+            # what cannot be removed yet would be nobody's to remove.
+            await asyncio.shield(self._remove_fork_dir_soon(session_id, target_dir))
             raise ForkRefused(str(event.get("message") or "the runtime could not copy the session"))
         # With no await since the runtime's word was taken: nothing comes
         # between the copy being written and its being put on record.

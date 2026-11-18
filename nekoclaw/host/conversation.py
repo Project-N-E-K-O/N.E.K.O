@@ -137,15 +137,15 @@ class RecentConversation:
     def recent(self, lanlan_name: str) -> list[Turn]:
         """Return the messages kept for a character that are not old, the oldest first.
 
-        By when each was said: one that was told of late stands where it
-        was said, so that the newest, which an excerpt keeps first, are
-        the ones said last. Told of in the order they were said, they
-        stay in it.
+        By when each was said, which is how they are kept (``note``):
+        one that was told of late stands where it was said, so that
+        the newest, which an excerpt keeps first, are the ones said
+        last.
         """
         from config.nekoclaw_settings import TASK_AGENT_EXCERPT_MAX_AGE_SECONDS
 
         since = self._clock() - TASK_AGENT_EXCERPT_MAX_AGE_SECONDS
-        return sorted((turn for turn in self._turns.get(lanlan_name, ()) if turn.at >= since), key=lambda turn: turn.at)
+        return [turn for turn in self._turns.get(lanlan_name, ()) if turn.at >= since]
 
     def forget(self, lanlan_name: str | None = None) -> None:
         """Drop what is kept for a character, or for all of them."""

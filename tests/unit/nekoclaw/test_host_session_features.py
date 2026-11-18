@@ -3908,7 +3908,6 @@ async def test_usage_that_is_written_while_the_account_is_looked_at_is_not_misse
 async def test_what_removes_a_copy_after_a_late_word_is_waited_for_by_a_host_that_shuts_down(hosts, tmp_path, monkeypatch):
     import shutil
     import threading
-    import time
 
     from nekoclaw.host import task_agents as task_agents_module
 
@@ -3935,38 +3934,46 @@ async def test_what_removes_a_copy_after_a_late_word_is_waited_for_by_a_host_tha
     ((session_id, target),) = manager._forks_given_up.items()
     Path(target).mkdir(parents=True, exist_ok=True)
     (Path(target) / "system.json").write_text("{}", encoding="utf-8")
-    remove, close = shutil.rmtree, host.ledger.close
-    begun, ledger_closed = threading.Event(), threading.Event()
+    remove, settle = shutil.rmtree, manager.forks_settled
+    begun, release = threading.Event(), threading.Event()
+    waiting = asyncio.Event()
+    there_when_no_longer_waited_for: list[bool] = []
 
-    def slow_to_go(path: Any, *args: Any, **kwargs: Any) -> None:
+    def held(path: Any, *args: Any, **kwargs: Any) -> None:
         if str(path) != str(target):
             remove(path, *args, **kwargs)
             return
-        # Something holds it for as long as the host takes to shut down, and a moment longer.
+        # Something holds it until the host, shutting down, has come to wait for this.
         begun.set()
-        assert ledger_closed.wait(20)
-        time.sleep(0.2)
+        assert release.wait(20)
         remove(path, *args, **kwargs)
 
-    async def closing() -> None:
-        await close()
-        ledger_closed.set()
+    async def settled() -> None:
+        # The ledger is closed, and what is still being done about copies is waited for.
+        waiting.set()
+        await settle()
+        there_when_no_longer_waited_for.append(Path(target).exists())
 
-    monkeypatch.setattr(shutil, "rmtree", slow_to_go)
+    monkeypatch.setattr(shutil, "rmtree", held)
     monkeypatch.setattr(task_agents_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.3)
-    host.ledger.close = closing
+    manager.forks_settled = settled
     try:
         # The runtime's late word comes as the host is about to shut down: the copy is taken off
         # the list of what shutting down removes, and its removal is under way.
         manager._events.put_nowait({"type": "forked", "session_id": session_id, "upto": "e1"})
         assert await asyncio.to_thread(begun.wait, 10)
         assert manager._forks_given_up == {} and len(manager._fork_records) == 1
-        await asyncio.wait_for(host.shutdown(), 20)
+        shutting = asyncio.ensure_future(host.shutdown())
+        await asyncio.wait_for(waiting.wait(), 20)
+        assert Path(target).exists()
+        release.set()
+        await asyncio.wait_for(shutting, 20)
     finally:
-        ledger_closed.set()
-        host.ledger.close = close
-    # On neither list, and the host is not gone before it is removed all the same: the process
-    # may end right after.
+        release.set()
+        manager.forks_settled = settle
+    # On neither list, and the host does not stop waiting before it is removed all the same:
+    # the process may end right after.
+    assert there_when_no_longer_waited_for == [False]
     assert not Path(target).exists() and manager._fork_records == set()
 
 
@@ -4000,7 +4007,7 @@ async def test_a_commission_taken_up_again_while_its_old_session_is_on_its_way_o
         # As after a round in which more usage was refused.
         manager._refused_more.add(first.id)
 
-        assert await host.tell(first.id, "it is unlocked now")
+        assert await asyncio.wait_for(host.tell(first.id, "it is unlocked now"), 10)
 
         # Its old session is still on its way out: queued, and a new round all the same.
         assert first.id in manager._queue and first.id not in manager._refused_more
@@ -4060,3 +4067,114 @@ async def test_what_is_owed_counts_for_the_commission_it_descends_from_and_for_n
     after = {item.id: (await host.ledger.get(item.id)).tokens - before[item.id] for item in (first, other, child, grandchild)}
     assert after == {first.id: 650, other.id: 7_000, child.id: 650, grandchild.id: 50}
     assert manager._usage_owed == {} and await manager._owed_tokens(first.id) == 0
+
+
+# ---------------------------------------------------------------------------
+# The sixteenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_what_a_copy_that_failed_left_is_still_the_hosts_to_remove_when_whoever_asked_is_cancelled(
+    hosts, tmp_path, monkeypatch
+):
+    import shutil
+    import threading
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    runtime = manager._runtimes.builtin()
+    fork = runtime.fork
+    left: list[str] = []
+
+    async def fails(session_id: str, **kwargs: Any) -> None:
+        # The runtime could not put the record in its place, nor remove the snapshot it had written.
+        target = Path(kwargs["session_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "system.json").write_text("{}", encoding="utf-8")
+        left.append(str(target))
+        manager._events.put_nowait(
+            {"type": "error", "command": "fork", "session_id": session_id, "message": "the record could not be put in its place"}
+        )
+
+    remove = shutil.rmtree
+    begun, release = threading.Event(), threading.Event()
+    attempts: list[str] = []
+
+    def in_use_at_first(path: Any, *args: Any, **kwargs: Any) -> None:
+        if not left or str(path) != left[0]:
+            remove(path, *args, **kwargs)
+            return
+        attempts.append(str(path))
+        if len(attempts) == 1:
+            # Something has it open, for a while.
+            begun.set()
+            assert release.wait(20)
+            return
+        remove(path, *args, **kwargs)
+
+    runtime.fork = fails
+    monkeypatch.setattr(shutil, "rmtree", in_use_at_first)
+    asking = asyncio.ensure_future(host.fork_session(first.id))
+    try:
+        assert await asyncio.to_thread(begun.wait, 10)
+        # Whoever asked for the copy leaves while what is left of it is being removed.
+        asking.cancel()
+        await asyncio.wait([asking], timeout=10)
+        assert asking.cancelled()
+        release.set()
+        # It could not be removed, and nobody waits to hear so. It is the host's to remove all the
+        # same: with the copies nobody waited for any more, when it shuts down.
+        await wait_until(
+            lambda: list(manager._forks_given_up.values()) == left, what="what could not be removed being kept"
+        )
+    finally:
+        release.set()
+        runtime.fork = fork
+    assert Path(left[0]).exists() and manager._copying_from == {}
+
+    await host.shutdown()
+
+    assert len(attempts) == 2 and not Path(left[0]).exists()
+
+
+async def test_what_was_used_before_the_user_allowed_more_and_not_heard_of_yet_does_not_come_out_of_it(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    ask = manager._permissions.ask_each_time
+
+    async def said_just_before_the_answer(commission_id: str, *args: Any, **kwargs: Any) -> Any:
+        decision = await ask(commission_id, *args, **kwargs)
+        # A request of a task agent of the commission has said what it used, and the host has not
+        # got to that when the user's answer is in.
+        manager._events.put_nowait(
+            {"type": "usage", "session_id": manager._sessions[commission_id].session_id, "input": 150, "output": 50}
+        )
+        return decision
+
+    manager._permissions.ask_each_time = said_just_before_the_answer
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        question = await _asked(host, first.id)
+        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_100)
+        assert await host.answer(first.id, "ok", choice="once")
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        manager._permissions.ask_each_time = ask
+    # As much again from all that was used when the answer came: what the user was told of, and
+    # what the host had not heard of yet. Used before more was allowed, it is not taken from it.
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 200 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130

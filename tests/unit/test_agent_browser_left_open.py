@@ -30,6 +30,7 @@ real browser.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import json
@@ -1202,57 +1203,98 @@ async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the
     assert kept.recent("Lan") == []
 
 
+_CAPABILITY_SWITCHES = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}
+_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
+def _own_nodes(function: ast.AST) -> list[ast.AST]:
+    """The nodes of a function, without those of the functions defined inside it."""
+    found: list[ast.AST] = []
+    todo = list(ast.iter_child_nodes(function))
+    while todo:
+        node = todo.pop()
+        found.append(node)
+        if not isinstance(node, _FUNCTIONS):
+            todo.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def _is_true(node: ast.AST | None) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _is_the_switches(node: ast.AST) -> bool:
+    return isinstance(node, ast.Attribute) and node.attr == "agent_flags"
+
+
+def _puts_a_capability_switch_off(node: ast.AST) -> bool:
+    """Whether a statement may put a capability switch off.
+
+    One of them set to anything but True, or taken out; and the whole
+    table of them changed at once, or put in the place of the one
+    there is: whatever that sets them to, it is not looked at here.
+    """
+    if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
+        targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+        for target in targets:
+            if _is_the_switches(target):
+                return True
+            if (
+                isinstance(target, ast.Subscript)
+                and _is_the_switches(target.value)
+                and not (isinstance(target.slice, ast.Constant) and target.slice.value not in _CAPABILITY_SWITCHES)
+                and not _is_true(getattr(node, "value", None))
+            ):
+                return True
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and _is_the_switches(node.func.value):
+        return node.func.attr in {"update", "clear", "pop", "popitem", "setdefault"}
+    return False
+
+
+def _puts_the_master_switch_off(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Assign)
+        and not _is_true(node.value)
+        and any(isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled" for target in node.targets)
+    )
+
+
+def _called(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    return getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+
+
+@pytest.mark.parametrize(
+    ("statement", "puts_one_off"),
+    [
+        ('Modules.agent_flags["browser_use_enabled"] = False', True),
+        ('_shared.Modules.agent_flags["computer_use_enabled"] = not ready', True),
+        ("Modules.agent_flags[key] = False", True),
+        ("Modules.agent_flags[key] = value", True),
+        ('del Modules.agent_flags["user_plugin_enabled"]', True),
+        # The whole table, in the place of the one there is or changed at once.
+        ('Modules.agent_flags = {"computer_use_enabled": False, "browser_use_enabled": False}', True),
+        ("Modules.agent_flags = dict(flags)", True),
+        ("Modules.agent_flags: dict = {}", True),
+        ("Modules.agent_flags.update(browser_use_enabled=False)", True),
+        ("Modules.agent_flags.clear()", True),
+        ('Modules.agent_flags.pop("user_plugin_enabled", None)', True),
+        # Put on, read, or another switch than the three.
+        ('Modules.agent_flags["browser_use_enabled"] = True', False),
+        ('on = Modules.agent_flags.get("browser_use_enabled", False)', False),
+        ("old_flags = dict(Modules.agent_flags)", False),
+        ('Modules.agent_flags["something_else"] = False', False),
+        ("Modules.analyzer_enabled = False", False),
+    ],
+)
+def test_what_puts_a_capability_switch_off_is_told_from_what_does_not(statement: str, puts_one_off: bool) -> None:
+    function = ast.parse(f"def changes():\n    {statement}\n").body[0]
+    assert any(_puts_a_capability_switch_off(node) for node in _own_nodes(function)) is puts_one_off
+
+
 def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
-    import ast
     from pathlib import Path
-
-    switches = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}
-    functions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-
-    def own(function: ast.AST) -> list[ast.AST]:
-        """The nodes of a function, without those of the functions defined inside it."""
-        found: list[ast.AST] = []
-        todo = list(ast.iter_child_nodes(function))
-        while todo:
-            node = todo.pop()
-            found.append(node)
-            if not isinstance(node, functions):
-                todo.extend(ast.iter_child_nodes(node))
-        return found
-
-    def is_true(node: ast.AST) -> bool:
-        return isinstance(node, ast.Constant) and node.value is True
-
-    def puts_a_capability_switch_off(node: ast.AST) -> bool:
-        """An assignment to one of the switches of anything but True, or a change of them all at once."""
-        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if (
-                    isinstance(target, ast.Subscript)
-                    and isinstance(target.value, ast.Attribute)
-                    and target.value.attr == "agent_flags"
-                    and not (isinstance(target.slice, ast.Constant) and target.slice.value not in switches)
-                    and not is_true(getattr(node, "value", None))
-                ):
-                    return True
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            held = node.func.value
-            if isinstance(held, ast.Attribute) and held.attr == "agent_flags":
-                return node.func.attr in {"update", "clear", "pop", "popitem", "setdefault"}
-        return False
-
-    def puts_the_master_switch_off(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Assign)
-            and not is_true(node.value)
-            and any(isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled" for target in node.targets)
-        )
-
-    def called(node: ast.AST) -> str | None:
-        if not isinstance(node, ast.Call):
-            return None
-        return getattr(node.func, "id", None) or getattr(node.func, "attr", None)
 
     capability: list[str] = []
     master: dict[str, bool] = {}
@@ -1261,16 +1303,16 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekocla
         for function in ast.walk(tree):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            nodes = own(function)
+            nodes = _own_nodes(function)
             name = f"{path.name}:{function.name}"
-            if any(puts_a_capability_switch_off(node) for node in nodes):
+            if any(_puts_a_capability_switch_off(node) for node in nodes):
                 capability.append(name)
                 # In one go: the switch, and what was kept, with nothing waited for in between.
                 assert isinstance(function, ast.FunctionDef), name
                 assert not any(isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)) for node in nodes), name
-                assert "forget_turns_if_nekoclaw_is_off" in {called(node) for node in nodes}, name
-            if any(puts_the_master_switch_off(node) for node in nodes):
-                master[name] = "forget_turns_for_task_agents" in {called(node) for node in nodes}
+                assert "forget_turns_if_nekoclaw_is_off" in {_called(node) for node in nodes}, name
+            if any(_puts_the_master_switch_off(node) for node in nodes):
+                master[name] = "forget_turns_for_task_agents" in {_called(node) for node in nodes}
 
     # With the master switch off, or the last capability switch, NekoClaw is off, and what was kept
     # of the main dialogue for task agents goes with the switch. A capability switch goes off by
