@@ -46,6 +46,55 @@ def test_context_is_session_scoped(archive):
         browse(archive, 'Alice', anchor=15)
 
 
+@pytest.mark.parametrize('anchor', [67, 15000, 30066])
+def test_sparse_session_context_has_bounded_reads_without_migrating_archive(archive, monkeypatch, anchor):
+    path = archive / 'Alice' / 'time_indexed.db'
+    payload = json.dumps({'type': 'human', 'data': {'content': 'Saved conversation'}})
+    with closing(sqlite3.connect(path)) as db, db:
+        db.executemany('INSERT INTO time_indexed_original VALUES(?,?,?,?)',
+                       [(i, f'session-{(i - 1) // 2}', payload, '2026-11-03')
+                        for i in range(67, 30067)])
+    before = path.read_bytes()
+    connections = []
+    class CountedConnection(sqlite3.Connection):
+        steps = 0
+        closed = False
+        def set_progress_handler(self, callback, interval):
+            def counted():
+                self.steps += 1
+                return callback()
+            super().set_progress_handler(counted, interval)
+        def close(self):
+            self.closed = True
+            return super().close()
+    connect = sqlite3.connect
+    def counted_connect(database, **kwargs):
+        assert database.endswith('?mode=ro') and kwargs['uri'] is True
+        db = connect(database, **kwargs, factory=CountedConnection)
+        connections.append(db)
+        return db
+    monkeypatch.setattr(sqlite3, 'connect', counted_connect)
+
+    page = browse(archive, 'Alice', anchor=anchor)
+
+    first = (anchor - 1) // 2 * 2 + 1
+    assert [row['id'] for row in page['messages']] == [first, first + 1]
+    assert page['scanned'] == 2 and page['nextCursor'] is None
+    assert sum(db.steps for db in connections) < 30
+    assert all(db.closed for db in connections)
+    assert path.read_bytes() == before
+
+
+def test_context_does_not_bridge_distant_rows_with_the_same_session_id(archive):
+    payload = json.dumps({'type': 'human', 'data': {'content': 'Distant turn'}})
+    with closing(sqlite3.connect(archive / 'Alice' / 'time_indexed.db')) as db, db:
+        db.execute('INSERT INTO time_indexed_original VALUES(?,?,?,?)',
+                   (5000, 'one', payload, '2026-11-03'))
+
+    assert 5000 not in [row['id'] for row in browse(archive, 'Alice', anchor=39)['messages']]
+    assert [row['id'] for row in browse(archive, 'Alice', anchor=5000)['messages']] == [5000]
+
+
 def test_missing_corrupt_and_paths(archive):
     assert browse(archive, 'Missing')['available'] is False
     for name in ('../Alice', '.', '..', '/Alice'):

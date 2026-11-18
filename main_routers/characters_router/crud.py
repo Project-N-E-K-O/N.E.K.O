@@ -2244,7 +2244,11 @@ async def _delete_catgirl_by_name_serialized(name: str):
 
 
 async def _delete_catgirl_transaction(_config_manager, characters, name: str):
-    old_archive_manager = (get_session_manager() or {}).get(name)
+    try:
+        old_archive_manager = get_session_manager().get(name)
+    except RuntimeError:
+        # Archive retirement is optional before session state is initialized.
+        old_archive_manager = None
     deleted_character_uid = get_character_uid(characters["猫娘"][name])
     deleted_avatar_directory = chat_avatar_directory(_config_manager)
     safe_path_name = _validate_existing_character_path_name(name) is None

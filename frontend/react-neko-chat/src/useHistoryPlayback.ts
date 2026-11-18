@@ -6,29 +6,79 @@ type Phase = 'idle' | 'loading' | 'playing' | 'paused' | 'done' | 'empty' | 'err
 type PlaybackState = { phase: Phase; current: HistoryEntry | null; sequence: boolean; partial: boolean };
 type Session = { stop: () => void; pause: () => void; resume: () => void };
 type AudioRoute = { stop: () => void };
+type SpeechSnapshot = { active: boolean; updatedAt: number };
 type AudioHost = Window & {
   appAudioPlayback?: { connectHistoryAudioElement?: (audio: HTMLAudioElement) => Promise<AudioRoute | null> };
   appState?: { speakerVolume?: number; effectiveSpeakerId?: string };
 };
 const idle: PlaybackState = { phase: 'idle', current: null, sequence: false, partial: false };
+const speechStorageKey = 'neko_speech_playback_state';
+const speechChannelName = 'neko_speech_playback_channel';
+// The audio owner publishes every 200 ms. Abandoned snapshots must expire.
+const speechSnapshotMaxAge = 1000;
+
+function readSpeechSnapshot(value: unknown): SpeechSnapshot | null {
+  if (!value || typeof value !== 'object') return null;
+  const snapshot = value as Partial<SpeechSnapshot>;
+  if (typeof snapshot.active !== 'boolean' || typeof snapshot.updatedAt !== 'number'
+    || !Number.isFinite(snapshot.updatedAt) || snapshot.updatedAt > Date.now()) return null;
+  return { active: snapshot.active, updatedAt: snapshot.updatedAt };
+}
+
+function isLiveSpeechActive(snapshot: SpeechSnapshot | null) {
+  const age = snapshot ? Date.now() - snapshot.updatedAt : Infinity;
+  return snapshot?.active === true && age >= 0 && age < speechSnapshotMaxAge;
+}
 
 // This player belongs to the dialog, never a virtual row. At most one page of
 // identities and the current audio resource are held by the playback queue.
 export function useHistoryPlayback(character: string, scope: string, autoContinue = true, selectionKey = '') {
   const [state, setState] = useState<PlaybackState>(idle);
   const session = useRef<Session>();
+  const sharedSpeech = useRef<SpeechSnapshot | null>(null);
   const autoContinueRef = useRef(autoContinue);
   autoContinueRef.current = autoContinue;
   const stop = () => session.current?.stop();
+  const rememberSharedSpeech = (value: unknown) => {
+    const snapshot = readSpeechSnapshot(value);
+    if (snapshot && (!sharedSpeech.current || snapshot.updatedAt >= sharedSpeech.current.updatedAt)) {
+      sharedSpeech.current = snapshot;
+    }
+  };
   useEffect(() => {
     const onSpeech = (event: Event) => { if ((event as CustomEvent).detail?.active) session.current?.stop(); };
+    const onSharedSpeech = (value: unknown) => {
+      rememberSharedSpeech(value);
+      if (isLiveSpeechActive(sharedSpeech.current)) session.current?.stop();
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== speechStorageKey) return;
+      try { onSharedSpeech(JSON.parse(event.newValue || 'null')); } catch { /* Ignore malformed snapshots. */ }
+    };
+    const onBroadcast = (event: MessageEvent) => onSharedSpeech(event.data);
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        channel = new BroadcastChannel(speechChannelName);
+        channel.addEventListener('message', onBroadcast);
+      }
+    } catch { /* Storage and local events remain available. */ }
     window.addEventListener('neko-speech-playback-state', onSpeech);
-    return () => { session.current?.stop(); window.removeEventListener('neko-speech-playback-state', onSpeech); };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      session.current?.stop();
+      window.removeEventListener('neko-speech-playback-state', onSpeech);
+      window.removeEventListener('storage', onStorage);
+      channel?.removeEventListener('message', onBroadcast);
+      channel?.close();
+    };
   }, [character, scope, selectionKey]);
 
   function start(single?: HistoryEntry) {
     session.current?.stop();
     if ((window as Window & { NekoSpeechPlaybackState?: { active?: boolean } }).NekoSpeechPlaybackState?.active) return;
+    try { rememberSharedSpeech(JSON.parse(localStorage.getItem(speechStorageKey) || 'null')); } catch { /* Storage can be disabled. */ }
+    if (isLiveSpeechActive(sharedSpeech.current)) return;
     const audio = new Audio();
     audio.preload = 'none';
     const controller = new AbortController();

@@ -12,6 +12,9 @@ from pathlib import Path
 from memory.timeindex import _assistant_text_from_stored_message
 
 
+_CONTEXT_ID_RADIUS = 2000
+
+
 class HistoryUnavailable(Exception):
     pass
 
@@ -75,8 +78,20 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
                 target = db.execute('SELECT id,session_id,substr(message,1,262144),timestamp FROM time_indexed_original WHERE id=?', (anchor,)).fetchone()
                 if not target or not message(target):
                     raise LookupError('message_not_found')
-                rows = db.execute('SELECT id,session_id,substr(message,1,262144),timestamp FROM time_indexed_original WHERE session_id=? AND id<=? ORDER BY id DESC LIMIT 11', (target[1], anchor)).fetchall()[::-1]
-                rows += db.execute('SELECT id,session_id,substr(message,1,262144),timestamp FROM time_indexed_original WHERE session_id=? AND id>? ORDER BY id LIMIT 10', (target[1], anchor)).fetchall()
+                # Saved turns are appended as batches. Bound nearby context
+                # even in legacy read-only archives without a session index.
+                lower = max(0, anchor - _CONTEXT_ID_RADIUS)
+                upper = min((1 << 63) - 1, anchor + _CONTEXT_ID_RADIUS)
+                rows = db.execute(
+                    'SELECT id,session_id,substr(message,1,262144),timestamp FROM time_indexed_original '
+                    'WHERE session_id=? AND id>=? AND id<=? ORDER BY id DESC LIMIT 11',
+                    (target[1], lower, anchor),
+                ).fetchall()[::-1]
+                rows += db.execute(
+                    'SELECT id,session_id,substr(message,1,262144),timestamp FROM time_indexed_original '
+                    'WHERE session_id=? AND id>? AND id<=? ORDER BY id LIMIT 10',
+                    (target[1], anchor, upper),
+                ).fetchall()
                 return dict(messages=[m for r in rows if (m := message(r))], nextCursor=None, scanned=len(rows), available=True)
             where, args = [], []
             if day:

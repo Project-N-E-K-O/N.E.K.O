@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useHistoryPlayback } from './useHistoryPlayback';
 import { claimVoicePlayback, releaseVoicePlayback } from './voicePlaybackOwner';
 import type { HistoryEntry } from './useHistoryFeed';
@@ -7,6 +7,15 @@ import type { HistoryEntry } from './useHistoryFeed';
 const clip = '/api/voice-archive/clips/' + 'a'.repeat(64) + '/0';
 const entry = (id: number): HistoryEntry => ({ id, role: 'assistant', time: `2026-11-01 12:00:${id}`, text: `message ${id}`, voice: { recordId: `record-${id}` } });
 let players: FakeAudio[];
+let channels: FakeBroadcastChannel[];
+const speechStorageKey = 'neko_speech_playback_state';
+const speechChannelName = 'neko_speech_playback_channel';
+class FakeBroadcastChannel extends EventTarget {
+  close = vi.fn();
+  addEventListener = vi.fn((...args: Parameters<EventTarget['addEventListener']>) => super.addEventListener(...args));
+  removeEventListener = vi.fn((...args: Parameters<EventTarget['removeEventListener']>) => super.removeEventListener(...args));
+  constructor(readonly name: string) { super(); channels.push(this); }
+}
 class FakeAudio {
   src = ''; preload = ''; onended: (() => void) | null = null; onerror: (() => void) | null = null;
   volume = 1; setSinkId = vi.fn(async (_id: string) => {});
@@ -15,8 +24,11 @@ class FakeAudio {
 }
 const response = (data: unknown) => ({ ok: true, status: 200, json: async () => data });
 const manifest = () => response({ clips: [{ url: clip, complete: true }] });
-beforeEach(() => { players = []; vi.stubGlobal('Audio', FakeAudio); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+beforeEach(() => {
+  players = []; channels = []; localStorage.removeItem(speechStorageKey);
+  vi.stubGlobal('Audio', FakeAudio); vi.stubGlobal('BroadcastChannel', FakeBroadcastChannel);
+});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.removeItem(speechStorageKey); });
 
 it('loads only the current batch and advances after all segments end', async () => {
   const fetcher = vi.fn(async (url: string) => url.includes('/playback?')
@@ -219,4 +231,162 @@ it('honors mute and selected sink when the shared audio graph is unavailable', a
   await waitFor(() => expect(result.current.phase).toBe('playing'));
   expect(players[0].volume).toBe(0);
   expect(players[0].setSinkId).toHaveBeenCalledWith('headphones');
+});
+
+describe('shared live speech', () => {
+  const now = 1800000000000;
+  const speech = (active: boolean, updatedAt = now) => ({ type: 'speech_playback_state', active, updatedAt });
+  beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(now); });
+  function emit(transport: 'storage' | 'broadcast', state: unknown) {
+    if (transport === 'storage') {
+      const newValue = JSON.stringify(state);
+      localStorage.setItem(speechStorageKey, newValue);
+      window.dispatchEvent(new StorageEvent('storage', { key: speechStorageKey, newValue }));
+    } else {
+      channels.find(channel => channel.name === speechChannelName)?.dispatchEvent(new MessageEvent('message', { data: state }));
+    }
+  }
+
+  it.each(['storage', 'broadcast'] as const)('stops replay on %s activity and waits for the stop state before restarting', async transport => {
+    let signal!: AbortSignal;
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => { signal = options.signal; return manifest(); }));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => emit(transport, speech(true)));
+    expect(result.current.phase).toBe('idle');
+    expect(signal.aborted).toBe(true);
+    expect(players[0].pause).toHaveBeenCalledOnce();
+    expect(players[0].onended).toBeNull();
+    act(() => result.current.start(entry(2)));
+    expect(players).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    vi.mocked(Date.now).mockReturnValue(now + 1);
+    act(() => emit(transport, speech(false, now + 1)));
+    act(() => result.current.start(entry(2)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    expect(players).toHaveLength(2);
+  });
+
+  it.each(['before opening', 'after opening'] as const)('reads a fresh shared snapshot written %s before starting', when => {
+    vi.stubGlobal('fetch', vi.fn());
+    vi.stubGlobal('NekoSpeechPlaybackState', speech(false, now - 500));
+    if (when === 'before opening') localStorage.setItem(speechStorageKey, JSON.stringify(speech(true, now - 999)));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    if (when === 'after opening') localStorage.setItem(speechStorageKey, JSON.stringify(speech(true, now - 999)));
+    act(() => result.current.start(entry(1)));
+    expect(players).toHaveLength(0);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.current.phase).toBe('idle');
+  });
+
+  it.each([
+    ['expired', JSON.stringify(speech(true, now - 1000))],
+    ['inactive', JSON.stringify(speech(false))],
+    ['missing timestamp', JSON.stringify({ active: true })],
+    ['invalid timestamp', JSON.stringify({ active: true, updatedAt: 'recent' })],
+    ['future timestamp', JSON.stringify(speech(true, now + 1))],
+    ['non-boolean activity', JSON.stringify({ active: 'true', updatedAt: now })],
+    ['broken JSON', '{'],
+  ])('does not let an %s stored snapshot block replay', async (_kind, snapshot) => {
+    localStorage.setItem(speechStorageKey, snapshot);
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+  });
+
+  it('expires a cached broadcast when its owner closes without sending a stop', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => emit('broadcast', speech(true)));
+    act(() => result.current.start(entry(1)));
+    expect(players).toHaveLength(0);
+    expect(localStorage.getItem(speechStorageKey)).toBeNull();
+    vi.mocked(Date.now).mockReturnValue(now + 1000);
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+  });
+
+  it('keeps a newer stop when an older active update arrives through another channel', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => emit('storage', speech(true, now - 200)));
+    act(() => emit('broadcast', speech(false)));
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => emit('storage', speech(true, now - 100)));
+    expect(result.current.phase).toBe('playing');
+  });
+
+  it('ignores other storage keys and malformed shared messages during replay', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'unrelated', newValue: JSON.stringify(speech(true)) }));
+      window.dispatchEvent(new StorageEvent('storage', { key: speechStorageKey, newValue: '{' }));
+      emit('broadcast', { active: 'true', updatedAt: now });
+      emit('broadcast', speech(true, now - 1000));
+    });
+    expect(result.current.phase).toBe('playing');
+    expect(players[0].pause).not.toHaveBeenCalled();
+  });
+
+  it.each(['unavailable', 'throws'] as const)('keeps storage and local speech cancellation when BroadcastChannel %s', async mode => {
+    vi.stubGlobal('BroadcastChannel', mode === 'unavailable' ? undefined : class { constructor() { throw new Error('blocked'); } });
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => emit('storage', speech(true)));
+    expect(result.current.phase).toBe('idle');
+    act(() => emit('storage', speech(false)));
+    act(() => result.current.start(entry(2)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => window.dispatchEvent(new CustomEvent('neko-speech-playback-state', { detail: { active: true } })));
+    expect(result.current.phase).toBe('idle');
+  });
+
+  it('retains broadcast cancellation and a start guard when localStorage is blocked', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    vi.stubGlobal('appState', { speakerVolume: 100 });
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => emit('broadcast', speech(true)));
+    expect(result.current.phase).toBe('idle');
+    act(() => result.current.start(entry(2)));
+    expect(players).toHaveLength(1);
+  });
+
+  it('removes window and broadcast listeners and closes channels on selection change and unmount', async () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const remove = vi.spyOn(window, 'removeEventListener');
+    vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+    const { result, rerender, unmount } = renderHook(({ scope }) => useHistoryPlayback('Alice', scope), { initialProps: { scope: '' } });
+    expect(channels.map(channel => channel.name)).toEqual([speechChannelName]);
+    const first = channels[0];
+    rerender({ scope: 'day=2026-11-02' });
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(first.removeEventListener).toHaveBeenCalledWith('message', first.addEventListener.mock.calls[0][1]);
+    act(() => result.current.start(entry(1)));
+    await waitFor(() => expect(result.current.phase).toBe('playing'));
+    act(() => first.dispatchEvent(new MessageEvent('message', { data: speech(true) })));
+    expect(result.current.phase).toBe('playing');
+    unmount();
+    expect(players[0].pause).toHaveBeenCalledOnce();
+    expect(channels[1].close).toHaveBeenCalledOnce();
+    for (const [event, listener] of add.mock.calls.filter(([event]) => ['storage', 'neko-speech-playback-state'].includes(event))) {
+      expect(remove).toHaveBeenCalledWith(event, listener);
+    }
+    act(() => {
+      emit('storage', speech(true));
+      channels[1].dispatchEvent(new MessageEvent('message', { data: speech(true) }));
+      window.dispatchEvent(new CustomEvent('neko-speech-playback-state', { detail: { active: true } }));
+    });
+    expect(players[0].pause).toHaveBeenCalledOnce();
+  });
 });

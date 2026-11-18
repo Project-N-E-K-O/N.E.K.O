@@ -26,7 +26,8 @@ def recording_gate(config):
 def load_settings(config):
     try:
         data = json.loads(settings_path(config).read_text(encoding='utf-8'))
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
+        # Missing or malformed opt-in data means off; a later save can repair it.
         return {'enabled': False}
     return {'enabled': isinstance(data, dict) and data.get('enabled') is True}
 

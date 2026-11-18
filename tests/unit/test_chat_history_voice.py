@@ -107,6 +107,38 @@ def test_recording_settings_are_opt_in_strict_and_persistent(client):
     assert web.get('/api/voice-archive/settings').json() == {'enabled': False}
 
 
+@pytest.mark.parametrize('damaged', [b'{invalid', b'\xff\xfe', b''])
+def test_corrupt_recording_settings_fail_closed_and_can_be_replaced(client, damaged):
+    web, root = client
+    path = root / 'voice_archive.json'
+    path.write_bytes(damaged)
+
+    response = web.get('/api/voice-archive/settings')
+    assert response.status_code == 200 and response.json() == {'enabled': False}
+    response = web.post('/api/voice-archive/settings', json={'enabled': True})
+    assert response.status_code == 200 and response.json() == {'enabled': True}
+    assert json.loads(path.read_text(encoding='utf-8')) == {'enabled': True}
+    assert web.get('/api/voice-archive/settings').json() == {'enabled': True}
+
+
+def test_unreadable_recording_settings_still_report_unavailable(client, monkeypatch):
+    from pathlib import Path
+
+    web, root = client
+    path = root / 'voice_archive.json'
+    path.write_text('{"enabled": true}', encoding='utf-8')
+    original_read = Path.read_text
+    def denied_read(source, *args, **kwargs):
+        if source == path:
+            raise PermissionError('settings are not readable')
+        return original_read(source, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', denied_read)
+
+    assert web.get('/api/voice-archive/settings').status_code == 503
+    assert web.post('/api/voice-archive/settings', json={'enabled': False}).status_code == 503
+    assert json.loads(original_read(path, encoding='utf-8')) == {'enabled': True}
+
+
 def test_user_filter_has_no_automatic_voice_continuation(client):
     web, _ = client
     page = web.get('/api/chat-history/playback', params={'character': 'Alice', 'role': 'user'}).json()
