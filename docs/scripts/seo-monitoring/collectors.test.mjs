@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   collectGa4,
+  collectGa4SearchEngineSessions,
   collectGsc,
   collectSitemap,
   collectTechnicalSeo,
@@ -77,6 +78,13 @@ test('GSC collector returns latest day, consecutive 7-day trend, and action queu
       if (body.dataState === 'all' && body.dimensions?.[0] === 'date') {
         return jsonResponse({ metadata: { first_incomplete_date: '2026-07-21' }, rows: [] })
       }
+      if (body.aggregationType === 'byProperty') {
+        assert.deepEqual(body, { ...recent7, dimensions: ['date'], aggregationType: 'byProperty', dataState: 'final' })
+        return jsonResponse({ rows: [
+          { keys: ['2026-07-17'], clicks: 2, impressions: 100 },
+          { keys: ['2026-07-19'], clicks: 4, impressions: 50 },
+        ] })
+      }
       if (body.startDate === latest.startDate) {
         return jsonResponse({ rows: [
           { keys: ['ai desktop pet', 'https://project-neko.online/'], clicks: 1, impressions: 10, ctr: 0.1, position: 8 },
@@ -100,6 +108,9 @@ test('GSC collector returns latest day, consecutive 7-day trend, and action queu
   assert.equal(result.availability.firstIncompleteDate, '2026-07-21')
   assert.equal(result.availability.latestFinalDate, '2026-07-20')
   assert.equal(result.latestCompleteDay.clicks, 1)
+  assert.deepEqual(result.latestPropertyDay, {
+    status: 'OBSERVED', date: '2026-07-19', clicks: 4, impressions: 50, ctr: 0.08,
+  })
   assert.equal(result.recent7.impressions, 120)
   assert.equal(result.previous7.impressions, 50)
   assert.equal(result.trend7.impressions.delta, 70)
@@ -133,6 +144,7 @@ test('GSC sitemap failure stays partial instead of discarding search performance
   assert.equal(result.dataThrough, '2026-07-22')
   assert.equal(result.availability.resolution, 'metadata_no_incomplete_date')
   assert.equal(result.latestCompleteDay.impressions, 0)
+  assert.deepEqual(result.latestPropertyDay, { status: 'UNKNOWN' })
   assert.equal(result.sitemap.status, 'unavailable')
   assert.match(result.sitemap.reason, /HTTP 404/)
 })
@@ -152,6 +164,7 @@ test('GSC collector paginates each requested period', async () => {
       if (body.dataState === 'all' && body.dimensions?.[0] === 'date') {
         return jsonResponse({ metadata: { first_incomplete_date: '2026-07-21' }, rows: [] })
       }
+      if (body.aggregationType === 'byProperty') return jsonResponse({}, 403)
       starts.push(`${body.startDate}:${body.startRow}`)
       if (body.startRow === 0) {
         return jsonResponse({ rows: [
@@ -164,6 +177,7 @@ test('GSC collector paginates each requested period', async () => {
   })
 
   assert.equal(result.pagination.latestRequests, 2)
+  assert.deepEqual(result.latestPropertyDay, { status: 'FAILED' })
   assert.equal(result.pagination.recent7Requests, 2)
   assert.equal(result.pagination.previous7Requests, 2)
   assert.equal(starts.length, 6)
@@ -254,6 +268,53 @@ test('GA4 keeps docs-to-home metrics N/A when the event is not applicable to a s
   assert.equal(result.latestCompleteDay.aiDocsHomeClicks, null)
   assert.equal(result.trend7.organicDocsHomeClicks.delta, null)
   assert.equal(result.docsToHomeEvent, null)
+})
+
+test('GA4 engine sessions use the exact host and Organic Search channel and keep observed zeros', async () => {
+  const range = { startDate: '2026-07-22', endDate: '2026-07-22' }
+  const rows = [
+    ['google', '4'], ['www.google.co.uk', '2'], ['cn.bing.com', '3'], ['m.baidu.com', '5'],
+    ['sogou', '1'], ['www.so.com', '7'], ['so.toutiao.com', '2'], ['lookalike.bing.com.invalid', '11'],
+  ].map(([source, sessions]) => ({ dimensionValues: [{ value: source }], metricValues: [{ value: sessions }] }))
+  const headers = { dimensionHeaders: [{ name: 'sessionSource' }], metricHeaders: [{ name: 'sessions' }] }
+  const site = { propertyId: '123456789', hostname: 'project-neko.cn' }
+  const success = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth',
+    fetchImpl: async (url, options) => {
+      assert.match(url, /properties\/123456789:runReport$/u)
+      const request = JSON.parse(options.body)
+      assert.deepEqual(request.dateRanges, [range])
+      assert.deepEqual(request.dimensions, [{ name: 'sessionSource' }])
+      assert.deepEqual(request.dimensionFilter.andGroup.expressions.map(item => [
+        item.filter.fieldName, item.filter.stringFilter.value,
+      ]), [['hostName', 'project-neko.cn'], ['sessionDefaultChannelGroup', 'Organic Search']])
+      return Response.json({ ...headers, rowCount: rows.length, rows, metadata: { timeZone: 'Asia/Shanghai' } })
+    },
+  })
+  assert.deepEqual(success, {
+    status: 'OBSERVED', date: '2026-07-22', timeZone: 'Asia/Shanghai', unmappedSessions: 11,
+    sessions: { google: 6, bing: 3, baidu: 5, sogou: 1, 360: 7, toutiao: 2 },
+  })
+
+  const empty = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth', fetchImpl: async () => Response.json(headers),
+  })
+  assert.equal(empty.status, 'OBSERVED')
+  assert.ok(Object.values(empty.sessions).every(value => value === 0))
+
+  const thresholded = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth',
+    fetchImpl: async () => Response.json({ ...headers, metadata: { subjectToThresholding: true } }),
+  })
+  assert.equal(thresholded.status, 'UNKNOWN')
+  assert.equal(thresholded.sessions, undefined)
+
+  const failure = await collectGa4SearchEngineSessions(site, range, {
+    accessToken: 'fixture-auth',
+    fetchImpl: async () => Response.json({ error: { message: 'credential fixture' } }, { status: 403 }),
+  })
+  assert.equal(failure.status, 'FAILED')
+  assert.doesNotMatch(JSON.stringify(failure), /credential fixture/u)
 })
 
 test('technical collector checks HTTP, discovery files, canonical, hreflang, schema, and GA4 ID', async () => {

@@ -220,6 +220,31 @@ test('Bing Markdown shows observed values and independent unavailable sources', 
   )
 })
 
+test('the daily engine table keeps webmaster metrics and GA4 sessions on their own dates', () => {
+  const report = buildMonitoringReport({
+    config,
+    generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} },
+    dataForSeoInputs: [],
+    siteInputs: [{
+      definition: { id: 'cn', label: '.cn 产品主页' },
+      gsc: gsc({
+        dataThrough: '2026-07-26', latestCompleteDay: { clicks: 1, impressions: 10, ctr: 0.1, position: 2 },
+        latestPropertyDay: { status: 'OBSERVED', date: '2026-07-26', clicks: 4, impressions: 50, ctr: 0.08 },
+      }),
+      ga4: unavailable('no GA4 overview fixture'),
+      ga4SearchEngineSessions: { status: 'OBSERVED', date: '2026-07-28', sessions: { google: 2, bing: 3, baidu: 0 } },
+      technical: technical('https://project-neko.cn'),
+      bing: { traffic: { status: 'OBSERVED', rows: [{ date: '2026-07-27', clicks: 2, impressions: 20 }] } },
+    }],
+  })
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /## 各搜索引擎每日统计/u)
+  assert.ok(markdown.includes('| Google | 2026-07-26 | 4 | 50 | 8.00% | OBSERVED | 2026-07-28 | 2 | OBSERVED |'))
+  assert.ok(markdown.includes('| Bing | 2026-07-27 | 2 | 20 | 10.00% | OBSERVED | 2026-07-28 | 3 | OBSERVED |'))
+  assert.ok(markdown.includes('| 百度 | N/A | N/A | N/A | N/A | UNSUPPORTED | 2026-07-28 | 0 | OBSERVED |'))
+})
+
 test('regional search report exposes ranking availability separately from public probes', () => {
   const definition = {
     id: 'cn',

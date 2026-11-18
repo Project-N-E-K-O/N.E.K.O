@@ -275,6 +275,44 @@ async function collectGscRange(analyticsUrl, range, options) {
   }, options)
 }
 
+async function collectGscPropertyDay(analyticsUrl, range, { accessToken, fetchImpl }) {
+  try {
+    const payload = await jsonRequest(analyticsUrl, {
+      accessToken,
+      fetchImpl,
+      method: 'POST',
+      body: JSON.stringify({
+        ...range,
+        dimensions: ['date'],
+        aggregationType: 'byProperty',
+        dataState: 'final',
+      }),
+    })
+    const rows = payload?.rows ?? []
+    if (!Array.isArray(rows)) return { status: 'FAILED' }
+    if (rows.length === 0) return { status: 'UNKNOWN' }
+    const dates = rows.map(row => row?.keys?.[0])
+    if (dates.some(date => typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(date)
+        || date < range.startDate || date > range.endDate)) {
+      return { status: 'FAILED' }
+    }
+    const date = dates.sort().at(-1)
+    const row = rows.find(item => item.keys[0] === date)
+    if (![row.clicks, row.impressions].every(value => Number.isFinite(value) && value >= 0)) {
+      return { status: 'FAILED', date }
+    }
+    return {
+      status: 'OBSERVED',
+      date,
+      clicks: row.clicks,
+      impressions: row.impressions,
+      ctr: row.impressions > 0 ? row.clicks / row.impressions : 0,
+    }
+  } catch {
+    return { status: 'FAILED' }
+  }
+}
+
 function sitemapUrlTotals(contents) {
   if (!Array.isArray(contents) || contents.length === 0) {
     return { submittedUrls: null, indexedUrls: null, coverageRate: null }
@@ -314,10 +352,11 @@ export async function collectGsc({
   const requestOptions = { accessToken, fetchImpl, rowLimit }
   const resolved = await resolveLatestFinalGscWindow(analyticsUrl, window.gsc.discovery, requestOptions)
   const gscWindow = resolved.windows
-  const [latest, recent7, previous7] = await Promise.all([
+  const [latest, recent7, previous7, latestPropertyDay] = await Promise.all([
     collectGscRange(analyticsUrl, gscWindow.latest, requestOptions),
     collectGscRange(analyticsUrl, gscWindow.recent7, requestOptions),
     collectGscRange(analyticsUrl, gscWindow.previous7, requestOptions),
+    collectGscPropertyDay(analyticsUrl, gscWindow.recent7, requestOptions),
   ])
 
   const categoryPattern = new RegExp(categoryQueryRegex, 'iu')
@@ -362,6 +401,7 @@ export async function collectGsc({
       coverage: 'api_top_rows_may_be_limited',
     },
     latestCompleteDay: aggregateGscRows(latest.rows),
+    latestPropertyDay,
     recent7: recentSummary,
     previous7: previousSummary,
     trend7: gscTrend(recentSummary, previousSummary),
@@ -419,6 +459,65 @@ function regexFilter(fieldName, value) {
       fieldName,
       stringFilter: { value, matchType: 'FULL_REGEXP', caseSensitive: false },
     },
+  }
+}
+
+export const SEARCH_ENGINES = [
+  { id: 'google', label: 'Google', source: /^(?:google|(?:[^.]+\.)*google\.[a-z]{2,}(?:\.[a-z]{2})?)$/iu },
+  { id: 'bing', label: 'Bing', source: /^(?:bing|(?:[^.]+\.)*bing\.com)$/iu },
+  { id: 'baidu', label: '百度', source: /^(?:baidu|(?:[^.]+\.)*baidu\.com)$/iu },
+  { id: 'sogou', label: '搜狗', source: /^(?:sogou|(?:[^.]+\.)*sogou\.com)$/iu },
+  { id: '360', label: '360', source: /^(?:360(?: search)?|(?:[^.]+\.)*(?:so|haosou)\.com)$/iu },
+  { id: 'toutiao', label: '头条搜索', source: /^(?:toutiao(?: search)?|(?:[^.]+\.)*toutiao\.com)$/iu },
+]
+
+export async function collectGa4SearchEngineSessions({
+  propertyId, hostname,
+}, range, { accessToken, fetchImpl = globalThis.fetch } = {}) {
+  const date = range.endDate
+  const unknown = reason => ({ status: 'UNKNOWN', date, reason })
+  try {
+    const payload = await gaRun(propertyId, {
+      dateRanges: [range],
+      dimensions: [{ name: 'sessionSource' }],
+      metrics: [{ name: 'sessions' }],
+      dimensionFilter: andFilter([
+        exactFilter('hostName', hostname),
+        exactFilter('sessionDefaultChannelGroup', 'Organic Search'),
+      ]),
+    }, accessToken, fetchImpl)
+    const rows = payload?.rows ?? []
+    const metadata = payload?.metadata
+    if (!Array.isArray(rows) || rows.length !== (payload?.rowCount ?? 0)
+        || metadata?.dataLossFromOtherRow || metadata?.subjectToThresholding
+        || metadata?.samplingMetadatas?.length || metadata?.dataTruncationReasons?.length
+        || rows.some(row => row?.dimensionValues?.[0]?.value === '(other)')) {
+      return unknown('GA4 来源数据被合并、抽样或截断')
+    }
+    if (payload?.dimensionHeaders?.[0]?.name !== 'sessionSource'
+        || payload?.metricHeaders?.[0]?.name !== 'sessions') {
+      return { status: 'FAILED', date, reason: 'GA4 来源响应缺少会话表头' }
+    }
+    if (metadata?.timeZone && date >= calendarDateInTimeZone(new Date(), metadata.timeZone)) {
+      return unknown('该日期在 GA4 属性时区尚未结束')
+    }
+    const sessions = Object.fromEntries(SEARCH_ENGINES.map(engine => [engine.id, 0]))
+    let unmappedSessions = 0
+    for (const row of rows) {
+      const source = row?.dimensionValues?.[0]?.value
+      const count = row?.metricValues?.[0]?.value
+      if (typeof source !== 'string' || !/^\d+$/u.test(count ?? '') || !Number.isSafeInteger(Number(count))) {
+        return { status: 'FAILED', date, reason: 'GA4 来源响应包含无效会话数据' }
+      }
+      const engine = SEARCH_ENGINES.find(item => item.source.test(source.trim()))
+      if (engine) sessions[engine.id] += Number(count)
+      else unmappedSessions += Number(count)
+    }
+    return { status: 'OBSERVED', date, timeZone: metadata?.timeZone ?? null, sessions, unmappedSessions }
+  } catch (error) {
+    const httpStatus = /^HTTP ([1-5]\d\d)\b/u.exec(error?.message ?? '')?.[1]
+    const detail = httpStatus ? `（HTTP ${httpStatus}）` : ''
+    return { status: 'FAILED', date, reason: `GA4 来源会话请求失败${detail}` }
   }
 }
 

@@ -78,7 +78,11 @@ CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.
 
 - 百度自然排名复用现有 `.cn` 关键词组，位置码为 2156，语言码为 `zh_CN`。付费运行提交一次 Standard 队列任务，最多等待 6 分钟。每个词采首个结果页（深度 10）并要求直达网址，以识别结果实际指向的站点。当前 8 个词预计每次 **$0.048**。等待超时的结果记为 `UNKNOWN`，保留已报告费用。`dry-run` 校验排名任务未提交。 [任务提交](https://docs.dataforseo.com/v3/serp/baidu/organic/task_post/) · [百度定价](https://dataforseo.com/pricing/serp/baidu-organic-serp-api)
 - 公开探针检查官网的验证文件、robots.txt 对首页的规则和 sitemap。百度还检查首页及最新生产推送回执，复用已有的 `SEO_REPORTS_TOKEN` 读取官网仓库有权限的 Actions 产物。如果没有可读取的回执，日报显示 `UNKNOWN`。收录和搜索表现可在站长平台人工查看。 [百度站长平台工具说明](https://ziyuan.baidu.com/college/articleinfo?id=3170)
-- 搜狗、360、头条的排名与搜索表现显示 `UNSUPPORTED`，日报只访问官网上的探针地址。
+- 搜狗、360、头条的站长排名与搜索表现显示 `UNSUPPORTED`，验证数据来自官网公开探针。
+
+## 各搜索引擎每日统计
+
+日报自动读取 Search Console 网页搜索的属性级汇总和 Bing Webmaster Tools 的全部来源流量，同时用已授权的 GA4 Data API 按 `sessionSource` 汇总 Google、Bing、百度、搜狗、360 和头条搜索的自然搜索站内会话。站长指标与站内会话采用各自的数据日期。GA4 以站点主机名和 `Organic Search` 渠道为过滤条件。缺失、抽样、合并或截断的来源数据在日报中显示对应状态。 [Search Console 搜索分析](https://developers.google.com/webmaster-tools/v1/searchanalytics/query) · [GA4 数据 API 字段](https://developers.google.com/analytics/devguides/reporting/data/v1/api-schema)
 
 ## 时间窗口
 

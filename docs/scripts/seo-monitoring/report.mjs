@@ -1,3 +1,5 @@
+import { SEARCH_ENGINES } from './collectors.mjs'
+
 function canonicalKeyword(value) {
   return String(value ?? '').trim().toLocaleLowerCase('en-US')
 }
@@ -908,6 +910,7 @@ export function buildMonitoringReport({
       technical: regionalSearch ? technical : input.technical,
       indexNow: normalizedIndexNow(input.indexNow),
       bing: input.bing,
+      ga4SearchEngineSessions: input.ga4SearchEngineSessions,
       regionalSearch: buildRegionalSearch(input, regionalSearch, baiduRanking),
     }
   })
@@ -1219,6 +1222,46 @@ function searchStatusCell(value) {
   return value?.reason ? `${status} · N/A（${escapeCell(value.reason)}）` : status
 }
 
+function dailyWebmasterMetrics(site, engineId) {
+  if (engineId === 'google') {
+    return site.gsc?.latestPropertyDay ?? { status: site.gsc?.status ?? 'UNKNOWN' }
+  }
+  if (engineId === 'bing') {
+    const traffic = site.bing?.traffic
+    const daily = traffic?.rows?.[0]
+    return daily ? { ...daily, ctr: ratio(daily.clicks, daily.impressions), status: traffic.status } : traffic
+  }
+  return site.regionalSearch?.find(engine => engine.id === engineId)?.performance ?? { status: 'UNSUPPORTED' }
+}
+
+function renderDailySearchEngines(sites) {
+  if (!sites.some(site => site.ga4SearchEngineSessions)) return []
+  const lines = [
+    '## 各搜索引擎每日统计',
+    '',
+    '| 站点 | 引擎 | 站长数据日 | 点击 | 曝光 | CTR | 站长数据状态 | GA4 会话数据日 | 自然搜索会话 | GA4 状态 |',
+    '|---|---|---|---:|---:|---:|---|---|---:|---|',
+  ]
+  for (const site of sites) {
+    const onsite = site.ga4SearchEngineSessions
+    for (const engine of SEARCH_ENGINES) {
+      const search = dailyWebmasterMetrics(site, engine.id) ?? {}
+      lines.push(`| ${escapeCell(site.label)} | ${escapeCell(engine.label)} | ${search.date ?? 'N/A'} | ${display(search.clicks)} | ${display(search.impressions)} | ${percentage(search.ctr)} | ${statusLabel(search.status)} | ${onsite?.date ?? 'N/A'} | ${display(onsite?.sessions?.[engine.id])} | ${statusLabel(onsite?.status)} |`)
+    }
+  }
+  lines.push(
+    '',
+    '- Google 使用 Search Console 网页搜索的属性级汇总。Bing 使用站长工具的全部来源流量。GA4 列按站点和来源统计归类为自然搜索的站内会话，每列采用对应的数据日期。',
+    '',
+  )
+  for (const site of sites) {
+    const onsite = site.ga4SearchEngineSessions
+    if (onsite?.reason) lines.push(`- ${escapeCell(site.label)} GA4 来源 · ${searchStatusCell(onsite)}`)
+    else if (onsite?.unmappedSessions > 0) lines.push(`- ${escapeCell(site.label)} 其他自然搜索来源 · ${onsite.unmappedSessions} 次会话`)
+  }
+  return [...lines, '']
+}
+
 function renderRegionalSearch(sites, baiduRanking) {
   const sources = sites.flatMap(site => site.regionalSearch ?? [])
   if (sources.length === 0 && !baiduRanking) return []
@@ -1347,7 +1390,7 @@ export function renderMarkdown(report) {
     '',
     '- 口径：`GSC 日均曝光 = 对应完整窗口 impressions ÷ 窗口天数`，表示 N.E.K.O 真正在 Google 搜索结果中出现的频率；日报不以 DataForSEO Volume 冒充实际曝光。',
     '',
-    '## 🔎 GSC 搜索表现',
+    '## 🔎 GSC 搜索表现（按查询与页面汇总）',
     '',
     '| 站点 | 数据截止 | 最新完整日点击 | 曝光 | CTR | 平均排名 | 近7日点击变化 | sitemap |',
     '|---|---|---:|---:|---:|---:|---:|---|',
@@ -1373,6 +1416,7 @@ export function renderMarkdown(report) {
     `- GSC 新查询：${report.sites.flatMap(site => site.gsc?.newQueries ?? []).slice(0, 10).map(item => item.query).join('、') || 'N/A'}`,
     '- 限制：GSC 的最新完整日由 API `first_incomplete_date` 动态解析；query/page 维度仍可能受 API top rows 限制。',
     '',
+    ...renderDailySearchEngines(report.sites),
     ...renderBingMarkdown(report.sites, report.bingRankings ?? []),
     ...renderRegionalSearch(report.sites, report.baiduRanking),
     '## 🤖 GEO / AI 搜索战况',
@@ -1394,8 +1438,8 @@ export function renderMarkdown(report) {
     '',
     '| 阶段 | `.cn` | `.online` |',
     '|---|---:|---:|',
-    `| GSC 曝光（最新完整日） | ${cn?.gsc?.latestCompleteDay?.impressions ?? 'N/A'} | ${online?.gsc?.latestCompleteDay?.impressions ?? 'N/A'} |`,
-    `| GSC 点击（最新完整日） | ${cn?.gsc?.latestCompleteDay?.clicks ?? 'N/A'} | ${online?.gsc?.latestCompleteDay?.clicks ?? 'N/A'} |`,
+    `| GSC 明细曝光（最新完整日） | ${cn?.gsc?.latestCompleteDay?.impressions ?? 'N/A'} | ${online?.gsc?.latestCompleteDay?.impressions ?? 'N/A'} |`,
+    `| GSC 明细点击（最新完整日） | ${cn?.gsc?.latestCompleteDay?.clicks ?? 'N/A'} | ${online?.gsc?.latestCompleteDay?.clicks ?? 'N/A'} |`,
     `| GA4 Organic 会话（昨日） | ${gaLine(cn, 'organicSessions')} | ${gaLine(online, 'organicSessions')} |`,
     `| Steam CTA 总数（昨日） | ${gaLine(cn, 'totalSteamCtaClicks')} | ${gaLine(online, 'totalSteamCtaClicks')} |`,
     `| 文档→主页总数（昨日） | ${gaLine(cn, 'totalDocsHomeClicks')} | ${gaLine(online, 'totalDocsHomeClicks')} |`,
