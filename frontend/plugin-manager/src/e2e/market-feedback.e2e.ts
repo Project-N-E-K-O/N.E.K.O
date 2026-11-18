@@ -1,10 +1,13 @@
-import { expect } from '@playwright/test'
+import { expect, type Page } from '@playwright/test'
+import type { MarketMessageDraft } from '../api/marketConversations'
 import { appearanceTest, PREVIEW_ORIGIN } from './plugin-manager-test-helpers'
 
 const PROFILE_ID = '123e4567-e89b-42d3-a456-426614174000'
 const MARKET = 'https://market.example.test'
 const ISSUE_URL = `${MARKET}/#/plugin/42?tab=issues&issue=71`
 const FEEDBACK_ROUTE = `${PREVIEW_ORIGIN}/ui/workbench/feedback`
+const CATALOG = '**/market/catalog/api/v1/plugins'
+const CONVERSATION = '**/market/conversations/plugins/42'
 
 const issue = {
   kind: 'issue',
@@ -27,32 +30,103 @@ const issue = {
   awaiting_reply: true,
 }
 
+const plugin = {
+  id: 42,
+  slug: 'example-plugin',
+  name: issue.plugin_name,
+  description: '',
+  author_name: 'Example author',
+  created_at: issue.created_at,
+  updated_at: issue.created_at,
+}
+const original = {
+  id: 181,
+  author: issue.author,
+  reply_to: null,
+  body: 'Original comment',
+  is_hidden: false,
+  created_at: issue.created_at,
+  format: 'plain',
+}
+
+async function stubMarketPluginCatalog(page: Page) {
+  await page.route(`${CATALOG}?*`, (route) =>
+    route.fulfill({ json: { items: [plugin], total: 1, page: 1, page_size: 12 } })
+  )
+  await page.route(`${CATALOG}/42`, (route) => route.fulfill({ json: plugin }))
+  await page.route(`${CATALOG}/42/versions?*`, (route) => route.fulfill({ json: { items: [] } }))
+  await page.route(`${CATALOG}/42/readme`, (route) =>
+    route.fulfill({ json: { availability: 'unavailable' } })
+  )
+}
+
+async function openMarketComments(page: Page) {
+  const card = page.locator('.market-plugin-card').filter({ hasText: plugin.name })
+  await card.getByTestId('plugin-details-button').click()
+  const dialog = page.getByRole('dialog', { name: '插件详情' })
+  await dialog.getByRole('tab', { name: '评论', exact: true }).click()
+  return dialog
+}
+
+const replyBody = 'Comment with an uncertain send result'
+const previousAccountWarning = '这段内容可能已经用之前的账号发出，再次发送前请先在上方对话里确认。'
+
+async function sendReplyWithUncertainResult(page: Page) {
+  let account = 'account-a'
+  const attempts: { session: string | undefined; draft: MarketMessageDraft }[] = []
+  await stubMarketPluginCatalog(page)
+  await page.route('**/market/feedback/avatars', (route) => route.fulfill({ json: {} }))
+  await page.route(`${CONVERSATION}/comments`, (route) =>
+    route.fulfill({
+      headers: { 'X-Market-Feedback-Session': account },
+      json: { messages: [original], next_cursor: null, can_reply: true },
+    })
+  )
+  await page.route(`${CONVERSATION}/comments/messages`, (route) => {
+    const request = route.request()
+    const session = request.headers()['x-market-feedback-session']
+    const draft = request.postDataJSON() as MarketMessageDraft
+    attempts.push({ session, draft })
+    if (attempts.length === 1) {
+      return route.fulfill({ status: 502, json: { code: 'market_feedback_unavailable' } })
+    }
+    return route.fulfill({
+      status: 201,
+      json: { ...original, id: 182, body: draft.body, reply_to: original },
+    })
+  })
+
+  await page.goto(`${PREVIEW_ORIGIN}/ui/market`)
+  const dialog = await openMarketComments(page)
+  await dialog.getByRole('button', { name: '回复', exact: true }).click()
+  await dialog.getByRole('textbox').fill(replyBody)
+  await dialog.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(dialog.getByText('发送留言失败。')).toBeVisible()
+  expect(attempts).toEqual([
+    {
+      session: 'account-a',
+      draft: {
+        body: replyBody,
+        reply_to_id: original.id,
+        client_message_id: expect.stringMatching(/.+/),
+      },
+    },
+  ])
+
+  async function switchAccount() {
+    account = 'account-b'
+    await page.evaluate(() => window.dispatchEvent(new Event('neko-market-auth-changed')))
+  }
+
+  return { dialog, attempts, switchAccount }
+}
+
 appearanceTest.use({ appLocale: 'zh-CN' })
 
 appearanceTest(
   'posts comments and handles issues from the Market plugin card',
   async ({ page }) => {
-    const plugin = {
-      id: 42,
-      slug: 'example-plugin',
-      name: issue.plugin_name,
-      description: '',
-      author_name: 'Example author',
-      created_at: issue.created_at,
-      updated_at: issue.created_at,
-    }
-    const original = {
-      id: 181,
-      author: issue.author,
-      reply_to: null,
-      body: 'Original comment',
-      is_hidden: false,
-      created_at: issue.created_at,
-      format: 'plain',
-    }
     const conversationHeaders = { 'X-Market-Feedback-Session': 'account-a' }
-    const catalog = '**/market/catalog/api/v1/plugins'
-    const conversation = '**/market/conversations/plugins/42'
     let waiting = true
     let open = true
     const issueSummary = () => ({
@@ -67,16 +141,7 @@ appearanceTest(
       messages: [{ ...original, id: issue.message_id, body: issue.body }],
       next_message_cursor: null,
     })
-    await page.route(`${catalog}?*`, (route) =>
-      route.fulfill({
-        json: { items: [plugin], total: 1, page: 1, page_size: 12 },
-      })
-    )
-    await page.route(`${catalog}/42`, (route) => route.fulfill({ json: plugin }))
-    await page.route(`${catalog}/42/versions?*`, (route) => route.fulfill({ json: { items: [] } }))
-    await page.route(`${catalog}/42/readme`, (route) =>
-      route.fulfill({ json: { availability: 'unavailable' } })
-    )
+    await stubMarketPluginCatalog(page)
     const avatarUrl = `${PREVIEW_ORIGIN}/ui/avatar-fixture.png`
     await page.route(avatarUrl, (route) =>
       route.fulfill({
@@ -104,26 +169,26 @@ appearanceTest(
         },
       })
     )
-    await page.route(`${conversation}/comments`, (route) =>
+    await page.route(`${CONVERSATION}/comments`, (route) =>
       route.fulfill({
         headers: conversationHeaders,
         json: { messages: [original], next_cursor: null, can_reply: true },
       })
     )
-    await page.route(`${conversation}/issues`, (route) =>
+    await page.route(`${CONVERSATION}/issues`, (route) =>
       route.fulfill({
         headers: conversationHeaders,
         json: { items: [issueSummary()], next_cursor: null },
       })
     )
-    await page.route(`${conversation}/issues/71`, (route) =>
+    await page.route(`${CONVERSATION}/issues/71`, (route) =>
       route.fulfill({
         headers: conversationHeaders,
         json: issueDetail(),
       })
     )
-    const submittedComments: { body: string; client_message_id: string; reply_to_id: number }[] = []
-    await page.route(`${conversation}/comments/messages`, (route) => {
+    const submittedComments: MarketMessageDraft[] = []
+    await page.route(`${CONVERSATION}/comments/messages`, (route) => {
       expect(route.request().headers()['x-market-feedback-session']).toBe('account-a')
       const payload = route.request().postDataJSON()
       submittedComments.push(payload)
@@ -140,7 +205,7 @@ appearanceTest(
         },
       })
     })
-    await page.route(`${conversation}/issues/71/messages`, (route) => {
+    await page.route(`${CONVERSATION}/issues/71/messages`, (route) => {
       expect(route.request().headers()['x-market-feedback-session']).toBe('account-a')
       const payload = route.request().postDataJSON()
       expect(payload.body).toBe('Issue reply from the desktop')
@@ -148,7 +213,7 @@ appearanceTest(
       return route.fulfill({ status: 201, json: { ...original, id: 194, body: payload.body } })
     })
     for (const action of ['close', 'reopen']) {
-      await page.route(`${conversation}/issues/71/${action}`, (route) => {
+      await page.route(`${CONVERSATION}/issues/71/${action}`, (route) => {
         expect(route.request().headers()['x-market-feedback-session']).toBe('account-a')
         open = action === 'reopen'
         return route.fulfill({ json: issueDetail() })
@@ -159,9 +224,7 @@ appearanceTest(
     const card = page.locator('.market-plugin-card').filter({ hasText: issue.plugin_name })
     const badge = card.getByTestId('market-awaiting-reply')
     await expect(badge).toHaveText('待回复 1')
-    await card.getByTestId('plugin-details-button').click()
-    const dialog = page.getByRole('dialog', { name: '插件详情' })
-    await dialog.getByRole('tab', { name: '评论', exact: true }).click()
+    const dialog = await openMarketComments(page)
     await expect(dialog.locator(`img[src="${avatarUrl}"]`)).toHaveJSProperty('naturalWidth', 1)
     await dialog.getByRole('button', { name: '回复', exact: true }).click()
     await dialog.getByRole('textbox').fill('Comment from the desktop')
@@ -184,6 +247,50 @@ appearanceTest(
     await expect(dialog.getByText('已关闭', { exact: true })).toBeVisible()
     await dialog.getByRole('button', { name: '重新打开 Issue', exact: true }).click()
     await expect(dialog.getByText('开放中', { exact: true })).toBeVisible()
+  }
+)
+
+appearanceTest(
+  'reuses the original reply ID after reopening the Market comment form',
+  async ({ page }) => {
+    const { dialog, attempts } = await sendReplyWithUncertainResult(page)
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(dialog).toBeHidden()
+    await openMarketComments(page)
+
+    await expect(dialog.getByRole('textbox')).toHaveValue(replyBody)
+    await expect(dialog.getByText('回复 example', { exact: true })).toBeVisible()
+    await expect(dialog.getByText(previousAccountWarning)).toHaveCount(0)
+    await dialog.getByRole('button', { name: '发送', exact: true }).click()
+    await expect(dialog.getByText(replyBody, { exact: true })).toBeVisible()
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1]).toEqual(attempts[0])
+  }
+)
+
+appearanceTest(
+  'warns after a Market account switch and uses a fresh ID for a manual resend',
+  async ({ page }) => {
+    const { dialog, attempts, switchAccount } = await sendReplyWithUncertainResult(page)
+    await switchAccount()
+
+    await expect(dialog.getByRole('textbox')).toHaveValue(replyBody)
+    await expect(dialog.getByText('回复 example', { exact: true })).toBeVisible()
+    await expect(dialog.getByText(previousAccountWarning)).toBeVisible()
+    expect(attempts).toHaveLength(1)
+
+    await dialog.getByRole('button', { name: '发送', exact: true }).click()
+    await expect(dialog.getByText(replyBody, { exact: true })).toBeVisible()
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1]).toEqual({
+      session: 'account-b',
+      draft: {
+        body: replyBody,
+        reply_to_id: original.id,
+        client_message_id: expect.stringMatching(/.+/),
+      },
+    })
+    expect(attempts[1]?.draft.client_message_id).not.toBe(attempts[0]?.draft.client_message_id)
   }
 )
 
