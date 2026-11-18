@@ -223,6 +223,8 @@ class _Session:
     update_names: dict[str, str] = field(default_factory=dict)
     # Set while a host callback waits for the user's answer.
     question: asyncio.Future[dict[str, Any]] | None = None
+    # Done the moment that answer is in, before whoever asked goes on.
+    at_answer: Callable[[], None] | None = None
     ask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # True after a ``waiting`` report: the answer becomes the session's next work.
     awaiting_prompt: bool = False
@@ -389,6 +391,70 @@ def build_answers(questions: list[Any], text: str) -> dict[str, Any]:
             selected = selected[:1]
         answers.append({"id": str(question.get("id", index)), "selected": selected, "custom": text})
     return {"answers": answers}
+
+
+class _UsageCut:
+    """Where what a commission had used ends when the user allows it more.
+
+    Begun the moment the answer is in (``begin``, with nothing
+    awaited before). From then on no write of usage begins, so what
+    the ledger has is what was written before the answer; and a mark
+    is put where what the runtimes had said by then ends. What is
+    handled before the mark was used before the answer: it is in the
+    ledger, or owed. What comes after the mark is put down as owed
+    as well for the time being (nothing is written), and noted
+    apart: used after the answer, it is not part of what the new
+    limit is counted from, and comes out of what was allowed.
+    """
+
+    def __init__(self, manager: "TaskAgentManager") -> None:
+        self._manager = manager
+        self._begun = False
+        self._over = False
+        self._reached: "asyncio.Future[None] | None" = None
+        self._late: dict[Any, Any] | None = None
+
+    def begin(self) -> None:
+        """Put the end where things stand now; nothing is awaited. Once only."""
+        if self._begun or self._over:
+            return
+        self._begun = True
+        manager = self._manager
+        manager._usage_reading += 1
+        self._reached = manager._mark(self._after)
+        if self._reached is None:
+            # Nothing handles what the runtimes say: nothing is on its way.
+            self._after()
+
+    def _after(self) -> None:
+        # From here on what is put down as owed was said after the answer.
+        if self._late is None and not self._over:
+            self._late = {}
+            self._manager._usage_late.append(self._late)
+
+    async def owed(self, root: str) -> int:
+        """Return what the work of ``root`` used before the answer that the ledger does not have."""
+        manager = self._manager
+        # The writes that were under way end in the ledger, or as owed.
+        await manager._usage_at_rest()
+        await manager._reach(self._reached)
+        # (Not reached in time: what is owed by now is what there is to go by.)
+        self._after()
+        # Both as they stand at one moment: what is owed, less what of it came after the answer.
+        owed, late = dict(manager._usage_owed), dict(self._late or {})
+        return max(0, await manager._owed_tokens(root, owed_at=owed) - await manager._owed_tokens(root, owed_at=late))
+
+    def end(self) -> None:
+        """Let usage be written again. Once only, and only if it was begun."""
+        if self._over:
+            return
+        self._over = True
+        if not self._begun:
+            return
+        manager = self._manager
+        if self._late is not None:
+            manager._usage_late[:] = [late for late in manager._usage_late if late is not self._late]
+        manager._usage_read_over()
 
 
 class TaskAgentManager:
@@ -570,9 +636,11 @@ class TaskAgentManager:
         self._usage_writes: set[asyncio.Task[Any]] = set()
         # How many are reading the account of a commission right now: no
         # write of usage begins meanwhile (``_usage_read``), and which
-        # were put off for it.
+        # were put off for it. And where what is put off is noted apart
+        # (``_UsageCut``).
         self._usage_reading = 0
         self._usage_put_off: set[tuple[str, str | None]] = set()
+        self._usage_late: list[dict[Any, Any]] = []
         # Commissions whose task agent was told to hand over what it has,
         # each with the requests it has left for that: kept apart from
         # the session it was told in, which an idle runtime closes while
@@ -741,25 +809,38 @@ class TaskAgentManager:
         """Wait until every event received so far has been handled."""
         await self._events.join()
 
-    async def _caught_up(self, within: float = _CAUGHT_UP_SECONDS, then: Callable[[], None] | None = None) -> None:
+    def _mark(self, then: Callable[[], None] | None = None) -> "asyncio.Future[None] | None":
+        """Mark where what the runtimes have said up to now ends; None when nothing handles what they say.
+
+        Not a coroutine: the mark is where it is put, with nothing
+        awaited before. ``then`` is called at that very point by
+        whoever handles the events, before what was said after it is
+        handled (and not at all once nobody waits for the mark).
+        """
+        if self._pump is None or self._pump.done():
+            return None
+        reached: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._events.put_nowait({_REACHED: reached, _THEN: then})
+        return reached
+
+    async def _reach(self, reached: "asyncio.Future[None] | None", within: float = _CAUGHT_UP_SECONDS) -> None:
+        """Wait until a mark is reached, and no longer than a moment."""
+        if reached is None:
+            return
+        try:
+            await asyncio.wait_for(reached, within)
+        except asyncio.TimeoutError:
+            logger.warning("the runtime's events were not caught up with in time; going on")
+
+    async def _caught_up(self, within: float = _CAUGHT_UP_SECONDS) -> None:
         """Wait until what the runtimes have said up to now is handled, and no longer than a moment.
 
         For a callback of a session whose answer depends on what the
         session said just before: a runtime's events are handled one at a
         time, in a task of their own, and a callback is not one of them.
         Unlike ``settle`` this does not wait for what is said meanwhile.
-        ``then`` is called at that very point, before what was said after
-        it is handled (and not at all when the point is not reached in
-        time, or nothing handles events).
         """
-        if self._pump is None or self._pump.done():
-            return
-        reached: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._events.put_nowait({_REACHED: reached, _THEN: then})
-        try:
-            await asyncio.wait_for(reached, within)
-        except asyncio.TimeoutError:
-            logger.warning("the runtime's events were not caught up with in time; going on")
+        await self._reach(self._mark(), within)
 
     # -- starting ---------------------------------------------------------
 
@@ -2344,6 +2425,8 @@ class TaskAgentManager:
             # reading is over (``_usage_read``). Begun now, it would be
             # in neither place for a moment.
             self._owe(key, amounts, context, said)
+            for late in self._usage_late:
+                self._owe(key, amounts, context, said, into=late)
             self._usage_put_off.add(key)
             return
         owed = self._usage_owed.pop(key, None)
@@ -2403,13 +2486,23 @@ class TaskAgentManager:
                     self._context_written[key[0]] = max(said, self._context_written.get(key[0], 0))
 
     def _owe(
-        self, key: tuple[str, str | None], amounts: tuple[int, int, int, int, int], context: int | None, said: int
+        self,
+        key: tuple[str, str | None],
+        amounts: tuple[int, int, int, int, int],
+        context: int | None,
+        said: int,
+        *,
+        into: dict[Any, Any] | None = None,
     ) -> None:
-        """Put what requests used down as owed, with what is owed of the same session and commission already."""
-        before = self._usage_owed.get(key, (0, 0, 0, 0, 0, None, 0))
+        """Put what requests used down as owed, with what is owed of the same session and commission already.
+
+        ``into``: noted there instead, in the same way.
+        """
+        owed = self._usage_owed if into is None else into
+        before = owed.get(key, (0, 0, 0, 0, 0, None, 0))
         # How long the conversation was, as of whichever said so later.
         length = (context, said) if context is not None and said > before[6] else (before[5], before[6])
-        self._usage_owed[key] = (
+        owed[key] = (
             amounts[0] + before[0],
             amounts[1] + before[1],
             amounts[2] + before[2],
@@ -2433,22 +2526,30 @@ class TaskAgentManager:
         """
         self._usage_reading += 1
         try:
-            while self._usage_writes:
-                await asyncio.wait(list(self._usage_writes))
+            await self._usage_at_rest()
             yield
         finally:
-            self._usage_reading -= 1
-            if not self._usage_reading and self._usage_put_off:
-                # What was put off is written now, and that only: what
-                # was owed before this, because the ledger did not take
-                # it, is tried again when it always was, and not with
-                # every reading. With the writes of usage, which
-                # shutting down waits for and does not cut off.
-                put_off, self._usage_put_off = self._usage_put_off, set()
-                if not self._closed:
-                    writing = asyncio.ensure_future(self._write_put_off(put_off))
-                    self._usage_writes.add(writing)
-                    writing.add_done_callback(self._usage_writes.discard)
+            self._usage_read_over()
+
+    async def _usage_at_rest(self) -> None:
+        """Wait until no write of usage is under way: each has ended in the ledger, or as owed again."""
+        while self._usage_writes:
+            await asyncio.wait(list(self._usage_writes))
+
+    def _usage_read_over(self) -> None:
+        """Let usage be written again, now that an account is read; what was put off is written."""
+        self._usage_reading -= 1
+        if not self._usage_reading and self._usage_put_off:
+            # What was put off is written now, and that only: what was
+            # owed before this, because the ledger did not take it, is
+            # tried again when it always was, and not with every
+            # reading. With the writes of usage, which shutting down
+            # waits for and does not cut off.
+            put_off, self._usage_put_off = self._usage_put_off, set()
+            if not self._closed:
+                writing = asyncio.ensure_future(self._write_put_off(put_off))
+                self._usage_writes.add(writing)
+                writing.add_done_callback(self._usage_writes.discard)
 
     async def _write_put_off(self, keys: set[tuple[str, str | None]]) -> None:
         """Write what was put off while the account of a commission was read, each once."""
@@ -3034,6 +3135,10 @@ class TaskAgentManager:
         if session is None:
             return await self._answer_closed(commission_id, text)
         if session.question is not None and not session.question.done():
+            if session.at_answer is not None:
+                # With nothing awaited between this and the answer being
+                # in: whoever asked gets to go on only later.
+                session.at_answer()
             session.question.set_result({"text": text, "choice": choice})
             return True
         if session.awaiting_prompt and self._runtime_of(session) is not None:
@@ -3793,34 +3898,33 @@ class TaskAgentManager:
                 if standing is None:
                     return None
                 if standing.root not in self._refused_more:
-                    decision = await self._permissions.ask_each_time(
-                        commission_id,
-                        USAGE_LIMIT,
-                        detail={"used": tokens_text(standing.used), "more": tokens_text(limit)},
-                    )
-                    if decision.allow:
-                        # As much again from what had been used when
-                        # the user said so. With nothing awaited since
-                        # the answer, no write of usage begins from
-                        # here on (``_usage_read``): what the ledger
-                        # has is what was written before the answer.
-                        # What the runtimes had said by then and is
-                        # not handled yet is handled, and put down as
-                        # owed. What is owed at that point, with what
-                        # the ledger did not take before, was used
-                        # before more was allowed, and is allowed on
-                        # top: left out, that much of what was
-                        # allowed would be gone the moment it is
-                        # written. What is said after the answer is
-                        # not among it, and comes out of what was
-                        # allowed.
-                        async with self._usage_read():
-                            owed_then: list[dict[Any, Any]] = []
-                            await self._caught_up(then=lambda: owed_then.append(dict(self._usage_owed)))
-                            owed = await self._owed_tokens(
-                                standing.root, owed_at=owed_then[0] if owed_then else dict(self._usage_owed)
-                            )
+                    # As much again, if the user allows it, from what had
+                    # been used when they said so: begun the moment the
+                    # answer is in (``_UsageCut``), and not when this
+                    # gets to go on, which is a while later (the
+                    # commission is put back to work first).
+                    cut = _UsageCut(self)
+                    session.at_answer = cut.begin
+                    try:
+                        decision = await self._permissions.ask_each_time(
+                            commission_id,
+                            USAGE_LIMIT,
+                            detail={"used": tokens_text(standing.used), "more": tokens_text(limit)},
+                        )
+                        if decision.allow:
+                            # (Answered by a way that does not come by the
+                            # session: it ends here, then.)
+                            cut.begin()
+                            # What was used before the answer and is not
+                            # in the ledger is allowed on top: left out,
+                            # that much of what was allowed would be
+                            # gone the moment it is written.
+                            owed = await cut.owed(standing.root)
                             await self._ledger.allow_usage(commission_id, limit + owed)
+                    finally:
+                        session.at_answer = None
+                        cut.end()
+                    if decision.allow:
                         # What the ledger did not take before is tried
                         # once more (the user may have taken a while).
                         await self._write_owed_usage()

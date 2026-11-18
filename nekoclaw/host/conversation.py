@@ -97,7 +97,11 @@ class RecentConversation:
         now = self._clock()
         said_at = now
         if at is not None:
-            said_at = float(at)
+            try:
+                said_at = float(at)
+            except (OverflowError, TypeError, ValueError):
+                # (A whole number too large to be one of seconds, say.)
+                said_at = math.inf
             if not math.isfinite(said_at):
                 # A time that is no time: as if it was said now. Kept as
                 # it is, nothing compares with it, and what comes after

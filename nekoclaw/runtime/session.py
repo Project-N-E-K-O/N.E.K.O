@@ -1147,8 +1147,16 @@ class TaskAgentSession(SessionInbox):
         )
 
     def _pinned(self) -> tuple[str, ...]:
-        """Return the row a summary leaves word for word: the text that opened the commission under way.
+        """Return the rows a summary leaves word for word: the text that opened the commission under way, and what the host said about usage.
 
+        What the host said about usage (that no more may be used, and
+        that what there is has to be handed over) is said for the run
+        it was said in, and taken out when that is over
+        (``_drop_usage_notices``). Summed up on the way, it would be
+        part of the summary, which is told to keep such limits, and
+        every later run of the session would be told to stop.
+
+        The text that opened the commission:
         Not when it is longer than half of what a conversation may fill of
         the window: kept whole next to what every request begins with, it
         would leave a summary nothing to shorten, and the request would be
@@ -1157,15 +1165,20 @@ class TaskAgentSession(SessionInbox):
         small.) It is then cut down and summed up like what the user said
         before it.
         """
+        rows = self.transcript.rows()
+        pinned = [
+            row.entry_id
+            for row in rows
+            if isinstance(row.message, CustomMessage) and row.message.custom_type == "notice:usage"
+        ]
         opening = self._opening_entry_id
-        if not opening:
-            return ()
-        row = next((row for row in self.transcript.rows() if row.entry_id == opening), None)
-        if row is None:
-            return ()
-        policy = self.context.policy
-        room = (policy.threshold - self.context.fixed_tokens) // 2
-        return (opening,) if estimate_tokens(row.message, policy.image_tokens) <= room else ()
+        row = next((row for row in rows if row.entry_id == opening), None) if opening else None
+        if row is not None:
+            policy = self.context.policy
+            room = (policy.threshold - self.context.fixed_tokens) // 2
+            if estimate_tokens(row.message, policy.image_tokens) <= room:
+                pinned.append(row.entry_id)
+        return tuple(pinned)
 
     def _persist_compaction(self, compaction: Compaction) -> None:
         self._recorder.link(

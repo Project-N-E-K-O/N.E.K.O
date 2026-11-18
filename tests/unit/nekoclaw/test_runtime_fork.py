@@ -1799,3 +1799,52 @@ async def test_closing_a_session_whose_summing_up_waits_for_the_record_waits_for
         refuse.set()
         if closing is None:
             await session.close()
+
+
+# ---------------------------------------------------------------------------
+# The eighteenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_what_the_host_said_about_usage_is_not_summed_up_on_the_way_and_goes_with_its_run(tmp_path: Path) -> None:
+    answers: list[Any] = []
+
+    async def budget(session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        del session_id, payload
+        return answers.pop(0) if answers else None
+
+    llm = ScriptedLLM()
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm, HostCallbacks(budget=budget))
+
+    def told() -> list[Any]:
+        return [message for message in session.harness.message_list if getattr(message, "custom_type", None) == "notice:usage"]
+
+    try:
+        await _seed(session, events, llm)
+        answers.append({"notice": "No more may be used. Hand over what you have."})
+        # What it hands over is longer than what a summary leaves word for word: what the host
+        # said in front of it is in the part that is summed up.
+        llm.add(say("Handing over: half is done. " + _words(4_000, "hw")), finish())
+        await _ask(session, events, "Sort the photos.")
+        assert len(told()) == 1
+
+        # Summed up on the way, as before a request of a run that would not fit.
+        llm.add(say("## Current Work\n- half is done"), usage(2_500, 40), finish())
+        before = len(llm.requests)
+        await session._fit(force=True)
+        assert len(llm.requests) == before + 1
+        asked = _said(llm.requests[-1])
+        assert asked[-1] == f"user: {texts.COMPACTION_INSTRUCTION}" and any("Finished step 0." in line for line in asked)
+        # What the host said about usage is no part of the summary: a summary keeps such limits,
+        # and every later run of the session would be told to stop.
+        assert not any("No more may be used" in line for line in asked)
+        # It is still there as it was said, for the run it was said in ...
+        assert [message.content for message in told()] == ["No more may be used. Hand over what you have."]
+
+        # ... and goes with it.
+        llm.add(say("Sorted."), finish())
+        ended = await _ask(session, events, "Go on.")
+        assert ended["text"] == "Sorted." and told() == []
+        assert not any("No more may be used" in line for line in _said(llm.requests[-1]))
+    finally:
+        await session.close()

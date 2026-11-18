@@ -1243,8 +1243,9 @@ def _puts_a_capability_switch_off(node: ast.AST) -> bool:
                 isinstance(target, ast.Subscript)
                 and _is_the_switches(target.value)
                 and not (isinstance(target.slice, ast.Constant) and target.slice.value not in _CAPABILITY_SWITCHES)
-                # (Put on, as it stands there: not what toggles it, or sets it by something.)
-                and not (isinstance(node, ast.Assign) and _is_true(node.value))
+                # (Put on, as it stands there, with a type said for it or without: not what
+                # toggles it, or sets it by something.)
+                and not (isinstance(node, (ast.Assign, ast.AnnAssign)) and _is_true(node.value))
             ):
                 return True
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and _is_the_switches(node.func.value):
@@ -1305,6 +1306,8 @@ def test_a_switch_is_put_off_though_what_was_kept_could_not_be_dropped_and_that_
         ('Modules.agent_flags.pop("user_plugin_enabled", None)', True),
         # Put on, read, or another switch than the three.
         ('Modules.agent_flags["browser_use_enabled"] = True', False),
+        ('Modules.agent_flags["browser_use_enabled"]: bool = True', False),
+        ('Modules.agent_flags["browser_use_enabled"]: bool = False', True),
         ('on = Modules.agent_flags.get("browser_use_enabled", False)', False),
         ("old_flags = dict(Modules.agent_flags)", False),
         ('Modules.agent_flags["something_else"] = False', False),

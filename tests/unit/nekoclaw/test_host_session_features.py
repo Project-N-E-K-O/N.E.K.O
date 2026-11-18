@@ -4145,45 +4145,6 @@ async def test_what_a_copy_that_failed_left_is_still_the_hosts_to_remove_when_wh
     assert len(attempts) == 2 and not Path(left[0]).exists()
 
 
-async def test_what_was_used_before_the_user_allowed_more_and_not_heard_of_yet_does_not_come_out_of_it(
-    hosts, tmp_path, monkeypatch
-):
-    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
-    llm = ScriptedLLM(
-        [
-            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
-            [call("report", {"status": "ready", "summary": "sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
-        ]
-    )
-    host = _host(hosts, tmp_path, llm)
-    manager = host.task_agents
-    ask = manager._permissions.ask_each_time
-
-    async def said_just_before_the_answer(commission_id: str, *args: Any, **kwargs: Any) -> Any:
-        decision = await ask(commission_id, *args, **kwargs)
-        # A request of a task agent of the commission has said what it used, and the host has not
-        # got to that when the user's answer is in.
-        manager._events.put_nowait(
-            {"type": "usage", "session_id": manager._sessions[commission_id].session_id, "input": 150, "output": 50}
-        )
-        return decision
-
-    manager._permissions.ask_each_time = said_just_before_the_answer
-    try:
-        first = (await _dispatch(host, "sort the photos")).commissions[0]
-        question = await _asked(host, first.id)
-        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_100)
-        assert await host.answer(first.id, "ok", choice="once")
-        await wait_status(host, first.id, "done")
-        await _let_go(host)
-    finally:
-        manager._permissions.ask_each_time = ask
-    # As much again from all that was used when the answer came: what the user was told of, and
-    # what the host had not heard of yet. Used before more was allowed, it is not taken from it.
-    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 200 + 1_000
-    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
-
-
 # ---------------------------------------------------------------------------
 # The seventeenth batch of the review
 # ---------------------------------------------------------------------------
@@ -4196,6 +4157,8 @@ async def test_only_what_was_put_off_while_the_account_was_read_is_written_once_
     await _let_go(host)
     manager = host.task_agents
     before = (await host.ledger.get(first.id)).tokens
+    # (The session a commission opens has the commission's id.)
+    before_in = (await host.ledger.get_session(first.id)).tokens
     add = host.ledger.add_usage
     written: list[str] = []
 
@@ -4208,11 +4171,11 @@ async def test_only_what_was_put_off_while_the_account_was_read_is_written_once_
         # Owed from before: the ledger did not take it then.
         manager._usage_owed[("an-older-session", first.id)] = (1, 5, 5, 0, 0, None, 0)
         async with manager._usage_read():
-            await manager._note_usage("a-session", first.id, {"input": 100, "output": 10})
+            await manager._note_usage(first.id, first.id, {"input": 100, "output": 10})
             # Put off, and where whoever reads the account finds it.
             assert written == [] and await manager._owed_tokens(first.id) == 10 + 110
         await wait_until(
-            lambda: ("a-session", first.id) not in manager._usage_owed and not manager._usage_writes,
+            lambda: (first.id, first.id) not in manager._usage_owed and not manager._usage_writes,
             what="what was put off being written",
         )
     finally:
@@ -4220,52 +4183,11 @@ async def test_only_what_was_put_off_while_the_account_was_read_is_written_once_
     # That, and nothing else: what the ledger did not take before is tried again when it always
     # was (with the next request of its session, when the session is let go of, when the host
     # shuts down), and not with every look at the account.
-    assert written == ["a-session"]
+    assert written == [first.id]
     assert (await host.ledger.get(first.id)).tokens - before == 110
+    assert (await host.ledger.get_session(first.id)).tokens - before_in == 110
     assert list(manager._usage_owed) == [("an-older-session", first.id)]
     manager._usage_owed.clear()
-
-
-async def test_what_is_used_after_the_user_allowed_more_comes_out_of_what_was_allowed(hosts, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
-    llm = ScriptedLLM(
-        [
-            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
-            [call("report", {"status": "ready", "summary": "sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
-        ]
-    )
-    host = _host(hosts, tmp_path, llm)
-    manager = host.task_agents
-    caught_up = manager._caught_up
-    said_late: list[int] = []
-
-    async def said_right_after_the_answer(*args: Any, **kwargs: Any) -> None:
-        await caught_up(*args, **kwargs)
-        if kwargs.get("then") is not None and not said_late:
-            # The user has answered, and what was said before that is handled. Only now, while it
-            # is worked out what more may be used, a task agent of the commission says what a
-            # request used.
-            said_late.append(1)
-            (session,) = manager._sessions.values()
-            manager._events.put_nowait({"type": "usage", "session_id": session.session_id, "input": 150, "output": 50})
-            await caught_up()
-
-    manager._caught_up = said_right_after_the_answer
-    try:
-        first = (await _dispatch(host, "sort the photos")).commissions[0]
-        question = await _asked(host, first.id)
-        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_100)
-        assert await host.answer(first.id, "ok", choice="once")
-        await wait_status(host, first.id, "done")
-        await _let_go(host)
-    finally:
-        manager._caught_up = caught_up
-    assert said_late == [1]
-    # As much again from what had been used when the user answered. What was said after that is
-    # on the account like anything else, and is used from what was allowed.
-    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
-    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
-    assert manager._usage_owed == {}
 
 
 def test_a_message_with_a_time_that_is_no_time_is_kept_as_said_now_and_the_others_stay_in_their_order() -> None:
@@ -4279,4 +4201,188 @@ def test_a_message_with_a_time_that_is_no_time_is_kept_as_said_now_and_the_other
         ("said before both", 99.0),
         ("said at a hundred", 100.0),
         ("said at no time", 100.0),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The eighteenth batch of the review: what more a commission may use is counted from where
+# the user's answer was in
+# ---------------------------------------------------------------------------
+
+
+def _over_at_the_second_request() -> ScriptedLLM:
+    return ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
+        ]
+    )
+
+
+def _says_it_used_200(manager: Any) -> None:
+    """Have a task agent of the one commission at work say that a request used 200."""
+    (session,) = manager._sessions.values()
+    manager._events.put_nowait({"type": "usage", "session_id": session.session_id, "input": 150, "output": 50})
+
+
+async def test_what_is_used_after_the_answer_is_in_comes_out_of_what_was_allowed(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    host = _host(hosts, tmp_path, _over_at_the_second_request())
+    manager = host.task_agents
+    transition = host.ledger.transition
+    said_late: list[int] = []
+
+    async def said_while_the_commission_is_put_back_to_work(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if kwargs.get("reason") == "the user answered" and not said_late:
+            # The answer is in, and whoever asked has not got to go on: the commission is put back
+            # to work first. What a task agent says it used meanwhile was used after the answer.
+            said_late.append(1)
+            _says_it_used_200(manager)
+            await manager._caught_up()
+        return await transition(commission_id, status, **kwargs)
+
+    host.ledger.transition = said_while_the_commission_is_put_back_to_work
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        question = await _asked(host, first.id)
+        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_100)
+        assert await host.answer(first.id, "ok", choice="once")
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        host.ledger.transition = transition
+    assert said_late == [1]
+    # As much again from what had been used when the answer was in. What was said after that is
+    # on the account like anything else, and is used from what was allowed.
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
+    assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0
+
+
+async def test_what_is_said_while_a_write_that_was_under_way_when_the_user_answered_is_waited_for_is_after_the_answer(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    host = _host(hosts, tmp_path, _over_at_the_second_request())
+    manager = host.task_agents
+    add, at_rest = host.ledger.add_usage, manager._usage_at_rest
+    entered, go, waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def of_the_other_session_slow(**kwargs: Any) -> None:
+        if kwargs["session_id"] == "another-session":
+            entered.set()
+            await go.wait()
+        await add(**kwargs)
+
+    async def waited_for() -> None:
+        waiting.set()
+        await at_rest()
+
+    host.ledger.add_usage = of_the_other_session_slow
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        question = await _asked(host, first.id)
+        assert question["detail"]["used"] == tokens_text(1_100)
+        # What another task agent of the commission used (50) is being written when the user answers.
+        manager._spawn(manager._write_usage(("another-session", first.id), (1, 30, 20, 0, 0), None, 0))
+        await asyncio.wait_for(entered.wait(), 10)
+        manager._usage_at_rest = waited_for
+        assert await host.answer(first.id, "ok", choice="once")
+        # The host waits for that write before it works out what more may be used. What is said
+        # meanwhile was said after the answer, however long the waiting takes.
+        await asyncio.wait_for(waiting.wait(), 10)
+        _says_it_used_200(manager)
+        await manager._caught_up()
+        go.set()
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        go.set()
+        host.ledger.add_usage, manager._usage_at_rest = add, at_rest
+    # The 50 were used before the answer, and are part of what the new limit is counted from;
+    # the 200 were not, and come out of what was allowed.
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 50 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 50 + 200 + 130
+    assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0
+
+
+async def test_the_writing_of_usage_goes_on_when_the_user_refuses_more(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
+            [call("report", {"status": "blocked", "summary": "half is sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await _asked(host, first.id)
+    assert await host.answer(first.id, "no", choice="deny")
+    await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    # Nothing was allowed, and nothing is held back any more: what the handing over used is on the account.
+    assert (await host.ledger.usage_standing(first.id)).allowed is None
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 130
+    assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0
+
+
+async def test_what_was_used_before_the_user_allowed_more_and_not_heard_of_yet_does_not_come_out_of_it(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    host = _host(hosts, tmp_path, _over_at_the_second_request())
+    manager = host.task_agents
+    handle, reach = manager._handle, manager._reach
+    held, go, at_the_mark = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def held_up_by_something_else(event: dict[str, Any]) -> None:
+        if event.get("type") == "held-up":
+            held.set()
+            await go.wait()
+            return
+        await handle(event)
+
+    async def waited_for(*args: Any, **kwargs: Any) -> None:
+        at_the_mark.set()
+        await reach(*args, **kwargs)
+
+    manager._handle = held_up_by_something_else
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        question = await _asked(host, first.id)
+        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_100)
+        # Whoever handles what the runtimes say is busy with something else when a task agent of
+        # the commission says what a request used: said before the answer, and not handled by then.
+        manager._events.put_nowait({"type": "held-up"})
+        await asyncio.wait_for(held.wait(), 10)
+        _says_it_used_200(manager)
+        manager._reach = waited_for
+        assert await asyncio.wait_for(host.answer(first.id, "ok", choice="once"), 10)
+        # What more may be used is not worked out before what was said up to the answer is handled.
+        await asyncio.wait_for(at_the_mark.wait(), 10)
+        assert (await host.ledger.usage_standing(first.id)).allowed is None
+        go.set()
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        go.set()
+        manager._handle, manager._reach = handle, reach
+    # As much again from all that had been used when the answer was in: what the user was told
+    # of, and what the host had not got to yet. Used before more was allowed, it is not taken from it.
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 200 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
+    assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0
+
+
+def test_a_message_with_a_time_too_large_to_be_one_is_kept_as_said_now() -> None:
+    kept = RecentConversation(clock=lambda: 100.0)
+    # A whole number that is no number of seconds any more (it cannot even be compared as one).
+    assert kept.note_event(
+        {"turn_type": "user_message", "lanlan_name": "Lan", "content": "said at a time out of all bounds", "ts": 10**309}
+    )
+    assert kept.note("Lan", ROLE_CHARACTER, "said before it", at=99.0)
+    assert [(turn.text, turn.at) for turn in kept.recent("Lan")] == [
+        ("said before it", 99.0),
+        ("said at a time out of all bounds", 100.0),
     ]
