@@ -164,9 +164,10 @@ class _LeftOpen:
     numbers: list[int]
     # What the turn began with, where the turn failed before it was known
     # that dsh had begun it: told of as taken with the texts above, should
-    # their answer turn out to have got there. (One list for all the
-    # answers the turn left open: told of once, by whichever says so
-    # first.)
+    # their answer turn out to have got there. The same list, and not a
+    # copy of it, for all the answers the turn left open: whichever says
+    # so first tells of it and empties it, so that it is told of once. (A
+    # copy each would tell of it once for every answer.)
     began: list[int] = field(default_factory=list)
     # Whether they are queued again where the answer went nowhere: not
     # those of a run that was stopped.
@@ -1224,8 +1225,12 @@ class DshRuntime:
             await asyncio.wait(open_ones, timeout=DSH_ANSWER_SETTLE_SECONDS)
         self._answers_known(session)
 
-    def _answers_known(self, session: _Session, began: list[int] | None = None) -> None:
+    def _answers_known(self, session: _Session, began: list[int] | None = None) -> bool:
         """Leave of what a turn's calls were handed (``awaited``) the texts dsh is known to have; stop waiting for the rest.
+
+        Returns whether the answer of any call of the turn is known to
+        have got to dsh, with a text in it or with none (a call that was
+        woken with nothing left for it): dsh was at work on the turn then.
 
         Each text by the answer that carried it last: one whose answer
         went nowhere was queued again, and a later call of the turn may
@@ -1240,6 +1245,7 @@ class DshRuntime:
         for outcome, numbers in session.answering:
             for number in numbers:
                 got_there[number] = outcome.done() and outcome.result()
+        reached = any(outcome.done() and outcome.result() for outcome, _numbers in session.answering)
         session.awaited = [number for number in session.awaited if got_there.get(number, True)]
         session.unsettled.update(
             (outcome, _LeftOpen(numbers, began if began is not None else []))
@@ -1247,6 +1253,7 @@ class DshRuntime:
             if not outcome.done()
         )
         session.answering = []
+        return reached
 
     def _give_back(self, session: _Session, texts: list[str], of_run: int, *, late: bool = False) -> None:
         """Queue again the texts a call was handed whose answer did not reach dsh.
@@ -1333,17 +1340,17 @@ class DshRuntime:
                         # its calls were handed and dsh is known to have
                         # (the answer got there) is in its conversation,
                         # and is told of as taken. With what the turn
-                        # began with, where a call of it was answered: the
-                        # turn was under way by then, and not refused at
-                        # the door. An answer still on its way is not
+                        # began with, where a call of it was answered
+                        # (with a text or with none): the turn was under
+                        # way by then, and not refused at the door. An
+                        # answer still on its way is not
                         # waited for, here or at the end of a later turn,
                         # and is dealt with when it is known: where it
                         # got there, that shows the same of what the turn
                         # began with, which is told of with it then,
                         # unless it is told of here.
                         began = list(sent)
-                        self._answers_known(session, began)
-                        if session.awaited:
+                        if self._answers_known(session, began):
                             self._say_taken(session, sent)
                             began.clear()
                         self._say_taken(session, session.awaited)
