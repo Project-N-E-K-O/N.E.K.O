@@ -628,6 +628,22 @@ def test_theater_entry_uses_independent_proactive_invites():
         assert "url: '/theater-numeric'" not in source
 
 
+def test_selector_title_bar_has_shared_window_controls():
+    """The selector is its own window; its title bar must keep the shared window buttons."""
+
+    html = _source("templates/theater.html")
+    selector_start = html.index("data-theater-selector-app")
+    header = html[html.index("<header", selector_start):html.index("</header>", selector_start)]
+
+    assert "/static/js/window_controls.js" in html
+    assert "/static/css/window_controls.css" in html
+    assert 'class="neko-window-controls' in header
+    for control in ("pin", "minimize", "maximize", "close"):
+        assert f'data-neko-window-control="{control}"' in header
+    # Pin stays hidden until the desktop host reports it as available.
+    assert 'data-neko-window-control="pin" hidden' in header
+
+
 _THEATER_FRONTEND_SOURCES = (
     "static/app/app-theater-runtime.js",
     "static/js/theater_selector.js",
