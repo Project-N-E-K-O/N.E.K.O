@@ -484,3 +484,28 @@ async def test_a_model_with_envelope_like_fields_is_not_mistaken_for_an_envelope
 
     runtime = _executor({"entry": entry}, {"entry": _meta_of(entry)})
     assert await runtime.invoke("plugin_entry", "entry", {}) == {"success": True, "error": None, "time": 1.5, "data": 3}
+
+
+class MaybeInt(RootModel[Union[int, None]]):
+    @field_validator("root")
+    @classmethod
+    def not_none(cls, value):
+        if value is None:
+            raise ValueError("required")
+        return value
+
+
+def test_a_model_whose_own_schema_allows_null_still_validates_none():
+    @plugin_decorators.plugin_entry(id="entry")
+    async def entry() -> MaybeInt:
+        return MaybeInt(1)
+
+    check = build_output_check(_meta_of(entry))
+    # The annotation has no "| None": None goes to the model, which rejects it.
+    assert [issue.type for issue in check(None)] == ["value_error"]
+
+    @plugin_decorators.plugin_entry(id="optional")
+    async def optional() -> MaybeInt | None:
+        return None
+
+    assert build_output_check(_meta_of(optional))(None) == []

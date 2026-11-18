@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import get_args
 
 from .entry_runtime import _build_model_instance
+from .result_contract import model_schema_from_type
 
 MAX_REPORTED_ISSUES = 20
 # Issue types starting with this mean the check itself could not run; they
@@ -81,9 +82,16 @@ def _model_check(model: type, schema: Mapping[str, object] | None) -> OutputChec
     from pydantic import ValidationError
 
     declared = _declared_names(schema)
-    # ``Model | None`` publishes ``anyOf: [<model>, {"type": "null"}]``.
+    # ``Model | None`` publishes ``anyOf: [<model>, {"type": "null"}]`` around
+    # the model's own schema. A model whose own schema allows null (e.g.
+    # ``RootModel[int | None]``) is not that: compare with the model's schema
+    # so only the annotation's ``| None`` lets a bare None skip the model.
     branches = schema.get("anyOf") if schema is not None else None
-    nullable = isinstance(branches, list) and {"type": "null"} in branches
+    nullable = (
+        isinstance(branches, list)
+        and {"type": "null"} in branches
+        and schema != model_schema_from_type(model)
+    )
 
     def check(value: object) -> list[OutputIssue]:
         if isinstance(value, model) or (value is None and nullable):
