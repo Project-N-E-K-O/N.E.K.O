@@ -1755,7 +1755,13 @@ class Ledger:
         return await self.run(work)
 
     async def turn_over(
-        self, commission_id: str, *, word: Callable[[Message], str], state: str = "", taken: Iterable[int] = ()
+        self,
+        commission_id: str,
+        *,
+        word: Callable[[Message], str],
+        state: str = "",
+        taken: Iterable[int] = (),
+        until: float | None = None,
     ) -> int:
         """Tell the senders who asked for it that the turn their notes began in a commission is over.
 
@@ -1771,8 +1777,12 @@ class Ledger:
         else. ``taken`` are wake requests the session is known to have
         taken that could not be put on record as such when it took them:
         they are, here, before the notes are looked at, so that a note
-        the turn did answer is told of. Returns how many were written.
-        No model is called for any of it.
+        the turn did answer is told of. ``until`` is for a turn that ended
+        a while ago and is told of only now (the ledger could not be
+        written then): the notes its session had taken by then, and none
+        it took since, which belong to a later turn; ``taken`` are put on
+        record as of that time. Returns how many were written. No model
+        is called for any of it.
         """
 
         confirmed = [int(item) for item in taken]
@@ -1780,7 +1790,9 @@ class Ledger:
         def work(conn: sqlite3.Connection) -> int:
             now = self._clock()
             if confirmed:
-                self._taken(conn, confirmed, now)
+                self._taken(conn, confirmed, now if until is None else float(until))
+            by_then = "" if until is None else " AND wake_requests.taken_at <= ?"
+            asked = [commission_id] if until is None else [commission_id, float(until)]
             # Those its session took. A note that was handed over and is
             # still on its way (steered in after the run's last request,
             # say) was not answered by this turn: it is told of when the
@@ -1790,8 +1802,8 @@ class Ledger:
                 "AND notified_at IS NULL AND kind = 'note' AND EXISTS ("
                 "SELECT 1 FROM wake_requests WHERE wake_requests.message_id = messages.id "
                 "AND wake_requests.reason = 'message' AND wake_requests.status = 'fired' "
-                "AND wake_requests.taken_at IS NOT NULL) ORDER BY id",
-                (commission_id,),
+                f"AND wake_requests.taken_at IS NOT NULL{by_then}) ORDER BY id",
+                asked,
             ).fetchall()
             written = 0
             for row in rows:
@@ -1993,17 +2005,6 @@ class Ledger:
         ).fetchall()
         fired: list[int] = []
         for row in rows:
-            if row["reason"] == "notice_expiry" and row["message_id"] is not None:
-                told = conn.execute("SELECT notified_at FROM messages WHERE id = ?", (row["message_id"],)).fetchone()
-                if told is None or told["notified_at"] is not None:
-                    # Word of the note came after all (the turn it began is
-                    # over, and its sender was told so): nothing is said of
-                    # having waited in vain.
-                    conn.execute(
-                        "UPDATE wake_requests SET status = 'void', status_reason = 'word of it came' WHERE id = ?",
-                        (row["id"],),
-                    )
-                    continue
             if row["reason"] == "message" and row["message_id"] is not None:
                 note = conn.execute(
                     "SELECT status, status_reason FROM messages WHERE id = ?", (row["message_id"],)

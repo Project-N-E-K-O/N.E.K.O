@@ -555,10 +555,13 @@ class TaskAgentManager:
         # them, and the ledger could not be written when it said so.
         self._unconfirmed: set[int] = set()
         # Turns that ended while the ledger could not be written: the
-        # commission, what it ended on and how it stood, for the senders of
-        # the notes it took. Told when the ledger can be written again (it
-        # tells each sender once, whoever asks).
-        self._turns_owed: list[tuple[str, str, str]] = []
+        # commission, what it ended on and how it stood, when that was, and
+        # what its session had taken that the ledger did not have yet, for
+        # the senders of the notes it had taken by then. Told when the
+        # ledger can be written again (it tells each sender once, whoever
+        # asks), and of that turn's notes only: one the session took since
+        # belongs to a later turn.
+        self._turns_owed: list[tuple[str, str, str, float, list[int]]] = []
         # The last count against the quota was refused. Cleared by the next
         # one that is not, which has what waits for the quota tried again.
         self._quota_out = False
@@ -2265,6 +2268,19 @@ class TaskAgentManager:
         held = {wake for wakes in session.handed.values() for wake in wakes} if session is not None else set()
         back = [wake for wake in on_their_way if wake not in held and wake not in self._unconfirmed]
         if back:
+            # Their text is not kept to be said to this commission should it
+            # be taken up again (what a start that failed left behind is):
+            # they go to another commission from here.
+            going = set(back)
+
+            def stays(text: Any) -> bool:
+                return not going.intersection(getattr(text, "wakes", ()))
+
+            for kept in (self._notes, self._carried):
+                if commission_id in kept:
+                    kept[commission_id] = [text for text in kept[commission_id] if stays(text)]
+            if commission_id in self._resume and not stays(self._resume[commission_id]):
+                del self._resume[commission_id]
             await self._put_back(back)
 
     async def _return_unreturned(self, *, kick: bool = True) -> bool:
@@ -2300,10 +2316,11 @@ class TaskAgentManager:
     async def _tell_turns_owed(self) -> bool:
         """Write what the senders of notes are owed for turns that ended while the ledger could not be written."""
         owed, self._turns_owed = self._turns_owed, []
-        for index, (commission_id, text, state) in enumerate(owed):
+        for index, (commission_id, text, state, ended_at, taken) in enumerate(owed):
             try:
-                taken = sorted(self._unconfirmed)
-                written = await self._ledger.turn_over(commission_id, word=lambda _note, text=text: text, state=state, taken=taken)
+                written = await self._ledger.turn_over(
+                    commission_id, word=lambda _note, text=text: text, state=state, taken=taken, until=ended_at
+                )
                 self._unconfirmed.difference_update(taken)
             except asyncio.CancelledError:
                 self._turns_owed = [*owed[index:], *self._turns_owed]
@@ -2374,7 +2391,8 @@ class TaskAgentManager:
         from config.nekoclaw_settings import SESSION_NOTICE_TEXT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        text, state = said.strip(), "over"
+        text, state, taken = said.strip(), "over", sorted(self._unconfirmed)
+        ended_at = self._ledger._clock()
         try:
             commission = await self._ledger.get(commission_id)
             if not text and commission is not None:
@@ -2389,7 +2407,7 @@ class TaskAgentManager:
             raise
         except Exception:  # noqa: BLE001 - kept, and told when the ledger can be written again
             logger.warning("telling the senders of notes that a turn is over failed; it is tried again", exc_info=True)
-            self._turns_owed.append((commission_id, text, state))
+            self._turns_owed.append((commission_id, text, state, ended_at, taken))
             if self._returning is None or self._returning.done():
                 self._returning = self._spawn(self._return_later())
             return
