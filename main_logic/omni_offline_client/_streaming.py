@@ -1154,7 +1154,9 @@ class _StreamingMixin:
             """Take the proactive screenshot out of this turn once consent is gone.
 
             Runs synchronously right before each attempt / reroll opens its
-            stream, so no await separates the check from that request. The
+            stream, and before a failed Gemini request falls back to
+            OpenAI-compat inside one attempt, so no await separates the check
+            from that request. The
             message already sits in history, so the image part is removed from
             its content in place; the user's own images and the text stay.
             Tool rounds inside one attempt are not re-checked: the first round
@@ -1414,6 +1416,7 @@ class _StreamingMixin:
                             _tool_rounds=_turn_tool_rounds,
                             _response_generation=response_generation,
                             _instruction=_ephemeral_context,
+                            _before_fallback_request=_withhold_revoked_proactive_image,
                             **_focus_overrides,
                         ):
                             # The empty chunk a cancelled tool loop hands up is

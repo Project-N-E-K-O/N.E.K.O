@@ -379,3 +379,43 @@ def test_service_commits_under_the_epoch_the_round_started_with():
     assert "vision_consent_epoch=vision_consent_epoch" in call
     # Bound once at entry, so the commit sees the epoch the round started under.
     assert source.count("vision_consent_epoch =") == 1
+
+
+# ── 5. a failed Gemini request falls back to OpenAI-compat within one attempt ─
+
+@pytest.mark.parametrize("revoke", [False, True])
+def test_revocation_before_the_gemini_fallback_withholds_the_screenshot(monkeypatch, revoke):
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    mgr = _consent_mgr()
+    c, _captured = _make_offline_for_stream()
+    # Run the real tool-aware stream down to the provider split.
+    del c._astream_visible_with_tools
+    c._use_genai_sdk = True
+    c._genai_tools_unsupported = False
+    _stage_under(mgr, c)
+    requests: list[list[str]] = []
+
+    def _image_parts(messages):
+        return _image_urls(messages[-1].content)
+
+    async def genai_fails_before_any_text(self, messages, **_overrides):
+        requests.append(_image_parts(messages))
+        if revoke:
+            _revoke(mgr)
+        raise RuntimeError("HTTP 503 before any chunk")
+        yield  # pragma: no cover — mark as an async generator.
+
+    async def openai_fallback(self, messages, **_overrides):
+        requests.append(_image_parts(messages))
+        raise RuntimeError("stop")
+        yield  # pragma: no cover — mark as an async generator.
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_genai_with_tools", genai_fails_before_any_text)
+    monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", openai_fallback)
+
+    asyncio.run(c.stream_text("这是什么呀"))
+
+    shot = "data:image/jpeg;base64,PROACTIVE_B64"
+    assert requests[0] == [shot]  # Gemini request: consent still held.
+    assert requests[1] == ([] if revoke else [shot])
