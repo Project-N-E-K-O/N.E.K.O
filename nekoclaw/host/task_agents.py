@@ -339,11 +339,30 @@ class _Session:
 _ENDS_KEPT_MAX = 64
 
 
+def _number(value: Any) -> int | None:
+    """Return the whole number an event carries; None for anything else (a boolean is not one)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _ends_kept(session: _Session) -> None:
-    """Let go of how those runs ended that no text can be said to have been taken by any more."""
-    session.ends = [item for item in session.ends if any(number <= item[1] for number in session.handed)][
-        -_ENDS_KEPT_MAX:
-    ]
+    """Let go of how those runs ended that no text can be said to have been taken by any more.
+
+    Over the limit the earliest go, but for the first run each open
+    text was within reach of: that is the run whose call was handed the
+    text, which the runs after it cannot be told from here. A text that
+    stays open for long (its answer is on its way and never arrives)
+    would otherwise push out the one run that may still be said to have
+    taken it.
+    """
+    kept = [item for item in session.ends if any(number <= item[1] for number in session.handed)]
+    over = len(kept) - _ENDS_KEPT_MAX
+    if over > 0:
+        firsts = {
+            next((index for index, item in enumerate(kept) if item[1] >= number), None) for number in session.handed
+        }
+        gone = set([index for index in range(len(kept)) if index not in firsts][:over])
+        kept = [item for index, item in enumerate(kept) if index not in gone]
+    session.ends = kept
 
 
 def _ended_as(session: _Session, event: dict[str, Any], number: int) -> tuple[str, str] | None:
@@ -354,8 +373,8 @@ def _ended_as(session: _Session, event: dict[str, Any], number: int) -> tuple[st
     does not say is taken for the first that was accounted for as far as
     this text.
     """
-    run = event.get("run")
-    if isinstance(run, int) and not isinstance(run, bool):
+    run = _number(event.get("run"))
+    if run is not None:
         ended = next((item for item in session.ends if item[0] == run), None)
     else:
         ended = next((item for item in session.ends if item[1] >= number), None)
@@ -379,7 +398,7 @@ def _withdraw(session: _Session, serial: Any) -> list[int]:
     is not known (the text was taken, or withdrawn before) withdraws
     nothing.
     """
-    if isinstance(serial, int) and not isinstance(serial, bool):
+    if _number(serial) is not None:
         number = session.numbered.pop(serial, None)
         if number is None:
             return []
@@ -395,6 +414,21 @@ def _withdraw(session: _Session, serial: Any) -> list[int]:
             session.numbered[key] = value - 1
     session.sent -= 1
     return wakes
+
+
+def _refusal(session: _Session, event: dict[str, Any]) -> list[int]:
+    """Take the text a refusal is about out of the count of those sent; returns the wake requests it brought.
+
+    Refused, the session never took it. What it was to hand over is not
+    left under its number, which the next text gets (and whose being
+    taken would then count for this one). Which text it was, the runtime
+    says (``serial``): the next one may have been sent before this was
+    heard of, and is not the one that was refused. A refusal of anything
+    but a text, or with none sent, takes nothing out.
+    """
+    if event.get("command") in ("prompt", "steer", "follow_up") and session.sent > 0:
+        return _withdraw(session, event.get("serial"))
+    return []
 
 
 class _Handed(str):
@@ -2003,11 +2037,17 @@ class TaskAgentManager:
         if session is None:
             # Process-level messages, and events of sessions already released.
             return
+        refused: list[int] = []
         if kind == "ended":
             # In hand from here on, before anything is awaited (the first
             # of the writes below may be the one that does not answer):
             # see ``_Session.ending``.
             session.ending = event
+        elif kind == "error":
+            # Out of the count from here on, likewise: stopped at a write
+            # below as the host shuts down, what the runtime says next to
+            # be taken would be taken for the text it refused.
+            refused = _refusal(session, event)
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
         if kind == "taken":
@@ -2051,7 +2091,7 @@ class TaskAgentManager:
         elif kind == "ended":
             await self._on_ended(session, event)
         elif kind == "error":
-            await self._on_error(session, event)
+            await self._on_error(session, event, refused)
         elif kind == "usage":
             await self._on_usage(session)
         elif kind == "model_capability":
@@ -2214,26 +2254,18 @@ class TaskAgentManager:
             # that one tells of its own notes with its own words, and not
             # of these. (An end that names no number is the session's: of
             # all it took.)
-            inputs = event.get("inputs")
-            upto = inputs if isinstance(inputs, int) and not isinstance(inputs, bool) else None
+            upto = _number(event.get("inputs"))
             said = str(event.get("text") or "")
             if upto is not None:
                 # What the run took is not refused any more.
                 _not_refused(session, upto)
 
-            def ended() -> None:
-                # What its senders are told of this run, kept for a text
-                # that is said to be taken after it: with how the
-                # commission stands as the run is over, and not as a later
-                # run leaves it. For as long as a text within its reach
-                # is still open (sent, and neither said to be taken nor
-                # given up), however many runs come and go before that
-                # text is heard of; with none open it is let go at once.
-                if upto is not None:
-                    run = event.get("run")
-                    known = run if isinstance(run, int) and not isinstance(run, bool) else None
-                    session.ends.append((known, upto, *self._told(said, session.stands)))
-                _ends_kept(session)
+            async def told() -> None:
+                self._end_kept(session, event)
+                await self._turn_over(session, said, upto)
+                # Told of, or kept to be told: not in hand any more, for
+                # shutting down to tell of once again.
+                session.ending = None
 
             try:
                 await self._act_on_end(session, event)
@@ -2253,14 +2285,27 @@ class TaskAgentManager:
                 # are told of it, with these words, now or once the ledger
                 # can be written. Left to a later run, they would be told
                 # with that run's words, or of nothing.
-                ended()
-                await self._turn_over(session, said, upto)
+                await told()
                 raise
-            ended()
-            await self._turn_over(session, said, upto)
-            session.ending = None
+            await told()
         finally:
             session.settling = False
+
+    def _end_kept(self, session: _Session, event: dict[str, Any]) -> None:
+        """Keep what the senders of a run's notes are told of it, for a text that is said to be taken after it.
+
+        With how the commission stands as the run is over, and not as a
+        later run leaves it. For as long as a text within its reach is
+        still open (sent, and neither said to be taken nor given up),
+        however many runs come and go before that text is heard of; with
+        none open it is let go at once. (An end that names no number is
+        the session's, and keeps nothing.)
+        """
+        upto = _number(event.get("inputs"))
+        if upto is not None:
+            said = str(event.get("text") or "")
+            session.ends.append((_number(event.get("run")), upto, *self._told(said, session.stands)))
+        _ends_kept(session)
 
     async def _act_on_end(self, session: _Session, event: dict[str, Any]) -> None:
         from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
@@ -2490,8 +2535,7 @@ class TaskAgentManager:
             # Jobs whose end starts the next run. One that is being stopped
             # tells nobody when it is gone, and closing the session does it
             # no harm: it does not keep the session open, and its place taken.
-            jobs = event.get("waking_jobs")
-            if isinstance(jobs, int) and not isinstance(jobs, bool) and jobs > 0:
+            if (_number(event.get("waking_jobs")) or 0) > 0:
                 session.idle = True
                 return True
             resting = await looked(lambda: self._ledger.rest(commission.id))
@@ -2678,8 +2722,8 @@ class TaskAgentManager:
 
     async def _on_taken(self, session: _Session, event: dict[str, Any]) -> None:
         """Note that a text sent to a session is in its conversation: what it brought is handed over for good."""
-        number = event.get("inputs")
-        if not isinstance(number, int) or isinstance(number, bool):
+        number = _number(event.get("inputs"))
+        if number is None:
             return
         # Taken, so it is not refused any more.
         _not_refused(session, number)
@@ -2877,25 +2921,19 @@ class TaskAgentManager:
             await self.abort(child.id)
         await self._close_session(session)
 
-    async def _on_error(self, session: _Session, event: dict[str, Any]) -> None:
+    async def _on_error(self, session: _Session, event: dict[str, Any], refused: list[int]) -> None:
+        """Act on a command the runtime refused; ``refused`` is what the text it refused had brought (``_refusal``)."""
         command = event.get("command")
         message = str(event.get("message") or "the runtime rejected the command")
         commission_id = session.commission_id
-        if command in ("prompt", "steer", "follow_up") and session.sent > 0:
-            # Refused, so the session never took it. What it was to hand
-            # over is not left under its number, which the next text gets
-            # (and whose being taken would then count for this one): it is
-            # pending again, and the session is not tried again at once.
-            # Which text it was, the runtime says (``serial``): the next
-            # one may have been sent before this was heard of, and is not
-            # the one that was refused.
-            refused = _withdraw(session, event.get("serial"))
-            if refused:
-                from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
+        if refused:
+            # What the refused text was to hand over is pending again, and
+            # the session is not tried again at once.
+            from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
 
-                session.refused_until = asyncio.get_running_loop().time() + WAKE_HELD_RETRY_SECONDS
-                if not self._closed:
-                    await self._put_back(refused)
+            session.refused_until = asyncio.get_running_loop().time() + WAKE_HELD_RETRY_SECONDS
+            if not self._closed:
+                await self._put_back(refused)
         if command == "steer":
             held = session.held_end
             if held is not None and isinstance(held.get("inputs"), int) and held["inputs"] >= session.sent:
@@ -4963,9 +5001,7 @@ class TaskAgentManager:
         for session in list(self._sessions.values()):
             ending, session.ending = session.ending, None
             if ending is not None:
-                number = ending.get("inputs")
-                counted = isinstance(number, int) and not isinstance(number, bool)
-                self._owe_turn(session, str(ending.get("text") or ""), number if counted else None)
+                self._owe_end(session, ending)
         while True:
             try:
                 event = self._events.get_nowait()
@@ -4975,20 +5011,15 @@ class TaskAgentManager:
             session = self._sessions.get(self._held_by.get(str(event.get("session_id") or ""), ""))
             if session is None:
                 continue
-            number = event.get("inputs")
-            counted = isinstance(number, int) and not isinstance(number, bool)
-            if (
-                event.get("type") == "error"
-                and event.get("command") in ("prompt", "steer", "follow_up")
-                and session.sent > 0
-            ):
+            number = _number(event.get("inputs"))
+            if event.get("type") == "error":
                 # A text was refused: those sent after it move up by one,
-                # as where this is acted on as it comes (``_on_error``), so
+                # as where this is acted on as it comes (``_handle``), so
                 # that what is said to be taken next is taken for the right
                 # one. What the refused text brought stays on record as on
                 # its way, which the next process puts right.
-                _withdraw(session, event.get("serial"))
-            elif event.get("type") == "taken" and counted:
+                _refusal(session, event)
+            elif event.get("type") == "taken" and number is not None:
                 wakes = session.handed.pop(number, None)
                 if wakes:
                     self._unconfirmed.update(wakes)
@@ -5000,11 +5031,21 @@ class TaskAgentManager:
                     else:
                         session.took.setdefault(number, []).extend(wakes)
             elif event.get("type") == "ended":
-                self._owe_turn(session, str(event.get("text") or ""), number if counted else None)
+                self._owe_end(session, event)
         for session in list(self._sessions.values()):
             # What it took in a run that was not seen to end: told with how
             # the commission stands.
             self._owe_turn(session, "", None)
+
+    def _owe_end(self, session: _Session, event: dict[str, Any]) -> None:
+        """Keep, as the host shuts down, what the end of a run tells the senders of the notes it took.
+
+        And how it ended (``_end_kept``): a text that is said, in what
+        was not got to after it, to have been taken by that run is owed
+        as this run was told of, and not left to the end of a later one.
+        """
+        self._end_kept(session, event)
+        self._owe_turn(session, str(event.get("text") or ""), _number(event.get("inputs")))
 
     async def _settle_at_close(self, within: float) -> None:
         """Write what turns that are over still owe as the host shuts down, for ``within`` seconds at the most."""

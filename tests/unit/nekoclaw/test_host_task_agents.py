@@ -1614,7 +1614,10 @@ async def test_a_refused_wake_up_hands_over_the_kept_answer(hosts, tmp_path):
     assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
 
     # The runtime refuses the steer that was to wake it: no run starts.
-    await host.task_agents._on_error(session, {"type": "error", "command": "steer", "message": "refused"})
+    from nekoclaw.host.task_agents import _refusal
+
+    refusal = {"type": "error", "command": "steer", "message": "refused"}
+    await host.task_agents._on_error(session, refusal, _refusal(session, refusal))
 
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "sorted D:/Camera"
