@@ -266,3 +266,25 @@ async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
         "successor-0",
         "successor-1",
     ]
+
+
+@pytest.mark.unit
+async def test_snapshot_carries_each_frame_request_id() -> None:
+    """Offline history keeps user screenshots sampled with live frames as attachments."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=93)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    base = runtime._core_multimodal_turns[turn_id].started_at
+    assert runtime._stage_independent_visual_frame(
+        "live-frame", source="screen", request_id=None, captured_at=base + 0.1,
+    )
+    assert runtime._stage_independent_visual_frame(
+        "user-shot", source="screen", request_id="req-7", captured_at=base + 0.2,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn.images == ("live-frame", "user-shot")
+    assert turn.image_request_ids == (None, "req-7")

@@ -189,3 +189,14 @@ class MultimodalTurn:
     transcript: str
     source: str
     request_id: str | None
+    # Per image, aligned with ``images``: the request_id of a screenshot the
+    # user attached (sampled with the live frames), None for a live frame.
+    image_request_ids: tuple[str | None, ...] = ()
+
+
+def multimodal_turn_attachment_kwargs(turn) -> dict:
+    """``image_request_ids`` for an offline submit, only when a frame is a user screenshot."""
+    request_ids = tuple(getattr(turn, "image_request_ids", ()) or ())
+    if any(rid is not None for rid in request_ids):
+        return {"image_request_ids": request_ids}
+    return {}

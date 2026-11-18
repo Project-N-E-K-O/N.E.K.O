@@ -845,8 +845,6 @@ class _LifecycleMixin:
         # still sees which calls really happened. The instruction is not: it
         # rides each request view only (``_dialog_messages_for_provider``). A
         # reply that is not kept runs on a copy and leaves nothing behind.
-        # Same rule as stream_text: live frames of earlier turns keep receipts only.
-        self._strip_answered_live_frames()
         _turn_messages = (
             self._conversation_history if persist_response
             else list(self._conversation_history)
@@ -889,6 +887,11 @@ class _LifecycleMixin:
         # go stale.
         if self._declines_over_another_reply(completion_mode):
             return False
+        # Same rule as stream_text: live frames of earlier turns keep receipts
+        # only. Only once this reply may start: a declined callback must not
+        # touch a turn that is still replying. Edited in place, so the request
+        # view built above sees it too.
+        self._strip_answered_live_frames()
 
         # Retry policy mirrors stream_text: max_retries=3, delays [1,2] seconds.
         # Proactive semantics differ: users await no reply, so **silently swallow** exhausted retries,

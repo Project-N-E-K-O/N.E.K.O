@@ -1224,6 +1224,7 @@ class AsrRuntimeMixin:
             transcript=transcript,
             source=newest.source,
             request_id=newest.request_id,
+            image_request_ids=tuple(frame.request_id for frame in frames),
         )
     def _schedule_core_asr_cleanup(
         self,

@@ -731,6 +731,9 @@ class _StreamingMixin:
         # user-dragged attachments after sampled frames (see _media.py ordering explanation); attachments
         # are user-provided and must not inherit this turn's capture channel.
         turn_source_count: Optional[int] = None,
+        # Per channelled turn image: True for a screenshot the user attached that
+        # independent ASR sampled with the live frames. History provenance only.
+        turn_image_user_flags: Sequence[bool] = (),
         turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
@@ -979,7 +982,12 @@ class _StreamingMixin:
                 ([_IMAGE_KIND_AUTO_SCREENSHOT] if proactive_image else [])
                 + [_IMAGE_KIND_PLUGIN] * len(plugin_images)
                 + [_IMAGE_KIND_PLUGIN] * len(prefix_images)
-                + [_IMAGE_KIND_LIVE] * _channelled
+                + [
+                    _IMAGE_KIND_USER
+                    if index < len(turn_image_user_flags) and turn_image_user_flags[index]
+                    else _IMAGE_KIND_LIVE
+                    for index in range(_channelled)
+                ]
                 + [_IMAGE_KIND_USER] * (len(own_images) - _channelled)
                 + [_IMAGE_KIND_USER] * len(attachment_images)
             )

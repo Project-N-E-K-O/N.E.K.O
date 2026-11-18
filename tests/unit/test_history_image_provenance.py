@@ -199,3 +199,45 @@ def test_budget_trimmed_turn_with_live_frames_is_stripped_whole_next_turn():
     client._conversation_history.append(message)
     client._strip_answered_live_frames()
     assert image_count(message.content) == 0
+
+
+@pytest.mark.asyncio
+async def test_user_screenshot_sampled_with_live_frames_is_kept_as_an_attachment():
+    """Independent ASR samples a screenshot the user attached together with live frames."""
+    client = _client()
+    live = _png_b64(40, 40, (200, 10, 10))
+    shot = _png_b64(41, 41, (10, 200, 10))
+    client.script = [[_text("ok"), _text("", "stop")]]
+    await client.submit_multimodal_turn(
+        "what about this screenshot?", (live, shot),
+        turn_id="t1", source="screen", image_request_ids=(None, "req-1"),
+    )
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    assert message.metadata["image_kinds"] == ["live", "user"]
+
+    urls = await _turn(client, "and the next question")
+    assert len(urls) == 1
+    client.discard_auto_captured_history_images()
+    urls = await _turn(client, "privacy mode on")
+    assert len(urls) == 1
+
+
+@pytest.mark.asyncio
+async def test_declined_proactive_turn_leaves_the_live_turn_untouched(monkeypatch):
+    """A callback that declines because another reply is live must not strip that reply's frames."""
+    client = _client()
+    await _turn(
+        client, "look", turn_images=(_png_b64(40, 40),), turn_source="screen", turn_source_count=1,
+    )
+    # The entry check passes; another reply starts during the callback's
+    # awaits, so the final check before it begins declines.
+    calls = []
+
+    def declines(_mode):
+        calls.append(1)
+        return len(calls) > 1
+
+    monkeypatch.setattr(client, "_declines_over_another_reply", declines)
+    assert await client.prompt_ephemeral("callback") is False
+    assert len(calls) >= 2
+    assert any(image_count(m.content) for m in client._conversation_history)

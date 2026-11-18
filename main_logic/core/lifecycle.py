@@ -76,6 +76,7 @@ from .callback_render import (
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
 from .session_records import start_phase
+from .multimodal_turn import multimodal_turn_attachment_kwargs
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -1904,6 +1905,9 @@ class LifecycleMixin:
                         # Capture channel frozen alongside these frames. Without it, offline handling labels
                         # both screen and camera frames as user.
                         source=turn.source,
+                        # Which sampled frames are screenshots the user attached
+                        # (only passed when there is one).
+                        **multimodal_turn_attachment_kwargs(turn),
                         # Turn-attached context: the offline session handles this turn on the fast path,
                         # so retrieval excludes its own resident knowledge.
                         **context_kwargs,
@@ -2236,6 +2240,7 @@ class LifecycleMixin:
                     turn_id=turn.turn_id,
                     # As above: frame-bus channel labels travel with frames.
                     source=turn.source,
+                    **multimodal_turn_attachment_kwargs(turn),
                 )
                 return delivered is not False
             finally:

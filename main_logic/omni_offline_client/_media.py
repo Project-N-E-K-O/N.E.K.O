@@ -107,6 +107,7 @@ class _MediaMixin:
         turn_images: tuple[str, ...] = (),
         turn_source: str | None = None,
         turn_source_count: int | None = None,
+        turn_image_user_flags: tuple[bool, ...] = (),
         turn_id: str | None = None,
         on_turn_committed=None,
         turn_context=None,
@@ -128,6 +129,7 @@ class _MediaMixin:
                     turn_images=turn_images,
                     turn_source=turn_source,
                     turn_source_count=turn_source_count,
+                    turn_image_user_flags=turn_image_user_flags,
                     turn_id=turn_id,
                     on_turn_committed=on_turn_committed,
                     turn_context=turn_context,
@@ -418,8 +420,13 @@ class _MediaMixin:
         turn_id: str,
         source: str | None = None,
         turn_context=None,
+        image_request_ids: Sequence[str | None] = (),
     ) -> bool:
         """Submit one utterance's sampled raw frames with its transcript.
+
+        ``image_request_ids`` (aligned with ``images``) marks sampled frames
+        that are screenshots the user attached; history keeps those like any
+        other attachment instead of treating them as live frames.
 
         Core samples the utterance down to first/middle/last before it gets
         here; this holds the same per-turn cap so provider-side history can
@@ -432,7 +439,14 @@ class _MediaMixin:
 
         if isinstance(images, str):
             images = (images,)
-        staged_images = tuple(image for image in (images or ()) if image)
+        request_ids = tuple(image_request_ids or ())
+        staged_pairs = tuple(
+            (image, request_ids[index] if index < len(request_ids) else None)
+            for index, image in enumerate(images or ())
+            if image
+        )
+        staged_images = tuple(image for image, _ in staged_pairs)
+        frame_user_flags = tuple(rid is not None for _, rid in staged_pairs)
         if not staged_images or not str(text or "").strip():
             raise ValueError("MULTIMODAL_TURN_REQUIRES_IMAGE_AND_TEXT")
         if len(staged_images) > MAX_MULTIMODAL_TURN_IMAGES:
@@ -443,6 +457,7 @@ class _MediaMixin:
                 MAX_MULTIMODAL_TURN_IMAGES,
             )
             staged_images = staged_images[:MAX_MULTIMODAL_TURN_IMAGES]
+            frame_user_flags = frame_user_flags[:MAX_MULTIMODAL_TURN_IMAGES]
         lock = getattr(self, "_multimodal_submit_lock", None)
         if lock is None:
             lock = asyncio.Lock()
@@ -490,6 +505,7 @@ class _MediaMixin:
                     # explicitly supplied user material.
                     turn_source=source,
                     turn_source_count=len(staged_images) - len(attachments),
+                    turn_image_user_flags=frame_user_flags,
                     # Standalone ASR supplies a stable turn_id for this utterance; carry it through to the frame bus
                     # so plugins can group frames sampled from the same utterance. Ordinary text turns have
                     # no such identity; leave it empty (omit turn_id from records).

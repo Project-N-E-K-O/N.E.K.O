@@ -914,6 +914,44 @@ async def test_existing_offline_fast_path_does_not_repeat_turn_preparation() -> 
     )
 
 
+async def test_offline_fast_path_passes_which_frames_are_user_screenshots() -> None:
+    """History keeps a screenshot the user attached as an attachment, not a live frame."""
+    manager = LLMSessionManager.__new__(LLMSessionManager)
+    manager.lanlan_name = "Test"
+    manager._multimodal_handoff_lock = asyncio.Lock()
+    manager._core_voice_session_swap_lock = asyncio.Lock()
+    manager._core_voice_session_swap_barrier_timeout_s = 1.0
+    manager.response_backend = "offline_vlm"
+    manager.handle_new_message = AsyncMock()
+    manager.ensure_tts_pipeline_alive = AsyncMock()
+    session = OmniOfflineClient.__new__(OmniOfflineClient)
+    session.handle_interruption = AsyncMock()
+    session.submit_multimodal_turn = AsyncMock()
+    manager.session = session
+    turn = SimpleNamespace(
+        transcript="what is this",
+        source="screen",
+        images=("live-frame", "user-shot"),
+        turn_id="turn-1",
+        image_request_ids=(None, "req-1"),
+    )
+
+    assert await manager._handoff_to_offline_vlm_and_submit(
+        turn,
+        expected_session=session,
+        prepared_session=session,
+        operation_is_current=lambda: True,
+        cached_turns_before_final=[],
+    ) is True
+    session.submit_multimodal_turn.assert_awaited_once_with(
+        "what is this",
+        ("live-frame", "user-shot"),
+        turn_id="turn-1",
+        source="screen",
+        image_request_ids=(None, "req-1"),
+    )
+
+
 async def test_offline_replacement_wins_and_receives_multimodal_turn() -> None:
     manager = LLMSessionManager.__new__(LLMSessionManager)
     manager.lanlan_name = "Test"
