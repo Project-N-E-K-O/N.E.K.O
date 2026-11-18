@@ -392,7 +392,7 @@ def _group_text(group: str, tools: list[Capability]) -> str:
     parts = [
         TOOL_GROUP_LOADED_HEADER.format(name=_group_name(group), call_tool=CALL_TOOL),
         BUILTIN_GROUP_GUIDANCE[group],
-        "\n".join(json.dumps(_definition(capability), ensure_ascii=False) for capability in tools),
+        "\n".join(json.dumps(_definition(capability, with_output=False), ensure_ascii=False) for capability in tools),
     ]
     text = "\n\n".join(parts)
     cut = truncate_to_tokens(text, GATEWAY_TOOL_GROUP_MAX_TOKENS)

@@ -791,3 +791,51 @@ async def test_cache_drops_entries_that_are_gone():
     del metadata["a"]
     await runtime.invoke("plugin_entry", "b", {})
     assert set(runtime._output_checks) == {"b"}
+
+
+# ---------------------------------------------------------------------------
+# Review round 3
+# ---------------------------------------------------------------------------
+
+
+class AlwaysRevalidate(BaseModel):
+    model_config = ConfigDict(revalidate_instances="always")
+    n: int
+
+
+def test_models_that_ask_for_instance_revalidation_are_revalidated_on_a_copy():
+    check = build_output_check(
+        SimpleNamespace(output_schema=AlwaysRevalidate.model_json_schema(), output_model=AlwaysRevalidate)
+    )
+    returned = AlwaysRevalidate(n=1)
+    returned.n = "bad"  # type: ignore[assignment]
+    assert [(i.path, i.type) for i in check(returned)] == [("$.n", "int_parsing")]
+    assert returned.n == "bad"
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "expected"),
+    [
+        # A plain-name anchor is not supported: unresolved, not the root key.
+        ({"$ref": "#deny", "deny": False}, 1, []),
+        ({"items": [{"type": "integer"}], "additionalItems": False}, [1, 2], [("$[1]", "false")]),
+    ],
+)
+def test_review_round_three_schema_cases(schema, value, expected):
+    assert _issues(schema, value) == expected
+
+
+async def test_cache_drops_gone_entries_on_a_cache_hit_too():
+    async def entry():
+        return {"count": 1}
+
+    metadata = {
+        "a": EventMeta(event_type="plugin_entry", id="a", output_schema=EXPLICIT),
+        "b": EventMeta(event_type="plugin_entry", id="b", output_schema=EXPLICIT),
+    }
+    runtime = _executor({"a": entry, "b": entry}, metadata)
+    await runtime.invoke("plugin_entry", "a", {})
+    await runtime.invoke("plugin_entry", "b", {})
+    del metadata["a"]
+    await runtime.invoke("plugin_entry", "b", {})  # cache hit
+    assert set(runtime._output_checks) == {"b"}

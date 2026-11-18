@@ -49,7 +49,7 @@ SUPPORTED_KEYWORDS = frozenset({
     "$ref", "$defs", "definitions",
     "type", "enum", "const",
     "properties", "patternProperties", "required", "additionalProperties",
-    "items", "prefixItems", "minItems", "maxItems",
+    "items", "prefixItems", "additionalItems", "minItems", "maxItems",
     "minLength", "maxLength", "pattern",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
     "anyOf", "oneOf", "allOf", "not",
@@ -139,9 +139,10 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     def check(value: object) -> list[OutputIssue]:
         if value is None and nullable:
             return []
-        if isinstance(value, model):
-            # Validated when it was built. Validating it again would rerun
-            # after-validators on the very object the caller receives.
+        if isinstance(value, model) and not _revalidates(model, value):
+            # Validated when it was built, and the model does not ask for
+            # instances to be revalidated. Validating anyway would rerun
+            # after-validators; when it does ask, a copy is validated below.
             return []
         try:
             # Validators may mutate their input; check a private copy so the
@@ -168,6 +169,17 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         return []
 
     return check
+
+
+def _revalidates(model: type, value: object) -> bool:
+    """Whether the model's own ``revalidate_instances`` setting covers ``value``."""
+    config = getattr(model, "model_config", None)
+    setting = config.get("revalidate_instances") if isinstance(config, Mapping) else None
+    if setting == "always":
+        return True
+    if setting == "subclass-instances":
+        return type(value) is not model
+    return False
 
 
 def _loc_path(loc: Sequence[object], declared: frozenset[str], value: object) -> str:

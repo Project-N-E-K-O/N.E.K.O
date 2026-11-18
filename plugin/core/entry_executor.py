@@ -70,13 +70,16 @@ class EntryExecutor:
         self._output_checks: dict[str, tuple[object, OutputCheck | None]] = {}
 
     def _output_check(self, event_id: str, meta: object) -> OutputCheck | None:
+        if len(self._output_checks) > len(self._metadata):
+            # More cached checks than entries: some entries are gone. Drop
+            # them even when this call is a cache hit.
+            self._prune_output_checks()
         cached = self._output_checks.get(event_id)
         if cached is not None and cached[0] is meta:
             return cached[1]
         # Entries that are gone (unregistered dynamic entries) leave the cache
         # here, so it tracks live entries rather than every id ever called.
-        for stale in [key for key in self._output_checks if key not in self._metadata]:
-            del self._output_checks[stale]
+        self._prune_output_checks()
         try:
             check = build_output_check(meta)
         except Exception as exc:
@@ -87,6 +90,10 @@ class EntryExecutor:
             )
         self._output_checks[event_id] = (meta, check)
         return check
+
+    def _prune_output_checks(self) -> None:
+        for stale in [key for key in self._output_checks if key not in self._metadata]:
+            del self._output_checks[stale]
 
     def _check_output(self, event_id: str, label: str, result: object, meta: object) -> None:
         """Validate a successful result against the entry's output contract.
