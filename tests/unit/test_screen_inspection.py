@@ -218,6 +218,76 @@ def test_tool_image_byte_budget_remains_enforced():
     assert result.output["_image_warnings"]
 
 
+@pytest.mark.parametrize("cancel_after_denial", [False, True])
+async def test_screen_denial_keeps_other_tool_evidence_and_releases_on_cancel(cancel_after_denial):
+    from main_logic.tool_calling import ToolCall, ToolImage, ToolResult
+
+    client = object.__new__(OmniOfflineClient)
+    client._tool_image_locale = lambda: "en"
+    messages, slots, frames = [], [], []
+    old_screen = {
+        "role": "tool", "name": "read_current_screen", "tool_call_id": "old",
+        "content": '{"title":"private-old-title"}',
+    }
+    messages.append(old_screen)
+    slots.append((messages, 0, old_screen, client._released_screen_result_content()))
+    for name, pixels in (("read_current_screen", "old-screen-pixels"), ("recall_memory", "other-pixels")):
+        client._append_tool_result_images(
+            messages,
+            ToolResult(call_id=name, name=name, output={}, images=[ToolImage(data_b64=pixels)]),
+            slots=slots, bus_frames=frames,
+        )
+    prior_request = list(messages)
+
+    async def handler(call):
+        if call.call_id == "cancel":
+            raise asyncio.CancelledError
+        if call.call_id == "denied":
+            return ToolResult(
+                call_id=call.call_id, name=call.name,
+                output={"status": "unavailable", "reason": "disabled"}, is_error=True,
+            )
+        return ToolResult(
+            call_id=call.call_id, name=call.name,
+            output={"title": "private-new-title" if call.call_id == "screen" else "keep-result"},
+            images=[ToolImage(data_b64="new-screen-pixels" if call.call_id == "screen" else "new-other-pixels")],
+        )
+
+    client.on_tool_call = handler
+    calls = [
+        ToolCall(call_id="screen", name="read_current_screen", arguments={}),
+        ToolCall(call_id="other", name="recall_memory", arguments={}),
+        ToolCall(call_id="denied", name="read_current_screen", arguments={}),
+    ]
+    if cancel_after_denial:
+        calls.append(ToolCall(call_id="cancel", name="read_current_screen", arguments={}))
+    assistant = {
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": call.call_id, "type": "function",
+                        "function": {"name": call.name, "arguments": "{}"}} for call in calls],
+    }
+    run = client._run_tool_round(
+        messages, assistant, calls, tool_image_slots=slots, tool_bus_frames=frames,
+        generation_is_active=lambda: True, log_prefix="test",
+    )
+    if cancel_after_denial:
+        with pytest.raises(asyncio.CancelledError):
+            await run
+    else:
+        executed, live = await run
+        assert executed == 3 and live
+
+    saved = str(messages)
+    assert "private-old-title" not in saved and "private-new-title" not in saved
+    assert "old-screen-pixels" not in saved and "new-screen-pixels" not in saved
+    assert "other-pixels" in saved and "keep-result" in saved and "disabled" in saved
+    assert all(frame[2] == "recall_memory" for frame in frames)
+    assert len(frames) == (1 if cancel_after_denial else 2)
+    replies = [message["tool_call_id"] for message in messages if message.get("role") == "tool"]
+    assert replies == ["old", "screen", "other", "denied"]
+    assert "private-old-title" in str(prior_request) and "old-screen-pixels" in str(prior_request)
+
+
 def test_child_coordinates_and_source_are_relative_to_parent():
     async def run():
         manager, _ = fixture()
@@ -507,6 +577,57 @@ async def test_stale_tool_invocation_does_not_capture(stale):
         invoking_session=object() if stale == 'session' else manager.session)
     assert result.is_error and result.output['reason'] == 'superseded'
     assert not calls
+
+
+@pytest.mark.parametrize("stale", ["session", "reply"])
+async def test_tool_invocation_rechecks_owner_after_thinking_bubble(stale):
+    from unittest.mock import AsyncMock
+
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolCall, ToolRegistry
+
+    manager, calls = fixture()
+    manager.tool_registry = ToolRegistry()
+    manager.tool_registry.register(m.build_tools(manager)[0])
+    manager._only_looks_up = lambda name: True
+    manager._route_tool_images = AsyncMock()
+    session = manager.session
+    owner = session._active_reply_owner = object()
+    bubble_started, release_bubble = asyncio.Event(), asyncio.Event()
+
+    async def light_bubble(active):
+        assert active is True
+        bubble_started.set()
+        await release_bubble.wait()
+
+    manager._push_focus_thinking = light_bubble
+    call = ToolCall(
+        call_id="interrupted", name="read_current_screen", arguments={}, reply_owner=owner,
+    )
+    task = asyncio.create_task(ToolCallingMixin._on_tool_call(
+        manager, call, invoking_session=session,
+    ))
+    try:
+        await asyncio.wait_for(bubble_started.wait(), 1)
+        if stale == "session":
+            manager.session = object.__new__(OmniOfflineClient)
+            # Keep the same reply owner so the session check is independently tested.
+            manager.session._active_reply_owner = owner
+        else:
+            session._active_reply_owner = object()
+        release_bubble.set()
+        result = await asyncio.wait_for(task, 1)
+        assert result.is_error and result.output["reason"] == "superseded"
+        assert result.images == []
+        assert not calls
+        manager._route_tool_images.assert_not_awaited()
+        assert not getattr(manager, "_screen_inspection_state", None)
+    finally:
+        release_bubble.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
 
 @pytest.mark.parametrize("empty", [None, "", [], {}])

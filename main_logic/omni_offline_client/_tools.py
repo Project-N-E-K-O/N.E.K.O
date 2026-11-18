@@ -668,6 +668,7 @@ class _ToolingMixin(_TurnContextMixin):
             tool_rounds.append(assistant_turn)
         tool_results: list = []
         image_results: list = []
+        revoked_screen_slots: list = []
         round_complete = False
         try:
             for tool_call in tool_calls:
@@ -708,6 +709,24 @@ class _ToolingMixin(_TurnContextMixin):
                 messages.append(tool_result_message)
                 tool_results.append(tool_result_message)
                 if tool_call.name == "read_current_screen" and tool_image_slots is not None:
+                    if result.is_error and isinstance(result.output, dict) and result.output.get("reason") in (
+                        "disabled", "scope_changed", "superseded",
+                    ):
+                        retained_slots = []
+                        for slot in tool_image_slots:
+                            message = slot[2]
+                            if _is_screen_image_message(message) or message.get("name") == "read_current_screen":
+                                revoked_screen_slots.append(slot)
+                            else:
+                                retained_slots.append(slot)
+                        tool_image_slots[:] = retained_slots
+                        image_results[:] = [
+                            item for item in image_results if item[0].name != "read_current_screen"
+                        ]
+                        if tool_bus_frames is not None:
+                            tool_bus_frames[:] = [
+                                frame for frame in tool_bus_frames if frame[2] != "read_current_screen"
+                            ]
                     receipt = self._released_screen_result_content()
                     # Track text even when image delivery is omitted or the round
                     # is cancelled. Window inventories are only useful this turn.
@@ -724,6 +743,9 @@ class _ToolingMixin(_TurnContextMixin):
             kept = len(tool_results)
             if not round_complete or not generation_is_active() or tool_results:
                 kept = self._settle_unfinished_tool_round(messages, assistant_turn, tool_results)
+            # Settle first: it reinserts this round's original result objects.
+            # Releasing earlier would resurrect their titles or duplicate replies.
+            self._release_tool_image_slots(revoked_screen_slots)
         # A round that left history with its turn (kept nothing) is not live:
         # its images would be orphaned at the end of history.
         live = round_complete and generation_is_active() and (kept or not tool_results)

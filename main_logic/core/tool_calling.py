@@ -197,6 +197,18 @@ class ToolCallingMixin:
                 call.host_reply = reply_tail_registry.tool_context(
                     self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
                 )
+        # Lighting the bubble can yield to a replacement session or reply.
+        # Recheck immediately before capture, with no intervening await.
+        if call.name == "read_current_screen":
+            if (invoking_session is not None and invoking_session is not self.session) or (
+                call.reply_owner is not None
+                and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
+            ):
+                from main_logic.screen_inspection import failure
+
+                rejected = failure(self, "superseded")
+                return ToolResult(call_id=call.call_id, name=call.name,
+                                  output=rejected["output"], is_error=True)
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
