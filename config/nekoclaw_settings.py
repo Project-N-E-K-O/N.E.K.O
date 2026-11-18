@@ -371,6 +371,14 @@ WAKE_HELD_RETRY_SECONDS = 300.0
 """After how long something that could not be handed over is tried again:
 NekoClaw was switched off, or the session's commission waits for the user."""
 
+WAKE_DUE_PAGE_ROWS = 1000
+"""How many wake requests that are due are read from the ledger at a time. All
+that are due are read, a page after the other."""
+
+WAKES_CLOSE_WAIT_SECONDS = 1.0
+"""How long shutting down waits for what is being handed to a session this
+moment to be handed over, before it is cut off."""
+
 WAKE_FAILED_RETRY_MAX_SECONDS = 3600.0
 """The longest pause between two tries to hand over something that failed
 for a reason of the host's own (it doubles from ``OUTBOX_RETRY_BASE_SECONDS``)."""

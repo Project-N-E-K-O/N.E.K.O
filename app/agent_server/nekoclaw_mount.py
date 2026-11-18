@@ -454,23 +454,22 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
     host.brain.drop_pending_dispatches()
     # Likewise a note one task agent session wrote to another that was not
     # handed over yet: handed over after the stop, it would start a turn.
-    # (A time a task agent set for itself goes with its commission below.)
-    try:
-        await host.stop_waiting()
-    except Exception as e:
-        logger.warning("[Agent] dropping the notes that waited for sessions failed: %s", e)
-    to_stop = [
-        commission
-        for commission in await host.ledger.select(statuses=ACTIVE_STATUSES)
-        # A child is stopped along with its parent. A blocked one has ended
-        # as far as work goes; it only waits to be taken up again.
-        if commission.parent_id is None and commission.status != "blocked"
-    ]
-    # All at once: a plugin that is slow to take its cancel must not keep the
-    # other commissions at work until it has answered.
-    outcomes = await asyncio.gather(
-        *(host.abort(commission.id, reason=reason) for commission in to_stop), return_exceptions=True
-    )
+    # Dropped now, and none is handed over while the commissions are being
+    # stopped; what one of them wrote meanwhile is dropped at the end. (A
+    # time a task agent set for itself goes with its commission below.)
+    async with host.stopping_everything():
+        to_stop = [
+            commission
+            for commission in await host.ledger.select(statuses=ACTIVE_STATUSES)
+            # A child is stopped along with its parent. A blocked one has ended
+            # as far as work goes; it only waits to be taken up again.
+            if commission.parent_id is None and commission.status != "blocked"
+        ]
+        # All at once: a plugin that is slow to take its cancel must not keep the
+        # other commissions at work until it has answered.
+        outcomes = await asyncio.gather(
+            *(host.abort(commission.id, reason=reason) for commission in to_stop), return_exceptions=True
+        )
     stopped = 0
     for commission, outcome in zip(to_stop, outcomes):
         if isinstance(outcome, BaseException):

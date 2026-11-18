@@ -385,14 +385,16 @@ async def test_the_session_tools_hand_on_what_the_model_asked_and_say_what_the_h
     ]
     assert sent == [("s1", {"to": "site", "message": "where is the build?", "notify_when_done": True})]
     assert woken == [("s1", {"delay_seconds": 900, "note": "is it up"})]
-    assert [end["text"] for end in events.of("tool_end")] == [
-        "Sessions: none",
-        "its record",
-        "its record",
-        'Queued for "site".',
-        "A wake is set.",
-    ]
-    assert not any(end["is_error"] for end in events.of("tool_end"))
+    # By the call each one ends: those that run side by side end in the order they finish.
+    ends = {end["tool_call_id"]: end for end in events.of("tool_end")}
+    assert {key: end["text"] for key, end in ends.items()} == {
+        "c1": "Sessions: none",
+        "c2": "its record",
+        "c3": "its record",
+        "c4": 'Queued for "site".',
+        "c5": "A wake is set.",
+    }
+    assert len(events.of("tool_end")) == 5 and not any(end["is_error"] for end in ends.values())
 
 
 async def test_the_session_tools_refuse_what_makes_no_sense_before_the_host_is_asked(tmp_path: Path) -> None:
@@ -418,14 +420,14 @@ async def test_the_session_tools_refuse_what_makes_no_sense_before_the_host_is_a
     )
 
     assert asked == []
-    ends = events.of("tool_end")
-    assert all(end["is_error"] for end in ends) and len(ends) == 6
-    assert "page must be 1 or more" in ends[0]["text"]
-    assert "needs query" in ends[1]["text"]
-    assert "at must be a position" in ends[2]["text"]
-    assert "non-empty" in ends[3]["text"]
-    assert "positive number of seconds" in ends[4]["text"]
-    assert "note must say" in ends[5]["text"]
+    ends = {end["tool_call_id"]: end for end in events.of("tool_end")}
+    assert all(end["is_error"] for end in ends.values()) and len(events.of("tool_end")) == 6 == len(ends)
+    assert "page must be 1 or more" in ends["c1"]["text"]
+    assert "needs query" in ends["c2"]["text"]
+    assert "at must be a position" in ends["c3"]["text"]
+    assert "non-empty" in ends["c4"]["text"]
+    assert "positive number of seconds" in ends["c5"]["text"]
+    assert "note must say" in ends["c6"]["text"]
 
 
 async def test_each_session_tool_is_offered_with_its_callback_and_withheld_when_disabled(tmp_path: Path) -> None:

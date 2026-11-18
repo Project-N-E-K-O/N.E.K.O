@@ -1501,5 +1501,6 @@ class TaskAgentSession(SessionInbox):
                 error=error,
                 inputs=self._inputs,
                 jobs=len(self.jobs.running()),
+                waking_jobs=len(self.jobs.waking()),
             )
         )

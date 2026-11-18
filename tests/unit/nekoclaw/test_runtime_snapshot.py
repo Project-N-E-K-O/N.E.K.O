@@ -187,6 +187,39 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
     assert _saved(spec) == saved
 
 
+async def test_a_snapshot_written_before_the_session_tools_is_put_together_anew_when_its_session_is_opened(
+    tmp_path: Path,
+) -> None:
+    from nekoclaw.runtime.host import HostCallbacks
+
+    async def answer(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"text": "", "message": ""}
+
+    host = HostCallbacks(session_list=answer, session_read=answer, session_send=answer, wake_schedule=answer)
+    first_llm = ScriptedLLM([[say("Done."), finish()]])
+    session, events = await open_session(make_spec(tmp_path), first_llm, host)
+    await _ask(session, events, "First commission.")
+    await session.close()
+    spec = make_spec(tmp_path)
+    # As a host of the version before left it: version 1, by its number and not by one counted
+    # from this version, and none of the tools that came with the next.
+    new = {"list_sessions", "read_session", "message_session", "schedule_wake"}
+    saved = _saved(spec)
+    assert new <= {tool["name"] for tool in saved["tools"]}
+    left = {**saved, "version": 1, "tools": [tool for tool in saved["tools"] if tool["name"] not in new]}
+    (Path(spec.session_dir) / SYSTEM_FILE).write_text(json.dumps(left), encoding="utf-8")
+    assert read_snapshot(Path(spec.session_dir)) is None
+
+    second_llm = ScriptedLLM([[say("Done again."), finish()]])
+    session, events = await open_session(spec, second_llm, host)
+    try:
+        await _ask(session, events, "Second commission.")
+        assert new <= set(_tool_names(second_llm.overrides[0]))
+    finally:
+        await session.close()
+    assert _saved(spec)["version"] > 1 and new <= {tool["name"] for tool in _saved(spec)["tools"]}
+
+
 async def test_the_goal_a_session_is_started_with_is_the_goal_of_the_commission_that_is_opened(tmp_path: Path) -> None:
     from nekoclaw.runtime.protocol import GoalSpec
 

@@ -2095,9 +2095,10 @@ async def test_stopping_everything_drops_the_notes_that_wait_for_sessions(wiring
         )
         commission, _session = await ledger.give_session(commission.id, kind="single", name=title)
         await ledger.transition(commission.id, "working")
-        await ledger.transition(commission.id, "done")
         made.append(commission)
     sender, target = made
+    await ledger.transition(target.id, "done")
+    # Written while its commission was under way, which is done by the time of the stop.
     message, refusal, _wait = await ledger.message_add(
         from_session=sender.session_id,
         from_commission=sender.id,
@@ -2109,6 +2110,7 @@ async def test_stopping_everything_drops_the_notes_that_wait_for_sessions(wiring
         limits=MessageLimits(target_interval=0.0, per_hour=10, queue_max=10, dedup_seconds=0.0),
     )
     assert refusal == "" and len(await ledger.wakes_pending(session_id=target.session_id)) == 1
+    await ledger.transition(sender.id, "done")
 
     await wiring.mount_module.stop_everything()
 

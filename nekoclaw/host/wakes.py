@@ -67,6 +67,36 @@ class SessionWakes:
         self._held_until: dict[tuple[str, str | None], float] = {}
         # (session, owner) -> how often in a row handing over failed outright.
         self._failures: dict[tuple[str, str | None], int] = {}
+        # How often it was told that something changed (``kick``).
+        self._kicks = 0
+        # When everything was last stopped (the ledger's clock); 0 for never.
+        # What was written before then and is put back after it is dropped.
+        self.stopped_at = 0.0
+        # Set while a stop's dropping is still to be made up for: the
+        # ledger could not be written when the stop came. Nothing is handed
+        # over before it is.
+        self._drop_before: float | None = None
+        # How many stops of everything are under way (``hold``): nothing is
+        # handed over meanwhile.
+        self._holds = 0
+
+    def hold(self) -> None:
+        """Hand nothing over until ``release``: everything is being stopped.
+
+        A stop of everything drops what waits, and then stops the
+        commissions one after the other, which takes a while. A note one
+        of them writes meanwhile (it was at it when the stop came) is not
+        handed over in between, to start work the stop would not know of:
+        it waits, and is dropped when the stop is through (the caller
+        calls ``stop_all`` again before ``release``).
+        """
+        self._holds += 1
+
+    def release(self) -> None:
+        """Hand over again, once every ``hold`` was released."""
+        self._holds = max(0, self._holds - 1)
+        if not self._holds:
+            self.kick()
 
     def kick(self) -> None:
         """Note that something may be due, or that what was held may go now. Starts the loop on first use."""
@@ -74,6 +104,7 @@ class SessionWakes:
             return
         # Whatever was kept back is looked at again: what changed may be
         # what it waited for.
+        self._kicks += 1
         self._held_until.clear()
         self._wake.set()
         if self._task is None or self._task.done():
@@ -88,7 +119,20 @@ class SessionWakes:
         the stop ends it (``Ledger.wakes_void_all``).
         """
         self._generation += 1
-        return await self._ledger.wakes_void_all(reason)
+        now = self._clock()
+        self.stopped_at = now
+        self._drop_before = now
+        try:
+            dropped = await self._ledger.wakes_void_all(reason, before=now)
+        except BaseException:
+            # Not dropped: the ledger could not be written. The next round
+            # drops them before it hands anything over (``flush``), so none
+            # of them starts a turn meanwhile; the caller is told.
+            self.kick()
+            raise
+        if self._drop_before == now:
+            self._drop_before = None
+        return dropped
 
     async def flush(self) -> float | None:
         """Hand over everything that is due now, once. Returns when to look again, or None when nothing is pending."""
@@ -97,12 +141,35 @@ class SessionWakes:
             SESSION_WAKE_BATCH_ROWS,
             WAKE_COALESCE_MAX_SECONDS,
             WAKE_COALESCE_SECONDS,
+            WAKE_DUE_PAGE_ROWS,
             WAKE_FAILED_RETRY_MAX_SECONDS,
         )
 
+        if self._drop_before is not None:
+            # A stop of everything could not drop what waited then. Dropped
+            # now, before anything is handed over; while this fails, the
+            # round fails, and nothing is.
+            before = self._drop_before
+            await self._ledger.wakes_void_all(STOPPED_REASON, before=before)
+            if self._drop_before == before:
+                self._drop_before = None
+        if self._holds:
+            # Everything is being stopped: nothing is handed over until that
+            # is done (``release`` starts the next round).
+            return None
         now = self._clock()
         generation = self._generation
-        due = await self._ledger.wakes_due(due_by=now)
+        # All that is due, a page after the other: with the first page
+        # alone, what it leaves out would wait behind rows that are kept
+        # back, or would be left with nothing to look at it again.
+        due: list[WakeRequest] = []
+        last: tuple[float, int] | None = None
+        while True:
+            page = await self._ledger.wakes_due(due_by=now, limit=WAKE_DUE_PAGE_ROWS, after=last)
+            due.extend(page)
+            if len(page) < WAKE_DUE_PAGE_ROWS:
+                break
+            last = (page[-1].due_at, page[-1].id)
         groups: dict[tuple[str, str | None], list[WakeRequest]] = {}
         for wake in due:
             groups.setdefault((wake.session_id, wake.commission_id), []).append(wake)
@@ -114,7 +181,7 @@ class SessionWakes:
             again = moment if again is None else min(again, moment)
 
         for key, wakes in groups.items():
-            if self._closed:
+            if self._closed or self._holds:
                 return None
             held = self._held_until.get(key)
             if held is not None and held > now:
@@ -130,6 +197,7 @@ class SessionWakes:
                 later(ready)
                 continue
             batch = wakes[:SESSION_WAKE_BATCH_ROWS]
+            kicks = self._kicks
             try:
                 handed = await self._task_agents.hand_over(
                     key[0], key[1], batch, still_wanted=lambda: generation == self._generation and not self._closed
@@ -145,7 +213,13 @@ class SessionWakes:
                 later(self._held_until[key])
                 continue
             self._failures.pop(key, None)
-            if handed.outcome == "held":
+            if handed.outcome == "held" and self._kicks != kicks:
+                # Something changed while this was being handed over (the
+                # user answered, say): what kept it back when it was looked
+                # at may be so no longer. Looked at again at once, and not
+                # after the wait that went with what was so then.
+                later(self._clock())
+            elif handed.outcome == "held":
                 self._held_until[key] = self._clock() + max(handed.retry_in, 0.05)
                 later(self._held_until[key])
             else:
@@ -194,8 +268,28 @@ class SessionWakes:
                 pass
 
     async def close(self) -> None:
+        """Stop handing over. What is being handed over this moment is let finish; what waits stays on record.
+
+        The round under way is not cut off in the middle of handing
+        something over (it looks, before every hand-over, whether this was
+        closed, and hands over nothing more): it gets a moment to end, and
+        is cancelled only when it takes longer.
+        """
+        from config.nekoclaw_settings import WAKES_CLOSE_WAIT_SECONDS
+
         self._closed = True
+        self._wake.set()
         task, self._task = self._task, None
-        if task is not None and not task.done():
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), WAKES_CLOSE_WAIT_SECONDS)
+        except asyncio.TimeoutError:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        except Exception:  # noqa: BLE001 - the round said what failed; closing goes on
+            logger.debug("the last round of wake requests failed", exc_info=True)
+

@@ -126,17 +126,25 @@ def _shown(entry: dict[str, Any]) -> tuple[str, str] | None:
 
 def _entries(path: Path, max_bytes: int) -> Iterator[tuple[int, str, str]]:
     """Yield ``(position, label, text)`` for every entry of a record that has something to show."""
+    import os
+
     try:
-        size = path.stat().st_size
+        handle = path.open("rb")
     except OSError as exc:
         raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed") from exc
-    if size > max_bytes:
-        raise RecordError("the record of this session is too large to look through; read its results instead")
     try:
-        with path.open("rb") as handle:
+        with handle:
+            # As long as it is when it is opened, and no further: what is
+            # added to it while it is read is not read, however much that is.
+            size = os.fstat(handle.fileno()).st_size
+            if size > max_bytes:
+                raise RecordError("the record of this session is too large to look through; read its results instead")
+            read = 0
             for position, raw in enumerate(handle, 1):
-                if not raw.endswith(b"\n"):
-                    # The line being written this moment.
+                read += len(raw)
+                if read > size or not raw.endswith(b"\n"):
+                    # Added since it was opened, or the line being written
+                    # this moment.
                     break
                 try:
                     entry = json.loads(raw)
@@ -155,12 +163,26 @@ def _words(query: str) -> list[str]:
 
 def _excerpt(text: str, word: str, max_tokens: int) -> str:
     """Return one line of ``text`` around where ``word`` occurs, within the cap."""
-    from utils.tokenize import truncate_to_tokens
+    from utils.tokenize import count_tokens, truncate_to_tokens
 
-    at = text.casefold().find(word)
-    # Roughly the cap on either side, in characters; cut to the cap below.
+    folded_at = text.casefold().find(word)
+    # Where that is in the text as it is written: folded, a character may
+    # become more than one, and the place found is counted in those.
+    at, folded = len(text), 0
+    for index, char in enumerate(text):
+        if folded >= folded_at:
+            at = index
+            break
+        folded += len(char.casefold())
+    # Roughly the cap in characters; cut to the cap below.
     reach = max_tokens * 4
+    # A third of it for what stands before the word, and that counted in
+    # tokens: where a character is a token or more (Chinese, say), as many
+    # characters as English would have there take up the whole cap, and
+    # the word itself would be cut off.
     start = max(0, at - reach // 3)
+    while start < at and count_tokens(text[start:at]) > max_tokens // 3:
+        start += (at - start + 1) // 2
     piece = " ".join(text[start : start + reach].split())
     if start > 0:
         piece = "…" + piece
@@ -176,13 +198,15 @@ def search_record(path: Path, query: str, *, hits: int, excerpt_tokens: int, max
     words = _words(query)
     if not words:
         raise RecordError("give the words to look for")
-    found: list[Hit] = []
+    found: list[tuple[int, str, str]] = []
     for position, label, text in _entries(path, max_bytes):
         folded = text.casefold()
         if all(word in folded for word in words):
-            found.append(Hit(position, label, _excerpt(text, words[0], excerpt_tokens)))
+            found.append((position, label, text))
     found.reverse()
-    return found[:hits], len(found)
+    # An excerpt is made for the places that come back, not for all there are.
+    shown = [Hit(position, label, _excerpt(text, words[0], excerpt_tokens)) for position, label, text in found[:hits]]
+    return shown, len(found)
 
 
 def read_record(

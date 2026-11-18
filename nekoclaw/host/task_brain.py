@@ -1184,20 +1184,23 @@ class TaskBrain:
             return then.strftime("%H:%M" if then.date() == today.date() else "%m-%d %H:%M")
 
         parts: list[str] = []
-        own = await self._ledger.wakes_pending(commission_id=commission.id)
-        if own and commission.resting:
-            parts.append(words["resting"].format(time=at(own[0].due_at)))
+        # Whether it rests and what would wake it, as of one look: read
+        # apart, a commission that was woken in between would be said to
+        # rest until the next of its times.
+        seen, own, notes = await self._ledger.waiting_view(commission.id)
+        if seen is None:
+            return ""
+        if own and seen.resting:
+            # One whose time has come and that could not be woken yet (the
+            # quota is used up, say) does not go on "at" a time gone by.
+            due = own[0].due_at
+            parts.append(words["due"] if due <= now else words["resting"].format(time=at(due)))
         else:
             timers = [wake for wake in own if wake.reason == "timer"]
             if timers:
                 parts.append(words["wakes"].format(count=len(timers), time=at(timers[0].due_at)))
-        notes = [
-            wake
-            for wake in await self._ledger.wakes_pending(session_id=commission.session_id)
-            if wake.commission_id is None and wake.reason == "message"
-        ]
         if notes:
-            parts.append(words["notes"].format(count=len(notes)))
+            parts.append(words["notes"].format(count=notes))
         return "; ".join(parts)
 
     # -- what a new session is told ---------------------------------------
