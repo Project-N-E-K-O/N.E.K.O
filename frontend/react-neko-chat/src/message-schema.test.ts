@@ -1,5 +1,5 @@
 import { ZodError, z } from 'zod';
-import { parseChatMessage, parseChatWindowProps } from './message-schema';
+import { chatWindowPropsSchema, parseChatMessage, parseChatWindowProps } from './message-schema';
 
 // zod 4 的函数包装器（z.function().implement）在调用时用核心层 parse，抛的是
 // z.core.$ZodError（classic ZodError 的父类），不是 ZodError 本身。
@@ -171,7 +171,7 @@ describe('message-schema', () => {
   it('lets the screenshot host callback report handled back through the validated wrapper', () => {
     // 宿主 handleComposerScreenshot 会 return handled（布尔）。生产路径上这个回调一定
     // 经过 parseChatWindowProps 的 zod 校验壳（mount.tsx），壳会校验返回值——一旦把
-    // 返回类型声明成 void，点一次截图就抛一个未捕获的 invalid_return_type。
+    // 返回类型声明成 void，点一次截图就抛一个未捕获的返回值类型错误（zod 4 里 issue code 是 invalid_type）。
     // 注意这里必须用真的返回布尔的函数：vi.fn() 默认返回 undefined，正好躲开这条校验。
     const onComposerScreenshot = vi.fn(function handleComposerScreenshot() {
       return true;
@@ -190,6 +190,20 @@ describe('message-schema', () => {
     const props = parseChatWindowProps({ onComposerImportImage });
 
     expect(() => props.onComposerImportImage?.()).toThrow(ZodCallbackError);
+  });
+
+  it('declares every host callback with an unknown rest parameter', () => {
+    // 结构性守卫：新增回调若绕过 hostCallback 直接写 z.function().input([...])，
+    // 就会丢掉 rest 参数，宿主多传一个参数就会抛错。
+    const callbacks = Object.entries(chatWindowPropsSchema.shape).flatMap(([key, schema]) => {
+      const inner = schema instanceof z.ZodOptional ? schema.unwrap() : schema;
+      return inner instanceof z.ZodFunction ? [[key, inner] as const] : [];
+    });
+    expect(callbacks.length).toBeGreaterThan(15);
+    for (const [key, fn] of callbacks) {
+      const input = fn._zod.def.input as z.core.$ZodTuple;
+      expect(input._zod.def.rest, key).toBeInstanceOf(z.ZodUnknown);
+    }
   });
 
   it('tolerates extra trailing arguments on validated host callbacks like zod 3 did', () => {
