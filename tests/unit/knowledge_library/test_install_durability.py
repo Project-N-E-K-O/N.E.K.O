@@ -37,7 +37,7 @@ def _activate(store, manifest, version):
     updated = deepcopy(manifest)
     updated["revision"] += 1
     updated["documents"] = {version["document_id"]: version["version_id"]}
-    return store._activate(updated, [version])
+    return store._activate_library_revision(updated, [version])
 
 
 def test_activation_checks_formal_reader_before_switching_manifest(tmp_path, monkeypatch):
@@ -230,7 +230,7 @@ def commit(value):
     if point == "after_manifest":
         checkpoint()
 store._write_manifest = commit
-store._activate(payload["manifest"], [payload["version"]])
+store._activate_library_revision(payload["manifest"], [payload["version"]])
 '''
 
 

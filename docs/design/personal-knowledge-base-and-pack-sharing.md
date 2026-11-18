@@ -273,7 +273,7 @@ tests/unit/knowledge_library/
 
 ### 6.1 提交点与崩溃恢复
 
-当前 `LibraryStore._activate()` 依次写不可变版本 JSON、建立本 revision 的 FTS、通过提交闸门、原子替换 manifest；manifest 本身就是唯一激活指针，不再另造一个指针权威。安装器先保留校验过的 artifact。下表定义应达到的恢复行为，不代表所有崩溃点已实测：
+当前 `LibraryStore._activate_library_revision()` 依次写不可变版本 JSON、建立本 revision 的 FTS、通过提交闸门、原子替换 manifest；manifest 本身就是唯一激活指针，不再另造一个指针权威。安装器先保留校验过的 artifact。下表定义应达到的恢复行为，不代表所有崩溃点已实测：
 
 | 阶段 / 崩溃点 | 恢复动作与验收要求 |
 | --- | --- |
@@ -588,7 +588,7 @@ tests/unit/knowledge_library/
 ### 13.12 安装可读性与持久化整改
 
 - 新增领域 `persistence.py`：JSON 流式编码并与 reader 共用 128 MiB 边界，编码失败、超限均不替换旧文件；复用现有 Windows 文件忙重试，不改共享 `utils/file_utils.py` 的其他调用方。
-- `LibraryStore._activate()` 在 manifest 切换前正式读取并核对候选；已有损坏版本与写后不可读版本均拒绝。冻结快照也经相同有界写入，避免生成重试无法读取的输入。
+- `LibraryStore._activate_library_revision()` 在 manifest 切换前正式读取并核对候选；已有损坏版本与写后不可读版本均拒绝。冻结快照也经相同有界写入，避免生成重试无法读取的输入。
 - 已补新建目录、JSON 与保留 artifact 的持久化边界；Windows 不冒充具有可移植目录 fsync。旧版本继续保留，未新增会删除历史数据的回收策略。
 - 提交后的目录同步失败通过正式 reader 核对真实清单：已经激活则任务完成并携带 `storage_sync_unconfirmed`，警告不写回清单；版本和 artifact 的存在分支也重新 fsync，不能把一次失败后的可见文件当成已持久化。Windows 文件同步用不截断的读写句柄，符合 [FlushFileBuffers 的写权限要求](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)，仍不宣称目录持久性已验证。
 - 验证：初始两项可读性回归先失败后修复，随后新增提交后同步异常与重试回归，直接文件共 12 项通过；离线和市场两条真实 API 的警告透传另有 2 项通过。三处实际子进程强杀与索引重建通过。缩小边界测试不冒充最大包或峰值内存实测；断电与其他平台未验收。
@@ -707,11 +707,17 @@ tests/unit/knowledge_library/
 - 市场使用独立 SQLite 和分享文件目录，真实 Alembic 已到 head，前端页面及 API 正常。用户明确本轮只测试个人资料库、离线成品包和市场页面；缺少 Auth 时不以调试身份绕过登录，也不把匿名浏览宣称为发布/下载闭环完成。各进程和测试根保存在本机运行记录，未提交到仓库。
 - PC 新增 `Knowledge_Base` 工作树，基于本轮核实的最新 `origin/main` `b85b061a20bf9017a1f4ebe3657c42e270dc9db8`。新增八语托盘「个人资料库」并复用既有相对地址/命名窗口动作，精确为 `/knowledge-library` 保留管理页原生 frame，Pet/Chat 两条入口均保护，未另造 IPC 或插件入口。PC 直接回归 44 项通过，下游 114 项通过、1 项配套主仓探测跳过；lint 无错误。macOS 实际 Electron 已连接当前源码后端，执行托盘同一页面动作返回成功，知识页和 32 像素原生标题栏可用；Windows/Linux 与正式发行包仍未据此验收。PC 的窗口合同与实测边界另见其现有 `docs/multi-window-architecture.md`。
 
+### 13.29 上游 PR 与索引跨平台整改
+
+- 上游 Windows CI 实际发现 SQLite 事务上下文退出后仍持有连接，阻止候选索引替换，并影响旧索引回收。构建改为事务提交后显式关闭，搜索在正常及异常退出时也关闭读取连接；三项新回归先失败后修复，保留连接对象以免本机垃圾回收掩盖泄漏，并模拟 Windows 文件锁。领域、排序、安装耐久、保留及市场安装的相关回归合计 101 项通过，Windows CI 复验仍需以新提交实际结果为准。
+- 新增同步持久化方法改用领域专名 `_activate_library_revision`，避免全库异步阻塞检查按方法尾名与既有异步 `_activate` 混淆。未修改语音、串门或门禁规则；全库静态检查通过，直接测试引用同步更新。随后默认资料库集合 237 项通过、7 项因未显式提供真实模型/产物等条件跳过，不把此前真实模型专项算成本轮复跑。
+- 市场分支已合并最新上游；使用无 DDL 的 `20261118_0001` 汇合知识包与反馈两条迁移，保留既有迁移身份。三种起点的真实 SQLite 升级、历史保护与拆头恢复已有直接回归；真实 PostgreSQL 仍明确跳过。市场部署使用 `alembic upgrade head`，具体边界见该仓运行文档。
+
 ## 14 提交推送与发布顺序
 
 ### 14.1 当前交付决定与历史模块划分
 
-用户已明确不拆 PR。本次 NEKO、市场与 PC 各自在 `Knowledge_Base` 分支整体提交并推送到各自 `origin`；不重排为多个中间分支，也不自动创建 PR。无关已有修改、`.agent`、本地运行配置、模型、构建产物和测试资料不得纳入功能提交。
+用户已明确不拆 PR。本次 NEKO、市场与 PC 各自在 `Knowledge_Base` 分支整体提交并推送到各自 `origin`；不重排为多个中间分支。随后按明确要求，各向对应上游 `main` 创建一个 PR；本轮没有合并或部署。无关已有修改、`.agent`、本地运行配置、模型、构建产物和测试资料不得纳入功能提交。
 
 下表保留原拆分分析的编号，供追溯模块与验收责任，已不作为待执行的 PR 数量或提交计划。PC 的桌面入口及原生窗口适配另随 PC 仓库整体提交；本轮没有构造或验收原计划的中间分支。
 

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 
@@ -148,7 +149,9 @@ def build_index(path: Path, documents: list[dict], limits: LibraryLimits) -> Non
     temporary = path.with_suffix(".building")
     temporary.unlink(missing_ok=True)
     try:
-        with sqlite3.connect(temporary) as connection:
+        # SQLite's transaction context does not close its handle. Release it
+        # before publication so Windows can atomically replace the candidate.
+        with closing(sqlite3.connect(temporary)) as connection, connection:
             connection.execute("CREATE VIRTUAL TABLE chunks USING fts5(chunk_id UNINDEXED, tokens)")
             connection.executemany("INSERT INTO chunks(chunk_id,tokens) VALUES (?,?)", rows)
         # The active manifest can point here only after the completed database
@@ -165,7 +168,8 @@ def rank(path: Path, documents: list[dict], query: str, query_vector: list | Non
     expression = fts_match_expression(query)
     lexical = []
     if expression:
-        with sqlite3.connect(path) as connection:
+        # Release readers on both success and failure before old-index cleanup.
+        with closing(sqlite3.connect(path)) as connection:
             lexical = [row[0] for row in connection.execute(
                 "SELECT chunk_id FROM chunks WHERE chunks MATCH ? ORDER BY bm25(chunks) LIMIT 40",
                 (expression,),

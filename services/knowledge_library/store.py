@@ -240,8 +240,8 @@ class LibraryStore:
     def _index_path(self, manifest: dict) -> Path:
         return self.root / "indexes" / manifest["library_id"] / f"{manifest['revision']}.sqlite"
 
-    def _activate(self, manifest: dict, versions: list[dict], gate: Callable | None = None) -> dict:
-        """Prepare immutable data and index before committing the sole active pointer."""
+    def _activate_library_revision(self, manifest: dict, versions: list[dict], gate: Callable | None = None) -> dict:
+        """Prepare library data and index before committing the sole active pointer."""
         if len(versions) > self.limits.max_documents:
             raise LibraryError("capacity_documents")
         if sum(len(document["content"]) for document in versions) > self.limits.max_library_chars:
@@ -289,7 +289,7 @@ class LibraryStore:
             manifest.update(revision=manifest["revision"] + 1, updated_at=now())
             old = [document for document in self.documents(self.manifest(current["library_id"]))
                    if document["document_id"] != version["document_id"]]
-            self._activate(manifest, [*old, version], gate)
+            self._activate_library_revision(manifest, [*old, version], gate)
             result = {"document_id": version["document_id"], "version_id": version["version_id"],
                       "semantic_state": version["semantic_state"], "unchanged": False}
             if manifest.get("warnings"):
@@ -310,7 +310,7 @@ class LibraryStore:
                 raise LibraryError("document_not_found")
             del manifest["documents"][document_id]
             manifest.update(revision=manifest["revision"] + 1, updated_at=now())
-            self._activate(manifest, self.documents(manifest))
+            self._activate_library_revision(manifest, self.documents(manifest))
 
     def delete_library(self, library_id: str) -> None:
         """Persist a tombstone rather than allowing delayed tasks to recreate the root."""
@@ -426,4 +426,4 @@ class LibraryStore:
                             documents={value["document_id"]: value["version_id"] for value in versions},
                             installation={**installation, "work_id": work_id},
                             installed_versions={**history, package_version: installation["artifact_sha256"]})
-            return self._activate(manifest, versions, gate)
+            return self._activate_library_revision(manifest, versions, gate)

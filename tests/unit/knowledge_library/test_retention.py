@@ -257,7 +257,7 @@ async def test_cancelled_precommit_candidate_is_not_pruned_as_an_old_revision(li
         raise LibraryError("job_cancelled")
 
     with library.store.lock, library.store.guard(), pytest.raises(LibraryError, match="job_cancelled"):
-        library.store._activate(candidate, library.store.documents(manifest), cancel)
+        library.store._activate_library_revision(candidate, library.store.documents(manifest), cancel)
     prepared_index = library.store._index_path(candidate)
     assert prepared_index.is_file() and older.is_file() and current.is_file()
     assert library.store.manifest(identifier) == manifest
