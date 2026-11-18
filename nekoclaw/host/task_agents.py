@@ -1221,7 +1221,14 @@ class TaskAgentManager:
         if self._model_capabilities is None:
             return None
         try:
-            return int(await self._model_capabilities.compact_at(config.get("base_url"), config.get("model")))
+            # Of the window this session is started with, which the model's
+            # configuration may have named itself.
+            window = config.get("context_window")
+            return int(
+                await self._model_capabilities.compact_at(
+                    config.get("base_url"), config.get("model"), window=int(window) if window else None
+                )
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - not knowing is the same as nothing set

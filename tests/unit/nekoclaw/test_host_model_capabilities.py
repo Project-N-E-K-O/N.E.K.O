@@ -364,6 +364,11 @@ async def test_the_user_sets_where_a_models_conversations_are_summed_up_from_and
     assert await store.compact_at(URL, "other") == 170_000
     assert await ModelCapabilityStore(path).compact_at(URL, "m") == 150_000
 
+    # Of the window a session is in fact started with, when the model's configuration names one.
+    assert await store.compact_at(URL, "other", window=1_000_000) == 850_000
+    assert await store.compact_at(URL, "m", window=1_000_000) == 150_000
+    assert await store.compact_at(URL, "m", window=100_000) == 85_000
+
     # A point that does not lie inside the window is not used: the model's window turned out
     # smaller than the number was meant for, and it is summed up in proportion.
     assert await store.note_context_window(URL, "m", 128_000) is True

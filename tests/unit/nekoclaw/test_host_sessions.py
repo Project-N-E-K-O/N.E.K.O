@@ -711,6 +711,9 @@ async def test_a_window_the_model_configuration_names_is_taken_as_it_is(hosts, t
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "done")
     assert specs[0].model.context_window == 32_000
+    # Summed up from the same part of the window the session is started with, not of the
+    # one that is on record for the model.
+    assert specs[0].model.compact_at == 27_200
 
 
 async def test_what_a_session_learns_of_its_models_window_is_used_for_the_sessions_started_later(hosts, tmp_path):

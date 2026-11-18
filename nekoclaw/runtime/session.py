@@ -55,6 +55,7 @@ from nekoclaw.runtime.context import (
     RowKind,
     Transcript,
     compact_ratio,
+    estimate_tokens,
     kind_of,
     output_allowance,
 )
@@ -478,6 +479,9 @@ class TaskAgentSession(SessionInbox):
         # Whether the goal the session has was given with this start of it
         # (``spec.goal``): that one is the goal of what is opened next.
         self._goal_of_this_start = False
+        # Whether the goal the session was started with has been made the
+        # session's goal, or the commission it was for has been opened.
+        self._goal_given = False
         # The window the conversation is managed for.
         self._window = spec.model.context_window
         # The output a request asks for: what the model is configured for,
@@ -654,6 +658,7 @@ class TaskAgentSession(SessionInbox):
         if spec.goal is not None and self.goals.current is None:
             self.goals.create(spec.goal.objective, spec.goal.max_rounds)
             self._goal_of_this_start = True
+            self._goal_given = True
         self._emit(
             protocol.StartedEvent(
                 session_id=self.session_id,
@@ -922,7 +927,16 @@ class TaskAgentSession(SessionInbox):
         retried = False
         # What a retry is to tell the host once it went through: a window
         # concluded from a refusal that did not say it was about length.
+        # And what the session was managed for before that, to go back to
+        # when the retry shows nothing.
         unsure: tuple[int, str] | None = None
+        before: tuple[int, int, ContextPolicy] | None = None
+
+        def back() -> None:
+            nonlocal before, unsure
+            if before is not None:
+                self._window, self._max_output, self.context.policy = before
+            before = unsure = None
         while True:
             for _again in range(2):
                 if not self._compaction_due:
@@ -966,11 +980,15 @@ class TaskAgentSession(SessionInbox):
                     # of another kind, or was stopped: the stream ends
                     # without raising then, and nothing was shown.)
                     self._tell_window(*unsure)
+                else:
+                    back()
                 return
             except RequestRefusedError as exc:
                 if retried or sent <= TASK_AGENT_UNSURE_REFUSAL_TOKENS:
                     # Not long enough to be about length, or refused again
-                    # after it was made shorter: reported as it came.
+                    # after it was made shorter: reported as it came, and
+                    # the session is managed for the window it had.
+                    back()
                     logger.warning("model request failed: %s", exc)
                     failure = AssistantMessage(model=model, stop_reason="error", error_message=str(exc))
                     yield AssistantErrorEvent(reason="error", error=failure)
@@ -982,8 +1000,9 @@ class TaskAgentSession(SessionInbox):
                     sent,
                     exc,
                 )
+                managed = (self._window, self._max_output, self.context.policy)
                 if self._assume_window(sent):
-                    unsure = (self._window, str(exc))
+                    unsure, before = (self._window, str(exc)), managed
                 await self._fit(force=True)
             except ContextOverflowError as exc:
                 self._learn_window(str(exc), sent)
@@ -1011,8 +1030,29 @@ class TaskAgentSession(SessionInbox):
             force=force,
             on_compaction=self._persist_compaction,
             # The commission under way stays as it was handed over.
-            pinned=(self._opening_entry_id,) if self._opening_entry_id else (),
+            pinned=self._pinned(),
         )
+
+    def _pinned(self) -> tuple[str, ...]:
+        """Return the row a summary leaves word for word: the text that opened the commission under way.
+
+        Not when it is longer than half of what a conversation may fill of
+        the window: kept whole next to what every request begins with, it
+        would leave a summary nothing to shorten, and the request would be
+        refused as too long however often it was summed up. (What a task
+        agent hands to one it starts has no cap, and a window may turn out
+        small.) It is then cut down and summed up like what the user said
+        before it.
+        """
+        opening = self._opening_entry_id
+        if not opening:
+            return ()
+        row = next((row for row in self.transcript.rows() if row.entry_id == opening), None)
+        if row is None:
+            return ()
+        policy = self.context.policy
+        room = (policy.threshold - self.context.fixed_tokens) // 2
+        return (opening,) if estimate_tokens(row.message, policy.image_tokens) <= room else ()
 
     def _persist_compaction(self, compaction: Compaction) -> None:
         self._recorder.link(
@@ -1272,7 +1312,14 @@ class TaskAgentSession(SessionInbox):
         self.todos.clear()
         if not self._goal_of_this_start:
             self.goals.drop()
+            goal = self.spec.goal
+            if goal is not None and not self._goal_given:
+                # The session was started with a goal, and had one from
+                # before that stood in its way: this is the commission the
+                # goal was given for.
+                self.goals.create(goal.objective, goal.max_rounds)
         self._goal_of_this_start = False
+        self._goal_given = True
 
     def steer(self, text: str) -> None:
         if self._closing:

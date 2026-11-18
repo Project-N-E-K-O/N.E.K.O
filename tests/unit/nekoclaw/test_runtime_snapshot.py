@@ -176,6 +176,68 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
     assert _saved(spec) == saved
 
 
+async def test_the_goal_a_session_is_started_with_is_the_goal_of_the_commission_that_is_opened(tmp_path: Path) -> None:
+    from nekoclaw.runtime.protocol import GoalSpec
+
+    stopped = asyncio.Event()
+
+    async def until_stopped() -> None:
+        await stopped.wait()
+
+    first_llm = ScriptedLLM(
+        [
+            [call("create_goal", {"objective": "finish the export"}, "c1"), finish("tool_calls")],
+            [until_stopped, say("never said"), finish()],
+        ]
+    )
+    session, events = await open_session(make_spec(tmp_path), first_llm)
+    session.prompt("First commission.", opening=True)
+
+    async def made() -> None:
+        while not events.of("tool_end"):
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(made(), 10)
+    await session.close()
+    stopped.set()
+
+    # Started for the next commission with a goal of its own, while the one before left one.
+    spec = make_spec(tmp_path, goal=GoalSpec(objective="draw the chart", max_rounds=1))
+    session, events = await open_session(spec, ScriptedLLM([[say("Done."), finish()]]))
+    try:
+        assert session.goals.current.objective == "finish the export"
+        await _ask(session, events, "Second commission.", opening=True)
+        # Not lost with the other one's: it is the goal of the commission that was opened.
+        assert session.goals.current is not None and session.goals.current.objective == "draw the chart"
+    finally:
+        await session.close()
+
+
+async def test_an_opening_message_too_long_for_the_window_is_summed_up_like_the_rest(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm)
+    try:
+        # As a task agent hands another its part: as long as it likes.
+        handed = "Your part: count the files\n" + _words(6_000, "p")
+        room = (session.context.policy.threshold - session.context.fixed_tokens) // 2
+        assert count_tokens(handed) > room
+        await _ask(session, events, handed, opening=True)
+        assert session._opening_entry_id is not None
+        # Kept whole next to what every request begins with, it would leave a summary nothing
+        # to shorten, and the request would be refused however often it was summed up.
+        assert session._pinned() == ()
+        await _seed(session, events, llm)
+        ended = await _sum_up(session, events, llm)
+        assert ended["reason"] == "completed" and ended["text"] == "Went on."
+        assert await session._size() <= session.context.policy.threshold
+
+        # One that has room stays word for word.
+        await _ask(session, events, "Commission B\nadd a chart", opening=True)
+        assert session._pinned() == (session._opening_entry_id,)
+    finally:
+        await session.close()
+
+
 @pytest.mark.parametrize("opening", [True, False])
 async def test_what_a_commission_left_unfinished_is_not_handed_to_the_next_one_of_its_session(
     tmp_path: Path, opening: bool
@@ -884,8 +946,9 @@ async def test_nothing_is_told_of_a_window_when_the_request_that_was_sent_once_m
 
         assert ended["reason"] == "error" and "the connection was reset" in ended["error"]
         # Whether the first refusal was about length was never shown: the host is told nothing,
-        # which it would believe for a month.
+        # which it would believe for a month, and the session is managed for the window it had.
         assert events.of("model_capability") == []
+        assert session.context.policy.window == 200_000 and session._window == 200_000
     finally:
         await session.close()
 
@@ -983,6 +1046,8 @@ async def test_a_request_refused_again_after_it_was_summed_up_is_reported_as_it_
         assert ended["reason"] == "error" and "tool schema is not valid" in ended["error"]
         assert len(llm.requests) - mark == 3
         assert events.of("model_capability") == []
+        # Nothing was shown of the model's window: the session is managed for the one it had.
+        assert session.context.policy.window == 200_000 and session._window == 200_000
     finally:
         await session.close()
 

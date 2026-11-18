@@ -280,7 +280,7 @@ class ModelCapabilityStore:
         known = TASK_AGENT_KNOWN_CONTEXT_WINDOWS.get(str(model or "").strip())
         return int(known) if known else TASK_AGENT_CONTEXT_WINDOW
 
-    async def compact_at(self, base_url: Any, model: Any) -> int:
+    async def compact_at(self, base_url: Any, model: Any, window: int | None = None) -> int:
         """Return the length of a conversation with this model from which it is summed up, in tokens.
 
         What the user set for the model, when that lies inside the window
@@ -289,10 +289,15 @@ class ModelCapabilityStore:
         ``TASK_AGENT_CONTEXT_WINDOW``): a window that turned out smaller
         than the one the user's number was meant for is summed up in
         proportion, not at a point beyond its end.
+
+        ``window`` is the window a session is in fact started with, when
+        that is not what ``context_window`` says (the model's configuration
+        names one): the point is of that window.
         """
         from config.nekoclaw_settings import TASK_AGENT_COMPACT_AT_TOKENS, TASK_AGENT_CONTEXT_WINDOW
 
-        window = await self.context_window(base_url, model)
+        if window is None:
+            window = await self.context_window(base_url, model)
         entry = (await self._loaded()).get(model_key(base_url, model))
         wanted = self._point((entry or {}).get("compact_at"))
         if wanted is not None and wanted < window:
