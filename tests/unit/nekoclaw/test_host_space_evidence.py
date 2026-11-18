@@ -6689,3 +6689,14 @@ async def test_a_file_found_gone_as_a_pending_entry_of_the_title_goes_into_the_e
     # The entry rested on nothing, and is not made to rest on a file that is gone; nor is that told as counted.
     assert _rests_on(entry)[0] == () and "src/app.py (not found)" in reply
     assert "evidence_counted" not in _lesson_event(events, "c2")
+
+
+def test_a_path_that_cannot_be_used_is_told_as_it_was_named(workdir):
+    long = "/" + "further/" * 120 + "notes.txt"
+
+    _counted, others = evidence_of(["notes/a  b" + long, "notes/a b" + long, "notes/a  b\nmore"], [str(workdir)])
+
+    # Two names that differ by a space are two; one on several lines is put on one.
+    assert [why for _name, why in others] == ["not a usable path"] * 3
+    assert others[0][0].startswith("notes/a  b/") and others[1][0].startswith("notes/a b/")
+    assert others[2][0] == "notes/a b more"

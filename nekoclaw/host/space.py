@@ -736,7 +736,9 @@ def evidence_of(
             or "\r" in named
             or count_tokens(text) > SPACE_EVIDENCE_PATH_MAX_TOKENS
         ):
-            others.append((_cut(text, 24), "not a usable path"))
+            # Told as it was named where that is one line: a name
+            # keeps the spaces it has.
+            others.append((_cut(text if "\n" in named or "\r" in named else named, 24), "not a usable path"))
             continue
         found: str | None = None
         within = False
