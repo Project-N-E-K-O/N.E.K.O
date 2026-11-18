@@ -6579,3 +6579,27 @@ async def test_a_file_found_as_the_note_is_judged_anew_speaks_for_it_though_noth
     # Asked about again as the note is judged anew, it is told by that look: in effect by it.
     assert len(looks) == 4 and reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
     assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+
+
+# ---------------------------------------------------------------------------
+# Review round 24
+# ---------------------------------------------------------------------------
+
+
+async def test_a_file_found_as_the_note_is_written_counts_though_nothing_was_told_of_it_as_the_note_was_judged(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    # There when the write's turn came; not told of as the note was judged (a look that took too long);
+    # there again as the entry is written.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", None])
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "verified", ["src/app.py"])
+    )
+
+    # Of the answers about one file the last one counts: it is on record, and counted.
+    assert len(looks) == 3 and reply.startswith("kept in") and "not found" not in reply
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+    assert _lesson_event(events, "c2")["evidence_counted"] == [app]

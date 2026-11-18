@@ -3082,12 +3082,17 @@ class TaskAgentSpace:
 
         def spoke(later: dict[str, bool | None]) -> tuple[str, ...]:
             # Of the files the note named, the ones that spoke for it in
-            # the end: found, told of, and not found otherwise by a look
-            # after that (``later``).
+            # the end: on record with it, and there by the last answer
+            # about each. That is what a look after the note was judged
+            # told (``later``), where there was one: it may have found a
+            # file of which nothing was told as the note was judged, or
+            # found one gone, or been told nothing of it. Else what was
+            # told as the note was judged.
             return tuple(
                 path
                 for path in note.known.evidence
-                if path in known.evidence and path not in known.untold and later.get(path, True) is True
+                if path in known.evidence
+                and (later[path] is True if path in later else path not in known.untold)
             )
 
         def found_gone(later: dict[str, bool | None]) -> tuple[str, ...]:
