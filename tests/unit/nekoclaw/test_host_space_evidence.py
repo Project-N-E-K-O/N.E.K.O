@@ -1188,6 +1188,25 @@ async def test_what_an_entry_said_when_it_was_removed_is_remembered_as_well_as_w
     assert _notes(root)["removed"][-1]["marks"] == [_digest("They are on the NAS.")]
 
 
+async def test_an_entry_that_says_nothing_when_it_is_removed_leaves_no_mark_of_nothing(space, root, workdir):
+    await space.touch_project("Budget app")
+    project = _commission(workdir, id="c9", project="Budget app")
+    await space.submit(project, _lesson("Camera drive", "It is E: here.", "verified"))
+    # Emptied in an editor, then removed in the console.
+    _said_instead(_memory(root, "Budget app") / "camera-drive.md", "It is E: here.", "")
+    assert await space.delete_entry("camera-drive", "Budget app")
+
+    (removed,) = _notes(root, "Budget app")["removed"]
+    assert removed["marks"] == [_digest("It is E: here.")]
+    # So an entry that says nothing, or has a part that comes to nothing, is not taken for one that was removed.
+    await space.submit(_commission(workdir), _lesson("Notes", "Something.", "verified"))
+    await space.submit(_commission(workdir), _lesson("More notes", "Something else.", "verified"))
+    _said_instead(_memory(root) / "notes.md", "Something.", "")
+    _said_instead(_memory(root) / "more-notes.md", "Something else.", "Something else." + chr(10) + chr(10) + "..." + chr(10))
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["more-notes", "notes"]
+
+
 async def test_what_was_removed_is_remembered_where_it_was(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
     await space.delete_entry("camera-drive", DEFAULT_PROJECT)
@@ -1549,6 +1568,56 @@ async def test_an_entry_that_was_deleted_while_it_was_coming_back_keeps_no_line(
 
     # No later look sees a file that is not there: the line would point at nothing for good.
     assert not entry.exists() and "(memory/entry-point.md)" not in _index(root)
+
+
+async def test_an_entry_that_cannot_be_looked_at_while_it_was_coming_back_keeps_its_line(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back" + chr(10), encoding="utf-8")
+    entry = _memory(root) / "entry-point.md"
+    editing, reading, looking = TaskAgentSpace._edit_text, TaskAgentSpace._read_text, os.stat
+    away: list[bool] = []
+
+    def held(self: TaskAgentSpace, path: Path, change: Any) -> bool:
+        if path == entry:
+            # The share the space is on goes right after the line was put back.
+            away.append(True)
+            raise PermissionError(13, "not reachable")
+        return editing(self, path, change)
+
+    def unreadable(path: Path) -> Any:
+        return None if away and path == entry else reading(path)
+
+    def unreachable(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if away and Path(path) == entry:
+            raise PermissionError(13, "not reachable")
+        return looking(path, *args, **kwargs)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", held)
+    monkeypatch.setattr(TaskAgentSpace, "_read_text", staticmethod(unreadable))
+    monkeypatch.setattr(os, "stat", unreachable)
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    monkeypatch.undo()
+
+    # It is not known to be gone, only not to be looked at: its line stays, and the next look goes on.
+    assert away and "(memory/entry-point.md)" in _index(root)
+    assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
+
+
+def test_a_file_is_gone_for_good_only_when_the_file_system_says_there_is_none(tmp_path, monkeypatch):
+    from nekoclaw.host.space import _gone_for_good
+
+    there = tmp_path / "a.md"
+    there.write_text("a", encoding="utf-8")
+    assert not _gone_for_good(there) and _gone_for_good(tmp_path / "none.md")
+
+    def refused(path: Any, *args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(13, "not allowed")
+
+    monkeypatch.setattr(os, "stat", refused)
+    assert not _gone_for_good(tmp_path / "none.md")
 
 
 async def test_an_expired_entry_that_kept_a_line_loses_it_though_its_files_cannot_be_looked_at(space, root, workdir, monkeypatch):

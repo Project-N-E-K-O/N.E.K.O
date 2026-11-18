@@ -824,6 +824,28 @@ def _removed_from(records: Iterable[dict[str, Any]]) -> tuple[set[str], set[str]
     return titles, marks
 
 
+def _removed_note(removed: tuple[set[str], set[str]], mark: Any, title: Any) -> bool:
+    """Whether a note is one the user removed: by the mark of its text, or by its title (``_removed_from``)."""
+    titles, marks = removed
+    return mark in marks or _normal(title) in titles
+
+
+def _gone_for_good(path: Path) -> bool:
+    """Whether a file is not there any more, as far as that is known for certain.
+
+    Only when the file system says there is no such file. One that
+    cannot be looked at just now (a share that is down, a directory that
+    may not be read) may be there all the same.
+    """
+    try:
+        os.stat(path)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def _removed_there(removed: tuple[set[str], set[str]], text: str, title: str) -> bool:
     """Whether an entry is one the user removed, going by what was removed from a layer (``_removed_from``).
 
@@ -1879,8 +1901,8 @@ class TaskAgentSpace:
             # that takes effect by itself is still kept.
             logger.warning("the notes of the task agent space that are not entries cannot be read", exc_info=True)
             record = None
-        removed_titles, removed_marks = _removed_from(record["removed"] if record is not None else ())
-        if mark in removed_marks or name in removed_titles:
+        removed = _removed_from(record["removed"] if record is not None else ())
+        if _removed_note(removed, mark, title):
             raise NoteRemoved("the user removed this note from the space, and it is not kept again")
         same, has_text = self._same_note(paths.memory_dir(project), project, title, content)
         waiting = [
@@ -1893,11 +1915,7 @@ class TaskAgentSpace:
         # title, a title another text was filed under. One the user
         # removed by that is not kept either. It goes into no entry with
         # this note, and waits no longer.
-        unwanted = [
-            item
-            for item in waiting
-            if item.get("mark") in removed_marks or _normal(item.get("title")) in removed_titles
-        ]
+        unwanted = [item for item in waiting if _removed_note(removed, item.get("mark"), item.get("title"))]
         if unwanted:
             waiting = [item for item in waiting if item not in unwanted]
             self._drop_held(notes_path, [str(item.get("mark")) for item in unwanted])
@@ -2752,7 +2770,14 @@ class TaskAgentSpace:
                     # Of the texts it was given, and of what it says now:
                     # its text may have been replaced in an editor since,
                     # and that is what the user saw and removed.
-                    "marks": list(dict.fromkeys([*_listed(document, "texts"), _digest(document.body)])),
+                    # One that says nothing (emptied, then removed) has no
+                    # text to remember: the mark of nothing would be that
+                    # of every empty entry and every empty part of one.
+                    "marks": list(
+                        dict.fromkeys(
+                            [*_listed(document, "texts"), *([_digest(document.body)] if _normal(document.body) else [])]
+                        )
+                    ),
                     "title": document.get("name") or name,
                     "at": _date(self._clock()),
                 }
@@ -2761,11 +2786,11 @@ class TaskAgentSpace:
                     data["removed"] = [*data["removed"], record][-SPACE_REMOVED_MAX_RECORDS:]
                     # Nor does it wait to take effect any longer: by any
                     # of its texts, or under its title in other words.
-                    titles, gone = _removed_from([record])
+                    gone = _removed_from([record])
                     data["held"] = [
                         kept
                         for kept in data["held"]
-                        if kept.get("mark") not in gone and _normal(kept.get("title")) not in titles
+                        if not _removed_note(gone, kept.get("mark"), kept.get("title"))
                     ]
 
                 try:
@@ -3001,11 +3026,13 @@ class TaskAgentSpace:
             # it still says it expired, the next look goes on from there.
             # One that is not there any more (the user deleted it at this
             # very moment) is looked at by no later look: its line goes.
+            # Only one that is known to be gone: a file that cannot be
+            # looked at just now may be an entry that is in effect.
             now = self._read_text(path)
             if (
                 _parse_document(now).get("status").strip().lower() == ENTRY_EXPIRED
                 if now is not None
-                else not os.path.exists(path)
+                else _gone_for_good(path)
             ):
                 try:
                     self._index_remove(paths.index(project), target)
