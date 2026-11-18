@@ -1023,7 +1023,7 @@ class DshRuntime:
     # -- texts ------------------------------------------------------------
 
     def _first_message(self, session: _Session, work: str) -> str:
-        from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
+        from config.prompts.prompts_nekoclaw import USER_LANGUAGE_GUIDANCE
         from config.prompts.prompts_nekoclaw_dsh import DSH_FIRST_MESSAGE, DSH_SUBAGENT_SECTION
 
         spec = session.spec
@@ -1033,10 +1033,12 @@ class DshRuntime:
         if session.subagents:
             # Not in the system prompt, which every session of the process shares.
             parts.append(DSH_SUBAGENT_SECTION)
-        if spec.reply_language and spec.reply_language.strip():
-            parts.append(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", spec.reply_language.strip()))
         if not parts:
             return work
+        # As in the built-in runtime's system prompt: the language itself is
+        # named in the message that opens each commission (``work`` here, for
+        # the first one), since a session's commissions need not share one.
+        parts.append(USER_LANGUAGE_GUIDANCE)
         return DSH_FIRST_MESSAGE.replace("<<INSTRUCTIONS>>", "\n\n".join(parts)).replace("<<WORK>>", work)
 
     async def _note(self, session: _Session) -> None:

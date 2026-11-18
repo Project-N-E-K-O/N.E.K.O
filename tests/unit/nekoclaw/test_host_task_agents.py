@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
+from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -246,7 +248,7 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     )
     hosts.append(host)
 
-    receipt = await _dispatch(host, "sort the photos")
+    receipt = await _dispatch(host, "sort the photos", lang="zh-TW")
 
     failed = await wait_status(host, receipt.commission_id, "failed")
     assert "could not be started" in failed.status_reason
@@ -255,6 +257,9 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     assert counted == []
     (report,) = await outbox(host, "task_result")
     assert report.payload["status"] == "failed"
+    # She is told, and the HUD shows, in her dialogue's language; the error itself as it came.
+    said = TASK_AGENT_FAILED_TEXTS["zh-TW"]["start"].format(detail="the runtime process could not be created")
+    assert report.payload["summary"] == said
 
 
 async def test_without_a_model_no_task_agent_is_available(hosts, tmp_path):
@@ -2184,6 +2189,41 @@ async def test_an_answer_while_a_child_result_keeps_the_parent_busy_waits_for_th
     assert {"role": "user", "content": "by month"} in parent.requests[3]
 
 
+async def test_a_child_that_fails_for_the_host_tells_its_parent_the_reason_on_record(hosts, tmp_path):
+    parent_release, parent_wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the files", "prompt": "Count the files in the folder."}), finish("tool_calls")],
+            # Held until the child has failed, so its result is in the next request.
+            [parent_wait, call("list_agents", {}, "c2"), finish("tool_calls")],
+            _report("ready", "the count failed"),
+        ]
+    )
+    child = ScriptedLLM([[say("3 files"), finish()]])
+    lead: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        # The parent's requests are counted; the child has nothing left.
+        lead[:1] = lead[:1] or [commission_id]
+        return commission_id == lead[0]
+
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child, task_agent_meter=meter)
+
+    receipt = await _dispatch(host, "tell me how many files are in the folder", lang="ja")
+
+    await wait_until(lambda: _children(host, receipt.commission_id), what="the child task agent being filed")
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    await wait_status(host, sub.id, "failed")
+    parent_release.set()
+    await wait_status(host, receipt.commission_id, "done")
+    # What a parent is told is not for the user: the reason as it is on record, untranslated.
+    told = json.dumps(parent.requests[-1], ensure_ascii=False).replace("\\n", "\n")
+    assert "[child task agent agent-1 finished: failed]\nthe free daily quota of the agent model is used up" in told
+    assert TASK_AGENT_FAILED_TEXTS["ja"]["quota"] not in told
+    # Only the commission she gave is reported to her.
+    assert [report.payload["task_id"] for report in await outbox(host, "task_result")] == [receipt.commission_id]
+
+
 async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hosts, tmp_path):
     parent = ScriptedLLM(
         [
@@ -2258,7 +2298,7 @@ async def test_what_a_task_agent_hands_to_one_it_starts_reaches_it_whole(hosts, 
     # it was told that the other was started.
     opening = child.requests[0][-1]["content"]
     assert opening.startswith(f"Your part: count the files\n{handed}")
-    assert opening.endswith("in English.")
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
 
 
 @pytest.mark.parametrize("where", ["outside", "inside"])

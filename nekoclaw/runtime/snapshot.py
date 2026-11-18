@@ -51,7 +51,10 @@ from nekoclaw.runtime.loop.tools import AgentTool
 logger = logging.getLogger(__name__)
 
 SYSTEM_FILE = "system.json"
-_VERSION = 1
+# 2: the system prompt no longer names the language of the commission the
+# session was opened for, and the report tool no longer says to use the
+# language of the user's request.
+_VERSION = 2
 
 # Why a snapshot was made.
 REASON_OPENED = "opened"

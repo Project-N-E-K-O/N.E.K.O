@@ -831,7 +831,7 @@ NEKOCLAW_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     'type': 'string',
                     'description': (
                         'One or two sentences for the user stating the outcome or the current '
-                        "state. Use the language of the user's request."
+                        'state, in the language the current commission names for the user.'
                     ),
                 },
                 'details': {

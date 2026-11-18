@@ -649,6 +649,39 @@ HOST_RESTART_FAILED_TEXT = {
     'pt': "O NekoClaw reiniciou no meio disto, então não foi concluído.",
 }
 
+# What she is told, and the HUD shows as it is written, when a commission of
+# hers failed for a reason of the host's own rather than the task agent's
+# report: the free daily quota ran out (``quota``), the task agent could not
+# be started (``start``), or its run stopped on an error (``run``). ``detail``
+# is the error as it came, untranslated. The ledger keeps the English reason.
+# Rendered with str.format (detail).
+TASK_AGENT_FAILED_TEXTS = {
+    'zh': {"quota": "今天使魔模型的免费额度用完了，这件事没有办完。",
+           "start": "使魔没能开工（{detail}）。",
+           "run": "使魔办到一半出错停下了（{detail}）。"},
+    'zh-TW': {"quota": "今天使魔模型的免費額度用完了，這件事沒有辦完。",
+              "start": "使魔沒能開工（{detail}）。",
+              "run": "使魔辦到一半出錯停下了（{detail}）。"},
+    'en': {"quota": "The free daily quota of the familiar's model is used up, so this was not finished.",
+           "start": "The familiar could not start ({detail}).",
+           "run": "The familiar stopped on an error partway through ({detail})."},
+    'ja': {"quota": "今日の使い魔のモデルの無料枠を使い切ったため、この用件は終わっていません。",
+           "start": "使い魔が作業を始められませんでした（{detail}）。",
+           "run": "使い魔が途中でエラーになり止まりました（{detail}）。"},
+    'ko': {"quota": "오늘 사역마 모델의 무료 사용량을 다 써서 이 일은 끝나지 않았습니다.",
+           "start": "사역마가 일을 시작하지 못했습니다({detail}).",
+           "run": "사역마가 도중에 오류로 멈췄습니다({detail})."},
+    'ru': {"quota": "Бесплатный дневной лимит модели фамильяра исчерпан, поэтому задача не завершена.",
+           "start": "Фамильяр не смог начать работу ({detail}).",
+           "run": "Фамильяр остановился на полпути из-за ошибки ({detail})."},
+    'es': {"quota": "Se agotó la cuota gratuita diaria del modelo del familiar, así que esto no se terminó.",
+           "start": "El familiar no pudo empezar ({detail}).",
+           "run": "El familiar se detuvo a mitad por un error ({detail})."},
+    'pt': {"quota": "A cota gratuita diária do modelo do familiar acabou, então isto não foi concluído.",
+           "start": "O familiar não conseguiu começar ({detail}).",
+           "run": "O familiar parou no meio por um erro ({detail})."},
+}
+
 # What the user is shown on the HUD, once for each model, when a model turned
 # out to take less context than its sessions were managed for and NekoClaw went
 # on with the smaller number by itself. Shown as it is written, and said to no

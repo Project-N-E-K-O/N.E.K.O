@@ -52,7 +52,9 @@ this project's own tools and the runtime-context wording are ours.
 
 All of it is English text read by the model and is deliberately not translated:
 translating would discard the tuning it carries. The language a task agent uses
-towards the user is set by one separate sentence (``REPLY_LANGUAGE_SENTENCE``).
+towards the user is named by one separate sentence (``REPLY_LANGUAGE_SENTENCE``)
+in the message that opens each commission; the system prompt names none
+(``USER_LANGUAGE_GUIDANCE``).
 
 A snapshot test (``tests/unit/nekoclaw/test_prompt_snapshot.py``) locks the
 assembled system prompt; any edit here has to update that snapshot explicitly.
@@ -98,10 +100,22 @@ NOTE_LESSON_GUIDANCE = (
     "known it at the start, submit it with note_lesson before you finish."
 )
 
-# Rendered with str.replace on the marker.
+# The language is the commission's, not the session's: a session works on
+# commissions one after the other, and they need not share a language, while
+# the system prompt stays as the session was opened until it is summed up. So
+# the system prompt names none and points to the commission's opening message,
+# which names it (``REPLY_LANGUAGE_SENTENCE``). Only where something is written
+# for the user: a session without the host's tools writes nothing for anyone.
+USER_LANGUAGE_GUIDANCE = (
+    "Write what is meant for the user in the language that the message opening the current "
+    "commission names, or else in the language of the commission."
+)
+
+# Ends the message that opens a commission. Rendered with str.replace on the marker.
 REPLY_LANGUAGE_SENTENCE = (
-    "Write everything meant for the user, including report summaries and questions, in "
-    "<<LANGUAGE>>."
+    "Write everything meant for the user in this commission, including report summaries and "
+    "questions with their options, in <<LANGUAGE>>, whatever language the files and tool results "
+    "are in. Keep code, commands, paths and names as they are."
 )
 
 # ---------------------------------------------------------------------------

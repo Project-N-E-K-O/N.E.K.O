@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
 from nekoclaw.host.paths import DEFAULT_PROJECT
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
@@ -176,7 +177,7 @@ async def test_the_space_and_the_commission_each_keep_within_a_cap_of_their_own(
     opening = llm.requests[0][-1]["content"]
     said, language = opening.rsplit("\n\n", 1)
     assert said.startswith(f"Commission {receipt.commission_id}\nsort the photos")
-    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language.endswith("in English.")
+    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language == REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English")
     assert "Index of project _daily:\n- [Daily 149 d149]" in kept
 
 

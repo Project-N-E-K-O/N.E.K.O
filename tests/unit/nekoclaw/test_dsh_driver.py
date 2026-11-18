@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw import USER_LANGUAGE_GUIDANCE
 from nekoclaw.dsh import profile
 from nekoclaw.dsh.driver import SESSION_FILE, DshLaunch, DshRuntime
 from nekoclaw.dsh.profile import DshUnavailable
@@ -170,7 +171,7 @@ async def test_the_process_is_started_on_drive_c(tmp_path: Path, dsh) -> None:
 
 async def test_what_the_host_tells_a_commission_heads_its_first_message_only(tmp_path: Path, dsh) -> None:
     driver = dsh()
-    spec = make_spec(tmp_path, instructions="Commission: tidy the desk.", reply_language="Japanese")
+    spec = make_spec(tmp_path, instructions="Commission: tidy the desk.")
     await driver.started(spec)
 
     await driver.run("s1", "first")
@@ -178,7 +179,10 @@ async def test_what_the_host_tells_a_commission_heads_its_first_message_only(tmp
 
     first, second = (row["text"] for row in driver.record("session/prompt"))
     assert first.startswith("[From the host, for this commission]\nCommission: tidy the desk.")
-    assert "in Japanese." in first and first.endswith("[Your work]\nfirst")
+    assert first.endswith("[Your work]\nfirst")
+    # Which language to write to the user in is named by each commission's
+    # opening message; what the session is told once names none.
+    assert USER_LANGUAGE_GUIDANCE in first
     assert second == "second"
 
 
@@ -1685,7 +1689,7 @@ async def test_a_session_that_goes_on_with_another_commission_is_given_its_openi
     tmp_path: Path, dsh
 ) -> None:
     driver = dsh()
-    spec = make_spec(tmp_path, instructions="You work for Lan.", reply_language="English")
+    spec = make_spec(tmp_path, instructions="You work for Lan.")
     await driver.started(spec)
     position = len(driver.events.events)
     await driver.runtime.prompt("s1", "Commission 1\ntidy the desk", opening=True)
@@ -1693,7 +1697,7 @@ async def test_a_session_that_goes_on_with_another_commission_is_given_its_openi
     await driver.closed("s1")
 
     # Opened again for the next commission of the session, with other instructions by now.
-    again = make_spec(tmp_path, instructions="You work for Lan. Index: three entries.", reply_language="English")
+    again = make_spec(tmp_path, instructions="You work for Lan. Index: three entries.")
     started = await driver.started(again)
     position = len(driver.events.events)
     await driver.runtime.prompt("s1", "Commission 2\nwater the plants", opening=True)

@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from config.prompts import prompts_nekoclaw as runtime_texts
 from config.prompts import prompts_nekoclaw_brain as brain_texts
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekoclaw.host_fakes import (
@@ -1746,10 +1747,15 @@ async def test_every_commission_says_in_which_language_to_answer(hosts, tmp_path
     done = await wait_status(host, second.commission_id, "done")
     assert done.session_id == first.commission_id
 
-    # The system prompt of the session names the language of the commission it was first
-    # opened for, and stays as it is; the message that opens a commission names its own.
-    said = _user_messages(scripts["add a chart"].requests[0])
+    # The message that opens a commission names its language. The system prompt of the
+    # session names none: it stays as the session was opened, so a language named there
+    # would be the first commission's and contradict the second's.
+    request = scripts["add a chart"].requests[0]
+    said = _user_messages(request)
     opened_first = next(text for text in said if text.startswith(f"Commission {first.commission_id}\n"))
     opened_second = next(text for text in said if text.startswith(f"Commission {second.commission_id}\n"))
-    assert opened_first.endswith("in English.")
-    assert opened_second.endswith("in Japanese.")
+    assert opened_first.endswith(runtime_texts.REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
+    assert opened_second.endswith(runtime_texts.REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "Japanese"))
+    (system,) = [str(message["content"]) for message in request if message.get("role") == "system"]
+    assert runtime_texts.USER_LANGUAGE_GUIDANCE in system
+    assert "English" not in system and "Japanese" not in system

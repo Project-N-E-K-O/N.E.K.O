@@ -155,8 +155,6 @@ class TaskAgentSpec(_Strict):
     model: ModelConfig
     # Host-supplied text appended to the built-in system prompt.
     instructions: str | None = None
-    # Language for text meant for the user, e.g. "Simplified Chinese".
-    reply_language: str | None = None
     # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True

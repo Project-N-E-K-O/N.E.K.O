@@ -598,7 +598,7 @@ class TaskAgentManager:
             except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
                 logger.warning("giving commission %s a session failed: %s", commission.id, exc)
                 self._candidates.pop(commission.id, None)
-                await self._fail(commission.id, f"the task agent could not be started: {exc}")
+                await self._fail(commission.id, "start", str(exc))
                 return False
         if self._closed:
             self._candidates.pop(commission.id, None)
@@ -800,8 +800,13 @@ class TaskAgentManager:
             opening += "\n\n" + picked
         language = _REPLY_LANGUAGES.get(commission.lang or "", None)
         if language:
-            # Said with every commission: the session's system prompt names
-            # the language of the commission it was first opened for.
+            # Said here, with every commission, and nowhere else: a session's
+            # commissions need not share a language, and its system prompt
+            # stays as it was opened until it is summed up. The built-in
+            # runtime keeps this message through a summary as it is
+            # (``opening=True``); dsh sums up on its own. The language
+            # is the one of her dialogue when it was dispatched, which is also
+            # what the host writes in to her and on the HUD.
             opening += "\n\n" + REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", language)
         return opening
 
@@ -1010,7 +1015,6 @@ class TaskAgentManager:
                 session_dir=session_path,
                 model=model,
                 instructions=await self._instructions(commission, with_gateway=gateway_spec is not None),
-                reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
                 top_level=commission.parent_id is None,
                 # A task agent started by a task agent starts none itself.
                 disabled_tools=["subagent"] if commission.parent_id is not None else [],
@@ -1156,7 +1160,7 @@ class TaskAgentManager:
                 # does: a new session of the same commission started before
                 # that would be released by it.
                 self._keep_unsent(session)
-                await self._fail(commission.id, _QUOTA_REASON)
+                await self._fail(commission.id, "quota")
                 await self._close_session(session)
                 # What was passed on while the failure was being written.
                 self._keep_unsent(session)
@@ -1200,7 +1204,7 @@ class TaskAgentManager:
                 # session looked at, and its status written.
                 await self._leave_cleared(session)
                 self._discard(commission_id)
-            await self._fail(commission_id, f"the task agent could not be started: {exc}")
+            await self._fail(commission_id, "start", str(exc))
             self._keep_unsent(session)
             return False
 
@@ -1516,7 +1520,7 @@ class TaskAgentManager:
                 # sees to: it must not stay queued for nobody.
                 logger.error("queued commission %s has no session to start in", commission_id)
                 self._resume.pop(commission_id, None)
-                await self._fail(commission_id, "the task agent could not be started: its session is not known")
+                await self._fail(commission_id, "start", "its session is not known")
 
     async def _know_session(self, commission_id: str) -> bool:
         """Make a commission's session known to this manager, from the ledger; False for a commission without one.
@@ -1836,7 +1840,7 @@ class TaskAgentManager:
                 # went away meanwhile): what it was to send is kept, and
                 # again once the failure is written, for what came meanwhile.
                 self._keep_unsent(session)
-                await self._fail(commission_id, str(event.get("error") or "the run failed"))
+                await self._fail(commission_id, "run", str(event.get("error") or ""))
                 self._keep_unsent(session)
             else:
                 # A run takes its prompt into the session's transcript before
@@ -1850,7 +1854,7 @@ class TaskAgentManager:
                 # nothing tells how far that got with what it was sent. What
                 # the commission is, is then said again when it is taken up;
                 # twice in the transcript does less harm than not at all.)
-                await self._fail(commission_id, str(event.get("error") or "the run failed"))
+                await self._fail(commission_id, "run", str(event.get("error") or ""))
         # It is over; what it started must not go on working for nobody.
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
@@ -1879,7 +1883,7 @@ class TaskAgentManager:
             return
         if allowed:
             return
-        await self._fail(commission_id, _QUOTA_REASON)
+        await self._fail(commission_id, "quota")
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
@@ -1923,14 +1927,14 @@ class TaskAgentManager:
                     {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": message},
                 )
                 return
-            await self._fail(commission_id, f"the task agent could not be started: {message}")
+            await self._fail(commission_id, "start", message)
             self._keep_unsent(session)
             await self._release(commission_id)
         elif command == "prompt":
             session.untaken_answer = None
             # Refused, so it is not in the transcript: what the user said
             # with it is kept, as when the start itself fails.
-            await self._fail(commission_id, message)
+            await self._fail(commission_id, "run", message)
             self._keep_unsent(session)
             await self._close_session(session)
         elif command == "close":
@@ -1944,8 +1948,31 @@ class TaskAgentManager:
         session.closing = True
         await runtime.close(session.session_id)
 
-    async def _fail(self, commission_id: str, reason: str) -> None:
-        await self._end(commission_id, "failed", reason=reason, text=reason, result_summary=self._summary(reason))
+    async def _fail(self, commission_id: str, why: str, detail: str = "") -> None:
+        """End a commission as failed for a reason of the host's own.
+
+        ``why`` is ``quota`` (the free daily quota ran out), ``start`` (the
+        task agent could not be started) or ``run`` (its run stopped on an
+        error); ``detail`` is the error as it came. The status reason is
+        English, for the record. What she is told, which the HUD also shows
+        as it is, is in the commission's language, like everything else the
+        host writes for her. A task agent that started the commission is
+        told the English reason: that is not for the user.
+        """
+        from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
+        from nekoclaw.host.task_brain import _texts
+
+        if why == "quota":
+            reason = _QUOTA_REASON
+        elif why == "start":
+            reason = f"the task agent could not be started: {detail}"
+        else:
+            reason = detail or "the run failed"
+        text = reason
+        commission = await self._ledger.get(commission_id)
+        if commission is not None and commission.parent_id is None:
+            text = _texts(TASK_AGENT_FAILED_TEXTS, commission.lang or "en")[why].format(detail=detail or reason)
+        await self._end(commission_id, "failed", reason=reason, text=text, result_summary=self._summary(text))
 
     async def _end(
         self,

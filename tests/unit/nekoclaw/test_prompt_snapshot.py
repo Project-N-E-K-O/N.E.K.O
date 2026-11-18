@@ -74,7 +74,6 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "workdir": "C:\\work\\project",
         "capabilities": frozenset(HOST_CALLS),
         "images": True,
-        "reply_language": "Simplified Chinese",
         "instructions": "Project notes supplied by the host go here.",
     },
     # Elsewhere, a text-only model and no host at all.

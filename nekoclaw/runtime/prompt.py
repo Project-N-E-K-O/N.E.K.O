@@ -53,7 +53,6 @@ def build_system_prompt(
     tool_names: Collection[str],
     workdir: str,
     platform: str,
-    reply_language: str | None = None,
     instructions: str | None = None,
 ) -> str:
     """Return the system prompt for a session offering ``tool_names``."""
@@ -72,10 +71,9 @@ def build_system_prompt(
         parts.append(texts.REPORT_GUIDANCE)
     if "note_lesson" in offered:
         parts.append(texts.NOTE_LESSON_GUIDANCE)
-    if reply_language and reply_language.strip():
-        parts.append(
-            texts.REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", reply_language.strip())
-        )
+    if "report" in offered or "ask_user_question" in offered:
+        # Which language that is, is said with each commission.
+        parts.append(texts.USER_LANGUAGE_GUIDANCE)
     if instructions and instructions.strip():
         parts.append(instructions.strip())
     return "\n\n".join(parts)

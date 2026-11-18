@@ -373,7 +373,7 @@
     },
     "summary": {
      "type": "string",
-     "description": "One or two sentences for the user stating the outcome or the current state. Use the language of the user's request."
+     "description": "One or two sentences for the user stating the outcome or the current state, in the language the current commission names for the user."
     },
     "details": {
      "type": "string",
