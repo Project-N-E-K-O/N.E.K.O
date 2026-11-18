@@ -668,17 +668,21 @@ class TaskBrain:
         try:
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
-            if not self._switched_on():
+            repeats = selection.route == "duplicate" and bool(selection.duplicate_of)
+            if not self._switched_on() and not repeats:
                 # NekoClaw was switched off while it was chosen who does
                 # it. Nothing new is begun while it is off, by a task
                 # agent or by a plugin: a sentence dispatched now would
                 # be turned away. And nothing of what was chosen is
                 # written down: not the session it would have gone on
                 # in, nor what the sentence states for good.
+                # (One that repeats something under way begins nothing:
+                # it is withdrawn as that, below, which is what there
+                # is to tell her of it whatever the switch says.)
                 # (The switch, not ``_is_enabled``: a brain that is being
                 # closed hands it over, and the start ends as failed
                 # because the host shut down, to be taken up again.)
-                await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
+                await self._overturn_switched_off(commission)
                 return
             goes_on = bool(follows) and selection.route == "task_agent" and self._task_agents is not None
             if goes_on:
@@ -723,7 +727,7 @@ class TaskBrain:
                 if turned_away:
                     # It took no place, and is nobody's: put down as what
                     # it is, whatever the switch says by now.
-                    await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
+                    await self._overturn_switched_off(commission)
             elif selection.route == "duplicate" and selection.duplicate_of:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
             else:
@@ -779,6 +783,10 @@ class TaskBrain:
             await self._reporter.correction(
                 commission, reason="no_capability", detail=reason, text=self._no_capability_text(commission, reason)
             )
+
+    async def _overturn_switched_off(self, commission: Commission) -> None:
+        """Accepted, and NekoClaw was switched off before anything had begun it: fail the commission and tell her so."""
+        await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
 
     async def _overturn_duplicate(self, commission: Commission, duplicate_of: str) -> None:
         """Accepted, yet it repeats something under way: withdraw it and tell her."""
@@ -853,7 +861,7 @@ class TaskBrain:
         if turned_away:
             # Nothing was called: put down as what it is, and not as a
             # call that failed.
-            await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
+            await self._overturn_switched_off(commission)
             return
         await self._finish_direct(commission, request.plugins, entry, outcome)
 

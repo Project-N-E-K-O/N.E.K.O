@@ -576,6 +576,39 @@ async def test_accepted_but_a_repeat_after_all_is_withdrawn_and_corrected(server
     await wait_status(host, first.commission_id, "done")
 
 
+async def test_a_repeat_is_withdrawn_as_a_repeat_though_nekoclaw_was_switched_off_while_the_model_chose(
+    server, hosts, tmp_path
+):
+    release = asyncio.Event()
+
+    async def slow(args: dict[str, Any]) -> dict[str, Any]:
+        await release.wait()
+        return finish({"reply": "sunny"})
+
+    _weather(server, slow)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today"), {"route": "duplicate", "duplicate_of": 1}])
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+    first = await _dispatch(host, "查一下上海的天气")
+    await wait_status(host, first.commission_id, "working")
+    llm.gate = asyncio.Event()
+
+    second = await _dispatch(host, "看看魔都今天气象如何")
+    assert second.kind == "accepted"
+    await wait_until(lambda: llm.count("fine") == 2, what="the second selection being asked")
+    on[0] = False
+    llm.gate.set()
+
+    # It begins nothing, switched off or not: what she is told is that it is being done already.
+    withdrawn = await wait_status(host, second.commission_id, "cancelled")
+    assert first.commission_id in withdrawn.status_reason
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("duplicate", first.commission_id)
+    assert len(server.calls) == 1
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+
+
 async def test_a_plugin_that_asked_for_confirmation_runs_again_when_asked_again(server, hosts, tmp_path):
     answers = [
         finish({"needs_confirmation": True, "reply": "确认定明早7点的闹钟吗？"}),

@@ -5095,3 +5095,39 @@ async def test_nothing_is_summed_up_when_nekoclaw_is_switched_off_while_the_quot
     session = await host.ledger.get_session(first.id)
     assert session.status == "closed" and session.compacted_at is None
     assert manager._service == {} and manager._idle_over == {}
+
+
+async def test_a_commission_that_was_queued_when_nekoclaw_went_off_is_begun_when_a_place_is_free(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([[wait, *_report("ready", "sorted")]]),
+        "check the mail": ScriptedLLM([_report("ready", "no mail")]),
+    }
+    clock = _Clock(1_700_000_000.0)
+    said = RecentConversation(clock=clock)
+    on = [True]
+    host = _host(
+        hosts, tmp_path, scripts_by_commission(scripts), max_task_agents=1, conversation=said, enabled=lambda: on[0]
+    )
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_until(lambda: scripts["sort the photos"].requests, what="its first request")
+    said.note("Lan", ROLE_USER, "the mail is in the other account")
+    clock.now += 5
+    second = (await _dispatch(host, "check the mail")).commissions[0]
+    await wait_until(lambda: second.id in manager._queue, what="the second being queued")
+    # The last capability switch goes off (which stops nothing that is under way), and what is
+    # kept of the main dialogue goes with it.
+    on[0] = False
+    clock.now += 5
+    said.forget()
+    release.set()
+    await wait_status(host, first.id, "done")
+    # One that waits for a place is under way like one that has it: the task agents were handed
+    # it while NekoClaw was on, and the user sees it queued. It is begun when its turn comes, and
+    # is not handed what was said before the switch went off.
+    await wait_status(host, second.id, "done")
+    await _let_go(host)
+    whole = json.dumps(scripts["check the mail"].requests[0], ensure_ascii=False)
+    assert "check the mail" in whole and "the other account" not in whole
+    assert await outbox(host, "correction") == []

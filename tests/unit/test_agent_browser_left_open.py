@@ -1295,7 +1295,9 @@ def _puts_the_master_switch_off(node: ast.AST) -> bool:
     )
 
 
-_LEAVES_OR_WAITS = (ast.Await, ast.Return, ast.Raise, ast.Yield, ast.YieldFrom, ast.Break, ast.Continue)
+_LEAVES_OR_WAITS = (
+    ast.Await, ast.AsyncWith, ast.AsyncFor, ast.Return, ast.Raise, ast.Yield, ast.YieldFrom, ast.Break, ast.Continue
+)
 
 
 def _master_switch_offs(function: ast.AST) -> list[bool]:
@@ -1438,12 +1440,18 @@ def test_every_place_that_puts_the_master_switch_off_is_looked_at_by_itself() ->
         "        Modules.analyzer_enabled = False\n"
         "        await stop_everything()\n"
         "        forget_turns_for_task_agents()\n"
+        "    elif action == 'off_under_a_lock':\n"
+        "        Modules.analyzer_enabled = False\n"
+        "        async with lock:\n"
+        "            pass\n"
+        "        forget_turns_for_task_agents()\n"
         "    else:\n"
         "        Modules.analyzer_enabled = True\n"
     ).body[0]
     # The first drops what was kept right after it. The second leaves without, and the third
-    # waits for something first: neither is covered by the first, nor by what comes later.
-    assert _master_switch_offs(function) == [True, False, False]
+    # and the fourth wait for something first: none of them is covered by the first, nor by
+    # what comes later.
+    assert _master_switch_offs(function) == [True, False, False, False]
 
 
 def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
