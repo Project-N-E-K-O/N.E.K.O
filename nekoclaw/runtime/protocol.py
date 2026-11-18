@@ -412,7 +412,12 @@ class EndedEvent(_SessionEvent):
     # Text of the last model response of the run.
     text: str = ""
     error: str | None = None
-    # Texts the session had taken when the run finished; None for ``closed``.
+    # Up to which of the texts the session was given this run is accounted
+    # for: the number of the last one it was handed when it finished. An
+    # upper bound, for telling the run's texts from those of the next. That
+    # a given text is in the conversation is said by its ``taken`` event and
+    # by nothing else: one whose answer never got there counts here, and is
+    # given again. None for ``closed``.
     inputs: int | None = None
     # A number for this run among the session's runs, where the runtime
     # counts them: what a ``taken`` event that comes late names (its ``run``).

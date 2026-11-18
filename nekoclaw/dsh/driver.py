@@ -1160,6 +1160,9 @@ class DshRuntime:
         if late:
             session.unsettled.remove(outcome)
         if not delivered:
+            # (Whatever becomes of the texts next, queued again or left to
+            # a stop that is under way, they are not told of as taken: the
+            # end of the turn looks at how each answer fared.)
             self._give_back(session, texts, of_run, late=late)
         elif late and self._sessions.get(session.id) is session and session.closing is None:
             # (Said as of a run that is over, and of which one: what is
@@ -1179,7 +1182,15 @@ class DshRuntime:
         open_ones = [outcome for outcome, _numbers in session.answering if not outcome.done()]
         if open_ones:
             await asyncio.wait(open_ones, timeout=DSH_ANSWER_SETTLE_SECONDS)
-        unknown = {number for outcome, numbers in session.answering if not outcome.done() for number in numbers}
+        # Not known to have got there, or known not to have (a stop that
+        # came during the wait kept those from being queued again; they
+        # are not in dsh's conversation for that).
+        unknown = {
+            number
+            for outcome, numbers in session.answering
+            if not outcome.done() or not outcome.result()
+            for number in numbers
+        }
         if unknown:
             session.awaited = [number for number in session.awaited if number not in unknown]
         session.unsettled.extend(outcome for outcome, _numbers in session.answering if not outcome.done())

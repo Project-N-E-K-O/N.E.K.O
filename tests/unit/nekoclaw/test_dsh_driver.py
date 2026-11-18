@@ -1918,6 +1918,32 @@ async def test_the_end_of_a_turn_waits_to_hear_whether_the_answer_of_its_call_re
     _sent_again(driver, await driver.events.wait_ended("s1"))
 
 
+async def test_a_text_whose_answer_went_nowhere_is_not_told_of_as_taken_though_its_turn_is_being_stopped(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh)
+    settled = driver.runtime._answers_settled
+    waiting = asyncio.Event()
+
+    async def looking(session: Any) -> None:
+        waiting.set()
+        await settled(session)
+
+    monkeypatch.setattr(driver.runtime, "_answers_settled", looking)
+    go.write_text("", encoding="utf-8")
+    await asyncio.wait_for(waiting.wait(), 10.0)
+    # The turn is stopped while its end waits to hear of the answer; then it is heard that the
+    # answer went nowhere.
+    await driver.runtime.abort("s1")
+    told[0](False)
+    await driver.events.wait_ended("s1")
+
+    # Not queued again (the stop sees to what it was handed), and not told of as taken either:
+    # it never was in dsh's conversation.
+    assert _taken(driver) == [1] and session.queue == []
+    assert len(driver.record("session/prompt")) == 1
+
+
 async def test_a_text_whose_answer_got_to_dsh_is_told_of_as_taken_with_the_end_of_its_turn(tmp_path: Path, dsh) -> None:
     driver, session, go, told = await _handed_to_a_call(tmp_path, dsh)
     told[0](True)
