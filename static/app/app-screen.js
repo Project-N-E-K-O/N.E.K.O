@@ -1876,7 +1876,12 @@
         var shouldRestart = isScreenSharingActiveForSourceChange();
         releaseActiveScreenCaptureForSourceChange();
         if (!shouldRestart) return;
-        Promise.resolve(startScreenSharing()).catch(function (error) {
+        Promise.resolve(startScreenSharing()).then(function () {
+            // The restart handles its own failures and resolves without a share;
+            // the old source's frames then need the stop notice it skipped.
+            if (!isScreenShareRunningOrStarting()) notifyScreenShareStopped();
+        }, function (error) {
+            if (!isScreenShareRunningOrStarting()) notifyScreenShareStopped();
             console.warn('[屏幕源] 标题恢复后重启流捕获失败:', error);
             window.showStatusToast(
                 safeT(
@@ -2039,7 +2044,10 @@
             return;
         }
         // Native capture (Tauri etc.) does not use this stream; its end does not end that share.
-        if (isManualScreenShareEngaged() && activeNativeCaptureSourceId === null) {
+        // A start still before its sender (e.g. waiting on audio init or the remembered-window
+        // check) has not adopted the stream yet: leave it to acquire a fresh one, as before.
+        var startNotAdopted = isScreenSharingStartPending() && !S.videoSenderInterval;
+        if (isManualScreenShareEngaged() && activeNativeCaptureSourceId === null && !startNotAdopted) {
             sourceSwitchRestart = null;
             releaseScreenSharing(true, false, { resumeProactiveVision: false });
             return;

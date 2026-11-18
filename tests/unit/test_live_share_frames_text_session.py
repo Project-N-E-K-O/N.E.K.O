@@ -27,7 +27,9 @@ Screenshots the user attached (no marker, ``request_id`` set) keep working.
 and fences frames that reached the server before it.
 """
 
+import asyncio
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -168,8 +170,8 @@ async def test_live_frame_never_rides_later_text_turns(manager):
 
 
 @pytest.mark.asyncio
-async def test_stop_notice_fences_live_frames_that_arrived_before_it(manager, monkeypatch):
-    """Frames still buffered or validating when the share stops must not land later."""
+async def test_stop_notice_fences_a_live_frame_still_decoding(manager, monkeypatch):
+    """The stop lands while an earlier frame is being validated: that frame is dropped."""
     staged = []
     manager._asr_route_mode = "independent"
     monkeypatch.setattr(
@@ -178,22 +180,57 @@ async def test_stop_notice_fences_live_frames_that_arrived_before_it(manager, mo
         lambda image_b64, **kw: staged.append(kw) or True,
         raising=False,
     )
-    before_stop = time.monotonic()
-    manager._latest_independent_visual_frame = object()
-    manager._prerecord_visual_frames = [object()]
+    decoding = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def paused_decode(data):
+        decoding.set()
+        await resume.wait()
+        return data.split(",", 1)[1]
+
+    monkeypatch.setattr(streaming_mod._core_facade, "process_screen_data", paused_decode, raising=False)
+    old = asyncio.create_task(
+        manager._process_stream_data_internal(_frame(live=True, at=time.monotonic()))
+    )
+    await decoding.wait()
+    manager.handle_screen_share_stopped()
+    resume.set()
+    await old
+    assert staged == []
+
+    # A later frame (a share restarted, or the voice vision heartbeat) is fresh.
+    await manager._process_stream_data_internal(_frame(live=True, at=time.monotonic()))
+    assert [kw["request_id"] for kw in staged] == [None]
+    # User attachments are never fenced.
+    await manager._process_stream_data_internal(
+        _frame(live=False, request_id="r4", at=manager._live_share_stopped_at - 1)
+    )
+    assert [kw["request_id"] for kw in staged] == [None, "r4"]
+
+
+def test_stop_notice_keeps_user_screenshots_staged_for_independent_asr(manager):
+    """Only live frames (no request_id) leave Core's independent-ASR caches."""
+    manager._ensure_asr_runtime_state()
+    manager._asr_route_mode = "independent"
+    now = time.monotonic()
+    assert manager._stage_independent_visual_frame("live", source="screen", request_id=None, captured_at=now)
+    assert manager._stage_independent_visual_frame("shot", source="screen", request_id="u1", captured_at=now + 0.01)
+    assert manager._latest_independent_visual_frame.request_id == "u1"
+    manager._prerecord_visual_frames = [
+        replace(manager._latest_independent_visual_frame, request_id=None, image_b64="live"),
+        manager._latest_independent_visual_frame,
+    ]
 
     manager.handle_screen_share_stopped()
 
+    assert manager._latest_independent_visual_frame.image_b64 == "shot"
+    assert [f.request_id for f in manager._prerecord_visual_frames] == ["u1"]
+
+    manager._latest_independent_visual_frame = replace(
+        manager._latest_independent_visual_frame, request_id=None
+    )
+    manager.handle_screen_share_stopped()
     assert manager._latest_independent_visual_frame is None
-    assert manager._prerecord_visual_frames == []
-    await manager._process_stream_data_internal(_frame(live=True, at=before_stop))
-    assert staged == []
-    # A later frame (a share restarted, or the voice vision heartbeat) is fresh.
-    await manager._process_stream_data_internal(_frame(live=True, at=time.monotonic()))
-    assert len(staged) == 1
-    # User attachments are never fenced.
-    await manager._process_stream_data_internal(_frame(live=False, request_id="r4", at=before_stop))
-    assert [kw["request_id"] for kw in staged] == [None, "r4"]
 
 
 def _realtime_with_cached_frame(request_id):
@@ -204,6 +241,7 @@ def _realtime_with_cached_frame(request_id):
     client._latest_image_source = "screen"
     client._latest_image_request_id = request_id
     client._proactive_image_consumed = False
+    client._supports_native_image = True
     return client
 
 
@@ -215,11 +253,44 @@ def test_stop_notice_clears_the_voice_session_cached_live_frame(manager):
     assert client._latest_image_b64 is None
     assert client._proactive_image_consumed is True
     assert client._latest_image_generation == 4
-    # Frames that reached the server before the stop are rejected as stale.
-    stale = client.stage_multimodal_frame("late", source="screen", captured_at=client._latest_image_captured_at - 0.01)
-    assert stale.accepted is False and client._latest_image_b64 is None
-    fresh = client.stage_multimodal_frame("new", source="screen", captured_at=time.monotonic() + 1)
-    assert fresh.accepted is True
+    # No captured-at floor: a user screenshot validated after the stop still stages.
+    late_shot = client.stage_multimodal_frame("shot", source="screen", request_id="u", captured_at=9.0)
+    assert late_shot.accepted is True
+
+
+@pytest.mark.asyncio
+async def test_stop_notice_drops_a_non_native_frame_description(manager, monkeypatch):
+    """StepFun-style providers describe the frame; the description must not outlive the share."""
+    client = _realtime_with_cached_frame(None)
+    client._supports_native_image = False
+    client._image_description = "[实时屏幕截图或相机画面]: a game menu"
+    client._image_recognized_this_turn = True
+    client._image_being_analyzed = False
+    manager.session = client
+    manager.handle_screen_share_stopped()
+    assert client._image_recognized_this_turn is False
+    assert "a game menu" not in client._image_description
+
+    # An analysis still running when the share stopped cannot write back.
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_analysis(**_kwargs):
+        started.set()
+        await release.wait()
+        return "the old game screen"
+
+    import utils.screenshot_utils as screenshot_utils
+
+    monkeypatch.setattr(screenshot_utils, "analyze_image_with_vision_model", slow_analysis)
+    client._latest_image_b64 = "frame"
+    task = asyncio.create_task(client._analyze_image_with_vision_model("frame"))
+    await started.wait()
+    manager.handle_screen_share_stopped()
+    release.set()
+    assert await task == "the old game screen"
+    assert client._image_recognized_this_turn is False
+    assert "the old game screen" not in client._image_description
 
 
 def test_stop_notice_keeps_a_screenshot_the_user_attached_in_voice(manager):
@@ -294,3 +365,28 @@ async def test_hang_up_then_typing_never_attaches_share_frames(manager, monkeypa
         offline.script = [[_text(f"reply {i}"), _text("", "stop")]]
         await offline.stream_text(f"typed {i}")
         assert _image_urls(offline.requests[-1]) == []
+
+
+def test_superseded_recorder_stop_notice_does_not_close_its_socket():
+    """stopRecording() sends screen_share_stopped before pause_session.
+
+    A recorder whose window was superseded but still owns voice must not be
+    closed by the notice (its pause would be lost); other old sockets'
+    notices are dropped without clearing anything.
+    """
+    from pathlib import Path
+
+    router_source = (
+        Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
+    ).read_text(encoding="utf-8")
+    superseded_gate = router_source.split(
+        "if (session_id.get(lanlan_name) != this_session_id", 1
+    )[1].split('action = message.get("action")', 1)[0]
+    branch = superseded_gate.split('if message.get("action") == "screen_share_stopped":', 1)[1]
+    branch = branch.split("continue", 1)[0]
+    assert "if _owns_voice_connection():" in branch
+    assert "handle_screen_share_stopped()" in branch
+    assert superseded_gate.index('"screen_share_stopped"') < superseded_gate.index(
+        "await websocket.close()"
+    )
+    assert 'if action == "screen_share_stopped":' in router_source

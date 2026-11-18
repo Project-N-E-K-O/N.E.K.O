@@ -993,6 +993,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                         message,
                     )
                     continue
+                if message.get("action") == "screen_share_stopped":
+                    # stopRecording() tears the share down before its
+                    # pause_session, so a superseded recorder sends this too:
+                    # closing it here would lose that pause. Only the socket
+                    # that still owns voice may clear frames (its own share);
+                    # any other old socket's notice is dropped.
+                    if _owns_voice_connection():
+                        session_manager[lanlan_name].handle_screen_share_stopped()
+                    continue
                 if _is_voice_path_message(message) and _owns_voice_connection():
                     await _dispatch_voice_message_while_superseded(message)
                     continue

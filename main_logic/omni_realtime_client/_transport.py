@@ -1412,6 +1412,15 @@ class _TransportMixin:
         description is delivered in the callback's exact arbiter ticket. They
         must not overwrite or consume the ambient screen/camera snapshot state.
         """
+        # A share stopped meanwhile (discard_live_share_frames): this result
+        # describes a frame that is gone, so it must not become turn state.
+        discard_epoch = getattr(self, "_live_share_discard_epoch", 0)
+
+        def owns_turn_state() -> bool:
+            return update_turn_state and getattr(
+                self, "_live_share_discard_epoch", 0
+            ) == discard_epoch
+
         try:
             # Use the shared visual-analysis helper.
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -1422,7 +1431,7 @@ class _TransportMixin:
             )
 
             if description:
-                if update_turn_state:
+                if owns_turn_state():
                     self._image_description = (
                         f"[实时屏幕截图或相机画面]: {description}"
                     )
@@ -1431,7 +1440,7 @@ class _TransportMixin:
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                if update_turn_state:
+                if owns_turn_state():
                     self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_recognized_this_turn = False
                     self._latest_image_b64 = None
@@ -1440,7 +1449,7 @@ class _TransportMixin:
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            if update_turn_state:
+            if owns_turn_state():
                 self._image_recognized_this_turn = False
                 self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                 self._latest_image_b64 = None
@@ -1466,24 +1475,28 @@ class _TransportMixin:
         """Forget the cached live frame after the frontend's share has stopped.
 
         Live share frames carry no ``request_id``; a cached screenshot the user
-        attached to a voice turn (it has one) is left alone. Raising the
-        captured-at floor makes ``stage_multimodal_frame`` reject frames that
-        reached the server before the stop but finish validating after it.
+        attached to a voice turn (it has one) is left alone. Frames that
+        reached the server before the stop but finish validating after it are
+        dropped by Core before they get here. On providers without native
+        vision the frame's description goes too, and an analysis still running
+        for it cannot write its result back.
         """
 
         if getattr(self, "_latest_image_request_id", None) is not None:
             return
+        self._live_share_discard_epoch = (
+            getattr(self, "_live_share_discard_epoch", 0) + 1
+        )
         self._latest_image_generation = (
             getattr(self, "_latest_image_generation", 0) + 1
         )
         self._latest_image_b64 = None
-        self._latest_image_captured_at = max(
-            getattr(self, "_latest_image_captured_at", 0.0),
-            time.monotonic(),
-        )
         self._latest_image_source = "unknown"
         self._latest_image_request_id = None
         self._proactive_image_consumed = True
+        if not getattr(self, "_supports_native_image", True):
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._image_recognized_this_turn = False
 
     def block_raw_visual_delivery(self) -> None:
         """Fail closed for raw frames without changing the microphone route."""

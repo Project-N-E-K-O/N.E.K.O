@@ -64,14 +64,16 @@ async function endedWay(way) {
   // Chromium dispatches one 'ended' to both the onended handler and the
   // listeners; fire the handler under test first, then the other one, which
   // must find nothing left to do.
-  if (way === 'onended') { stream.track.fireOnended(); stream.track.fireListeners(); }
-  else { stream.track.fireListeners(); stream.track.fireOnended(); }
+  if (way === 'onended') stream.track.fireOnended(); else stream.track.fireListeners();
+  // The handler under test alone must leave the share stopped.
+  const afterFirst = snapshot(r);
+  if (way === 'onended') stream.track.fireListeners(); else stream.track.fireOnended();
   const after = snapshot(r);
   // A fully released share can be started again right away.
   await r.w.acquireOrReuseCachedStream({ allowPrompt: true });
   await r.w.startScreenSharing();
   const restarted = snapshot(r);
-  return { way, acquired: r.acquired.slice(), before, after, restarted };
+  return { way, acquired: r.acquired.slice(), before, afterFirst, after, restarted };
 }
 async function cachedOnly() {
   // Stream cached for proactive vision only: no manual share is running.
@@ -102,6 +104,20 @@ async function cachedOnly() {
       framesAfter: r.sent.filter(m => m.action === 'stream_data').length - framesBefore,
       liveTagged: r.sent.filter(m => m.action === 'stream_data').every(m => m.live_share === true),
     });
+  }
+  else if (way === 'ended_during_pending_start') {
+    // The cached (proactive vision) stream ends while a share start still waits
+    // on audio init: the start is not cancelled (it has not adopted the stream).
+    const r = boot('web');
+    const cached = await r.w.acquireOrReuseCachedStream({ allowPrompt: true });
+    let open; r.setAudioGate(new Promise(res => { open = res; }));
+    const starting = r.w.startScreenSharing();
+    await new Promise(res => setImmediate(res));
+    cached.track.fireListeners();
+    const during = snapshot(r);
+    r.setAudioGate(null); open();
+    await starting;
+    out = { during, after: snapshot(r), acquired: r.acquired.slice() };
   }
   else if (way === 'storage_source_change') {
     // Another window picked a different source: this window's share stops.
@@ -143,7 +159,7 @@ function boot(mode) {
     getDisplayMedia: async () => { acquired.push('display'); return (lastStream = makeStream()); },
     getUserMedia: async () => { acquired.push('electron'); return (lastStream = makeStream()); },
   };
-  const heartbeat = { starts: 0 }; const windowListeners = {}; 
+  const heartbeat = { starts: 0 }; const windowListeners = {}; let audioGate = null; 
   const w = { console: { log: noop, info: noop, debug: noop, warn: noop, error: noop },
     location: { pathname: '/', origin: 'http://x', search: '' }, appState: S, appConst: { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 },
     appUtils: { isMobile: () => false }, safeT: (k, f) => f, t: k => k, document, navigator: { userAgent: 'node', mediaDevices },
@@ -151,7 +167,7 @@ function boot(mode) {
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop }, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     addEventListener(type, fn) { (windowListeners[type] = windowListeners[type] || []).push(fn); }, removeEventListener: noop, dispatchEvent: noop, CustomEvent: function () {},
     setTimeout: () => 0, clearTimeout: noop, setInterval(fn) { const id = iid++; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
-    showStatusToast: noop, ensureAudioPlayerContext: async () => {},
+    showStatusToast: noop, ensureAudioPlayerContext: async () => { if (audioGate) await audioGate; },
     startProactiveVisionDuringSpeech: () => { heartbeat.starts += 1; }, stopProactiveVisionDuringSpeech: noop,
     invokeDesktopCaptureWithTimeout: async (p, m, args) => p[m].apply(p, args), desktopSourceEnumerationMayPrompt: () => false,
   };
@@ -161,7 +177,7 @@ function boot(mode) {
   w.window = w; vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(repo, 'static/app/app-screen.js'), 'utf8'), w);
   if (mode === 'electron') S.selectedScreenSourceId = 'screen:0:0';
-  return { w, S, sent, els, intervals, heartbeat, acquired, windowListeners, lastStreamRef: () => lastStream };
+  return { w, S, sent, els, intervals, heartbeat, acquired, windowListeners, setAudioGate: g => { audioGate = g; }, lastStreamRef: () => lastStream };
 }
 async function run(way) {
   const mode = way === 'electron_listener' ? 'electron' : 'web';
@@ -218,6 +234,9 @@ def test_track_ended_fully_stops_share_and_notifies_backend(way, acquired):
     out = _run(way)
     assert out["acquired"][0] == acquired
     before, after = out["before"], out["after"]
+    first = out["afterFirst"]
+    assert first["active"] is False and first["sender"] is False
+    assert first["streamCleared"] is True and first["notices"] == 1
     assert before["active"] and before["sender"] and not before["stopDisabled"]
     assert after["active"] is False
     assert after["stopDisabled"] is True
@@ -258,3 +277,12 @@ def test_hanging_up_voice_stops_share_frames_before_the_session_ends():
     assert out["notices"] == 1
     # Button styling is the hang-up caller's job; the frame sender is gone.
     assert out["sender"] is False
+
+
+def test_cached_stream_ending_during_a_pending_start_does_not_cancel_it():
+    """Same as before this change: the start owns no stream yet, so it is not torn down."""
+    out = _run("ended_during_pending_start")
+    assert out["during"]["notices"] == 0 and out["after"]["notices"] == 0
+    # A torn-down start disables the stop button (clearScreenSharingIndicators).
+    assert out["during"]["stopDisabled"] is False
+    assert out["after"]["stopDisabled"] is False

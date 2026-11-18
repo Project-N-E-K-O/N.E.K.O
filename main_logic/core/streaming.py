@@ -282,12 +282,23 @@ class StreamingMixin:
         router ingress time and are dropped by ``_is_stale_live_share_frame``;
         frames already cached for later turns are cleared here. A text
         session never holds live frames (they are dropped on arrival), and
-        user attachments are not touched.
+        user attachments are not touched: live frames carry no
+        ``request_id``, a screenshot the user attached does.
+
+        Frames already owned by an independent-ASR turn in progress stay
+        with it: they were captured while the share was on, during the
+        user's own utterance. Stopping a share is not a consent revocation.
         """
         self._live_share_stopped_at = time.monotonic()
         # Independent ASR keeps the latest live frame for the next voice turn.
-        self._latest_independent_visual_frame = None
-        self._prerecord_visual_frames = []
+        latest = getattr(self, "_latest_independent_visual_frame", None)
+        if latest is not None and getattr(latest, "request_id", None) is None:
+            self._latest_independent_visual_frame = None
+        self._prerecord_visual_frames = [
+            frame
+            for frame in getattr(self, "_prerecord_visual_frames", None) or []
+            if getattr(frame, "request_id", None) is not None
+        ]
         discard = getattr(self.session, "discard_live_share_frames", None)
         if callable(discard):
             try:
