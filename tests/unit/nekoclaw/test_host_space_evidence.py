@@ -6253,3 +6253,34 @@ async def test_a_file_the_note_names_that_is_gone_as_its_pending_entry_takes_eff
     assert "src/app.py (not found)" in reply
     payload = _lesson_event(events, "c2")
     assert payload["kept"] is True and "evidence_counted" not in payload
+
+
+async def test_a_file_the_note_names_that_was_gone_as_the_note_was_judged_did_not_count_though_it_is_back_by_then(
+    space, root, workdir, events, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    real = module._recorded
+    asked: list[int] = []
+
+    def gone_for_a_moment(*args: Any) -> Any:
+        # There when the files the note names were looked at; gone as what waited is asked about; back right after.
+        (workdir / "src" / "app.py").unlink()
+        try:
+            return real(*args)
+        finally:
+            asked.append(1)
+            (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_recorded", gone_for_a_moment)
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"])
+    )
+
+    # In effect, as two commissions have filed it. The note was judged without the file, and that is what is told.
+    assert asked == [1] and reply.startswith("kept in") and "src/app.py (not found)" in reply
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
+    payload = _lesson_event(events, "c2")
+    assert payload["kept"] is True and "evidence_counted" not in payload
