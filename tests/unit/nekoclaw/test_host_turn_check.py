@@ -1184,6 +1184,8 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     failed = await wait_status(host, receipt.commission_id, "failed")
 
     assert failed.status_reason == "the free daily quota of the agent model is used up"
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["summary"] == TASK_AGENT_FAILED_TEXTS["en"]["quota"]
     # The first request was paid for before it was sent, the second as its
     # usage came in; the third found nothing left. The request already under
     # way when that was found may still have gone out, and nothing after it.
