@@ -401,9 +401,7 @@ class PluginCommunicationResourceManager:
             failure = exc
             raise
         finally:
-            capability_gate.end_call(
-                record, capability_gate.result_code(failure), time.monotonic() - started
-            )
+            capability_gate.end_call(record, capability_gate.result_code(failure), started)
 
     async def trigger_custom_event(
         self,
@@ -792,17 +790,7 @@ class PluginCommunicationResourceManager:
         parent = msg.pop("_rpc_parent_request_id", None)
         from plugin.server.application.plugins import capability_gate
 
-        try:
-            capability_gate.check(
-                self.plugin_id, parent, capability_gate.MESSAGE_PUSH_CAPABILITY, "MESSAGE_PUSH"
-            )
-        except Exception as exc:
-            # Observe stage: a failing check must never cost the message.
-            self.logger.warning(
-                "message push capability check failed: plugin_id={}, error_type={}",
-                self.plugin_id,
-                type(exc).__name__,
-            )
+        capability_gate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")
 
     def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
         """Write one plugin message into the message plane. Best effort.

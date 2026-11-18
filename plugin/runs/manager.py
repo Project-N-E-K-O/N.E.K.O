@@ -13,7 +13,7 @@ from plugin.logging_config import logger
 
 from plugin.core.state import state
 from plugin._types.models import RunCreateRequest, RunCreateResponse, RunStatus
-from plugin.core.call_registry import ORIGIN_RUN, CallLink, Origin, delivery_link
+from plugin.core.call_registry import CallLink, Origin, delivery_link
 from plugin.runs.trigger_service import trigger_plugin
 from plugin.server.messaging.plane_bridge import publish_record as _publish_record_impl
 from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
@@ -661,7 +661,7 @@ async def _execute_run(
         except Exception:
             logger.debug("Failed to inject run_id into _ctx for run {}", run_id, exc_info=True)
 
-        with delivery_link(CallLink(Origin.of(ORIGIN_RUN, run_id))):
+        with delivery_link(CallLink(Origin.of("run", run_id))):
             resp = await trigger_plugin(
                 plugin_id=plugin_id,
                 entry_id=entry_id,

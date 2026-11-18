@@ -34,13 +34,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Body, HTTPException
 
-from plugin.core.call_registry import (
-    ORIGIN_CHAT_HOOK,
-    ORIGIN_CHAT_TOOL,
-    CallLink,
-    Origin,
-    delivery_link,
-)
+from plugin.core.call_registry import CallLink, Origin, delivery_link
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.messaging.llm_tool_registry import (
@@ -88,7 +82,7 @@ async def reply_completed_callback(
     # Callback return values are deliberately not fed into the conversation.
     # Images go through reply_tail.register with the host-issued context.
     try:
-        with delivery_link(CallLink(Origin.of(ORIGIN_CHAT_HOOK, context.get("call_id")))):
+        with delivery_link(CallLink(Origin.of("chat_hook", context.get("call_id")))):
             await host.trigger(entry_id, {
                 "text": body["text"], "user_text": body["user_text"],
                 "has_attachments": body.get("has_attachments") is True,
@@ -205,7 +199,7 @@ async def llm_tool_callback(
     # ``**arguments`` directly (see ``register_llm_tool`` in
     # ``plugin/sdk/plugin/llm_tool.py``).
     try:
-        with delivery_link(CallLink(Origin.of(ORIGIN_CHAT_TOOL, call_id))):
+        with delivery_link(CallLink(Origin.of("chat_tool", call_id))):
             result = await trigger(entry_id, arguments, timeout_seconds)
     except TimeoutError as exc:
         # comm_manager.trigger raises plain TimeoutError on no-response

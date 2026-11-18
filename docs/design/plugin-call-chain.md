@@ -104,8 +104,7 @@ Origin 只存指针，不存原文；`speaker` 字段预留为 `None`。Origin �
 - **登记**：在 `_trigger_local` / `_trigger_custom_event_local` 生成 `req_id` 之后、发送之前登记；`finally` 里摘除（成功、失败、超时、取消都摘）。摘除时写一条「转发」审计（结果码、耗时）和一条「放行聚合」审计（按能力计数）。
 - **查找**：`lookup(plugin_id, parent_request_id)`。`plugin_id` 永远是连接绑定的身份（`RpcContext.from_plugin` 或 `_route_message` 覆写后的 `plugin_id`），`parent_request_id` 只是查表的键。插件把父 id 伪造成别的插件的 `req_id`，键里的 `plugin_id` 对不上，查不到，按「插件自发」处理：借不到别人的权限，也不能把别人卷进自己的链。
 - **存活判断**：`has_live_chain(plugin_id)`：该插件当前是否作为「被别的插件调用的一方」存在于某条**还没结束**的记录里。用于 `possible_laundering`：一次使用只归到插件自己（没带父 id，或带的是它自己一条单跳记录的 id，例如 B 同时在处理一个直接的 run 和 A 发来的调用，拿 run 的 id 读记忆，就把 A 甩掉了），而它此时正被别的插件调用，就打这个标记。两条并发的多跳链（A→B 和 C→B）之间不互相比较，这个留给 P2。并发时合法的单跳调用也可能被标出来，只记不拦。
-- **结束但可能还在跑**：宿主在插件回结果之前就不等了（超时、取消、传输出错），插件里的入口可能还没停。这类记录不立即删除，标上结束时间后保留 30 秒（`LINGER_SECONDS`），期间的使用仍按它的链判定并打 `after_return`；保留中的记录不算「正在被调用」，不占存活上限，最多 1024 条（超出时最早的先删）。插件已经回了结果（成功或报错）的记录立即删除。
-- **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`，并写一条去重后的 `not_registered` 审计，调用照常进行（这时候它的子调用按插件自发处理）。P2 要定满了以后是拒绝投递还是把这类请求一律当作可疑。
+- **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`（审计接口返回这个数），调用照常进行（这时候它的子调用按插件自发处理）。P2 要定满了以后怎么处理。
 - **并发**：宿主里多个 owner loop 和路由 loop 都会碰它，用 `threading.Lock`，临界区只有字典操作。
 
 宿主调用点用 `delivery_link(CallLink(...))` 说明这次投递的 Origin 和父记录（任务内的上下文值，只在同一个协程、同一个 loop 里有效）。`PluginCommunicationResourceManager.trigger` / `trigger_custom_event` 在**调用方的 loop 上**读出它，再作为显式参数 `call_link=` 交给跨 loop 执行的 `_trigger_local` / `_trigger_custom_event_local`，所以不依赖 contextvar 跨 loop。P0 测试表明 contextvar 在 3.11 下其实能经 `run_coroutine_threadsafe` 带过去（见 5.1），但这依赖 `Handle` 的实现细节，不作为设计前提；有测试证明跨 loop 时用的是显式参数。
@@ -125,12 +124,11 @@ def decide(capability: str, chain: tuple[str, ...], granted: Callable[[str], fro
 - `capability` 不在 `CAPABILITIES` → `Decision(judged=False, allowed=True)`。
 - 否则对链上每个插件（含最后一个，即被调方自己）查 `granted(p)`，缺这项能力的进 `blocked_by`（保持链序）。
 - `reason`：链上**除自己以外**有缺的 → `caller_chain`；只有自己缺 → `self_not_approved`；都不缺 → `None`。理由：P2 只强制 `caller_chain`，P3 才强制 `self_not_approved`，`caller_chain` 优先能让 P2 的拦截不受「自己也没确认」干扰。
-- `Decision` 同时给出 `caller_blocked`、`self_blocked` 两个布尔，阶段开关据此决定拦不拦（`should_reject(decision, mode, stage)`；P1 恒为 `False`）。
 - `granted` 读失败（consent 文件坏了）按空集处理，并在审计里标 `consent_unavailable`；observe 下不影响调用，enforce 下按失败放行还是失败拒绝，在 P2 的 PR 里定。
 
-**observe 下失败不改变调用**：登记、查表、读 consent、写审计任何一步抛异常，都只记异常类型（不记内容），调用照常进行；`check` 唯一会往外抛的是 enforce 阶段的 `CAPABILITY_NOT_GRANTED`。有注入故障的测试。
+**observe 下失败不改变调用**：登记、查表、读 consent、写审计任何一步抛异常，都只记异常类型（不记内容），调用照常进行；P1 的 `check` 从不往外抛。有注入故障的测试。
 
-宿主所有判定点都调同一个入口 `capability_gate.check(plugin_id, parent_request_id, capability, operation)`（`plugin/server/application/plugins/capability_gate.py`）：查表 → 组链（查不到时链 = `(plugin_id,)`，打 `unattributed`，`has_live_chain` 时再打 `possible_laundering`）→ `decide` → 记审计 → 按开关决定是否抛 `CAPABILITY_NOT_GRANTED`。**它不读 `_ctx`，也不读插件递交的视图**。
+宿主所有判定点都调同一个入口 `capability_gate.check(plugin_id, parent_request_id, capability, operation)`（`plugin/server/application/plugins/capability_gate.py`）：查表 → 组链（查不到时链 = `(plugin_id,)`，打 `unattributed`，`has_live_chain` 时再打 `possible_laundering`）→ `decide` → 记审计。P1 不拦，拦截逻辑在 P2 才加。**它不读 `_ctx`，也不读插件递交的视图**。
 
 ### 3.4 RPC handler 的判定入口（对偶）
 
@@ -163,43 +161,39 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 
 ### 3.8 审计
 
-新模块 `plugin/server/application/plugins/call_audit.py`：内存环形缓冲 + 追加式 JSONL，**不走事件总线**，不用 logger 写记录内容。
+新模块 `plugin/server/application/plugins/call_audit.py`：内存环形缓冲 + 追加式 JSONL，**不走事件总线**，全部用标准库现成组件。
 
 - **路径**：`resolve_plugin_log_directory(log_subdir="plugin_call_audit") / "call_audit.jsonl"`，和插件服务日志同一个根。
-- **滚动**：单文件超过 4 MiB 时轮转为 `.1`，最多保留 `.1`…`.3`，总量上限约 16 MiB。
-- **写入**：调用方把记录放进有界队列（2048 条），一个守护线程批量追加；队列满就丢弃并累加 `dropped` 计数，绝不阻塞宿主 loop。环形缓冲 1000 条，接口直接读它。
-- **退出**：插件服务关停时（`plugin/server/lifecycle.py` 的 `_shutdown_internal`，宿主都停下之后）先刷一次聚合计数，再让写线程在 1 秒内把队列写完；超时就放弃剩下的，不阻塞关停。写线程是守护线程，解释器退出不等它；`os._exit` 或外部强制结束时队列里没写完的记录会丢，这是尽力而为。
-- **去重**：同一 `(plugin, capability, reason, blocked_by)` 的 `would_deny` 在 60 秒内只写第一条，之后累加 `suppressed`，下一条带上计数。没确认过 consent 的插件（例如从没手动启动过的内置插件）每次用能力都会 `would_deny self_not_approved`，不去重会刷屏。
+- **写入**：专用 logger（`propagate=False`，只写一行一个 JSON）挂 `QueueHandler`，由 `QueueListener` 在它自己的守护线程里交给 `RotatingFileHandler`（4 MiB 轮转，保留 3 个，总量约 16 MiB）。队列 2048 条，满了丢弃并计数（`dropped`），不阻塞宿主 loop。环形缓冲是 `deque(maxlen=1000)`，接口直接读它。
+  - 隐私规则禁止的是「用 logger 记隐私内容」。审计记录里只有 id、能力名和结果码，没有任何内容原文，所以用专用 logger 写不违规；模块说明里写了这一点，并有测试断言审计不含隐私内容。
+- **退出**：插件服务关停时（`plugin/server/lifecycle.py` 的 `_shutdown_internal`，宿主都停下之后）调 `QueueListener.stop()` 把队列写完，外面套 1 秒时限，超时就不等了，不阻塞关停。监听线程是守护线程，解释器退出不等它；`os._exit` 或外部强制结束时没写完的记录会丢，这是尽力而为。
+- **去重**：同一 `(plugin, capability, verdict, reason, blocked_by, flags)` 的判定记录 60 秒内只写第一条（一个 dict 存上次写的时间）。没确认过 consent 的插件（例如从没手动启动过的内置插件）每次用能力都会 `would_deny self_not_approved`，不去重会刷屏。
 
 记录种类和字段：
 
-| 字段 | forward | decision | allow_summary | unattributed_summary |
-|---|---|---|---|---|
-| `ts`（UTC ISO） | ✓ | ✓ | ✓ | ✓ |
-| `kind` | `forward` | `decision` | `allow_summary` | `unattributed_summary` |
-| `mode`（off/observe/enforce） | ✓ | ✓ | ✓ | ✓ |
-| `trace_id`、`call_id`、`parent_call_id`、`depth` | ✓ | ✓（有链时） | ✓ | — |
-| `caller`、`target`、`event_type`、`event_id` | ✓ | — | ✓（target） | — |
-| `origin_kind`、`origin_ref` | ✓ | ✓ | — | — |
-| `result`（`ok` 或错误码）、`duration_ms` | ✓ | — | — | — |
-| `plugin`、`operation`、`capability`、`chain` | — | ✓ | — | ✓（plugin） |
-| `verdict`（`allow` / `would_deny` / `deny`）、`reason`、`blocked_by` | — | ✓ | — | — |
-| `flags`（`unattributed`、`possible_laundering`、`after_return`、`consent_unavailable`） | ✓（possible_laundering） | ✓ | — | — |
-| `counts`（能力 → 次数）、`suppressed` | — | `suppressed` | ✓ | ✓ |
+| 字段 | forward | decision | allow_summary |
+|---|---|---|---|
+| `ts`（UTC ISO）、`kind`、`mode` | ✓ | ✓ | ✓ |
+| `trace_id`、`call_id` | ✓ | ✓（有链时） | ✓ |
+| `parent_call_id`、`depth`、`target` | ✓ | — | ✓ |
+| `caller`、`event_type`、`event_id`、`origin_ref`、`result`（`ok` 或错误码）、`duration_ms` | ✓ | — | — |
+| `origin_kind`、`flags` | ✓ | ✓ | — |
+| `plugin`、`operation`、`capability`、`chain`、`verdict`（`allow` / `would_deny`）、`reason`、`blocked_by` | — | ✓ | — |
+| `counts`（能力 → 次数） | — | — | ✓ |
+
+`flags` 的取值：`unattributed`、`possible_laundering`、`consent_unavailable`。
 
 写入点：
 
-- `forward`、`allow_summary`：登记表摘除时（`_trigger_local` / `_trigger_custom_event_local` 的 `finally`）。宿主直接投递（`/runs`、工具、UI）也写，链长为 1。
-- `not_registered`：登记表满了没登记上的投递（按目标插件去重）。
-- `decision`：`capability_gate.check`。`would_deny` / `deny` 和带 `possible_laundering` / `after_return` 的放行**立即写**（同样按 60 秒去重）；有链的放行只给记录的 `uses` 计数，摘除时进 `allow_summary`。
-- `unattributed_summary`：没有链、也不可疑的放行（定时器、后台任务）按 `(plugin, capability)` 计数，60 秒刷一次，只写非零项；宿主关停时再刷一次。
+- `forward`、`allow_summary`：登记表摘除时（`_send_delivery` 的 `finally`）。宿主直接投递（`/runs`、工具、UI）也写，链长为 1。
+- `decision`：`capability_gate.check`。`would_deny` 和带 `possible_laundering` 的放行立即写（按上面去重）；有链的放行只给记录的 `uses` 计数，摘除时进 `allow_summary`；没有链、也不可疑的放行（定时器、后台任务）不写。
 
 **不记**参数、返回值、对话正文、异常原文。`result` 只写错误码（`PluginError` 的 `code`，或 `PLUGIN_EXECUTION_FAILED` 这类固定码），`event_id` 是插件代码里的入口名，不是用户内容。测试用带哨兵字符串的参数、返回值、异常消息、push 正文跑一遍，断言 JSONL 和环形缓冲里都找不到哨兵。
 
 ### 3.9 本机只读的审计接口
 
 - 路由：`GET /plugin-audit/call-chain`，新文件 `plugin/server/routes/plugin_audit.py`，在 `build_plugin_server_app`（`plugin/server/http_app.py:277`）里 `include_router`。
-- 参数：`limit`（默认 200，上限 1000）、`trace_id`、`plugin_id`、`kind`、`verdict`，都是可选的精确匹配。只读环形缓冲（不读盘）。返回 `{"mode", "entries": [...], "dropped", "registry_full"}`。
+- 不带参数，返回环形缓冲里最近的最多 1000 条（新的在前，不读盘）：`{"mode", "entries": [...], "dropped", "registry_full"}`。
 - 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。所以经主服务代理、Docker 端口映射或反代过来的请求都会被拒。带 `Origin` 头的请求（浏览器页面发起的）也一律 403，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
 - 开关 `off` 时返回 `mode: "off"` 和空列表。
 
@@ -242,11 +236,11 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 | 文件 | 函数 / 位置 | 改动 |
 |---|---|---|
 | `plugin/settings.py` | 模块级 | `PLUGIN_CAPABILITY_POLICY`（不进 `PUBLIC_SYSTEM_CONFIG_KEYS`，插件读到的系统配置不变） |
-| `plugin/core/capability_policy.py`（新） | `decide`、`Decision`、`should_reject`、`not_granted_error`、`current_mode` | 纯函数和开关读取 |
+| `plugin/core/capability_policy.py`（新） | `decide`、`Decision`、`current_mode`、错误码常量 | 纯函数和开关读取 |
 | `plugin/core/call_registry.py`（新） | `CallRegistry`、`CallRecord`、`CallLink`、`Origin`、`delivery_link` | 登记表和调用点的链信息 |
 | `plugin/sdk/shared/core/call_chain_view.py`（新） | `CallChainView`、`view_from_wire`、`self_only_view`、`call_chain_scope` | 视图，子进程用（放在 SDK 里：SDK 不 import `plugin.core`） |
-| `plugin/server/application/plugins/capability_gate.py`（新） | `check`、`capability_checked`、`CAPABILITY_BY_OPERATION`、`begin_call` / `end_call`、`link_for_plugin_call`、`flush_and_close` | 判定入口、登记 / 摘除 |
-| `plugin/server/application/plugins/call_audit.py`（新） | `CallAudit` | 环形缓冲、JSONL 写线程、滚动、去重、聚合 |
+| `plugin/server/application/plugins/capability_gate.py`（新） | `check`、`capability_checked`、`CAPABILITY_BY_OPERATION`、`begin_call` / `end_call`、`link_for_plugin_call` | 判定入口、登记 / 摘除 |
+| `plugin/server/application/plugins/call_audit.py`（新） | `record`、`entries`、`close` | 环形缓冲 + 标准库 QueueHandler / QueueListener / RotatingFileHandler |
 | `plugin/core/rpc.py` | `RpcContext`、`RpcDispatcher.dispatch`、`current_request_id`、`bounded_parent_request_id` | 加 `parent_request_id` |
 | `plugin/core/communication.py` | `trigger`、`_trigger_local`、`trigger_custom_event`、`_trigger_custom_event_local`、`_send_delivery`（新）、`_route_message`、`_check_message_push`（新） | 登记 / 摘除，下发 `_call_chain`；MESSAGE_PUSH 判定 |
 | `plugin/core/host.py` | 子进程 `_execute_command` | 套视图 scope |
@@ -259,30 +253,21 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 | `plugin/server/application/plugins/ui_query_service.py` | `call_surface_action` | `ui_action` Origin |
 | `plugin/server/application/plugins/voice_transcript_bridge.py` | `resolve_voice_transcript_request` | `chat_hook` Origin |
 | `plugin/server/routes/plugin_audit.py`（新）、`plugin/server/http_app.py` | 路由 + 注册 | |
-| `plugin/server/lifecycle.py` | `startup`（重新打开审计）、`_shutdown_internal`（刷聚合、有时限地刷队列） | |
+| `plugin/server/lifecycle.py` | `_shutdown_internal` | 有时限地刷审计队列 |
 | `docs/plugins/sdk-reference.md` 及 zh-CN、ja 版 | `ctx.call_chain` 一节 | 插件文档 |
 
-测试（`plugin/tests/unit/` 下新文件，一个主题一个文件）：
+测试（只覆盖主流路径和需求列出的不变式）：
 
-- 登记和摘除：成功、插件报错、超时、取消四种结束方式都摘除；上限满了不登记、调用照常。
-- 伪造父 id：B 把父 id 填成 A 正在进行的调用的 `req_id`，查不到，链 = `(B,)`；B 伪造 `_ctx`（带 `run_id`、`lanlan_name` 等），对链和判定没有影响；B 伪造 `_rpc_trace_id`、`_rpc_depth`，链里不出现别的插件。两个方向都测：借不到权限、不能把别人卷进来。
-- `would_deny`：链 `(B, A)`，A 有 `memory.read`、B 没有，A 调 `MEMORY_SEARCH` → `would_deny`、`reason=caller_chain`、`blocked_by=[B]`，调用照常返回；只有自己没确认 → `self_not_approved`；词表外能力不判；consent 读失败按空集并标 `consent_unavailable`。
-- 六个 RPC 操作和 MESSAGE_PUSH 走同一个入口（对偶）：表驱动，逐个操作断言产生了 decision 记录；`owns_deadline` 保留。
-- 三种入口（函数式、Router、动态）在被调时都能读到 `ctx.call_chain`，`callers` 正确；入口结束后后台任务读到只含自己的链。
-- `unattributed`、`possible_laundering` 两种标记。
-- 审计不含隐私：哨兵出现在参数、返回值、异常消息、push 正文里，JSONL 和环形缓冲里都没有。
-- observe 不拦：`CAPABILITY_NOT_GRANTED` 从不返回给调用方。
-- `off`：登记表、审计、判定都没被调用（用计数桩断言调用次数为 0），包装器直接调原 handler，push 信封里没有 `_rpc_parent_request_id`，TRIGGER 消息里没有 `_call_chain`。
-- 审计接口：本机请求 200；带转发头、非回环 Host 的请求 403；`off` 时返回空。
-- 滚动：超过阈值轮转，最多三个旧文件；队列满时丢弃计数增加、不阻塞。
-- observe 下现有行为不变：push 到达消息平面的记录和 `off` 时逐键相同；TRIGGER 的 `args` 逐字节相同；现有 `plugin/tests` 全部通过。
+- `plugin/tests/integration/test_call_chain_processes.py`（三个真实插件子进程 + 真实控制路由）：三种入口都读到链、登记后摘除；跨插件调用延长链；借道记 `would_deny caller_chain` 且不拦；`self_not_approved` 和放行聚合；MESSAGE_PUSH 判定且到达消息平面的记录不变；`unattributed` / `possible_laundering`；伪造父 id 和 `_ctx` 既借不到权限也卷不进别人；审计不含参数、返回值、push 正文、异常文本；`off` 时登记、判定、审计都没被调用，线上消息不变。
+- `plugin/tests/unit/server/test_call_chain.py`：`decide`；视图永不为 `None`、未知时 `allows()` 为 `False`、入口结束后回到只含自己；查表按插件区分；六个操作同一个包装器；observe 下内部出错不改变调用；跨 loop 用的是显式参数；审计用标准库轮转写入 JSON 行；审计接口只给本机。
+- `plugin/tests/unit/core/test_call_chain_invariants.py`：P0。
 
 回退：开关 `off`。审计文件是新增的独立文件，删掉不影响任何东西；没有改任何已有数据格式。
 
 风险：
 
-- 登记 / 摘除漏在某条异常路径上 → 记录泄漏。由 `finally` 摘除和上限兜底，测试覆盖四种结束方式。
-- 审计写线程出错 → 只影响审计，写线程吞掉异常并计数，不影响调用。
+- 登记 / 摘除漏在某条异常路径上 → 记录泄漏。由 `finally` 摘除（成功、报错、超时、取消都走它）和上限兜底。
+- 审计写盘出错 → 只影响审计（标准库 handler 自己处理写错误），不影响调用。
 - `RpcContext` 加字段 → 有默认值；现有测试里直接构造它的地方不受影响。
 
 ### 5.3 P2：强制防借道
@@ -290,7 +275,11 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 - `enforce` 下，`capability_gate.check` 在 `decision.caller_blocked` 时：RPC 抛 `CAPABILITY_NOT_GRANTED`；MESSAGE_PUSH 不转发、写 `deny` 审计。`self_not_approved` 和 `unattributed` 仍然放行。
 - SDK `push_message` 用 `ctx.call_chain.allows("messages.push")` 同步预检，拒绝时返回 `{"ok": False, "submitted": False, "reason": "capability_not_granted"}`（和现有 `payload_too_large` 同一套返回形状），不抛异常；宿主仍做最终判定。
 - SDK：`PluginCallError.code == "CAPABILITY_NOT_GRANTED"` 的文档和示例；视需要做 `call_chain` 关键字参数注入。
-- 归属更严：P1 只按插件带来的那一条记录判定，再用 `possible_laundering` 标出「同一插件还有更宽的存活链」。P2 拦截时要决定是否改为取该插件所有存活记录链的并集来判定（防止挑一条窄的），以及登记表满了以后怎么处理。
+- 归属更严（P1 只记录，P2 拦截前要定）：
+  - P1 只按插件带来的那一条记录判定，只在「归到它自己、而它正被别的插件调用」时标 `possible_laundering`。是否改为取该插件所有存活记录链的并集来判定（防止挑一条窄的），以及两条并发多跳链怎么处理。
+  - 调用方超时或取消后，插件里的入口可能还在跑，P1 已经摘掉记录，之后的使用按插件自发处理。拦截时要不要把这类记录再保留一段时间。
+  - 登记表满了以后是拒绝投递还是把这类请求一律当作可疑。
+  - 没有链的放行（定时器、后台任务）P1 不写审计，要不要按插件汇总。
 - 补上 P1 没覆盖到的 `conversations.read` 入口：把 `bus.conversations.get` / `get_message` 挪到需要认证的控制 RPC（新增两个 handler，挂同一个判定包装器），SDK 对外接口不变，消息平面上的旧入口保留一个版本；要压测读对话的延迟和背压（今天这条路有独立的并发槽）。
 - 测试：借道被拒、自己没确认仍放行、unattributed 放行；拒绝不改变没有借道的调用；SDK 预检和宿主判定一致。
 - 回退：开关回到 `observe` 或 `off`。
@@ -355,6 +344,7 @@ P2 起如果 SDK 预检的拒绝原因要在界面显示、P3 的待确认通知
 2. **经消息平面读对话**：放进 P2，挪到需要认证的控制 RPC（5.3）。P1 不改，观察期数据不含这一类（第 9 节）。
 3. **视图在调用上下文之外**：返回只含自己的链，不返回 `None`；`allows()` 未知时返回 `False`，另给 `rights_known` 区分「没有」和「不知道」（3.7）。
 4. **审计写线程的退出**：队列满了丢弃并计数；插件服务关停时在有时限内（1 秒）尽力把队列刷进文件，写线程是守护线程，不会卡住进程退出；`os._exit` 之类的强制退出路径不保证落盘（3.8）。
+6. **复用现成能力、最小实现、范围收敛**（2026-11-18）：审计用标准库的 QueueHandler / QueueListener / RotatingFileHandler；去重和聚合用 dict；P1 不为 P2–P4 预埋代码（错误码常量除外）。自审时考虑过的「调用方超时后记录再保留一段时间」「同一插件两条并发多跳链互相比较」「没有链的放行按插件汇总」「登记表满了单独写审计」都移到 P2 再定。
 5. 环境变量名 `NEKO_PLUGIN_CAPABILITY_POLICY`；`reason` 的优先级 `caller_chain` 在前。
 
 ---

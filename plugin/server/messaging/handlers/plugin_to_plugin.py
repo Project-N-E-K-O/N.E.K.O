@@ -43,11 +43,8 @@ async def handle_plugin_to_plugin(ctx: RpcContext, request: dict[str, object]) -
         event_id,
         ctx.request_id,
     )
-    # Attribute the delivery from the host's registry only: the caller is the
-    # connection identity and its parent id is just a key into its own calls.
-    link = None
-    if policy_enabled():
-        link = capability_gate.link_for_plugin_call(ctx.from_plugin, ctx.parent_request_id)
+    # Host registry only: the parent id is just a key into the caller's own calls.
+    link = capability_gate.link_for_plugin_call(ctx.from_plugin, ctx.parent_request_id) if policy_enabled() else None
     with delivery_link(link):
         result = await plugin_dispatch_service.trigger_custom_event(
             to_plugin=to_plugin,

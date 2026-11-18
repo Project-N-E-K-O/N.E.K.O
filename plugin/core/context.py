@@ -607,13 +607,7 @@ class PluginContext:
 
     @property
     def call_chain(self) -> "CallChainView":
-        """Read-only view of the chain that led to this invocation.
-
-        Never None: outside an invocation (background work, timers) or with
-        the capability policy off it is a chain holding only this plugin, with
-        ``rights_known`` False. ``allows()`` is advisory and answers False
-        when the rights are unknown; the host makes the final decision.
-        """
+        """Read-only view of how this invocation was reached; never None (see CallChainView)."""
         from plugin.sdk.shared.core.call_chain_view import current_call_chain
 
         return current_call_chain(self.plugin_id)

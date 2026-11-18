@@ -1,59 +1,35 @@
 """Host-side registry of plugin deliveries in flight.
 
 Every TRIGGER / TRIGGER_CUSTOM the host sends is keyed by the target plugin
-and the request id the host itself generated. The plugin process adopts that
-id as the parent of any nested request, so a later request from the same
-connection can be attributed by looking up ``(connection plugin id, parent
-id)``. Nothing a plugin sends (``_ctx``, ``_rpc_*`` fields, its own view) is
-used to build a chain. See docs/design/plugin-call-chain.md.
+and the request id the host generated. The plugin process adopts that id as
+the parent of its nested requests, so a request is attributed only by looking
+up ``(connection plugin id, parent id)`` here. Nothing the plugin sends
+(``_ctx``, ``_rpc_*`` fields, its own view) builds a chain.
 
-A call site describes its delivery with ``delivery_link(...)``. The link is a
-task-local value read by the communication manager on the caller's loop and
-then passed explicitly across any event-loop hop.
+A host call site describes its delivery with ``delivery_link(...)``; the
+communication manager reads it on the caller's loop and passes it on
+explicitly across any loop hop. See docs/design/plugin-call-chain.md.
 """
 
 from __future__ import annotations
 
 import contextvars
 import threading
-import time
-from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from plugin.core.rpc import bounded_parent_request_id
 
-ORIGIN_RUN = "run"
-ORIGIN_CHAT_TOOL = "chat_tool"
-ORIGIN_CHAT_HOOK = "chat_hook"
-ORIGIN_UI_ACTION = "ui_action"
-ORIGIN_PLUGIN_SELF = "plugin_self"
-ORIGIN_SYSTEM = "system"
-
-FLAG_UNATTRIBUTED = "unattributed"
-FLAG_POSSIBLE_LAUNDERING = "possible_laundering"
-FLAG_CONSENT_UNAVAILABLE = "consent_unavailable"
-FLAG_AFTER_RETURN = "after_return"
-
-_MAX_REF_LENGTH = 128
-
-
-def _ref(value: object) -> str | None:
-    if isinstance(value, str) and value:
-        return value[:_MAX_REF_LENGTH]
-    return None
-
 
 @dataclass(frozen=True, slots=True)
 class Origin:
-    """What started the chain. Only pointers (ids), never content."""
+    """What started the chain: a kind and an id pointer, never content."""
 
     kind: str
     ref: str | None = None
 
     @classmethod
     def of(cls, kind: str, ref: object = None) -> "Origin":
-        return cls(kind, _ref(ref))
+        return cls(kind, ref[:128] if isinstance(ref, str) and ref else None)
 
 
 @dataclass(eq=False, slots=True)
@@ -65,15 +41,16 @@ class CallRecord:
     caller: str | None
     parent_call_id: str | None
     trace_id: str
-    depth: int
     chain: tuple[str, ...]
     hops: tuple[tuple[str, str | None, str | None], ...]
     origin: Origin
     flags: frozenset[str]
-    started: float
     rights: frozenset[str] | None = None
     uses: dict[str, int] = field(default_factory=dict)
-    ended_at: float | None = None
+
+    @property
+    def depth(self) -> int:
+        return len(self.chain) - 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,9 +71,8 @@ _DELIVERY_LINK: contextvars.ContextVar[CallLink | None] = contextvars.ContextVar
 class delivery_link:
     """Describe the deliveries started by the enclosed host code.
 
-    A plain context manager on purpose: ``contextlib.contextmanager`` rewrites
-    ``__traceback__`` of a passing exception, which frozen domain errors
-    (``ServerDomainError``) refuse.
+    Not ``contextlib.contextmanager``: it rewrites ``__traceback__`` of a
+    passing exception, which the frozen ``ServerDomainError`` refuses.
     """
 
     __slots__ = ("_link", "_token")
@@ -111,7 +87,6 @@ class delivery_link:
     def __exit__(self, *exc_info: object) -> bool:
         if self._token is not None:
             _DELIVERY_LINK.reset(self._token)
-            self._token = None
         return False
 
 
@@ -119,176 +94,64 @@ def current_delivery_link() -> CallLink | None:
     return _DELIVERY_LINK.get()
 
 
-def normalize_parent_id(value: object) -> str | None:
-    """A plugin-supplied parent id is only ever a lookup key; bound its shape."""
-    return bounded_parent_request_id(value)
-
-
 class CallRegistry:
-    """Live deliveries, shared by the router loop and every owner loop.
-
-    A delivery that ended without a result (caller timeout, cancellation,
-    failure) may still be running in the plugin. Such a record lingers for
-    ``linger`` seconds so late uses are still judged against its real chain.
-    """
+    """Live deliveries, shared by the router loop and every owner loop."""
 
     MAX_LIVE = 4096
-    MAX_LINGERING = 1024
 
-    def __init__(self, *, max_live: int = MAX_LIVE, clock: Callable[[], float] = time.monotonic):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: dict[tuple[str, str], CallRecord] = {}
-        self._by_target: dict[str, set[CallRecord]] = {}
-        self._lingering: deque[tuple[float, CallRecord]] = deque()
-        self._max_live = max_live
-        self._clock = clock
+        self._callee_counts: dict[str, int] = {}
         self.registry_full = 0
-        self.duplicates = 0
 
     def __len__(self) -> int:
-        with self._lock:
-            self._prune_locked()
-            return len(self._records)
+        return len(self._records)
 
-    def register(
-        self,
-        *,
-        target: str,
-        call_id: str,
-        event_type: str,
-        event_id: str,
-        link: CallLink | None,
-        rights_of: Callable[[tuple[str, ...]], frozenset[str] | None] | None = None,
-    ) -> CallRecord | None:
+    def register(self, target: str, call_id: str, event_type: str, event_id: str,
+                 link: CallLink | None) -> CallRecord | None:
         hop = (target, event_type or None, event_id or None)
-        link = link or CallLink(Origin(ORIGIN_SYSTEM))
+        link = link or CallLink(Origin("system"))
         parent = link.parent
         if parent is not None:
-            chain = (*parent.chain, target)
-            hops = (*parent.hops, hop)
-            trace_id, origin, parent_call_id = parent.trace_id, parent.origin, parent.call_id
-            caller = parent.target
+            chain, hops, trace_id = (*parent.chain, target), (*parent.hops, hop), parent.trace_id
+            origin, caller, parent_call_id = parent.origin, parent.target, parent.call_id
         elif link.caller:
-            chain = (link.caller, target)
-            hops = ((link.caller, None, None), hop)
-            trace_id, origin, parent_call_id = call_id, link.origin, None
-            caller = link.caller
+            chain, hops, trace_id = (link.caller, target), ((link.caller, None, None), hop), call_id
+            origin, caller, parent_call_id = link.origin, link.caller, None
         else:
-            chain = (target,)
-            hops = (hop,)
-            trace_id, origin, parent_call_id = call_id, link.origin, None
-            caller = None
-        record = CallRecord(
-            call_id=call_id,
-            target=target,
-            event_type=event_type,
-            event_id=event_id,
-            caller=caller,
-            parent_call_id=parent_call_id,
-            trace_id=trace_id,
-            depth=len(chain) - 1,
-            chain=chain,
-            hops=hops,
-            origin=origin,
-            flags=link.flags,
-            started=self._clock(),
-        )
-        if rights_of is not None:
-            record.rights = rights_of(chain)
-        key = (target, call_id)
+            chain, hops, trace_id = (target,), (hop,), call_id
+            origin, caller, parent_call_id = link.origin, None, None
+        record = CallRecord(call_id, target, event_type, event_id, caller, parent_call_id,
+                            trace_id, chain, hops, origin, link.flags)
         with self._lock:
-            self._prune_locked()
-            if key in self._records:
-                self.duplicates += 1
-                return None
-            if len(self._records) - len(self._lingering) >= self._max_live:
+            if len(self._records) >= self.MAX_LIVE:
                 self.registry_full += 1
                 return None
-            self._records[key] = record
-            self._by_target.setdefault(target, set()).add(record)
+            self._records[(target, call_id)] = record
+            if len(chain) > 1:
+                self._callee_counts[target] = self._callee_counts.get(target, 0) + 1
         return record
 
-    def remove(self, record: CallRecord, *, linger: float = 0.0) -> dict[str, int]:
-        """End a delivery; returns the capability uses it counted so far."""
-        key = (record.target, record.call_id)
+    def remove(self, record: CallRecord) -> dict[str, int]:
+        """Drop a finished delivery; returns the capability uses it counted."""
         with self._lock:
-            if self._records.get(key) is not record or record.ended_at is not None:
+            if self._records.pop((record.target, record.call_id), None) is not record:
                 return {}
-            uses, record.uses = record.uses, {}
-            if linger > 0:
-                record.ended_at = self._clock()
-                if len(self._lingering) >= self.MAX_LINGERING:
-                    _, oldest = self._lingering.popleft()
-                    self._drop_locked(oldest)
-                self._lingering.append((record.ended_at + linger, record))
-            else:
-                self._drop_locked(record)
-            return uses
-
-    def _drop_locked(self, record: CallRecord) -> None:
-        if self._records.get((record.target, record.call_id)) is record:
-            del self._records[(record.target, record.call_id)]
-        group = self._by_target.get(record.target)
-        if group is not None:
-            group.discard(record)
-            if not group:
-                del self._by_target[record.target]
-
-    def _prune_locked(self) -> None:
-        now = self._clock()
-        while self._lingering and self._lingering[0][0] <= now:
-            _, record = self._lingering.popleft()
-            self._drop_locked(record)
+            if len(record.chain) > 1:
+                count = self._callee_counts.pop(record.target, 0) - 1
+                if count > 0:
+                    self._callee_counts[record.target] = count
+            return record.uses
 
     def lookup(self, plugin_id: str, request_id: object) -> CallRecord | None:
-        parent = normalize_parent_id(request_id)
-        if parent is None:
-            return None
-        with self._lock:
-            self._prune_locked()
-            return self._records.get((plugin_id, parent))
+        parent = bounded_parent_request_id(request_id)
+        return None if parent is None else self._records.get((plugin_id, parent))
 
     def has_live_chain(self, plugin_id: str) -> bool:
-        """Whether the plugin is currently being called by another plugin.
+        """Whether another plugin is calling this one right now."""
+        return self._callee_counts.get(plugin_id, 0) > 0
 
-        Only deliveries still in flight count; a lingering record has ended.
-        A use attributed to the plugin alone (no parent, or one of its own
-        single-hop deliveries) while this holds may be dropping its callers
-        on purpose: possible laundering.
-        """
+    def note_use(self, record: CallRecord, capability: str) -> None:
         with self._lock:
-            self._prune_locked()
-            return any(
-                record.ended_at is None and len(record.chain) > 1
-                for record in self._by_target.get(plugin_id, ())
-            )
-
-    def note_use(self, record: CallRecord, capability: str) -> bool:
-        """Count an allowed use for the end-of-call summary (live records only)."""
-        key = (record.target, record.call_id)
-        with self._lock:
-            if self._records.get(key) is not record or record.ended_at is not None:
-                return False
             record.uses[capability] = record.uses.get(capability, 0) + 1
-            return True
-
-
-__all__ = [
-    "FLAG_AFTER_RETURN",
-    "FLAG_CONSENT_UNAVAILABLE",
-    "FLAG_POSSIBLE_LAUNDERING",
-    "FLAG_UNATTRIBUTED",
-    "ORIGIN_CHAT_HOOK",
-    "ORIGIN_CHAT_TOOL",
-    "ORIGIN_PLUGIN_SELF",
-    "ORIGIN_RUN",
-    "ORIGIN_SYSTEM",
-    "ORIGIN_UI_ACTION",
-    "CallLink",
-    "CallRecord",
-    "CallRegistry",
-    "Origin",
-    "current_delivery_link",
-    "delivery_link",
-    "normalize_parent_id",
-]

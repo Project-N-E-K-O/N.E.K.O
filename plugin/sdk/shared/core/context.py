@@ -233,11 +233,7 @@ class SdkContext:
 
     @property
     def call_chain(self) -> "CallChainView":
-        """Read-only view of the chain that led to this invocation; never None.
-
-        ``allows()`` is advisory and answers False when the rights are
-        unknown. The host makes the final decision on every use.
-        """
+        """Read-only view of how this invocation was reached; never None (see CallChainView)."""
         view = getattr(self._host_ctx, "call_chain", None)
         if view is not None:
             return cast("CallChainView", view)
