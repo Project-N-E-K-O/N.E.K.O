@@ -292,6 +292,28 @@ def test_revocation_in_the_transcript_callback_withholds_the_screenshot():
     assert spy.images == requests[0]
 
 
+def test_withheld_sole_screenshot_publishes_nothing_on_the_frame_bus(monkeypatch):
+    mgr = _consent_mgr()
+    client, _shot, _user_frame, requests = _snapshotting_client(mgr)
+    client._pending_images = []
+
+    async def revoke_in_callback(_text):
+        _revoke(mgr)
+
+    client.on_input_transcript = revoke_in_callback
+    published: list = []
+
+    async def record_publish(images, sources, **_kwargs):
+        published.append((list(images), list(sources)))
+
+    monkeypatch.setattr(client, "_publish_provider_frames", record_publish)
+    with patch(_PUBLISHER, _Spy()):
+        _run_turn(client.stream_text("这是什么呀"))
+
+    assert requests == [[]]
+    assert published == []
+
+
 def test_screenshot_sent_on_the_first_attempt_is_withheld_from_retries_after_revocation():
     mgr = _consent_mgr()
     client, _shot, _user_frame, requests = _snapshotting_client(mgr, error=_connection_error)

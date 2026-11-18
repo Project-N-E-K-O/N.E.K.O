@@ -1174,7 +1174,10 @@ class _StreamingMixin:
                     break
             if _pending_bus_frames is not None:
                 _bus_images, _bus_sources = _pending_bus_frames
-                _pending_bus_frames = (_bus_images[1:], _bus_sources[1:])
+                # Nothing left to publish when the screenshot was the only image.
+                _pending_bus_frames = (
+                    (_bus_images[1:], _bus_sources[1:]) if len(_bus_images) > 1 else None
+                )
             _proactive_attached_b64 = None
             # Leave a screenshot staged by a newer round alone.
             if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
