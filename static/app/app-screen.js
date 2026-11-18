@@ -788,6 +788,7 @@
             // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
             // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
             // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
+            var shareWasEngaged = isManualScreenShareEngaged();
             stopScreening();
             if (S.screenCaptureStream) {
                 try {
@@ -806,6 +807,7 @@
             }
             // 旧源已停止推流，所有分享控件也必须回到未分享状态。
             resetScreenSharingControls();
+            if (shareWasEngaged) notifyScreenShareStopped();
         }
         console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
         // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
@@ -1831,7 +1833,9 @@
             });
     }
 
-    function releaseActiveScreenCaptureForSourceChange() {
+    // notifyBackend: the share ends here (not restarted right away), so tell the backend.
+    function releaseActiveScreenCaptureForSourceChange(notifyBackend) {
+        var shareWasEngaged = !!notifyBackend && isManualScreenShareEngaged();
         stopScreening();
         if (S.screenCaptureStream) {
             try {
@@ -1849,6 +1853,7 @@
             S.screenCaptureStreamIdleTimer = null;
         }
         resetScreenSharingControls();
+        if (shareWasEngaged) notifyScreenShareStopped();
     }
 
     function isScreenSharingActiveForSourceChange() {
@@ -1885,7 +1890,7 @@
 
     function stopActiveCaptureForRememberedSourceRejection() {
         if (!isScreenSharingActiveForSourceChange() && !S.screenCaptureStream) return;
-        releaseActiveScreenCaptureForSourceChange();
+        releaseActiveScreenCaptureForSourceChange(true);
     }
 
     // ======================== getMobileCameraStream ========================
@@ -2251,7 +2256,7 @@
                         || !initialCaptureIsCurrent
                         || !initialStreamStillOwned) {
                         if (initialStreamStillOwned) {
-                            releaseActiveScreenCaptureForSourceChange();
+                            releaseActiveScreenCaptureForSourceChange(true);
                         } else {
                             try {
                                 captureStream.getTracks().forEach(function (track) {

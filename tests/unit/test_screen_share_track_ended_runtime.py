@@ -84,6 +84,12 @@ async function cachedOnly() {
   const way = process.argv[2] || __WAY__;
   let out;
   if (way === 'cached_only') out = await cachedOnly();
+  else if (way === 'storage_source_change') {
+    // Another window picked a different source: this window's share stops.
+    const { r } = await startShare('display_listener');
+    (r.windowListeners.storage || []).forEach(fn => fn({ key: 'selectedScreenSourceId', newValue: 'screen:9:0' }));
+    out = snapshot(r);
+  }
   else if (way === 'build_message') {
     const r = boot('web');
     out = ['screen', 'camera'].map(t => r.w.appScreen.buildStreamDataMessage('data:image/jpeg;base64,AAA', t, null, null));
@@ -118,13 +124,13 @@ function boot(mode) {
     getDisplayMedia: async () => { acquired.push('display'); return (lastStream = makeStream()); },
     getUserMedia: async () => { acquired.push('electron'); return (lastStream = makeStream()); },
   };
-  const heartbeat = { starts: 0 }; 
+  const heartbeat = { starts: 0 }; const windowListeners = {}; 
   const w = { console: { log: noop, info: noop, debug: noop, warn: noop, error: noop },
     location: { pathname: '/', origin: 'http://x', search: '' }, appState: S, appConst: { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 },
     appUtils: { isMobile: () => false }, safeT: (k, f) => f, t: k => k, document, navigator: { userAgent: 'node', mediaDevices },
     WebSocket: { OPEN: 1 }, lanlan_config: { lanlan_name: 'T' },
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop }, sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
-    addEventListener: noop, removeEventListener: noop, dispatchEvent: noop, CustomEvent: function () {},
+    addEventListener(type, fn) { (windowListeners[type] = windowListeners[type] || []).push(fn); }, removeEventListener: noop, dispatchEvent: noop, CustomEvent: function () {},
     setTimeout: () => 0, clearTimeout: noop, setInterval(fn) { const id = iid++; intervals.set(id, fn); return id; }, clearInterval(id) { intervals.delete(id); },
     showStatusToast: noop, ensureAudioPlayerContext: async () => {},
     startProactiveVisionDuringSpeech: () => { heartbeat.starts += 1; }, stopProactiveVisionDuringSpeech: noop,
@@ -136,7 +142,7 @@ function boot(mode) {
   w.window = w; vm.createContext(w);
   vm.runInContext(fs.readFileSync(path.join(repo, 'static/app/app-screen.js'), 'utf8'), w);
   if (mode === 'electron') S.selectedScreenSourceId = 'screen:0:0';
-  return { w, S, sent, els, intervals, heartbeat, acquired, lastStreamRef: () => lastStream };
+  return { w, S, sent, els, intervals, heartbeat, acquired, windowListeners, lastStreamRef: () => lastStream };
 }
 async function run(way) {
   const mode = way === 'electron_listener' ? 'electron' : 'web';
@@ -216,3 +222,10 @@ def test_continuous_share_frames_are_tagged_live():
         assert msg["action"] == "stream_data"
         assert msg["live_share"] is True
         assert "request_id" not in msg
+
+
+def test_share_stopped_by_another_windows_source_change_notifies_backend():
+    out = _run("storage_source_change")
+    assert out["active"] is False
+    assert out["sender"] is False
+    assert out["notices"] == 1
