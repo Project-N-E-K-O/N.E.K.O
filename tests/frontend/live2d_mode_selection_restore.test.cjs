@@ -88,3 +88,41 @@ test('休眠绑定恢复不读取共享 asset_source 字段', () => {
     assert.doesNotMatch(executableBlock, /asset_source(?:_id)?/);
     assert.match(block, /configuredLive2D\.model_path/);
 });
+
+test('Live2D keeps backend disambiguation labels for local, Steam and managed models', () => {
+    const start = source.indexOf('function createLive2DModelOption(');
+    const end = source.indexOf('async function captureWorkshopListContext()', start);
+    const sandbox = {
+        getLive2DModelSelection: helpers.getLive2DModelSelection,
+        document: { createElement() { return { dataset: {}, setAttribute() {} }; } },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(source.slice(start, end) + '\nglobalThis.make = createLive2DModelOption;', sandbox);
+    const models = [
+        { name: 'Hiyori', path: '/user_live2d/Hiyori/a.model3.json', display_name: 'Hiyori (local)' },
+        { name: 'Hiyori', path: '/workshop/123/Hiyori/a.model3.json', item_id: '123', display_name: 'Hiyori (steam_workshop 123)' },
+        { name: 'neko_model_raw', path: '/user_live2d/neko_model_raw/a.model3.json', model_workshop: { install_id: 'a'.repeat(32) }, display_name: 'Package title' },
+    ];
+    const options = models.map(sandbox.make);
+    assert.deepEqual(options.map(item => item.textContent), models.map(item => item.display_name));
+    assert.deepEqual(options.map(item => item.value), models.map(item => item.name));
+    assert.equal(options[1].dataset.itemId, '123');
+    assert.equal(options[2].dataset.itemId, undefined);
+});
+
+test('legacy uploads show translated workshop errors in all eight languages', () => {
+    const start = source.indexOf('function legacyModelUploadError(');
+    const end = source.indexOf('function createLive2DModelOption(', start);
+    for (const language of ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW']) {
+        const translations = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'static/locales', language + '.json'), 'utf8')).modelWorkshop;
+        const sandbox = { t: key => translations[key.split('.')[1]] };
+        vm.createContext(sandbox);
+        vm.runInContext(source.slice(start, end) + '\nglobalThis.message = legacyModelUploadError;', sandbox);
+        for (const [code, key] of [['model_workshop_install_conflict', 'conflict'], ['model_workshop_busy', 'busy'], ['model_workshop_state_unreadable', 'stateUnavailable']]) {
+            assert.ok(translations[key]);
+            assert.equal(sandbox.message({ error_code: code }), translations[key]);
+        }
+        assert.equal(sandbox.message({ error: 'ordinary server error' }), 'ordinary server error');
+        assert.equal(sandbox.message({}), translations.importFailed);
+    }
+});

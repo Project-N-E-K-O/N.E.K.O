@@ -392,6 +392,16 @@
                 return translate('storage.pickFolderUnavailable', '当前系统目录选择器不可用，请手动输入路径。');
             case 'insufficient_space':
                 return translate('storage.blockingInsufficientSpace', '目标卷剩余空间不足，无法安全迁移。');
+            // Model migration uses stable codes; raw filesystem errors and
+            // internal ownership details never become page copy.
+            case 'model_workshop_busy':
+                return translate('storage.modelWorkshopBusy', '模型操作仍在进行，请等待完成后再迁移存储位置。');
+            case 'model_workshop_pending':
+                return translate('storage.modelWorkshopPending', '请先在当前存储位置处理未完成的模型安装，再重试迁移。');
+            case 'model_workshop_state_unreadable':
+                return translate('storage.modelWorkshopUnavailable', '无法确认模型安装状态，请检查当前存储位置并重启 N.E.K.O. 后重试。');
+            case 'model_workshop_root_conflict':
+                return translate('storage.modelWorkshopRootConflict', '所选位置会混用不同目录的模型和安装记录，请选择空文件夹。');
             case 'recovery_source_unavailable':
                 return translate('storage.recoverySourceUnavailable', '原始数据路径当前不可用。请先重连原路径，或显式切回推荐默认路径继续当前会话。');
             case 'restart_not_required':

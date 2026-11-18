@@ -165,6 +165,14 @@ class CustomStaticFiles(StaticFiles):
         return response
 
 
+# User-model reads share one transport guard with Monitor; Main alone performs recovery.
+from app.model_workshop_static import WorkshopStaticMixin
+
+
+class UserModelStaticFiles(WorkshopStaticMixin, CustomStaticFiles):
+    pass
+
+
 class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
     """The repository ``static/`` mount; also answers retired asset URLs."""
 
@@ -277,7 +285,7 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(_serve_live2d_path):
         app.mount(
             "/user_live2d",
-            CustomStaticFiles(directory=_serve_live2d_path),
+            UserModelStaticFiles(directory=_serve_live2d_path, config_manager=_config_manager, maintain_main=True),
             name="user_live2d",
         )
         logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
@@ -288,7 +296,7 @@ if _IS_MAIN_PROCESS:
         if os.path.exists(_writable_live2d_path):
             app.mount(
                 "/user_live2d_local",
-                CustomStaticFiles(directory=_writable_live2d_path),
+                UserModelStaticFiles(directory=_writable_live2d_path, config_manager=_config_manager, maintain_main=True),
                 name="user_live2d_local",
             )
             logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
@@ -313,7 +321,7 @@ if _IS_MAIN_PROCESS:
     user_vrm_path = str(_config_manager.vrm_dir)
     if os.path.exists(user_vrm_path):
         app.mount(
-            "/user_vrm", CustomStaticFiles(directory=user_vrm_path), name="user_vrm"
+            "/user_vrm", UserModelStaticFiles(directory=user_vrm_path, config_manager=_config_manager, maintain_main=True), name="user_vrm"
         )
         logger.info(f"已挂载VRM目录: {user_vrm_path}")
 
@@ -336,7 +344,7 @@ if _IS_MAIN_PROCESS:
     user_mmd_path = str(_config_manager.mmd_dir)
     if os.path.exists(user_mmd_path):
         app.mount(
-            "/user_mmd", CustomStaticFiles(directory=user_mmd_path), name="user_mmd"
+            "/user_mmd", UserModelStaticFiles(directory=user_mmd_path, config_manager=_config_manager, maintain_main=True), name="user_mmd"
         )
         logger.info(f"已挂载MMD目录: {user_mmd_path}")
 

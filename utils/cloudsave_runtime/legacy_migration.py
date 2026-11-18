@@ -178,6 +178,14 @@ def _runtime_root_has_user_content(root: Path, *, config_manager=None) -> bool:
         if name in NON_RUNTIME_CONTENT_DIR_NAMES:
             continue
         candidate = root / name
+        if name == "model_workshop":
+            from utils.model_workshop_storage import model_workshop_has_user_content
+
+            # This read-only probe also preserves dangling links/unknown files;
+            # opening an empty workshop must not make a fresh root user-owned.
+            if model_workshop_has_user_content(candidate):
+                return True
+            continue
         if candidate.is_file():
             return True
         if candidate.is_dir():

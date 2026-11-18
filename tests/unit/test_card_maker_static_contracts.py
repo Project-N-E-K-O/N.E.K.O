@@ -33,6 +33,8 @@ MODEL_MANAGER_PART_NAMES = (
     "card-face.js",
     "path-request-fullscreen.js",
     "vrm-emotion-source.js",
+    # Optional workshop UI must load before the page controller mounts it.
+    "model-workshop.js",
     "page-controller.js",
     "background-model-drag.js",
     "window-lifecycle.js",

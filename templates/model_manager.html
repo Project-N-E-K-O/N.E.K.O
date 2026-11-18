@@ -62,6 +62,30 @@
             <div id="upload-status" style="font-size:12px; color:#666; margin-top:4px;"></div>
         </div>
 
+        {% if model_workshop_enabled | default(false) %}
+        <!-- Activated together with the N3 router after integration acceptance. -->
+        <details id="model-workshop-panel" class="model-workshop-panel">
+            <summary data-i18n="modelWorkshop.title"></summary>
+            <p data-i18n="modelWorkshop.help"></p>
+            <label for="model-workshop-file" data-i18n="modelWorkshop.fileLabel"></label>
+            <input id="model-workshop-file" data-workshop="file" type="file" accept=".neko-model.zip">
+            <button data-workshop="start" type="button" data-i18n="modelWorkshop.start" disabled></button>
+            <progress data-workshop="progress" aria-labelledby="model-workshop-status" hidden></progress>
+            <p id="model-workshop-status" data-workshop="status" role="status" aria-live="polite"></p>
+            <button data-workshop="cancel" type="button" data-i18n="modelWorkshop.cancel" hidden></button>
+            <button data-workshop="retry" type="button" data-i18n="modelWorkshop.retry" hidden></button>
+            <div data-workshop="result" hidden>
+                <dl>
+                    <dt data-i18n="modelWorkshop.name"></dt><dd data-workshop="display_name"></dd>
+                    <dt data-i18n="modelWorkshop.attribution"></dt><dd data-workshop="attribution"></dd>
+                    <dt data-i18n="modelWorkshop.license"></dt><dd data-workshop="license"></dd>
+                </dl>
+                <p data-i18n="modelWorkshop.unverified"></p>
+            </div>
+            <button data-workshop="view" type="button" data-i18n="modelWorkshop.view" hidden></button>
+        </details>
+        {% endif %}
+
         <div class="control-group">
             <div id="model-type-select-wrapper" style="position: relative;">
                 <button id="model-type-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.modelType">
@@ -690,6 +714,9 @@
     <script src="/static/js/model_manager/card-face.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/path-request-fullscreen.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/vrm-emotion-source.js?v={{ static_asset_version | default('0') }}"></script>
+    {% if model_workshop_enabled | default(false) %}
+    <script src="/static/js/model_manager/model-workshop.js?v={{ static_asset_version | default('0') }}"></script>
+    {% endif %}
     <script src="/static/js/model_manager/page-controller.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/background-model-drag.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/js/model_manager/window-lifecycle.js?v={{ static_asset_version | default('0') }}"></script>

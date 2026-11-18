@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,12 +33,17 @@ _BASE_CONFIG = {
 
 
 @pytest.fixture(autouse=True)
-def _clear_model_config_write_locks():
+def _clear_model_config_write_locks(monkeypatch, tmp_path):
     """Clear the lock registry between tests: an awaited asyncio.Lock binds to its loop."""
     # pytest.ini uses asyncio_mode=auto + function-scope loop, so loops are replaced between tests; retaining
     # a lock contended by the previous test makes the next test's await fail with RuntimeError (loop mismatch). In production
     # there is only one loop (merged single process), so this is a test constraint, not a design flaw.
     live2d_router._MODEL_CONFIG_WRITE_LOCKS.clear()
+    # The new managed adapter needs a runtime root; these existing fixtures are
+    # ordinary models outside it and must still exercise the original writer.
+    root = tmp_path / 'runtime'
+    config = SimpleNamespace(app_docs_dir=root, live2d_dir=root/'live2d', vrm_dir=root/'vrm', mmd_dir=root/'mmd')
+    monkeypatch.setattr(live2d_router, 'get_config_manager', lambda: config)
     yield
     live2d_router._MODEL_CONFIG_WRITE_LOCKS.clear()
 
