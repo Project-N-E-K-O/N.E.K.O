@@ -347,3 +347,99 @@ async def test_the_web_fetch_tool_reports_failures_to_the_model(tmp_path: Path) 
         assert json.dumps(llm.requests[1][-1]).count("blocked URL") == 1
     finally:
         await session.close()
+
+
+# ---------------------------------------------------------------------------
+# Other sessions and wakes
+# ---------------------------------------------------------------------------
+
+
+async def test_the_session_tools_hand_on_what_the_model_asked_and_say_what_the_host_worded(tmp_path: Path) -> None:
+    listed: list = []
+    read: list = []
+    sent: list = []
+    woken: list = []
+    host = HostCallbacks(
+        session_list=_recording({"text": "Sessions: none"}, listed),
+        session_read=_recording({"text": "its record"}, read),
+        session_send=_recording({"message": 'Queued for "site".'}, sent),
+        wake_schedule=_recording({"message": "A wake is set."}, woken),
+    )
+    events, _llm = await _run(
+        tmp_path,
+        host,
+        [
+            call("list_sessions", {"query": " budget  ", "page": 2}, "c1", index=0),
+            call("read_session", {"session": "site", "what": "search", "query": "csv"}, "c2", index=1),
+            call("read_session", {"session": "site"}, "c3", index=2),
+            call("message_session", {"to": "site", "message": "where is the build?", "notify_when_done": True}, "c4", index=3),
+            call("schedule_wake", {"delay_seconds": 900, "note": " is it up "}, "c5", index=4),
+            finish("tool_calls"),
+        ],
+    )
+
+    assert listed == [("s1", {"query": "budget", "project": None, "page": 2})]
+    assert read == [
+        ("s1", {"session": "site", "what": "search", "query": "csv", "at": None}),
+        ("s1", {"session": "site", "what": "results", "query": None, "at": None}),
+    ]
+    assert sent == [("s1", {"to": "site", "message": "where is the build?", "notify_when_done": True})]
+    assert woken == [("s1", {"delay_seconds": 900, "note": "is it up"})]
+    assert [end["text"] for end in events.of("tool_end")] == [
+        "Sessions: none",
+        "its record",
+        "its record",
+        'Queued for "site".',
+        "A wake is set.",
+    ]
+    assert not any(end["is_error"] for end in events.of("tool_end"))
+
+
+async def test_the_session_tools_refuse_what_makes_no_sense_before_the_host_is_asked(tmp_path: Path) -> None:
+    asked: list = []
+    host = HostCallbacks(
+        session_list=_recording({"text": "x"}, asked),
+        session_read=_recording({"text": "x"}, asked),
+        session_send=_recording({"message": "x"}, asked),
+        wake_schedule=_recording({"message": "x"}, asked),
+    )
+    events, _llm = await _run(
+        tmp_path,
+        host,
+        [
+            call("list_sessions", {"page": 0}, "c1", index=0),
+            call("read_session", {"session": "site", "what": "search"}, "c2", index=1),
+            call("read_session", {"session": "site", "what": "read", "at": 0}, "c3", index=2),
+            call("message_session", {"to": "site", "message": "   "}, "c4", index=3),
+            call("schedule_wake", {"delay_seconds": 0, "note": "x"}, "c5", index=4),
+            call("schedule_wake", {"delay_seconds": 900, "note": "  "}, "c6", index=5),
+            finish("tool_calls"),
+        ],
+    )
+
+    assert asked == []
+    ends = events.of("tool_end")
+    assert all(end["is_error"] for end in ends) and len(ends) == 6
+    assert "page must be 1 or more" in ends[0]["text"]
+    assert "needs query" in ends[1]["text"]
+    assert "at must be a position" in ends[2]["text"]
+    assert "non-empty" in ends[3]["text"]
+    assert "positive number of seconds" in ends[4]["text"]
+    assert "note must say" in ends[5]["text"]
+
+
+async def test_each_session_tool_is_offered_with_its_callback_and_withheld_when_disabled(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say("done"), finish()]])
+    host = HostCallbacks(session_list=_recording({"text": "x"}), wake_schedule=_recording({"message": "x"}))
+    session, events = await open_session(make_spec(tmp_path, disabled_tools=["schedule_wake"]), llm, host)
+    try:
+        offered = set(events.of("started")[0]["tools"])
+    finally:
+        await session.close()
+    assert "list_sessions" in offered
+    assert not offered & {"read_session", "message_session", "schedule_wake"}
+
+
+async def test_a_run_says_how_many_background_jobs_it_leaves_running(tmp_path: Path) -> None:
+    events, _llm = await _run(tmp_path, HostCallbacks())
+    assert events.of("ended")[0]["jobs"] == 0

@@ -2081,3 +2081,37 @@ def test_the_budget_for_shutting_down_fits_the_time_the_launcher_gives_the_agent
     # The host gets a part of what the process has to stop in, never all of it.
     assert HOST_SHUTDOWN_BUDGET_SECONDS <= merged["Agent"] / 2
     assert HOST_CLOSE_STOP_WAIT_SECONDS < HOST_SHUTDOWN_BUDGET_SECONDS
+
+
+async def test_stopping_everything_drops_the_notes_that_wait_for_sessions(wiring, tmp_path):
+    from nekoclaw.host.ledger import MessageLimits
+
+    host = wiring.host_mount.get_host()
+    ledger = host.ledger
+    made = []
+    for title in ("sender", "target"):
+        commission, _created = await ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent"
+        )
+        commission, _session = await ledger.give_session(commission.id, kind="single", name=title)
+        await ledger.transition(commission.id, "working")
+        await ledger.transition(commission.id, "done")
+        made.append(commission)
+    sender, target = made
+    message, refusal, _wait = await ledger.message_add(
+        from_session=sender.session_id,
+        from_commission=sender.id,
+        to_session=target.session_id,
+        body="rebuild it",
+        depth=1,
+        notify_when_done=False,
+        notice_after=3600.0,
+        limits=MessageLimits(target_interval=0.0, per_hour=10, queue_max=10, dedup_seconds=0.0),
+    )
+    assert refusal == "" and len(await ledger.wakes_pending(session_id=target.session_id)) == 1
+
+    await wiring.mount_module.stop_everything()
+
+    # A note handed over after the stop would start a turn: it is dropped with the stop.
+    assert await ledger.wakes_pending(session_id=target.session_id) == []
+    assert (await ledger.message_get(message.id)).status == "void"

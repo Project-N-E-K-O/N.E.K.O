@@ -620,6 +620,12 @@ async def test_stopping_a_resting_commission_ends_it_and_its_wake(hosts, tmp_pat
 
     await host.abort(receipt.commission_id)
 
+    # It had asked for ten minutes, where an hour is the least here: moved, and told so.
+    [set_for] = await host.ledger.run(
+        lambda conn: [row["due_at"] - row["created_at"] for row in conn.execute("SELECT * FROM wake_requests")]
+    )
+    assert set_for == pytest.approx(3600.0, abs=1.0)
+    assert _tool_results(llm.requests[1])[0].endswith(words.WAKE_SET_MOVED.format(seconds=3600))
     stopped = await host.ledger.get(receipt.commission_id)
     assert (stopped.status, stopped.resting) == ("cancelled", False)
     assert await host.ledger.wakes_pending(commission_id=receipt.commission_id) == []
@@ -877,6 +883,41 @@ async def test_a_commission_is_not_filed_for_a_note_once_everything_was_stopped(
     assert handed.outcome == "held"
     assert await _filed_for_notes(host) == []
 
+    # The stop came while it was being filed: the commission is there, and is stopped at once.
+    answers = iter([True, False])
+    handed = await host.task_agents.hand_over(built.session_id, None, [wake], still_wanted=lambda: next(answers, False))
+
+    assert handed.outcome == "dropped"
+    [filed] = await _filed_for_notes(host)
+    assert filed.status == "cancelled" and host.task_agents.running == []
+
+
+async def test_what_was_read_before_a_stop_of_everything_is_no_longer_wanted_after_it(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built"), _report("ready", "other")]))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    other = await wait_status(host, (await _dispatch(host, "something else")).commission_id, "done")
+    await _let_go(host)
+    asked: list[Any] = []
+    proceed = asyncio.Event()
+
+    async def hand_over(session_id: str, owner: Any, wakes: list[Any], *, still_wanted: Any) -> Any:
+        from nekoclaw.host.task_agents import Handover
+
+        asked.append(still_wanted)
+        await proceed.wait()
+        return Handover("held", 3600.0)
+
+    host.task_agents.hand_over = hand_over
+    await _note(host.ledger, other, built.session_id, "Rebuild it.")
+    host.wakes.kick()
+    await wait_until(lambda: bool(asked), what="the note being handed over")
+    assert asked[0]() is True
+
+    await host.stop_waiting()
+
+    assert asked[0]() is False
+    proceed.set()
+
 
 async def test_what_a_session_may_not_write_is_refused_with_the_reason(hosts, tmp_path, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SESSION_MESSAGE_MAX_TOKENS", 20)
@@ -1056,9 +1097,155 @@ async def test_another_sessions_files_are_read_without_asking_and_never_written(
     written = await ruling("write", "outside_write", Path(place.workdir) / "index.html")
     assert written == {"allow": False, "reason": words.SESSION_WRITE_REFUSED}
     assert asked == []
-    # A path that is no session's is asked about as ever.
+    # A path that is no session's is asked about as ever, and so is a session's own record.
     assert (await ruling("read", "outside_read", tmp_path / "elsewhere.txt"))["allow"] is False
-    assert asked == ["outside_read"]
+    own = await host.ledger.get_session(second.session_id)
+    assert (await ruling("read", "outside_read", Path(own.session_dir) / "transcript.jsonl"))["allow"] is False
+    assert asked == ["outside_read", "outside_read"]
+    # A working directory that is a folder of the user's is written as any path outside is: asked about.
+    elsewhere = tmp_path / "a project of the user"
+    elsewhere.mkdir()
+    await host.ledger.update_session(first.session_id, workdir=str(elsewhere))
+    await host.permission_store.set_mode("outside_write", "always_ask")
+    assert (await ruling("write", "outside_write", elsewhere / "index.html"))["allow"] is False
+    assert asked == ["outside_read", "outside_read", "outside_write"]
     # Reading outside working directories that the user forbade stays forbidden.
     await host.permission_store.set_mode("outside_read", "deny")
     assert (await ruling("read", "outside_read", Path(place.workdir) / "index.html"))["allow"] is False
+
+
+# ---------------------------------------------------------------------------
+# When nothing is woken
+# ---------------------------------------------------------------------------
+
+
+async def _bring_forward(host: Any, commission_id: str) -> None:
+    """Make what a commission waits for due now."""
+    await host.ledger.run(
+        lambda conn: conn.execute(
+            "UPDATE wake_requests SET due_at = 0 WHERE commission_id = ? AND status = 'pending'", (commission_id,)
+        )
+        and None
+    )
+    host.wakes.kick()
+
+
+async def test_nothing_is_woken_while_task_agents_are_switched_off(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    on = [True]
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm, task_agents_enabled=lambda: on[0])
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: _resting(host, receipt.commission_id), what="the commission coming to rest")
+    await _let_go(host)
+
+    on[0] = False
+    await _bring_forward(host, receipt.commission_id)
+    await asyncio.sleep(0.3)
+
+    # Its time came and went: it rests on, and what would wake it is kept.
+    kept = await host.ledger.get(receipt.commission_id)
+    assert (kept.status, kept.resting) == ("working", True) and len(llm.requests) == 2
+    assert len(await host.ledger.wakes_pending(commission_id=receipt.commission_id)) == 1
+
+    on[0] = True
+    host.wakes.kick()
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+
+
+async def test_a_commission_whose_quota_is_used_up_rests_on_instead_of_failing(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    # The scripted model reports no usage: what is counted is the first request of every start.
+    left = [1]
+    counted: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        counted.append(commission_id)
+        if left[0] <= 0:
+            return False
+        left[0] -= 1
+        return True
+
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm, task_agent_meter=meter)
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: _resting(host, receipt.commission_id), what="the commission coming to rest")
+    await _let_go(host)
+    assert len(counted) == 1
+
+    await _bring_forward(host, receipt.commission_id)
+    await wait_until(lambda: len(counted) == 2, what="the quota being asked")
+    await asyncio.sleep(0.2)
+
+    # Asked once and refused: not woken, not failed, and not asked again at every look.
+    kept = await host.ledger.get(receipt.commission_id)
+    assert (kept.status, kept.resting) == ("working", True) and len(llm.requests) == 2
+    host.wakes.kick()
+    await asyncio.sleep(0.2)
+    assert len(counted) == 2
+
+    # A request is left again (another day): woken, and its first request is counted once.
+    left[0] = 5
+    host.task_agents._quota_asked_again_at = 0.0
+    host.wakes.kick()
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+    assert len(counted) == 3 and len(llm.requests) == 3
+
+
+async def test_a_session_with_background_jobs_stays_open_while_its_commission_waits(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm)
+    seen: list[dict[str, Any]] = []
+    handle = host.task_agents._handle
+
+    async def with_a_job(event: dict[str, Any]) -> None:
+        # As a session whose run ended with a background command still running reports it.
+        if event.get("type") == "ended" and event.get("reason") == "completed" and not seen:
+            event = {**event, "jobs": 1}
+            seen.append(event)
+        await handle(event)
+
+    monkeypatch.setattr(host.task_agents, "_handle", with_a_job)
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: bool(seen), what="the run ending")
+    await host.task_agents.settle()
+
+    # Not done, not resting either: closing the session would end the command.
+    kept = await host.ledger.get(receipt.commission_id)
+    assert (kept.status, kept.resting) == ("working", False)
+    assert host.task_agents.running == [receipt.commission_id]
+    assert [event.type for event in await _events(host, receipt.commission_id) if event.type == "resting"] == []
+
+    # What it waits for reaches the open session as one more thing said to it.
+    await _bring_forward(host, receipt.commission_id)
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+    statuses = [(e.payload["from"], e.payload["to"]) for e in await _events(host, receipt.commission_id, "status")]
+    assert statuses == [("queued", "working"), ("working", "done")]
+
+
+async def test_what_comes_together_for_a_session_starts_one_turn(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_COALESCE_SECONDS", 0.3)
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built"), _report("ready", "one"), _report("ready", "two"), _report("ready", "took both")]))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    first = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
+    second = await wait_status(host, (await _dispatch(host, "mow the lawn")).commission_id, "done")
+    await _let_go(host)
+
+    await _note(host.ledger, first, built.session_id, "The fence is done.")
+    host.wakes.kick()
+    await asyncio.sleep(0.1)
+    # The first waits a moment for more of the same, and more comes.
+    assert await _filed_for_notes(host) == []
+    await _note(host.ledger, second, built.session_id, "So is the lawn.")
+    host.wakes.kick()
+    await wait_until(lambda: _filed_for_notes(host), what="a commission being filed for the notes")
+
+    # Two sessions wrote within a moment of each other: one commission, with both notes in what opens it.
+    [filed] = await _filed_for_notes(host)
+    assert (await wait_status(host, filed.id, "done")).result_summary == "took both"
+    await asyncio.sleep(0.2)
+    assert len(await _filed_for_notes(host)) == 1
+    opening = await host.task_agents._opening(filed, cleared=False)
+    assert "    The fence is done." in opening and "    So is the lawn." in opening
+    assert len(set(re.findall(r"marked ([0-9a-f]{16})", opening))) == 2
