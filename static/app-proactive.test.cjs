@@ -17,7 +17,7 @@ test('tutorial suppression rejects late vision acquisition at every async bounda
         let stopped = 0;
         let promptCalls = 0;
         const stream = { getTracks() { return [{ stop() { stopped += 1; } }]; } };
-        const state = { isRecording: true, proactiveVisionEnabled: true };
+        const state = { isRecording: true, proactiveVisionEnabled: true, proactiveChatEnabled: true, proactiveVisionChatEnabled: true };
         const window = {
             appState: state, appConst: {},
             addEventListener(type, listener) { listeners.set(type, listener); },

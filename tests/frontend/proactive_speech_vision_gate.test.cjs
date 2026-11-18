@@ -579,7 +579,6 @@ test('a stream obtained after consent was revoked is released, not kept', async 
             },
         },
     });
-    h.S.proactiveVisionChatEnabled = false;
 
     const ok = await h.window.acquireProactiveVisionStream();
 
@@ -750,8 +749,10 @@ test('turning the switch back on during a call restarts the heartbeat', async ()
     h.window.syncProactiveVisionDuringSpeech();
     const timer = h.heartbeat();
     assert.ok(timer, 'heartbeat restarted');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.frames(), 1, 'a fresh frame goes out at once, not after one interval');
     await timer.fn();
-    assert.equal(h.frames(), 1);
+    assert.equal(h.frames(), 2);
 });
 
 test('turning the switch on outside a call does not start the heartbeat', () => {
@@ -798,4 +799,104 @@ test('turning privacy mode off grabs a stream only when proactive vision will us
         await runBlock(privacyToggleBlock, globals);
         assert.deepEqual(calls.filter((name) => name === 'acquire'), holds ? ['acquire'] : [], `holds=${holds}`);
     }
+});
+
+test('turning a switch back on by click re-acquires the screen stream', async () => {
+    const { h } = runningCall();
+    let acquires = 0;
+    h.window.appScreen.acquireOrReuseCachedStream = async () => { acquires += 1; return fakeStream(); };
+    h.S.proactiveChatEnabled = false;
+    h.window.syncProactiveVisionDuringSpeech();
+    h.window.acquireSpeechVisionAfterUserEnable(); // switch still off: nothing to do
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(acquires, 0);
+
+    h.S.proactiveChatEnabled = true;
+    h.window.acquireSpeechVisionAfterUserEnable();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(acquires, 1);
+});
+
+test('a stream that arrives after a switch was turned off elsewhere is released', async () => {
+    let h;
+    const stream = fakeStream();
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            acquireOrReuseCachedStream: async () => {
+                h.settings.proactiveVisionChatEnabled = false; // another window
+                h.S.screenCaptureStream = stream;
+                return stream;
+            },
+        },
+    });
+    assert.equal(await h.window.acquireProactiveVisionStream(), false);
+    assert.equal(stream.stopped, 1);
+});
+
+test('the voice nudge asks for vision only while the speech gate allows it', () => {
+    const proactive = read('static/app/app-proactive.js');
+    const block = proactive.slice(proactive.indexOf('var voiceModes = [];'), proactive.indexOf("voiceModes.push('vision');"));
+    assert.match(block, /if \(canProactiveVisionRunDuringSpeech\(\)\) \{\s*$/);
+});
+
+test('both switch click handlers re-acquire the stream after turning on', () => {
+    const drag = read('static/avatar/avatar-ui-drag.js');
+    const popup = read('static/avatar/avatar-ui-popup.js');
+    assert.match(drag, /globalVarName === 'proactiveChatEnabled' \|\| globalVarName === 'proactiveVisionChatEnabled'\)[\s\S]{0,120}window\.acquireSpeechVisionAfterUserEnable\(\)/);
+    const chatToggle = statementAt(popup, "else if (toggle.id === 'proactive-chat') {");
+    assert.match(chatToggle, /if \(isChecked && typeof window\.acquireSpeechVisionAfterUserEnable === 'function'\)/);
+});
+
+test('re-enabling by click sends a frame once the re-acquired stream arrives', async () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    // Browser after the switch went off: no cached stream, no backend capture.
+    h.S.screenCaptureStream = null;
+    let streamReady = false;
+    h.window.appScreen.acquireOrReuseCachedStream = async (opts) => {
+        if (opts && opts.allowPrompt === false && !streamReady) return null;
+        streamReady = true;
+        const stream = fakeStream();
+        h.S.screenCaptureStream = stream;
+        return stream;
+    };
+    h.window.syncProactiveVisionDuringSpeech(); // the save on click
+    assert.ok(h.heartbeat(), 'heartbeat restarted');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.frames(), 0, 'no stream yet, nothing to send');
+
+    h.window.acquireSpeechVisionAfterUserEnable(); // the click handler
+    for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.frames(), 1, 'a fresh frame goes out as soon as the stream is back');
+});
+
+test('re-enabling by click does not acquire outside a call or while a manual picker is open', async () => {
+    for (const setup of [
+        (h) => { h.S.isRecording = false; },
+        (h) => { h.window.isScreenSharingStartPending = () => true; },
+        (h) => { h.S.proactiveVisionChatEnabled = false; },
+    ]) {
+        const h = loadProactive({ privacyAllowsVision: true });
+        let acquires = 0;
+        h.window.appScreen.acquireOrReuseCachedStream = async () => { acquires += 1; return fakeStream(); };
+        setup(h);
+        h.window.acquireSpeechVisionAfterUserEnable();
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(acquires, 0);
+    }
+});
+
+test('tutorial suppression still releases the stream while a manual share is starting', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.window.isScreenSharingStartPending = () => true;
+    const stream = fakeStream();
+    h.S.screenCaptureStream = stream;
+    h.window.releaseProactiveVisionStream();
+    assert.equal(stream.stopped, 0, 'not suppressed: the starting manual share keeps it');
+
+    h.window.isNekoClickGuideActive = true; // tutorial suppression
+    h.window.releaseProactiveVisionStream();
+    assert.equal(stream.stopped, 1);
 });

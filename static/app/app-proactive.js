@@ -165,12 +165,10 @@
     // still needs the cached screen stream. The single keep-the-stream rule
     // for app-screen and releaseProactiveVisionStream.
     function holdsProactiveVisionStream() {
-        if (S.isRecording && canProactiveVisionRunDuringSpeech()) return true;
-        // Text-chat screenshots: their own switches, read like the speech
-        // gate so a switch turned off in another window counts here too.
-        return isSwitchOnNow('proactiveVisionChatEnabled')
-            && isSwitchOnNow('proactiveChatEnabled')
-            && isVisionConsentHeldNow();
+        // The speech heartbeat (during a call) and text-chat screenshots need
+        // the same switches today, so the speech gate answers for both. Split
+        // this if their conditions ever diverge.
+        return canProactiveVisionRunDuringSpeech();
     }
     mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
@@ -1251,7 +1249,7 @@
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
+                if (canProactiveVisionRunDuringSpeech()) {
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
@@ -2290,17 +2288,48 @@
         _speechVisionAllowedLast = allowed;
         if (!allowed) {
             stopProactiveVisionDuringSpeech();
-            var manualStartPending = typeof window.isScreenSharingStartPending === 'function'
-                && window.isScreenSharingStartPending() === true;
-            if (wasAllowed !== false && !manualStartPending) {
+            if (wasAllowed !== false) {
                 releaseProactiveVisionStream();
             }
             return;
         }
         if (S.isRecording && !S.proactiveVisionFrameTimer) {
             startProactiveVisionDuringSpeech();
+            // Re-enabled during a call: send a fresh frame now instead of
+            // after one full interval, so a voice nudge in that gap cannot
+            // describe a frame cached before the switch was turned off.
+            if (S.proactiveVisionFrameTimer) {
+                sendOneProactiveVisionFrame();
+            }
         }
     }
+
+    // Called from a switch the user just turned on (a click, so a capture
+    // picker may be shown): in a browser the stream was released when the
+    // switch went off, so ask for it again before the heartbeat needs it.
+    function acquireSpeechVisionAfterUserEnable() {
+        if (!S.isRecording || !holdsProactiveVisionStream()) return;
+        // A manual share picker is already open: do not open a second one.
+        if (typeof window.isScreenSharingStartPending === 'function'
+            && window.isScreenSharingStartPending() === true) return;
+        try {
+            var pending = acquireProactiveVisionStream();
+            if (pending && typeof pending.then === 'function') {
+                pending.then(function (ok) {
+                    // The frame sent when the switch came back on had no
+                    // stream yet in a browser; send one now that it is here.
+                    if (ok === true && S.proactiveVisionFrameTimer) {
+                        return sendOneProactiveVisionFrame();
+                    }
+                }).catch(function (e) {
+                    console.warn('[ProactiveVision] 开关开启后重新获取屏幕流失败:', e);
+                });
+            }
+        } catch (e) {
+            console.warn('[ProactiveVision] 开关开启后重新获取屏幕流失败:', e);
+        }
+    }
+    mod.acquireSpeechVisionAfterUserEnable = acquireSpeechVisionAfterUserEnable;
     mod.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
 
     function stopProactiveChatSchedule() {
@@ -2611,13 +2640,13 @@
         if (isHomeTutorialFeatureSuppressed()) return false;
 
         // Consent may be revoked while the remembered window was being checked.
-        if (!isVisionConsentHeldNow()) return false;
+        if (!holdsProactiveVisionStream()) return false;
 
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
             if (isHomeTutorialFeatureSuppressed()) return false;
-            if (!isVisionConsentHeldNow()) return false;
+            if (!holdsProactiveVisionStream()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;
@@ -2634,7 +2663,7 @@
         }
         if (stream) {
             // Consent revoked while the picker was open: do not keep the stream.
-            if (!isVisionConsentHeldNow()) {
+            if (!holdsProactiveVisionStream()) {
                 releaseProactiveVisionStream();
                 return false;
             }
@@ -2662,13 +2691,20 @@
             console.log('[主动视觉] 手动屏幕共享活跃中，不释放流');
             return;
         }
-
         // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
         // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
         // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。
         // 若后端截图也不可用，教程结束后的静默重排无法恢复这条来源，需
         // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
         var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
+
+        // A manual share still starting (picker open) may be about to use it;
+        // tutorial suppression still releases, as before.
+        if (!suppressionBlocksVision
+            && typeof window.isScreenSharingStartPending === 'function'
+            && window.isScreenSharingStartPending() === true) {
+            return;
+        }
 
         // Speech heartbeat or text-chat vision may still use the stream: keep it.
         if (!suppressionBlocksVision && holdsProactiveVisionStream()) {
@@ -2792,6 +2828,7 @@
     window.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
     window.holdsProactiveVisionStream = holdsProactiveVisionStream;
     window.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
+    window.acquireSpeechVisionAfterUserEnable = acquireSpeechVisionAfterUserEnable;
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;
