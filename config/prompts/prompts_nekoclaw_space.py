@@ -74,7 +74,8 @@ SPACE_LESSONS_CAP_REACHED = (
 # (one of the two below).
 SPACE_NOTE_HELD = (
     "not in effect yet, and in no index: {why}. It takes effect when another commission files the "
-    "same, or when you file it again as verified, or as observed with a file that exists."
+    "same, or when you file it again as verified, or as observed with a file that exists. Until "
+    "then, do not report it as kept."
 )
 SPACE_NOTE_HELD_INFERRED = "it was filed as inferred"
 SPACE_NOTE_HELD_NO_EVIDENCE = (

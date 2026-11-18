@@ -181,7 +181,7 @@ REPO_DOCUMENTS_MAX_TOKENS = 400
 """Cap on the whole of it, the sentence in front included. It follows a
 task agent's brief, after the caps of the brief and of the task agent
 space, and is paid with every request of the session. Ten lines of
-ordinary paths are some 250 tokens."""
+ordinary paths are some 280 tokens."""
 
 REPO_DOCUMENT_DIRECTORY_MAX_FILES = 200
 """Most files of one directory that are looked at for that list."""
