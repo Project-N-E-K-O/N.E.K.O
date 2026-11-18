@@ -1462,6 +1462,29 @@ class _TransportMixin:
             if update_turn_state:
                 self._image_being_analyzed = False
 
+    def discard_live_share_frames(self) -> None:
+        """Forget the cached live frame after the frontend's share has stopped.
+
+        Live share frames carry no ``request_id``; a cached screenshot the user
+        attached to a voice turn (it has one) is left alone. Raising the
+        captured-at floor makes ``stage_multimodal_frame`` reject frames that
+        reached the server before the stop but finish validating after it.
+        """
+
+        if getattr(self, "_latest_image_request_id", None) is not None:
+            return
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        self._latest_image_captured_at = max(
+            getattr(self, "_latest_image_captured_at", 0.0),
+            time.monotonic(),
+        )
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+
     def block_raw_visual_delivery(self) -> None:
         """Fail closed for raw frames without changing the microphone route."""
 

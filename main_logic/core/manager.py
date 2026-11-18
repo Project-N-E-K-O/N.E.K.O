@@ -416,6 +416,9 @@ class LLMSessionManager(
         # Input buffering prevents loss during session initialization.
         self.session_ready = False  # Whether session is fully ready.
         self.pending_input_data = []  # Pending input data: [message_dict, ...].
+        # Monotonic time of the last frontend ``screen_share_stopped``; live share
+        # frames that reached the router before it are stale.
+        self._live_share_stopped_at = 0.0
         self.pending_context_appends: list[dict] = []
         self._context_append_sequence = 0
         self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()

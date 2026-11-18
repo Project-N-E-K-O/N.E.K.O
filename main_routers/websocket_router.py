@@ -1065,6 +1065,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
                 continue
 
+            if action == "screen_share_stopped":
+                # The frontend's manual screen share ended (any way: stop
+                # button, the browser/system ending the track, a capture
+                # failure, the voice session ending). Forget its frames.
+                session_manager[lanlan_name].handle_screen_share_stopped()
+                continue
+
             if action == "goodbye_state":
                 active = bool(message.get("active"))
                 reason = str(message.get("reason") or ("goodbye" if active else "return")).strip().lower()[:64]

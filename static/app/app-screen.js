@@ -1238,14 +1238,7 @@
                     newStream.getVideoTracks().forEach(function (track) {
                         track.addEventListener('ended', function () {
                             console.log('[acquireStream] 流被终止');
-                            if (S.screenCaptureStream === newStream) {
-                                S.screenCaptureStream = null;
-                                S.screenCaptureStreamLastUsed = null;
-                                if (S.screenCaptureStreamIdleTimer) {
-                                    clearTimeout(S.screenCaptureStreamIdleTimer);
-                                    S.screenCaptureStreamIdleTimer = null;
-                                }
-                            }
+                            handleScreenCaptureTrackEnded(newStream);
                         });
                     });
 
@@ -1299,14 +1292,7 @@
                 displayStream.getVideoTracks().forEach(function (track) {
                     track.addEventListener('ended', function () {
                         console.log('[acquireStream] getDisplayMedia 流被用户终止');
-                        if (S.screenCaptureStream === displayStream) {
-                            S.screenCaptureStream = null;
-                            S.screenCaptureStreamLastUsed = null;
-                            if (S.screenCaptureStreamIdleTimer) {
-                                clearTimeout(S.screenCaptureStreamIdleTimer);
-                                S.screenCaptureStreamIdleTimer = null;
-                            }
-                        }
+                        handleScreenCaptureTrackEnded(displayStream);
                     });
                 });
 
@@ -1549,7 +1535,11 @@
      *        「已确认无法判定」→ 不叠加。省略时按 sourceId / 缓存流推断。
      */
     function buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType) {
-        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
+        // live_share: a continuous share frame (manual screen share, voice-time
+        // vision heartbeat), not an image the user chose to attach. The backend
+        // keeps these out of a text session's attachment queue and its replay.
+        // User screenshot attachments are sent by app-buttons.js without it.
+        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type, live_share: true };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
             var captureType;
@@ -1986,6 +1976,7 @@
     // 只临时停发送、分享要继续的调用方（切换麦克风、隐私模式停主动视觉）
     // 仍用 window.stopScreening。
     function teardownScreenSharing() {
+        var wasEngaged = isManualScreenShareEngaged();
         var cancelledStart = sourceSwitchRestart !== null || isScreenSharingStartPending();
         sourceSwitchRestart = null;
         manualScreenShareRunning = false;
@@ -1995,7 +1986,67 @@
         // 所以这里只撤掉「共享中」的样式和停止按钮：不按录音状态重新启用按钮，
         // 也不恢复主动视觉，其余按钮交给调用方自己的收尾。
         if (cancelledStart) clearScreenSharingIndicators();
+        if (wasEngaged) notifyScreenShareStopped();
     }
+
+    // Whether a manual share is in use: running, starting or restarting for a
+    // source switch, holding a native capture source, still sending frames, or
+    // shown as sharing. The voice-time vision heartbeat does not count.
+    function isManualScreenShareEngaged() {
+        var screen = screenButton();
+        return manualScreenShareRunning
+            || isScreenSharingStartPending()
+            || sourceSwitchRestart !== null
+            || activeNativeCaptureSourceId !== null
+            || !!S.videoSenderInterval
+            || !!(screen && screen.classList.contains('active'));
+    }
+
+    // Tell the backend the manual share has ended so it forgets earlier share
+    // frames (the voice session's cached frame, frames still buffered or being
+    // validated). Sent however the share ends; a temporary pause of the sender
+    // (pauseScreenFrameSender) does not send it.
+    function notifyScreenShareStopped() {
+        try {
+            if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S.socket.send(JSON.stringify({ action: 'screen_share_stopped' }));
+            }
+        } catch (e) {
+            console.warn('[ScreenShare] failed to send screen_share_stopped:', e);
+        }
+    }
+    mod.notifyScreenShareStopped = notifyScreenShareStopped;
+
+    // The stream's video track was ended by the browser or the system (the
+    // browser's "stop sharing", the window closing, a display unplugged; our own
+    // track.stop() does not fire it). If a manual share owns the stream, release
+    // it fully (buttons, manualScreenShareRunning, frame sender, stream) and tell
+    // the backend. This does not start the voice-time vision heartbeat; whether it
+    // runs is decided by its own switches. A stream only cached for proactive
+    // vision just leaves the cache.
+    function handleScreenCaptureTrackEnded(stream) {
+        if (S.screenCaptureStream !== stream) {
+            if (stream && typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(function (track) {
+                    try { track.stop(); } catch (e) { }
+                });
+            }
+            return;
+        }
+        // Native capture (Tauri etc.) does not use this stream; its end does not end that share.
+        if (isManualScreenShareEngaged() && activeNativeCaptureSourceId === null) {
+            sourceSwitchRestart = null;
+            releaseScreenSharing(true, false, { resumeProactiveVision: false });
+            return;
+        }
+        S.screenCaptureStream = null;
+        S.screenCaptureStreamLastUsed = null;
+        if (S.screenCaptureStreamIdleTimer) {
+            clearTimeout(S.screenCaptureStreamIdleTimer);
+            S.screenCaptureStreamIdleTimer = null;
+        }
+    }
+    mod.handleScreenCaptureTrackEnded = handleScreenCaptureTrackEnded;
 
     // 外部的 stopScreening：只停发送。启动还在进行时（例如原生捕获在等首帧）
     // 不能推进原生代次，否则那次启动会被当成过期丢掉，而切换麦克风这类调用方
@@ -2648,26 +2699,7 @@
                         return;
                     }
 
-                    stopScreening();
-                    screenButton().classList.remove('active');
-                    manualScreenShareRunning = false;
-                    syncFloatingScreenButtonState(false);
-
-                    if (typeof captureStream.getTracks === 'function') {
-                        captureStream.getTracks().forEach(function (track) {
-                            try { track.stop(); } catch (e) { }
-                        });
-                    }
-
-                    if (S.screenCaptureStream === captureStream) {
-                        S.screenCaptureStream = null;
-                        S.screenCaptureStreamLastUsed = null;
-
-                        if (S.screenCaptureStreamIdleTimer) {
-                            clearTimeout(S.screenCaptureStreamIdleTimer);
-                            S.screenCaptureStreamIdleTimer = null;
-                        }
-                    }
+                    handleScreenCaptureTrackEnded(captureStream);
                 };
             } else {
                 // 连续分享必须保持系统/窗口选择器授予的来源。后端 pyautogui 只能
@@ -2757,7 +2789,11 @@
     // forSourceSwitch：换源重启自己的停止。保留重启令牌，停完接着启动新来源；
     // 界面保持「共享中」，停顿和重新启动期间各个开关都按「停止」处理，与显示
     // 一致；重启没能恢复分享时由 resetControlsIfNotSharing 复位。
-    function releaseScreenSharing(forceRelease, forSourceSwitch) {
+    // options.resumeProactiveVision === false: do not start the voice-time vision
+    // heartbeat while finishing (used when the track was ended externally, which
+    // never started it before either).
+    function releaseScreenSharing(forceRelease, forSourceSwitch, options) {
+        var wasEngaged = isManualScreenShareEngaged();
         manualScreenShareRunning = false;
         cancelPendingScreenSharingStart();
         stopScreening();
@@ -2799,15 +2835,22 @@
         }
 
         if (!forSourceSwitch) {
-            finishScreenSharingStopped();
+            finishScreenSharingStopped({
+                notify: wasEngaged,
+                resumeProactiveVision: !(options && options.resumeProactiveVision === false)
+            });
         }
     }
     mod.stopScreenSharing = stopScreenSharing;
 
     // 分享真正停下后的界面与主动视觉收尾。
-    function finishScreenSharingStopped() {
+    // options.notify: the share was in use; tell the backend it has stopped.
+    // options.resumeProactiveVision === false: do not resume the voice-time vision timer.
+    function finishScreenSharingStopped(options) {
         // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
         resetScreenSharingControls();
+        if (options && options.notify) notifyScreenShareStopped();
+        if (options && options.resumeProactiveVision === false) return;
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
@@ -2854,7 +2897,7 @@
         var stop = stopButton();
         var showsSharing = !!(screen && screen.classList.contains('active'))
             || !!(stop && !stop.disabled);
-        if (showsSharing) finishScreenSharingStopped();
+        if (showsSharing) finishScreenSharingStopped({ notify: true });
     }
 
     // ======================== switchMicCapture ========================

@@ -1,0 +1,248 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Live screen-share frames never become the text session's user attachments.
+
+The bug: a voice session with a running manual screen share is rebuilt as a
+text session. Frames the share keeps sending meanwhile are buffered and then
+replayed into the offline client's ``_pending_images``. The next typed
+message carries them as if the user had attached them, history keeps their
+pixels for two image turns, and every later request resends them until the
+session closes: the character keeps describing a screen that is long gone.
+
+Frames the frontend marks ``live_share: true`` (manual share, voice vision
+heartbeat) are dropped by a text session, both on arrival and on replay.
+Screenshots the user attached (no marker, ``request_id`` set) keep working.
+``screen_share_stopped`` forgets the cached live frames of a voice session
+and fences frames that reached the server before it.
+"""
+
+import time
+
+import pytest
+
+from main_logic import core as core_module
+from main_logic.core import streaming as streaming_mod
+from main_logic.omni_realtime_client import OmniRealtimeClient
+from tests.unit.test_core_game_route_memory_contract import (
+    _make_callback_media_manager,
+    _make_offline_session_for_callback_media,
+)
+from tests.unit.test_offline_provider_frame_publish import _png_b64
+from tests.unit.test_offline_turn_cancellation_e2e import _client, _text
+from utils.llm_client.messages import _normalize_messages
+
+pytestmark = pytest.mark.unit
+
+
+def _frame(*, live: bool, request_id: str | None = None, at: float | None = None) -> dict:
+    message = {"input_type": "screen", "data": "data:image/jpeg;base64," + _png_b64(40, 40)}
+    if live:
+        message["live_share"] = True
+    if request_id:
+        message["request_id"] = request_id
+    if at is not None:
+        message["_visual_input_ingress_time"] = at
+    return message
+
+
+async def _decode_only(data):
+    return data.split(",", 1)[1]
+
+
+@pytest.fixture
+def manager(monkeypatch):
+    session = _make_offline_session_for_callback_media()
+    mgr = _make_callback_media_manager(session)
+    mgr._bg_tasks = set()
+    mgr._asr_route_mode = "blocked"
+    mgr._live_share_stopped_at = 0.0
+    texts = []
+
+    async def stream_text(text, **kwargs):
+        texts.append(text)
+        if callable(kwargs.get("on_turn_committed")):
+            kwargs["on_turn_committed"]()
+
+    session.stream_text = stream_text
+    mgr.texts = texts
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda *a: None)
+    monkeypatch.setattr(streaming_mod._core_facade, "process_screen_data", _decode_only, raising=False)
+    return mgr
+
+
+def _image_urls(request) -> list[str]:
+    urls = []
+    for message in _normalize_messages(request):
+        content = message.get("content")
+        if isinstance(content, list):
+            urls += [part["image_url"]["url"] for part in content if part.get("type") == "image_url"]
+    return urls
+
+
+@pytest.mark.asyncio
+async def test_live_frames_buffered_during_voice_to_text_rebuild_are_not_replayed(manager):
+    """Repro of the field report: the handoff buffer must not feed the text session."""
+    manager.session_ready = False
+    manager._starting_session_count = 1
+    await manager._stream_data_now(_frame(live=True))
+    await manager._stream_data_now(_frame(live=True))
+    await manager._stream_data_now({"input_type": "text", "data": "typed during voice", "request_id": "t1"})
+    assert [m["input_type"] for m in manager.pending_input_data] == ["screen", "screen", "text"]
+
+    manager._starting_session_count = 0
+    manager.session_ready = True
+    await manager._flush_pending_input_data()
+
+    assert manager.session.stream_image.await_count == 0
+    assert manager.texts == ["typed during voice"]
+    assert manager.pending_input_data == []
+
+
+@pytest.mark.asyncio
+async def test_user_screenshot_buffered_during_rebuild_still_reaches_text_session(manager):
+    manager.session_ready = False
+    manager._starting_session_count = 1
+    await manager._stream_data_now(_frame(live=False, request_id="r1"))
+    await manager._stream_data_now({"input_type": "text", "data": "look", "request_id": "r1"})
+    manager._starting_session_count = 0
+    manager.session_ready = True
+    await manager._flush_pending_input_data()
+
+    assert manager.session.stream_image.await_count == 1
+    assert manager.texts == ["look"]
+
+
+@pytest.mark.asyncio
+async def test_text_session_drops_live_frames_that_arrive_after_the_switch(manager):
+    await manager._process_stream_data_internal(_frame(live=True))
+    assert manager.session.stream_image.await_count == 0
+
+    await manager._process_stream_data_internal(_frame(live=False, request_id="r2"))
+    assert manager.session.stream_image.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_independent_asr_replay_keeps_live_frames(manager, monkeypatch):
+    """Independent ASR is voice mode over an offline client: its live frames stay."""
+    manager._asr_route_mode = "independent"
+    seen = []
+
+    async def record(message, **_kwargs):
+        seen.append(message)
+
+    monkeypatch.setattr(manager, "_process_stream_input", record, raising=False)
+    manager.pending_input_data = [_frame(live=True)]
+    await manager._flush_pending_input_data()
+    assert len(seen) == 1 and seen[0]["live_share"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_frame_never_rides_later_text_turns(manager):
+    """End to end with the real offline client: no image in any later request."""
+    client = _client()
+    manager.session = client
+    await manager._process_stream_data_internal(_frame(live=True))
+    assert client._pending_images == []
+
+    for i in range(3):
+        client.script = [[_text(f"reply {i}"), _text("", "stop")]]
+        await client.stream_text(f"text-only message {i}")
+        assert _image_urls(client.requests[-1]) == []
+
+    # Control: a user attachment through the same path is still sent.
+    await manager._process_stream_data_internal(_frame(live=False, request_id="r3"))
+    client.script = [[_text("seen"), _text("", "stop")]]
+    await client.stream_text("what is in my screenshot?")
+    assert len(_image_urls(client.requests[-1])) == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_notice_fences_live_frames_that_arrived_before_it(manager, monkeypatch):
+    """Frames still buffered or validating when the share stops must not land later."""
+    staged = []
+    manager._asr_route_mode = "independent"
+    monkeypatch.setattr(
+        manager,
+        "_stage_independent_visual_frame",
+        lambda image_b64, **kw: staged.append(kw) or True,
+        raising=False,
+    )
+    before_stop = time.monotonic()
+    manager._latest_independent_visual_frame = object()
+    manager._prerecord_visual_frames = [object()]
+
+    manager.handle_screen_share_stopped()
+
+    assert manager._latest_independent_visual_frame is None
+    assert manager._prerecord_visual_frames == []
+    await manager._process_stream_data_internal(_frame(live=True, at=before_stop))
+    assert staged == []
+    # A later frame (a share restarted, or the voice vision heartbeat) is fresh.
+    await manager._process_stream_data_internal(_frame(live=True, at=time.monotonic()))
+    assert len(staged) == 1
+    # User attachments are never fenced.
+    await manager._process_stream_data_internal(_frame(live=False, request_id="r4", at=before_stop))
+    assert [kw["request_id"] for kw in staged] == [None, "r4"]
+
+
+def _realtime_with_cached_frame(request_id):
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._latest_image_b64 = "cached"
+    client._latest_image_generation = 3
+    client._latest_image_captured_at = 1.0
+    client._latest_image_source = "screen"
+    client._latest_image_request_id = request_id
+    client._proactive_image_consumed = False
+    return client
+
+
+def test_stop_notice_clears_the_voice_session_cached_live_frame(manager):
+    client = _realtime_with_cached_frame(None)
+    manager.session = client
+    manager.handle_screen_share_stopped()
+
+    assert client._latest_image_b64 is None
+    assert client._proactive_image_consumed is True
+    assert client._latest_image_generation == 4
+    # Frames that reached the server before the stop are rejected as stale.
+    stale = client.stage_multimodal_frame("late", source="screen", captured_at=client._latest_image_captured_at - 0.01)
+    assert stale.accepted is False and client._latest_image_b64 is None
+    fresh = client.stage_multimodal_frame("new", source="screen", captured_at=time.monotonic() + 1)
+    assert fresh.accepted is True
+
+
+def test_stop_notice_keeps_a_screenshot_the_user_attached_in_voice(manager):
+    client = _realtime_with_cached_frame("user-req")
+    manager.session = client
+    manager.handle_screen_share_stopped()
+    assert client._latest_image_b64 == "cached"
+    assert client._proactive_image_consumed is False
+
+
+@pytest.mark.asyncio
+async def test_text_replay_drops_live_frames_before_processing(manager, monkeypatch):
+    """The replay layer itself drops them, like it drops plain text for voice."""
+    seen = []
+
+    async def record(message, **_kwargs):
+        seen.append(message)
+
+    monkeypatch.setattr(manager, "_process_stream_input", record, raising=False)
+    manager.pending_input_data = [
+        _frame(live=True),
+        _frame(live=False, request_id="r5"),
+        {"input_type": "text", "data": "hi", "request_id": "r5"},
+    ]
+    await manager._flush_pending_input_data()
+    assert [(m["input_type"], m.get("live_share")) for m in seen] == [("screen", None), ("text", None)]
