@@ -13,6 +13,7 @@ logger = get_logger("server.application.messages.memory_query")
 
 DEFAULT_TIMEOUT_SECONDS = 5.0
 MAX_TIMEOUT_SECONDS = 60.0
+DEADLINE_REPLY_MARGIN_SECONDS = 0.25
 
 
 def _coerce_timeout(value: object) -> float:
@@ -112,7 +113,44 @@ def _render_results(results: list[Mapping[str, object]], lang: object) -> str:
         normalized_lang,
         header_template=_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, normalized_lang),
     )
+    # Hits whose text is empty are skipped by the renderer, which still emits
+    # the header. A lone "found 0 memories" header is not a memory: keep the
+    # documented empty-string contract for that case.
+    if block.kept == 0:
+        return ""
     return block.text
+
+
+def _deadline_seconds(timeout: float) -> float:
+    """Deadline for the whole call, a little inside the caller's timeout.
+
+    The caller waits on the same timeout, so finishing right at it leaves no
+    time to deliver the reply: the plugin would see a bare RPC timeout instead
+    of the mapped ``MEMORY_QUERY_TIMEOUT``. Keep a small margin for the reply.
+    """
+    return timeout - min(DEADLINE_REPLY_MARGIN_SECONDS, timeout * 0.1)
+
+
+async def _fetch_render_language(client, httpx, *, lanlan_name: str) -> object:
+    """Read the memory server's resolved locale for rendering, failing soft.
+
+    The recall has already succeeded when this runs. A locale lookup failure
+    must not throw those hits away, mirroring the memory server's own resolver,
+    which degrades instead of failing on an unreadable locale sidecar. ``None``
+    renders with the memory-prompt default locale.
+    """
+    try:
+        response = await client.get(_build_prompt_locale_url(lanlan_name=lanlan_name))
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning(
+            "query_memory locale lookup failed, rendering with default locale: lanlan_name={}, err_type={}",
+            lanlan_name,
+            type(exc).__name__,
+        )
+        return None
+    return payload.get("effective_language") if isinstance(payload, Mapping) else None
 
 
 class MemoryQueryService:
@@ -149,8 +187,9 @@ class MemoryQueryService:
             # and the render each have their own wait; without a shared cap
             # their sum can outlive the caller's timeout, and the work keeps
             # running after the plugin has already given up on it.
-            async with asyncio.timeout(normalized_timeout):
-                async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None, trust_env=False) as client:
+            deadline = _deadline_seconds(normalized_timeout)
+            async with asyncio.timeout(deadline):
+                async with httpx.AsyncClient(timeout=deadline, proxy=None, trust_env=False) as client:
                     response = await client.post(
                         _build_memory_query_url(lanlan_name=normalized_lanlan_name),
                         json=body,
@@ -159,16 +198,9 @@ class MemoryQueryService:
                     results = _extract_results(response.json())
                     if not results:
                         return {"result": ""}
-                    locale_response = await client.get(
-                        _build_prompt_locale_url(lanlan_name=normalized_lanlan_name),
+                    lang = await _fetch_render_language(
+                        client, httpx, lanlan_name=normalized_lanlan_name,
                     )
-                    locale_response.raise_for_status()
-                    locale_payload = locale_response.json()
-                lang = (
-                    locale_payload.get("effective_language")
-                    if isinstance(locale_payload, Mapping)
-                    else None
-                )
                 text = await asyncio.to_thread(_render_results, results, lang)
             return {"result": text}
         except ServerDomainError as exc:

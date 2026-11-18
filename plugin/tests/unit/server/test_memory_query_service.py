@@ -210,16 +210,22 @@ async def test_query_memory_maps_other_errors_to_upstream_error(
 async def test_query_memory_whole_call_shares_one_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each request alone fits the timeout; together they must not."""
+    """A step that never answers is ended by the call's own deadline.
+
+    The locale lookup is held on an Event nobody sets, and MockTransport
+    applies no per-request timeout, so the shared deadline is the only way
+    the wait can end. Asserts state and order, never elapsed time.
+    """
     httpx_module = load_httpx()
     real_client = httpx_module.AsyncClient
     paths: list[str] = []
+    never = asyncio.Event()
 
     async def handler(request: httpx.Request) -> httpx.Response:
         paths.append(request.url.path)
-        await asyncio.sleep(0.3)
         if request.url.path.startswith("/query_memory/"):
             return httpx.Response(200, json={"results": [_hit("Likes green tea")]})
+        await never.wait()
         return httpx.Response(200, json={"effective_language": "en"})
 
     def _client(**kwargs):
@@ -229,18 +235,78 @@ async def test_query_memory_whole_call_shares_one_deadline(
 
     monkeypatch.setattr(httpx_module, "AsyncClient", _client)
 
-    loop = asyncio.get_running_loop()
-    started = loop.time()
     with pytest.raises(ServerDomainError) as exc_info:
         await module.MemoryQueryService().query_memory(
             lanlan_name="Neko", query="tea", timeout=0.5
         )
-    elapsed = loop.time() - started
 
     assert exc_info.value.code == "MEMORY_QUERY_TIMEOUT"
     assert exc_info.value.status_code == 504
     assert paths == ["/query_memory/Neko", "/prompt-locale/Neko"]
-    assert elapsed < 0.55
+
+
+@pytest.mark.plugin_unit
+def test_deadline_leaves_room_for_the_reply() -> None:
+    assert module._deadline_seconds(5.0) == pytest.approx(4.75)
+    assert module._deadline_seconds(0.5) == pytest.approx(0.45)
+    assert 0 < module._deadline_seconds(0.01) < 0.01
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_keeps_hits_when_locale_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/query_memory/"):
+            return httpx.Response(200, json={"results": [_hit("Likes green tea")]})
+        return httpx.Response(500, json={"detail": "locale sidecar unreadable"})
+
+    _install_transport(monkeypatch, handler)
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="tea", timeout=5
+    )
+
+    # Falls back to the memory-prompt default locale instead of failing.
+    assert "Likes green tea" in result["result"]
+    assert result["result"].startswith("Found 1 relevant memories:")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_keeps_hits_when_locale_lookup_cannot_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/query_memory/"):
+            return httpx.Response(200, json={"results": [_hit("Likes green tea")]})
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _install_transport(monkeypatch, handler)
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="tea", timeout=5
+    )
+
+    assert "Likes green tea" in result["result"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_returns_empty_text_when_no_hit_has_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_json={"results": [_hit(""), _hit("   ")]}),
+    )
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="tea", timeout=5
+    )
+
+    assert result == {"result": ""}
 
 
 @pytest.mark.plugin_unit
