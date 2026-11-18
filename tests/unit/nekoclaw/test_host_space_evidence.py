@@ -6603,3 +6603,89 @@ async def test_a_file_found_as_the_note_is_written_counts_though_nothing_was_tol
     assert len(looks) == 3 and reply.startswith("kept in") and "not found" not in reply
     assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
     assert _lesson_event(events, "c2")["evidence_counted"] == [app]
+
+
+async def test_a_file_found_as_a_pending_entry_was_to_take_effect_speaks_for_the_note_as_it_is_judged_anew(
+    space, root, workdir, events, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    app, readme = _where(workdir / "src" / "app.py"), _where(workdir / "README.md")
+    await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py", "README.md"])
+    )
+    waiting = _memory(root) / "entry-point.md"
+    _named_for_nobody(waiting)
+    real = module._stood
+    looks: list[int] = []
+
+    def in_turn(paths: Any) -> Any:
+        paths = list(paths)
+        if app not in paths:
+            return real(paths)
+        looks.append(1)
+        if len(looks) == 1:
+            # As the write's turn comes: one is there, of the other nothing is told.
+            return {**real(paths), readme: None}
+        if len(looks) == 2:
+            # As the guess was to take effect: the first is gone, the other is there.
+            (workdir / "src" / "app.py").unlink()
+        return real(paths)
+
+    monkeypatch.setattr(module, "_stood", in_turn)
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"),
+        _lesson("Entry point", "It is started from the command line.", "observed", ["src/app.py", "README.md"]),
+    )
+
+    # Judged anew with what that look told of each: the one that is gone does not count, and the one it
+    # found speaks for the note, though nothing was told of it before. In effect by that one.
+    assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"] and "src/app.py (not found)" in reply
+    assert _rests_on(waiting)[0] == (readme,)
+    assert _lesson_event(events, "c2")["evidence_counted"] == [readme]
+
+
+async def test_a_file_not_told_of_at_first_and_found_gone_as_the_note_is_judged_is_said_to_be_missing(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # Nothing is told of it when the write's turn comes; it is gone as what waited is asked about.
+    looks = _told_in_turn(monkeypatch, app, [None, gone])
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+
+    # It waits, and is told that the file is not there: off the record of what waits as well.
+    assert len(looks) == 2 and reply.startswith("not in effect yet") and "src/app.py (not found)" in reply
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [])]
+
+
+async def test_a_file_found_gone_as_a_pending_entry_of_the_title_goes_into_the_entry_is_not_given_to_it_with_the_note(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There when the write's turn came; gone as the guess of that title goes into the entry.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    # Other words under the title, checked by hand, with the file the guess rested on.
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Photo dates", "Screenshots have no EXIF date.", "verified", ["src/app.py"])
+    )
+
+    assert len(looks) == 2 and reply.startswith("added to photo-dates.md") and _pending(root) == []
+    assert "Videos may have none." in entry.read_text(encoding="utf-8")
+    # The entry rested on nothing, and is not made to rest on a file that is gone; nor is that told as counted.
+    assert _rests_on(entry)[0] == () and "src/app.py (not found)" in reply
+    assert "evidence_counted" not in _lesson_event(events, "c2")

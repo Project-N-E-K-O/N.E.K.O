@@ -3043,7 +3043,10 @@ class TaskAgentSpace:
         apart = {*(own.evidence_outside if own is not None else ()), *note.known.outside}
         # And one that is found there here is there, though nothing was
         # told of it when the note asked.
-        there_now = {path for path in on_record if path not in untold}
+        there_now = {
+            *(path for path in on_record if path not in untold),
+            *(path for path, stands in earlier.items() if stands is True),
+        }
         untold_now = {
             *untold,
             *(path for path in note.known.untold if path not in there_now),
@@ -3197,7 +3200,9 @@ class TaskAgentSpace:
                 # Not confirmed by this note: it goes on waiting.
                 continue
             if home is not None and home.status != ENTRY_PENDING and _normal(pending.title) == _normal(home.title):
-                home, _added, failed = self._fold(project, pending, home, known, allowed)
+                # What it rested on is asked about as it goes: a file
+                # found gone then is not what the note brings to the entry.
+                home, _added, failed = self._fold(project, pending, home, known, allowed, told=later)
             else:
                 _entry, failed = self._confirm(project, pending, known, allowed)
             unlisted = failed or unlisted
@@ -3359,6 +3364,8 @@ class TaskAgentSpace:
 
         def work(allowed: bool) -> _Taken:
             evidence, others, apart, untold = self._at_its_turn(*looked[0], allowed)
+            # The files it goes into the judgment with: found, or not told of.
+            named_files = list(evidence)
             counted_files[:] = [path for path in evidence if path not in untold]
             other_files[:] = others
             note = _Note(
@@ -3382,7 +3389,9 @@ class TaskAgentSpace:
                 # found since, and one that was there may be gone, or not
                 # told of any more. One that is gone is told with the
                 # others that did not count.
-                dropped = [path for path in counted_files if path in gone and path not in spoke]
+                # (Also one of which nothing was told when the write's turn
+                # came: found gone since, it is told like any other.)
+                dropped = [path for path in named_files if path in gone and path not in spoke]
                 counted_files[:] = list(spoke)
                 other_files.extend((path, "not found") for path in dropped)
 
