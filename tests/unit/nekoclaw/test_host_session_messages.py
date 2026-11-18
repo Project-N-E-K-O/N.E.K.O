@@ -3250,6 +3250,10 @@ async def test_a_directory_that_holds_a_record_under_a_second_name_is_not_search
     assert (await asked("grep", project / "docs"))["allow"] is True
     # Listing names reads no file.
     assert (await asked("glob", project))["allow"] is True
+    # A folder the caller works in that holds the other session's own directory is ruled on as
+    # before (a search of it is left alone): the record lies there under its first name, which
+    # is not what is looked for, and that directory is not gone into.
+    assert (await asked("grep", Path(place.session_dir).parent, "workdir_files"))["allow"] is True
     # Among the files the caller itself works on, the same: a folder of its own that holds the
     # second name is not searched, the others are.
     mine = Path(second.workdir)
@@ -3265,6 +3269,36 @@ async def test_a_directory_that_holds_a_record_under_a_second_name_is_not_search
     (project / "docs" / "a.txt").write_text("x", encoding="utf-8")
     (project / "docs" / "b.txt").write_text("x", encoding="utf-8")
     assert await asked("grep", project / "docs") == refused
+    monkeypatch.setattr(nekoclaw_settings, "SESSION_RECORD_ALIAS_SCAN_ENTRIES", 100)
+
+    # A write searches nothing: no directory is gone through for it.
+    from nekoclaw.host import task_agents
+
+    gone_through: list[Any] = []
+    lies_in = task_agents._lies_in
+
+    def noting(directory: Any, *more: Any) -> bool:
+        gone_through.append(directory)
+        return lies_in(directory, *more)
+
+    monkeypatch.setattr(task_agents, "_lies_in", noting)
+    await asked("write", project / "docs", "outside_write")
+    assert gone_through == []
+    assert await asked("grep", project / "src") == refused and len(gone_through) == 1
+    # And a directory that is not to be reached says no, where asking of it would raise: the
+    # search is ruled on as any other, and not refused for an error.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    is_dir = Path.is_dir
+
+    def unreachable(self: Path) -> bool:
+        if self == elsewhere:
+            raise PermissionError("not to be reached")
+        return is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", unreachable)
+    await host.permission_store.set_mode("outside_read", "allow")
+    assert (await asked("grep", elsewhere))["allow"] is True
 
 
 def test_a_directory_is_read_no_further_than_is_looked_at_for_a_second_name(tmp_path, monkeypatch):
@@ -3319,6 +3353,84 @@ def test_a_directory_is_read_no_further_than_is_looked_at_for_a_second_name(tmp_
     assert _lies_in(large, files, set(), 100) is True
 
 
+def test_a_directory_that_cannot_be_read_through_is_taken_to_hold_a_second_name(tmp_path, monkeypatch):
+    import os
+
+    from nekoclaw.host.task_agents import _lies_in
+
+    record = tmp_path / "transcript.jsonl"
+    record.write_text("x", encoding="utf-8")
+    os.link(record, tmp_path / "transcript again.jsonl")
+    found = os.stat(record)
+    files = {(found.st_dev, found.st_ino)}
+    work = tmp_path / "work"
+    (work / "shut").mkdir(parents=True)
+    (work / "broken").mkdir()
+    for index in range(4):
+        (work / "broken" / f"file {index}.txt").write_text("x", encoding="utf-8")
+    scandir = os.scandir
+
+    class Breaking:
+        """What ``os.scandir`` hands back, which breaks off after two entries."""
+
+        def __init__(self, path: Any) -> None:
+            self._entries, self._read = scandir(path), 0
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            self._entries.close()
+
+        def __iter__(self) -> Any:
+            return self
+
+        def __next__(self) -> Any:
+            self._read += 1
+            if self._read > 2:
+                raise OSError("the share went away")
+            return next(self._entries)
+
+    def reading(path: Any) -> Any:
+        if Path(path).name == "shut":
+            raise PermissionError("not to be opened")
+        return Breaking(path) if Path(path).name == "broken" else scandir(path)
+
+    monkeypatch.setattr(os, "scandir", reading)
+
+    # A directory that cannot be opened is passed over, as a search passes over it.
+    assert _lies_in(work / "shut", files, set(), 100) is False
+    # One whose reading breaks off part of the way is taken to hold the record: it cannot be
+    # told what the rest of it holds.
+    assert _lies_in(work / "broken", files, set(), 100) is True
+    assert _lies_in(work, files, set(), 100) is True
+
+
+def test_what_a_version_control_system_keeps_is_not_gone_into_for_a_second_name(tmp_path):
+    import os
+
+    from nekoclaw.host.task_agents import _lies_in
+
+    record = tmp_path / "transcript.jsonl"
+    record.write_text("x", encoding="utf-8")
+    found = os.stat(record)
+    files = {(found.st_dev, found.st_ino)}
+    project = tmp_path / "project"
+    (project / ".git" / "objects").mkdir(parents=True)
+    (project / "src").mkdir()
+    for index in range(30):
+        (project / ".git" / "objects" / f"object {index}").write_text("x", encoding="utf-8")
+    (project / "src" / "main.py").write_text("x", encoding="utf-8")
+    # (A second name in there is not read by a search, and is not looked for.)
+    os.link(record, project / ".git" / "kept")
+
+    # What is kept in there does not count towards the limit either: a repository with a
+    # great many objects is not taken, for those, to hold the record.
+    assert _lies_in(project, files, set(), 5) is False
+    os.link(record, project / "src" / "kept.txt")
+    assert _lies_in(project, files, set(), 5) is True
+
+
 def test_a_sessions_own_directory_is_not_gone_into_for_a_second_name_of_a_record(tmp_path):
     import os
 
@@ -3332,9 +3444,10 @@ def test_a_sessions_own_directory_is_not_gone_into_for_a_second_name_of_a_record
     record = own / "transcript.jsonl"
     record.write_text("x", encoding="utf-8")
     os.link(record, tmp_path / "elsewhere.jsonl")
-    found = os.stat(record)
+    found, there = os.stat(record), os.stat(own)
     files = {(found.st_dev, found.st_ino)}
-    apart = {os.path.normcase(os.path.abspath(own))}
+    # (Told by what it is, and not by how the path to it is written.)
+    apart = {(there.st_dev, there.st_ino)}
 
     # That directory is ruled on by itself: what is looked for here is a second name, and the
     # record under its first is not one.

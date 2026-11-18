@@ -344,11 +344,13 @@ SESSION_RECORD_MAX_BYTES = 64 * 1024 * 1024
 """A session's record larger than this is not read by ``read_session``; the
 task agent is told so and reads the results instead."""
 
-SESSION_RECORD_ALIAS_SCAN_ENTRIES = 20000
+SESSION_RECORD_ALIAS_SCAN_ENTRIES = 100000
 """How many entries of a directory are looked at, before it is searched, for a
 second name (a hard link) of another session's record. Looked for only where
 such a record has a second name at all; a directory with more entries than
-this is then not searched, as it cannot be told that the record is not in it."""
+this is then not searched, as it cannot be told that the record is not in it.
+What a version control system keeps of itself (``.git``) is not counted: a
+search does not read it."""
 
 WAKE_MIN_DELAY_SECONDS = 600.0
 """Shortest time a task agent may ask to be woken after. A shorter one is

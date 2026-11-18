@@ -490,52 +490,65 @@ def _has_second_name(path: str) -> bool:
     return stat.S_ISREG(found.st_mode) and found.st_nlink > 1
 
 
-def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[str], limit: int) -> bool:
+def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, int]], limit: int) -> bool:
     """Whether one of some files lies in a directory under any of its names, however deep. Blocking.
 
     The files are told by device and number, which is what a second name
     (a hard link) shares with the first. Read as a search of the
-    directory reads it: through no link. The directories in ``apart``
-    are not gone into (other sessions' own directories, which are ruled
-    on by themselves). No more than ``limit`` entries are looked at: a
+    directory reads it: through no link, and not into what a version
+    control system keeps of itself. The directories in ``apart`` (told
+    by device and number likewise, however the path to them is written)
+    are not gone into: other sessions' own directories, which are ruled
+    on by themselves. No more than ``limit`` entries are looked at: a
     directory that has more is taken to hold one of the files, as it
-    cannot be told that it does not. A directory is read an entry at a
-    time, and no further than that: one with a great many entries is not
-    read whole to find that it has too many.
+    cannot be told that it does not. So is one whose reading breaks off
+    part of the way; one that cannot be opened at all is passed over, as
+    a search passes over it. A directory is read an entry at a time, and
+    no further than the limit: one with a great many entries is not read
+    whole to find that it has too many.
     """
     import os
     import stat
+
+    from nekoclaw.runtime.tools.search import VCS_DIRECTORIES
 
     looked = 0
     pending = [os.fspath(directory)]
     while pending:
         try:
-            with os.scandir(pending.pop()) as entries:
-                for entry in entries:
+            listing = os.scandir(pending.pop())
+        except OSError:
+            continue  # Not to be read: nor is it by a search.
+        with listing:
+            try:
+                for entry in listing:
+                    if entry.name in VCS_DIRECTORIES:
+                        continue
                     looked += 1
                     if looked > limit:
                         return True
                     try:
                         if entry.is_symlink():
                             continue
-                        if entry.is_dir(follow_symlinks=False):
-                            if os.path.normcase(os.path.abspath(entry.path)) not in apart:
-                                pending.append(entry.path)
-                            continue
-                        # (Asked of the file itself: what a directory tells
+                        # (Asked of the entry itself: what a directory tells
                         # of its entries does not have the number on every
                         # system.)
                         found = os.stat(entry.path, follow_symlinks=False)
                     except OSError:
                         continue
-                    if (
+                    if stat.S_ISDIR(found.st_mode):
+                        if (found.st_dev, found.st_ino) not in apart:
+                            pending.append(entry.path)
+                    elif (
                         stat.S_ISREG(found.st_mode)
                         and found.st_nlink > 1
                         and (found.st_dev, found.st_ino) in files
                     ):
                         return True
-        except OSError:
-            continue  # Not to be read (or gone meanwhile): nor is it by a search.
+            except OSError:
+                # Broken off part of the way (a share that went away, say):
+                # it cannot be told what the rest of it holds.
+                return True
     return False
 
 
@@ -4901,7 +4914,10 @@ class TaskAgentManager:
                 and any(session_dir and is_inside(Path(session_dir), target) for _id, _workdir, session_dir in places)
             )
             aliased = False
-            if not names_only and target.is_dir():
+            # (Asked so that a directory which is not to be reached says
+            # no, and does not raise; and not for a write, which searches
+            # nothing.)
+            if not writes and not names_only and os.path.isdir(target):
                 # Only a record that has a second name can lie anywhere
                 # under one, and it has none unless somebody gave it one:
                 # as a rule nothing is looked for, and no directory is
@@ -4918,11 +4934,14 @@ class TaskAgentManager:
                 if twice:
                     # (The sessions' own directories, where the records
                     # lie under their first names, are ruled on above.)
-                    apart = {
-                        os.path.normcase(os.path.abspath(session_dir))
-                        for _id, _workdir, session_dir in places
-                        if session_dir
-                    }
+                    apart: set[tuple[int, int]] = set()
+                    for _id, _workdir, session_dir in places:
+                        try:
+                            kept = os.stat(session_dir) if session_dir else None
+                        except OSError:
+                            continue  # Not there.
+                        if kept is not None:
+                            apart.add((kept.st_dev, kept.st_ino))
                     aliased = _lies_in(target, twice, apart, SESSION_RECORD_ALIAS_SCAN_ENTRIES)
             return in_own, in_work, record, holds, aliased
 

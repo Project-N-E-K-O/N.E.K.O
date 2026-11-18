@@ -1154,6 +1154,13 @@ class DshRuntime:
             # and the end of that run's turn would tell of it as taken.
             return []
         texts, session.queue = session.queue, []
+        if not texts:
+            # Woken with nothing left for it (another call of the turn took
+            # what arrived). Like a call whose time ran out, it leaves no
+            # answer to hear of: there is nothing to tell of or to queue
+            # again, and an answer with no text in it that went nowhere
+            # would begin a run with nothing to do.
+            return []
         numbers = _numbers_of(texts)
         session.taken = max([session.taken, *numbers])
         # They go back as the result of a call dsh made. Whether dsh took
@@ -1228,9 +1235,10 @@ class DshRuntime:
     def _answers_known(self, session: _Session, began: list[int] | None = None) -> bool:
         """Leave of what a turn's calls were handed (``awaited``) the texts dsh is known to have; stop waiting for the rest.
 
-        Returns whether the answer of any call of the turn is known to
-        have got to dsh, with a text in it or with none (a call that was
-        woken with nothing left for it): dsh was at work on the turn then.
+        Returns whether an answer that carried a text is known to have
+        got to dsh: dsh was at work on the turn then. (A call that was
+        handed nothing leaves no answer to hear of, and says nothing
+        either way.)
 
         Each text by the answer that carried it last: one whose answer
         went nowhere was queued again, and a later call of the turn may
@@ -1340,10 +1348,10 @@ class DshRuntime:
                         # its calls were handed and dsh is known to have
                         # (the answer got there) is in its conversation,
                         # and is told of as taken. With what the turn
-                        # began with, where a call of it was answered
-                        # (with a text or with none): the turn was under
-                        # way by then, and not refused at the door. An
-                        # answer still on its way is not
+                        # began with, where a call of it was handed a
+                        # text and its answer got there: the turn was
+                        # under way by then, and not refused at the door.
+                        # An answer still on its way is not
                         # waited for, here or at the end of a later turn,
                         # and is dealt with when it is known: where it
                         # got there, that shows the same of what the turn
