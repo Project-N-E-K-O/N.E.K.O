@@ -60,9 +60,11 @@ class Document:
     size: int | None = None
     # How many files a directory that is counted has.
     files: int | None = None
-    # Whether its directory has more files than were looked at: then the
-    # number is the least it can be, and so is how many are said to be
-    # left out of the list.
+    # Whether there is more than this says. Of a file: its directory is
+    # known to have more files than are taken into the list, so at least
+    # one more is left out. Of a directory that is counted: the number is
+    # the least it can be (it has more files than are counted, or was
+    # not looked at to its end).
     more: bool = False
 
 
@@ -103,8 +105,13 @@ def repository_root(workdir: Path, *, upward: bool = True) -> Path:
     return start
 
 
-def _files_of(directory: Path) -> tuple[list[Path], bool]:
-    """Return the first files directly in a directory, by name, and whether it has more than those.
+def _files_of(directory: Path) -> tuple[list[Path], bool, bool]:
+    """Return the first files directly in a directory, by name; whether it has more; whether it was not looked at to its end.
+
+    The second says that more files were seen than are returned. The
+    third says only that not every name was looked at: what was left may
+    be files or may be none, so it is no proof of a file that is not
+    listed.
 
     Empty when it cannot be read. The first
     ``REPO_DOCUMENT_DIRECTORY_MAX_FILES`` by name: a directory fuller than
@@ -117,12 +124,12 @@ def _files_of(directory: Path) -> tuple[list[Path], bool]:
     from config.nekoclaw_settings import REPO_DOCUMENT_DIRECTORY_MAX_FILES, REPO_DOCUMENT_DIRECTORY_MAX_SCANNED
 
     names: list[str] = []
-    more = False
+    cut = False
     try:
         with os.scandir(directory) as items:
             for seen, item in enumerate(items):
                 if seen >= REPO_DOCUMENT_DIRECTORY_MAX_SCANNED:
-                    more = True
+                    cut = True
                     break
                 try:
                     if item.is_file():
@@ -130,10 +137,10 @@ def _files_of(directory: Path) -> tuple[list[Path], bool]:
                 except OSError:
                     continue
     except OSError:
-        return [], False
+        return [], False, False
     names.sort()
-    more = more or len(names) > REPO_DOCUMENT_DIRECTORY_MAX_FILES
-    return [directory / name for name in names[:REPO_DOCUMENT_DIRECTORY_MAX_FILES]], more
+    more = len(names) > REPO_DOCUMENT_DIRECTORY_MAX_FILES
+    return [directory / name for name in names[:REPO_DOCUMENT_DIRECTORY_MAX_FILES]], more, cut
 
 
 def _size(path: Path) -> int | None:
@@ -155,12 +162,15 @@ def documents(root: Path) -> list[Document]:
                 if path.is_file():
                     found.append(Document(name, size=_size(path)))
             elif kind == FILES:
-                files, more = _files_of(path)
+                # Only files that were seen and are not taken: where the
+                # directory was merely not looked at to its end, nothing is
+                # known to be left out.
+                files, more, _cut = _files_of(path)
                 found.extend(Document(f"{name}/{item.name}", size=_size(item), more=more) for item in files)
             elif kind == COUNT:
-                files, more = _files_of(path)
+                files, more, cut = _files_of(path)
                 if files:
-                    found.append(Document(f"{name}/", files=len(files), more=more))
+                    found.append(Document(f"{name}/", files=len(files), more=more or cut))
         except OSError:
             continue
     return found

@@ -455,7 +455,9 @@ _WORD_CLOSERS = ".,;:!?…)]}\"'»”’」』》】`*。，、；：！？"
 _MARKS_OF_UNSPACED = "。、「」『』《》【】"
 # These are written in code as well (``foo(bar)``, ``a:b``): inside such a
 # word they are marks of the sentence only next to a character of that text.
-_MARKS_OF_BOTH = ",;:!?()"
+# All that is taken off the ends of a word is here, so that such text reads
+# the same with spaces around what a sentence puts there and without.
+_MARKS_OF_BOTH = ".,;:!?()[]{}\"'«»“”‘’`*"
 _MARKS_INSIDE_UNSPACED = re.compile(f"[{re.escape(_MARKS_OF_UNSPACED + _MARKS_OF_BOTH)}]+")
 
 
@@ -472,11 +474,19 @@ def _of_the_sentence(word: str, marks: re.Match[str]) -> bool:
     comma between them are written without a space. Between narrow
     characters the run is part of what is written there, a call or a
     key and its value, and stays.
+
+    A full stop ends what stands before it, so it is the sentence's
+    only with a wide character after it. With a narrow one after it, it
+    begins a name (``.env``) or stands inside one (``app.py``), whatever
+    stands before.
     """
-    if any(char in _MARKS_OF_UNSPACED for char in marks.group()):
+    run = marks.group()
+    if any(char in _MARKS_OF_UNSPACED for char in run):
         return True
     before = word[marks.start() - 1] if marks.start() else ""
     after = word[marks.end()] if marks.end() < len(word) else ""
+    if set(run) == {"."}:
+        return _wide(after)
     return _wide(before) or _wide(after)
 
 
@@ -554,18 +564,18 @@ def _joined(first: Iterable[Any], second: Iterable[Any], most: int) -> list[str]
     """Return two lists of files as one, each file once, the newest ``most`` of them.
 
     The same file written with another case is one file where the file
-    system reads names so.
+    system reads names so. A file that is named again stands where it
+    was named last: it was looked at just now, and is not the one to go
+    for being the oldest.
     """
-    paths: list[str] = []
-    known: set[str] = set()
+    paths: dict[str, str] = {}
     for item in [*first, *second]:
         if not isinstance(item, str) or not item:
             continue
         key = os.path.normcase(item)
-        if key not in known:
-            known.add(key)
-            paths.append(item)
-    return paths[-most:] if most > 0 else []
+        paths.pop(key, None)
+        paths[key] = item
+    return list(paths.values())[-most:] if most > 0 else []
 
 
 def _lexically_inside(path: str, base: str) -> bool:
@@ -576,6 +586,14 @@ def _lexically_inside(path: str, base: str) -> bool:
     except ValueError:
         # Different drives on Windows.
         return False
+
+
+def _real_place(path: str) -> str:
+    """Return where a directory really is, links resolved; the path itself when that cannot be told."""
+    try:
+        return os.path.realpath(path)
+    except (OSError, ValueError):
+        return path
 
 
 def evidence_of(
@@ -592,7 +610,10 @@ def evidence_of(
 
     What is returned is where each file really is, links resolved: that
     is what is kept, so a path that leads somewhere else later on is told
-    from the file it was (``_stands``).
+    from the file it was (``_stands``). A path may be given that way as
+    well: one that lies in where a base really is counts like one that
+    lies in the base as it is written (a working directory reached
+    through a link, as the temporary directories of some systems are).
 
     Of what a task agent names, the first ``SPACE_EVIDENCE_MAX_PATHS`` are
     looked at. ``looked_at`` is for words taken from a text, most of
@@ -603,7 +624,9 @@ def evidence_of(
     from nekoclaw.runtime.permissions import is_inside
     from utils.tokenize import count_tokens
 
-    roots = [str(base) for base in bases if base]
+    # Each base as it is written, and where it really is. Only the base
+    # itself is looked at for that, never a path that was named.
+    roots = [(str(base), _real_place(str(base))) for base in bases if base]
     counted: list[str] = []
     others: list[tuple[str, str]] = []
     items = raw if isinstance(raw, (list, tuple)) else []
@@ -618,9 +641,9 @@ def evidence_of(
             continue
         found: str | None = None
         within = False
-        for root in roots:
+        for root, real_root in roots:
             candidate = os.path.normpath(os.path.join(root, text))
-            if not _lexically_inside(candidate, root):
+            if not _lexically_inside(candidate, root) and not _lexically_inside(candidate, real_root):
                 continue
             try:
                 if not is_inside(Path(candidate), Path(root)):
@@ -785,6 +808,25 @@ def _set_evidence(document: _Document, paths: list[str]) -> None:
         document.set("evidence", json.dumps(paths, ensure_ascii=False))
     else:
         document.drop("evidence")
+
+
+def _known_of_held(item: dict[str, Any], *, observer: str | None, seen_before: Iterable[str]) -> _Known:
+    """Return what is known of a note that waits, for making it an entry or judging it somewhere else.
+
+    Of the files it rested on, only the ones that are still there
+    (``_standing``). Everyone it came from but the last goes before; the
+    last is given as the source of the note by whoever files it. Who
+    counts as having seen it differs: ``observer`` is the one that sees
+    it now (the commission that confirms it, or the last that had seen
+    it when it is only moved), ``seen_before`` the ones before.
+    """
+    return _Known(
+        confidence=_confidence(item.get("confidence")) or INFERRED,
+        evidence=tuple(_standing(_strings(item.get("evidence")))),
+        observer=observer,
+        seen_before=tuple(seen_before),
+        sources_before=tuple(_strings(item.get("sources"))[:-1]),
+    )
 
 
 def _keep_known(document: _Document, known: _Known | None) -> bool:
@@ -1774,7 +1816,11 @@ class TaskAgentSpace:
         The outcome says whether the note used one of the places its
         commission has (``charged``). With ``may_use_place`` False a note
         that would use one is not kept: raises ``_NoPlace``, before
-        anything is written.
+        anything of it is written. Where that is found out only as the
+        note is written (its text was in an entry when it was looked at,
+        and is gone from it by then), what waited under its title in
+        other words and is confirmed by it has gone in already: each of
+        those is an entry that stands by itself.
         """
         from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_SEEN_TO_TAKE_EFFECT
 
@@ -1913,12 +1959,10 @@ class TaskAgentSpace:
                     description=str(item.get("description") or ""),
                     source=sources[-1] if sources else None,
                     into=target,
-                    known=_Known(
-                        confidence=_confidence(item.get("confidence")) or INFERRED,
-                        evidence=tuple(_standing(_strings(item.get("evidence")))),
-                        observer=observer,
-                        seen_before=tuple(dict.fromkeys((*seen_by, *note.known.seen_before))),
-                        sources_before=tuple(sources[:-1]),
+                    # Confirmed by the commission that files now, after
+                    # everyone who had seen it.
+                    known=_known_of_held(
+                        item, observer=observer, seen_before=dict.fromkeys((*seen_by, *note.known.seen_before))
                     ),
                 )
             except _LineNotAdded as exc:
@@ -2424,13 +2468,20 @@ class TaskAgentSpace:
                     put_back()
             # What it filed that is not in effect yet goes with it as well:
             # seen again by a commission of its project, it is found there.
-            self._move_held(source, target, own)
+            # What takes effect there at once is an entry of the project
+            # like the ones that were moved.
+            for name in self._move_held(source, target, own):
+                if name not in moved:
+                    moved.append(name)
             return moved
 
         return await self._write(work)
 
-    def _move_held(self, source: str, target: str, own: set[str]) -> None:
+    def _move_held(self, source: str, target: str, own: set[str]) -> list[str]:
         """Take the notes that wait which only the commissions ``own`` filed along to another project.
+
+        Returns the ids of the entries there that they went into: one that
+        takes effect where it goes is an entry, new or added to.
 
         Each is judged anew where it goes, as if it were filed there by
         the commissions that have seen it (``_take_note``), and keeps
@@ -2449,8 +2500,9 @@ class TaskAgentSpace:
             ]
         except OSError:
             logger.warning("the notes that wait could not be read to go with their commission", exc_info=True)
-            return
+            return []
         gone: list[str] = []
+        entries: list[str] = []
         for item in going:
             # Who has seen it and who it came from are two lists: a
             # commission and a task agent it started are one that has seen
@@ -2458,7 +2510,7 @@ class TaskAgentSpace:
             seen_by, sources = _strings(item.get("seen_by")), _strings(item.get("sources"))
             at = item.get("at")
             try:
-                self._take_note(
+                taken = self._take_note(
                     target,
                     _Note(
                         title=str(item.get("title") or ""),
@@ -2466,12 +2518,9 @@ class TaskAgentSpace:
                         kind=str(item.get("type") or ""),
                         description=str(item.get("description") or ""),
                         source=sources[-1],
-                        known=_Known(
-                            confidence=_confidence(item.get("confidence")) or INFERRED,
-                            evidence=tuple(_standing(_strings(item.get("evidence")))),
-                            observer=seen_by[-1] if seen_by else None,
-                            seen_before=tuple(seen_by[:-1]),
-                            sources_before=tuple(sources[:-1]),
+                        # Seen by the ones that had seen it, and by nobody new.
+                        known=_known_of_held(
+                            item, observer=seen_by[-1] if seen_by else None, seen_before=seen_by[:-1]
                         ),
                         # It waits since it was first filed, not since today.
                         waited=(
@@ -2481,16 +2530,22 @@ class TaskAgentSpace:
                         ),
                     ),
                 )
-            except (NoteRemoved, _LineNotAdded):
-                # Not kept there because the user removed it there; or in
-                # its file there, with no line yet. Either way it is no
-                # longer one that waits here.
+            except NoteRemoved:
+                # Not kept there because the user removed it there: it is
+                # no longer one that waits here either.
                 pass
+            except _LineNotAdded as exc:
+                # In its file there, with no line yet.
+                entries.append(exc.entry_id)
             except (SpaceError, OSError, ValueError):
                 logger.warning("a note that waits could not go with its commission to its project", exc_info=True)
                 continue
+            else:
+                if taken.entry is not None:
+                    entries.append(taken.entry.id)
             gone.append(str(item.get("mark")))
         self._drop_held(origin, gone)
+        return list(dict.fromkeys(entries))
 
     # -- for the console: entries -----------------------------------------
 
@@ -2838,7 +2893,15 @@ class TaskAgentSpace:
             return False
         line = _index_line(document.get("name") or path.stem, target, document.get("description"))
         self._index_add(paths.index(project), line, target)
-        return self._edit_text(path, change)
+        changed = self._edit_text(path, change)
+        if not (still and still[0]):
+            # Its files could not be seen to be there after all (the disk
+            # they are on went at this very moment): it still says it
+            # expired, and an entry that expired has no line. While its
+            # files cannot be looked at nothing else would take the line
+            # out again.
+            self._index_remove(paths.index(project), target)
+        return changed
 
     # -- for the console: rules and indexes -------------------------------
 

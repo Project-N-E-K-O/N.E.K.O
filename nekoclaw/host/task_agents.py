@@ -612,7 +612,7 @@ class TaskAgentManager:
             logger.warning("reading the task agent space for a task agent failed", exc_info=True)
             return ""
 
-    async def _repository_documents(self, workdir: str) -> str:
+    async def _repository_documents(self, workdir: str, session_dir: str | None = None) -> str:
         """Return the list of the files the repository a task agent works in keeps for agents; empty when it has none.
 
         A list and nothing more: names and sizes, with a sentence that says
@@ -622,9 +622,15 @@ class TaskAgentManager:
         not keep a task agent from starting.
 
         In a directory of the host's own (the one a commission is given
-        that names none, below the folder the host keeps its data in)
-        only that directory is looked at, not what lies above it: see
-        ``repo_docs.listing``.
+        that names none) only that directory is looked at, not what lies
+        above it: see ``repo_docs.listing``. Such a directory is below
+        the folder the host keeps its data in, or among the sessions
+        where this commission's session is kept (``session_dir``): the
+        folder for the data may have been changed since the commission
+        was first taken up, and its session and working directory stayed
+        where they were (``_session_dir_of``). A task agent started by
+        another works inside that one's directory, among the same
+        sessions.
         """
         from pathlib import Path
 
@@ -632,10 +638,16 @@ class TaskAgentManager:
         from nekoclaw.runtime.permissions import is_inside
 
         def look() -> str:
-            try:
-                own = is_inside(Path(workdir), self._paths.root())
-            except (OSError, ValueError):
-                own = False
+            places = [self._paths.root()]
+            if session_dir:
+                # ``.../sessions/<commission>``: the sessions of its project.
+                places.append(Path(session_dir).parent)
+            own = False
+            for place in places:
+                try:
+                    own = own or is_inside(Path(workdir), place)
+                except (OSError, ValueError):
+                    continue
             return repo_docs.listing(workdir, upward=not own)
 
         try:
@@ -773,7 +785,7 @@ class TaskAgentManager:
             instructions = await self._brief(commission, with_gateway=gateway_spec is not None)
             # After the brief and what the task agent space holds, each of
             # which has its own cap: neither is pushed out by it.
-            listed = await self._repository_documents(workdir)
+            listed = await self._repository_documents(workdir, session_path)
             if listed:
                 instructions = f"{instructions}\n\n{listed}"
             spec = TaskAgentSpec(

@@ -366,6 +366,47 @@ def test_a_file_reached_through_a_link_is_kept_as_where_it_really_is(workdir):
     assert counted == [(workdir / "README.md").as_posix(), (workdir / "src" / "app.py").as_posix()]
 
 
+def test_a_file_named_by_where_it_really_is_counts_in_a_folder_reached_through_a_link(tmp_path, workdir):
+    link = tmp_path / "work-link"
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    try:
+        link.symlink_to(workdir, target_is_directory=True)
+    except OSError:
+        pytest.skip("links cannot be made here")
+    real = (workdir / "src" / "app.py").as_posix()
+
+    # The commission works in the folder as the link names it; the file is named as the place it really is
+    # at, which is how evidence is kept and what such a system tells a task agent its folder is.
+    assert evidence_of([real], [str(link)]) == ([real], [])
+    assert evidence_of(["src/app.py"], [str(link)]) == ([real], [])
+    # What is in neither is still not looked at.
+    assert evidence_of([outside.as_posix()], [str(link)]) == ([], [(outside.as_posix(), "outside the working directory")])
+
+
+def test_a_file_that_is_named_again_is_among_the_newest():
+    from nekoclaw.host.space import _joined
+
+    assert _joined(["a", "b", "c", "d", "e"], ["a", "f"], 5) == ["c", "d", "e", "a", "f"]
+    # None named twice: the order they came in.
+    assert _joined(["a", "b"], ["c"], 5) == ["a", "b", "c"]
+    assert _joined(["a", "b", "c"], ["d"], 2) == ["c", "d"]
+    assert _joined(["a"], ["b"], 0) == []
+
+
+async def test_a_file_an_entry_rests_on_that_is_named_again_is_not_the_one_that_goes(space, root, workdir):
+    for name in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt"):
+        (workdir / name).write_text("x\n", encoding="utf-8")
+    note = ("Entry point", "The app starts in app.py.", "observed")
+    await space.submit(_commission(workdir), _lesson(*note, ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]))
+
+    await space.submit(_commission(workdir, id="c2"), _lesson(*note, ["a.txt", "f.txt"]))
+
+    kept = json.loads(_head(_memory(root) / "entry-point.md")["evidence"])
+    # The oldest that was not named again went; the one that was looked at just now stays.
+    assert kept == [(workdir / name).as_posix() for name in ("c.txt", "d.txt", "e.txt", "a.txt", "f.txt")]
+
+
 def test_a_link_that_leads_out_of_the_directory_is_no_evidence(tmp_path, workdir):
     outside = tmp_path / "secret.txt"
     outside.write_text("secret\n", encoding="utf-8")
@@ -498,6 +539,27 @@ def test_a_mark_inside_a_word_of_such_text_goes_only_where_it_is_the_sentences()
     assert _digest("函数(参数)要写全") == _digest("函数参数要写全")
     # A mark that only such text has is one wherever it stands.
     assert _digest("改a.py、b.py") == _digest("改a.py b.py")
+
+
+def test_such_text_is_the_same_text_with_spaces_around_what_a_sentence_puts_there_and_without():
+    for spaced, unspaced in [
+        ("完成. 然后", "完成.然后"),
+        ("用 “foo” 做", "用“foo”做"),
+        ("用 'foo' 做", "用'foo'做"),
+        ("用 `foo` 做", "用`foo`做"),
+        ("看 app.py. 然后重启", "看app.py.然后重启"),
+        ("等等... 然后", "等等...然后"),
+        ("数组 a[0] 的值", "数组a[0]的值"),
+        ("用 .env 文件", "用.env文件"),
+        ("**注意** 备份", "**注意**备份"),
+    ]:
+        assert _digest(spaced) == _digest(unspaced), spaced
+    # A full stop with a narrow character after it begins a name or stands inside one.
+    assert _digest("用.env文件") != _digest("用env文件")
+    assert _digest("大约1.5倍") != _digest("大约15倍")
+    assert _normal("看app.py.然后重启") == "看app.py然后重启"
+    # An apostrophe between letters is the word's.
+    assert _digest("他说don't做") != _digest("他说dont做")
 
 
 async def test_the_same_words_filed_again_add_nothing_and_are_counted(space, root, workdir, events):
@@ -2055,3 +2117,86 @@ async def test_what_nobody_is_named_for_is_no_second_sighting_of_a_note_that_wai
     # A second commission still has it take effect.
     reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is probably E: here.", scope="global"))
     assert reply == "kept in the space of every project as camera-drive.md"
+
+
+# ---------------------------------------------------------------------------
+# Review round 3: what a look that goes wrong halfway leaves behind; what goes with a commission
+# ---------------------------------------------------------------------------
+
+
+async def test_an_entry_that_cannot_be_brought_back_after_all_keeps_no_line(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
+    real = module._gone
+    looks: list[Any] = []
+
+    def then_unplugged(evidence: Any) -> Any:
+        # There at the two looks before the entry is written, and not to be told when it is: the disk went.
+        looks.append(real(evidence))
+        return None if len(looks) > 2 else looks[-1]
+
+    monkeypatch.setattr(module, "_gone", then_unplugged)
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+
+    # It still says it expired, and the line that was put there for it is gone again.
+    assert len(looks) == 3 and looks[:2] == [False, False]
+    assert _head(_memory(root) / "entry-point.md")["status"] == "expired"
+    assert "(memory/entry-point.md)" not in _index(root)
+    # Once the files can be looked at again it comes back.
+    monkeypatch.setattr(module, "_gone", real)
+    assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
+    assert _index(root).count("(memory/entry-point.md)") == 1
+
+
+async def test_what_takes_effect_where_it_is_brought_to_is_among_what_went_there(space, root, workdir):
+    await space.touch_project("Budget app")
+    # c1 guessed two things while it was one of the daily ones; a commission of the project guessed one of them too.
+    await space.submit(_commission(workdir), _lesson("Shared guess", "Both think so."))
+    await space.submit(_commission(workdir), _lesson("Own guess", "Only c1 thinks so."))
+    await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Shared guess", "Both think so."))
+    await space.submit(_commission(workdir), _lesson("Checked", "It is so.", "verified"))
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # The entry it had, and the one its guess became there. What still waits is no entry.
+    assert moved == ["checked", "shared-guess"]
+    assert sorted(entry.id for entry in await space.list_entries("Budget app")) == ["checked", "shared-guess"]
+    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["Own guess"]
+
+
+async def test_what_took_effect_there_and_has_no_line_yet_is_among_what_went_there_too(space, root, workdir, monkeypatch):
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir), _lesson("Shared guess", "Both think so."))
+    await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Shared guess", "Both think so."))
+    adding = TaskAgentSpace._index_add
+
+    def held(self: TaskAgentSpace, index: Path, line: str, target: str) -> None:
+        if "shared-guess" in target:
+            raise PermissionError(13, "in use")
+        adding(self, index, line, target)
+
+    # The index of the project is held by another program when the guess becomes an entry there.
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", held)
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # In its file there all the same, and no longer one that waits where it was.
+    assert moved == ["shared-guess"]
+    assert (_memory(root, "Budget app") / "shared-guess.md").is_file()
+    assert _notes(root)["held"] == [] and _notes(root, "Budget app")["held"] == []
+
+
+async def test_a_note_that_waited_goes_in_as_what_it_was_said_to_be(space, root, workdir):
+    # Seen, with no file to show for it: it waits. Another commission says something else under its title.
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It was E: when I looked.", "observed"))
+    await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It may be E: on this machine."))
+
+    # What waited was seen, and the entry says so, though what confirmed it was a guess.
+    assert _head(_memory(root) / "camera-drive.md")["confidence"] == "observed"
+
