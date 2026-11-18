@@ -246,3 +246,51 @@ async def test_text_replay_drops_live_frames_before_processing(manager, monkeypa
     ]
     await manager._flush_pending_input_data()
     assert [(m["input_type"], m.get("live_share")) for m in seen] == [("screen", None), ("text", None)]
+
+
+@pytest.mark.asyncio
+async def test_hang_up_then_typing_never_attaches_share_frames(manager, monkeypatch):
+    """Manual hang-up (end_session / pause_session), then N typed turns.
+
+    The frontend stops the share before it ends the session, so this path
+    has no rebuild window that buffers share frames. Pinned step by step:
+    a frame still validating when the voice session ends is dropped; a frame
+    arriving with no session does not start one; the text session's start
+    window replays only what was typed; later requests carry no image.
+    """
+    voice = object()
+    manager.session = voice
+
+    async def end_during_validation(data):
+        # The hang-up lands while this frame is being decoded.
+        manager.session = None
+        manager.is_active = False
+        manager.session_ready = False
+        return data.split(",", 1)[1]
+
+    monkeypatch.setattr(streaming_mod._core_facade, "process_screen_data", end_during_validation, raising=False)
+    await manager._process_stream_data_internal(_frame(live=True))
+    monkeypatch.setattr(streaming_mod._core_facade, "process_screen_data", _decode_only, raising=False)
+
+    async def no_auto_start(*_a, **_k):
+        raise AssertionError("a share frame must not start a session")
+
+    monkeypatch.setattr(manager, "start_session", no_auto_start, raising=False)
+    await manager._stream_data_now(_frame(live=True))
+    assert manager.pending_input_data == []
+
+    # The user types: the text session is starting.
+    offline = _client()
+    manager._starting_session_count = 1
+    await manager._stream_data_now({"input_type": "text", "data": "hello", "request_id": "t9"})
+    manager.session = offline
+    manager.is_active = True
+    manager._starting_session_count = 0
+    manager.session_ready = True
+    assert [m["input_type"] for m in manager.pending_input_data] == ["text"]
+    assert offline._pending_images == []
+
+    for i in range(4):
+        offline.script = [[_text(f"reply {i}"), _text("", "stop")]]
+        await offline.stream_text(f"typed {i}")
+        assert _image_urls(offline.requests[-1]) == []

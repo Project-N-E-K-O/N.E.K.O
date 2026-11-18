@@ -69,6 +69,13 @@ from ._media import (
     _FRAME_SOURCE_SCREEN,
     _FRAME_SOURCE_UNKNOWN,
     _FRAME_SOURCE_USER,
+    _HISTORY_IMAGE_KINDS_KEY,
+    _HISTORY_IMAGE_PREFIT_KINDS_KEY,
+    _IMAGE_KIND_AUTO_SCREENSHOT,
+    _IMAGE_KIND_LIVE,
+    _IMAGE_KIND_PLUGIN,
+    _IMAGE_KIND_USER,
+    _history_image_kinds,
 )
 
 from ._genai_support import (
@@ -964,6 +971,18 @@ class _StreamingMixin:
                 + _own_image_sources
                 + [_FRAME_SOURCE_USER] * len(attachment_images)
             )
+            # History provenance, same positions. Channelled turn frames are
+            # live screen/camera frames (independent ASR samples them over the
+            # utterance); the frame-bus "screen" label cannot tell them apart
+            # from the proactive screenshot, so this is kept separately.
+            _ordered_kinds = (
+                ([_IMAGE_KIND_AUTO_SCREENSHOT] if proactive_image else [])
+                + [_IMAGE_KIND_PLUGIN] * len(plugin_images)
+                + [_IMAGE_KIND_PLUGIN] * len(prefix_images)
+                + [_IMAGE_KIND_LIVE] * _channelled
+                + [_IMAGE_KIND_USER] * (len(own_images) - _channelled)
+                + [_IMAGE_KIND_USER] * len(attachment_images)
+            )
             # Each source has separate image-count quotas (cannot spend another's allowance), but all enter
             # one HumanMessage, so the provider sees their sum: exceeding its per-request cap rejects
             # the whole request, rather than discarding a few images. Trim from the front: images nearest text
@@ -1059,7 +1078,13 @@ class _StreamingMixin:
                 "text": _user_text_with_prefix,
             })
 
+            _attached_kinds, _prefit_kinds = _history_image_kinds(
+                _ordered_kinds, len(_attached_images)
+            )
             user_message = HumanMessage(content=content)
+            user_message.metadata[_HISTORY_IMAGE_KINDS_KEY] = _attached_kinds
+            if _prefit_kinds:
+                user_message.metadata[_HISTORY_IMAGE_PREFIT_KINDS_KEY] = _prefit_kinds
             # Report what was ATTACHED, not what was staged. The trim above
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
@@ -1091,6 +1116,9 @@ class _StreamingMixin:
             # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
 
+        # Live frames of earlier turns were answered there; keep only receipts
+        # so a frame of a share that has since ended is not resent every turn.
+        self._strip_answered_live_frames()
         self._conversation_history.append(user_message)
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).

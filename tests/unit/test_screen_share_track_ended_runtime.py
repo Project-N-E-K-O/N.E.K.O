@@ -84,6 +84,25 @@ async function cachedOnly() {
   const way = process.argv[2] || __WAY__;
   let out;
   if (way === 'cached_only') out = await cachedOnly();
+  else if (way === 'hangup') {
+    // What ending the voice chat does first (stopRecording / the hang-up
+    // button): teardownScreenSharing, then end_session / pause_session.
+    const { r } = await startShare('display_listener');
+    await new Promise(res => setImmediate(res));
+    const ticks = Array.from(r.intervals.values());
+    for (const tick of ticks) await tick();
+    const framesBefore = r.sent.filter(m => m.action === 'stream_data').length;
+    r.w.teardownScreenSharing();
+    r.S.isRecording = false;
+    r.S.voiceChatActive = false;
+    // A tick that was already queued when the interval was cleared.
+    for (const tick of ticks) await tick();
+    out = Object.assign(snapshot(r), {
+      framesBefore,
+      framesAfter: r.sent.filter(m => m.action === 'stream_data').length - framesBefore,
+      liveTagged: r.sent.filter(m => m.action === 'stream_data').every(m => m.live_share === true),
+    });
+  }
   else if (way === 'storage_source_change') {
     // Another window picked a different source: this window's share stops.
     const { r } = await startShare('display_listener');
@@ -114,7 +133,7 @@ function boot(mode) {
   const S = { isRecording: true, voiceChatActive: true, proactiveVisionEnabled: true, proactiveVisionInterval: 15,
     socket: { readyState: 1, send: m => sent.push(JSON.parse(m)) }, audioPlayerContext: { state: 'running' },
     screenCaptureStream: null, selectedScreenSourceId: mode === 'electron' ? 'screen:0:0' : null };
-  const el = id => { const c = new Set(); return { id, disabled: false, play: async () => {}, srcObject: null, readyState: 4, videoWidth: 4, videoHeight: 4, style: {}, dataset: {}, classList: { add: x => c.add(x), remove: x => c.delete(x), contains: x => c.has(x), toggle() {} },
+  const el = id => { const c = new Set(); return { id, disabled: false, play: async () => {}, getContext: () => ({ drawImage() {}, getImageData: () => ({ data: [200, 200, 200, 255] }) }), toDataURL: () => 'data:image/jpeg;base64,AAA', srcObject: null, readyState: 4, videoWidth: 4, videoHeight: 4, style: {}, dataset: {}, classList: { add: x => c.add(x), remove: x => c.delete(x), contains: x => c.has(x), toggle() {} },
     addEventListener: noop, removeEventListener: noop, setAttribute: noop, getAttribute: () => null, appendChild: noop, querySelector: () => null, querySelectorAll: () => [] }; };
   const els = {};
   const document = { body: el('body'), documentElement: el('html'), addEventListener: noop, hasFocus: () => true, activeElement: null, hidden: false, visibilityState: 'visible',
@@ -229,3 +248,13 @@ def test_share_stopped_by_another_windows_source_change_notifies_backend():
     assert out["active"] is False
     assert out["sender"] is False
     assert out["notices"] == 1
+
+
+def test_hanging_up_voice_stops_share_frames_before_the_session_ends():
+    """Ending voice chat tears the share down first; no frame follows the notice."""
+    out = _run("hangup")
+    assert out["framesBefore"] >= 1 and out["liveTagged"] is True
+    assert out["framesAfter"] == 0
+    assert out["notices"] == 1
+    # Button styling is the hang-up caller's job; the frame sender is gone.
+    assert out["sender"] is False

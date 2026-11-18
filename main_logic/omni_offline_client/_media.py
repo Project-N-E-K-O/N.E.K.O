@@ -62,6 +62,32 @@ _FRAME_SOURCE_PROACTIVE = "proactive"
 # image count and the mapping can no longer be trusted.
 _FRAME_SOURCE_UNKNOWN = "unknown"
 
+# Where each image of a history message came from, kept in the message's
+# internal ``metadata`` (never sent to a provider) as ``image_kinds``, aligned
+# with the message's image blocks. Separate from the frame-bus labels above,
+# where "screen" names both the proactive screenshot and a live screen frame.
+_HISTORY_IMAGE_KINDS_KEY = "image_kinds"
+# Pre-fit kinds of a turn whose image count the budget ladder changed (the
+# positional mapping is lost then); used to fail closed on consent revocation.
+_HISTORY_IMAGE_PREFIT_KINDS_KEY = "image_prefit_kinds"
+_IMAGE_KIND_LIVE = "live"                  # live share / voice vision frames of the turn
+_IMAGE_KIND_AUTO_SCREENSHOT = "auto_screenshot"  # the proactive-vision screenshot
+_IMAGE_KIND_USER = "user"                  # images the user attached
+_IMAGE_KIND_PLUGIN = "plugin"              # plugin frames and callback media
+_IMAGE_KIND_UNKNOWN = "unknown"
+# Captured automatically from the screen or camera rather than chosen by the user.
+_AUTO_CAPTURED_IMAGE_KINDS = frozenset({_IMAGE_KIND_LIVE, _IMAGE_KIND_AUTO_SCREENSHOT})
+
+
+def _history_image_kinds(ordered_kinds: list, attached_count: int) -> tuple[list, list]:
+    """Kinds aligned with the attached images, and the pre-fit kinds when unaligned."""
+    if len(ordered_kinds) == attached_count:
+        return list(ordered_kinds), []
+    distinct = set(ordered_kinds)
+    if len(distinct) == 1:
+        return [next(iter(distinct))] * attached_count, []
+    return [_IMAGE_KIND_UNKNOWN] * attached_count, sorted(distinct)
+
 
 class _MediaMixin:
     class _ExternalVoiceSubmitCancelled(Exception):
@@ -549,6 +575,69 @@ class _MediaMixin:
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
+
+    def _strip_history_images(self, should_strip) -> int:
+        """Drop the pixels of history images for which ``should_strip(kind, prefit_kinds)`` holds.
+
+        A receipt replaces them, like ``_evict_old_images``. Messages without
+        recorded kinds (older turns, text-only turns) are left alone.
+        """
+        stripped = 0
+        for idx, msg in enumerate(self._conversation_history):
+            if not isinstance(msg, HumanMessage):
+                continue
+            count = image_count(msg.content)
+            metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+            kinds = metadata.get(_HISTORY_IMAGE_KINDS_KEY)
+            if not count or not isinstance(kinds, list):
+                continue
+            prefit = tuple(metadata.get(_HISTORY_IMAGE_PREFIT_KINDS_KEY) or ())
+            if len(kinds) != count:
+                kinds = [_IMAGE_KIND_UNKNOWN] * count
+            keep = [i for i, kind in enumerate(kinds) if not should_strip(kind, prefit)]
+            if len(keep) == count:
+                continue
+            replacement = replace(
+                msg,
+                content=without_image_pixels(msg.content, keep=keep),
+                metadata={
+                    **metadata,
+                    _HISTORY_IMAGE_KINDS_KEY: [kinds[i] for i in keep],
+                },
+            )
+            self._conversation_history[idx] = replacement
+            self._rebind_resident_anchor(msg, replacement)
+            stripped += count - len(keep)
+        return stripped
+
+    def _strip_answered_live_frames(self) -> None:
+        """Live share frames serve the turn they rode; the next turn keeps only a receipt."""
+        stripped = self._strip_history_images(
+            lambda kind, _prefit: kind == _IMAGE_KIND_LIVE
+        )
+        if stripped:
+            logger.info("🖼️ Stripped %d live frame(s) from history after their turn", stripped)
+
+    def discard_auto_captured_history_images(self) -> None:
+        """Screen consent was revoked: automatically captured images leave history.
+
+        Live share / voice vision frames and proactive screenshots keep only a
+        receipt; images the user attached are untouched. A turn whose image
+        mapping the budget ladder lost is stripped whole if it held any
+        automatically captured image (fail closed).
+        """
+        stripped = self._strip_history_images(
+            lambda kind, prefit: kind in _AUTO_CAPTURED_IMAGE_KINDS
+            or (
+                kind == _IMAGE_KIND_UNKNOWN
+                and any(k in _AUTO_CAPTURED_IMAGE_KINDS for k in prefit)
+            )
+        )
+        if stripped:
+            logger.info(
+                "🖼️ Stripped %d automatically captured image(s) from history after consent revocation",
+                stripped,
+            )
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         keep_turns = max(0, keep_turns)

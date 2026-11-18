@@ -845,6 +845,8 @@ class _LifecycleMixin:
         # still sees which calls really happened. The instruction is not: it
         # rides each request view only (``_dialog_messages_for_provider``). A
         # reply that is not kept runs on a copy and leaves nothing behind.
+        # Same rule as stream_text: live frames of earlier turns keep receipts only.
+        self._strip_answered_live_frames()
         _turn_messages = (
             self._conversation_history if persist_response
             else list(self._conversation_history)

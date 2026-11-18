@@ -99,11 +99,30 @@ class ProactiveMixin:
         """Apply live browser consent without granting persisted permission."""
         if not isinstance(enabled, bool):
             return
-        if not enabled and getattr(self, "_proactive_vision_enabled", None) is not False:
+        revoked = not enabled and getattr(self, "_proactive_vision_enabled", None) is not False
+        if revoked:
             self._proactive_vision_revocation_epoch = (
                 getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
             )
         self._proactive_vision_enabled = enabled
+        if revoked:
+            # Privacy mode promises the character cannot see the screen; screen
+            # images captured automatically before it must not keep riding the
+            # text session's history. Images the user attached stay.
+            discard = getattr(
+                getattr(self, "session", None),
+                "discard_auto_captured_history_images",
+                None,
+            )
+            if callable(discard):
+                try:
+                    discard()
+                except Exception:
+                    logger.warning(
+                        "[%s] failed to strip automatically captured images after consent revocation",
+                        getattr(self, "lanlan_name", ""),
+                        exc_info=True,
+                    )
 
     def _proactive_round_owned(self, round_id: str | None) -> bool:
         """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
