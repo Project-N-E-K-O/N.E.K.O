@@ -829,13 +829,15 @@ def _removed_there(removed: Iterable[dict[str, Any]], text: str | None, title: s
     without a mark then, as all it says or as a part of it.
     """
     records = list(removed)
-    name = _normal(title)
+    document = _parse_document(text) if text is not None else None
+    # The title it has in the text that was read; ``title`` is the one it
+    # had when its directory was listed, for one that cannot be read.
+    name = _normal((document.get("name") if document is not None else "") or title)
     if name and any(_normal(item.get("title")) == name for item in records):
         return True
     wanted = {mark for item in records for mark in _strings(item.get("marks"))}
-    if text is None or not wanted:
+    if document is None or not wanted:
         return False
-    document = _parse_document(text)
     if wanted & {*_listed(document, "texts"), _digest(document.body)}:
         return True
     # None when the entry is too long to look through: not told then.
@@ -2381,35 +2383,39 @@ class TaskAgentSpace:
                 if not entry.sources or not set(entry.sources) <= own:
                     continue
                 old = origin / f"{entry.id}.md"
-                if removed and _removed_there(removed, self._read_text(old), entry.title):
-                    # The user removed this note from the project it would
-                    # go to, and it is not kept there again: it stays
-                    # where it is, which is a place they did not remove
-                    # it from.
-                    continue
                 name = self._free_name(destination, entry.id)
                 # Written where it goes before it is removed where it was,
                 # and removed there only as the file that was copied: one
                 # the user saved from an editor in between is copied again.
-                same = copied = False
+                same = copied = stays = False
                 for _attempt in range(_WRITE_ATTEMPTS):
                     before = self._signature(old)
                     text = self._read_text(old)
                     if text is None:
+                        break
+                    if removed and _removed_there(removed, text, entry.title):
+                        # The user removed this note from the project it
+                        # would go to, and it is not kept there again: it
+                        # stays where it is, which is a place they did not
+                        # remove it from. Told of the very text that would
+                        # be copied, not of one read before: it may have
+                        # been saved from an editor in between.
+                        stays = True
                         break
                     self._put_text(destination / f"{name}.md", text)
                     copied = True
                     same = self._signature(old) == before
                     if same:
                         break
-                if text is None:
+                if text is None or stays:
                     if copied:
-                        # There a moment ago, gone or unreadable now: the
-                        # copy made of it is not left behind with no line.
+                        # There a moment ago, and gone, unreadable or not to
+                        # go there by now: the copy an earlier try made of
+                        # it is not left behind with no line.
                         try:
                             (destination / f"{name}.md").unlink()
                         except OSError:
-                            logger.warning("the copy of an entry that is gone could not be removed", exc_info=True)
+                            logger.warning("the copy of an entry that does not go could not be removed", exc_info=True)
                     continue
                 link = f"{paths.MEMORY_DIR}/{name}.md"
                 was = f"{paths.MEMORY_DIR}/{entry.id}.md"
@@ -2776,7 +2782,8 @@ class TaskAgentSpace:
         rests on is back (a disk that was unplugged at the last look). An
         entry that rests on nothing does not expire, and neither does one
         the user wrote. Where it cannot be told whether a file is there,
-        nothing is changed.
+        nothing is changed in what an entry says; one that says it expired
+        and still has a line loses the line.
 
         Notes that have waited longer than ``SPACE_HELD_KEPT_SECONDS`` to
         be seen again are dropped.
@@ -2786,7 +2793,7 @@ class TaskAgentSpace:
         """
         from config.nekoclaw_settings import SPACE_EVIDENCE_ENTRIES_PER_UPKEEP, SPACE_HELD_KEPT_SECONDS
 
-        def look() -> tuple[list[tuple[str | None, str, bool]], list[str | None]]:
+        def look() -> tuple[list[tuple[str | None, str, bool | None]], list[str | None]]:
             paths = self._paths()
             scopes: list[str | None] = [None, *(project.name for project in self._active_projects())]
             files: list[tuple[str | None, Path]] = []
@@ -2802,7 +2809,9 @@ class TaskAgentSpace:
             if not files:
                 return [], scopes
             start = self._evidence_looked_until % len(files)
-            due: list[tuple[str | None, str, bool]] = []
+            # What is to become of an entry: True to expire, False to be in
+            # effect again, None for its line alone to go.
+            due: list[tuple[str | None, str, bool | None]] = []
             indexes: dict[str | None, str] = {}
             taken = 0
             for scope, path in [*files[start:], *files[:start]][:SPACE_EVIDENCE_ENTRIES_PER_UPKEEP]:
@@ -2816,16 +2825,25 @@ class TaskAgentSpace:
                     continue
                 expired = document.get("status").strip().lower() == ENTRY_EXPIRED
                 gone = _gone(evidence)
-                if gone is True:
+                listed = False
+                if expired and gone is not False:
+                    # One that says it expired and still has its line: the
+                    # index could not be written when it expired, or it
+                    # could not be brought back and the line put there for
+                    # it could not be taken out again.
                     if scope not in indexes:
                         indexes[scope] = self._read_text(paths.index(scope)) or ""
-                    target = f"{paths.MEMORY_DIR}/{path.stem}.md"
-                    # One that says it expired and still has its line (the
-                    # index could not be written then) is seen to again.
-                    if not expired or self._index_line_in(indexes[scope], target) is not None:
+                    listed = self._index_line_in(indexes[scope], f"{paths.MEMORY_DIR}/{path.stem}.md") is not None
+                if gone is True:
+                    if not expired or listed:
                         due.append((scope, path.stem, True))
                 elif gone is False and expired:
                     due.append((scope, path.stem, False))
+                elif gone is None and listed:
+                    # Whether its files are there cannot be told, so what
+                    # it says stays. But it says it expired, and an entry
+                    # that expired is handed to no task agent.
+                    due.append((scope, path.stem, None))
             self._evidence_looked_until = (start + taken) % len(files)
             return due, scopes
 
@@ -2833,6 +2851,9 @@ class TaskAgentSpace:
         outcome = {"expired": 0, "restored": 0, "dropped": 0}
         for scope, entry_id, expire in due:
             try:
+                if expire is None:
+                    await self._write(self._unlist_expired, scope, entry_id)
+                    continue
                 changed = await self._write(self._set_standing, scope, entry_id, expire)
             except (OSError, ValueError):
                 logger.warning("an entry of the task agent space could not be marked as expired or in effect", exc_info=True)
@@ -2865,6 +2886,21 @@ class TaskAgentSpace:
             except (OSError, ValueError):
                 logger.warning("the notes that wait could not be looked through for old ones", exc_info=True)
         return outcome
+
+    def _unlist_expired(self, project: str | None, entry_id: str) -> bool:
+        """Take the line of an entry that says it expired out of the index. Returns whether it said so.
+
+        For one whose files cannot be looked at: nothing is changed in
+        what it says. Read once more under the lock, and left alone when
+        it is in effect by now or cannot be read.
+        """
+        paths = self._paths()
+        path = paths.memory_dir(project) / f"{safe_segment(entry_id)}.md"
+        text = self._read_text(path)
+        if text is None or _parse_document(text).get("status").strip().lower() != ENTRY_EXPIRED:
+            return False
+        self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{path.stem}.md")
+        return True
 
     def _set_standing(self, project: str | None, entry_id: str, expire: bool) -> bool:
         """Mark an entry as expired, or as in effect again, and see to its line in the index. Returns whether it changed.

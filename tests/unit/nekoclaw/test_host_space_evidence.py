@@ -1418,6 +1418,74 @@ async def test_an_entry_that_cannot_be_read_after_the_writing_failed_keeps_its_l
     assert _index(root).count("(memory/entry-point.md)") == 1
 
 
+async def test_an_expired_entry_that_kept_a_line_loses_it_though_its_files_cannot_be_looked_at(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await _filed_with_a_file(space, workdir)
+    await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E: here.", "observed", ["README.md"]))
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    assert await space.check_evidence() == {"expired": 2, "restored": 0, "dropped": 0}
+    # One of them was to come back, could not be written, and could not be read to tell what it said: its
+    # line stayed. Here it is put back by hand, which comes to the same.
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    index.write_text("- [Entry point](memory/entry-point.md) — The app starts in app.py." + chr(10), encoding="utf-8")
+    # The disk its files are on is away from now on.
+    monkeypatch.setattr(module, "_gone", lambda evidence: None)
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+
+    # It still says it expired, as nothing is known of its files; it has no line any more.
+    assert _head(_memory(root) / "entry-point.md")["status"] == "expired"
+    assert _index(root) == ""
+    assert "Entry point" not in await space.brief(None)
+
+
+async def test_an_entry_in_effect_keeps_its_line_while_its_files_cannot_be_looked_at(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await _filed_with_a_file(space, workdir)
+    monkeypatch.setattr(module, "_gone", lambda evidence: None)
+    removing, unlisting = TaskAgentSpace._index_remove, TaskAgentSpace._unlist_expired
+    removed: list[str] = []
+    asked: list[str] = []
+
+    def watched(self: TaskAgentSpace, index: Path, target: str) -> None:
+        removed.append(target)
+        removing(self, index, target)
+
+    def unlist(self: TaskAgentSpace, project: Any, entry_id: str) -> bool:
+        asked.append(entry_id)
+        return unlisting(self, project, entry_id)
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_remove", watched)
+    monkeypatch.setattr(TaskAgentSpace, "_unlist_expired", unlist)
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    # Nothing is done about it at all: it does not say it expired.
+    assert asked == [] and removed == [] and "(memory/entry-point.md)" in _index(root)
+    # Nor does one that came into effect between the look and the write lose its line.
+    assert not await space._write(space._unlist_expired, DEFAULT_PROJECT, "entry-point")
+    assert not await space._write(space._unlist_expired, DEFAULT_PROJECT, "no-such-entry")
+    assert removed == [] and "(memory/entry-point.md)" in _index(root)
+
+
+async def test_an_expired_entry_with_no_line_is_left_alone_while_its_files_cannot_be_looked_at(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    monkeypatch.setattr(module, "_gone", lambda evidence: None)
+    asked: list[str] = []
+    monkeypatch.setattr(TaskAgentSpace, "_unlist_expired", lambda self, project, entry_id: asked.append(entry_id))
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    # It has no line to lose, and what it says is not to be changed: nothing waits for the lock over it.
+    assert asked == [] and _head(_memory(root) / "entry-point.md")["status"] == "expired"
+
+
 async def test_an_entry_that_kept_its_line_and_still_says_it_expired_is_finished_at_the_next_look(space, root, workdir, monkeypatch):
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
@@ -2363,6 +2431,82 @@ async def test_an_entry_that_says_by_now_what_the_user_removed_from_a_project_do
         "things-about-the-camera",
         "where-the-camera-is",
     ]
+
+
+async def _removed_from_the_project_and_filed_elsewhere(space: TaskAgentSpace, workdir: Path) -> None:
+    """Have the user remove a note from a project, and a commission of the daily ones file two other things."""
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Camera drive", "It is E: here.", "verified"))
+    await space.delete_entry("camera-drive", "Budget app")
+    await space.submit(_commission(workdir), _lesson("Where the camera is", "It is somewhere.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Checked", "It is so.", "verified"))
+
+
+async def test_what_was_removed_there_is_told_of_the_text_that_is_copied(space, root, workdir, monkeypatch):
+    await _removed_from_the_project_and_filed_elsewhere(space, workdir)
+    entry = _memory(root) / "where-the-camera-is.md"
+    looking = TaskAgentSpace._signature
+    saved: list[bool] = []
+
+    def then_saved(path: Path) -> Any:
+        # The user saves the entry with what was removed from the project, after the entries were listed
+        # and right before this one is read to be copied.
+        if path == entry and not saved:
+            saved.append(True)
+            _said_instead(entry, "It is somewhere.", "It is E: here.")
+        return looking(path)
+
+    monkeypatch.setattr(TaskAgentSpace, "_signature", staticmethod(then_saved))
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    assert saved and moved == ["checked"]
+    assert entry.is_file() and "It is E: here." in entry.read_text(encoding="utf-8")
+    assert sorted(item.name for item in _memory(root, "Budget app").iterdir()) == ["checked.md"]
+    assert "(memory/where-the-camera-is.md)" in _index(root)
+
+
+async def test_a_copy_made_before_the_entry_came_to_say_what_was_removed_there_is_taken_back(space, root, workdir, monkeypatch):
+    await _removed_from_the_project_and_filed_elsewhere(space, workdir)
+    entry = _memory(root) / "where-the-camera-is.md"
+    putting = TaskAgentSpace._put_text
+    saved: list[bool] = []
+
+    def then_saved(path: Path, text: str) -> Any:
+        done = putting(path, text)
+        # While the entry is copied as it was, the user saves it with what was removed from the project:
+        # it is read again, and that reading is not to go there.
+        if path.name == "where-the-camera-is.md" and path.parent != entry.parent and not saved:
+            saved.append(True)
+            _said_instead(entry, "It is somewhere.", "It is E: here.")
+        return done
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_text", staticmethod(then_saved))
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    assert saved and moved == ["checked"]
+    assert entry.is_file() and "It is E: here." in entry.read_text(encoding="utf-8")
+    # The copy of the first try is gone, and nothing lists it.
+    assert sorted(item.name for item in _memory(root, "Budget app").iterdir()) == ["checked.md"]
+    assert "where-the-camera-is" not in _index(root, "Budget app")
+    assert "(memory/where-the-camera-is.md)" in _index(root)
+
+
+def test_an_entry_is_told_to_be_one_that_was_removed_by_the_title_it_has_now():
+    from nekoclaw.host.space import _removed_there
+
+    removed = [{"marks": ["0" * 12], "title": "Camera drive", "at": "2027-01-15"}]
+    renamed = "---" + chr(10) + "name: camera DRIVE." + chr(10) + "---" + chr(10) + chr(10) + "Something else." + chr(10)
+
+    # Called something else when its directory was listed, and saved under the title that was removed since.
+    assert _removed_there(removed, renamed, "Where the camera is")
+    # Not read: the title it was listed under is all there is to go by.
+    assert _removed_there(removed, None, "Camera drive") and not _removed_there(removed, None, "Where the camera is")
+    # Renamed away from the title that was removed, with another text: not one that was removed.
+    other = renamed.replace("camera DRIVE.", "Where the camera is")
+    assert not _removed_there(removed, other, "Camera drive")
+    assert not _removed_there([], renamed, "Camera drive")
 
 
 async def test_an_entry_too_long_to_look_through_is_told_by_the_marks_of_what_it_was_given(space, root, workdir, monkeypatch):
