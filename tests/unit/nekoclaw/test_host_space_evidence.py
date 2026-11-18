@@ -5543,3 +5543,32 @@ async def test_a_file_found_there_as_what_waited_is_asked_about_speaks_for_the_n
     # The later answer counts: the note was seen, and a file it rests on is there.
     assert taken.how == "created" and _in_effect(root) == ["entry-point"]
     assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+
+
+async def test_a_file_named_from_the_only_working_directory_when_that_does_not_answer_is_said_not_to_have_been_looked_at(
+    space, root, outside, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    # The commission works on a share, and nowhere else.
+    share = outside.parent
+    monkeypatch.setattr(module, "_place_of", lambda path: "share" if "elsewhere" in str(path) else "disk")
+    answered = _unanswered(monkeypatch, "_real_place", lambda path: "elsewhere" in str(path))
+    try:
+        reply = await asyncio.wait_for(
+            space.submit(_commission(share), _lesson("Drive", "It is drive E.", "observed", ["camera.ini"])), 30
+        )
+        assert reply.startswith("not in effect yet") and "not looked at, the disk does not answer" in reply
+        assert len(module._OUT) == 1
+        # The share is out by now, and there is no other directory to look in. The next file is not asked
+        # about: it is said not to have been looked at, not to be missing or to lie outside.
+        reply = await asyncio.wait_for(
+            space.submit(_commission(share, id="c2"), _lesson("Camera", "The camera keeps a file.", "observed", ["camera.ini"])),
+            30,
+        )
+        assert reply.startswith("not in effect yet") and "not looked at, the disk does not answer" in reply
+        assert "outside the working directory" not in reply and "not found" not in reply
+        assert len(module._OUT) == 1
+    finally:
+        answered.set()
+    await _until(lambda: not module._OUT)
