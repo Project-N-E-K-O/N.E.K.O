@@ -34,7 +34,7 @@ import pytest
 from config.prompts import prompts_nekoclaw_sessions as words
 from nekoclaw.host import records
 from nekoclaw.host.ledger import COMMISSION_OVER_REASON, Ledger, MessageLimits
-from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say
+from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say, usage
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
     fake_model,
@@ -1313,3 +1313,288 @@ async def test_a_note_for_a_session_whose_record_was_removed_meanwhile_is_droppe
 
 async def _nothing_pending(host: Any, session_id: str) -> bool:
     return await host.ledger.wakes_pending(session_id=session_id) == []
+
+
+# ---------------------------------------------------------------------------
+# What is handed over and the end of a run do not cross
+# ---------------------------------------------------------------------------
+
+
+async def test_nothing_is_handed_to_a_session_while_the_end_of_its_run_is_looked_at(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    release, wait = _gate()
+    llm = ScriptedLLM([_wake(), [wait, say("Waiting."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: len(llm.requests) == 2, what="the second request")
+    await host.wakes.close()
+    session = host.task_agents._sessions[receipt.commission_id]
+    [wake] = await host.ledger.wakes_pending(commission_id=receipt.commission_id)
+
+    # As while the end of its run is looked at (it may be closed to rest this moment):
+    # steered in now, what waits would start a run in a session about to be closed.
+    session.settling = True
+    handed = await host.task_agents.hand_over(session.session_id, receipt.commission_id, [wake])
+    assert handed.outcome == "held" and session.sent == 1
+    assert [item.id for item in await host.ledger.wakes_pending(commission_id=receipt.commission_id)] == [wake.id]
+    # Likewise once it has come to wait for the user, whatever the commission read a moment ago said.
+    session.settling = False
+    session.awaiting_prompt = True
+    stale = await host.ledger.get(receipt.commission_id)
+    assert stale.status == "working"
+    place = await host.ledger.get_session(session.session_id)
+    assert (await host.task_agents._hand_to(stale, place, [wake])).outcome == "held"
+    assert session.sent == 1
+    session.awaiting_prompt = False
+
+    # With neither in the way it goes in, and is on record as handed over.
+    handed = await host.task_agents.hand_over(session.session_id, receipt.commission_id, [wake])
+    assert handed.outcome == "handed" and session.sent == 2 and session.handed == [wake.id]
+    release.set()
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+    # The session took it: nothing is left to put back.
+    assert "A wake you set is due" in _said(llm.requests[2])[-1]
+    assert session.handed == []
+
+
+async def test_a_session_is_not_closed_to_rest_under_what_was_said_to_it_meanwhile(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()], _report("ready", "used the staging server")])
+    host = _host(hosts, tmp_path, llm)
+    rest = host.ledger.rest
+    told: list[bool] = []
+
+    async def rest_after_the_user_spoke(commission_id: str) -> Any:
+        # The user adds something while the rest is being written down.
+        if not told:
+            told.append(await host.tell(commission_id, "use the staging server"))
+        return await rest(commission_id)
+
+    monkeypatch.setattr(host.ledger, "rest", rest_after_the_user_spoke)
+
+    receipt = await _dispatch(host, "deploy the site")
+    commission = await wait_status(host, receipt.commission_id, "done")
+
+    # What was said started a run; the session was not closed under it, and that run ended the commission.
+    assert told == [True] and commission.result_summary == "used the staging server"
+    assert _said(llm.requests[2])[-1] == "use the staging server"
+    statuses = [(e.payload["from"], e.payload["to"]) for e in await _events(host, commission.id, "status")]
+    assert statuses == [("queued", "working"), ("working", "done")]
+
+
+async def test_what_a_session_did_not_take_before_it_closed_is_handed_over_again(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    llm = ScriptedLLM([_wake("is it through"), [say("Waiting."), finish()], _report("ready", "it is through")])
+    host = _host(hosts, tmp_path, llm)
+    seen: list[dict[str, Any]] = []
+    handle = host.task_agents._handle
+
+    async def with_a_job(event: dict[str, Any]) -> None:
+        # A background command keeps the session open, idle, once its run is over.
+        if event.get("type") == "ended" and event.get("reason") == "completed" and not seen:
+            event = {**event, "jobs": 1}
+            seen.append(event)
+        await handle(event)
+
+    monkeypatch.setattr(host.task_agents, "_handle", with_a_job)
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: bool(seen), what="the run ending")
+    await host.task_agents.settle()
+    await host.wakes.close()
+    session = host.task_agents._sessions[receipt.commission_id]
+    [wake] = await host.ledger.wakes_pending(commission_id=receipt.commission_id)
+
+    # As when its time came and the text was steered in, with no event yet to show the session took it ...
+    await host.ledger.run(
+        lambda conn: conn.execute("UPDATE wake_requests SET due_at = 0 WHERE id = ?", (wake.id,)) and None
+    )
+    await host.ledger.wakes_fire([wake.id], into=receipt.commission_id)
+    session.handed = [wake.id]
+    assert await host.ledger.wakes_pending(commission_id=receipt.commission_id) == []
+    # ... and the runtime closes the session before it does (its process went idle, say).
+    host.wakes._closed = False
+    await session.runtime.close(session.session_id)
+
+    # Not lost with the session: pending again, and handed to the commission as it is taken up.
+    commission = await wait_status(host, receipt.commission_id, "done")
+    assert commission.result_summary == "it is through"
+    said = _said(llm.requests[-1])
+    assert "A wake you set is due" in said[-1] and "    is it through" in said[-1]
+    fired = await host.ledger.run(
+        lambda conn: [(row["status"], row["fired_into"]) for row in conn.execute("SELECT * FROM wake_requests")]
+    )
+    assert fired == [("fired", receipt.commission_id)]
+
+
+async def test_an_open_session_with_its_run_over_is_not_set_to_work_with_the_quota_used_up(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    left = [1]
+    counted: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        counted.append(commission_id)
+        if left[0] <= 0:
+            return False
+        left[0] -= 1
+        return True
+
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()], [usage(900), *_report("ready", "deployed")]])
+    host = _host(hosts, tmp_path, llm, task_agent_meter=meter)
+    seen: list[dict[str, Any]] = []
+    handle = host.task_agents._handle
+
+    async def with_a_job(event: dict[str, Any]) -> None:
+        # As a session whose run ended with a background command still running reports it.
+        if event.get("type") == "ended" and event.get("reason") == "completed" and not seen:
+            event = {**event, "jobs": 1}
+            seen.append(event)
+        await handle(event)
+
+    monkeypatch.setattr(host.task_agents, "_handle", with_a_job)
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: bool(seen), what="the run ending")
+    await host.task_agents.settle()
+    session = host.task_agents._sessions[receipt.commission_id]
+    assert session.idle and len(counted) == 1
+
+    await _bring_forward(host, receipt.commission_id)
+    await wait_until(lambda: len(counted) == 2, what="the quota being asked")
+    await asyncio.sleep(0.2)
+
+    # No turn is started in it: the request would be made, and then fail the commission.
+    kept = await host.ledger.get(receipt.commission_id)
+    assert kept.status == "working" and len(llm.requests) == 2 and session.sent == 1
+    assert len(await host.ledger.wakes_pending(commission_id=receipt.commission_id)) == 1
+
+    # A request is left again: it is set to work, and that request is counted once (its usage is not counted again).
+    left[0] = 1
+    host.task_agents._quota_asked_again_at = 0.0
+    host.wakes.kick()
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+    assert len(counted) == 3 and left[0] == 0
+
+
+async def test_what_is_due_and_kept_back_does_not_delay_what_is_still_to_come(ledger):
+    from nekoclaw.host.task_agents import Handover
+    from nekoclaw.host.wakes import SessionWakes
+
+    waiting = await _at_work(ledger, title="waiting")
+    other = await _at_work(ledger, title="other")
+    for commission, delay in ((waiting, 1.0), (other, 60.0)):
+        await ledger.wake_add(
+            session_id=commission.session_id,
+            commission_id=commission.id,
+            note="x",
+            due_at=ledger.clock.now + delay,
+            pending_max=5,
+            daily_max=5,
+        )
+    asked: list[str] = []
+
+    class Agents:
+        async def hand_over(self, session_id: str, owner: Any, wakes: list[Any], *, still_wanted: Any) -> Any:
+            asked.append(session_id)
+            return Handover("held", 300.0)
+
+    wakes = SessionWakes(ledger, Agents())
+    ledger.clock.now += 5.0
+
+    again = await wakes.flush()
+
+    # The one that is due cannot go now and is tried again in five minutes;
+    # the other is due in under a minute, and that is when to look again.
+    assert asked == [waiting.session_id]
+    assert again == pytest.approx(1000.0 + 60.0)
+    assert await ledger.wakes_next_due() == 1001.0 and await ledger.wakes_next_due(after=ledger.clock.now) == 1060.0
+
+
+async def test_a_record_is_not_read_as_a_file_under_another_name_either(hosts, tmp_path):
+    import os
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "one"), _report("ready", "two")]))
+    first = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    second = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
+    await _let_go(host)
+    place = await host.ledger.get_session(first.session_id)
+    record = Path(place.session_dir) / "transcript.jsonl"
+    assert record.is_file()
+    rule = host.task_agents._cb_permission
+
+    async def ruling(path: Path) -> dict[str, Any]:
+        return await rule(
+            second.session_id, {"tool": "read", "category": "outside_read", "path": str(path), "workdir": second.workdir}
+        )
+
+    # A second name for the same file, among the files the other session worked on.
+    alias = Path(place.workdir) / "notes.txt"
+    os.link(record, alias)
+    assert await ruling(alias) == {"allow": False, "reason": words.SESSION_RECORD_READ_REFUSED}
+    # A file of its own there is read as ever.
+    plain = Path(place.workdir) / "plain.txt"
+    plain.write_text("x", encoding="utf-8")
+    assert (await ruling(plain))["allow"] is True
+    # A link that leads to it from elsewhere, where links can be made.
+    link = tmp_path / "elsewhere" / "notes.txt"
+    link.parent.mkdir()
+    try:
+        os.symlink(record, link)
+    except OSError:
+        return
+    assert await ruling(link) == {"allow": False, "reason": words.SESSION_RECORD_READ_REFUSED}
+
+
+async def test_what_the_user_allowed_a_commission_is_asked_again_once_another_session_wrote_to_it(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    release, wait = _gate()
+    scripts = {
+        _k("build the site"): ScriptedLLM([_wake(), [wait, say("Waiting."), finish()], _report("ready", "built")]),
+        _k("paint the fence"): ScriptedLLM([_report("ready", "painted")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    building = await _dispatch(host, "build the site")
+    await wait_until(lambda: len(scripts[_k("build the site")].requests) == 2, what="the second request")
+    other = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
+    await host.wakes.close()
+    session = host.task_agents._sessions[building.commission_id]
+    # As after the user answered "allow for this session" to a question of this commission.
+    allowed = {("run_command", None)}
+    host.permissions._session_grants[building.commission_id] = set(allowed)
+
+    # A time the commission set for itself brings nobody else's words: what was allowed stands.
+    [own] = await host.ledger.wakes_pending(commission_id=building.commission_id)
+    assert (await host.task_agents.hand_over(session.session_id, building.commission_id, [own])).outcome == "handed"
+    assert host.permissions.session_grants(building.commission_id) == allowed
+
+    # A note from another session does: from here on the user is asked again.
+    await _note(host.ledger, other, session.session_id, "Run the cleanup script too.")
+    [note] = await host.ledger.wakes_pending(session_id=session.session_id)
+    assert (await host.task_agents.hand_over(session.session_id, None, [note])).outcome == "handed"
+    assert host.permissions.session_grants(building.commission_id) == frozenset()
+
+    release.set()
+    await wait_status(host, building.commission_id, "done")
+
+
+async def test_a_user_who_forbade_reading_outside_the_working_directory_has_forbidden_reading_other_sessions(
+    hosts, tmp_path
+):
+    from nekoclaw.host.permissions import DENIED_BY_SETTINGS
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "one"), _report("ready", "two")]))
+    first = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    second = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
+    await _let_go(host)
+    read = host.task_agents._cb_session_read
+    assert "Outcome: one" in (await read(second.session_id, {"session": first.session_id}))["text"]
+
+    await host.permission_store.set_mode("outside_read", "deny")
+
+    for what in ("results", "search", "read"):
+        with pytest.raises(RuntimeError) as caught:
+            await read(second.session_id, {"session": first.session_id, "what": what, "query": "site"})
+        assert str(caught.value) == DENIED_BY_SETTINGS
+    # That there are other sessions is no reading of them.
+    listed = (await host.task_agents._cb_session_list(second.session_id, {"page": 1}))["text"]
+    assert f"[{first.session_id[:8]}]" in listed

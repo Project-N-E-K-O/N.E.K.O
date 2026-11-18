@@ -278,6 +278,19 @@ class _Session:
     # ends, the earlier one's end is held here and decides nothing.
     sent: int = 0
     held_end: dict[str, Any] | None = None
+    # The end of a run is being looked at this moment: whether the commission
+    # is done with it, rests, or waits on. What waits to be handed to the
+    # session is kept back meanwhile (``_hand_to``): steered in now, it would
+    # start a run in a session that is about to be closed.
+    settling: bool = False
+    # The session is open with no run under way and none to come by itself
+    # soon: its commission waits for task agents it started, or for
+    # background jobs. What is handed to it then starts a turn.
+    idle: bool = False
+    # Wake requests whose text was steered into the session and that no
+    # event has yet shown it took. Should the session close first, they are
+    # put back, to be handed over again.
+    handed: list[int] = field(default_factory=list)
     # The address and the name of the model the session was started with.
     model: tuple[Any, Any] | None = None
 
@@ -1480,6 +1493,7 @@ class TaskAgentManager:
         word for word when it sums the conversation up.
         """
         session.sent += 1
+        session.idle = False
         # A steer to an idle session starts a new run. An answer arriving
         # meanwhile must then wait for that run to end (``held_answer``)
         # rather than be sent as a prompt the busy session refuses.
@@ -1723,6 +1737,12 @@ class TaskAgentManager:
             return
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
+        if session.handed and _shows_work_taken(event, session.sent):
+            session.handed = []
+        if kind != "ended" and _shows_run_at_work(event):
+            # A run is under way, also one the session began by itself (a
+            # background job of its own finished).
+            session.idle = False
         if session.sent > 0 and _shows_run_at_work(event):
             session.carried = []
             await self._note_opened(session)
@@ -1888,6 +1908,23 @@ class TaskAgentManager:
             logger.warning("remembering that the task agent model takes no pictures failed", exc_info=True)
 
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
+        """Act on the end of a run, or of the session; nothing is handed to the session while this looks.
+
+        What a run's end means takes a few looks at the ledger to tell
+        (is the commission done, does it rest, does it wait for task
+        agents). Something steered into the session in between would
+        start a run that this then closes, and be lost with it. Whether
+        the session took more than the run that ended (``inputs`` against
+        ``sent``) is read first thing, before anything is awaited, and
+        from then until this returns ``_hand_to`` keeps back what waits.
+        """
+        session.settling = True
+        try:
+            await self._act_on_end(session, event)
+        finally:
+            session.settling = False
+
+    async def _act_on_end(self, session: _Session, event: dict[str, Any]) -> None:
         from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
 
         commission_id = session.commission_id
@@ -1917,6 +1954,12 @@ class TaskAgentManager:
             # fail the commission now finds no session and is ignored, so
             # without this it would stay working for nobody.
             untaken, session.untaken_answer = session.untaken_answer, None
+            # Likewise what was steered into it for a wake request and never
+            # seen taken: the request is pending again, and is handed over
+            # anew (to the commission as it stands then).
+            handed, session.handed = session.handed, []
+            if handed and not self._closed:
+                await self._put_back(handed)
             claimed = (kept is not None or untaken is not None) and not self._closed
             if claimed:
                 # Claimed for that answer before anything is awaited, so an
@@ -1955,6 +1998,7 @@ class TaskAgentManager:
                 if await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING):
                     # Task agents it started are still at work. Their results
                     # arrive as messages and start its next run; it is not done.
+                    session.idle = not (isinstance(inputs, int) and inputs < session.sent)
                     return
                 if await self._rests(session, commission, event):
                     # It asked to be woken (a time it set, word of a note it
@@ -2012,8 +2056,19 @@ class TaskAgentManager:
             pending = await self._ledger.wakes_pending(commission_id=commission.id)
             if not pending:
                 return False
+            inputs = event.get("inputs")
+
+            def went_on() -> bool:
+                # Something was sent to the session since the run ended (the
+                # user said more of it, a task agent handed a result back):
+                # a run is under way again, and its end is the one to look at.
+                return isinstance(inputs, int) and inputs < session.sent
+
             jobs = event.get("jobs")
             if isinstance(jobs, int) and not isinstance(jobs, bool) and jobs > 0:
+                session.idle = not went_on()
+                return True
+            if went_on():
                 return True
             if await self._ledger.rest(commission.id) is None:
                 # What it waited for came, or was dropped, this moment.
@@ -2023,8 +2078,24 @@ class TaskAgentManager:
         except Exception:  # noqa: BLE001 - it ends as a run without a report does
             logger.warning("looking whether a commission rests failed", exc_info=True)
             return False
+        if went_on():
+            # Sent while the rest was being written down: the session is not
+            # closed under the run that started. That run's end looks again,
+            # and finds the commission resting or not as it stands then.
+            return True
         await self._close_session(session)
         return True
+
+    async def _put_back(self, wake_ids: list[int]) -> None:
+        """Make wake requests pending again whose text went into a session that closed before taking it."""
+        try:
+            await self._ledger.wakes_unfire(wake_ids)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the session is let go all the same
+            logger.warning("putting back what a closed session did not take failed", exc_info=True)
+            return
+        self._kick_waker()
 
     async def _turn_over(self, commission_id: str, said: str) -> None:
         """Tell the sessions that wrote to a commission and asked to hear back that its turn is over.
@@ -3214,21 +3285,80 @@ class TaskAgentManager:
             # it gets to work with its question open. It goes once the
             # commission no longer waits (``_on_commission_change``).
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
-        session = self._sessions.get(commission_id)
-        if session is not None and session.closing:
-            # Its runtime session is on its way out (it came to rest this
-            # moment): what is sent now would be lost with it.
-            return Handover("held", _CLOSING_RETRY_SECONDS)
         text = await self._wake_text(target, wakes, answerable=commission.parent_id is None)
         if not text:
             await self._ledger.wakes_void(ids, "nothing was left of it to hand over")
             return Handover("dropped")
+        session = self._sessions.get(commission_id)
+        if session is not None and session.ready and session.idle and not session.closing:
+            # Open with its run over (its commission waits for background
+            # jobs, or for task agents it started): what is handed to it
+            # starts a turn, and no turn is started with NekoClaw switched
+            # off or the quota used up, in an open session any more than in
+            # a closed one. Its first request is counted here, ahead of it.
+            held = await self._may_start(commission_id)
+            if held is not None:
+                return held
+
+        def in_the_way() -> bool:
+            # Looked at after everything that is awaited, with nothing
+            # awaited between this and the sending: its runtime session is
+            # on its way out, the end of its run is being looked at (it may
+            # be closed to rest this moment), or it has come to wait for
+            # the user. What is sent now would be lost, or would set it to
+            # work with its question open.
+            live = self._sessions.get(commission_id)
+            return live is not None and (
+                live.closing
+                or live.settling
+                or live.awaiting_prompt
+                or (live.question is not None and not live.question.done())
+            )
+
+        if in_the_way():
+            return Handover("held", _CLOSING_RETRY_SECONDS)
+
+        def forget_allowances() -> None:
+            # What another session wrote is about to stand in this
+            # commission's conversation. A note carries nobody's
+            # permissions, and that is not left to the model alone: what the
+            # user allowed "for this session", or once for the run, was
+            # allowed for the commission as the user knew it, and is asked
+            # again for whatever it does from here on. (A time the
+            # commission set for itself brings none of another's words.)
+            if any(wake.reason == "message" for wake in wakes):
+                self._permissions.end_session(commission_id)
+
+        session = self._sessions.get(commission_id)
         if session is not None and session.ready and self._runtime_of(session) is not None:
-            # Before its next model request; an idle session is started by it.
-            await self._send_text(self._runtime_of(session), session, "steer", text)
-        elif self._in_hand(commission_id):
+            # On record before it is sent: should the session close before
+            # it took the text, the requests are put back from that record.
+            fired = await self._ledger.wakes_fire(ids, into=commission_id)
+            if not fired:
+                # Dropped while this looked (everything was stopped, or the
+                # commission that asked is over): there is nothing to say.
+                return Handover("dropped")
+            if self._sessions.get(commission_id) is not session or in_the_way():
+                await self._ledger.wakes_unfire(fired)
+                return Handover("held", _CLOSING_RETRY_SECONDS)
+            if commission_id in self._prepaid_starts:
+                # Counted above, for the turn this starts.
+                self._prepaid_starts.discard(commission_id)
+                session.prepaid_requests += 1
+            session.handed.extend(fired)
+            forget_allowances()
+            try:
+                # Before its next model request; an idle session is started by it.
+                await self._send_text(self._runtime_of(session), session, "steer", text)
+            except BaseException:
+                session.handed = [item for item in session.handed if item not in fired]
+                await asyncio.shield(self._ledger.wakes_unfire(fired))
+                raise
+            return Handover("handed")
+        if self._in_hand(commission_id):
             # Being started, or waiting for a place: it goes along with the
             # work it is about to be given.
+            forget_allowances()
             self._notes.setdefault(commission_id, []).append(text)
         elif commission.status == "working":
             # It rests, or waits for task agents it started with its
@@ -3236,6 +3366,7 @@ class TaskAgentManager:
             held = await self._may_start(commission_id)
             if held is not None:
                 return held
+            forget_allowances()
             if not await self._wake_working(commission_id, text, reason=_WOKEN_REASON):
                 self._prepaid_starts.discard(commission_id)
                 return Handover("held", WAKE_HELD_RETRY_SECONDS)
@@ -3519,6 +3650,11 @@ class TaskAgentManager:
         from utils.tokenize import truncate_to_tokens
 
         caller = await self._caller(session_id)
+        if await self._permissions.forbidden("outside_read"):
+            # What another session left lies outside this one's working
+            # directory, whichever tool reads it: a user who forbade
+            # reading there has forbidden this too.
+            raise RuntimeError(DENIED_BY_SETTINGS)
         target = await self._session_named(str(payload.get("session") or ""))
         what = str(payload.get("what") or "results")
         nonce = secrets.token_hex(8)
@@ -3718,22 +3854,41 @@ class TaskAgentManager:
         if not places:
             return None
 
-        def look() -> tuple[bool, bool]:
-            # Whether the path is in another session's own directory, and
-            # whether it is in another session's working directory.
+        kept_files = (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME)
+
+        def look() -> tuple[bool, bool, bool]:
+            # Whether the path is in another session's own directory, whether
+            # it is in another session's working directory, and whether it
+            # is a file a session keeps of itself: by what the path leads
+            # to, not by what it is called, so that a link under another
+            # name is the file it points at.
+            import os
+
             target = Path(path)
             in_own = any(session_dir and is_inside(target, Path(session_dir)) for _id, _workdir, session_dir in places)
             in_work = any(workdir and is_inside(target, Path(workdir)) for _id, workdir, _session_dir in places)
-            return in_own, in_work
+            record = False
+            if in_own or in_work:
+                record = Path(os.path.realpath(target)).name in kept_files
+                for _id, _workdir, session_dir in places:
+                    if record or not session_dir:
+                        continue
+                    for name in kept_files:
+                        try:
+                            # Also a second name for the same file (a hard link).
+                            record = record or os.path.samefile(target, Path(session_dir) / name)
+                        except OSError:
+                            pass  # One of the two is not there: not the same file.
+            return in_own, in_work, record
 
-        in_own, in_work = await asyncio.to_thread(look)
+        in_own, in_work, record = await asyncio.to_thread(look)
         if writes:
             return {"allow": False, "reason": SESSION_WRITE_REFUSED} if in_own else None
         if not in_own and not in_work:
             return None
         if await self._permissions.forbidden("outside_read"):
             return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
-        if in_own and Path(path).name in (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME):
+        if record:
             return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED}
         return PermissionDecision(True).to_json()
 

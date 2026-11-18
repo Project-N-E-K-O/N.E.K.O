@@ -153,12 +153,13 @@ class SessionWakes:
                 if len(wakes) > len(batch):
                     # The rest follows at once.
                     later(self._clock())
-        upcoming = await self._ledger.wakes_next_due()
-        if upcoming is not None and upcoming > now:
+        # The first that was not due when this round began: not the first
+        # of all, which may be one that is due and kept back, in front of
+        # another session's that is still to come. (What became due while
+        # this round was handing over is among these, and is looked at next.)
+        upcoming = await self._ledger.wakes_next_due(after=now)
+        if upcoming is not None:
             later(upcoming)
-        elif upcoming is not None and again is None:
-            # Something became due while this round was handing over.
-            later(self._clock())
         return again
 
     async def _run(self) -> None:

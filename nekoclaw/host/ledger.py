@@ -1724,11 +1724,21 @@ class Ledger:
 
         return await self.run(work)
 
-    async def wakes_next_due(self) -> float | None:
-        """Return when the first pending wake request is due, or None when none is pending."""
+    async def wakes_next_due(self, *, after: float | None = None) -> float | None:
+        """Return when the first pending wake request is due, or None when none is pending.
+
+        With ``after``, the first that is due later than that: what is due
+        already and kept back (its session waits for the user, say) does
+        not stand in front of what is still to come.
+        """
 
         def work(conn: sqlite3.Connection) -> float | None:
-            row = conn.execute("SELECT MIN(due_at) AS due FROM wake_requests WHERE status = 'pending'").fetchone()
+            if after is None:
+                row = conn.execute("SELECT MIN(due_at) AS due FROM wake_requests WHERE status = 'pending'").fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT MIN(due_at) AS due FROM wake_requests WHERE status = 'pending' AND due_at > ?", (after,)
+                ).fetchone()
             return None if row is None or row["due"] is None else float(row["due"])
 
         return await self.run(work)
@@ -1831,6 +1841,41 @@ class Ledger:
             return fired
 
         return await self.run(work)
+
+    async def wakes_unfire(self, wake_ids: Iterable[int]) -> None:
+        """Make wake requests pending again that were put on record as carried out and were not.
+
+        Their text went into a session that closed before taking it. The
+        message one of them was to hand over is queued again. They are
+        handed over anew, to whatever their session is at by then; one
+        whose commission is over meanwhile is dropped there.
+        """
+        ids = [int(item) for item in wake_ids]
+        if not ids:
+            return
+
+        def work(conn: sqlite3.Connection) -> None:
+            marks = ", ".join("?" for _ in ids)
+            conn.execute(
+                "UPDATE messages SET status = 'queued', delivered_at = NULL, delivered_to = NULL "
+                "WHERE status = 'delivered' AND id IN "
+                f"(SELECT message_id FROM wake_requests WHERE id IN ({marks}) AND status = 'fired' "
+                "AND reason = 'message' AND message_id IS NOT NULL)",
+                ids,
+            )
+            conn.execute(
+                "UPDATE messages SET notified_at = NULL WHERE id IN "
+                f"(SELECT message_id FROM wake_requests WHERE id IN ({marks}) AND status = 'fired' "
+                "AND reason = 'notice_expiry' AND message_id IS NOT NULL)",
+                ids,
+            )
+            conn.execute(
+                "UPDATE wake_requests SET status = 'pending', fired_at = NULL, fired_into = NULL "
+                f"WHERE id IN ({marks}) AND status = 'fired'",
+                ids,
+            )
+
+        await self.run(work)
 
     async def wakes_void(self, wake_ids: Iterable[int], reason: str) -> None:
         """Drop pending wake requests, and the messages they were to hand over, with the reason."""
