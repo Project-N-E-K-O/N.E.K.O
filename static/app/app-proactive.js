@@ -2320,14 +2320,19 @@
             // Re-enabled during a call: send a fresh frame now instead of
             // after one full interval, so a voice nudge in that gap cannot
             // describe a frame cached before the switch was turned off.
-            if (S.proactiveVisionFrameTimer) {
-                if (proactiveVisionFrameInFlight) {
-                    proactiveVisionFrameRetryAfterInFlight = true;
-                } else {
-                    sendOneProactiveVisionFrame();
-                }
-            }
+            requestFreshProactiveVisionFrame();
         }
+    }
+
+    // Send a fresh frame now, or right after the capture in flight finishes
+    // (that one may be voided by an off -> on toggle). Heartbeat only.
+    function requestFreshProactiveVisionFrame() {
+        if (!S.proactiveVisionFrameTimer) return;
+        if (proactiveVisionFrameInFlight) {
+            proactiveVisionFrameRetryAfterInFlight = true;
+            return;
+        }
+        sendOneProactiveVisionFrame();
     }
 
     // Called from a switch the user just turned on (a click, so a capture
@@ -2350,8 +2355,8 @@
         _userEnableAcquireInFlight.then(function (ok) {
             // The frame sent when the switch came back on had no stream yet
             // in a browser; send one now that it is here.
-            if (ok === true && S.isRecording && S.proactiveVisionFrameTimer) {
-                return sendOneProactiveVisionFrame();
+            if (ok === true && S.isRecording) {
+                requestFreshProactiveVisionFrame();
             }
         }).catch(function (e) {
             console.warn('[ProactiveVision] 开关开启后重新获取屏幕流失败:', e);
