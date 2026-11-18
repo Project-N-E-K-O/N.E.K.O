@@ -3216,23 +3216,40 @@ async def test_a_guess_of_a_review_that_went_into_an_entry_by_a_later_one_of_the
     folder = _work_folder(tmp_path)
     world.llm.answers[TIER_REVIEW] = [
         {
-            "review": "It sorted the photos.",
-            "entries": [{"title": "Photo dates", "content": "EXIF first, then the file date.", "evidence": ["src/dates.py"]}],
-        },
-        {
             "review": "It sorted the videos.",
             "entries": [
-                # Under the title of that entry, in other words, with no file: it waits beside it.
+                # Under the title of an entry, in other words, with no file: it waits beside it.
                 {"title": "Photo dates", "content": "Videos have no EXIF date.", "evidence": []},
                 # The same again, with a file this time: it takes effect, and goes into the entry of its title.
                 {"title": "Photo dates", "content": "Videos have no EXIF date.", "evidence": ["src/dates.py"]},
             ],
         },
     ]
+    commission = await world.file("sort the photos in Downloads", workdir=str(folder))
+    # The task agent files a lesson of that title itself: the review of its commission is no second to have seen it.
+    kept = await world.space.submit(
+        commission,
+        {"title": "Photo dates", "content": "EXIF first, then the file date.", "category": "lesson", "confidence": "verified"},
+    )
+    assert kept is not None and kept.startswith("kept in")
+    noted: list[list[str]] = []
+    proposing = world.space.propose_entry
 
-    await world.finished(workdir=str(folder))
-    commission = await world.finished(workdir=str(folder))
+    async def watched(*args: Any, **kwargs: Any) -> Any:
+        waits = kwargs.get("waits")
+        made = await proposing(*args, **kwargs)
+        noted.append(list(waits or ()))
+        return made
 
+    world.space.propose_entry = watched
+    try:
+        await world.work(commission.id, 3)
+        await world.end(commission.id, "done")
+    finally:
+        world.space.propose_entry = proposing
+
+    # The first of the two was noted to wait, as a file of its own; the second took it into the entry.
+    assert noted and noted[0] == ["photo-dates-2"]
     entries = await world.space.list_entries(DEFAULT_PROJECT)
     assert [(entry.id, entry.status) for entry in entries] == [("photo-dates", "active")]
     # Nothing waits any more: the guess is no file by now, and is not counted as one.

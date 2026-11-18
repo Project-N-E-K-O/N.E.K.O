@@ -6762,3 +6762,33 @@ async def test_a_file_found_gone_as_a_guess_of_the_title_takes_effect_where_it_i
     # The guess took effect, without the file; and the entry is not made to rest on it either.
     assert "status" not in _head(waiting) and _rests_on(waiting)[0] == () and _rests_on(entry)[0] == ()
     assert "evidence_counted" not in _lesson_event(events, "c2")
+
+
+async def test_a_file_found_again_as_the_entry_is_written_is_not_among_what_was_found_gone(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+    from nekoclaw.host.space import VERIFIED, _Known, _Note
+
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    real = module._recorded
+
+    def gone_for_a_moment(*args: Any) -> Any:
+        (workdir / "src" / "app.py").unlink()
+        try:
+            return real(*args)
+        finally:
+            (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_recorded", gone_for_a_moment)
+    note = _Note(
+        title="Entry point",
+        content="The app starts in app.py.",
+        kind="lesson",
+        source="c2",
+        known=_Known(confidence=VERIFIED, evidence=(app,), observer="c2"),
+    )
+
+    taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note))
+
+    # Gone as the note was judged, there as the entry was written: it spoke for the note in the end.
+    assert taken.spoke == (app,) and taken.gone == ()
