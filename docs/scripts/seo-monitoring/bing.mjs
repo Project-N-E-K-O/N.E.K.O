@@ -4,6 +4,7 @@ import { createSerpRequester, domainMatchesTarget, validateConfig } from '../dat
 const WEBMASTER_ORIGIN = 'https://ssl.bing.com'
 const SERP_DEPTH = 10
 const STORED_QUERY_LIMIT = 20
+const CHINA_LOCATION_CODE = 2156
 
 function bingDate(value) {
   if (typeof value !== 'string') return null
@@ -54,11 +55,15 @@ async function getWebmasterRows(method, siteUrl, apiKey, parseRow, { fetchImpl, 
     }
     const payload = await response.json()
     if (!Array.isArray(payload?.d)) return { status: 'FAILED', reason: 'Bing 站长 API 返回格式异常', rows: [] }
-    const rows = payload.d.map(parseRow)
-    if (rows.includes(null)) return { status: 'FAILED', reason: 'Bing 站长 API 返回无效数据行', rows: [] }
-    if (rows.length === 0) return { status: 'UNKNOWN', reason: 'Bing 站长 API 未返回数据行', rows }
+    const rows = payload.d.map(parseRow).filter(Boolean)
+    const invalidRowCount = payload.d.length - rows.length
+    if (rows.length === 0) {
+      return invalidRowCount > 0
+        ? { status: 'FAILED', reason: 'Bing 站长 API 未返回有效数据行', invalidRowCount, rows }
+        : { status: 'UNKNOWN', reason: 'Bing 站长 API 未返回数据行', rows }
+    }
     rows.sort((left, right) => right.date.localeCompare(left.date) || right.impressions - left.impressions)
-    return { status: 'OBSERVED', collectedAt: new Date().toISOString(), rows }
+    return { status: 'OBSERVED', collectedAt: new Date().toISOString(), invalidRowCount, rows }
   } catch (error) {
     const reason = error?.name === 'TimeoutError' || error?.name === 'AbortError'
       ? 'Bing 站长 API 请求超时'
@@ -117,7 +122,7 @@ export async function collectBingRankings(definition, {
   retryOptions,
 } = {}) {
   const segment = { id: definition.id, label: definition.label, depth: SERP_DEPTH }
-  const skipReason = definition.bingRanking === 'opt-in' && !includeCn
+  const skipReason = definition.bingRanking === 'china-opt-in' && !includeCn
     ? '中文组开关未开启'
     : !paid
       ? 'dry-run 未请求付费排名'
@@ -132,12 +137,13 @@ export async function collectBingRankings(definition, {
   } catch {
     return { ...segment, status: 'FAILED', reason: 'Bing 排名配置无效', rows: [] }
   }
-  if (definition.id === 'cn') {
+  if (config.locationCode === CHINA_LOCATION_CODE) {
     const location = await checkChinaLocation(client, config.locationCode)
     if (location.status !== 'OBSERVED') return { ...segment, ...location, rows: [] }
   }
   const requestSerp = createSerpRequester(client, {
     endpoint: DATAFORSEO_ENDPOINTS.bingOrganicSerp,
+    // Bound the serial Bing requests within the shared report job's time budget.
     timeoutMs: 20_000,
     retryOptions,
   })
@@ -171,10 +177,15 @@ export async function collectBingRankings(definition, {
         rows.push({ ...row, status: 'UNKNOWN', reason: 'DataForSEO 未返回搜索结果' })
         continue
       }
-      const match = items
-        .filter(item => item?.type === 'organic' && Number.isInteger(item.rank_group)
-          && item.rank_group > 0 && item.rank_group <= SERP_DEPTH
-          && domainMatchesTarget(item.domain ?? item.url, config.targetDomain))
+      const organic = items.filter(item => item?.type === 'organic' && Number.isInteger(item.rank_group)
+        && item.rank_group > 0 && item.rank_group <= SERP_DEPTH
+        && typeof (item.domain ?? item.url) === 'string' && (item.domain ?? item.url).trim())
+      if (organic.length === 0) {
+        rows.push({ ...row, status: 'UNKNOWN', reason: 'DataForSEO 未返回有效自然搜索结果' })
+        continue
+      }
+      const match = organic
+        .filter(item => domainMatchesTarget(item.domain ?? item.url, config.targetDomain))
         .sort((left, right) => left.rank_group - right.rank_group)[0]
       rows.push({ ...row, status: 'OBSERVED', rank: match?.rank_group ?? null, matchedUrl: match?.url ?? null })
     } catch (error) {

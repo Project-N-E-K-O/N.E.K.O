@@ -74,7 +74,7 @@
       "id": "cn",
       "siteId": "cn",
       "label": ".cn zh-CN / China",
-      "bingRanking": "opt-in",
+      "bingRanking": "china-opt-in",
       "configPath": "seo/dataforseo.cn.config.json",
       "reportPathEnv": "DATAFORSEO_CN_REPORT_PATH",
       "statusPathEnv": "DATAFORSEO_CN_STATUS_PATH",

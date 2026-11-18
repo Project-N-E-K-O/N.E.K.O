@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import monitoringConfig from '../../seo/monitoring.config.json' with { type: 'json' }
+
 const REQUIRED_SEGMENTS = new Map([
   ['cn', {
     keywords: 8,
@@ -685,11 +687,12 @@ function validateTechnical(site, failures) {
 
 export function requiredFailures(report, level = 'core') {
   if (level === 'bing-dry-run') {
+    const expectedIds = monitoringConfig.dataForSeoSegments.filter(segment => segment.bingRanking).map(segment => segment.id)
     const segments = report?.bingRankings
-    if (!Array.isArray(segments) || segments.length !== 2) {
-      return ['Bing dry-run must report both ranking groups']
+    if (expectedIds.length === 0 || !Array.isArray(segments) || segments.length !== expectedIds.length) {
+      return ['Bing dry-run must report all configured ranking groups']
     }
-    return ['cn', 'online-en'].flatMap(id => {
+    return expectedIds.flatMap(id => {
       const segment = segments.find(item => item?.id === id)
       const planned = segment?.status === 'UNKNOWN'
         && Array.isArray(segment.rows)

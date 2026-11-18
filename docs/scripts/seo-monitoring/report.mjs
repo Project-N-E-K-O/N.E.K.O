@@ -802,6 +802,7 @@ function buildTrustRows(sites, segments, rankComparison, bingRankings) {
     if (site.bing) {
       const { traffic, queries } = site.bing
       const latest = traffic?.rows?.[0]
+      const queryRows = queries?.rows ?? []
       rows.push(
         {
           source: 'Bing Webmaster Tools',
@@ -819,7 +820,7 @@ function buildTrustRows(sites, segments, rankComparison, bingRankings) {
           status: queries?.status,
           collectedAt: queries?.collectedAt ?? null,
           result: queries?.status === 'OBSERVED'
-            ? `${queries.latestDate ?? queries.rows[0]?.date} · 保留 ${queries.rows.length} 条查询`
+            ? `${queries.latestDate ?? queryRows[0]?.date ?? 'N/A'} · 保留 ${queryRows.length} 条查询`
             : queries?.reason ?? 'N/A',
           evidence: 'GetQueryStats',
         },
@@ -1146,10 +1147,10 @@ function renderBingMarkdown(sites, rankings) {
   for (const site of sites) {
     const traffic = site.bing?.traffic
     const queries = site.bing?.queries
-    const latest = traffic?.rows[0]
+    const latest = traffic?.rows?.[0]
     const label = escapeCell(site.label)
     lines.push(`| ${label} | 站点流量 | ${bingStatusCell(traffic)} | ${latest?.date ?? 'N/A'} | ${display(latest?.clicks)} | ${display(latest?.impressions)} |`)
-    lines.push(`| ${label} | 查询表现（最新一周） | ${bingStatusCell(queries)} | ${queries?.latestDate ?? queries?.rows[0]?.date ?? 'N/A'} | N/A | N/A |`)
+    lines.push(`| ${label} | 查询表现（最新一周） | ${bingStatusCell(queries)} | ${queries?.latestDate ?? queries?.rows?.[0]?.date ?? 'N/A'} | N/A | N/A |`)
   }
   lines.push(
     '',
@@ -1189,6 +1190,7 @@ function renderBingMarkdown(sites, rankings) {
 
 function bingStatusCell(value) {
   const status = statusLabel(value?.status)
+  if (status === 'OBSERVED' && value.invalidRowCount > 0) return `${status}（跳过 ${value.invalidRowCount} 条无效数据）`
   return value?.reason ? `${status} · N/A（${escapeCell(value.reason)}）` : status
 }
 

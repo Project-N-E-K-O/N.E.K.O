@@ -132,7 +132,7 @@ test('the unified artifact contains source statuses, raw reports, Markdown, and 
   assert.match(workflow, /docs\/\.seo-reports\/\*\*/)
   assert.match(workflow, /!docs\/\.seo-reports\/previous\/\*\*/)
   assert.match(workflow, /name: seo-geo-daily-report/)
-  assert.match(workflow, /name: Publish verified paid comparison baseline/)
+  assert.match(workflow, /name: Publish verified Google comparison baseline/)
   assert.match(workflow, /name: seo-geo-daily-paid-baseline/)
   assert.match(workflow, /github\.ref == 'refs\/heads\/main'/)
 })

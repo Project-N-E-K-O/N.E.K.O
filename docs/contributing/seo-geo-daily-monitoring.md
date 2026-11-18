@@ -72,6 +72,7 @@ CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.
 1. 从 [Bing Webmaster Tools](https://www.bing.com/webmasters/) 的「设置 → API Access → API Key」复制密钥，保存到日报仓库 `Project-N-E-K-O/N.E.K.O` 的 Actions Secret。用同一个 Bing 账号验证或访问所需的站点。
 2. 手动运行 `SEO GEO Daily Report` 的 `dry-run`，在日报的 Bing 段核对两站的站点流量和查询表现。流量显示 API 最新返回日。查询每周更新，按最新 API 日期和曝光数排序，每站最多保留 20 条到 JSON，Markdown 显示前 10 条。JSON 同时记录 API 返回的日期数和最新日期行数。平均排名采用 `AvgImpressionPosition`。密钥缺失或没有数据行时，对应来源显示 `UNKNOWN`。请求失败时显示 `FAILED`。
 3. `paid` 模式使用现有 DataForSEO 凭证，按深度 10 采集 `.online` 英文组，19 词预计增加 $0.038。开启 `include_bing_cn` 后，先通过免费的中国地区列表确认位置码 2156，再请求 `.cn` 中文组排名，8 词预计增加 $0.016。日报按组展示 API 已报告费用。 [Bing Webmaster API 授权](https://learn.microsoft.com/en-us/bingwebmaster/getting-access) · [DataForSEO Bing 地区列表](https://docs.dataforseo.com/v3/serp/bing/locations/) · [DataForSEO Bing 价格](https://dataforseo.com/pricing/serp/bing-organic-serp-api)
+4. 付费对比基线沿用 Google 和既有来源的验证门禁。Bing 独立显示每组的有效结果数和逐词状态，Bing 采集失败时整份日报仍会生成。
 
 ## 时间窗口
 

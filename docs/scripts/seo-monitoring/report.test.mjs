@@ -188,9 +188,10 @@ test('Bing Markdown shows observed values and independent unavailable sources', 
       ga4: unavailable('no GA4 fixture'),
       technical: technical('https://project-neko.cn'),
       bing: {
-        traffic: { status: 'FAILED', reason: 'HTTP 403', rows: [] },
+        traffic: { status: 'FAILED', reason: 'HTTP 403' },
         queries: {
           status: 'OBSERVED',
+          invalidRowCount: 1,
           rows: [{ date: '2026-07-28', query: 'desktop | pet', clicks: 0, impressions: 4, position: 3.5 }],
         },
       },
@@ -209,6 +210,7 @@ test('Bing Markdown shows observed values and independent unavailable sources', 
   assert.match(markdown, /查询（最新一周） \| API 日期/u)
   assert.ok(markdown.includes('| .cn 产品主页 | desktop \\| pet | 2026-07-28 | 0 | 4 | 3.50 |'))
   assert.match(markdown, /站点流量 \| FAILED · N\/A（HTTP 403）/u)
+  assert.match(markdown, /OBSERVED（跳过 1 条无效数据）/u)
   assert.match(markdown, /UNKNOWN · N\/A（dry-run 未请求付费排名）/u)
   assert.ok(!report.blockers.some(blocker => blocker.includes('Bing')))
   assert.equal(report.sites[0].bing.queries.status, 'OBSERVED')
