@@ -170,6 +170,7 @@ def test_parent_initialization_then_real_fork_rebinds_both_logger_apis(isolated_
 @pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "mkfifo"), reason="requires POSIX fork")
 def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(isolated_log_dir, tmp_path):
     """A child must not flush a file buffer whose lock a parent thread held at fork."""
+    import contextlib
     import fcntl
     import select
     import signal
@@ -187,17 +188,20 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
     os.mkfifo(fifo)
     original_stream, original_max_bytes = handler.stream, handler.maxBytes
     reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
-    writer = child = None
+    readable = select.poll()  # Unlike select(), poll() has no descriptor-number limit.
+    readable.register(reader, select.POLLIN)
+    writer = child = fifo_stream = None
     try:
         handler.maxBytes = 0  # A FIFO cannot report a rollover position.
-        handler.stream = open(fifo, "w", encoding="utf-8")
+        handler.stream = fifo_stream = open(fifo, "w", encoding="utf-8")
         # Exceed the pipe capacity (1 MiB on 64 KiB-page kernels) so the write stays parked.
         payload = 1 << 20
         if hasattr(fcntl, "F_GETPIPE_SZ"):
             payload = max(payload, 2 * fcntl.fcntl(reader, fcntl.F_GETPIPE_SZ))
-        writer = threading.Thread(target=lambda: handler.stream.write("x" * payload), daemon=True)
+        # Bind the FIFO now so a late-starting writer can never hit the restored log stream.
+        writer = threading.Thread(target=fifo_stream.write, args=("x" * payload,), daemon=True)
         writer.start()
-        assert select.select([reader], [], [], 10)[0], "parent writer never reached the raw write"
+        assert readable.poll(10_000), "parent writer never reached the raw write"
         child = os.fork()
         if child == 0:
             try:
@@ -221,16 +225,22 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
             time.sleep(0.05)
         assert os.waitstatus_to_exitcode(status) == 0
     finally:
-        if child is not None:  # Timed out or interrupted: never leave the child behind.
-            os.kill(child, signal.SIGKILL)
-            os.waitpid(child, 0)
-        while writer is not None and writer.is_alive():
-            if select.select([reader], [], [], 0.1)[0]:
-                os.read(reader, 1 << 16)
-        if handler.stream is not original_stream:
-            handler.stream.close()
-        handler.stream, handler.maxBytes = original_stream, original_max_bytes
-        os.close(reader)
+        try:
+            if child is not None:  # Timed out or interrupted: never leave the child behind.
+                with contextlib.suppress(ChildProcessError):  # Already reaped.
+                    if os.waitpid(child, os.WNOHANG)[0] == 0:
+                        os.kill(child, signal.SIGKILL)
+                        os.waitpid(child, 0)
+        finally:
+            handler.stream, handler.maxBytes = original_stream, original_max_bytes
+            try:
+                while writer is not None and writer.is_alive():
+                    if readable.poll(100):
+                        os.read(reader, 1 << 16)
+                if fifo_stream is not None:
+                    fifo_stream.close()
+            finally:
+                os.close(reader)
     assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-marker") == 1
     plogging.logger.info("parent-after-fork-marker")
     assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
