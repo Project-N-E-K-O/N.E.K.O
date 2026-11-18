@@ -41,9 +41,24 @@ runtime. What a host can count on, and where dsh makes it differ:
   tool of the host's gateway, asked before the call because dsh ends such
   a call after a minute, and ``other`` for a tool the driver does not know
   (one a dsh plugin brought).
-* **What the host tells one commission** (``TaskAgentSpec.instructions``,
-  the language to answer in) is the head of the session's first message;
-  dsh has one system prompt for all its sessions.
+* **What the host tells a session** (``TaskAgentSpec.instructions``, the
+  language to answer in) is the head of the session's first message; dsh
+  has one system prompt for all its sessions. A session takes several
+  commissions, one after the other, and is resumed for each: what it was
+  told at first is in dsh's record of it and is not told again, as a
+  session of the built-in runtime keeps the system prompt it was opened
+  with. What a commission is, is the message that opens it, here as there.
+* **dsh sums a conversation up on its own and does not say so.** So
+  nothing is put together anew after a summary, and nothing is kept from
+  one: what the session was told at first and the message that opened the
+  commission under way may go into the summary with the rest (``prompt``
+  takes ``opening`` and makes nothing of it), and a group of built-in
+  tools the gateway handed over before a summary is not handed over anew
+  (dsh names no count of summaries with its calls).
+* A model endpoint that refuses a request as too long and states its window
+  is reported (``model_capability``), for the sessions the host starts
+  later; the session itself stays in its dsh process, which was started
+  for the window it has.
 * ``usage`` reports what the model endpoint reported for each request
   (``forward.py``).
 * ``TaskAgentSpec.goal``, ``limits``, ``image_retention`` and
@@ -82,6 +97,8 @@ from utils.asyncio_executor import to_thread_through_cancellation
 logger = logging.getLogger(__name__)
 
 ACP_PROTOCOL_VERSION = 1
+# The smallest window a session is managed for; ``protocol.ModelConfig`` takes no less.
+_MIN_CONTEXT_WINDOW = 4_000
 _INVALID_PARAMS = -32602
 _IDLE_POLL_SECONDS = 1.0
 # How long ``shutdown`` lets sessions on their way in finish starting before it gives them up.
@@ -149,6 +166,8 @@ class _Session:
     last_text: str = ""
     last_message_id: str = ""
     spoke: bool = False
+    # The windows its model endpoint stated that the host was told of.
+    windows_told: set[int] = field(default_factory=set)
     # The next reply is the endpoint's own word after a closing report
     # (``forward.py``), not something the task agent said.
     local_reply_due: bool = False
@@ -283,6 +302,7 @@ class DshRuntime:
             report_tool=f"{HOST_TOOL_PREFIX}report",
             transport=model_transport,
             on_local_reply=self._on_local_reply,
+            on_window=self._on_window,
         )
         self._endpoint = LocalEndpoint(forwarder=self._forwarder, tools=self._tools)
         self._sessions: dict[str, _Session] = {}
@@ -357,6 +377,27 @@ class DshRuntime:
         session = self._sessions.get(session_id)
         if session is not None:
             session.local_reply_due = True
+
+    def _on_window(self, session_id: str, tokens: int, said: str) -> None:
+        """A session's model endpoint refused a request as too long and stated its window.
+
+        Told to the host when the window is smaller than the one the
+        session was started with, once for each number: the host starts
+        sessions for this model with that window from then on. This
+        session stays in its dsh process, which was started for the window
+        it has and sums the conversation up as dsh does.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        stated = max(int(tokens), _MIN_CONTEXT_WINDOW)
+        if stated >= session.spec.model.context_window or stated in session.windows_told:
+            return
+        session.windows_told.add(stated)
+        self._emit(
+            session,
+            protocol.ModelCapabilityEvent(session_id=session.id, context_window=stated, reason=said[:300]),
+        )
 
     def _on_report(self, session: _Session, payload: dict[str, Any]) -> None:
         if self._sessions.get(session.id) is not session:
@@ -1082,7 +1123,7 @@ class DshRuntime:
 
     async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
         # ``opening`` is for a runtime that sums the conversation up itself
-        # and can give the text again; dsh does that on its own.
+        # and can leave that text as it is; dsh sums up on its own.
         del opening
         session = await self._session(session_id, "prompt")
         if session is None:

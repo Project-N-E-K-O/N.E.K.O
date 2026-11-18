@@ -144,12 +144,21 @@ class ModelRequestError(Exception):
     """A one-shot model request (see ``complete``) failed."""
 
 
+# The statuses a provider refuses a request that is too long with.
+OVERFLOW_STATUSES = (400, 413, 422)
+
+
 def is_context_overflow(error: BaseException) -> bool:
     """Recognize a provider's "input too long" rejection from its message."""
     status = getattr(error, "status_code", None)
-    if status is not None and status not in (400, 413, 422):
+    if status is not None and status not in OVERFLOW_STATUSES:
         return False
-    return bool(_OVERFLOW_PATTERNS.search(str(error)))
+    return says_context_overflow(str(error))
+
+
+def says_context_overflow(said: str) -> bool:
+    """Whether what a provider answered a refused request with says that its input was too long."""
+    return bool(_OVERFLOW_PATTERNS.search(said))
 
 
 def window_from_overflow(said: str) -> int | None:

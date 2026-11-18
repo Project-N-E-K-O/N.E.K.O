@@ -468,3 +468,104 @@ async def test_an_answer_cut_off_half_way_ends_the_stream_without_usage() -> Non
     await forwarder.serve(PROCESS, json.dumps(_payload()).encode(), asgi.receive, asgi.send)
     await forwarder.aclose()
     assert asgi.status == 200 and b"par" in asgi.body and usage == []
+
+
+# ---------------------------------------------------------------------------
+# The window a model endpoint states
+# ---------------------------------------------------------------------------
+
+
+def _learning_forwarder(handler: Any, learned: list[tuple[str, int, str]]) -> ModelForwarder:
+    forwarder = ModelForwarder(
+        lambda session_id, used: None,
+        report_tool=REPORT,
+        transport=httpx.MockTransport(handler),
+        on_window=lambda session_id, tokens, said: learned.append((session_id, tokens, said)),
+    )
+    forwarder.bind(PROCESS, "slot-3", "commission-1", ModelConfig(model="real-model", base_url="http://model.test/v1", api_key="sk-real", auto_extra_body=False))
+    return forwarder
+
+
+@pytest.mark.parametrize("status", [400, 413, 422])
+async def test_the_window_an_endpoint_states_when_a_request_is_too_long_is_handed_on(status: int) -> None:
+    learned: list[tuple[str, int, str]] = []
+    refusal = {
+        "error": {
+            "message": "The maximum context length is 32768 tokens. However, you requested 40000 tokens.",
+            "code": "context_length_exceeded",
+        }
+    }
+    forwarder = _learning_forwarder(lambda request: httpx.Response(status, json=refusal), learned)
+    asgi = _Asgi()
+
+    await forwarder.serve(PROCESS, json.dumps(_payload()).encode(), asgi.receive, asgi.send)
+    await forwarder.aclose()
+
+    # dsh is told the refusal as it came; the host is told the window.
+    assert asgi.status == status and json.loads(asgi.body) == refusal
+    assert [(session, tokens) for session, tokens, _said in learned] == [("commission-1", 32_768)]
+    assert "maximum context length is 32768" in learned[0][2]
+
+
+@pytest.mark.parametrize(
+    "status, message",
+    [
+        # Not about the length of the input.
+        (400, "max_tokens: 9000 > 8192 maximum"),
+        (429, "The maximum context length is 32768 tokens."),
+        (500, "The maximum context length is 32768 tokens."),
+        # Too long, and no window stated.
+        (400, "context_length_exceeded"),
+        (400, ""),
+    ],
+)
+async def test_a_refusal_that_states_no_window_teaches_nothing(status: int, message: str) -> None:
+    learned: list[tuple[str, int, str]] = []
+    forwarder = _learning_forwarder(lambda request: httpx.Response(status, json={"error": {"message": message}}), learned)
+    asgi = _Asgi()
+
+    await forwarder.serve(PROCESS, json.dumps(_payload()).encode(), asgi.receive, asgi.send)
+    await forwarder.aclose()
+
+    assert asgi.status == status and learned == []
+
+
+async def test_an_answer_that_is_no_refusal_is_not_read_for_a_window() -> None:
+    learned: list[tuple[str, int, str]] = []
+    stream = _sse({"choices": [{"index": 0, "delta": {"content": "the maximum context length is 32768 tokens"}}]})
+    forwarder = _learning_forwarder(
+        lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, content=stream), learned
+    )
+    asgi = _Asgi()
+
+    await forwarder.serve(PROCESS, json.dumps(_payload()).encode(), asgi.receive, asgi.send)
+    await forwarder.aclose()
+
+    assert asgi.status == 200 and learned == []
+
+
+async def test_a_listener_that_fails_does_not_fail_the_request() -> None:
+    def broken(session_id: str, tokens: int, said: str) -> None:
+        raise RuntimeError("no room")
+
+    refusal = {"error": {"message": "The maximum context length is 8192 tokens."}}
+    forwarder = ModelForwarder(
+        lambda session_id, used: None,
+        report_tool=REPORT,
+        transport=httpx.MockTransport(lambda request: httpx.Response(400, json=refusal)),
+        on_window=broken,
+    )
+    forwarder.bind(PROCESS, "slot-3", "commission-1", ModelConfig(model="real-model", base_url="http://model.test/v1", api_key="k", auto_extra_body=False))
+    asgi = _Asgi()
+
+    await forwarder.serve(PROCESS, json.dumps(_payload()).encode(), asgi.receive, asgi.send)
+    await forwarder.aclose()
+
+    assert asgi.status == 400 and json.loads(asgi.body) == refusal
+
+
+def test_the_statuses_a_request_that_is_too_long_is_refused_with_are_those_of_the_model_client() -> None:
+    from nekoclaw.dsh import forward
+    from nekoclaw.runtime import model
+
+    assert forward._OVERFLOW_STATUSES == model.OVERFLOW_STATUSES

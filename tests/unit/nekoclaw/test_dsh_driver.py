@@ -1672,3 +1672,56 @@ async def test_the_gateway_is_handed_to_dsh_with_the_sessions_token(tmp_path: Pa
         # In events the tool has the name the gateway gives it, as with the built-in runtime.
         assert driver.events.of("tool_start")[0]["tool_name"] == "capability_call"
         assert driver.events.of("tool_end")[0]["text"] == "first\nsecond"
+
+
+# ---------------------------------------------------------------------------
+# Sessions that take several commissions
+# ---------------------------------------------------------------------------
+
+
+async def test_a_session_that_goes_on_with_another_commission_is_given_its_opening_message_and_nothing_else(
+    tmp_path: Path, dsh
+) -> None:
+    driver = dsh()
+    spec = make_spec(tmp_path, instructions="You work for Lan.", reply_language="English")
+    await driver.started(spec)
+    position = len(driver.events.events)
+    await driver.runtime.prompt("s1", "Commission 1\ntidy the desk", opening=True)
+    await driver.events.wait_ended("s1", start=position)
+    await driver.closed("s1")
+
+    # Opened again for the next commission of the session, with other instructions by now.
+    again = make_spec(tmp_path, instructions="You work for Lan. Index: three entries.", reply_language="English")
+    started = await driver.started(again)
+    position = len(driver.events.events)
+    await driver.runtime.prompt("s1", "Commission 2\nwater the plants", opening=True)
+    await driver.events.wait_ended("s1", start=position)
+
+    assert started["resumed"] is True
+    said = [row["text"] for row in driver.record("session/prompt")]
+    # What the host tells the session was said once, when it began; a commission is the message that opens it.
+    assert "You work for Lan." in said[0] and said[0].rstrip().endswith("Commission 1\ntidy the desk")
+    assert said[1] == "Commission 2\nwater the plants"
+
+
+async def test_a_window_a_sessions_model_endpoint_states_is_told_to_the_host_once(tmp_path: Path, dsh) -> None:
+    driver = dsh()
+    model = ModelConfig(model="model-a", base_url="http://model.test/v1", api_key="k", context_window=256_000)
+    await driver.started(make_spec(tmp_path, "s1", model=model))
+
+    # As the forwarder hands it on when the endpoint refused a request as too long.
+    driver.runtime._on_window("s1", 32_768, "The maximum context length is 32768 tokens.")
+    driver.runtime._on_window("s1", 32_768, "The maximum context length is 32768 tokens.")
+    # As large as the session's own, or larger: nothing to learn. Of a session that is gone: nobody to tell.
+    driver.runtime._on_window("s1", 256_000, "maximum context length is 256000 tokens")
+    driver.runtime._on_window("s1", 400_000, "maximum context length is 400000 tokens")
+    driver.runtime._on_window("gone", 8_000, "maximum context length is 8000 tokens")
+    # Smaller than a session can be managed for: the smallest that can.
+    driver.runtime._on_window("s1", 2_048, "maximum context length is 2048 tokens")
+
+    told = driver.events.of("model_capability")
+    assert [(event["session_id"], event["context_window"], event["supports_images"]) for event in told] == [
+        ("s1", 32_768, None),
+        ("s1", 4_000, None),
+    ]
+    assert "maximum context length is 32768" in told[0]["reason"]

@@ -60,6 +60,12 @@ from nekoclaw.runtime.protocol import ModelConfig
 
 logger = logging.getLogger(__name__)
 
+# How much of a refused request's answer is read for what it says of the model's window.
+_REFUSAL_READ_BYTES = 4096
+# The statuses a request that is too long is refused with
+# (``nekoclaw.runtime.model.OVERFLOW_STATUSES``; a test keeps the two the same).
+_OVERFLOW_STATUSES = (400, 413, 422)
+
 # ``report`` statuses after which a commission is over: done, or not to be done.
 FINAL_REPORT_STATUSES = frozenset({"ready", "failed"})
 # How the result of a delivered report begins (same module).
@@ -254,8 +260,12 @@ class ModelForwarder:
         report_tool: str,
         transport: Any = None,
         on_local_reply: Callable[[str], None] | None = None,
+        on_window: Callable[[str, int, str], None] | None = None,
     ) -> None:
         self._on_usage = on_usage
+        # Told the session, the number of tokens and what was said, when a
+        # model endpoint refuses a request as too long and states its window.
+        self._on_window = on_window
         self._report_tool = report_tool
         # Told the session whose request is about to be answered here, with
         # a fixed word in the model's place, instead of being forwarded.
@@ -267,6 +277,23 @@ class ModelForwarder:
         self._routes: dict[tuple[str, str], Route] = {}
         self._client: Any = None
         self._client_lock = asyncio.Lock()
+
+    def _learn_window(self, route: Route, refusal: bytes) -> None:
+        """Hand on the window a model endpoint stated when it refused a request as too long.
+
+        dsh is told the refusal as it came and deals with it as it does.
+        What the endpoint said of its window is for the host: sessions it
+        starts for this model later are managed for that window.
+        """
+        if self._on_window is None:
+            return
+        found = _stated_window(refusal)
+        if found is None:
+            return
+        try:
+            self._on_window(route.session_id, found[0], found[1])
+        except Exception:  # noqa: BLE001 - learning must not fail the request
+            logger.exception("handing on the window a model endpoint stated failed")
 
     # -- routes -----------------------------------------------------------
 
@@ -363,6 +390,9 @@ class ModelForwarder:
         counted = False
         # Fed only with an answer that is no error, so an error counts as no request.
         reader = _UsageReader(streamed)
+        # The beginning of what a request was refused with, as far as it may
+        # say that the input was too long.
+        refusal = bytearray()
 
         def count() -> None:
             """Hand on what the request cost, once, if the answer has told it."""
@@ -396,11 +426,14 @@ class ModelForwarder:
                         continue
                     if answer.status_code < 400:
                         reader.feed(chunk)
+                    elif answer.status_code in _OVERFLOW_STATUSES and len(refusal) < _REFUSAL_READ_BYTES:
+                        refusal.extend(chunk[: _REFUSAL_READ_BYTES - len(refusal)])
                     await send({"type": "http.response.body", "body": chunk, "more_body": True})
                 # Counted before the last piece is sent: with that piece the
                 # request is over for dsh, the connection is reported as gone,
                 # and whatever this was still doing is given up.
                 count()
+                self._learn_window(route, bytes(refusal))
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
         except asyncio.CancelledError:
             # dsh hung up. It does so as soon as it has what it needs, which
@@ -417,6 +450,20 @@ class ModelForwarder:
             else:
                 # Cut off in the middle: dsh sees a broken stream and repeats the request.
                 await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+
+def _stated_window(refusal: bytes) -> tuple[int, str] | None:
+    """Return the window a model endpoint stated when it refused a request as too long, and what it said."""
+    # Imported here: the model client is not needed to forward a request.
+    from nekoclaw.runtime.model import says_context_overflow, window_from_overflow
+
+    if not refusal:
+        return None
+    said = " ".join(refusal.decode("utf-8", "replace").split())
+    if not says_context_overflow(said):
+        return None
+    stated = window_from_overflow(said)
+    return None if stated is None else (stated, said)
 
 
 async def _answer_locally(send: Send, model: str, streamed: bool) -> None:
