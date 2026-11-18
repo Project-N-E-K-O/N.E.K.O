@@ -728,8 +728,9 @@ class SpaceKeeper:
             try:
                 # Judged like a note of a task agent: the model read an
                 # account and checked nothing, so what it made takes effect
-                # when a file its words name exists where the commission
-                # worked, and waits to be seen again otherwise.
+                # when a file it gives, or one its words name, exists where
+                # the commission worked, and waits to be seen again
+                # otherwise.
                 entry, _created = await self._space.propose_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
@@ -739,6 +740,7 @@ class SpaceKeeper:
                     source=commission.id,
                     observer=commission.parent_id or commission.id,
                     bases=bases,
+                    evidence=item.get("evidence") or (),
                 )
             except (SpaceError, OSError) as exc:
                 logger.warning("an entry of a review could not be kept (%s)", type(exc).__name__)
@@ -750,7 +752,7 @@ class SpaceKeeper:
         await self._space.write_review(project, commission, text, entries=tuple(kept))
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
         if waiting:
-            # Made by the review and not in effect yet: in no index, and not among its entries.
+            # Made by the review and not in effect yet: pending entries, in no index and not among its entries.
             outcome["waiting"] = waiting
         if refiled:
             outcome["refiled"] = [f"{project}/{entry_id}" for entry_id in refiled]
@@ -871,7 +873,7 @@ class SpaceKeeper:
         outcome = await self._space.check_evidence()
         if any(outcome.values()):
             logger.info(
-                "task agent space: %d entries expired, %d are in effect again, %d notes that waited were dropped",
+                "task agent space: %d entries expired, %d are in effect again, %d pending ones were removed",
                 outcome.get("expired", 0),
                 outcome.get("restored", 0),
                 outcome.get("dropped", 0),
@@ -945,6 +947,7 @@ class SpaceKeeper:
             SPACE_ARCHIVES_PER_UPKEEP,
             SPACE_PROJECT_DESCRIPTION_MAX_TOKENS,
             SPACE_PROJECT_IDLE_SECONDS,
+            TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS,
         )
         idle = [
             project
@@ -1030,10 +1033,11 @@ class SpaceKeeper:
                     await self._space.propose_entry(
                         None,
                         title=str(item.get("title") or ""),
-                        content=str(item.get("content") or ""),
+                        content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                         kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
                         description=str(item.get("description") or ""),
                         bases=[project.workdir] if project.workdir else [],
+                        evidence=item.get("evidence") or (),
                     )
                 except (SpaceError, OSError) as exc:
                     logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)

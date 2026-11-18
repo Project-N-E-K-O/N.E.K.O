@@ -171,15 +171,18 @@ async def test_a_lesson_rests_on_the_files_of_the_folder_the_task_agent_works_in
     done = await wait_status(host, receipt.commission_id, "done")
 
     # The file is looked for where the task agent works, by the host; the task agent is told what counted.
-    (entry,) = await host.space.list_entries(DEFAULT_PROJECT)
+    entry, guess = await host.space.list_entries(DEFAULT_PROJECT)
     assert (entry.id, entry.confidence, entry.seen_by) == ("photo-dates", "observed", (done.id,))
     assert entry.evidence == ((Path(done.workdir) / "notes.txt").as_posix(),)
     assert (
         "lesson submitted. kept in project _daily as photo-dates.md. Not counted as evidence: missing.txt (not found)."
     ) in llm.requests[2][-1]["content"]
-    # A guess is kept apart, in no index, and the task agent is told so.
-    assert "lesson submitted. not in effect yet, and in no index: it was filed as inferred." in llm.requests[3][-1]["content"]
-    assert [held["title"] for held in (await host.space.read_notes(DEFAULT_PROJECT))["held"]] == ["Videos"]
+    # A guess is kept as a pending entry, in no index, and the task agent is told so.
+    assert (
+        "lesson submitted. not in effect yet: it was filed as inferred. It is kept as videos.md, marked pending "
+        "and in no index."
+    ) in llm.requests[3][-1]["content"]
+    assert (guess.id, guess.status) == ("videos", "pending")
     assert "Videos" not in await host.space.read_index(DEFAULT_PROJECT)
 
 
@@ -597,13 +600,13 @@ async def test_a_finished_commission_is_reviewed_in_the_background(hosts, tmp_pa
     root = _space_root(tmp_path)
     review = (root / "projects" / DEFAULT_PROJECT / "reviews" / f"{done.id}.md").read_text(encoding="utf-8")
     assert "It looked at the folder three times and sorted the photos." in review
-    # What the review made of it names no file of the folder the task agent worked in: it is no entry
-    # yet, and waits to be found by another commission.
-    assert not (root / "projects" / DEFAULT_PROJECT / "memory").exists()
+    # What the review made of it names no file of the folder the task agent worked in: it is not in
+    # effect yet, and waits as a pending entry to be found by another commission.
+    assert "Photo folders" not in await host.space.read_index(DEFAULT_PROJECT)
     (event,) = [item for item in await host.ledger.events(done.id) if item.type == "review"]
     assert event.payload == {"status": "written", "project": DEFAULT_PROJECT, "entries": [], "waiting": 1}
-    (held,) = (await host.space.read_notes(DEFAULT_PROJECT))["held"]
-    assert (held["title"], held["confidence"], held["seen_by"]) == ("Photo folders", "inferred", [done.id])
+    (held,) = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (held.title, held.status, held.confidence, held.seen_by) == ("Photo folders", "pending", "inferred", (done.id,))
     # One call of the space's own, counted apart from the decision model's.
     assert [tier for tier, _ in decision_llm.space_calls] == ["review"]
     assert decision_llm.calls == []

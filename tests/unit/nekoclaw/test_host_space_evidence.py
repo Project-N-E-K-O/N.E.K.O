@@ -34,6 +34,7 @@ from nekoclaw.host.paths import DEFAULT_PROJECT, SpacePaths
 from nekoclaw.host.space import (
     ENTRY_ACTIVE,
     ENTRY_EXPIRED,
+    ENTRY_PENDING,
     NoteRemoved,
     SpaceError,
     TaskAgentSpace,
@@ -43,16 +44,18 @@ from nekoclaw.host.space import (
     paths_named_in,
 )
 
-HELD_INFERRED = (
-    "not in effect yet, and in no index: it was filed as inferred. It takes effect when another commission "
-    "files the same, or when you file it again as verified, or as observed with a file that exists. "
-    "Until then, do not report it as kept."
-)
-HELD_OBSERVED = (
-    "not in effect yet, and in no index: it was filed as observed, and no file given as evidence exists in "
-    "the working directory. It takes effect when another commission files the same, or when you file it "
-    "again as verified, or as observed with a file that exists. Until then, do not report it as kept."
-)
+NO_FILE = "it was filed as observed, and none of the files given as evidence was found"
+
+
+def _held(entry: str, why: str = "it was filed as inferred") -> str:
+    """What a task agent is told about a note that does not take effect: why, where it waits, what would change it."""
+    return (
+        f"not in effect yet: {why}. It is kept as {entry}.md, marked pending and in no index. It takes effect "
+        "when another commission files the same, or when you file it again under the same title as verified, "
+        "or as observed with a file that exists. Until then, do not report it as kept."
+    )
+
+
 REMOVED = "not kept: the user removed this note from the space, and it is not kept again"
 
 
@@ -148,7 +151,7 @@ def _index(root: Path, project: str | None = DEFAULT_PROJECT) -> str:
 
 def _notes(root: Path, project: str | None = DEFAULT_PROJECT) -> dict[str, Any]:
     path = (root if project is None else root / "projects" / project) / "notes.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"held": [], "removed": []}
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"removed": []}
 
 
 def _head(path: Path) -> dict[str, str]:
@@ -162,6 +165,79 @@ def _head(path: Path) -> dict[str, str]:
         key, _colon, value = line.partition(": ")
         head[key.rstrip(":")] = value
     return head
+
+
+def _pending(root: Path, project: str | None = DEFAULT_PROJECT) -> list[dict[str, Any]]:
+    """Return the pending entries of a layer, by the name of their file: what each says of itself, and its text."""
+    directory = _memory(root, project)
+    found: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.md")) if directory.exists() else []:
+        head = _head(path)
+        if head.get("status") != "pending":
+            continue
+        found.append(
+            {
+                "id": path.stem,
+                "title": head["name"],
+                "content": path.read_text(encoding="utf-8").split("---" + chr(10), 2)[2].strip(),
+                "confidence": head.get("confidence", ""),
+                "evidence": json.loads(head.get("evidence", "[]")),
+                "seen_by": [item for item in head.get("seen_by", "").split(", ") if item],
+                "sources": [item for item in head.get("sources", "").split(", ") if item],
+                "first": head["created"],
+                "last": head["updated"],
+                "texts": head["texts"].split(", "),
+            }
+        )
+    return found
+
+
+def _in_effect(root: Path, project: str | None = DEFAULT_PROJECT) -> list[str]:
+    """Return the names of the entries of a layer that are not pending."""
+    directory = _memory(root, project)
+    if not directory.exists():
+        return []
+    return sorted(path.stem for path in directory.glob("*.md") if _head(path).get("status") != "pending")
+
+
+def _pending_file(
+    root: Path,
+    title: str,
+    content: str,
+    by: list[str],
+    *,
+    project: str = DEFAULT_PROJECT,
+    name: str | None = None,
+    created: str = "2027-01-15",
+    updated: str | None = None,
+) -> Path:
+    """Write a pending entry as the host writes one: for a state that is found, and was not made by filing."""
+    directory = _memory(root, project)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name or title.lower().replace(' ', '-')}.md"
+    head = [
+        f"name: {title}",
+        f"description: {content}",
+        "type: lesson",
+        f"created: {created}",
+        f"updated: {updated or created}",
+        f"sources: {', '.join(by)}",
+        f"texts: {_digest(content)}",
+        "confidence: inferred",
+        f"seen: {len(by)}",
+        f"seen_by: {', '.join(by)}",
+        "status: pending",
+        "notice: Not confirmed.",
+    ]
+    path.write_text(chr(10).join(["---", *head, "---", "", content, ""]), encoding="utf-8", newline=chr(10))
+    return path
+
+
+def _removed(root: Path, records: list[dict[str, Any]], project: str = DEFAULT_PROJECT) -> None:
+    """Write what the user removed from a project, as it may be found."""
+    path = root / "projects" / project / "notes.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "removed": records}), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -198,21 +274,31 @@ async def test_a_verified_note_needs_no_file(space, root, workdir):
     assert head["confidence"] == "verified" and "evidence" not in head
 
 
-async def test_an_inferred_note_waits_and_is_in_no_index(space, root, workdir, events):
+async def test_an_inferred_note_waits_as_a_pending_entry_in_no_index(space, root, workdir, events):
+    from config.prompts import prompts_nekoclaw_space as texts
+
     reply = await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
 
-    assert reply == HELD_INFERRED
-    assert not _memory(root).exists() and _index(root) == ""
-    (held,) = _notes(root)["held"]
-    assert held["title"] == "Camera drive" and held["content"] == "It is probably E: here."
-    assert held["mark"] == _digest("It is probably E: here.")
+    assert reply == _held("camera-drive")
+    assert _in_effect(root) == [] and _index(root) == ""
+    (held,) = _pending(root)
+    assert (held["id"], held["title"], held["content"]) == ("camera-drive", "Camera drive", "It is probably E: here.")
+    assert held["texts"] == [_digest("It is probably E: here.")]
     assert (held["confidence"], held["seen_by"], held["sources"], held["evidence"]) == ("inferred", ["c1"], ["c1"], [])
     assert held["first"] == held["last"] == "2027-01-15"
-    # On the commission's record as what it is: not kept, and why.
+    # The file says what it is and how it is confirmed, for a task agent that comes upon it.
+    head = _head(_memory(root) / "camera-drive.md")
+    assert head["status"] == "pending" and head["notice"] == texts.SPACE_ENTRY_PENDING_NOTICE
+    assert "submit it again with note_lesson under this exact title as verified" in head["notice"]
+    # The console lists it as what it is.
+    (entry,) = await space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status, entry.to_json()["status"]) == ("camera-drive", ENTRY_PENDING, "pending")
+    # On the commission's record as what it is: not kept, why, and where it waits.
     (_commission_id, kind, payload) = events.rows[-1]
     assert kind == "lesson" and payload["kept"] is False and payload["reason"] == "held"
+    assert payload["entry"] == "camera-drive"
     # And nothing of it is handed to the next task agent.
-    assert await space.brief(None) == ""
+    assert await space.brief(None) == "" and await space.brief(DEFAULT_PROJECT) == ""
 
 
 async def test_a_note_that_does_not_say_how_it_is_known_is_taken_for_inferred(space, root, workdir):
@@ -221,8 +307,8 @@ async def test_a_note_that_does_not_say_how_it_is_known_is_taken_for_inferred(sp
         _commission(workdir, id="c2"), _lesson("Backups", "Copied first.", confidence="certainly")
     )
 
-    assert reply == other == HELD_INFERRED
-    assert [held["confidence"] for held in _notes(root)["held"]] == ["inferred", "inferred"]
+    assert (reply, other) == (_held("camera-drive"), _held("backups"))
+    assert [held["confidence"] for held in _pending(root)] == ["inferred", "inferred"]
 
 
 async def test_an_observed_note_takes_effect_only_with_a_file_that_exists(space, root, workdir):
@@ -238,10 +324,15 @@ async def test_an_observed_note_takes_effect_only_with_a_file_that_exists(space,
     )
 
     assert with_file == "kept in project _daily as entry-point.md"
-    assert without == HELD_OBSERVED
-    assert missing == HELD_OBSERVED + " Not counted as evidence: tests/conftest.py (not found)."
-    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["entry-point"]
-    assert [held["title"] for held in _notes(root)["held"]] == ["Settings", "Tests"]
+    assert without == _held("settings", NO_FILE)
+    assert missing == _held("tests", NO_FILE) + " Not counted as evidence: tests/conftest.py (not found)."
+    assert [(entry.id, entry.status) for entry in await space.list_entries(DEFAULT_PROJECT)] == [
+        ("entry-point", ENTRY_ACTIVE),
+        ("settings", ENTRY_PENDING),
+        ("tests", ENTRY_PENDING),
+    ]
+    assert [held["title"] for held in _pending(root)] == ["Settings", "Tests"]
+    assert "Settings" not in _index(root) and "Tests" not in _index(root)
 
 
 async def test_one_file_that_exists_is_enough_and_the_others_are_named(space, root, workdir):
@@ -638,15 +729,17 @@ async def test_a_note_that_waits_takes_effect_when_another_commission_files_the_
     clock.now += 86400
     second = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "it is probably e here"))
 
-    assert first == HELD_INFERRED
+    assert first == _held("camera-drive")
     assert second == "kept in project _daily as camera-drive.md"
+    # The file it waited in is the entry: it no longer says it is pending, and has its line.
     head = _head(_memory(root) / "camera-drive.md")
+    assert "status" not in head and "notice" not in head
     assert (head["seen"], head["seen_by"], head["sources"], head["confidence"]) == ("2", "c1, c2", "c1, c2", "inferred")
     # As it was filed first, once.
     text = (_memory(root) / "camera-drive.md").read_text(encoding="utf-8")
     assert text.rstrip().endswith("It is probably E: here.") and "## " not in text
-    assert _notes(root)["held"] == []
-    assert "(memory/camera-drive.md)" in _index(root)
+    assert _pending(root) == [] and _in_effect(root) == ["camera-drive"]
+    assert _index(root).count("(memory/camera-drive.md)") == 1
     payload = events.rows[-1][2]
     assert payload["kept"] is True and payload["created"] is True and payload["seen"] == 2
 
@@ -658,11 +751,11 @@ async def test_filing_it_again_oneself_is_not_seeing_it_a_second_time(space, roo
         _commission(workdir, id="c1-a", parent_id="c1"),
     ):
         reply = await space.submit(commission, _lesson("Camera drive", "It is probably E: here."))
-        assert reply == HELD_INFERRED
+        assert reply == _held("camera-drive")
 
-    (held,) = _notes(root)["held"]
+    (held,) = _pending(root)
     assert held["seen_by"] == ["c1"] and held["sources"] == ["c1", "c1-a"]
-    assert not _memory(root).exists()
+    assert _in_effect(root) == []
 
 
 async def test_as_many_commissions_as_are_asked_for_must_have_seen_it(space, root, workdir, monkeypatch):
@@ -672,7 +765,7 @@ async def test_as_many_commissions_as_are_asked_for_must_have_seen_it(space, roo
         for name in ("c1", "c2", "c3")
     ]
 
-    assert replies == [HELD_INFERRED, HELD_INFERRED, "kept in project _daily as camera-drive.md"]
+    assert replies == [_held("camera-drive"), _held("camera-drive"), "kept in project _daily as camera-drive.md"]
     head = _head(_memory(root) / "camera-drive.md")
     assert (head["seen"], head["seen_by"], head["sources"]) == ("3", "c1, c2, c3", "c1, c2, c3")
 
@@ -691,11 +784,14 @@ async def test_the_same_title_in_other_words_is_the_same_note(space, root, workd
     assert text.index("Long paths fail in the copy step.") < text.index("## 2027-01-16") < text.index("needs the long path prefix")
     head = _head(_memory(root) / "windows-paths.md")
     assert (head["name"], head["seen"], head["sources"]) == ("Windows paths", "2", "c1, c2")
-    assert _notes(root)["held"] == []
+    assert _pending(root) == []
 
 
 async def test_what_went_in_stays_as_it_should_be_when_the_next_step_of_taking_a_note_fails(space, root, workdir, monkeypatch, clock):
-    await space.submit(_commission(workdir), _lesson("Windows paths", "Long paths fail in the copy step."))
+    # An entry, and a guess of the same commission that waits under its title.
+    await space.submit(_commission(workdir), _lesson("Windows paths", "Long paths fail in the copy step.", "verified"))
+    guess = await space.submit(_commission(workdir), _lesson("Windows paths", "Short names may work."))
+    assert guess == _held("windows-paths-2") and [held["id"] for held in _pending(root)] == ["windows-paths-2"]
     clock.now += 86400
     filing = TaskAgentSpace._file_entry
     steps: list[str] = []
@@ -706,19 +802,21 @@ async def test_what_went_in_stays_as_it_should_be_when_the_next_step_of_taking_a
             raise PermissionError(13, "in use")
         return filing(self, project, **kwargs)
 
-    # Another commission confirms it in other words: what waited goes in, and then its own text cannot be written.
+    # Another commission files under that title: what waited goes into the entry, and then its own text cannot be written.
     monkeypatch.setattr(TaskAgentSpace, "_file_entry", second_fails)
     other = _commission(workdir, id="c2")
     failed = await space.submit(other, _lesson("windows paths", "The copy step needs the long path prefix."))
 
     assert failed == "not kept: the files of the task agent space could not be written"
-    assert steps == ["Long paths fail in the copy step.", "The copy step needs the long path prefix."]
-    # What went in is an entry that both have seen, and waits no longer: the first step left nothing half done.
+    assert steps == ["Short names may work.", "The copy step needs the long path prefix."]
+    # What went in is in the entry, which both have seen, and waits no longer: the first step left nothing half done.
     head = _head(_memory(root) / "windows-paths.md")
     assert (head["seen"], head["seen_by"], head["sources"]) == ("2", "c1, c2", "c1")
-    assert _notes(root)["held"] == [] and "(memory/windows-paths.md)" in _index(root)
+    assert "Short names may work." in (_memory(root) / "windows-paths.md").read_text(encoding="utf-8")
+    assert _pending(root) == [] and _in_effect(root) == ["windows-paths"]
+    assert _index(root).count("(memory/windows-paths.md)") == 1
     # Nothing of the second commission's was kept, so it used no place.
-    assert space._added_by == {"c1": 1} and space._adding == {}
+    assert space._added_by == {"c1": 2} and space._adding == {}
 
     monkeypatch.setattr(TaskAgentSpace, "_file_entry", filing)
     again = await space.submit(other, _lesson("windows paths", "The copy step needs the long path prefix."))
@@ -726,10 +824,10 @@ async def test_what_went_in_stays_as_it_should_be_when_the_next_step_of_taking_a
     assert again == "added to windows-paths.md in project _daily"
     head = _head(_memory(root) / "windows-paths.md")
     assert (head["seen"], head["seen_by"], head["sources"]) == ("2", "c1, c2", "c1, c2")
-    assert space._added_by == {"c1": 1, "c2": 1}
+    assert space._added_by == {"c1": 2, "c2": 1}
 
 
-async def test_a_note_that_waited_goes_in_with_everyone_who_has_seen_it_in_one_write(space, root, workdir, monkeypatch):
+async def test_a_note_that_waited_takes_effect_with_everyone_who_has_seen_it_in_one_write(space, root, workdir, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_SEEN_TO_TAKE_EFFECT", 3)
     for name in ("c1", "c2"):
         await space.submit(_commission(workdir, id=name), _lesson("Camera drive", "It is probably E: here."))
@@ -745,8 +843,10 @@ async def test_a_note_that_waited_goes_in_with_everyone_who_has_seen_it_in_one_w
     reply = await space.submit(_commission(workdir, id="c3"), _lesson("camera drive", "it is probably e here"))
 
     assert reply == "kept in project _daily as camera-drive.md"
-    # As it was filed first, once: no step after which the entry would say less than is known of it.
-    assert steps == ["It is probably E: here."]
+    # One write: no step after which the entry would say less than is known of it. And it says what was filed first.
+    assert steps == ["it is probably e here"]
+    said = (_memory(root) / "camera-drive.md").read_text(encoding="utf-8")
+    assert said.rstrip().endswith("It is probably E: here.") and "it is probably e here" not in said
     head = _head(_memory(root) / "camera-drive.md")
     assert (head["name"], head["seen"], head["seen_by"], head["sources"]) == ("Camera drive", "3", "c1, c2, c3", "c1, c2, c3")
 
@@ -758,10 +858,10 @@ async def test_a_title_that_is_only_similar_is_not_the_same_note(space, root, wo
     )
 
     # Alike enough to be one topic once they are entries; not enough for one to confirm the other.
-    assert first == second == HELD_INFERRED
-    assert [held["title"] for held in _notes(root)["held"]] == [
-        "pip install fails on Windows",
+    assert first == _held("pip-install-fails-on-windows") and second == _held("npm-install-fails-on-windows")
+    assert [held["title"] for held in _pending(root)] == [
         "npm install fails on Windows",
+        "pip install fails on Windows",
     ]
 
 
@@ -772,14 +872,15 @@ async def test_an_addition_to_an_entry_by_its_title_counts_the_commission(space,
     own = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none."))
     other = await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Scans have none either."))
 
-    # Its own guess about what it filed is not seen by anyone else; another commission's is the second sighting,
-    # and with it the guess that waited under the same title is confirmed too.
-    assert own == HELD_INFERRED
+    # Its own guess about what it filed is not seen by anyone else, and waits beside the entry; another
+    # commission's is the second sighting, and with it the guess that waited under the same title goes
+    # into the entry too: one title is one entry.
+    assert own == _held("photo-dates-2")
     assert other == "added to photo-dates.md in project _daily"
     text = (_memory(root) / "photo-dates.md").read_text(encoding="utf-8")
     assert text.index("Use the EXIF date.") < text.index("Videos may have none.") < text.index("Scans have none either.")
     assert _head(_memory(root) / "photo-dates.md")["seen"] == "2"
-    assert _notes(root)["held"] == []
+    assert _pending(root) == [] and [path.name for path in _memory(root).iterdir()] == ["photo-dates.md"]
 
 
 async def test_a_note_filed_again_with_a_file_that_exists_takes_effect(space, root, workdir):
@@ -790,11 +891,12 @@ async def test_a_note_filed_again_with_a_file_that_exists_takes_effect(space, ro
         _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"])
     )
 
-    assert first == HELD_OBSERVED + " Not counted as evidence: app.py (not found)."
+    assert first == _held("entry-point", NO_FILE) + " Not counted as evidence: app.py (not found)."
     assert again == "kept in project _daily as entry-point.md"
-    assert _notes(root)["held"] == []
+    assert _pending(root) == [] and "(memory/entry-point.md)" in _index(root)
     head = _head(_memory(root) / "entry-point.md")
     assert (head["seen"], head["seen_by"], head["confidence"]) == ("1", "c1", "observed")
+    assert "status" not in head and "notice" not in head
 
 
 async def test_what_was_said_of_a_note_that_waits_counts_with_what_is_said_later(space, root, workdir):
@@ -818,7 +920,7 @@ async def test_a_note_that_waits_uses_one_of_the_places_of_its_commission(space,
     second = await space.submit(commission, _lesson("Two", "The second guess."))
     third = await space.submit(commission, _lesson("Three", "A note that was checked.", "verified"))
 
-    assert first == second == HELD_INFERRED
+    assert (first, second) == (_held("one"), _held("two"))
     assert third.startswith("not kept: this commission has added 2 notes already")
     assert space._added_by == {"c1": 2}
 
@@ -826,16 +928,16 @@ async def test_a_note_that_waits_uses_one_of_the_places_of_its_commission(space,
 async def test_a_note_that_waits_uses_its_place_once_however_often_it_is_filed(space, root, workdir, events):
     commission = _commission(workdir)
     for _time in range(4):
-        assert await space.submit(commission, _lesson("Entry point", "The app starts in app.py.")) == HELD_INFERRED
+        assert await space.submit(commission, _lesson("Entry point", "The app starts in app.py.")) == _held("entry-point")
     # One place for the one note that waits, though it was filed four times; and the fourth was not turned down.
     assert space._added_by == {"c1": 1} and space._adding == {}
-    assert len(_notes(root)["held"]) == 1
+    assert len(_pending(root)) == 1
 
     # Filed once more with a file that exists, as it was told it could: it takes effect, and that is no second place.
     kept = await space.submit(commission, _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
 
     assert kept == "kept in project _daily as entry-point.md"
-    assert space._added_by == {"c1": 1} and _notes(root)["held"] == []
+    assert space._added_by == {"c1": 1} and _pending(root) == []
     # Two more of its own are still its to add.
     assert (await space.submit(commission, _lesson("Second", "Another note.", "verified"))).startswith("kept in ")
     assert (await space.submit(commission, _lesson("Third", "One more note.", "verified"))).startswith("kept in ")
@@ -859,10 +961,10 @@ async def test_a_note_of_its_own_that_waits_is_judged_again_though_the_commissio
     new = await space.submit(commission, _lesson("Guess 9", "Guess number 9."))
 
     assert checked == "kept in project _daily as guess-1.md"
-    assert again == by_agent == HELD_INFERRED
+    assert (again, by_agent) == (_held("guess-2"), _held("guess-0"))
     assert new.startswith(f"not kept: this commission has added {SPACE_LESSONS_PER_COMMISSION} notes already")
     assert space._added_by == {"c1": SPACE_LESSONS_PER_COMMISSION} and space._adding == {}
-    assert [held["title"] for held in _notes(root)["held"]] == ["Guess 0", "Guess 2"]
+    assert [held["title"] for held in _pending(root)] == ["Guess 0", "Guess 2"]
     assert (events.rows[-1][2]["kept"], events.rows[-1][2]["reason"]) == (False, "cap")
 
 
@@ -871,7 +973,7 @@ async def test_a_note_that_no_longer_waits_is_not_let_past_the_places_of_its_com
     commission = _commission(workdir)
     await space.submit(commission, _lesson("First", "The first note.", "verified"))
     # It looked like one of its own that waits when it was let through; by the time it is judged it is not.
-    monkeypatch.setattr(TaskAgentSpace, "_waits_of", lambda self, *args: True)
+    monkeypatch.setattr(TaskAgentSpace, "_own_pending", lambda self, *args: True)
 
     waiting = await space.submit(commission, _lesson("Guess", "A new guess."))
     kept = await space.submit(commission, _lesson("Checked", "A new note that was checked.", "verified"))
@@ -882,14 +984,14 @@ async def test_a_note_that_no_longer_waits_is_not_let_past_the_places_of_its_com
     # What is there already uses no place, as ever.
     assert there == "already in first.md in project _daily; nothing was added"
     assert space._added_by == {"c1": 1} and space._adding == {}
-    assert _notes(root)["held"] == [] and [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["first"]
+    assert _pending(root) == [] and [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["first"]
 
 
 async def test_only_a_note_of_its_own_that_waits_is_let_through_without_a_place(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
 
     def waits(observer: str, title: str, content: str, project: str | None = DEFAULT_PROJECT) -> bool:
-        return space._waits_of(project, observer, title, content)
+        return space._own_pending(project, observer, title, content)
 
     # The very text, however it is spaced, whatever it is called: told by its mark.
     assert waits("c1", "Camera drive", "It is probably E: here.")
@@ -899,15 +1001,18 @@ async def test_only_a_note_of_its_own_that_waits_is_let_through_without_a_place(
     assert not waits("c1", "Camera drive", "It is drive F.")
     assert not waits("c1", "Camera drive", "It is probably E: here.", None)
     assert not waits("c1", "Camera drive", "")
-    notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
-    notes.write_text("{ not json", encoding="utf-8")
+    assert not waits("c1", "Camera drive", "...")
+    # Nor one that took effect meanwhile, or is gone.
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here.", "verified"))
+    assert not waits("c1", "Camera drive", "It is probably E: here.")
+    (_memory(root) / "camera-drive.md").unlink()
     assert not waits("c1", "Camera drive", "It is probably E: here.")
 
 
 async def test_a_note_judged_without_a_place_gives_back_no_place_that_another_note_holds(space, root, workdir, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 2)
     commission = _commission(workdir)
-    assert await space.submit(commission, _lesson("Guess", "A guess.")) == HELD_INFERRED
+    assert await space.submit(commission, _lesson("Guess", "A guess.")) == _held("guess")
     taking = TaskAgentSpace._take_note
     # For each of two notes: set when it is being judged, and waited for before it goes on.
     gates = {text: (threading.Event(), threading.Event()) for text in ("A guess.", "A note that was checked.")}
@@ -938,7 +1043,7 @@ async def test_a_note_judged_without_a_place_gives_back_no_place_that_another_no
         assert space._adding == {"c1": 1}
         # The guess, which had no place, is done: the place the third holds is still held.
         gates["A guess."][1].set()
-        assert await again == HELD_INFERRED
+        assert await again == _held("guess")
         assert await asyncio.to_thread(gates["A note that was checked."][0].wait, 10)
         assert space._adding == {"c1": 1}
         # So a fourth is turned down at once, while the third is still being written.
@@ -979,7 +1084,7 @@ async def test_a_file_a_note_rested_on_while_it_waited_is_looked_for_again(space
     first = await space.submit(
         _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"])
     )
-    assert first == HELD_INFERRED and _notes(root)["held"][0]["evidence"] == [(workdir / "src" / "app.py").as_posix()]
+    assert first == _held("entry-point") and _pending(root)[0]["evidence"] == [(workdir / "src" / "app.py").as_posix()]
     (workdir / "src" / "app.py").unlink()
 
     # Seen now, and the file is named again: it is gone, and what was found once does not speak for the note any more.
@@ -987,11 +1092,11 @@ async def test_a_file_a_note_rested_on_while_it_waited_is_looked_for_again(space
         _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"])
     )
 
-    assert again == HELD_OBSERVED + " Not counted as evidence: src/app.py (not found)."
-    assert not _memory(root).exists()
+    assert again == _held("entry-point", NO_FILE) + " Not counted as evidence: src/app.py (not found)."
+    assert _in_effect(root) == []
     # Nor is it kept as what the entry rests on once another commission confirms the note.
     await space.submit(_commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py."))
-    assert "evidence" not in _head(_memory(root) / "entry-point.md")
+    assert _in_effect(root) == ["entry-point"] and "evidence" not in _head(_memory(root) / "entry-point.md")
 
 
 async def test_a_file_that_is_gone_is_not_what_an_entry_rests_on_when_what_waited_is_confirmed_in_other_words(space, root, workdir):
@@ -1028,20 +1133,26 @@ async def test_an_entry_the_user_wrote_is_given_nothing_but_the_text(space, root
 async def test_only_so_many_notes_wait_and_the_oldest_go(space, root, workdir, monkeypatch, clock):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 2)
     for number in range(3):
-        clock.now += 60
+        clock.now += 86400
         await space.submit(_commission(workdir, id=f"c{number}"), _lesson(f"Guess {number}", f"Guess number {number}."))
-    # Filed again, the one that waited longest of the two is the newest once more.
-    clock.now += 60
+    assert [held["title"] for held in _pending(root)] == ["Guess 1", "Guess 2"]
+    # Filed again on a later day, the one that waited longest of the two is the newest once more.
+    clock.now += 86400
     await space.submit(_commission(workdir, id="c1"), _lesson("Guess 1", "Guess number 1."))
-    clock.now += 60
+    clock.now += 86400
     await space.submit(_commission(workdir, id="c9"), _lesson("Guess 9", "Guess number 9."))
 
-    assert [held["title"] for held in _notes(root)["held"]] == ["Guess 1", "Guess 9"]
+    assert [(held["title"], held["last"]) for held in _pending(root)] == [("Guess 1", "2027-01-19"), ("Guess 9", "2027-01-20")]
+    # The ones that went are files no more, and are not remembered as removed: filed again, such a note waits anew.
+    assert sorted(path.name for path in _memory(root).iterdir()) == ["guess-1.md", "guess-9.md"]
+    assert _notes(root) == {"removed": []}
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 3)
+    assert await space.submit(_commission(workdir, id="c0"), _lesson("Guess 0", "Guess number 0.")) == _held("guess-0")
 
 
 async def test_the_note_that_is_filed_is_never_the_one_that_goes_for_being_one_too_many(space, root, workdir, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 3)
-    # All within one tick of the clock: none has waited longer than another.
+    # All on one day: none has waited longer than another, but for when its file was written.
     for number in range(3):
         await space.submit(_commission(workdir, id=f"c{number}"), _lesson(f"Guess {number}", f"Guess number {number}."))
     # Fewer may wait from now on, and the first of them is filed once more.
@@ -1049,7 +1160,7 @@ async def test_the_note_that_is_filed_is_never_the_one_that_goes_for_being_one_t
 
     await space.submit(_commission(workdir, id="c0"), _lesson("Guess 0", "Guess number 0."))
 
-    assert [held["title"] for held in _notes(root)["held"]] == ["Guess 0", "Guess 2"]
+    assert [held["title"] for held in _pending(root)] == ["Guess 0", "Guess 2"]
 
 
 async def test_a_guess_does_not_take_effect_for_naming_a_file(space, root, workdir):
@@ -1058,9 +1169,9 @@ async def test_a_guess_does_not_take_effect_for_naming_a_file(space, root, workd
     )
 
     # That the file is there says nothing for what was only concluded.
-    assert reply == HELD_INFERRED
-    (held,) = _notes(root)["held"]
-    assert held["evidence"] == [(workdir / "src" / "app.py").as_posix()] and not _memory(root).exists()
+    assert reply == _held("entry-point")
+    (held,) = _pending(root)
+    assert held["evidence"] == [(workdir / "src" / "app.py").as_posix()] and _in_effect(root) == []
 
 
 async def test_a_note_for_every_project_is_judged_and_waits_with_the_space(space, root, workdir):
@@ -1068,8 +1179,8 @@ async def test_a_note_for_every_project_is_judged_and_waits_with_the_space(space
         _commission(workdir, project="blog"), _lesson("Use uv", "Python is run through uv.", scope="global")
     )
 
-    assert reply == HELD_INFERRED
-    assert [held["title"] for held in _notes(root, None)["held"]] == ["Use uv"]
+    assert reply == _held("use-uv")
+    assert [held["title"] for held in _pending(root, None)] == ["Use uv"]
     assert not (root / "projects").exists()
 
 
@@ -1091,7 +1202,7 @@ async def test_the_files_of_the_project_count_as_well_as_those_of_the_commission
 # ---------------------------------------------------------------------------
 
 
-async def test_notes_that_cannot_be_read_do_not_keep_a_note_that_takes_effect_from_being_kept(space, root, workdir):
+async def test_what_was_removed_that_cannot_be_read_keeps_no_note_from_being_kept(space, root, workdir):
     notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
     notes.parent.mkdir(parents=True)
     notes.write_text("{ not json", encoding="utf-8")
@@ -1099,48 +1210,55 @@ async def test_notes_that_cannot_be_read_do_not_keep_a_note_that_takes_effect_fr
     kept = await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
     waiting = await space.submit(_commission(workdir), _lesson("Backups", "Probably copied first."))
 
+    # What the user removed cannot be told, so nothing is taken for removed: one note is an entry, the
+    # other waits in a file of its own. The record is left as it was.
     assert kept == "kept in project _daily as camera-drive.md"
-    # One that would have to wait has nowhere to wait: said as it is, and the file is left as it was.
-    assert waiting == "not kept: the files of the task agent space could not be written"
+    assert waiting == _held("backups")
     assert notes.read_text(encoding="utf-8") == "{ not json"
-    # It used no place: nothing of it was kept.
-    assert space._added_by == {"c1": 1}
+    assert space._added_by == {"c1": 2}
 
 
-@pytest.mark.parametrize("text", ['["a list"]', '{"held": "no list"}', '{"held": [], "removed": 3}'])
-async def test_notes_that_are_not_what_the_host_writes_are_left_as_they_are(space, root, workdir, text):
+@pytest.mark.parametrize("text", ['["a list"]', '{"removed": "no list"}', '{"version": 1, "removed": 3}', "{ not json"])
+async def test_a_record_of_what_was_removed_that_is_not_what_the_host_writes_is_left_as_it_is(space, root, workdir, text):
     notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
     notes.parent.mkdir(parents=True)
     notes.write_text(text, encoding="utf-8")
+    await space.submit(_commission(workdir), _lesson("Backups", "Copied first.", "verified"))
 
-    reply = await space.submit(_commission(workdir), _lesson("Backups", "Probably copied first."))
+    # Removing still removes; that it was removed cannot be put on record, and the file is not written over.
+    assert await space.delete_entry("backups", DEFAULT_PROJECT)
 
-    assert reply == "not kept: the files of the task agent space could not be written"
     assert notes.read_text(encoding="utf-8") == text
-    assert await space.read_notes(DEFAULT_PROJECT) == {"held": [], "removed": []}
+    assert await space.read_notes(DEFAULT_PROJECT) == {"removed": []}
 
 
-async def test_what_else_the_user_put_into_the_notes_stays(space, root, workdir):
+async def test_what_else_is_in_the_record_of_what_was_removed_stays(space, root, workdir):
     notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
     notes.parent.mkdir(parents=True)
-    notes.write_text('{"comment": "mine", "held": ["broken", {"no": "mark"}], "removed": []}', encoding="utf-8")
+    # A line of the user's, and a list an earlier build of this kept there.
+    notes.write_text('{"comment": "mine", "held": [{"title": "Old"}], "removed": []}', encoding="utf-8")
+    await space.submit(_commission(workdir), _lesson("Backups", "Copied first.", "verified"))
 
-    await space.submit(_commission(workdir), _lesson("Backups", "Probably copied first."))
+    await space.delete_entry("backups", DEFAULT_PROJECT)
 
     data = json.loads(notes.read_text(encoding="utf-8"))
-    assert data["comment"] == "mine" and [held["title"] for held in data["held"]] == ["Backups"]
+    assert data["comment"] == "mine" and data["held"] == [{"title": "Old"}]
+    assert [record["title"] for record in data["removed"]] == ["Backups"]
+    # That list is read by nothing any more: what it names is no note that waits.
+    assert _pending(root) == [] and await space.read_notes(DEFAULT_PROJECT) == {"removed": data["removed"]}
 
 
-async def test_the_notes_that_are_not_entries_can_be_read_for_the_console(space, root, workdir):
+async def test_what_was_removed_can_be_read_for_the_console(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Backups", "Probably copied first."))
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
     await space.delete_entry("camera-drive", DEFAULT_PROJECT)
 
     notes = await space.read_notes(DEFAULT_PROJECT)
 
-    assert [held["title"] for held in notes["held"]] == ["Backups"]
-    assert notes["removed"] == [{"marks": [_digest("It is E: here.")], "title": "Camera drive", "at": "2027-01-15"}]
-    assert await space.read_notes(None) == {"held": [], "removed": []}
+    assert notes == {"removed": [{"marks": [_digest("It is E: here.")], "title": "Camera drive", "at": "2027-01-15"}]}
+    assert await space.read_notes(None) == {"removed": []}
+    # What waits is among the entries, as what it is.
+    assert [(entry.id, entry.status) for entry in await space.list_entries(DEFAULT_PROJECT)] == [("backups", ENTRY_PENDING)]
 
 
 # ---------------------------------------------------------------------------
@@ -1246,7 +1364,7 @@ async def test_a_note_that_says_nothing_is_not_kept_and_does_not_wait(space, roo
 
     # Marks of a sentence and nothing between them: every such text would be the same text as every other.
     assert reply == guess == "not kept: an entry needs a title and a text"
-    assert not _memory(root).exists() and _notes(root) == {"held": [], "removed": []}
+    assert not _memory(root).exists() and _notes(root) == {"removed": []}
     assert [row[2]["reason"] for row in events.rows] == ["refused", "refused"]
     # It used no place of its commission.
     assert space._added_by == {} and space._adding == {}
@@ -1283,28 +1401,31 @@ async def test_an_entry_the_user_wrote_and_removed_is_remembered_by_its_text_and
     assert await space.submit(_commission(workdir), _lesson("Framework", "It uses Flask.", "verified")) == REMOVED
 
 
-async def test_removing_an_entry_takes_what_waits_under_its_title_off_the_list(space, root, workdir):
+async def test_removing_an_entry_removes_what_waits_under_its_title(space, root, workdir):
     # A guess waits under a title; the user has an entry of that title with another text, and removes it.
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
     await space.submit(_commission(workdir), _lesson("Backups", "They may be on the NAS."))
-    await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is F: on this machine.")
+    entry, _created = await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is F: on this machine.")
+    # Filed from the console, it is an entry of its own: nothing is added to a guess.
+    assert entry.id == "camera-drive-2" and [held["id"] for held in _pending(root)] == ["backups", "camera-drive"]
 
-    assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+    assert await space.delete_entry("camera-drive-2", DEFAULT_PROJECT)
 
     # The guess under that title waits no longer; the other one does.
-    assert [held["title"] for held in _notes(root)["held"]] == ["Backups"]
+    assert [held["title"] for held in _pending(root)] == ["Backups"]
+    assert not (_memory(root) / "camera-drive.md").exists()
     # Its text, filed under another title by another commission, is a guess of that commission alone: the
     # one that waited under the removed title does not come back as an entry of that title.
     reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo location", "It is probably E: here."))
-    assert reply == HELD_INFERRED
-    assert await space.list_entries(DEFAULT_PROJECT) == [] and "Camera drive" not in _index(root)
-    assert [(held["title"], held["seen_by"]) for held in _notes(root)["held"]] == [
+    assert reply == _held("photo-location")
+    assert _in_effect(root) == [] and "Camera drive" not in _index(root)
+    assert [(held["title"], held["seen_by"]) for held in _pending(root)] == [
         ("Backups", ["c1"]),
         ("Photo location", ["c2"]),
     ]
 
 
-async def test_removing_an_entry_takes_what_waits_with_its_text_off_the_list_whatever_it_is_called(space, root, workdir):
+async def test_removing_an_entry_removes_what_waits_with_its_text_whatever_it_is_called(space, root, workdir):
     # A guess waits under one title; the user has the same text in an entry of another title, and removes it.
     await space.submit(_commission(workdir), _lesson("Photo location", "It is probably E: here."))
     await space.submit(_commission(workdir), _lesson("Backups", "They may be on the NAS."))
@@ -1312,56 +1433,29 @@ async def test_removing_an_entry_takes_what_waits_with_its_text_off_the_list_wha
 
     assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
 
-    assert [held["title"] for held in _notes(root)["held"]] == ["Backups"]
-
-
-def _held_and_removed(root: Path, held: list[dict[str, Any]], removed: list[dict[str, Any]]) -> None:
-    """Write the notes of the daily project as they may be found: what waits, and what was removed."""
-    path = root / "projects" / DEFAULT_PROJECT / "notes.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"version": 1, "held": held, "removed": removed}), encoding="utf-8")
-
-
-def _waits(title: str, content: str, by: str) -> dict[str, Any]:
-    return {
-        "mark": _digest(content),
-        "title": title,
-        "description": "",
-        "type": "lesson",
-        "content": content,
-        "confidence": "inferred",
-        "evidence": [],
-        "seen_by": [by],
-        "sources": [by],
-        "first": "2027-01-15",
-        "last": "2027-01-15",
-        "at": 1_800_000_000.0,
-    }
+    assert [held["title"] for held in _pending(root)] == ["Backups"]
+    assert sorted(path.name for path in _memory(root).iterdir()) == ["backups.md"]
 
 
 async def test_a_note_that_waits_under_a_title_the_user_removed_does_not_become_an_entry_of_it(space, root, workdir):
     # As it may be found: the note waits, and its title was removed (with another text) without it going.
-    _held_and_removed(
-        root,
-        [_waits("Camera drive", "It is probably E: here.", "c1")],
-        [{"marks": [_digest("It is F: on this machine.")], "title": "Camera drive", "at": "2027-01-15"}],
-    )
+    waiting = _pending_file(root, "Camera drive", "It is probably E: here.", ["c1"])
+    _removed(root, [{"marks": [_digest("It is F: on this machine.")], "title": "Camera drive", "at": "2027-01-15"}])
 
     # Its text is filed under another title by another commission: seen twice, it would take effect, and
-    # go in as it was first filed, under the title that was removed.
+    # be an entry under the title that was removed.
     reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo location", "It is probably E: here."))
 
-    assert reply == HELD_INFERRED
-    assert not _memory(root).exists() and _index(root) == ""
-    assert [(held["title"], held["seen_by"]) for held in _notes(root)["held"]] == [("Photo location", ["c2"])]
+    assert reply == _held("photo-location")
+    assert _in_effect(root) == [] and _index(root) == "" and not waiting.exists()
+    assert [(held["title"], held["seen_by"]) for held in _pending(root)] == [("Photo location", ["c2"])]
 
 
-async def test_a_note_that_waits_with_a_text_the_user_removed_does_not_go_in_with_a_note_of_its_title(space, root, workdir):
-    _held_and_removed(
-        root,
-        [_waits("Camera drive", "It is probably E: here.", "c1"), _waits("Camera drive", "It may also be G:.", "c1")],
-        [{"marks": [_digest("It is probably E: here.")], "title": "Old camera notes", "at": "2027-01-15"}],
-    )
+async def test_a_note_that_waits_with_a_text_the_user_removed_does_not_take_effect_with_a_note_of_its_title(space, root, workdir):
+    # Two wait under one title, as files that were put there by hand may: one of them with a text the user removed.
+    removed = _pending_file(root, "Camera drive", "It is probably E: here.", ["c1"], name="camera-drive-old")
+    _pending_file(root, "Camera drive", "It may also be G:.", ["c1"])
+    _removed(root, [{"marks": [_digest("It is probably E: here.")], "title": "Old camera notes", "at": "2027-01-15"}])
 
     # Another commission files under that title: what waits under it is confirmed, but for the removed text.
     reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is F: on this machine.", "verified"))
@@ -1370,19 +1464,19 @@ async def test_a_note_that_waits_with_a_text_the_user_removed_does_not_go_in_wit
     said = (_memory(root) / "camera-drive.md").read_text(encoding="utf-8")
     assert "It may also be G:." in said and "It is F: on this machine." in said
     assert "It is probably E: here." not in said
-    assert _notes(root)["held"] == []
+    assert _pending(root) == [] and not removed.exists()
 
 
-async def test_removing_an_entry_takes_what_waits_of_it_off_the_list(space, root, workdir):
+async def test_removing_an_entry_removes_what_waits_of_it(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
-    # Put on the list by hand: the same text, waiting.
-    notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
-    held = {"mark": _digest("It is E: here."), "title": "Camera drive", "content": "It is E: here."}
-    notes.write_text(json.dumps({"held": [held, {"mark": "0" * 12, "title": "Other"}], "removed": []}), encoding="utf-8")
+    # Put there by hand: the same text, waiting; and another.
+    same = _pending_file(root, "Photo location", "It is E: here.", ["c9"])
+    other = _pending_file(root, "Other", "Something else.", ["c9"])
 
     await space.delete_entry("camera-drive", DEFAULT_PROJECT)
 
-    assert [item["title"] for item in _notes(root)["held"]] == ["Other"]
+    assert not same.exists() and other.exists()
+    assert [item["title"] for item in _pending(root)] == ["Other"]
 
 
 async def test_only_so_many_removals_are_remembered(space, root, workdir, monkeypatch):
@@ -1697,7 +1791,7 @@ async def test_an_expired_entry_that_kept_a_line_loses_it_though_its_files_canno
     index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
     index.write_text("- [Entry point](memory/entry-point.md) — The app starts in app.py." + chr(10), encoding="utf-8")
     # The disk its files are on is away from now on.
-    monkeypatch.setattr(module, "_gone", lambda evidence: None)
+    monkeypatch.setattr(module, "_gone", lambda evidence, *rest: None)
 
     assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
 
@@ -1711,7 +1805,7 @@ async def test_an_entry_in_effect_keeps_its_line_while_its_files_cannot_be_looke
     from nekoclaw.host import space as module
 
     await _filed_with_a_file(space, workdir)
-    monkeypatch.setattr(module, "_gone", lambda evidence: None)
+    monkeypatch.setattr(module, "_gone", lambda evidence, *rest: None)
     removing, unlisting = TaskAgentSpace._index_remove, TaskAgentSpace._unlist_expired
     removed: list[str] = []
     asked: list[str] = []
@@ -1743,7 +1837,7 @@ async def test_an_expired_entry_with_no_line_is_left_alone_while_its_files_canno
     (workdir / "src" / "app.py").unlink()
     (workdir / "README.md").unlink()
     await space.check_evidence()
-    monkeypatch.setattr(module, "_gone", lambda evidence: None)
+    monkeypatch.setattr(module, "_gone", lambda evidence, *rest: None)
     asked: list[str] = []
     monkeypatch.setattr(TaskAgentSpace, "_unlist_expired", lambda self, project, entry_id: asked.append(entry_id))
 
@@ -1874,15 +1968,19 @@ async def test_a_note_filed_into_an_entry_that_expired_brings_it_back(space, roo
     (workdir / "main.py").write_text("print('main')\n", encoding="utf-8")
 
     weak = await space.submit(_commission(workdir), _lesson("Entry point", "It may have moved."))
+    assert weak == _held("entry-point-2") and _head(_memory(root) / "entry-point.md")["status"] == "expired"
     again = await space.submit(
         _commission(workdir, id="c2"), _lesson("Entry point", "It is main.py now.", "observed", ["main.py"])
     )
 
-    # A guess of the commission that filed it does not bring it back; a note that takes effect does.
-    assert weak == HELD_INFERRED
+    # A guess of the commission that filed it does not bring it back; a note that takes effect does, and
+    # the guess, which another commission has now filed under the title of, goes into the entry with it.
     assert again == "added to entry-point.md in project _daily. It had expired and is in effect again."
     head = _head(_memory(root) / "entry-point.md")
     assert "status" not in head and "expired" not in head and head["seen"] == "2"
+    said = (_memory(root) / "entry-point.md").read_text(encoding="utf-8")
+    assert said.index("It may have moved.") < said.index("It is main.py now.")
+    assert _pending(root) == [] and _in_effect(root) == ["entry-point"]
     # It rests on what is there now: the files that are gone would have it expire at the next look.
     assert json.loads(head["evidence"]) == [(workdir / "main.py").as_posix()]
     assert "(memory/entry-point.md)" in _index(root)
@@ -1901,11 +1999,12 @@ async def test_the_same_text_filed_again_brings_an_expired_entry_back_only_when_
     )
     strong = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "verified"))
 
-    assert weak == HELD_OBSERVED + " Not counted as evidence: src/app.py (not found)."
+    assert weak == _held("entry-point-2", NO_FILE) + " Not counted as evidence: src/app.py (not found)."
     assert strong == "already in entry-point.md in project _daily; nothing was added. It had expired and is in effect again."
     head = _head(_memory(root) / "entry-point.md")
     assert "status" not in head and "evidence" not in head and head["confidence"] == "verified"
-    assert _notes(root)["held"] == []
+    # What waited beside it is the entry's own text: the two are one entry, and one file.
+    assert _pending(root) == [] and [path.name for path in _memory(root).iterdir()] == ["entry-point.md"]
     # A place for the entry when it was made and one for the note that waited; none for bringing back what was there.
     assert space._added_by == {"c1": 2}
 
@@ -1996,7 +2095,7 @@ async def test_only_so_many_entries_are_looked_at_in_one_round_and_the_next_goes
     assert rounds == [2, 2, 1, 0]
 
 
-async def test_notes_that_waited_too_long_are_dropped(space, root, workdir, clock):
+async def test_pending_entries_that_waited_too_long_are_removed(space, root, workdir, clock):
     from config.nekoclaw_settings import SPACE_HELD_KEPT_SECONDS
 
     await space.submit(_commission(workdir), _lesson("Old guess", "A guess from long ago."))
@@ -2006,12 +2105,18 @@ async def test_notes_that_waited_too_long_are_dropped(space, root, workdir, cloc
     clock.now += SPACE_HELD_KEPT_SECONDS - 60
     await space.submit(_commission(workdir, id="c2"), _lesson("New guess", "A guess of today."))
     assert (await space.check_evidence())["dropped"] == 0
-
+    # Counted by the day: on the day after its time is up it has not been filed for long enough.
     clock.now += 120
+    assert (await space.check_evidence())["dropped"] == 0
+
+    clock.now += 86400
 
     assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 2}
-    assert [held["title"] for held in _notes(root)["held"]] == ["New guess"]
-    assert _notes(root, None)["held"] == []
+    assert [held["title"] for held in _pending(root)] == ["New guess"]
+    assert _pending(root, None) == [] and list(_memory(root, None).iterdir()) == []
+    # Not remembered as removed: the same guess may be filed again, and waits anew.
+    assert _notes(root) == {"removed": []} and _notes(root, None) == {"removed": []}
+    assert await space.submit(_commission(workdir, id="c3"), _lesson("Old guess", "A guess from long ago.")) == _held("old-guess")
 
 
 # ---------------------------------------------------------------------------
@@ -2045,7 +2150,7 @@ async def test_what_a_model_made_that_names_no_file_waits(space, root, workdir):
         )
         assert entry is None and not created
 
-    (held,) = _notes(root)["held"]
+    (held,) = _pending(root)
     assert (held["title"], held["confidence"], held["seen_by"], held["sources"]) == ("Search results", "inferred", ["c1"], ["c1"])
     # Another commission's review finds the same: it takes effect.
     entry, created = await space.propose_entry(
@@ -2057,6 +2162,7 @@ async def test_what_a_model_made_that_names_no_file_waits(space, root, workdir):
         bases=[str(workdir)],
     )
     assert created and entry is not None and entry.seen == 2 and entry.sources == ("c1", "c2")
+    assert (entry.id, entry.status) == ("search-results", ENTRY_ACTIVE) and _pending(root) == []
     assert "The search returns nothing" in entry.content and "Long questions get no results" in entry.content
 
 
@@ -2105,10 +2211,12 @@ async def test_what_waits_goes_with_a_commission_to_its_project(space, root, wor
     await space.submit(_commission(workdir, id="c9"), _lesson("Another's guess", "A guess of c9."))
     await space.touch_project("Budget app")
 
-    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-a",))
+    # What waits is no entry yet, so none is told to have gone there.
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-a",)) == []
 
-    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["Own guess", "Its agent's guess"]
-    assert [held["title"] for held in _notes(root)["held"]] == ["Another's guess"]
+    assert [held["title"] for held in _pending(root, "Budget app")] == ["Its agent's guess", "Own guess"]
+    assert [held["title"] for held in _pending(root)] == ["Another's guess"]
+    assert "guess" not in _index(root, "Budget app")
     # Seen again there by another commission, it takes effect there.
     reply = await space.submit(_commission(workdir, id="c2", project="Budget app"), _lesson("Own guess", "A guess of c1."))
     assert reply == "kept in project Budget app as own-guess.md"
@@ -2118,7 +2226,7 @@ async def test_what_waits_is_judged_anew_in_the_project_it_goes_to(space, root, 
     await space.touch_project("Budget app", workdir=str(workdir))
     # The same guess, by a commission of the project and by one that belongs to none yet.
     in_project = _commission(workdir, id="c2", project="Budget app")
-    assert await space.submit(in_project, _lesson("Entry point", "The app probably starts in app.py.")) == HELD_INFERRED
+    assert await space.submit(in_project, _lesson("Entry point", "The app probably starts in app.py.")) == _held("entry-point")
     daily = _commission(workdir)
     await space.submit(daily, _lesson("Entry point", "The app probably starts in app.py.", "inferred", ["src/app.py"]))
     # One the user removed from the project, and one that is only its own.
@@ -2128,34 +2236,54 @@ async def test_what_waits_is_judged_anew_in_the_project_it_goes_to(space, root, 
     await space.submit(daily, _lesson("Backups", "Probably copied first."))
     clock.now += 86400
 
-    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["entry-point"]
 
     # Two commissions have seen the first by now: it takes effect there, with what both said of it.
     head = _head(_memory(root, "Budget app") / "entry-point.md")
-    assert (head["seen"], head["seen_by"], head["sources"]) == ("2", "c2, c1", "c2, c1")
+    assert "status" not in head and (head["seen"], head["seen_by"], head["sources"]) == ("2", "c2, c1", "c2, c1")
     assert json.loads(head["evidence"]) == [(workdir / "src" / "app.py").as_posix()]
-    # What the user removed there is not kept there, and waits nowhere any more; the third waits there.
-    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["Backups"]
-    assert _notes(root)["held"] == []
+    # What the user removed there is not kept there, and waits nowhere any more; the third waits there,
+    # since the day it was filed.
+    assert [(held["title"], held["first"], held["last"]) for held in _pending(root, "Budget app")] == [
+        ("Backups", "2027-01-15", "2027-01-15")
+    ]
+    assert _pending(root) == [] and list(_memory(root).iterdir()) == []
 
 
 async def test_no_more_wait_in_a_project_than_may_when_a_commission_brings_its_own(space, root, workdir, monkeypatch, clock):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 2)
     await space.touch_project("Budget app")
     for number in range(2):
-        clock.now += 60
+        clock.now += 86400
         await space.submit(
             _commission(workdir, id=f"p{number}", project="Budget app"), _lesson(f"There {number}", f"A guess there {number}.")
         )
-    clock.now += 60
+    clock.now += 86400
     await space.submit(_commission(workdir), _lesson("Brought", "A guess that is brought along."))
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
 
-    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["There 1", "Brought"]
+    assert [held["title"] for held in _pending(root, "Budget app")] == ["Brought", "There 1"]
 
 
-async def test_a_note_that_cannot_be_kept_where_its_commission_goes_stays_where_it_was(space, root, workdir):
+async def test_a_note_that_cannot_be_kept_where_its_commission_goes_stays_where_it_was(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
+    await space.touch_project("Budget app")
+    filing = TaskAgentSpace._file_entry
+
+    def unwritable(self: TaskAgentSpace, project: Any, **kwargs: Any) -> Any:
+        if project == "Budget app":
+            raise PermissionError(13, "in use")
+        return filing(self, project, **kwargs)
+
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", unwritable)
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == []
+
+    assert [held["title"] for held in _pending(root)] == ["Own guess"] and _pending(root, "Budget app") == []
+
+
+async def test_a_note_goes_with_its_commission_though_what_was_removed_there_cannot_be_read(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
     await space.touch_project("Budget app")
     notes = root / "projects" / "Budget app" / "notes.json"
@@ -2163,7 +2291,8 @@ async def test_a_note_that_cannot_be_kept_where_its_commission_goes_stays_where_
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
 
-    assert [held["title"] for held in _notes(root)["held"]] == ["Own guess"]
+    # Nothing can be taken for removed there, so it goes along; the record is left as it was.
+    assert [held["title"] for held in _pending(root, "Budget app")] == ["Own guess"] and _pending(root) == []
     assert notes.read_text(encoding="utf-8") == "{ not json"
 
 
@@ -2172,52 +2301,52 @@ async def test_a_note_that_goes_with_its_commission_has_waited_as_long_as_it_had
 
     filed_at = clock.now
     await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
-    (before,) = _notes(root)["held"]
+    (before,) = _pending(root)
     await space.touch_project("Budget app")
     # The commission runs for ten days more before it is found to belong to the project.
     clock.now += 10 * 86400
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
 
-    (held,) = _notes(root, "Budget app")["held"]
+    (held,) = _pending(root, "Budget app")
     # Brought along, not filed anew: it waits since the day it was filed.
-    assert (held["first"], held["last"], held["at"]) == (before["first"], before["last"], filed_at) == ("2027-01-15", "2027-01-15", filed_at)
-    # And is dropped when it has waited its time from then, not from the day it was brought along.
-    clock.now = filed_at + SPACE_HELD_KEPT_SECONDS + 60
+    assert (held["first"], held["last"]) == (before["first"], before["last"]) == ("2027-01-15", "2027-01-15")
+    # And is removed when it has waited its time from then, not from the day it was brought along.
+    clock.now = filed_at + SPACE_HELD_KEPT_SECONDS + 86400
     assert (await space.check_evidence())["dropped"] == 1
-    assert _notes(root, "Budget app")["held"] == []
+    assert _pending(root, "Budget app") == []
 
 
 async def test_a_note_that_is_brought_along_goes_first_when_it_waited_longest(space, root, workdir, monkeypatch, clock):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 2)
     await space.touch_project("Budget app")
-    # The oldest of all, in no project yet; then two that wait in the project.
+    # The oldest of all, in no project yet; then two that wait in the project, each a day later.
     await space.submit(_commission(workdir), _lesson("Brought", "A guess that is brought along."))
     for number in range(2):
-        clock.now += 60
+        clock.now += 86400
         await space.submit(
             _commission(workdir, id=f"p{number}", project="Budget app"), _lesson(f"There {number}", f"A guess there {number}.")
         )
-    clock.now += 60
+    clock.now += 86400
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
 
     # Being brought along did not make it the newest: the two that were filed after it stay.
-    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["There 0", "There 1"]
-    assert _notes(root)["held"] == []
+    assert [held["title"] for held in _pending(root, "Budget app")] == ["There 0", "There 1"]
+    assert _pending(root) == []
 
 
 async def test_everyone_a_note_came_from_goes_along_with_it(space, root, workdir, monkeypatch):
     # The commission and a task agent it started filed the same guess: one that has seen it, two it came from.
     await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
     await space.submit(_commission(workdir, id="c1-a", parent_id="c1"), _lesson("Own guess", "A guess of c1."))
-    (before,) = _notes(root)["held"]
+    (before,) = _pending(root)
     assert (before["seen_by"], before["sources"]) == (["c1"], ["c1", "c1-a"])
     await space.touch_project("Budget app")
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-a",))
 
-    (held,) = _notes(root, "Budget app")["held"]
+    (held,) = _pending(root, "Budget app")
     assert (held["seen_by"], held["sources"]) == (["c1"], ["c1", "c1-a"])
     # It takes effect there with both on record.
     await space.submit(_commission(workdir, id="c2", project="Budget app"), _lesson("Own guess", "A guess of c1."))
@@ -2228,21 +2357,14 @@ async def test_everyone_a_note_came_from_goes_along_with_it(space, root, workdir
 async def test_everyone_who_has_seen_a_note_goes_along_with_it(space, root, workdir, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.SPACE_SEEN_TO_TAKE_EFFECT", 3)
     await space.touch_project("Budget app")
-    # Seen by two already where it waits (as a list of notes that was put together by hand may have it).
-    notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
-    notes.parent.mkdir(parents=True)
-    waiting = {
-        "mark": _digest("A guess of two."), "title": "Shared guess", "content": "A guess of two.", "type": "lesson",
-        "confidence": "inferred", "seen_by": ["c1", "c1-b"], "sources": ["c1", "c1-b"], "first": "2027-01-01",
-        "last": "2027-01-02", "at": 1_799_000_000.0,
-    }
-    notes.write_text(json.dumps({"held": [waiting], "removed": []}), encoding="utf-8")
+    # Seen by two already where it waits (as a file that was put together by hand may have it).
+    _pending_file(root, "Shared guess", "A guess of two.", ["c1", "c1-b"], created="2027-01-01", updated="2027-01-02")
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-b",))
 
-    (held,) = _notes(root, "Budget app")["held"]
+    (held,) = _pending(root, "Budget app")
     assert (held["seen_by"], held["sources"]) == (["c1", "c1-b"], ["c1", "c1-b"])
-    assert (held["first"], held["last"], held["at"]) == ("2027-01-01", "2027-01-02", 1_799_000_000.0)
+    assert (held["first"], held["last"]) == ("2027-01-01", "2027-01-02")
     # A third commission sees it there: three have, and it takes effect.
     reply = await space.submit(_commission(workdir, id="c2", project="Budget app"), _lesson("Shared guess", "A guess of two."))
     assert reply == "kept in project Budget app as shared-guess.md"
@@ -2255,21 +2377,15 @@ async def test_all_who_have_seen_a_note_are_counted_where_it_is_brought_to(space
     await space.touch_project("Budget app")
     # One commission of the project has guessed it; two more have, where no project was known yet.
     await space.submit(_commission(workdir, id="p1", project="Budget app"), _lesson("Shared guess", "A guess of two."))
-    notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
-    notes.parent.mkdir(parents=True)
-    waiting = {
-        "mark": _digest("A guess of two."), "title": "Shared guess", "content": "A guess of two.", "type": "lesson",
-        "confidence": "inferred", "seen_by": ["c1", "c1-b"], "sources": ["c1", "c1-b"], "first": "2027-01-01",
-        "last": "2027-01-02", "at": 1_799_000_000.0,
-    }
-    notes.write_text(json.dumps({"held": [waiting], "removed": []}), encoding="utf-8")
+    _pending_file(root, "Shared guess", "A guess of two.", ["c1", "c1-b"], created="2027-01-01", updated="2027-01-02")
 
     await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-b",))
 
     # Three have seen it by now, which is as many as are asked for: it takes effect, with all of them on record.
     head = _head(_memory(root, "Budget app") / "shared-guess.md")
+    assert "status" not in head
     assert (head["seen"], head["seen_by"], head["sources"]) == ("3", "p1, c1, c1-b", "p1, c1, c1-b")
-    assert _notes(root, "Budget app")["held"] == [] and _notes(root)["held"] == []
+    assert _pending(root, "Budget app") == [] and _pending(root) == []
 
 
 async def test_an_entry_that_expired_goes_with_its_commission_and_gets_no_line(space, root, workdir):
@@ -2378,15 +2494,15 @@ async def test_a_file_that_became_a_link_out_of_the_folder_no_longer_speaks_for_
     if there:
         outside.write_text("secret\n", encoding="utf-8")
     first = await space.submit(_commission(workdir), _lesson("Readme", "It says what the app is.", "inferred", ["README.md"]))
-    assert first == HELD_INFERRED and _notes(root)["held"][0]["evidence"] == [(workdir / "README.md").as_posix()]
+    assert first == _held("readme") and _pending(root)[0]["evidence"] == [(workdir / "README.md").as_posix()]
     _linked(workdir / "README.md", outside)
 
     # Filed again as seen, with no file named: what it rested on leads out of the folder by now. Whether
     # anything is where it leads is not looked at, and makes no difference to what becomes of the note.
     again = await space.submit(_commission(workdir), _lesson("Readme", "It says what the app is.", "observed"))
 
-    assert again == HELD_OBSERVED
-    assert not _memory(root).exists()
+    assert again == _held("readme", NO_FILE)
+    assert _in_effect(root) == []
 
 
 async def test_an_entry_expires_when_the_file_it_rests_on_became_a_link_out_of_the_folder(space, root, workdir, tmp_path):
@@ -2462,9 +2578,9 @@ async def test_such_a_text_is_not_added_again_for_a_commission_that_has_no_place
 
     # A guess that waits, and the same text in an entry the user made in the console.
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here."))
-    await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is E: here.")
-    assert [held["seen_by"] for held in _notes(root)["held"]] == [["c1"]]
-    path = _memory(root) / "camera-drive.md"
+    entry, _created = await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is E: here.")
+    assert [(held["id"], held["seen_by"]) for held in _pending(root)] == [("camera-drive", ["c1"])]
+    path = _memory(root) / f"{entry.id}.md"
     _taken_out_after_it_was_seen(space, monkeypatch, path, "It is E: here.")
     note = _Note(
         title="Camera drive",
@@ -2480,11 +2596,12 @@ async def test_such_a_text_is_not_added_again_for_a_commission_that_has_no_place
     # Nothing was written: the entry is as the user saved it. What waited goes on waiting, since the
     # entry does not say it.
     assert "It is E: here." not in path.read_text(encoding="utf-8")
-    assert [held["seen_by"] for held in _notes(root)["held"]] == [["c1"]]
+    assert [(held["id"], held["seen_by"]) for held in _pending(root)] == [("camera-drive", ["c1"])]
     # With a place it is added, and uses the place; it waits no longer.
     taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note))
-    assert (taken.how, taken.charged) == ("added", True)
-    assert _notes(root)["held"] == []
+    assert (taken.how, taken.charged, taken.entry.id) == ("added", True, entry.id)
+    assert "It is E: here." in path.read_text(encoding="utf-8")
+    assert _pending(root) == []
 
 
 async def test_nor_is_it_added_again_to_an_entry_that_expired_without_a_place(space, root, workdir, monkeypatch):
@@ -2552,7 +2669,7 @@ async def test_what_nobody_is_named_for_is_no_second_sighting_of_a_note_that_wai
     entry, _created = await space.propose_entry(None, title="Camera drive", content="It is probably E: here.")
 
     assert entry is None
-    (held,) = _notes(root, None)["held"]
+    (held,) = _pending(root, None)
     assert held["seen_by"] == ["c1"]
     # A second commission still has it take effect.
     reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is probably E: here.", scope="global"))
@@ -2575,9 +2692,9 @@ async def test_an_entry_that_cannot_be_brought_back_after_all_keeps_no_line(spac
     real = module._gone
     looks: list[Any] = []
 
-    def then_unplugged(evidence: Any) -> Any:
+    def then_unplugged(evidence: Any, *rest: Any) -> Any:
         # There at the two looks before the entry is written, and not to be told when it is: the disk went.
-        looks.append(real(evidence))
+        looks.append(real(evidence, *rest))
         return None if len(looks) > 2 else looks[-1]
 
     monkeypatch.setattr(module, "_gone", then_unplugged)
@@ -2604,10 +2721,10 @@ async def test_what_takes_effect_where_it_is_brought_to_is_among_what_went_there
 
     moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
 
-    # The entry it had, and the one its guess became there. What still waits is no entry.
+    # The entry it had, and the one its guess became there. What still waits is not among them.
     assert moved == ["checked", "shared-guess"]
-    assert sorted(entry.id for entry in await space.list_entries("Budget app")) == ["checked", "shared-guess"]
-    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["Own guess"]
+    assert _in_effect(root, "Budget app") == ["checked", "shared-guess"]
+    assert [held["title"] for held in _pending(root, "Budget app")] == ["Own guess"]
 
 
 async def test_what_took_effect_there_and_has_no_line_yet_is_among_what_went_there_too(space, root, workdir, monkeypatch):
@@ -2629,7 +2746,7 @@ async def test_what_took_effect_there_and_has_no_line_yet_is_among_what_went_the
     # In its file there all the same, and no longer one that waits where it was.
     assert moved == ["shared-guess"]
     assert (_memory(root, "Budget app") / "shared-guess.md").is_file()
-    assert _notes(root)["held"] == [] and _notes(root, "Budget app")["held"] == []
+    assert _pending(root) == [] and _pending(root, "Budget app") == []
 
 
 async def test_a_note_that_waited_goes_in_as_what_it_was_said_to_be(space, root, workdir):
@@ -2825,9 +2942,9 @@ async def test_that_the_line_of_an_entry_that_did_not_come_back_cannot_be_taken_
     real = module._gone
     looks: list[Any] = []
 
-    def then_unplugged(evidence: Any) -> Any:
+    def then_unplugged(evidence: Any, *rest: Any) -> Any:
         # There when the entry is looked at, and not to be told when it is written: the disk went.
-        looks.append(real(evidence))
+        looks.append(real(evidence, *rest))
         return None if len(looks) > 1 else looks[-1]
 
     def held(self: TaskAgentSpace, *args: Any, **kwargs: Any) -> None:
@@ -2862,14 +2979,16 @@ async def test_a_note_whose_text_is_in_an_entry_still_confirms_what_waits_under_
     reply = await space.submit(_commission(workdir, id="c3"), _lesson("Camera drive", "The card shows up as a drive."))
 
     # Its own text is there already and uses no place. Another commission has now filed under the title of
-    # the guess, so the guess waits no longer: it is in the entry the note was found in.
+    # the guess, so the guess waits no longer: it is an entry, where it waited and under its own title.
     assert reply == "already in card-reader.md in project _daily; nothing was added"
-    assert _notes(root)["held"] == []
+    assert _pending(root) == [] and _in_effect(root) == ["camera-drive", "card-reader"]
+    guess = _head(_memory(root) / "camera-drive.md")
+    assert "status" not in guess and (guess["seen"], guess["seen_by"], guess["sources"]) == ("2", "c1, c3", "c1")
     said = (_memory(root) / "card-reader.md").read_text(encoding="utf-8").split("---" + chr(10), 2)[2]
-    assert "It is probably E: here." in said and said.count("The card shows up as a drive.") == 1
+    assert "It is probably E: here." not in said and said.count("The card shows up as a drive.") == 1
     head = _head(_memory(root) / "card-reader.md")
-    assert (head["seen"], head["seen_by"], head["sources"]) == ("3", "c2, c1, c3", "c2, c1, c3")
-    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["card-reader"]
+    assert (head["seen"], head["seen_by"], head["sources"]) == ("2", "c2, c3", "c2, c3")
+    assert _index(root).count("(memory/camera-drive.md)") == 1 and _index(root).count("(memory/card-reader.md)") == 1
     assert space._added_by == {"c1": 1, "c2": 1}
 
 
@@ -2880,4 +2999,4 @@ async def test_a_text_of_ones_own_that_is_in_an_entry_is_not_judged_again(space,
     reply = await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "inferred"))
 
     assert reply == "already in camera-drive.md in project _daily; nothing was added"
-    assert _notes(root)["held"] == [] and _head(_memory(root) / "camera-drive.md")["confidence"] == "verified"
+    assert _pending(root) == [] and _head(_memory(root) / "camera-drive.md")["confidence"] == "verified"

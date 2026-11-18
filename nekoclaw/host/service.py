@@ -167,7 +167,7 @@ class NekoClawHost:
         self.model_capabilities = ModelCapabilityStore(self.paths.model_capabilities_json)
         # What task agents keep for later commissions. The console reads and
         # edits it through this object.
-        self.space = TaskAgentSpace(self.paths.space, ledger=self.ledger)
+        self.space = TaskAgentSpace(self.paths.space, ledger=self.ledger, outside_readable=self._outside_readable)
         self.gateway = CapabilityGateway(
             registry=self.registry,
             runner=self.runner,
@@ -271,6 +271,14 @@ class NekoClawHost:
         # answer, and another commission may be waiting for its turn.
         if commission.status in ENDED_STATUSES or commission.status == "waiting_user":
             self.leases.release(commission.id)
+
+    async def _outside_readable(self) -> bool:
+        """Whether the user set reading outside the working directory to be allowed without asking.
+
+        Only then does the task agent space look at a file out there that
+        a note names as what it rests on.
+        """
+        return await self.permission_store.mode("outside_read") == "allow"
 
     async def _root_of(self, commission_id: str) -> str:
         """Return the commission a team is named after: the one no task agent started."""

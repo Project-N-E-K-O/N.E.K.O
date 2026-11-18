@@ -292,13 +292,14 @@ none of them is counted twice. One that filed it before so many others did
 could be counted again; the count itself is kept whole."""
 
 SPACE_HELD_MAX_NOTES = 30
-"""Most notes that are not in effect yet which are kept for one project, or
-for the space as a whole, while they wait to be seen again. With more, the
-ones that waited longest are dropped."""
+"""Most pending entries (notes that are not in effect yet) which are kept for
+one project, or for the space as a whole, while they wait to be seen again.
+With more, the ones filed longest ago are removed, file and all. They are
+not remembered as removed: the same note may be filed again."""
 
 SPACE_HELD_KEPT_SECONDS = 90 * 24 * 3600.0
-"""How long a note that is not in effect waits to be seen again before a
-round of tidying drops it."""
+"""How long a pending entry waits to be filed again before a round of tidying
+removes it, counted by the day it was last filed."""
 
 SPACE_REMOVED_MAX_RECORDS = 1000
 """Most entries the user removed that are remembered for one project, or for

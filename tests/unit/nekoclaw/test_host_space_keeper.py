@@ -2811,23 +2811,23 @@ async def test_an_entry_of_a_review_that_names_no_file_waits_until_another_revie
 
     first = await world.finished(workdir=str(folder))
 
-    # In no index and not an entry: the review says how many of what it made wait.
-    assert await world.space.list_entries(DEFAULT_PROJECT) == []
+    # In no index and not in effect, a pending entry: the review says how many of what it made wait.
+    (held,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (held.id, held.status, held.confidence, held.seen_by) == ("photo-dates", "pending", "inferred", (first.id,))
+    assert "Photo dates" not in await world.space.read_index(DEFAULT_PROJECT)
     assert await world.reviews(first.id) == [
         {"status": "written", "project": DEFAULT_PROJECT, "entries": [], "waiting": 1}
     ]
     assert (await world.space.read_review(first.id)).entries == ()
-    (held,) = (await world.space.read_notes(DEFAULT_PROJECT))["held"]
-    assert (held["title"], held["confidence"], held["seen_by"]) == ("Photo dates", "inferred", [first.id])
 
     second = await world.finished("sort the photos in Pictures", workdir=str(folder))
 
     (entry,) = await world.space.list_entries(DEFAULT_PROJECT)
-    assert (entry.id, entry.seen, entry.sources) == ("photo-dates", 2, (first.id, second.id))
+    assert (entry.id, entry.status, entry.seen, entry.sources) == ("photo-dates", "active", 2, (first.id, second.id))
     assert await world.reviews(second.id) == [
         {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
     ]
-    assert (await world.space.read_notes(DEFAULT_PROJECT))["held"] == []
+    assert "(memory/photo-dates.md)" in await world.space.read_index(DEFAULT_PROJECT)
 
 
 async def test_what_the_task_agent_filed_and_its_review_repeats_is_seen_once(world, tmp_path, judged):
@@ -2842,12 +2842,12 @@ async def test_what_the_task_agent_filed_and_its_review_repeats_is_seen_once(wor
 
     await world.end(commission.id)
 
-    # The review is of the same commission: it does not confirm what the task agent guessed.
-    assert await world.space.list_entries(DEFAULT_PROJECT) == []
-    assert [held["seen_by"] for held in (await world.space.read_notes(DEFAULT_PROJECT))["held"]] == [
-        [commission.id],
-        [commission.id],
-    ]
+    # The review is of the same commission: it does not confirm what the task agent guessed. What it
+    # says under that title waits in the same pending entry.
+    (held,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (held.id, held.status, held.seen, held.seen_by) == ("photo-dates", "pending", 1, (commission.id,))
+    said = (await world.space.read_entry("photo-dates", DEFAULT_PROJECT)).content
+    assert "EXIF dates are right." in said and "Use the EXIF date." in said
 
 
 async def test_an_entry_of_a_review_rests_on_a_file_of_the_project_too(world, tmp_path, judged):
@@ -2885,12 +2885,11 @@ async def test_an_entry_of_a_summary_for_the_archive_is_judged_like_one_of_a_rev
 
     await world.keeper.tidy(force=True)
 
-    # A file it names speaks for it; nobody is named as having seen it.
-    (entry,) = await world.space.list_entries()
-    assert (entry.id, entry.confidence, entry.seen_by) == ("date-formats", "observed", ())
+    # A file it names speaks for it; nobody is named as having seen it. The other one waits.
+    held, entry = await world.space.list_entries()
+    assert (entry.id, entry.status, entry.confidence, entry.seen_by) == ("date-formats", "active", "observed", ())
     assert entry.evidence == ((folder / "src" / "dates.py").as_posix(),)
-    (held,) = (await world.space.read_notes(None))["held"]
-    assert (held["title"], held["seen_by"]) == ("CSV on Windows", [])
+    assert (held.id, held.title, held.status, held.seen_by) == ("csv-on-windows", "CSV on Windows", "pending", ())
 
 
 async def test_a_summary_for_the_archive_that_repeats_a_guess_of_its_project_is_no_second_sighting(world, tmp_path, judged):
@@ -2917,9 +2916,8 @@ async def test_a_summary_for_the_archive_that_repeats_a_guess_of_its_project_is_
     await world.keeper.tidy(force=True)
 
     # Seen by one commission still: it goes on waiting.
-    assert await world.space.list_entries() == []
-    (held,) = (await world.space.read_notes(None))["held"]
-    assert (held["title"], held["seen_by"]) == ("CSV on Windows", ["c1"])
+    (held,) = await world.space.list_entries()
+    assert (held.title, held.status, held.seen_by) == ("CSV on Windows", "pending", ("c1",))
 
 
 async def test_tidying_has_entries_expire_whose_files_are_gone(world, tmp_path, judged):
