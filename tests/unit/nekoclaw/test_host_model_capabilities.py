@@ -433,6 +433,16 @@ async def test_the_user_is_to_be_told_of_a_models_smaller_window_once(path):
     assert "reminded" not in await store.describe_window(URL, "m")
     assert await store.claim_window_reminder(URL, "m") == 64_000
 
+    # They set it once more while they are being told: what is on its way is of a window
+    # they have looked at since, and is not put on record as told.
+    await store.set_context_window(URL, "m", 90_000)
+    await store.confirm_window_reminder(URL, "m", 64_000)
+    assert "reminded" not in await store.describe_window(URL, "m")
+    assert await store.note_context_window(URL, "m", 48_000) is True
+    assert await store.claim_window_reminder(URL, "m") == 48_000
+    await store.confirm_window_reminder(URL, "m", 48_000)
+    assert (await store.describe_window(URL, "m"))["reminded"] == 48_000
+
 
 async def test_the_user_sets_a_window_for_one_model_and_takes_it_back(path):
     store = ModelCapabilityStore(path)

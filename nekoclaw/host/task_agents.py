@@ -90,6 +90,7 @@ _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
 _SHUT_DOWN_REASON = "the host was shut down"
 _QUOTA_REASON = "the free daily quota of the agent model is used up"
+_STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -879,23 +880,38 @@ class TaskAgentManager:
             logger.warning("filing a commission under a project failed", exc_info=True)
             return commission
 
-    async def _launch(self, commission_id: str, *, prompt: str | None = None) -> bool:
+    async def _launch(
+        self, commission_id: str, *, prompt: str | None = None, still_wanted: Callable[[], bool] | None = None
+    ) -> bool:
         """Start a commission whose place is taken; a place it leaves unused goes to the queue."""
-        started = await self._start(commission_id, prompt=prompt)
+        started = await self._start(commission_id, prompt=prompt, still_wanted=still_wanted)
         if not started:
             await self._start_next()
         return started
 
-    async def _start(self, commission_id: str, *, prompt: str | None = None) -> bool:
+    async def _start(
+        self, commission_id: str, *, prompt: str | None = None, still_wanted: Callable[[], bool] | None = None
+    ) -> bool:
         """Open the session of a commission and give it its work. Returns whether it started.
 
         The caller has taken the commission's place with ``_take_place``. When
         this returns False the place is given back, at once or, for a session
         that has to be closed again, once it is closed.
+
+        ``still_wanted`` comes with a commission that was over and is taken
+        up again (``tell``). A stop of everything ends what is under way,
+        and such a commission is not until its status is written here: the
+        stop does not find it. So it is asked here, after everything this
+        waits for and before the commission is given its work. (It says no
+        as well when NekoClaw was switched off meanwhile.)
         """
         session = self._sessions.get(commission_id)
         if session is None:
             return False
+
+        def unwanted() -> bool:
+            return still_wanted is not None and not still_wanted()
+
         # The sentence this start was given is the user's from the outset:
         # a failure while it is set up keeps it too.
         session.carried = [prompt] if prompt is not None else []
@@ -996,6 +1012,13 @@ class TaskAgentManager:
             )
             runtime_name, runtime, fallback = await self._choose_runtime(commission, model, begun_in)
             session.runtime, session.runtime_name = runtime, runtime_name
+            if unwanted():
+                # Everything was stopped while this was being set up, and
+                # the stop left a commission that was over alone: it stays
+                # as it was. What it was to be told goes with the stop.
+                self._notes.pop(commission.id, None)
+                self._discard(commission.id)
+                return False
             moved = await self._ledger.transition(
                 commission.id,
                 "working",
@@ -1086,7 +1109,16 @@ class TaskAgentManager:
 
             async def stopped_meanwhile() -> bool:
                 current = await self._ledger.get(commission.id)
-                return self._sessions.get(commission.id) is not session or current is None or current.status != "working"
+                if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
+                    return True
+                if unwanted():
+                    # Everything was stopped while its status was being
+                    # written: the stop looked at a commission that was
+                    # over, and this one is at work with nothing to end it.
+                    # It is stopped here, as it would have been there.
+                    await self._ledger.transition(commission.id, "cancelled", reason=_STOPPED_MEANWHILE_REASON)
+                    return True
+                return False
 
             # Starting can take a while (the runtime process coming up). A stop
             # meanwhile found no session to close; this one must get no work.
@@ -2027,7 +2059,10 @@ class TaskAgentManager:
 
         ``still_wanted``, when given, is asked before a commission that is
         blocked or failed is taken up again, after whatever that had to
-        wait for: False (everything was stopped meanwhile) leaves it as it is.
+        wait for and up to where it is given its work: False (everything
+        was stopped meanwhile, or NekoClaw switched off) leaves it as it
+        is. Where its status was written just then, behind the back of the
+        stop, it is stopped instead.
         """
         if self._closed:
             return False
@@ -2089,6 +2124,9 @@ class TaskAgentManager:
         # process has not had the commission in hand before.
         if not await self._know_session(commission_id) or self._closed:
             return False
+        if still_wanted is not None and not still_wanted():
+            # Stopped while the ledger was read.
+            return False
         if commission_id in self._taking_up or commission_id in self._requeueing:
             # An earlier sentence is taking it up again or queueing it right
             # now: this one goes along with that rather than starting or
@@ -2100,7 +2138,7 @@ class TaskAgentManager:
             # so a caller cancelled meanwhile does not leave a half set-up
             # session behind a commission that says it is working.
             self._taking_up.add(commission_id)
-            launch = self._spawn(self._launch(commission_id, prompt=text))
+            launch = self._spawn(self._launch(commission_id, prompt=text, still_wanted=still_wanted))
 
             def taken_up(_done: Any) -> None:
                 self._taking_up.discard(commission_id)
@@ -2116,9 +2154,11 @@ class TaskAgentManager:
         # Marked at once, before anything is awaited, so a sentence arriving
         # meanwhile joins this one.
         self._requeueing.add(commission_id)
-        return await asyncio.shield(self._spawn(self._requeue(commission_id, text)))
+        return await asyncio.shield(self._spawn(self._requeue(commission_id, text, still_wanted=still_wanted)))
 
-    async def _requeue(self, commission_id: str, text: str) -> bool:
+    async def _requeue(
+        self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None
+    ) -> bool:
         # Marked (by the caller) while the status is written: the old
         # session's end meanwhile then keeps the candidate plugins and notes
         # for the retry.
@@ -2127,10 +2167,22 @@ class TaskAgentManager:
             moved = await self._ledger.transition(commission_id, "queued", reason="taken up again; waiting for a place")
         finally:
             self._requeueing.discard(commission_id)
+        stopped = False
         if moved.applied and self._closed:
             # Shutting down emptied the queue while the status was written.
             await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
-        if not moved.applied or self._closed:
+        elif moved.applied and still_wanted is not None and not still_wanted():
+            # Everything was stopped while the status was written: the stop
+            # looked at a commission that was over, and from here on it
+            # waits for a place with nothing to end it. It is stopped here,
+            # as it would have been there. (Queued, a later stop finds it:
+            # nothing more is asked when it gets its place.)
+            await self._ledger.transition(commission_id, "cancelled", reason=_STOPPED_MEANWHILE_REASON)
+            stopped = True
+            # Over for good, as after any stop: nothing said is kept for it.
+            self._carried.pop(commission_id, None)
+            self._notes.pop(commission_id, None)
+        if not moved.applied or self._closed or stopped:
             if commission_id not in self._sessions:
                 self._candidates.pop(commission_id, None)
                 self._notes.pop(commission_id, None)

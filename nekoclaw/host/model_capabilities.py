@@ -353,7 +353,9 @@ class ModelCapabilityStore:
         down only then: a process that ends in between tells them once
         more the next time, and never not at all. Setting the window
         (``set_context_window``) clears the record: a model that turns out
-        smaller again after that is told of again.
+        smaller again after that is told of again. It also takes back what
+        was handed out here and not yet confirmed: that is of a window the
+        user has looked at since, and is not put on record.
         """
         models = await self._loaded()
         key = model_key(base_url, model)
@@ -370,6 +372,10 @@ class ModelCapabilityStore:
         models = await self._loaded()
         key = model_key(base_url, model)
         async with self._lock:
+            if key not in self._reminding:
+                # The user set the model's window while they were being
+                # told: what they were told of is done with.
+                return
             self._reminding.discard(key)
             entry = dict(models.get(key) or {})
             entry["window_reminded"] = int(window)
@@ -429,9 +435,11 @@ class ModelCapabilityStore:
                 entry.pop("context_window", None)
             else:
                 entry["context_window"] = self._tokens(tokens)
-            # The user has looked at it: what they were told is done with.
+            # The user has looked at it: what they were told is done with,
+            # and so is what they are being told this moment.
             entry.pop("window_reminded", None)
             entry.pop("window_reminded_at", None)
+            self._reminding.discard(key)
             if entry:
                 models[key] = entry
             else:

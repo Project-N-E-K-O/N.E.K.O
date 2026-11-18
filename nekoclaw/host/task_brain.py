@@ -578,8 +578,12 @@ class TaskBrain:
             if generation != self._dispatch_generation:
                 return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
             # Looked at once more where taking it up waits (for its review
-            # to be written down): a stop may come during that as well.
-            if await self.tell(earlier.id, text, still_wanted=lambda: generation == self._dispatch_generation):
+            # to be written down, for its session to be set up): a stop may
+            # come during that as well, and so may the switch. What is said
+            # of it then is said below, where both are read again.
+            if await self.tell(
+                earlier.id, text, still_wanted=lambda: self._is_enabled() and generation == self._dispatch_generation
+            ):
                 return Receipt(kind="told", commissions=[earlier], model_calls=calls)
             earlier = None
         if triage.kind in ("stop", "answer", "duplicate"):
@@ -1011,7 +1015,8 @@ class TaskBrain:
         """Pass a sentence on to a commission. Only a task agent can take one.
 
         ``still_wanted`` is asked before a commission that is over is taken
-        up again with it, after whatever that had to wait for.
+        up again with it, after whatever that had to wait for, up to where
+        it is given its work.
         """
         if self._task_agents is None:
             return False
