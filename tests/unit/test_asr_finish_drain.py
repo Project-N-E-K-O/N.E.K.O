@@ -367,14 +367,16 @@ async def test_finish_resource_retirement_cannot_extend_caller_deadline(monkeypa
 
     session, callback, _ = await make_session(worker)
     try:
-        # The outer wait is only a hang guard. It has to sit well past the
-        # caller's 30 ms deadline: when a stalled runner wakes up with both
-        # expired, the guard firing first raises a bare TimeoutError and
-        # fails the match even though the deadline was honoured. A finish that
-        # did wait for the stuck worker still fails here, at the guard.
+        # One deadline covers both the drain and the retirement. It is long
+        # enough for the drain (the ``finished`` event and its callbacks) to
+        # complete on a stalled runner: at 30 ms a pause there expired it
+        # before the retirement was reached and raised a bare TimeoutError.
+        # The worker never exits and its own close bound is pushed out above,
+        # so only this deadline can end the retirement wait; a finish that
+        # waited for the worker instead runs into the outer hang guard.
         with pytest.raises(TimeoutError, match="ASR_FINISH_RETIRE_TIMEOUT"):
             await asyncio.wait_for(
-                session.finish_and_drain(deadline=asyncio.get_running_loop().time() + 0.03),
+                session.finish_and_drain(deadline=asyncio.get_running_loop().time() + 2),
                 10,
             )
         assert session._state.value == "closing"
