@@ -50,6 +50,8 @@ def gate(monkeypatch, tmp_path):
 
 def test_decide():
     assert decide("memory.read", ("a",), granted).allowed
+    # A -> B -> A: the first A is a caller even though A also uses it.
+    assert decide("memory.read", ("b", "a", "b"), granted).reason == "caller_chain"
     laundering = decide("memory.read", ("b", "a"), granted)
     assert (laundering.blocked_by, laundering.reason) == (("b",), "caller_chain")
     assert decide("memory.read", ("b",), granted).reason == "self_not_approved"
@@ -139,10 +141,14 @@ async def test_link_crosses_the_loop_hop_as_an_argument(gate):
 
     thread = threading.Thread(target=owner.run_forever, daemon=True)
     thread.start()
+    running = threading.Event()
+    owner.call_soon_threadsafe(running.set)
+    assert running.wait(2)  # the owner loop is really running elsewhere
     sent = []
 
     class Transport:
         async def send_command(self, msg):
+            assert asyncio.get_running_loop() is owner  # delivered across the hop
             sent.append(msg)
             asyncio.get_running_loop().call_soon(lambda: manager._rpc_peer.receive(msg["req_id"], result=1))
 
@@ -188,29 +194,42 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
     real_emit = logging.handlers.RotatingFileHandler.emit
     monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit",
                         lambda self, record: (stuck.wait(5), real_emit(self, record)))
-    for index in range(3000):  # more than the queue holds
-        call_audit.record({"kind": "forward", "n": index})
-    assert call_audit.dropped > 0
-    started = time.monotonic()
-    assert call_audit.close(0.3) is False
-    assert time.monotonic() - started < 1.5
-    # logging.shutdown() at exit must not wait on the stuck handler's lock.
-    stuck_handlers = call_audit._abandoned.handlers
-    assert not any(ref() in stuck_handlers for ref in logging._handlerList)
-    # The stuck writer keeps the file: a restart must not start a second one ...
-    stuck_writer = call_audit._abandoned
-    call_audit.reopen()
-    before = call_audit.dropped
-    call_audit.record({"kind": "forward", "n": "after"})
-    assert call_audit._listener is None and call_audit.dropped == before + 1
+    baseline = call_audit.dropped
+    try:
+        for index in range(3000):  # more than the queue holds
+            call_audit.record({"kind": "forward", "n": index})
+        assert call_audit.dropped > baseline
+        started = time.monotonic()
+        assert call_audit.close(0.3) is False
+        assert time.monotonic() - started < 1.5
+        assert call_audit.close(0.1) is False  # still not exited: no false success
+        # logging.shutdown() at exit must not wait on the stuck handler's lock.
+        stuck_writer = call_audit._abandoned
+        assert not any(ref() in stuck_writer.handlers for ref in logging._handlerList)
+        # The stuck writer keeps the file: a restart must not start a second one ...
+        call_audit.reopen()
+        before = call_audit.dropped
+        call_audit.record({"kind": "forward", "n": "after"})
+        assert call_audit._listener is None and call_audit.dropped == before + 1
+    finally:
+        stuck.set()
     # ... until it has actually exited.
-    stuck.set()
     deadline = time.monotonic() + 10
     while call_audit._listener is None:  # each record re-asks the old writer to stop
         assert time.monotonic() < deadline, "the abandoned writer never handed over"
         call_audit.record({"kind": "forward", "n": "resumed"})
         time.sleep(0.01)
     assert not stuck_writer._thread.is_alive()
+
+
+def test_unwritable_audit_file_is_counted_as_dropped(gate, monkeypatch):
+    blocker = gate / "not-a-dir"
+    blocker.write_text("x")
+    monkeypatch.setattr(call_audit, "audit_directory", lambda: blocker)
+    baseline = call_audit.dropped
+    call_audit.record({"kind": "forward"})
+    assert call_audit.close(2.0) is True
+    assert call_audit.dropped == baseline + 1
 
 
 def test_failed_rights_lookup_does_not_leak_the_registration(gate, monkeypatch):
@@ -252,9 +271,13 @@ def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch):
     child = capability_gate.begin_call("a", "r2", "plugin_entry", "push", capability_gate.link_for_plugin_call("b", "r1"))
     capability_gate.end_call(child, "ok", 0)
     capability_gate.check("a", "r2", "messages.push", "MESSAGE_PUSH")
+    capability_gate.check("a", "r2", "memory.read", "MEMORY_SEARCH")  # control RPCs alike
     capability_gate.end_call(root, "ok", 0)
-    (decision,) = [e for e in call_audit.entries() if e["kind"] == "decision"]
-    assert decision["chain"] == ["b", "a"] and decision["reason"] == "caller_chain"
+    decisions = [e for e in call_audit.entries() if e["kind"] == "decision"]
+    assert {(d["operation"], tuple(d["chain"]), d["reason"]) for d in decisions} == {
+        ("MESSAGE_PUSH", ("b", "a"), "caller_chain"),
+        ("MEMORY_SEARCH", ("b", "a"), "caller_chain"),
+    }
     assert len(capability_gate.registry) == 0
 
 
@@ -292,3 +315,25 @@ async def test_internal_push_field_is_never_forwarded(monkeypatch):
     manager = PluginCommunicationResourceManager(plugin_id="a", transport=object())  # type: ignore[arg-type]
     await manager._route_message({"type": "MESSAGE_PUSH", "_rpc_parent_request_id": "r1", "parts": []})
     assert "_rpc_parent_request_id" not in forwarded[0]
+
+
+def test_a_malformed_record_only_affects_its_own_plugin(gate, monkeypatch):
+    from plugin.server.infrastructure import plugin_consent
+
+    records = {"bad": {"decision": "approved", "approved_capabilities": 7},
+               "good": {"decision": "approved", "approved_capabilities": ["memory.read"]}}
+    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
+    monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: records[plugin_id])
+    assert capability_gate.granted_capabilities("bad") == (frozenset(), False)
+    assert capability_gate.granted_capabilities("good") == (frozenset({"memory.read"}), True)
+
+
+async def test_audit_route_returns_nothing_when_off(gate, monkeypatch):
+    call_audit.record({"kind": "forward"})
+    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "off")
+    app = FastAPI()
+    app.include_router(audit_router)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as http:
+        body = (await http.get("/plugin-audit/call-chain")).json()
+    assert body["mode"] == "off" and body["entries"] == []

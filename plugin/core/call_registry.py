@@ -170,7 +170,8 @@ class CallRegistry:
 
     def has_live_chain(self, plugin_id: str) -> bool:
         """Whether another plugin is calling this one right now."""
-        return self._callee_counts.get(plugin_id, 0) > 0
+        with self._lock:
+            return self._callee_counts.get(plugin_id, 0) > 0
 
     def note_use(self, record: CallRecord, capability: str) -> None:
         # Uses after the call ended are allowed and not summarized.

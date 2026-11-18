@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import re
 import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
@@ -33,7 +32,12 @@ CAPABILITY_BY_OPERATION = {
     "CONVERSATION_INTERACTION_GET": "conversations.read",
 }
 
-_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+# Codes the host and the standard executor produce; anything else is "ERROR".
+_RESULT_CODES = frozenset({
+    "PLUGIN_EXECUTION_FAILED", "DEADLINE_EXCEEDED", "OPERATION_TIMEOUT", "CANCELLED",
+    "CONNECTION_CLOSED", "TRANSPORT_ERROR", "TRANSPORT_TIMEOUT", "BUSY",
+    "SERIALIZATION_FAILED", "PLUGIN_UNAVAILABLE", "PLUGIN_NOT_READY",
+})
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}
 # After a failed consent read, do not retry the file on the event loop for a while.
@@ -50,16 +54,30 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
         from plugin.server.infrastructure.plugin_consent import consent_store
 
         record = consent_store.read(plugin_id)
+    except Exception:  # the whole store is unreadable: back off for everyone
+        _consent_failed_at = time.monotonic()
+        return frozenset(), False
+    try:
         if record.get("decision") != "approved":
             return frozenset(), True
         return frozenset(c for c in record.get("approved_capabilities") or () if isinstance(c, str)), True
-    except Exception:  # unreadable store or malformed record
-        _consent_failed_at = time.monotonic()
+    except Exception:  # only this plugin's record is malformed
         return frozenset(), False
 
 
-def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink:
-    """Link for a PLUGIN_TO_PLUGIN delivery; ``caller`` is the connection identity."""
+def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink | None:
+    """Link for a PLUGIN_TO_PLUGIN delivery; ``caller`` is the connection identity.
+
+    Never raises: on failure the delivery goes ahead without a link.
+    """
+    try:
+        return _link_for_plugin_call(caller, parent_request_id)
+    except Exception as exc:
+        logger.warning("call-chain link failed: error_type={}", type(exc).__name__)
+        return None
+
+
+def _link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink:
     parent = registry.lookup(caller, parent_request_id)
     if parent is not None and len(parent.chain) > 1:
         return CallLink(parent.origin, caller=caller, parent=parent, flags=parent.flags)
@@ -112,7 +130,7 @@ def result_code(exc: BaseException | None) -> str:
         return "CANCELLED"
     for candidate in (exc, exc.__cause__):
         code = getattr(candidate, "code", None)
-        if isinstance(code, str) and _CODE.fullmatch(code):
+        if code in _RESULT_CODES:
             return code
     return "TIMEOUT" if isinstance(exc, TimeoutError) else "ERROR"
 

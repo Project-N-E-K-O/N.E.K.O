@@ -46,11 +46,12 @@ def decide(capability: str, chain: Iterable[str], granted: Callable[[str], froze
     chain = tuple(chain)
     if capability not in CAPABILITIES or not chain:
         return Decision(capability, chain, judged=False)
-    blocked = tuple(plugin for plugin in chain if capability not in granted(plugin))
-    user = chain[-1]
-    if any(plugin != user for plugin in blocked):
+    missing = [capability not in granted(plugin) for plugin in chain]
+    blocked = tuple(plugin for plugin, lacks in zip(chain, missing) if lacks)
+    # By position, so in A -> B -> A the first A still counts as a caller.
+    if any(missing[:-1]):
         reason = "caller_chain"
-    elif blocked:
+    elif missing[-1]:
         reason = "self_not_approved"
     else:
         reason = None

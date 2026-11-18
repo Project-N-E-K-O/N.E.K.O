@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import logging.handlers
 import queue
 import threading
@@ -30,14 +31,28 @@ _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
 _abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out close left behind
-dropped = 0  # records not written (queue full, or after close); may race across threads
+dropped = 0  # records not written (queue full, unwritable file, after close); may race
+
+
+def _count_drop() -> None:
+    global dropped
+    dropped += 1
 
 
 class _DroppingQueueHandler(logging.handlers.QueueHandler):
     def handleError(self, record: logging.LogRecord) -> None:
-        # Queue full: drop and count instead of printing a traceback.
-        global dropped
-        dropped += 1
+        _count_drop()  # queue full: drop and count, no traceback
+
+
+class _AuditFileHandler(logging.handlers.RotatingFileHandler):
+    """Opens (and creates the directory) lazily, in the writer thread."""
+
+    def _open(self):
+        os.makedirs(os.path.dirname(self.baseFilename), exist_ok=True)
+        return super()._open()
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        _count_drop()  # unwritable file: count it, never echo the record
 
 
 def audit_directory():
@@ -51,9 +66,11 @@ def _audit_logger_locked() -> logging.Logger | None:
     log = logging.getLogger(_LOGGER_NAME)
     if _closed:
         return None
+    if _listener is not None:
+        return log
     if _abandoned is not None:
-        # A writer left by a timed-out close still owns the file. Ask it to
-        # stop (its queue may have room now) and take over once it has exited.
+        # A closed writer may still own the file. Ask it to stop (its queue
+        # may have room now) and take over only once it has exited.
         if _abandoned._thread.is_alive():
             try:
                 _abandoned.queue.put_nowait(None)
@@ -63,22 +80,19 @@ def _audit_logger_locked() -> logging.Logger | None:
         for handler in _abandoned.handlers:
             handler.close()
         _abandoned = None
-    if _listener is not None:
-        return log
-    directory = audit_directory()
-    directory.mkdir(parents=True, exist_ok=True)
     # delay=True: the writer thread opens the file on its first record.
-    file_handler = logging.handlers.RotatingFileHandler(
-        directory / "call_audit.jsonl", maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT,
-        encoding="utf-8", delay=True,
+    file_handler = _AuditFileHandler(
+        os.path.join(audit_directory(), "call_audit.jsonl"), maxBytes=MAX_BYTES,
+        backupCount=BACKUP_COUNT, encoding="utf-8", delay=True,
     )
     file_handler.setFormatter(logging.Formatter("%(message)s"))
     records: queue.Queue = queue.Queue(maxsize=2048)
+    listener = logging.handlers.QueueListener(records, file_handler)
+    listener.start()  # publish only once it runs, so a failed start can retry
     log.handlers[:] = [_DroppingQueueHandler(records)]
     log.setLevel(logging.INFO)
     log.propagate = False
-    _listener = logging.handlers.QueueListener(records, file_handler)
-    _listener.start()
+    _listener = listener
     return log
 
 
@@ -111,31 +125,38 @@ def close(timeout: float = 1.0) -> bool:
 
     Bounded on purpose (``QueueListener.stop`` waits without a limit and
     fails on a full queue). Later records stay in the ring only. Returns
-    whether the flush finished.
+    whether the writer has exited.
     """
     global _listener, _closed, _abandoned
     with _lock:
         _closed = True
-        listener, _listener = _listener, None
+        if _listener is not None:
+            # Until it is seen exiting, the closing writer still owns the file.
+            _abandoned, _listener = _listener, None
+            try:
+                _abandoned.queue.put_nowait(None)  # QueueListener's stop sentinel
+            except queue.Full:
+                pass
+        listener = _abandoned
     if listener is None:
         return True
     deadline = time.monotonic() + timeout
-    try:
-        listener.queue.put(None, timeout=timeout)  # QueueListener's stop sentinel
-        listener._thread.join(max(0.0, deadline - time.monotonic()))
-    except queue.Full:
-        pass
+    while listener._thread.is_alive() and time.monotonic() < deadline:
+        try:
+            listener.queue.put(None, timeout=0.05)
+        except queue.Full:
+            pass
+        listener._thread.join(min(0.05, max(0.0, deadline - time.monotonic())))
     if listener._thread.is_alive():
-        # The stuck daemon writer still owns the file: no second writer on it
-        # until it has exited (see _audit_logger_locked).
-        with _lock:
-            _abandoned = listener
         # logging.shutdown() at exit would wait on the stuck handler's lock.
         with logging._lock:
             logging._handlerList[:] = [
                 ref for ref in logging._handlerList if ref() not in listener.handlers
             ]
         return False
+    with _lock:
+        if _abandoned is listener:
+            _abandoned = None
     for handler in listener.handlers:
         handler.close()
     return True

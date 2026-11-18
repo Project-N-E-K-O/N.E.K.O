@@ -21,9 +21,10 @@ async def get_call_chain_audit(request: Request) -> dict[str, object]:
     from_browser = any(name == "origin" or name.startswith("sec-fetch-") for name in request.headers)
     if from_browser or not _local_request(request):
         raise HTTPException(status_code=403, detail={"code": "LOCAL_ONLY"})
+    mode = current_mode()
     return {
-        "mode": current_mode(),
-        "entries": call_audit.entries(),
+        "mode": mode,
+        "entries": [] if mode == "off" else call_audit.entries(),
         "dropped": call_audit.dropped,
         "registry_full": capability_gate.registry.registry_full,
     }

@@ -206,8 +206,13 @@ async def test_forged_parent_and_ctx_neither_borrow_nor_drag_in(world):
 
 
 async def test_audit_holds_no_arguments_results_bodies_or_error_text(world):
-    await world.run("chain_b", "call", {"target": "chain_a:read_memory", "params": {"secret": "SENTINEL-ARG"}})
-    await world.run("chain_b", "call", {"target": "chain_a:push", "params": {"secret": "SENTINEL-PUSH"}})
+    read = await world.run("chain_b", "call", {"target": "chain_a:read_memory", "params": {"secret": "SENTINEL-ARG"}})
+    assert read == {"ok": True, "value": "SENTINEL-RESULT"}
+    pushed = await world.run("chain_b", "call", {"target": "chain_a:push", "params": {"secret": "SENTINEL-PUSH"}})
+    assert pushed == {"ok": True, "value": True}
+    async with asyncio.timeout(3):
+        while not world.forwarded:
+            await asyncio.sleep(0.01)
     await world.run("chain_b", "call", {"target": "chain_a:fail"})
     assert world.entries(kind="forward", target="chain_a", result="PLUGIN_EXECUTION_FAILED")
     call_audit.close()
