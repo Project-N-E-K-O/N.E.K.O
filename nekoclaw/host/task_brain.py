@@ -387,8 +387,30 @@ class TaskBrain:
             plugins=[] if plugins_forbidden else await self._without_denied_mcp(await self._registry.plugins()),
             active=active,
             answerable=answerable,
+            recent=await self._recently_over(lanlan_name),
             task_agent_available=await self._task_agent_available(),
         )
+
+    async def _recently_over(self, lanlan_name: str) -> list[Commission]:
+        """Return her commissions a task agent worked on that are over and not long so, newest first.
+
+        What a sentence that adds something can go on with (``decision.read_follow_up``):
+        done, failed or stopped within ``FOLLOW_UP_RECENT_SECONDS``, her own
+        (not one a task agent started for itself), and worked on in a session.
+        """
+        from config.nekoclaw_settings import FOLLOW_UP_RECENT_SECONDS, FOLLOW_UP_ROWS
+
+        over = await self._ledger.select(
+            lanlan_name=lanlan_name,
+            statuses=ENDED_STATUSES - {"blocked"},
+            updated_since=self._ledger._clock() - FOLLOW_UP_RECENT_SECONDS,
+            limit=FOLLOW_UP_ROWS * 4,
+        )
+        mine = [
+            item for item in over if item.parent_id is None and item.route == "task_agent" and item.session_id
+        ]
+        # Newest by when they ended, which is when they last changed.
+        return sorted(mine, key=lambda item: item.updated_at, reverse=True)[:FOLLOW_UP_ROWS]
 
     async def _denied_mcp(self) -> McpDenial:
         """Return the MCP server settings as of now."""
@@ -522,9 +544,11 @@ class TaskBrain:
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
-        by_id = {commission.id: commission for commission in (*request.active, *request.answerable)}
+        by_id = {commission.id: commission for commission in (*request.active, *request.answerable, *request.recent)}
         targets = [by_id[target] for target in triage.targets if target in by_id]
         calls = triage.model_calls
+        # The commission this sentence goes on with, when it is one that is over.
+        earlier = targets[0] if triage.kind == "continue" and targets else None
 
         if triage.kind == "nothing_active":
             return Receipt(kind="nothing_active", model_calls=calls)
@@ -547,6 +571,14 @@ class TaskBrain:
             if delivered:
                 return Receipt(kind="told", commissions=targets[:1], model_calls=calls)
             # It could not be passed on; treat the sentence as work of its own.
+        if earlier is not None and earlier.status == "failed":
+            # A commission that failed is taken up again as it is, where its
+            # session stands, with what the sentence adds: as when it is
+            # told so directly. One that was done or stopped stays over and
+            # is followed up by a commission of its own (below).
+            if await self.tell(earlier.id, text):
+                return Receipt(kind="told", commissions=[earlier], model_calls=calls)
+            earlier = None
         if triage.kind in ("stop", "answer", "duplicate"):
             # What it referred to is no longer there.
             return Receipt(kind="nothing_active", model_calls=calls)
@@ -559,6 +591,12 @@ class TaskBrain:
         if generation != self._dispatch_generation:
             return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
 
+        follows: dict[str, Any] = {}
+        if earlier is not None:
+            # It goes on in the session of the commission it follows up: with
+            # what was said there, in the same working directory, under the
+            # same project. That one stays as it ended.
+            follows = {"session_id": earlier.session_id, "continues": earlier.id, "project": earlier.project}
         commission, created = await self._ledger.create(
             unless=lambda active: find_duplicate(text, user_text, active),
             lanlan_name=lanlan_name,
@@ -568,6 +606,7 @@ class TaskBrain:
             source=source,
             conversation_id=conversation_id,
             lang=lang,
+            **follows,
         )
         if not created:
             return Receipt(kind="duplicate", commissions=[commission], model_calls=calls)
@@ -577,6 +616,25 @@ class TaskBrain:
 
     async def _second_round(self, commission: Commission, request: DecisionRequest, triage: Triage) -> None:
         try:
+            if commission.continues and self._task_agents is not None:
+                # It goes on with what a task agent did, in that one's
+                # session: there is nothing to choose, and no model is asked.
+                # The plugins its words point at are told to the task agent
+                # as they are for any commission.
+                await self._ledger.append_event(
+                    commission.id,
+                    "decision",
+                    {
+                        "route": "task_agent",
+                        "plugin_id": None,
+                        "entry_id": None,
+                        "reason": "it follows up an earlier commission",
+                        "continues": commission.continues,
+                        "model_calls": triage.model_calls,
+                    },
+                )
+                await self._task_agents.submit(commission, candidate_plugin_ids=triage.candidate_ids)
+                return
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
             await self._ledger.append_event(

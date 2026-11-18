@@ -620,3 +620,101 @@ async def test_what_a_runtime_says_of_a_session_is_about_the_commission_at_work_
     assert [event.payload["title"] for event in await _events(host, second.commission_id, "lesson")] == ["Charts"]
     release.set()
     await wait_status(host, second.commission_id, "done")
+
+
+# ---------------------------------------------------------------------------
+# From a dispatched sentence to the session it goes on in
+# ---------------------------------------------------------------------------
+
+
+async def test_a_dispatched_sentence_that_adds_to_a_commission_that_is_done_goes_on_in_its_session(hosts, tmp_path):
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("ready", "sorted 12 photos by month")]),
+        "rename the photos": ScriptedLLM([_report("ready", "renamed")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    earlier = await wait_status(host, first.commission_id, "done")
+    await _released(host, first.commission_id)
+
+    receipt = await _dispatch(host, "also rename the photos by date", user_text="oh and rename the photos too")
+
+    # A commission of its own, which she is told of like any other; the one it follows up stays done.
+    assert receipt.kind == "accepted" and receipt.commission_id != first.commission_id
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert (done.session_id, done.continues, done.route) == (first.commission_id, first.commission_id, "task_agent")
+    assert (done.workdir, done.session_dir) == (earlier.workdir, earlier.session_dir)
+    assert (await host.ledger.get(first.commission_id)).status == "done"
+    # No model was asked where it goes.
+    assert host.decision._llm.calls == []
+    (decision,) = await _events(host, receipt.commission_id, "decision")
+    assert (decision.payload["route"], decision.payload["continues"]) == ("task_agent", first.commission_id)
+    said = _user_messages(scripts["rename the photos"].requests[0])
+    assert said[0].startswith(_opens(first.commission_id, "sort the photos in my downloads folder"))
+    assert said[-1].startswith(
+        _opens(receipt.commission_id, "also rename the photos by date\nWhat the user said: oh and rename the photos too")
+    )
+    assert "follows up the earlier commission" in said[-1]
+
+
+async def test_a_dispatched_sentence_about_something_else_is_a_commission_in_a_session_of_its_own(hosts, tmp_path):
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("ready", "sorted")]),
+        "back up the notes": ScriptedLLM([_report("ready", "backed up")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "done")
+
+    # About the same thing without a word that says it adds something, and about something else with such a word.
+    for text in ("sort the photos on drive E: as well", "also back up the notes to drive F:"):
+        receipt = await _dispatch(host, text)
+        done = await wait_status(host, receipt.commission_id, "done")
+        assert (done.session_id, done.continues) == (receipt.commission_id, None)
+        scripts["sort the photos"].add(*_report("ready", "sorted again"))
+
+
+async def test_a_dispatched_sentence_that_adds_to_a_commission_that_failed_takes_that_one_up_again(hosts, tmp_path):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "sorted")])
+    host = _host(hosts, tmp_path, llm)
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "failed")
+    await _released(host, first.commission_id)
+
+    receipt = await _dispatch(host, "also the photos are on drive E: now")
+
+    assert (receipt.kind, receipt.commission_id) == ("told", first.commission_id)
+    done = await wait_status(host, first.commission_id, "done")
+    assert done.result_summary == "sorted"
+    assert len(await host.ledger.select(lanlan_name="Lan")) == 1
+    assert _user_messages(llm.requests[-1])[-1] == "also the photos are on drive E: now"
+
+
+async def test_a_follow_up_to_a_commission_of_a_project_waits_for_the_projects_session(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("ready", "export added")]),
+        "add a chart": ScriptedLLM([[wait, *_report("ready", "chart added")]]),
+        "semicolons": ScriptedLLM([_report("ready", "now with semicolons")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "done")
+    second = await _dispatch(host, "add a chart to the budget app")
+    await wait_status(host, second.commission_id, "working")
+
+    follow = await _dispatch(host, "also the CSV export should use semicolons")
+    await host.brain.settle()
+
+    queued = await host.ledger.get(follow.commission_id)
+    assert (queued.status, queued.session_id, queued.continues, queued.project) == (
+        "queued",
+        first.commission_id,
+        first.commission_id,
+        "Budget app",
+    )
+    release.set()
+    await wait_status(host, second.commission_id, "done")
+    done = await wait_status(host, follow.commission_id, "done")
+    assert done.result_summary == "now with semicolons"

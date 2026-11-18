@@ -125,7 +125,9 @@ class _ScriptOfTheCommission:
             text = json.dumps(message.get("content"), ensure_ascii=False)
             found = [key for key in self._scripts if key in text]
             if found:
-                return max(found, key=len)
+                # The one named first: a commission's opening message begins with
+                # what was dispatched, and may go on to name the one it follows up.
+                return min(found, key=text.index)
         raise AssertionError(f"no script for a session asked: {messages[-1].get('content')!r}")
 
     async def astream(self, messages: list[dict[str, Any]], **overrides: Any):  # noqa: ANN201

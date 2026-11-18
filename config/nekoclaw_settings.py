@@ -148,6 +148,21 @@ not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length."""
 QUERY_RECENT_SECONDS = 24 * 3600.0
 """How far back finished commissions are still listed by a query."""
 
+FOLLOW_UP_RECENT_SECONDS = 24 * 3600.0
+"""How long after a commission a task agent worked on is over a sentence that
+adds to it still goes on with it, in its session. A sentence about something
+longer ago is a commission of its own (unless its project takes it)."""
+
+FOLLOW_UP_MIN_OVERLAP = 0.25
+"""Least share of a sentence's own words that must occur in a commission that
+is over, or in what came of it, for the sentence to go on with it. Higher
+than for an addition to a commission under way (``SUPPLEMENT_MIN_OVERLAP``):
+taken for a follow-up, a sentence is worked on with all that was said in the
+earlier commission's session in front of it."""
+
+FOLLOW_UP_ROWS = 8
+"""Most commissions that are over a dispatched sentence is compared with."""
+
 # ---------------------------------------------------------------------------
 # Task agents
 # ---------------------------------------------------------------------------
