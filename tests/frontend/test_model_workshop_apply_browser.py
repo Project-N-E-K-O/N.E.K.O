@@ -45,10 +45,12 @@ MODEL_READY = '''data => {
     const visible=data.kind === 'vrm'?manager?.currentModel?.vrm?.scene?.visible
         :manager?.currentModel?.mesh?.visible;
     const rect=canvas?.getBoundingClientRect();
-    // VRM sets currentModel before its animation warmup and fade-in.
-    // Wait for the actual visible frame, not the early resource handle.
+    const ready=data.kind === 'vrm'?manager?._loadState === 'ready'
+        :manager?._modelLoadState === 'ready';
+    // Both managers set currentModel before initialization finishes. Require
+    // their actual ready state as well as a visible frame, including fade-in.
     return path && new URL(path,location.href).href === new URL(data.url,location.href).href
-        && visible && (data.kind !== 'vrm' || (manager._loadState === 'ready' && !manager._isLoadingModel))
+        && visible && ready && !manager._isLoadingModel
         && rect?.width > 0 && rect?.height > 0 && Number(getComputedStyle(canvas).opacity) >= 0.99
         && manager.renderer?.info?.render?.calls > 0;
 }'''
@@ -178,7 +180,9 @@ def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_mana
     url, cfg, applied = full_manager_app
     package = real_package(tmp_path, kind)
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(args=['--enable-unsafe-swiftshader', '--use-angle=swiftshader'])
+        # Full Chromium uses the platform renderer, as desktop Chromium does.
+        # Forced SwiftShader on macOS stalls this large-model/two-window workload.
+        browser = pw.chromium.launch(channel='chromium')
         page = browser.new_page(locale='zh-CN', viewport={'width': 1280, 'height': 900})
         logs = []
         def log(message):
