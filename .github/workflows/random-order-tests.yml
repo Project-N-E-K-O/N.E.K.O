@@ -10,7 +10,7 @@ name: Random Order Tests
 # 为什么并行：tests/unit 已有 5 万多条用例，在 windows-latest 上串行一遍远超 30
 # 分钟，这个 job 曾经连续 20 次超时被取消、一次结果都没产出过。现在分两步跑，
 # 分法照抄 PR CI（unit-tests.yml + unit-test-shards.yml）对用例的分类：
-#   1. 主体用 `-n auto --dist loadfile` 多进程并行；
+#   1. 主体用 `-n auto --dist loadfile --no-loadscope-reorder` 多进程并行；
 #   2. integration_serial（子进程 / socket / HTTP）和 frontend_contract 两类，
 #      PR CI 里本来就用 `-n 0` 单进程跑，这里也单进程跑，不在多 worker 下互相抢
 #      端口和进程。
@@ -19,8 +19,10 @@ name: Random Order Tests
 # 并行时 seed 的语义：pytest-randomly 让 controller 把 seed 下发给每个 worker，
 # 所有 worker 洗出同一份顺序（xdist 也要求各 worker 收集结果一致）。loadfile 把
 # 同一个文件的用例整组派给一个 worker，文件内顺序 = 这个 seed 下的洗牌顺序，
-# 文件之间的派发顺序也由 seed 决定；但"哪几个文件落在同一个 worker 上、前后挨着"
-# 取决于运行时谁先空闲，不是 seed 能钉住的。
+# 文件之间的派发顺序也由 seed 决定——前提是 `--no-loadscope-reorder`：xdist 默认
+# 会把文件按用例数从多到少重排派发队列，那样每晚的文件先后基本固定，跨文件的随机
+# 压力就没了。但"哪几个文件落在同一个 worker 上、前后挨着"取决于运行时谁先空闲，
+# 不是 seed 能钉住的。
 #
 # 失败怎么办：seed 在 "Pick seed" 一步里打印为 `randomly-seed = <N>`（pytest 带
 # `-q` 时不打印 `Using --randomly-seed=<N>` 那行表头，所以以这一行为准）。复现：
@@ -30,7 +32,7 @@ name: Random Order Tests
 #   2. 单跑不红，说明是别的文件写脏了状态，跑全量串行（文件间顺序与 CI 相同，
 #      只是不再分 worker），或照 CI 的命令并行跑：
 #        uv run pytest tests/unit -q --randomly-seed=<N>
-#        uv run pytest tests/unit -q -n auto --dist loadfile --randomly-seed=<N> -m "not integration_serial and not frontend_contract"
+#        uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=<N> -m "not integration_serial and not frontend_contract"
 # 顺序依赖的典型形态是"产品代码里的进程级可变全局被前一条用例写脏"，修法通常是给
 # 那个模块加一条 autouse fixture 做前后清理（见 tests/unit/test_music_router.py 的
 # _reset_music_proxy_cache）。
@@ -113,7 +115,7 @@ jobs:
           SEED: ${{ steps.seed.outputs.value }}
         run: |
           Write-Host "randomly-seed = $env:SEED"
-          uv run pytest tests/unit -q -n auto --dist loadfile --randomly-seed=$env:SEED -m "not integration_serial and not frontend_contract"
+          uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=$env:SEED -m "not integration_serial and not frontend_contract"
 
       - name: Run serial-only markers in a random order
         # 上一步红了也要跑：两步合起来才是完整的 tests/unit。
