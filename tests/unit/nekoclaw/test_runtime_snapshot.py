@@ -918,11 +918,14 @@ async def test_a_long_request_refused_in_words_that_are_not_recognized_is_summed
 
         assert ended["reason"] == "completed" and ended["text"] == "Went on."
         assert len(events.of("compacted")) == 1
-        # Shorter, it went through: the host is told the window that follows from it.
-        (learned,) = events.of("model_capability")
-        assert before < learned["context_window"] < before + 300
-        assert "could not be processed" in learned["reason"]
-        assert session.context.policy.window == learned["context_window"]
+        # Shorter, it went through. That does not show it was too long: summing up rewrites
+        # what was said, and a refusal for something in it goes away with that as well. The
+        # host is told nothing, which it would believe for a month, for every session with
+        # the model, and tell the user of.
+        assert events.of("model_capability") == []
+        # The session itself goes on with the smaller window, which is all it needs.
+        assert before < session.context.policy.window < before + 300
+        assert session._window == session.context.policy.window
     finally:
         await session.close()
 

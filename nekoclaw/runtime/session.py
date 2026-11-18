@@ -925,18 +925,16 @@ class TaskAgentSession(SessionInbox):
             else:
                 await self._fit(force=False)
         retried = False
-        # What a retry is to tell the host once it went through: a window
-        # concluded from a refusal that did not say it was about length.
-        # And what the session was managed for before that, to go back to
-        # when the retry shows nothing.
-        unsure: tuple[int, str] | None = None
+        # What the session was managed for before a window was assumed for
+        # a retry (after a refusal that did not say it was about length),
+        # to go back to when the retry does not go through.
         before: tuple[int, int, ContextPolicy] | None = None
 
         def back() -> None:
-            nonlocal before, unsure
+            nonlocal before
             if before is not None:
                 self._window, self._max_output, self.context.policy = before
-            before = unsure = None
+            before = None
         while True:
             for _again in range(2):
                 if not self._compaction_due:
@@ -974,14 +972,21 @@ class TaskAgentSession(SessionInbox):
                         held = None
                     answered = answered or isinstance(event, AssistantDoneEvent)
                     yield event
-                if unsure is not None and answered:
-                    # Shorter, it went through: it was too long. (Not when
-                    # the request that was sent once more ended in an error
-                    # of another kind, or was stopped: the stream ends
-                    # without raising then, and nothing was shown.)
-                    self._tell_window(*unsure)
-                else:
+                if not answered:
+                    # The request that was sent once more ended in an error
+                    # of another kind, or was stopped (the stream ends
+                    # without raising then): the session is managed for the
+                    # window it had.
                     back()
+                # Shorter, it went through. That does not show it was too
+                # long: summing up rewrites what was said, and a refusal
+                # for something in it (a turn the provider does not take,
+                # words it screens out) goes away with that as well. So the
+                # session keeps the smaller window for as long as it is
+                # open, which is all it needs to go on, and the host is
+                # told nothing: it would manage every session with the
+                # model for that window for a month, and tell the user
+                # that the model's window is smaller than was set.
                 return
             except RequestRefusedError as exc:
                 if retried or sent <= TASK_AGENT_UNSURE_REFUSAL_TOKENS:
@@ -1002,7 +1007,7 @@ class TaskAgentSession(SessionInbox):
                 )
                 managed = (self._window, self._max_output, self.context.policy)
                 if self._assume_window(sent):
-                    unsure, before = (self._window, str(exc)), managed
+                    before = managed
                 await self._fit(force=True)
             except ContextOverflowError as exc:
                 self._learn_window(str(exc), sent)
