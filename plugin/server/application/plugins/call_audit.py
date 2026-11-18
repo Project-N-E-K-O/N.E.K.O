@@ -27,8 +27,8 @@ _ring: deque[dict] = deque(maxlen=1000)
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
-_abandoned = False  # a timed-out close left its writer behind: never start a second one
-dropped = 0  # diagnostic only; increments from several threads may race
+_abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out close left behind
+dropped = 0  # records not written (queue full, or after close); may race across threads
 
 
 class _DroppingQueueHandler(logging.handlers.QueueHandler):
@@ -45,10 +45,22 @@ def audit_directory():
 
 
 def _audit_logger_locked() -> logging.Logger | None:
-    global _listener
+    global _listener, _abandoned
     log = logging.getLogger(_LOGGER_NAME)
-    if _closed or _abandoned:
+    if _closed:
         return None
+    if _abandoned is not None:
+        # A writer left by a timed-out close still owns the file. Ask it to
+        # stop (its queue may have room now) and take over once it has exited.
+        if _abandoned._thread.is_alive():
+            try:
+                _abandoned.queue.put_nowait(None)
+            except queue.Full:
+                pass
+            return None
+        for handler in _abandoned.handlers:
+            handler.close()
+        _abandoned = None
     if _listener is not None:
         return log
     directory = audit_directory()
@@ -70,6 +82,7 @@ def _audit_logger_locked() -> logging.Logger | None:
 
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
+    global dropped
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     _ring.append(item)
     try:
@@ -77,7 +90,9 @@ def record(entry: dict) -> None:
         # everything accepted before a close is queued ahead of its sentinel.
         with _lock:
             log = _audit_logger_locked()
-            if log is not None:
+            if log is None:
+                dropped += 1
+            else:
                 # A full queue makes QueueHandler drop the record (handleError).
                 log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
     except Exception:
@@ -109,10 +124,10 @@ def close(timeout: float = 1.0) -> bool:
     except queue.Full:
         pass
     if listener._thread.is_alive():
-        # The stuck daemon writer still owns the file; an in-process restart
-        # keeps the ring only rather than racing it with a second writer.
+        # The stuck daemon writer still owns the file: no second writer on it
+        # until it has exited (see _audit_logger_locked).
         with _lock:
-            _abandoned = True
+            _abandoned = listener
         return False
     for handler in listener.handlers:
         handler.close()

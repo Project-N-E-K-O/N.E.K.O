@@ -38,7 +38,7 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (granted(p), True))
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path)
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
-    monkeypatch.setattr(call_audit, "_abandoned", False)
+    monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()
     yield tmp_path
@@ -183,18 +183,29 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
     import time
 
     stuck = threading.Event()
-    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit", lambda self, record: stuck.wait(5))
+    real_emit = logging.handlers.RotatingFileHandler.emit
+    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit",
+                        lambda self, record: (stuck.wait(5), real_emit(self, record)))
     for index in range(3000):  # more than the queue holds
         call_audit.record({"kind": "forward", "n": index})
     assert call_audit.dropped > 0
     started = time.monotonic()
     assert call_audit.close(0.3) is False
     assert time.monotonic() - started < 1.5
-    # The stuck writer keeps the file: a restart must not start a second one.
+    # The stuck writer keeps the file: a restart must not start a second one ...
+    stuck_writer = call_audit._abandoned
     call_audit.reopen()
+    before = call_audit.dropped
     call_audit.record({"kind": "forward", "n": "after"})
-    assert call_audit._listener is None
+    assert call_audit._listener is None and call_audit.dropped == before + 1
+    # ... until it has actually exited.
     stuck.set()
+    deadline = time.monotonic() + 10
+    while call_audit._listener is None:  # each record re-asks the old writer to stop
+        assert time.monotonic() < deadline, "the abandoned writer never handed over"
+        call_audit.record({"kind": "forward", "n": "resumed"})
+        time.sleep(0.01)
+    assert not stuck_writer._thread.is_alive()
 
 
 def test_failed_rights_lookup_does_not_leak_the_registration(gate, monkeypatch):

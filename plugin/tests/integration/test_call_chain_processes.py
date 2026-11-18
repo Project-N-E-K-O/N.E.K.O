@@ -48,7 +48,7 @@ async def _world(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (frozenset(grants.get(p, ())), True))
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path / "audit")
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
-    monkeypatch.setattr(call_audit, "_abandoned", False)
+    monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()
     forwarded: list[dict] = []
@@ -149,6 +149,30 @@ async def test_message_push_is_judged_and_reaches_the_plane_unchanged(world):
     assert "_rpc_parent_request_id" not in world.forwarded[0]
     (decision,) = world.entries(kind="decision")
     assert (decision["operation"], decision["reason"]) == ("MESSAGE_PUSH", "caller_chain")
+
+
+async def test_push_routed_after_the_result_keeps_its_chain(world, monkeypatch):
+    # Results and pushes ride separate uplinks; hold the push until the call
+    # has returned and its record was removed.
+    world.grants["chain_a"] = {"messages.push"}
+    release = asyncio.Event()
+    route = PluginCommunicationResourceManager._route_message
+
+    async def held(self, msg):
+        if msg.get("type") == "MESSAGE_PUSH":
+            await release.wait()
+        await route(self, msg)
+
+    monkeypatch.setattr(PluginCommunicationResourceManager, "_route_message", held)
+    assert (await world.run("chain_b", "call", {"target": "chain_a:push"}))["value"] is True
+    assert len(capability_gate.registry) == 0 and world.forwarded == []
+    release.set()
+    async with asyncio.timeout(3):
+        while not world.forwarded:
+            await asyncio.sleep(0.01)
+    assert "_rpc_parent_request_id" not in world.forwarded[0]
+    (decision,) = world.entries(kind="decision")
+    assert decision["chain"] == ["chain_b", "chain_a"] and decision["reason"] == "caller_chain"
 
 
 async def test_unattributed_and_possible_laundering(world):
