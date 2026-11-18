@@ -135,6 +135,26 @@ def test_recent_file_one_failed_rebuild_does_not_skip_the_rest(tmp_path, monkeyp
     assert _run_in_fork_child(_recent_child_uses_lock_object, lock) == 0
 
 
+def _recent_child_gate_is_fresh(lock):
+    if lock._thread.locked() or lock._holder is not None:
+        raise SystemExit(9)
+
+
+def _fail_new_file_lock():
+    raise OSError('cannot build lock')
+
+
+def test_recent_file_failed_file_lock_rebuild_still_refreshes_gate(tmp_path, monkeypatch):
+    lock = recent_file.recent_file_lock(tmp_path / 'Role' / 'recent.json')
+    thread, release = _hold_in_other_thread(lock.acquire, lock.release)
+    monkeypatch.setattr(lock, '_new_file_lock', _fail_new_file_lock)
+    try:
+        assert _run_in_fork_child(_recent_child_gate_is_fresh, lock) == 0
+    finally:
+        release.set()
+        thread.join(_JOIN_TIMEOUT)
+
+
 def test_recent_file_fork_child_respects_parent_hold(tmp_path):
     path = tmp_path / 'Role' / 'recent.json'
     lock = recent_file.recent_file_lock(path)
@@ -329,6 +349,21 @@ def test_chat_sync_writer_child_does_not_inherit_verified_heads(tmp_path):
 
     assert _run_in_fork_child(_writer_child_does_not_inherit_trust, writer) == 0
     assert writer.local_visibility_trusted()
+
+
+def _writer_child_trust_is_dropped(writer):
+    if writer._trusted_heads is not None:
+        raise SystemExit(9)
+
+
+def test_chat_sync_writer_failed_file_lock_rebuild_still_drops_trust(tmp_path, monkeypatch):
+    _, writer = _new_writer(tmp_path)
+    with writer.initialize():
+        pass
+    writer.check()
+    monkeypatch.setattr(writer, '_new_file_lock', _fail_new_file_lock)
+
+    assert _run_in_fork_child(_writer_child_trust_is_dropped, writer) == 0
 
 
 def test_chat_sync_writer_mutex_held_by_forking_thread_is_kept(tmp_path):

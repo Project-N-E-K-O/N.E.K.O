@@ -96,7 +96,8 @@ class ChatSyncWriter:
         exist in the child. A mutex the forking thread holds is kept so its release
         works; replacing one also drops the state that thread guarded with it.
         """
-        self._file_lock = self._new_file_lock()
+        # In-process state first: it cannot fail, so a failed FileLock rebuild below
+        # never leaves the child trusting heads or a gate it inherited.
         # local_visibility_trusted() vouches only for heads this process verified itself.
         self._trusted_heads = None
         # RLock._is_owned is private but present in CPython's C and Python RLocks (project pins 3.11).
@@ -106,6 +107,7 @@ class ChatSyncWriter:
             # Left True it would skip _check_locked(); cleared, the child rereads the witness,
             # which recover() marks quarantined before staging.
             self._initializing = False
+        self._file_lock = self._new_file_lock()
 
     @contextmanager
     def locked(self):

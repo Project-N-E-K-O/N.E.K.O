@@ -264,11 +264,13 @@ class _RecentFileLock:
         thread held at fork time would stay locked forever: that thread does not
         exist in the child. A gate the forking thread holds is kept so its release works.
         """
-        self._file = self._new_file_lock()
+        # In-process state first: it cannot fail, so a failed FileLock rebuild below
+        # never leaves the child with a gate it inherited.
         holder = self._holder
         if not (holder is not None and holder[0] == threading.get_ident()):
             self._thread = threading.Lock()
             self._holder = None
+        self._file = self._new_file_lock()
 
 
 # Every _RecentFileLock, including any a caller still references outside _LOCKS.
