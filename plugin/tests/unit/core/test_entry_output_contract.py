@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from plugin._types.exceptions import (
     OUTPUT_SCHEMA_VIOLATION_CODE,
@@ -251,7 +251,7 @@ async def test_model_annotation_warns_on_mismatch(caplog):
     runtime = _runtime_for_model({"city": "x"})
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
         assert await runtime.invoke("plugin_entry", "entry", {}) == {"city": "x"}
-    assert "$.temperature (missing)" in caplog.text
+    assert "$.temperature (required)" in caplog.text
 
 
 async def test_model_instance_and_matching_dict_pass(caplog):
@@ -495,12 +495,14 @@ def test_json_schema_subset_reports_a_bounded_number_of_issues():
     assert len(_issues(schema, list(range(500)))) == output_contract.MAX_REPORTED_ISSUES + 1
 
 
-def test_pydantic_check_is_used_for_inferred_models():
-    check = build_output_check(SimpleNamespace(output_schema=Weather.model_json_schema(), output_model=Weather))
+def test_serialized_output_of_an_inferred_model_is_checked_against_the_published_schema():
+    schema = Weather.model_json_schema(mode="serialization")
+    check = build_output_check(SimpleNamespace(output_schema=schema, output_model=Weather))
     assert check is not None
-    # Lax mode, as the model itself would accept it.
-    assert check({"city": "x", "temperature": "3"}) == []
-    assert [(i.path, i.type) for i in check({"city": "x"})] == [("$.temperature", "missing")]
+    # Output rules, not input coercion: "3" is not an integer on the wire.
+    assert [(i.path, i.type) for i in check({"city": "x", "temperature": "3"})] == [("$.temperature", "type")]
+    assert [(i.path, i.type) for i in check({"city": "x"})] == [("$.temperature", "required")]
+    assert check({"city": "x", "temperature": 3}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +531,8 @@ async def test_optional_model_annotation_accepts_none_in_strict_mode():
     assert await runtime.invoke("plugin_entry", "entry", {}) is None
     check = build_output_check(meta)
     assert check is not None
-    assert [(i.path, i.type) for i in check({"inner": {"v": "x"}})] == [("$.inner.v", "int_parsing")]
+    # Serialized output is checked against the published (nullable) schema.
+    assert [(i.path, i.type) for i in check({"inner": {"v": "x"}})] == [("$", "anyOf")]
 
 
 async def test_plain_model_annotation_still_rejects_none():
@@ -648,8 +651,8 @@ class IntKeys(BaseModel):
 def test_integer_mapping_keys_are_not_put_in_paths():
     check = build_output_check(SimpleNamespace(output_schema=IntKeys.model_json_schema(), output_model=IntKeys))
     issues = [(i.path, i.type) for i in check({"scores": {123456789: "x"}, "rows": [1, "y"]})]
-    assert ("$.scores.*", "int_parsing") in issues
-    assert ("$.rows[1]", "int_parsing") in issues
+    assert ("$.scores.*", "type") in issues
+    assert ("$.rows[1]", "type") in issues
     assert all("123456789" not in path for path, _kind in issues)
 
 
@@ -661,10 +664,10 @@ class Exploding(BaseModel):
         raise TypeError("not a validation error")
 
 
-async def test_a_crashing_custom_validator_warns_but_does_not_fail_strict(caplog):
+async def test_model_validators_take_no_part_in_checking_serialized_output(caplog):
     meta = EventMeta(
         event_type="plugin_entry", id="entry",
-        output_schema=Exploding.model_json_schema(), output_model=Exploding, strict_output=True,
+        output_schema=Exploding.model_json_schema(mode="serialization"), output_model=Exploding, strict_output=True,
     )
 
     async def entry():
@@ -673,6 +676,34 @@ async def test_a_crashing_custom_validator_warns_but_does_not_fail_strict(caplog
     runtime = _executor({"entry": entry}, {"entry": meta})
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
         assert await runtime.invoke("plugin_entry", "entry", {}) == {"n": 1}
+    # The validator (an input rule that would raise) never ran.
+    assert "output" not in caplog.text
+
+
+async def test_a_crashing_validator_while_revalidating_an_instance_warns_only(caplog):
+    class Revalidated(BaseModel):
+        model_config = ConfigDict(revalidate_instances="always")
+        n: int
+
+        @model_validator(mode="after")
+        def boom(self):
+            if self.n == 7:
+                raise TypeError("not a validation error")
+            return self
+
+    returned = Revalidated(n=1)
+    returned.n = 7
+    meta = EventMeta(
+        event_type="plugin_entry", id="entry",
+        output_schema=Revalidated.model_json_schema(mode="serialization"), output_model=Revalidated, strict_output=True,
+    )
+
+    async def entry():
+        return returned
+
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
     assert "check_error:TypeError" in caplog.text
 
 
@@ -868,17 +899,22 @@ def test_custom_error_types_are_replaced_by_a_fixed_code():
     from pydantic_core import PydanticCustomError
 
     class Custom(BaseModel):
+        model_config = ConfigDict(revalidate_instances="always")
         n: int
 
         @field_validator("n")
         @classmethod
         def leak(cls, value):
-            raise PydanticCustomError(f"bad_{value}_{SECRET}", "nope")
+            if value == 7:
+                raise PydanticCustomError(f"bad_{value}_{SECRET}", "nope")
+            return value
 
     check = build_output_check(SimpleNamespace(output_schema=Custom.model_json_schema(), output_model=Custom))
-    issues = [(i.path, i.type) for i in check({"n": 7})]
-    assert issues == [("$.n", "custom_error")]
-    assert output_contract.is_violation(check({"n": 7}))
+    returned = Custom(n=1)
+    returned.n = 7
+    issues = check(returned)
+    assert [(i.path, i.type) for i in issues] == [("$.n", "custom_error")]
+    assert output_contract.is_violation(issues)
 
 
 @pytest.mark.parametrize(
@@ -952,7 +988,7 @@ async def test_aliased_model_returned_through_finish_passes_strict():
     check = build_output_check(meta)
     # Looked up by the published key rule (field names here).
     assert check({"user_id": 3}) == []
-    assert [i.type for i in check({"userId": 3})] == ["missing"]
+    assert [i.type for i in check({"userId": 3})] == ["required"]
 
 
 def test_one_of_stops_at_the_second_match():
@@ -1074,10 +1110,68 @@ async def test_validation_and_serialization_aliases_that_differ_pass_strict():
     check = build_output_check(meta)
     # The other direction: validation-alias keys are not what the contract
     # publishes, so they do not satisfy it.
-    assert [i.type for i in check({"incoming": 3, "inTotal": 5})] == ["missing", "missing"]
+    assert [i.type for i in check({"incoming": 3, "inTotal": 5})] == ["required", "required"]
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf")])
 def test_non_finite_numbers_are_not_json_numbers(value):
     assert _issues({"type": "number", "minimum": 0}, value) == [("$", "type")]
     assert _issues({"type": "integer"}, value) == [("$", "type")]
+
+
+
+class Serialized(BaseModel):
+    n: int
+
+    @field_serializer("n")
+    def as_id(self, value: int) -> str:
+        return f"ID-{value}"
+
+
+async def test_field_serializer_output_matches_the_published_contract():
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> Serialized:
+        return build_finish_envelope(data=Serialized(n=3), delivery="silent")  # type: ignore[return-value]
+
+    meta = _meta_of(entry)
+    assert meta.output_schema["properties"]["n"]["type"] == "string"
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    result = await runtime.invoke("plugin_entry", "entry", {})
+    assert result["data"] == {"n": "ID-3"}
+    # Returning the instance itself passes too.
+    assert build_output_check(meta)(Serialized(n=3)) == []
+
+
+class NestedInner(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    user_id: int = Field(alias="userId")
+
+
+class NestedOuter(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    child: NestedInner
+    items: list[NestedInner]
+
+
+async def test_nested_models_with_aliases_pass_strict_through_finish():
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> NestedOuter:
+        value = NestedOuter(child=NestedInner(userId=1), items=[NestedInner(userId=2)])
+        return build_finish_envelope(data=value, delivery="silent")  # type: ignore[return-value]
+
+    meta = _meta_of(entry)
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    result = await runtime.invoke("plugin_entry", "entry", {})
+    assert result["data"] == {"child": {"userId": 1}, "items": [{"userId": 2}]}
+
+
+def test_alias_and_field_name_cannot_overwrite_each_other():
+    check = build_output_check(
+        SimpleNamespace(output_schema=AliasOut.model_json_schema(by_alias=True, mode="serialization"), output_model=AliasOut)
+    )
+    # The published key carries a wrong value; the field-name key is not part of the contract.
+    assert [(i.path, i.type) for i in check({"userId": "bad", "user_id": 3})] == [("$.userId", "type")]

@@ -9,13 +9,16 @@ returned data, so they are never kept. Path segments that are not declared in
 the schema (keys of free-form mappings, extra keys) come from the data too and
 are replaced by ``*``.
 
-Two checkers:
+The published contract describes serialized output, and serialized output
+is always checked against that same published schema, with a built-in
+checker for a structural subset of JSON Schema (``SUPPORTED_KEYWORDS``; other
+keywords are ignored rather than guessed at):
 
-- The output contract was inferred from a Pydantic model: the model itself
-  validates (``TypeAdapter``), so the published schema and the check agree.
-- An explicit ``output_schema`` mapping: a built-in checker for a structural
-  subset of JSON Schema (listed in ``SUPPORTED_KEYWORDS``). Other keywords are
-  ignored rather than guessed at. The full ``jsonschema`` package is not a
+- An explicit ``output_schema`` mapping is that schema.
+- A contract inferred from a Pydantic return annotation is the model's
+  serialization-mode schema. The one exception is an entry that returns a
+  model instance: it was validated when built, and is revalidated (on a copy)
+  only when the model's ``revalidate_instances`` asks for it. The full ``jsonschema`` package is not a
   runtime dependency of N.E.K.O, and pulling it in adds a native extension
   (``rpds-py``) to every packaged build for a warning-level feature.
 """
@@ -130,48 +133,45 @@ def is_pydantic_model(model: type) -> bool:
 
 
 def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputCheck:
+    """Two paths, split by what the entry handed back.
+
+    - A model instance: trusted (it was validated when built), or revalidated
+      on a copy when the model's own ``revalidate_instances`` asks for it.
+    - Anything else is already serialized output (a plain dict, the ``data``
+      of ``finish()``). It is checked against the published contract, the
+      model's serialization-mode schema, in its JSON form. The model's own
+      validators are input rules and take no part in checking output.
+    """
     from pydantic import TypeAdapter, ValidationError
 
     adapter = TypeAdapter(model)
-    wire_to_name = _wire_key_map(model)
-    lookup = _BY_NAME_ONLY if _LOOKUP_OPTIONS_SUPPORTED else {}
-    # Field names (what model_dump()/finish() put on the wire, and what the
-    # published schema uses) plus aliases (what Pydantic puts in a loc).
     declared = _declared_names(schema) if schema is not None else frozenset()
     try:
         declared = declared | _declared_names(model.model_json_schema())  # type: ignore[attr-defined]
         declared = declared | frozenset(getattr(model, "model_fields", {}) or {})
     except Exception:  # noqa: BLE001 - extra names only refine paths
         pass
-    # ``Model | None`` publishes a nullable schema; the model alone rejects None.
-    nullable = schema is not None and not _JsonSchemaCheck(schema)(None)
+    published = _JsonSchemaCheck(schema, json_form=_pydantic_json_form) if schema is not None else None
 
     def check(value: object) -> list[OutputIssue]:
-        if value is None and nullable:
-            return []
-        if isinstance(value, model) and not _revalidates(model, value):
-            # Validated when it was built, and the model does not ask for
-            # instances to be revalidated. Validating anyway would rerun
-            # after-validators; when it does ask, a copy is validated below.
+        if not isinstance(value, model):
+            return published(value) if published is not None else []
+        if not _revalidates(model, value):
+            # Revalidating anyway would rerun after-validators on the very
+            # object the caller receives.
             return []
         try:
-            # Validators may mutate their input; check a private copy so the
-            # returned value is never touched.
+            # Validators may mutate their input; revalidate a private copy.
             probe = copy.deepcopy(value)
         except Exception as exc:  # noqa: BLE001 - uncopyable data cannot be checked safely
             return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         try:
-            if wire_to_name and isinstance(probe, Mapping):
-                # Output keys back to field names (top level; nested models
-                # are looked up by field name, their default output).
-                probe = {wire_to_name.get(key, key): item for key, item in probe.items()}
-            adapter.validate_python(probe, **lookup)
+            adapter.validate_python(probe)
         except ValidationError as exc:
             # include_input/include_context off: only loc and type are read,
             # but nothing that quotes the data is even materialized.
             try:
                 errors = exc.errors(include_url=False, include_input=False, include_context=False)
-                # Paths are walked along the copy the validator received.
                 return [
                     OutputIssue(path=_loc_path(error.get("loc", ()), declared, probe), type=_error_type(error.get("type")))
                     for error in errors[:MAX_REPORTED_ISSUES + 1]
@@ -185,6 +185,18 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     return check
 
 
+def _pydantic_json_form(value: object) -> object:
+    """Serialized output as Pydantic's JSON mode renders it.
+
+    The published contract is Pydantic's serialization schema, so the value is
+    rendered by the same rules (Decimal and datetime as strings, nested models
+    by their own alias settings) before it is checked.
+    """
+    from pydantic_core import to_jsonable_python
+
+    return to_jsonable_python(value)
+
+
 def _builtin_error_types() -> frozenset[str]:
     try:
         from pydantic_core.core_schema import ErrorType
@@ -196,44 +208,6 @@ def _builtin_error_types() -> frozenset[str]:
 _BUILTIN_ERROR_TYPES = _builtin_error_types()
 
 
-def _supports_lookup_options() -> bool:
-    """Whether ``validate_python`` takes ``by_alias`` / ``by_name`` (Pydantic >= 2.11)."""
-    try:
-        from pydantic import VERSION
-    except ImportError:  # pragma: no cover
-        return False
-    major, minor = (int(part) for part in VERSION.split(".")[:2])
-    return (major, minor) >= (2, 11)
-
-
-_LOOKUP_OPTIONS_SUPPORTED = _supports_lookup_options()
-
-
-def _wire_key_map(model: type) -> dict[str, str]:
-    """Output key -> field name for a model's top-level fields.
-
-    model_dump() (and so finish()) emits field names, or each field's
-    serialization alias when the model sets ``serialize_by_alias``. The
-    published schema uses the same keys. Validation aliases may differ from
-    both, so payloads are renamed to field names and validated by name only;
-    looking up names and aliases at once would let one field's alias shadow
-    another field's value.
-    """
-    config = getattr(model, "model_config", None)
-    if not (isinstance(config, Mapping) and config.get("serialize_by_alias")):
-        return {}
-    fields = getattr(model, "model_fields", None)
-    if not isinstance(fields, Mapping):
-        return {}
-    mapping: dict[str, str] = {}
-    for name, info in fields.items():
-        wire = getattr(info, "serialization_alias", None) or name
-        if isinstance(wire, str) and wire != name:
-            mapping[wire] = name
-    return mapping
-
-
-_BY_NAME_ONLY = {"by_alias": False, "by_name": True}
 _CUSTOM_ERROR_TYPE = "custom_error"
 
 
@@ -310,8 +284,9 @@ def _declared_names(schema: object) -> frozenset[str]:
 class _JsonSchemaCheck:
     """Structural subset of JSON Schema; unsupported keywords are ignored."""
 
-    def __init__(self, schema: Mapping[str, object]):
+    def __init__(self, schema: Mapping[str, object], *, json_form: Callable[[object], object] | None = None):
         self._root = schema
+        self._json_form = json_form or _json_form
         self._patterns: dict[str, re.Pattern[str] | None] = {}
         self._steps = 0
 
@@ -319,7 +294,7 @@ class _JsonSchemaCheck:
         issues: list[OutputIssue] = []
         self._steps = 0
         try:
-            self._check(self._root, _json_form(value), "$", issues, 0)
+            self._check(self._root, self._json_form(value), "$", issues, 0)
         except _Enough:
             pass
         except _CheckAborted as exc:

@@ -37,8 +37,9 @@ class EventMeta:
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     # Appended last so positional construction keeps working.
     # Output contract, independent of the AI-visible llm_result_* fields.
-    # ``output_schema`` is the published JSON schema; ``output_model`` is the
-    # Pydantic model it was derived from (validated with the model itself,
+    # ``output_schema`` is the published JSON schema of the serialized output,
+    # and what serialized output is checked against; ``output_model`` is the
+    # Pydantic model it was derived from (used only for returned instances,
     # stays in the plugin process). ``strict_output`` turns a mismatch into
     # an execution failure instead of a warning.
     output_schema: InputSchema | None = None
