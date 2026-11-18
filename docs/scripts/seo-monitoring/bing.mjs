@@ -55,15 +55,28 @@ async function getWebmasterRows(method, siteUrl, apiKey, parseRow, { fetchImpl, 
     }
     const payload = await response.json()
     if (!Array.isArray(payload?.d)) return { status: 'FAILED', reason: 'Bing 站长 API 返回格式异常', rows: [] }
-    const rows = payload.d.map(parseRow).filter(Boolean)
+    let rows = payload.d.map(parseRow).filter(Boolean)
     const invalidRowCount = payload.d.length - rows.length
+    rows.sort((left, right) => right.date.localeCompare(left.date) || right.impressions - left.impressions)
+    let period = {}
+    if (method === 'GetQueryStats') {
+      const dates = [...new Set(payload.d.map(row => bingDate(row?.Date)).filter(Boolean))]
+      const latestDate = dates.sort().at(-1)
+      if (latestDate) {
+        rows = rows.filter(row => row.date === latestDate)
+        period = { latestDate, distinctDateCount: dates.length, latestDateRowCount: rows.length }
+        rows = rows.slice(0, STORED_QUERY_LIMIT)
+      }
+    }
     if (rows.length === 0) {
+      if (period.latestDate) {
+        return { ...period, status: 'FAILED', reason: 'Bing 站长 API 最新一周未返回有效查询', invalidRowCount, rows }
+      }
       return invalidRowCount > 0
         ? { status: 'FAILED', reason: 'Bing 站长 API 未返回有效数据行', invalidRowCount, rows }
         : { status: 'UNKNOWN', reason: 'Bing 站长 API 未返回数据行', rows }
     }
-    rows.sort((left, right) => right.date.localeCompare(left.date) || right.impressions - left.impressions)
-    return { status: 'OBSERVED', collectedAt: new Date().toISOString(), invalidRowCount, rows }
+    return { ...period, status: 'OBSERVED', collectedAt: new Date().toISOString(), invalidRowCount, rows }
   } catch (error) {
     const reason = error?.name === 'TimeoutError' || error?.name === 'AbortError'
       ? 'Bing 站长 API 请求超时'
@@ -82,19 +95,7 @@ export async function collectBingWebmaster(siteUrl, {
     getWebmasterRows('GetRankAndTrafficStats', siteUrl, apiKey, trafficRow, options),
     getWebmasterRows('GetQueryStats', siteUrl, apiKey, queryRow, options),
   ])
-  if (queries.status !== 'OBSERVED') return { traffic, queries }
-  const latestDate = queries.rows[0].date
-  const latestRows = queries.rows.filter(row => row.date === latestDate)
-  return {
-    traffic,
-    queries: {
-      ...queries,
-      latestDate,
-      distinctDateCount: new Set(queries.rows.map(row => row.date)).size,
-      latestDateRowCount: latestRows.length,
-      rows: latestRows.slice(0, STORED_QUERY_LIMIT),
-    },
-  }
+  return { traffic, queries }
 }
 
 async function checkChinaLocation(client, locationCode) {
@@ -137,7 +138,7 @@ export async function collectBingRankings(definition, {
   } catch {
     return { ...segment, status: 'FAILED', reason: 'Bing 排名配置无效', rows: [] }
   }
-  if (config.locationCode === CHINA_LOCATION_CODE) {
+  if (definition.bingRanking === 'china-opt-in' || config.locationCode === CHINA_LOCATION_CODE) {
     const location = await checkChinaLocation(client, config.locationCode)
     if (location.status !== 'OBSERVED') return { ...segment, ...location, rows: [] }
   }
@@ -177,17 +178,28 @@ export async function collectBingRankings(definition, {
         rows.push({ ...row, status: 'UNKNOWN', reason: 'DataForSEO 未返回搜索结果' })
         continue
       }
-      const organic = items.filter(item => item?.type === 'organic' && Number.isInteger(item.rank_group)
-        && item.rank_group > 0 && item.rank_group <= SERP_DEPTH
-        && typeof (item.domain ?? item.url) === 'string' && (item.domain ?? item.url).trim())
-      if (organic.length === 0) {
+      const organic = items.filter(item => item?.type === 'organic').map(item => ({
+        rank: item.rank_group,
+        url: item.url,
+        candidate: (typeof item.domain === 'string' && item.domain.trim()) || item.url,
+      }))
+      const ranked = organic.filter(item => Number.isInteger(item.rank)
+        && item.rank > 0 && item.rank <= SERP_DEPTH
+        && typeof item.candidate === 'string' && item.candidate.trim())
+      if (ranked.length === 0) {
         rows.push({ ...row, status: 'UNKNOWN', reason: 'DataForSEO 未返回有效自然搜索结果' })
         continue
       }
-      const match = organic
-        .filter(item => domainMatchesTarget(item.domain ?? item.url, config.targetDomain))
-        .sort((left, right) => left.rank_group - right.rank_group)[0]
-      rows.push({ ...row, status: 'OBSERVED', rank: match?.rank_group ?? null, matchedUrl: match?.url ?? null })
+      const match = ranked
+        .filter(item => domainMatchesTarget(item.candidate, config.targetDomain))
+        .sort((left, right) => left.rank - right.rank)[0]
+      if (!match && organic.some(item => (
+        (!Number.isInteger(item.rank) || item.rank <= 0) && domainMatchesTarget(item.candidate, config.targetDomain)
+      ))) {
+        rows.push({ ...row, status: 'UNKNOWN', reason: '目标域名结果缺少有效自然排名' })
+        continue
+      }
+      rows.push({ ...row, status: 'OBSERVED', rank: match?.rank ?? null, matchedUrl: match?.url ?? null })
     } catch (error) {
       if (error instanceof DataForSeoApiError) knownCostUsd += error.costUsd
       billingUncertain ||= !(error instanceof DataForSeoApiError) || error.billingUncertain

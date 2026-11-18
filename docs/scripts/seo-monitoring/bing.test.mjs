@@ -86,6 +86,23 @@ test('Bing Webmaster keeps at most 20 latest-date queries by impressions', async
   assert.ok(result.queries.rows.every(row => row.date === '2011-09-16'))
 })
 
+test('Bing keeps the latest API query date when its rows are all invalid', async () => {
+  const result = await collectBingWebmaster(origin, {
+    apiKey: 'test-fixture',
+    fetchImpl: async url => url.pathname.endsWith('/GetQueryStats')
+      ? Response.json({ d: [
+        { Date: '2011-09-09', Query: 'valid older row', Clicks: 1, Impressions: 10 },
+        { Date: date, Query: 'invalid newest row', Clicks: '1', Impressions: 10 },
+      ] })
+      : Response.json({ d: [] }),
+  })
+  assert.equal(result.queries.status, 'FAILED')
+  assert.equal(result.queries.latestDate, '2011-09-16')
+  assert.equal(result.queries.distinctDateCount, 2)
+  assert.equal(result.queries.latestDateRowCount, 0)
+  assert.deepEqual(result.queries.rows, [])
+})
+
 const definition = {
   id: 'online-en',
   label: '.online en / United States',
@@ -94,7 +111,7 @@ const definition = {
     targetDomain: 'example.test',
     locationCode: 2840,
     languageCode: 'en',
-    keywords: ['desktop pet', 'empty pet', 'other pet', 'ads only pet', 'timed out pet'],
+    keywords: ['desktop pet', 'empty pet', 'other pet', 'ads only pet', 'unranked pet', 'timed out pet'],
   },
 }
 
@@ -183,6 +200,22 @@ test('China Bing SERP skips paid requests when location support is absent or can
   }
 })
 
+test('China opt-in groups still verify the location when misconfigured for another country', async () => {
+  const report = await collectBingRankings({
+    ...chinaDefinition,
+    keywordConfig: { ...chinaDefinition.keywordConfig, locationCode: 2840 },
+  }, {
+    paid: true,
+    includeCn: true,
+    client: {
+      get: async () => ({ tasks: [{ result: [{ location_code: 2156, country_iso_code: 'CN' }] }] }),
+      post: () => assert.fail('Unsupported locations must not incur a paid request'),
+    },
+  })
+  assert.equal(report.status, 'UNSUPPORTED')
+  assert.match(report.reason, /2840/u)
+})
+
 test('Bing SERP reuses safe retries and distinguishes misses, empty results, and uncertain billing', async () => {
   const calls = []
   const result = await collectBingRankings(definition, {
@@ -197,7 +230,7 @@ test('Bing SERP reuses safe retries and distinguishes misses, empty results, and
         calls.push(keyword)
         if (calls.length === 1) throw new DataForSeoApiError('Try again', { statusCode: 429, retryable: true })
         if (keyword === 'timed out pet') throw new DataForSeoApiError('Timed out', { billingUncertain: true })
-        const matched = { type: 'organic', rank_group: 3, url: `${origin}/guide/` }
+        const matched = { type: 'organic', rank_group: 3, domain: ' ', url: `${origin}/guide/` }
         const unrelated = { type: 'organic', rank_group: 1, url: 'https://example.test.unrelated.test/' }
         const paidResult = { ...matched, type: 'paid', rank_group: 1 }
         const items = {
@@ -205,19 +238,21 @@ test('Bing SERP reuses safe retries and distinguishes misses, empty results, and
           'empty pet': [],
           'other pet': [unrelated],
           'ads only pet': [paidResult],
+          'unranked pet': [unrelated, { ...matched, rank_group: undefined }],
         }
         return { cost: 0.002, tasks: [{ result: [{ items: items[keyword] }] }] }
       },
     },
   })
-  assert.deepEqual(calls, ['desktop pet', 'desktop pet', 'empty pet', 'other pet', 'ads only pet', 'timed out pet'])
+  assert.deepEqual(calls, ['desktop pet', 'desktop pet', 'empty pet', 'other pet', 'ads only pet', 'unranked pet', 'timed out pet'])
   assert.equal(result.status, 'OBSERVED')
   assert.equal(result.observed, 2)
-  assert.equal(result.knownCostUsd, 0.008)
+  assert.equal(result.knownCostUsd, 0.01)
   assert.equal(result.billingUncertain, true)
   assert.deepEqual(result.rows.map(row => [row.status, row.rank]), [
-    ['OBSERVED', 3], ['UNKNOWN', null], ['OBSERVED', null], ['UNKNOWN', null], ['FAILED', null],
+    ['OBSERVED', 3], ['UNKNOWN', null], ['OBSERVED', null], ['UNKNOWN', null], ['UNKNOWN', null], ['FAILED', null],
   ])
+  assert.match(result.rows.find(row => row.keyword === 'unranked pet').reason, /缺少有效自然排名/u)
 })
 
 test('a fatal Bing SERP failure preserves earlier observations and skips the remaining keywords', async () => {
@@ -235,5 +270,5 @@ test('a fatal Bing SERP failure preserves earlier observations and skips the rem
   })
   assert.equal(calls, 2)
   assert.equal(report.knownCostUsd, 0.002)
-  assert.deepEqual(report.rows.map(row => row.status), ['OBSERVED', 'FAILED', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN'])
+  assert.deepEqual(report.rows.map(row => row.status), ['OBSERVED', 'FAILED', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN', 'UNKNOWN'])
 })

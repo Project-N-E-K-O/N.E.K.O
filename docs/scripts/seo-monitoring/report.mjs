@@ -821,7 +821,7 @@ function buildTrustRows(sites, segments, rankComparison, bingRankings) {
           collectedAt: queries?.collectedAt ?? null,
           result: queries?.status === 'OBSERVED'
             ? `${queries.latestDate ?? queryRows[0]?.date ?? 'N/A'} · 保留 ${queryRows.length} 条查询`
-            : queries?.reason ?? 'N/A',
+            : [queries?.latestDate, queries?.reason].filter(Boolean).join(' · ') || 'N/A',
           evidence: 'GetQueryStats',
         },
       )
