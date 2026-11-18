@@ -1702,9 +1702,16 @@ class Ledger:
 
         def work(conn: sqlite3.Connection) -> int:
             now = self._clock()
+            # Those its session took. A note that was handed over and is
+            # still on its way (steered in after the run's last request,
+            # say) was not answered by this turn: it is told of when the
+            # turn that takes it is over, or put back with the session.
             rows = conn.execute(
                 "SELECT * FROM messages WHERE delivered_to = ? AND notify_when_done = 1 "
-                "AND notified_at IS NULL AND kind = 'note' ORDER BY id",
+                "AND notified_at IS NULL AND kind = 'note' AND EXISTS ("
+                "SELECT 1 FROM wake_requests WHERE wake_requests.message_id = messages.id "
+                "AND wake_requests.reason = 'message' AND wake_requests.status = 'fired' "
+                "AND wake_requests.taken_at IS NOT NULL) ORDER BY id",
                 (commission_id,),
             ).fetchall()
             written = 0

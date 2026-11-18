@@ -317,9 +317,11 @@ async def test_the_sender_that_asked_is_told_once_when_the_turn_is_over(ledger):
     target = await _at_work(ledger, title="target")
     message, _refusal, _wait = await _note(ledger, sender, target.session_id, notify_when_done=True)
     [wake] = await ledger.wakes_pending(session_id=target.session_id)
-    # Not before the note was handed over.
+    # Not before the note was handed over, nor while it is on its way into the session.
     assert await ledger.turn_over(target.id, word=lambda note: "early") == 0
     await ledger.wakes_fire([wake.id], into=target.id)
+    assert await ledger.turn_over(target.id, word=lambda note: "not taken yet") == 0
+    await ledger.wakes_taken([wake.id])
 
     assert await ledger.turn_over(target.id, word=lambda note: f"dealt with #{note.id}", state="resting") == 1
 
@@ -1555,11 +1557,20 @@ async def test_an_open_session_with_its_run_over_is_not_set_to_work_with_the_quo
     session = host.task_agents._sessions[receipt.commission_id]
     assert session.idle and len(counted) == 1
 
+    outcomes: list[str] = []
+    hand_over = host.task_agents.hand_over
+
+    async def noting(*args: Any, **kwargs: Any) -> Any:
+        handed = await hand_over(*args, **kwargs)
+        outcomes.append(handed.outcome)
+        return handed
+
+    monkeypatch.setattr(host.task_agents, "hand_over", noting)
     await _bring_forward(host, receipt.commission_id)
-    await wait_until(lambda: len(counted) == 2, what="the quota being asked")
-    await asyncio.sleep(0.2)
+    await wait_until(lambda: bool(outcomes), what="the hand-over coming back")
 
     # No turn is started in it: the request would be made, and then fail the commission.
+    assert outcomes[0] == "held" and len(counted) == 2
     kept = await host.ledger.get(receipt.commission_id)
     assert kept.status == "working" and len(llm.requests) == 2 and session.sent == 1
     assert len(await host.ledger.wakes_pending(commission_id=receipt.commission_id)) == 1
@@ -2014,6 +2025,7 @@ async def test_what_a_done_notice_says_of_the_turn_is_what_was_so_when_it_ended(
     await _note(host.ledger, sender, built.session_id, "Rebuild it.", notify_when_done=True)
     [wake] = await host.ledger.wakes_pending(session_id=built.session_id)
     await host.ledger.wakes_fire([wake.id], into=built.id)
+    await host.ledger.wakes_taken([wake.id])
 
     # The turn ended with the commission at rest; by the time the sender is told, it is done.
     wrote = await host.ledger.turn_over(built.id, word=lambda note: "Rebuilding, back in an hour.", state="resting")
