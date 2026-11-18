@@ -1269,8 +1269,6 @@
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                 };
                 _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
-                var voiceProactiveBody = JSON.stringify(voiceProactivePayload);
-
                 async function _sendVoiceProactive() {
                     var hdrs = { 'Content-Type': 'application/json' };
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
@@ -1280,10 +1278,17 @@
                     if (_inputSlowdownStillBlocksSend()) {
                         return null;
                     }
+                    // A switch may have gone off while the headers were
+                    // fetched (also before a CSRF retry): drop vision then,
+                    // keeping the field as an explicit empty list.
+                    if (voiceProactivePayload.enabled_modes.length > 0
+                        && !canProactiveVisionRunDuringSpeech()) {
+                        voiceProactivePayload.enabled_modes = [];
+                    }
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
-                        body: voiceProactiveBody,
+                        body: JSON.stringify(voiceProactivePayload),
                     });
                 }
 
@@ -2048,8 +2053,10 @@
             // Only an actual "not allowed now" stops the heartbeat: after a
             // revoke-then-regrant a newer heartbeat may already be running.
             var revocationSeqAtStart = proactiveVisionRevocationSeq;
+            var offSeqAtStart = _speechVisionOffSeq;
             var frameStale = function () {
-                return revocationSeqAtStart !== proactiveVisionRevocationSeq;
+                return revocationSeqAtStart !== proactiveVisionRevocationSeq
+                    || offSeqAtStart !== _speechVisionOffSeq;
             };
 
             var rememberedWindowCapture = { required: false, allowed: true };
@@ -2282,11 +2289,16 @@
     // the screen stream so the capture indicator goes out. On: start it when
     // in a call. Settings are saved often, so this must be idempotent.
     var _speechVisionAllowedLast = null;
+    // Bumped whenever a sync finds speech vision not allowed (a switch or
+    // privacy mode went off), so a frame captured before an off -> on toggle
+    // is dropped even though the gate is open again when it completes.
+    var _speechVisionOffSeq = 0;
     function syncProactiveVisionDuringSpeech() {
         var allowed = canProactiveVisionRunDuringSpeech();
         var wasAllowed = _speechVisionAllowedLast;
         _speechVisionAllowedLast = allowed;
         if (!allowed) {
+            _speechVisionOffSeq += 1;
             stopProactiveVisionDuringSpeech();
             if (wasAllowed !== false) {
                 releaseProactiveVisionStream();
@@ -2305,31 +2317,33 @@
     }
 
     // Called from a switch the user just turned on (a click, so a capture
-    // picker may be shown): in a browser the stream was released when the
-    // switch went off, so ask for it again before the heartbeat needs it.
-    function acquireSpeechVisionAfterUserEnable() {
-        if (!S.isRecording || !holdsProactiveVisionStream()) return;
-        // A manual share picker is already open: do not open a second one.
+    // picker may be shown). In a browser the stream was released when a
+    // switch went off, and the captures that use it never prompt, so ask for
+    // it here: for the speech heartbeat in a call and for text-chat
+    // screenshots outside one (whichever switch was turned on last).
+    var _userEnableAcquireInFlight = null;
+    function acquireProactiveVisionAfterUserEnable() {
+        if (!holdsProactiveVisionStream()) return;
+        // A manual share picker, or one opened by an earlier click, is
+        // already open: do not open a second one.
         if (typeof window.isScreenSharingStartPending === 'function'
             && window.isScreenSharingStartPending() === true) return;
-        try {
-            var pending = acquireProactiveVisionStream();
-            if (pending && typeof pending.then === 'function') {
-                pending.then(function (ok) {
-                    // The frame sent when the switch came back on had no
-                    // stream yet in a browser; send one now that it is here.
-                    if (ok === true && S.proactiveVisionFrameTimer) {
-                        return sendOneProactiveVisionFrame();
-                    }
-                }).catch(function (e) {
-                    console.warn('[ProactiveVision] 开关开启后重新获取屏幕流失败:', e);
-                });
+        if (_userEnableAcquireInFlight) return;
+        _userEnableAcquireInFlight = acquireProactiveVisionStream();
+        _userEnableAcquireInFlight.finally(function () {
+            _userEnableAcquireInFlight = null;
+        }).catch(function () { });
+        _userEnableAcquireInFlight.then(function (ok) {
+            // The frame sent when the switch came back on had no stream yet
+            // in a browser; send one now that it is here.
+            if (ok === true && S.isRecording && S.proactiveVisionFrameTimer) {
+                return sendOneProactiveVisionFrame();
             }
-        } catch (e) {
+        }).catch(function (e) {
             console.warn('[ProactiveVision] 开关开启后重新获取屏幕流失败:', e);
-        }
+        });
     }
-    mod.acquireSpeechVisionAfterUserEnable = acquireSpeechVisionAfterUserEnable;
+    mod.acquireProactiveVisionAfterUserEnable = acquireProactiveVisionAfterUserEnable;
     mod.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
 
     function stopProactiveChatSchedule() {
@@ -2828,7 +2842,7 @@
     window.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
     window.holdsProactiveVisionStream = holdsProactiveVisionStream;
     window.syncProactiveVisionDuringSpeech = syncProactiveVisionDuringSpeech;
-    window.acquireSpeechVisionAfterUserEnable = acquireSpeechVisionAfterUserEnable;
+    window.acquireProactiveVisionAfterUserEnable = acquireProactiveVisionAfterUserEnable;
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;

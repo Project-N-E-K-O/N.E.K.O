@@ -841,11 +841,14 @@ def test_proactive_language_keeps_dynamic_fallback_render_only():
     voice_payload = _slice_between(
         proactive_source,
         "var voiceProactivePayload = {",
-        "async function _sendVoiceProactive() {",
+        "var resp = await _sendVoiceProactive();",
         "语音主动搭话语言参数",
     )
     assert "voice_mode: true" in voice_payload
-    assert "JSON.stringify(voiceProactivePayload)" in voice_payload
+    # Serialized at send time (after the language fields are applied).
+    assert voice_payload.index(
+        "_applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);"
+    ) < voice_payload.index("JSON.stringify(voiceProactivePayload)")
 
 
 @pytest.mark.unit

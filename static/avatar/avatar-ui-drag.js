@@ -376,11 +376,11 @@ window.createChatModeToggle = function(options) {
             if (window.proactiveChatEnabled && typeof window.resetProactiveChatBackoff === 'function') {
                 window.resetProactiveChatBackoff();
             }
-            // Voice-call screen viewing needs both switches; the stream was
-            // released when one went off, so re-acquire it on this click.
+            // Proactive vision needs both switches; the stream was released when
+            // one went off and later captures never prompt, so acquire it on this click.
             if ((globalVarName === 'proactiveChatEnabled' || globalVarName === 'proactiveVisionChatEnabled')
-                && typeof window.acquireSpeechVisionAfterUserEnable === 'function') {
-                window.acquireSpeechVisionAfterUserEnable();
+                && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+                window.acquireProactiveVisionAfterUserEnable();
             }
         } else {
             // 关闭时的逻辑：区分主开关和子模式

@@ -2120,8 +2120,10 @@
     // 隐私模式在手动启动进行中打开时不动那次启动复用的主动视觉流
     // （stopVisionAfterPrivacyEnabled 会跳过）。启动最终没跑起来（失败或被
     // 取消）时，这条流没人再用，在这里补释放，不用等 idle 检查。
+    // Same when a Proactive Chat / Screen Share switch went off during the
+    // start: release unless proactive vision still holds the stream.
     function releaseReusedStreamUnderPrivacy(attempt) {
-        if (S.proactiveVisionEnabled !== false) return;
+        if (isProactiveVisionHoldingStream()) return;
         if (manualScreenShareRunning || isScreenSharingStartPending()
             || sourceSwitchRestart !== null) return;
         var stream = attempt.initialStream;

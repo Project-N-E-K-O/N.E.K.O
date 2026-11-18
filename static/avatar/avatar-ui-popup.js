@@ -3032,10 +3032,11 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
-            // Voice-call screen viewing needs this switch too; re-acquire the
-            // stream on this click (it was released when the switch went off).
-            if (isChecked && typeof window.acquireSpeechVisionAfterUserEnable === 'function') {
-                window.acquireSpeechVisionAfterUserEnable();
+            // Proactive vision (voice-call viewing, text-chat screenshots) needs
+            // this switch too; acquire the stream on this click, since it was
+            // released when the switch went off and later captures never prompt.
+            if (isChecked && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
+                window.acquireProactiveVisionAfterUserEnable();
             }
         } else if (toggle.id === 'proactive-vision') {
             const visionEnabled = toggle.inverted ? !isChecked : isChecked;

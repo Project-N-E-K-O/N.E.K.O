@@ -1345,6 +1345,7 @@ const isProactiveVisionEnabledNow = () => visionEnabled;
 const canProactiveVisionRunDuringSpeech = () => visionEnabled;
 const isVisionConsentHeldNow = () => visionEnabled;
 let proactiveVisionRevocationSeq = 0;
+let _speechVisionOffSeq = 0;
 let tutorialSuppressed = false;
 const isHomeTutorialFeatureSuppressed = () => tutorialSuppressed;
 const stopProactiveVisionDuringSpeech = () => { results.stopped += 1; };
