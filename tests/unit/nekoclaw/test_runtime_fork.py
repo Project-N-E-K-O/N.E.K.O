@@ -1407,3 +1407,50 @@ async def test_what_can_be_removed_of_a_copy_that_failed_is_removed_though_one_f
             fork_record(source, target)
     # The snapshot could not be removed; the record under its first name and its lock file were.
     assert [path.name for path in target.iterdir()] == [SYSTEM_FILE]
+
+
+# ---------------------------------------------------------------------------
+# The tenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.runtime import session as session_module
+
+    # (No waiting between the attempts to write an entry.)
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", ())
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+        writer = session._recorder
+        append = writer._append_blocking
+
+        def not_the_summary(entry: Any) -> None:
+            if entry.type == "compaction":
+                raise OSError("the disk is full")
+            append(entry)
+
+        writer._append_blocking = not_the_summary
+        llm.add(say("## Current Work\n- the four steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        assert (await events.wait_ended(start=mark))["reason"] == "completed"
+        # The summary is in this conversation, and not on the record: a session opened from the
+        # record later finds what was said before it. The host is not told that it was summed up.
+        assert session._compactions == 1 and not events.of("compacted")
+        assert '"type":"compaction"' not in (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+
+        # One the record takes is told of, as before. (More is said first: there is something to sum up.)
+        writer._append_blocking = append
+        await _seed(session, events, llm)
+        llm.add(say("## Current Work\n- eight steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        await events.wait_ended(start=mark)
+        assert len(events.of("compacted")) == 1
+    finally:
+        await session.close()

@@ -2411,16 +2411,18 @@ async def test_what_was_said_before_a_commission_is_kept_when_it_is_filed_whatev
     host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
     manager = host.task_agents
     said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    said.note("Lan", ROLE_CHARACTER, "the ones from Rome, right")
     decision = host.brain._decision
     select = decision.select
     kept_meanwhile: list[int] = []
 
     async def much_is_said_meanwhile(*args: Any, **kwargs: Any) -> Any:
-        # While it is chosen who does it: more than is kept of the main dialogue.
+        # While it is chosen who does it: so much that the older of the two messages said
+        # before it is no longer among what is kept of the main dialogue, and the newer still is.
         kept_meanwhile.append(len(manager._excerpts))
         # (A moment after it was filed, whatever the clock's step is.)
         await asyncio.sleep(0.05)
-        for index in range(settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES):
+        for index in range(settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES - 1):
             said.note("Lan", ROLE_USER, f"something else {index}")
         return await select(*args, **kwargs)
 
@@ -2430,10 +2432,13 @@ async def test_what_was_said_before_a_commission_is_kept_when_it_is_filed_whatev
         await wait_status(host, first.id, "done")
     finally:
         decision.select = select
-    assert not any("the photos are on the desktop" in turn.text for turn in said.recent("Lan"))
+    still_kept = [turn.text for turn in said.recent("Lan")]
+    assert "the photos are on the desktop" not in still_kept and "the ones from Rome, right" in still_kept
     opening = _user_messages(scripts["sort the photos"].requests[0])[0]
-    # What the sentence referred to when it was dispatched, and nothing of what was said after.
-    assert "User: the photos are on the desktop" in opening and "something else" not in opening
+    # What the sentence referred to when it was dispatched, all of it (kept then, and not read
+    # again from what is left of it when it is handed over), and nothing of what was said after.
+    assert "User: the photos are on the desktop" in opening and "the ones from Rome, right" in opening
+    assert "something else" not in opening
     assert kept_meanwhile == [1]
 
     # Kept for a task agent, it goes when none takes the commission.
@@ -2912,3 +2917,132 @@ async def test_a_copy_that_can_neither_be_put_on_record_nor_removed_is_removed_w
     await host.shutdown()
 
     assert not Path(held[0]).exists() and manager._forks_given_up == {}
+
+
+# ---------------------------------------------------------------------------
+# The tenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_told_to_hand_over_a_task_agent_whose_session_was_closed_while_it_waited_goes_on_with_the_same_round(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.none"}), _used(900, 200), finish("tool_calls")],
+            # Told to hand over what it has, it asks the user something first.
+            [call("report", {"status": "waiting", "summary": "Which folder do the sorted ones go in?"}, "call-2"), _used(950, 60), finish("tool_calls")],
+            [call("report", {"status": "blocked", "summary": "half of the photos are sorted, in Sorted"}, "call-3"), _used(960, 40), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await _asked(host, first.id)
+    assert await host.answer(first.id, "no", choice="deny")
+
+    async def asks() -> bool:
+        commission = await host.ledger.get(first.id)
+        return commission.status == "waiting_user" and (commission.question() or {}).get("kind") == "report"
+
+    async def run_over() -> bool:
+        return sum(1 for event in await _events(host, first.id, "ended") if event.payload.get("reason") == "completed") >= 1
+
+    await wait_until(asks, what="its question to the user")
+    await wait_until(run_over, what="the asking run ending")
+    left = settings.TASK_AGENT_USAGE_WIND_UP_REQUESTS
+    assert manager._winding_up == {first.id: left - 1}
+    # The runtime, with nothing to do, closes the session that waits for the answer.
+    await manager._runtimes.builtin().close(first.id)
+    await manager.settle()
+    assert first.id not in manager._sessions and (await host.ledger.get(first.id)).status == "waiting_user"
+
+    # The user answers the question: the same round goes on, in a session opened anew.
+    assert (await _dispatch(host, "answer: in the folder Sorted")).kind == "answered"
+
+    stuck = await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    said = _user_messages(llm.requests[2])
+    # Not asked about usage a second time: what was refused for the round stands, the task agent
+    # goes on with what it had left, and is told again to hand over.
+    assert said[-1] == brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=left - 1)
+    assert brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=left) not in said
+    assert stuck.result_summary == "half of the photos are sorted, in Sorted"
+    assert len(await _events(host, first.id, "usage_refused")) == 1
+    # (Asked again, it would have waited for that answer and not come to an end.)
+    # Over, nothing of it is left.
+    assert manager._winding_up == {} and manager._refused_more == set()
+
+
+async def test_a_task_agent_is_told_to_hand_over_though_the_refusal_could_not_be_noted(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.none"}), _used(900, 200), finish("tool_calls")],
+            [call("report", {"status": "blocked", "summary": "half of the photos are sorted"}, "call-2"), _used(950, 60), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    append = host.ledger.append_event
+    refused: list[str] = []
+
+    async def not_the_refusal(commission_id: str, kind: str, payload: dict[str, Any] | None = None) -> int:
+        if kind == "usage_refused":
+            refused.append(commission_id)
+            raise RuntimeError("the ledger is locked")
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = not_the_refusal
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await _asked(host, first.id)
+        assert await host.answer(first.id, "no", choice="deny")
+        stuck = await wait_status(host, first.id, "blocked")
+        await _let_go(host)
+    finally:
+        host.ledger.append_event = append
+    # The note of it was not taken; the task agent was told all the same, and handed over.
+    assert refused == [first.id]
+    notice = brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=settings.TASK_AGENT_USAGE_WIND_UP_REQUESTS)
+    assert _user_messages(llm.requests[1])[-1] == notice
+    assert stuck.result_summary == "half of the photos are sorted"
+
+
+async def test_what_is_added_while_a_commission_is_being_taken_up_again_does_not_change_what_was_kept_for_it(
+    hosts, tmp_path
+):
+    scripts = {"sort the photos": ScriptedLLM([_report("blocked", "the folder is locked"), _report("ready", "sorted")])}
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    manager = host.task_agents
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    said.note("Lan", ROLE_USER, "the folder is unlocked now")
+    config = manager._model_config
+    entered, go = asyncio.Event(), asyncio.Event()
+
+    async def slow() -> Any:
+        # Its start takes a while (the model's configuration is being read).
+        entered.set()
+        await go.wait()
+        return await config()
+
+    manager._model_config = slow
+    try:
+        taking_up = asyncio.ensure_future(host.tell(first.id, "go on"))
+        await asyncio.wait_for(entered.wait(), 10)
+        kept = [turn.text for turn in manager._excerpts[first.id]]
+        # Said after the round began, and then a sentence that is added to it.
+        said.note("Lan", ROLE_USER, "and what about the videos")
+        assert await host.tell(first.id, "the ones from Rome first")
+        # The round keeps what was said before it began.
+        assert [turn.text for turn in manager._excerpts[first.id]] == kept
+        assert kept == ["the photos are on the desktop", "the folder is unlocked now"]
+    finally:
+        manager._model_config = config
+        go.set()
+    assert await asyncio.wait_for(taking_up, 10)
+    await wait_status(host, first.id, "done")

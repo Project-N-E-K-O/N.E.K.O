@@ -561,6 +561,12 @@ class TaskAgentManager:
         # gives up on: what such a write comes to (written, or owed) is
         # for it alone to tell.
         self._usage_writes: set[asyncio.Task[Any]] = set()
+        # Commissions whose task agent was told to hand over what it has,
+        # each with the requests it has left for that: kept apart from
+        # the session it was told in, which an idle runtime closes while
+        # the task agent waits for an answer. The session that is opened
+        # for the answer goes on with these, and is told again.
+        self._winding_up: dict[str, int] = {}
         # A count that goes up with every request that says how long its
         # session's conversation is, and for each session the count of
         # the one the ledger has: what an older request said of it,
@@ -937,19 +943,29 @@ class TaskAgentManager:
         and what is said meanwhile is not what it refers to. Kept in memory;
         no model is asked and nothing is read from anywhere else.
         """
-        if self._conversation is None or commission.parent_id is not None or commission.id in self._excerpts:
+        if commission.id in self._excerpts:
             return
+        turns = self._said_before(commission, upto=upto)
+        if turns:
+            self._excerpts[commission.id] = turns
+
+    def _said_before(self, commission: Commission, *, upto: float | None = None) -> list[Any]:
+        """Return what she and the user said in the main dialogue just before now, or before ``upto``; empty for none.
+
+        For her own commissions only (see ``_keep_excerpt``).
+        """
+        if self._conversation is None or commission.parent_id is not None:
+            return []
         try:
             turns = self._conversation.recent(commission.lanlan_name)
         except Exception:  # noqa: BLE001 - it starts without an excerpt
             logger.warning("reading what was said before a commission failed", exc_info=True)
-            return
+            return []
         if upto is not None:
             # What was said after the sentence was dispatched (while it was
             # being routed, say) is not what it refers to.
             turns = [turn for turn in turns if turn.at <= upto]
-        if turns:
-            self._excerpts[commission.id] = list(turns)
+        return list(turns)
 
     def _excerpt(self, commission: Commission) -> str:
         """Return the part of a commission's opening message that holds what was said just before it; empty for none.
@@ -2637,12 +2653,14 @@ class TaskAgentManager:
             # what was kept when it was first handed over went when it ended.
             # (Or is still there, when its start failed and it is taken up
             # before that was let go of: this round is about what is said
-            # now, so that goes first.)
-            self._excerpts.pop(commission_id, None)
-            self._keep_excerpt(commission)
-            taken = await self._take_up_again(commission_id, text, still_wanted=still_wanted)
-            if not taken:
-                self._excerpts.pop(commission_id, None)
+            # now, so that takes its place.) Read here, and kept only if
+            # this call is the one that starts or queues the round: one
+            # that joins a round under way adds its words to it, and the
+            # round keeps what was said before it began.
+            fresh = self._said_before(commission)
+            taken = await self._take_up_again(commission_id, text, still_wanted=still_wanted, excerpt=fresh)
+            if not taken and fresh and self._excerpts.get(commission_id) is fresh:
+                del self._excerpts[commission_id]
             return taken
         if commission.status == "queued" or (session is not None and not session.ready and not session.closing):
             called_off = self._called_off(commission_id)
@@ -2666,13 +2684,27 @@ class TaskAgentManager:
         return False
 
     async def _take_up_again(
-        self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None
+        self,
+        commission_id: str,
+        text: str,
+        *,
+        still_wanted: Callable[[], bool] | None = None,
+        same_round: bool = False,
+        excerpt: list[Any] | None = None,
     ) -> bool:
         """Start a commission's task agent again where its transcript ends, ``text`` its next work.
 
         Its old session is gone or on its way out. Without a free place it is
         queued, which a stop can still end. Returns whether it was started or
         queued.
+
+        ``same_round`` is for the answer to a question its task agent
+        asked: more of the round it was at, not a new one (what was
+        refused for the round, and what it has left to hand over, stand).
+        ``excerpt`` is what was said in the main dialogue just before,
+        for one that is taken up as a new round: kept for it when this
+        call is the one that starts or queues it, and not when it only
+        joins one that is doing so already.
         """
         if self._closed:
             return False
@@ -2707,7 +2739,9 @@ class TaskAgentManager:
                 # other to be out of the way and takes the commission up
                 # by itself.
                 await asyncio.wait([called_off])
-                return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
+                return await self._take_up_again(
+                    commission_id, text, still_wanted=still_wanted, same_round=same_round, excerpt=excerpt
+                )
             # An earlier sentence is taking it up again or queueing it right
             # now: this one goes along with that rather than starting or
             # queueing a second time, which would then be refused.
@@ -2718,7 +2752,7 @@ class TaskAgentManager:
             # so a caller cancelled meanwhile does not leave a half set-up
             # session behind a commission that says it is working.
             self._taking_up.add(commission_id)
-            self._new_round_of(commission_id)
+            self._new_round_of(commission_id, same_round=same_round, excerpt=excerpt)
             launch = self._spawn(self._launch(commission_id, prompt=text, still_wanted=still_wanted))
             self._note_under_way(commission_id, still_wanted, launch)
 
@@ -2736,12 +2770,14 @@ class TaskAgentManager:
         # Marked at once, before anything is awaited, so a sentence arriving
         # meanwhile joins this one.
         self._requeueing.add(commission_id)
-        self._new_round_of(commission_id)
+        self._new_round_of(commission_id, same_round=same_round, excerpt=excerpt)
         queueing = self._spawn(self._requeue(commission_id, text, still_wanted=still_wanted))
         self._note_under_way(commission_id, still_wanted, queueing)
         return await asyncio.shield(queueing)
 
-    def _new_round_of(self, commission_id: str) -> None:
+    def _new_round_of(
+        self, commission_id: str, *, same_round: bool = False, excerpt: list[Any] | None = None
+    ) -> None:
         """Note that a commission is taken up again: started now, or queued for a place.
 
         Its session has something new to be worked on in it (it may be
@@ -2751,9 +2787,23 @@ class TaskAgentManager:
         on its session is looked at, which is where it is forgotten.
         Kept, the new round would be told to hand over at once instead
         of the user being asked.
+
+        Not so for more of the same round (``same_round``: the answer to
+        a question the task agent asked, in a session that was closed
+        meanwhile): the user answers that question, and is not asked
+        about usage a second time; what the task agent had left to hand
+        over stands as well.
+
+        ``excerpt`` takes the place of what was kept for the commission
+        before: this is where a round becomes this call's.
         """
         self._new_work_in(self._session_of.get(commission_id), self._idle_stops)
-        self._refused_more.discard(commission_id)
+        if not same_round:
+            self._refused_more.discard(commission_id)
+            self._winding_up.pop(commission_id, None)
+            self._excerpts.pop(commission_id, None)
+            if excerpt:
+                self._excerpts[commission_id] = excerpt
 
     def _note_under_way(
         self, commission_id: str, still_wanted: Callable[[], bool] | None, task: asyncio.Future[Any]
@@ -2874,7 +2924,7 @@ class TaskAgentManager:
             if question.get("kind") != "report":
                 return False
             await self._ledger.append_event(commission_id, "answered", {"text": text, "resumed": True})
-            return await self._take_up_again(commission_id, text)
+            return await self._take_up_again(commission_id, text, same_round=True)
         finally:
             self._answering_closed.discard(commission_id)
 
@@ -3458,6 +3508,7 @@ class TaskAgentManager:
 
     def _usage_settled(self, commission: Commission) -> None:
         """Forget what was noted of the usage of a commission that is over: whether more was refused for it."""
+        self._winding_up.pop(commission.id, None)
         if commission.parent_id is None:
             self._refused_more.discard(commission.id)
             self._usage_asks.pop(commission.id, None)
@@ -3516,6 +3567,12 @@ class TaskAgentManager:
         if self._sessions.get(commission_id) is not session or session.closing:
             # Over meanwhile: its run ends by itself.
             return None
+        if session.wind_up_left is None and commission_id in self._winding_up:
+            # More of a round in which it was told to hand over, in a
+            # session opened anew (the one it was told in was closed
+            # while it waited for an answer): with what it had left.
+            session.wind_up_left = self._winding_up[commission_id]
+            session.wind_up_told_again = False
         if session.wind_up_left is not None:
             return await self._wind_up_step(session)
 
@@ -3556,9 +3613,16 @@ class TaskAgentManager:
             return {"stop": True}
         # The request this is asked before is the first of those it has left.
         session.wind_up_left = max(0, TASK_AGENT_USAGE_WIND_UP_REQUESTS - 1)
-        await self._ledger.append_event(
-            commission_id, "usage_refused", {"used": standing.used, "requests_left": TASK_AGENT_USAGE_WIND_UP_REQUESTS}
-        )
+        self._winding_up[commission_id] = session.wind_up_left
+        try:
+            await self._ledger.append_event(
+                commission_id, "usage_refused", {"used": standing.used, "requests_left": TASK_AGENT_USAGE_WIND_UP_REQUESTS}
+            )
+        except Exception:  # noqa: BLE001 - the note is for the record; the task agent is told all the same
+            # Left untold, it would go on working on the requests it has
+            # left, and be stopped without ever having been told to hand
+            # over what it has.
+            logger.warning("noting that more usage was refused failed", exc_info=True)
         return {"notice": TASK_AGENT_USAGE_WIND_UP.format(requests=TASK_AGENT_USAGE_WIND_UP_REQUESTS)}
 
     async def _wind_up_step(self, session: _Session) -> dict[str, Any] | None:
@@ -3572,6 +3636,7 @@ class TaskAgentManager:
         if session.wind_up_left:
             left = session.wind_up_left
             session.wind_up_left -= 1
+            self._winding_up[session.commission_id] = session.wind_up_left
             if not session.wind_up_told_again:
                 # The first request of another run of the same round: what
                 # it was told went with the run it was told in, and without

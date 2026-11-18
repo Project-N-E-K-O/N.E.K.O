@@ -382,6 +382,10 @@ class SessionRecorder:
     async def flush(self) -> None:
         await self._queue.join()
 
+    def gave_up_on(self, entry_id: str | None) -> bool:
+        """Whether an entry was given up on: it could not be written, and is not on the record."""
+        return entry_id is not None and entry_id in self._lost
+
     async def close(self) -> None:
         await self.flush()
         writer, self._writer = self._writer, None
@@ -472,6 +476,8 @@ class TaskAgentSession(SessionInbox):
         self._compactions = 0
         self._compaction_due = False
         self._tokens_before_compaction = 0
+        # The entry of the latest summary made here, to ask the record whether it took it.
+        self._compaction_entry_id: str | None = None
         # The entry of the text that opened the commission under way, which a
         # summary leaves as it is; and that text as a message, from the
         # moment it is handed over until it is in the transcript.
@@ -1168,6 +1174,7 @@ class TaskAgentSession(SessionInbox):
             )
         )
         self._compactions += 1
+        self._compaction_entry_id = compaction.summary_row.entry_id
         self._tokens_before_compaction = compaction.tokens_before
         # (What the request that wrote it used was told when it came back:
         # ``_summarize``.)
@@ -1610,12 +1617,18 @@ class TaskAgentSession(SessionInbox):
             self._drop_usage_notices()
             before = self._compactions
             await self._fit(force=True, tight=False, or_drop=False)
+            # Whether a summary was made now, and is on the record: one
+            # the record did not take (the disk refused it, after the
+            # retries) is in this conversation and in no other that is
+            # opened from the record, so the host is not told of it.
+            await self._recorder.flush()
+            made = self._compactions > before and not self._recorder.gave_up_on(self._compaction_entry_id)
             if self._compaction_due:
                 # Also when no summary was made now and one from before the
                 # session was last closed still waits for what follows it:
                 # that is done, and the host is not told of a summing up,
                 # there having been none this time.
-                await self._after_compaction(tell=self._compactions > before)
+                await self._after_compaction(tell=made)
             await self._recorder.flush()
         except asyncio.CancelledError:
             if not (self._abort_requested or self._closing):
