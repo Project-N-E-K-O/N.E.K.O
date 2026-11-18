@@ -165,7 +165,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 新模块 `plugin/server/application/plugins/call_audit.py`：内存环形缓冲 + 追加式 JSONL，**不走事件总线**，全部用标准库现成组件。
 
 - **路径**：`resolve_plugin_log_directory(log_subdir="plugin_call_audit") / "call_audit.jsonl"`，和插件服务日志同一个根。
-- **写入**：专用 logger（`propagate=False`，只写一行一个 JSON）挂 `QueueHandler`，由 `QueueListener` 在它自己的守护线程里交给 `RotatingFileHandler`（4 MiB 轮转，保留 3 个，总量约 16 MiB）。队列 2048 条，满了丢弃并计数（`dropped`），不阻塞宿主 loop。环形缓冲是 `deque(maxlen=1000)`，接口直接读它。
+- **写入**：专用 logger（`propagate=False`，只写一行一个 JSON）挂 `QueueHandler`，由 `QueueListener` 在它自己的守护线程里交给 `RotatingFileHandler`（4 MiB 轮转，保留 3 个，总量约 16 MiB）。队列 2048 条，满了丢弃并计数（`dropped`），不阻塞宿主 loop。环形缓冲是 `deque(maxlen=1000)`，判定记录另有一个 `deque(maxlen=500)`，频繁的转发记录挤不掉它们；接口合并两者按时间返回。
   - 隐私规则禁止的是「用 logger 记隐私内容」。审计记录里只有 id、能力名和结果码，没有任何内容原文，所以用专用 logger 写不违规；模块说明里写了这一点，并有测试断言审计不含隐私内容。
 - **退出**：插件服务关停时（`plugin/server/lifecycle.py` 的 `_shutdown_internal`，宿主都停下之后）放入停止标记并等监听线程把队列写完，最多 1 秒，超时就不等了，不阻塞关停（没用 `QueueListener.stop()`：它等待没有时限，队列满时还会直接报错）。关停之后的记录只进环形缓冲；同一进程里服务重启时重新打开。监听线程是守护线程，解释器退出不等它；`os._exit` 或外部强制结束时没写完的记录会丢，这是尽力而为。
 - **去重**：同一 `(plugin, capability, verdict, reason, blocked_by, flags)` 的判定记录 60 秒内只写第一条（一个 dict 存上次写的时间）。没确认过 consent 的插件（例如从没手动启动过的内置插件）每次用能力都会 `would_deny self_not_approved`，不去重会刷屏。
@@ -195,7 +195,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 
 - 路由：`GET /plugin-audit/call-chain`，新文件 `plugin/server/routes/plugin_audit.py`，在 `build_plugin_server_app`（`plugin/server/http_app.py:277`）里 `include_router`。
 - 不带参数，返回环形缓冲里最近的最多 1000 条（新的在前，不读盘）：`{"mode", "entries": [...], "dropped", "registry_full"}`。
-- 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。所以经主服务代理、Docker 端口映射或反代过来的请求都会被拒。带 `Origin` 头的请求（浏览器页面发起的）也一律 403，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
+- 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。所以经主服务代理、Docker 端口映射或反代过来的请求都会被拒。带 `Origin` 或 `Sec-Fetch-*` 头的请求（浏览器页面发起的；同源 GET 不带 `Origin`，但会带 `Sec-Fetch-*`）也一律 403，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
 - 开关 `off` 时返回 `mode: "off"` 和空列表。
 
 ### 3.10 错误码 `CAPABILITY_NOT_GRANTED`
@@ -268,7 +268,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 风险：
 
 - 登记 / 摘除漏在某条异常路径上 → 记录泄漏。由 `finally` 摘除（成功、报错、超时、取消都走它）和上限兜底。
-- 判定时同步读 consent：批量自启动前已在线程里读入内存，之后每次约 4µs；但读和保存共用一把锁，用户确认或拒绝、写入小 JSON 文件的那几毫秒里，判定会在事件循环上等这把锁。P1 接受这个窄窗口；如果实际观察到阻塞，再改成读已发布的内存快照。
+- 判定时同步读 consent：批量自启动前已在线程里读入内存，之后每次约 4µs；但读和保存共用一把锁，用户确认或拒绝、写入小 JSON 文件的那几毫秒里，判定会在事件循环上等这把锁。P1 接受这个窄窗口；如果实际观察到阻塞，再改成读已发布的内存快照。consent 文件损坏、读不出来时，5 秒内不再重读，期间按「未知」处理，避免每次判定都在事件循环上重读文件。
 - 审计写盘出错 → 只影响审计（标准库 handler 自己处理写错误），不影响调用。
 - `RpcContext` 加字段 → 有默认值；现有测试里直接构造它的地方不受影响。
 

@@ -24,6 +24,8 @@ MAX_BYTES = 4 * 1024 * 1024
 BACKUP_COUNT = 3
 
 _ring: deque[dict] = deque(maxlen=1000)
+# Decisions get their own ring so frequent forward entries cannot evict them.
+_decision_ring: deque[dict] = deque(maxlen=500)
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
@@ -84,7 +86,7 @@ def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     global dropped
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
-    _ring.append(item)
+    (_decision_ring if entry.get("kind") == "decision" else _ring).append(item)
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
         # everything accepted before a close is queued ahead of its sentinel.
@@ -101,7 +103,7 @@ def record(entry: dict) -> None:
 
 def entries() -> list[dict]:
     """Newest first."""
-    return list(reversed(_ring))
+    return sorted([*_ring, *_decision_ring], key=lambda item: item["ts"], reverse=True)
 
 
 def close(timeout: float = 1.0) -> bool:
@@ -128,6 +130,11 @@ def close(timeout: float = 1.0) -> bool:
         # until it has exited (see _audit_logger_locked).
         with _lock:
             _abandoned = listener
+        # logging.shutdown() at exit would wait on the stuck handler's lock.
+        with logging._lock:
+            logging._handlerList[:] = [
+                ref for ref in logging._handlerList if ref() not in listener.handlers
+            ]
         return False
     for handler in listener.handlers:
         handler.close()

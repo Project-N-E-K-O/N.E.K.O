@@ -38,6 +38,8 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (granted(p), True))
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path)
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
+    monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
+    monkeypatch.setattr(capability_gate, "_consent_failed_at", -60.0)
     monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()
@@ -192,6 +194,9 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
     started = time.monotonic()
     assert call_audit.close(0.3) is False
     assert time.monotonic() - started < 1.5
+    # logging.shutdown() at exit must not wait on the stuck handler's lock.
+    stuck_handlers = call_audit._abandoned.handlers
+    assert not any(ref() in stuck_handlers for ref in logging._handlerList)
     # The stuck writer keeps the file: a restart must not start a second one ...
     stuck_writer = call_audit._abandoned
     call_audit.reopen()
@@ -225,6 +230,8 @@ def test_failed_rights_lookup_does_not_leak_the_registration(gate, monkeypatch):
         ("127.0.0.1", "http://nas.local:48916", {}, 403),
         ("127.0.0.1", "http://127.0.0.1:48916", {"X-Forwarded-For": "10.0.0.2"}, 403),
         ("127.0.0.1", "http://127.0.0.1:48916", {"Origin": "http://127.0.0.1:48911"}, 403),
+        # A same-origin page omits Origin on GET but sends fetch metadata.
+        ("127.0.0.1", "http://127.0.0.1:48916", {"Sec-Fetch-Site": "same-origin"}, 403),
     ],
 )
 async def test_audit_route_is_local_only(gate, client, base, headers, status):
@@ -249,3 +256,39 @@ def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch):
     (decision,) = [e for e in call_audit.entries() if e["kind"] == "decision"]
     assert decision["chain"] == ["b", "a"] and decision["reason"] == "caller_chain"
     assert len(capability_gate.registry) == 0
+
+
+def test_decisions_are_not_evicted_by_forward_entries(gate):
+    call_audit.record({"kind": "decision", "verdict": "would_deny"})
+    for index in range(1500):
+        call_audit.record({"kind": "forward", "n": index})
+    assert [e for e in call_audit.entries() if e["kind"] == "decision"]
+
+
+def test_failed_consent_reads_are_not_retried_on_every_use(gate, monkeypatch):
+    from plugin.server.infrastructure import plugin_consent
+
+    reads = []
+
+    def broken(plugin_id):
+        reads.append(plugin_id)
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
+    monkeypatch.setattr(plugin_consent.consent_store, "read", broken)
+    assert capability_gate.granted_capabilities("a") == (frozenset(), False)
+    assert capability_gate.granted_capabilities("a") == (frozenset(), False)
+    assert reads == ["a"]
+
+
+async def test_internal_push_field_is_never_forwarded(monkeypatch):
+    monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "off")
+    forwarded = []
+
+    async def forward(self, msg):
+        forwarded.append(msg)
+
+    monkeypatch.setattr(PluginCommunicationResourceManager, "_forward_message", forward)
+    manager = PluginCommunicationResourceManager(plugin_id="a", transport=object())  # type: ignore[arg-type]
+    await manager._route_message({"type": "MESSAGE_PUSH", "_rpc_parent_request_id": "r1", "parts": []})
+    assert "_rpc_parent_request_id" not in forwarded[0]

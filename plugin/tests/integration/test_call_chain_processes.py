@@ -48,6 +48,7 @@ async def _world(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (frozenset(grants.get(p, ())), True))
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path / "audit")
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
+    monkeypatch.setattr(call_audit, "_decision_ring", call_audit.deque(maxlen=500))
     monkeypatch.setattr(call_audit, "_abandoned", None)
     call_audit.close()
     call_audit.reopen()

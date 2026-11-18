@@ -780,17 +780,14 @@ class PluginCommunicationResourceManager:
         se = self._shutdown_event
         if se and se.is_set():
             return
-        if msg.get("type") == "MESSAGE_PUSH" and policy_enabled():
-            self._check_message_push(msg)
+        if msg.get("type") == "MESSAGE_PUSH":
+            # Internal field: never forwarded, whatever either side's setting.
+            parent = msg.pop("_rpc_parent_request_id", None)
+            if policy_enabled():
+                from plugin.server.application.plugins import capability_gate
+
+                capability_gate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")
         await self._forward_message(msg)
-
-    def _check_message_push(self, msg: dict) -> None:
-        # The SDK adds the parent id only for this check; drop it so the
-        # stored record and the message plane see the same bytes as before.
-        parent = msg.pop("_rpc_parent_request_id", None)
-        from plugin.server.application.plugins import capability_gate
-
-        capability_gate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")
 
     def _publish_message_to_plane(self, msg: Dict[str, Any]) -> bool:
         """Write one plugin message into the message plane. Best effort.

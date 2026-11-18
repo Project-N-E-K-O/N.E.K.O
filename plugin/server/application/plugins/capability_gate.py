@@ -10,6 +10,7 @@ the caller sees exactly what it saw before. See docs/design/plugin-call-chain.md
 from __future__ import annotations
 
 import asyncio
+import functools
 import re
 import time
 
@@ -35,10 +36,16 @@ CAPABILITY_BY_OPERATION = {
 _CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}
+# After a failed consent read, do not retry the file on the event loop for a while.
+_CONSENT_RETRY_SECONDS = 5.0
+_consent_failed_at = -_CONSENT_RETRY_SECONDS
 
 
 def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
     """Approved capabilities from plugin_consents.json, and whether the read worked."""
+    global _consent_failed_at
+    if time.monotonic() - _consent_failed_at < _CONSENT_RETRY_SECONDS:
+        return frozenset(), False
     try:
         from plugin.server.infrastructure.plugin_consent import consent_store
 
@@ -47,6 +54,7 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
             return frozenset(), True
         return frozenset(c for c in record.get("approved_capabilities") or () if isinstance(c, str)), True
     except Exception:  # unreadable store or malformed record
+        _consent_failed_at = time.monotonic()
         return frozenset(), False
 
 
@@ -180,13 +188,10 @@ def check(plugin_id: str, parent_request_id: object, capability: str, operation:
 def capability_checked(capability: str, handler):
     """Wrap a control-RPC handler with the shared decision entry point."""
 
+    @functools.wraps(handler)  # keeps the name and markers such as owns_deadline
     async def checked(ctx, request):
         check(ctx.from_plugin, ctx.parent_request_id, capability, str(request.get("type") or ""))
         return await handler(ctx, request)
 
-    checked.__wrapped__ = handler
     checked.__capability__ = capability
-    for name, value in vars(handler).items():
-        if name.startswith("__rpc_"):  # e.g. the owns_deadline marker
-            setattr(checked, name, value)
     return checked

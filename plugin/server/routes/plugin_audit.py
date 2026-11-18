@@ -1,7 +1,8 @@
 """Read-only call-chain audit for local native clients (docs/design/plugin-call-chain.md 3.9).
 
 Allowed only when the client and the Host are loopback, there are no
-forwarding headers and no browser ``Origin``.
+forwarding headers and nothing a browser sends (``Origin``, ``Sec-Fetch-*``):
+a same-origin page on the plugin server omits ``Origin`` on GET.
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ router = APIRouter()
 
 @router.get("/plugin-audit/call-chain")
 async def get_call_chain_audit(request: Request) -> dict[str, object]:
-    if request.headers.get("origin") is not None or not _local_request(request):
+    from_browser = any(name == "origin" or name.startswith("sec-fetch-") for name in request.headers)
+    if from_browser or not _local_request(request):
         raise HTTPException(status_code=403, detail={"code": "LOCAL_ONLY"})
     return {
         "mode": current_mode(),
