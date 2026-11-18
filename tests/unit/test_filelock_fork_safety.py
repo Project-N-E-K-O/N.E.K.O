@@ -261,6 +261,45 @@ def test_chat_sync_writer_mutex_held_by_other_thread_is_fresh_in_child(tmp_path)
         pass
 
 
+def _writer_child_check_is_quarantined(writer):
+    try:
+        writer.check()
+    except chat_sync_writer.WriterQuarantined:
+        return
+    raise SystemExit(5)
+
+
+def test_chat_sync_writer_fork_during_other_thread_recover_stays_quarantined(tmp_path):
+    """A recover() another thread was running at fork must not leave the child skipping checks."""
+    _, writer = _new_writer(tmp_path)
+    with writer.initialize():
+        pass
+    writer.check()
+    staging, fail = threading.Event(), threading.Event()
+
+    def stage():
+        staging.set()
+        fail.wait(_JOIN_TIMEOUT)
+        raise RuntimeError('staging aborted')
+
+    def run_recover():
+        with pytest.raises(RuntimeError):
+            writer.recover(stage)
+
+    thread = threading.Thread(target=run_recover, daemon=True)
+    thread.start()
+    assert staging.wait(_JOIN_TIMEOUT)
+    # Abort the parent's recovery once the child is waiting on the file lock;
+    # the witness stays quarantined, so the child's check must refuse.
+    timer = _release_soon(fail)
+    try:
+        assert _run_in_fork_child(_writer_child_check_is_quarantined, writer) == 0
+    finally:
+        fail.set()
+        timer.cancel()
+        thread.join(_JOIN_TIMEOUT)
+
+
 def test_chat_sync_writer_mutex_held_by_forking_thread_is_kept(tmp_path):
     _, writer = _new_writer(tmp_path)
     with writer._mutex:

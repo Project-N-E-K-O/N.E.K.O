@@ -93,12 +93,17 @@ class ChatSyncWriter:
 
         filelock 4 rejects instances inherited across fork. A mutex another parent
         thread held at fork time would stay locked forever: that thread does not
-        exist in the child. A mutex the forking thread holds is kept so its release works.
+        exist in the child. A mutex the forking thread holds is kept so its release
+        works; replacing one also drops the state that thread guarded with it.
         """
         self._file_lock = self._new_file_lock()
         # RLock._is_owned is private but present in CPython's C and Python RLocks (project pins 3.11).
         if not self._mutex._is_owned():
             self._mutex = threading.RLock()
+            # Set only under the mutex by initialize()/recover(), whose finally never runs here.
+            # Left True it would skip _check_locked(); cleared, the child rereads the witness,
+            # which recover() marks quarantined before staging.
+            self._initializing = False
 
     @contextmanager
     def locked(self):
