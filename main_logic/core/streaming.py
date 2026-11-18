@@ -291,14 +291,7 @@ class StreamingMixin:
         """
         self._live_share_stopped_at = time.monotonic()
         # Independent ASR keeps the latest live frame for the next voice turn.
-        latest = getattr(self, "_latest_independent_visual_frame", None)
-        if latest is not None and getattr(latest, "request_id", None) is None:
-            self._latest_independent_visual_frame = None
-        self._prerecord_visual_frames = [
-            frame
-            for frame in getattr(self, "_prerecord_visual_frames", None) or []
-            if getattr(frame, "request_id", None) is not None
-        ]
+        self._discard_independent_live_frames()
         discard = getattr(self.session, "discard_live_share_frames", None)
         if callable(discard):
             try:
@@ -1201,8 +1194,12 @@ class StreamingMixin:
                         elif isinstance(target_session, OmniOfflineClient):
                             # A live share frame is not something the user chose
                             # to attach. Queued here it would ride the next text
-                            # message and stay in history for later turns.
-                            if _is_live_share_frame(message):
+                            # message and stay in history for later turns. Same
+                            # rule as the pending-input replay.
+                            if (
+                                _is_live_share_frame(message)
+                                and self._live_share_frame_targets_text_session()
+                            ):
                                 return
                             # screen/camera validation runs in background; the same request's slash shortcut
                             # may already have executed, so recheck before buffering to avoid attaching its screenshot to the next message.

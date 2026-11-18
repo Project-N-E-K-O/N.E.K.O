@@ -644,6 +644,21 @@ class AsrRuntimeMixin:
         if not hasattr(self, "_voice_lease_resync_suppressed"):
             self._voice_lease_resync_suppressed = False
 
+    def _discard_independent_live_frames(self) -> None:
+        """Forget staged live frames (no request_id) after a screen share stopped.
+
+        Screenshots the user attached (request_id set) stay for their turn;
+        frames already owned by a turn record stay with that turn.
+        """
+        latest = getattr(self, "_latest_independent_visual_frame", None)
+        if latest is not None and latest.request_id is None:
+            self._latest_independent_visual_frame = None
+        self._prerecord_visual_frames = [
+            frame
+            for frame in getattr(self, "_prerecord_visual_frames", None) or []
+            if frame.request_id is not None
+        ]
+
     def _stage_independent_visual_frame(
         self,
         image_b64: str,

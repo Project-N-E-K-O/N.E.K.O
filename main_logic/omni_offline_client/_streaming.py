@@ -17,7 +17,7 @@ import collections
 from dataclasses import replace
 from typing import Sequence
 
-from utils.image_history import replace_history_text
+from utils.image_history import image_count, replace_history_text
 
 from main_logic.agent_event_bus import conversation_reply_observation
 from main_logic.proactive_delivery import (
@@ -1179,6 +1179,7 @@ class _StreamingMixin:
             # Store _attached_images: post-fit bytes, not original caller images.
             # Normalization re-encodes almost every turn; bus images must match what the model actually saw.
             _pending_bus_frames = (_attached_images, _attached_sources)
+            _auto_capture_epoch_at_snapshot = getattr(self, "_auto_capture_discard_epoch", 0)
 
         # Callback for user input
         transcript_callback = input_transcript_callback or self.on_input_transcript
@@ -1443,29 +1444,35 @@ class _StreamingMixin:
                                 # revocation since the snapshot (e.g. while the
                                 # transcript callback ran) stripped them from the
                                 # request, so plugins must not get them either.
-                                # Counted, not a set: identical bytes may be both a
-                                # stripped screenshot and a kept attachment. Other
-                                # labels claim a carried copy before the screenshot.
-                                _carried = collections.Counter(
-                                    part.get("image_url", {}).get("url")
-                                    for part in (
-                                        user_message.content
-                                        if isinstance(user_message.content, list)
-                                        else ()
+                                # Nothing was stripped since the snapshot in the common
+                                # case: skip building data URLs for every frame.
+                                if (
+                                    getattr(self, "_auto_capture_discard_epoch", 0)
+                                    != _auto_capture_epoch_at_snapshot
+                                    or image_count(user_message.content) != len(_bus_images)
+                                ):
+                                    # Counted, not a set: identical bytes may be both a
+                                    # stripped screenshot and a kept attachment. Other
+                                    # labels claim a carried copy before the screenshot.
+                                    _carried = collections.Counter(
+                                        part.get("image_url", {}).get("url")
+                                        for part in (
+                                            user_message.content
+                                            if isinstance(user_message.content, list)
+                                            else ()
+                                        )
+                                        if isinstance(part, dict) and part.get("type") == "image_url"
                                     )
-                                    if isinstance(part, dict) and part.get("type") == "image_url"
-                                )
-                                _kept = []
-                                for _screen_pass in (False, True):
-                                    for index, image in enumerate(_bus_images):
-                                        if (_bus_sources[index] == _FRAME_SOURCE_SCREEN) != _screen_pass:
-                                            continue
-                                        url = f"data:image/jpeg;base64,{image}"
-                                        if _carried[url] > 0:
-                                            _carried[url] -= 1
-                                            _kept.append(index)
-                                _kept.sort()
-                                if len(_kept) != len(_bus_images):
+                                    _kept = []
+                                    for _screen_pass in (False, True):
+                                        for index, image in enumerate(_bus_images):
+                                            if (_bus_sources[index] == _FRAME_SOURCE_SCREEN) != _screen_pass:
+                                                continue
+                                            url = f"data:image/jpeg;base64,{image}"
+                                            if _carried[url] > 0:
+                                                _carried[url] -= 1
+                                                _kept.append(index)
+                                    _kept.sort()
                                     _bus_images = [_bus_images[i] for i in _kept]
                                     _bus_sources = [_bus_sources[i] for i in _kept]
                                 # Publish without waiting. This hop may cross loops (see
