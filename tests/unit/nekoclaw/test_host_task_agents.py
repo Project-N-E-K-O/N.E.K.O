@@ -2237,7 +2237,7 @@ async def test_what_a_task_agent_hands_to_one_it_starts_reaches_it_whole(hosts, 
     from config.nekoclaw_settings import TASK_AGENT_BRIEF_MAX_TOKENS
     from utils.tokenize import count_tokens
 
-    steps = " ".join(f"Then check file number {index} against the list." for index in range(400))
+    steps = " ".join(f"Then check file number {index} against the list." for index in range(900))
     handed = f"Count the files in the folder. {steps} Last of all, answer with the word DONE."
     # Longer than what the opening message of one of her commissions is held to.
     assert count_tokens(handed) > 2 * TASK_AGENT_BRIEF_MAX_TOKENS
@@ -2870,6 +2870,80 @@ async def _started(
     kind, session, said = runtime.sent[-1]
     assert (kind, session, runtime.openings[-1]) == ("prompt", commission.id, True) and text in said
     return commission, runtime
+
+
+async def test_a_start_that_fails_after_a_runtime_opened_its_session_closes_it_before_the_session_is_let_go(
+    hosts, tmp_path, monkeypatch
+):
+    host, runtimes = _recording_host(hosts, tmp_path)
+    await host.space.touch_project("Budget app")
+    told = RecordingRuntime.prompt
+    order: list[str] = []
+
+    async def cannot_be_told(self: Any, session_id: str, text: str, *, opening: bool = False) -> None:
+        if not order:
+            order.append("refused")
+            raise RuntimeError("the runtime went away")
+        order.append("told")
+        await told(self, session_id, text, opening=opening)
+
+    closing = RecordingRuntime.close
+
+    async def close(self: Any, session_id: str) -> None:
+        order.append("closed")
+        await closing(self, session_id)
+
+    monkeypatch.setattr(RecordingRuntime, "prompt", cannot_be_told)
+    monkeypatch.setattr(RecordingRuntime, "close", close)
+    first = await _filed(host, "add a CSV export to the budget app")
+    await host.task_agents.submit(first)
+    failed = await wait_status(host, first.id, "failed")
+    assert "the runtime went away" in failed.status_reason
+    await host.task_agents.settle()
+    await wait_until(lambda: host.task_agents._held_by == {}, what="the session being let go")
+
+    # The runtime had opened the session before the start failed: it was closed there, and
+    # the next commission of the project is started in it only after that.
+    (runtime,) = runtimes
+    assert runtime.closed == [first.id]
+    second = await _filed(host, "add a chart to the budget app")
+    assert await host.task_agents.submit(second)
+    assert [spec.session_id for spec in runtime.specs] == [first.id, first.id]
+    assert order == ["refused", "closed", "told"]
+
+
+@pytest.mark.parametrize(
+    ("error", "told_again"),
+    [
+        # Said by the runtime of a run it carried out: what it was sent is in its transcript.
+        ("the model returned no response", False),
+        # Said by the host for a runtime process that went away: nothing tells how far it got.
+        ("the runtime process exited", True),
+    ],
+)
+async def test_what_a_commission_is_is_said_again_after_a_runtime_process_that_went_away(
+    hosts, tmp_path, error, told_again
+):
+    from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
+    assert PROCESS_EXITED_ERROR == "the runtime process exited"
+    host, runtimes = _recording_host(hosts, tmp_path)
+    commission, runtime = await _started(host, runtimes)
+    # As a session directory with something said in it has.
+    session_dir = Path((await host.ledger.get(commission.id)).session_dir)
+    (session_dir / "transcript.jsonl").write_text("{}\n", encoding="utf-8")
+
+    runtime.say(commission.id, "ended", reason="error", error=error, inputs=1)
+    await wait_status(host, commission.id, "failed")
+    await host.task_agents.settle()
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+
+    assert await host.task_agents.tell(commission.id, "try once more")
+    await wait_until(lambda: len(runtime.sent) >= 2, what="the commission being taken up again")
+    kind, _session, said = runtime.sent[-1]
+    assert (kind, runtime.openings[-1]) == ("prompt", told_again)
+    assert said.startswith(f"Commission {commission.id}\n") is told_again
+    assert said.endswith("try once more")
 
 
 async def _once(commission_id: str, ask: Any) -> str:

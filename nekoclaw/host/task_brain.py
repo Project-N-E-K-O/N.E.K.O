@@ -569,6 +569,14 @@ class TaskBrain:
             # session stands, with what the sentence adds: as when it is
             # told so directly. One that was done or stopped stays over and
             # is followed up by a commission of its own (below).
+            #
+            # Not when NekoClaw was switched off, or everything stopped,
+            # while this round was looking: it is over, a stop does not end
+            # it, and taking it up would start work after the stop.
+            if not self._is_enabled():
+                return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+            if generation != self._dispatch_generation:
+                return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
             if await self.tell(earlier.id, text):
                 return Receipt(kind="told", commissions=[earlier], model_calls=calls)
             earlier = None

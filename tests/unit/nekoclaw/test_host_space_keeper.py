@@ -655,8 +655,9 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
     system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
     total = count_tokens(system) + count_tokens(user)
     assert total <= TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
-    # What the owner was told: one call per commission, about 4000 tokens in at most.
-    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 4000
+    # What the owner was told: one call per commission, about 4000 tokens in at most; 800
+    # more since what she dispatched and what the user said may be longer (2026-11-18).
+    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 5000
     # The account keeps how it began and how it ended.
     process = user.split("What the task agent did:\n", 1)[1].split("\n\nAlready filed", 1)[0]
     assert count_tokens(process) <= TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS

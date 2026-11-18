@@ -253,29 +253,37 @@ class ModelCapabilityStore:
     async def context_window(self, base_url: Any, model: Any) -> int:
         """Return the window a session with this model is managed for, in tokens.
 
-        What the user set for the model, else the setting; and no more than
-        the model's provider said it takes, when that is known.
+        What the user set for the model, else what is written down for it
+        (``TASK_AGENT_KNOWN_CONTEXT_WINDOWS``), else the setting; and no
+        more than the model's provider said it takes, when that is known.
         """
-        from config.nekoclaw_settings import TASK_AGENT_CONTEXT_WINDOW
-
         entry = (await self._loaded()).get(model_key(base_url, model))
-        wanted = self._tokens((entry or {}).get("context_window")) or TASK_AGENT_CONTEXT_WINDOW
+        wanted = self._tokens((entry or {}).get("context_window")) or self._default_window(model)
         learned = self._learned(entry)
         return wanted if learned is None else min(wanted, learned)
+
+    @staticmethod
+    def _default_window(model: Any) -> int:
+        """Return the window a model is managed for when the user set none: its own if written down, else the setting."""
+        from config.nekoclaw_settings import TASK_AGENT_CONTEXT_WINDOW, TASK_AGENT_KNOWN_CONTEXT_WINDOWS
+
+        known = TASK_AGENT_KNOWN_CONTEXT_WINDOWS.get(str(model or "").strip())
+        return int(known) if known else TASK_AGENT_CONTEXT_WINDOW
 
     async def describe_window(self, base_url: Any, model: Any) -> dict[str, Any]:
         """Return what decides a model's window, for showing it.
 
-        ``window`` (what is used), ``default`` (the setting), ``set`` (what
-        the user set, or None), and ``learned`` with ``learned_at`` and
+        ``window`` (what is used), ``default`` (what it is when the user set
+        none: the model's own if that is written down, else the setting),
+        ``set`` (what the user set, or None), and ``learned`` with ``learned_at`` and
         ``lapses_at`` when a provider stated one that is still believed.
         """
-        from config.nekoclaw_settings import MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS, TASK_AGENT_CONTEXT_WINDOW
+        from config.nekoclaw_settings import MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS
 
         entry = (await self._loaded()).get(model_key(base_url, model))
         described: dict[str, Any] = {
             "window": await self.context_window(base_url, model),
-            "default": TASK_AGENT_CONTEXT_WINDOW,
+            "default": self._default_window(model),
             "set": self._tokens((entry or {}).get("context_window")),
         }
         learned = self._learned(entry)

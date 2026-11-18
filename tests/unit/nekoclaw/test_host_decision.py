@@ -852,7 +852,10 @@ async def test_dispatch_text_user_text_and_preferences_are_capped_in_tokens():
     preferences = "\n".join(lines[lines.index("PREFERENCES:") + 1 :])
     assert count_tokens(task[len("TASK: ") :]) <= DISPATCH_TEXT_MAX_TOKENS
     assert count_tokens(said[len("USER_SAID: ") :]) <= DISPATCH_USER_TEXT_MAX_TOKENS
-    assert count_tokens(preferences) <= PREFERENCE_PROMPT_MAX_TOKENS == 150
+    assert count_tokens(preferences) <= PREFERENCE_PROMPT_MAX_TOKENS == 300
+    # What the owner agreed to (2026-11-18): with all three at their caps the fine selection
+    # is sent 1700 tokens of them, 950 more than before.
+    assert (DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS) == (600, 800)
 
 
 # What the fixed part of the analyzer's selection prompt cost, per language,

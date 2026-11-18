@@ -36,10 +36,10 @@ answers a dispatch within ``DISPATCH_FIRST_ROUND_SECONDS`` and a query at
 once; the rest is room for the local request. When it runs out she is told
 that the task system did not respond, never that the task was taken."""
 
-DISPATCH_TEXT_MAX_TOKENS = 300
+DISPATCH_TEXT_MAX_TOKENS = 600
 """Cap on the sentence she dispatches, as stored and as shown to the decision model."""
 
-DISPATCH_USER_TEXT_MAX_TOKENS = 300
+DISPATCH_USER_TEXT_MAX_TOKENS = 800
 """Cap on the user's own words that come with a dispatch."""
 
 COMMISSION_TITLE_MAX_TOKENS = 24
@@ -113,7 +113,7 @@ DECISION_LEDGER_ROWS = 3
 DECISION_LEDGER_ROW_MAX_TOKENS = 60
 """Cap on one ledger row in the fine-selection prompt."""
 
-PREFERENCE_PROMPT_MAX_TOKENS = 150
+PREFERENCE_PROMPT_MAX_TOKENS = 300
 """Cap on the task preferences injected into the fine selection and into a
 task agent's instructions (design section 5.1)."""
 
@@ -177,9 +177,46 @@ A conversation is cut down and summed up when it nears four fifths of it. A
 model whose window is known to be smaller is given its own: what is used is
 the smaller of the two."""
 
+TASK_AGENT_KNOWN_CONTEXT_WINDOWS = {"free-agent-model": 128_000}
+"""Windows of models that are known and cannot be learned, by model name.
+Used in place of ``TASK_AGENT_CONTEXT_WINDOW`` for a model named here,
+unless the user set one for it.
+
+A window is otherwise learned from what a provider says when it refuses a
+request as too long. The free tier's agent model refuses none: measured on
+2026-11-18, it takes about 131,000 tokens of input and cuts a longer
+request off without a word (requests of about 250,000 and of about 500,000
+tokens, by its own count, both came back as 131,276 tokens of input, and
+were answered). Managed
+for 256,000, a session with it would be sent requests of up to four fifths
+of that, and lose part of every one above 131,000 without anything to tell
+it. This is the model a user who configured nothing has."""
+
 TASK_AGENT_CONTEXT_WINDOW_MIN = 4_000
 """The smallest window a session is managed for. A model that takes less
 cannot hold a task agent's instructions and tools."""
+
+TASK_AGENT_INFERRED_WINDOW_MIN_TOKENS = 32_000
+"""A provider that refuses a request as too long without stating its window
+still tells one thing: the window is smaller than that request. The size of
+the refused request is taken for the window from then on, when it is at
+least this much. Below it nothing is concluded: a refusal of so short a
+request is more likely about something else, and a window taken that small
+by mistake would be believed for ``MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS``."""
+
+TASK_AGENT_UNSURE_REFUSAL_TOKENS = 100_000
+"""A request of more than this that a provider refuses outright, in words
+that are not recognized, is taken for one that was too long: the
+conversation is summed up and the request is sent once more. Likewise a
+session opened again whose last request failed, with a conversation of more
+than this: it is summed up before its first request.
+
+It is the size at which a conversation was summed up while every session
+was managed for 128,000 tokens. A model that task agents worked with then
+never saw a longer request, so nothing is known of how it answers one;
+without this, a session that outlasts a commission would fail every
+commission from the first such refusal on, having grown past what its model
+takes without anything to say so."""
 
 MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS = 30 * 24 * 3600
 """How long a model's window, learned from what its provider said when a
@@ -187,7 +224,7 @@ request was too long, is believed. After that the setting counts again: if
 the model still takes less, one request is refused, the conversation is
 summed up, and the window is written down anew."""
 
-TASK_AGENT_BRIEF_MAX_TOKENS = 1200
+TASK_AGENT_BRIEF_MAX_TOKENS = 2400
 """Cap on what the host says of one commission in the message that opens it
 (what was dispatched, what the user said, how the user wants such things
 done), and likewise on its own part of a task agent's system prompt. What
@@ -198,9 +235,11 @@ commission have caps of their own (``SPACE_BRIEF_MAX_TOKENS``,
 TASK_AGENT_SESSION_NAME_MAX_TOKENS = 16
 """Cap on the name a session is given from the title of its first commission."""
 
-TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS = 300
+TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS = 500
 """Cap on what a commission is told of the outcome of the one it follows up,
-when the session's record of that one was removed since."""
+when the session's record of that one was removed since. More than a result
+summary is stored with (``TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS``), so one is
+told whole."""
 
 TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS = 400
 """Cap on the result summary stored for a commission."""
@@ -209,7 +248,7 @@ TASK_AGENT_EVENT_TEXT_MAX_CHARS = 4000
 """Size of one stored ``text`` or ``tool_update`` event row (display only,
 never sent to a model). Longer runs of output are split into several rows."""
 
-TASK_AGENT_CHILD_RESULT_MAX_TOKENS = 1500
+TASK_AGENT_CHILD_RESULT_MAX_TOKENS = 3000
 """Cap on a child task agent's result when it is handed back to its parent."""
 
 DEFERRED_COMMISSION_SECONDS = 3600.0
@@ -326,7 +365,7 @@ TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS = 24 * 3600.0
 commission is often taken up again; reviewed at once, the review would miss
 how it ended, and every commission is reviewed once at most."""
 
-TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 4000
+TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 5000
 """Cap on everything sent to the model for one review, the instructions
 included."""
 

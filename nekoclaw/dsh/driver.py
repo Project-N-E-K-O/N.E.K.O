@@ -98,7 +98,7 @@ logger = logging.getLogger(__name__)
 
 ACP_PROTOCOL_VERSION = 1
 # The smallest window a session is managed for; ``protocol.ModelConfig`` takes no less.
-_MIN_CONTEXT_WINDOW = 4_000
+_MIN_CONTEXT_WINDOW = protocol.MIN_CONTEXT_WINDOW
 _INVALID_PARAMS = -32602
 _IDLE_POLL_SECONDS = 1.0
 # How long ``shutdown`` lets sessions on their way in finish starting before it gives them up.

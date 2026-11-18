@@ -140,6 +140,15 @@ class ContextOverflowError(Exception):
     """The provider refused the request because the input exceeds its window."""
 
 
+class RequestRefusedError(Exception):
+    """The provider refused the request outright, in words that say nothing recognized about its length.
+
+    With a status a request that is too long is refused with
+    (``OVERFLOW_STATUSES``), and before any output. Whether it was too long
+    is for the session to judge, which knows how long it was.
+    """
+
+
 class ModelRequestError(Exception):
     """A one-shot model request (see ``complete``) failed."""
 
@@ -933,6 +942,8 @@ class LLMClientProvider:
                     final = event.message
                 elif isinstance(event, AssistantErrorEvent):
                     raise ModelRequestError(event.error.error_message or event.reason)
+        # (A request refused outright raises from the stream itself, as one
+        # that is too long does: ``RequestRefusedError``, ``ContextOverflowError``.)
         if final is None:
             raise ModelRequestError("the model returned no response")
         return final
@@ -1034,6 +1045,9 @@ class LLMClientProvider:
         except Exception as exc:  # noqa: BLE001 - reported to the loop as a failed response
             if not builder.emitted_output and is_context_overflow(exc):
                 raise ContextOverflowError(str(exc)) from exc
+            if not builder.emitted_output and getattr(exc, "status_code", None) in OVERFLOW_STATUSES:
+                # Told as it would be reported, for whoever does report it.
+                raise RequestRefusedError(f"{type(exc).__name__}: {exc}") from exc
             logger.warning("model request failed: %s", exc)
             yield builder.fail("error", f"{type(exc).__name__}: {exc}")
         finally:

@@ -22,6 +22,7 @@ commission under way); the window a provider states.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from nekoclaw.runtime.model import is_context_overflow, window_from_overflow
 from nekoclaw.runtime.protocol import ModelConfig
 from nekoclaw.runtime.snapshot import (
     REASON_COMPACTED,
+    REASON_MOVED,
     REASON_OPENED,
     SYSTEM_FILE,
     SystemSnapshot,
@@ -174,6 +176,79 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
     assert _saved(spec) == saved
 
 
+@pytest.mark.parametrize("opening", [True, False])
+async def test_what_a_commission_left_unfinished_is_not_handed_to_the_next_one_of_its_session(
+    tmp_path: Path, opening: bool
+) -> None:
+    todos = [{"content": "export the rows", "status": "in_progress"}, {"content": "write the header", "status": "pending"}]
+    stopped = asyncio.Event()
+
+    async def until_stopped() -> None:
+        await stopped.wait()
+
+    first_llm = ScriptedLLM(
+        [
+            [call("todo_write", {"todos": todos}, "c1"), finish("tool_calls")],
+            [call("create_goal", {"objective": "finish the export"}, "c2"), finish("tool_calls")],
+            [until_stopped, say("never said"), finish()],
+        ]
+    )
+    session, events = await open_session(make_spec(tmp_path), first_llm)
+    session.prompt("First commission.", opening=True)
+
+    async def both_done() -> None:
+        while len(events.of("tool_end")) < 2:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(both_done(), 10)
+    assert [end["is_error"] for end in events.of("tool_end")] == [False, False]
+    # Stopped half way: the list has open items and the goal is still the goal.
+    await session.close()
+    stopped.set()
+
+    llm = ScriptedLLM(
+        [
+            [call("create_goal", {"objective": "draw the chart"}, "c3"), finish("tool_calls")],
+            [say("Done."), finish()],
+        ]
+    )
+    session, events = await open_session(make_spec(tmp_path), llm)
+    try:
+        # Opened again with both, as a commission that goes on needs them.
+        assert [item["content"] for item in session.todos.open_items()] == ["export the rows", "write the header"]
+        assert session.goals.current is not None and session.goals.current.objective == "finish the export"
+        assert session.goals.current.phase == "active"
+
+        await _ask(session, events, "Second commission." if opening else "Go on with it.", opening=opening)
+
+        # What the runtime tells of the time and of what is open, with the first request of this start.
+        notices = [
+            str(message["content"])
+            for message in llm.requests[0]
+            if message["role"] == "user" and str(message["content"]).startswith("<runtime_context>")
+        ]
+        made = events.of("tool_end")[0]
+        if opening:
+            # Another piece of work: it is not told of the other's open items, and makes a goal of its own.
+            assert "export the rows" not in notices[-1]
+            assert session.todos.open_items() == []
+            assert made["is_error"] is False and session.goals.current.objective == "draw the chart"
+        else:
+            # The same commission going on: its list is told again, and its goal is still its goal.
+            assert "export the rows" in notices[-1] and "write the header" in notices[-1]
+            assert made["is_error"] is True and session.goals.current.objective == "finish the export"
+    finally:
+        await session.close()
+
+    # What was dropped stays dropped when the session is opened once more.
+    session, events = await open_session(make_spec(tmp_path), ScriptedLLM([[say("ok"), finish()]]))
+    try:
+        assert bool(session.todos.open_items()) is (not opening)
+        assert session.goals.current.objective == ("draw the chart" if opening else "finish the export")
+    finally:
+        await session.close()
+
+
 async def test_a_tool_is_described_to_the_model_as_the_snapshot_has_it_and_carried_out_by_what_there_is_now(
     tmp_path: Path,
 ) -> None:
@@ -270,6 +345,57 @@ async def test_a_tool_that_came_since_the_snapshot_is_told_of_only_after_the_con
         await session.close()
 
 
+@pytest.mark.parametrize("on_record", [True, False])
+async def test_a_session_whose_working_directory_is_another_by_now_has_its_system_prompt_put_together_anew(
+    tmp_path: Path, on_record: bool
+) -> None:
+    first_llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, instructions="First."), first_llm)
+    await _ask(session, events, "First commission.")
+    await session.close()
+    spec = make_spec(tmp_path, instructions="Second.")
+    before = _saved(spec)
+    assert before["workdir"] == str(tmp_path / "work") and before["workdir"] in before["system"]
+    if not on_record:
+        # As a snapshot of a build that did not write it down.
+        del before["workdir"]
+        (Path(spec.session_dir) / SYSTEM_FILE).write_text(json.dumps(before), encoding="utf-8")
+
+    # The data was moved: the session is opened with its working directory where that is now.
+    moved = tmp_path / "moved" / "work"
+    moved.mkdir(parents=True)
+    spec = spec.model_copy(update={"workdir": str(moved)})
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(spec, llm)
+    try:
+        await _ask(session, events, "Second commission.")
+        system = _system_of(llm.requests[0])
+        if on_record:
+            # The system prompt names the directory the tools work in: left as it was, every
+            # path the task agent writes would be one that is no longer there.
+            assert str(moved) in system and str(tmp_path / "work") not in system
+            assert "Second." in system
+            saved = _saved(spec)
+            assert (saved["reason"], saved["workdir"]) == (REASON_MOVED, str(moved))
+        else:
+            # Nothing says which directory it was made for: kept, as every snapshot is.
+            assert system == _system_of(first_llm.requests[0])
+            assert _saved(spec) == before
+    finally:
+        await session.close()
+
+
+def test_the_numbers_that_are_written_down_in_two_places_are_the_same() -> None:
+    import config.nekoclaw_settings as settings
+    from nekoclaw.dsh import driver, forward
+    from nekoclaw.runtime import model, protocol, session
+
+    assert protocol.MIN_CONTEXT_WINDOW == settings.TASK_AGENT_CONTEXT_WINDOW_MIN
+    assert session.MIN_CONTEXT_WINDOW == driver._MIN_CONTEXT_WINDOW == protocol.MIN_CONTEXT_WINDOW
+    # The forwarder does not load the model client to forward a request, so it has its own.
+    assert forward._OVERFLOW_STATUSES == model.OVERFLOW_STATUSES
+
+
 async def test_a_tool_of_the_snapshot_that_is_not_there_now_stays_listed_and_says_so_when_called(
     tmp_path: Path,
 ) -> None:
@@ -361,6 +487,74 @@ async def test_after_a_summary_the_system_prompt_and_the_tools_are_put_together_
         await _ask(session, events, "And more.")
         assert _system_of(llm.requests[-1]) == _system_of(retry)
         assert len(events.of("compacted")) == 1
+    finally:
+        await session.close()
+
+
+async def test_the_conversation_is_fitted_again_next_to_what_the_requests_begin_with_after_a_summary(
+    tmp_path: Path,
+) -> None:
+    session, events = await open_session(
+        make_spec(tmp_path, model=_small_model(), instructions="Index of then."), ScriptedLLM([[say("ok"), finish()]])
+    )
+    await _ask(session, events, "First commission.")
+    await session.close()
+
+    # Much more to tell by now: what every request begins with grows when it is put together anew.
+    later = "Index of later. " + "Something more was learned since. " * 400
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(), instructions=later), llm)
+    try:
+        await _ask(session, events, "Second commission.")
+        await _seed(session, events, llm)
+        fitted: list[tuple[bool, int]] = []
+        fit = session._fit
+
+        async def recording(*, force: bool) -> None:
+            fitted.append((force, session.context.fixed_tokens))
+            await fit(force=force)
+
+        session._fit = recording
+        before = session.context.fixed_tokens
+        ended = await _sum_up(session, events, llm)
+
+        assert ended["reason"] == "completed" and ended["text"] == "Went on."
+        after = session.context.fixed_tokens
+        assert after > before + 2_000
+        # Before the request, when it was refused, and once more next to the longer beginning:
+        # summed up next to the shorter one, the conversation may no longer fit.
+        assert fitted == [(False, before), (True, before), (False, after)]
+    finally:
+        await session.close()
+
+
+async def test_what_follows_a_summary_is_done_again_by_the_next_run_when_it_was_stopped_half_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(), instructions="Index."), llm)
+    try:
+        await _ask(session, events, "First commission.")
+        await _seed(session, events, llm)
+        await _sum_up(session, events, llm)
+        assert len(events.of("compacted")) == 1 and session._compaction_due is False
+
+        # Another summary, and the run is stopped while the snapshot is written.
+        renew = session._renew_snapshot
+
+        async def stopped(reason: str) -> None:
+            raise asyncio.CancelledError
+
+        session._compaction_due = True
+        session._renew_snapshot = stopped
+        with pytest.raises(asyncio.CancelledError):
+            await session._after_compaction()
+        # Still to be done: the next run does it, and measures against what it sends.
+        assert session._compaction_due is True and len(events.of("compacted")) == 1
+
+        session._renew_snapshot = renew
+        await session._after_compaction()
+        assert session._compaction_due is False and len(events.of("compacted")) == 2
     finally:
         await session.close()
 
@@ -570,6 +764,186 @@ async def test_a_session_opened_in_a_small_window_asks_for_less_output_from_the_
         await _ask(session, events, "Start.")
         assert session.context.policy.max_output == 5_000
         assert llm.overrides[0]["max_completion_tokens"] == 5_000
+    finally:
+        await session.close()
+
+
+class _Refused(Exception):
+    """What a model client raises for a request its provider answered with an error status."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def test_a_refusal_for_length_that_states_no_window_still_tells_that_it_is_smaller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_INFERRED_WINDOW_MIN_TOKENS", 5_000)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        before = await session._size()
+        assert before > 5_000
+
+        llm.add(RuntimeError("Error code: 400 - {'code': 'context_length_exceeded'}"))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        llm.add(say("Went on."), finish())
+        mark = len(llm.requests)
+        ended = await _ask(session, events, "Go on.")
+
+        assert ended["reason"] == "completed" and ended["text"] == "Went on."
+        # The window is not known, but it is smaller than what was refused: the conversation
+        # is managed for that from here on, not for the 256,000 the session was started with.
+        (learned,) = events.of("model_capability")
+        window = learned["context_window"]
+        assert before < window < before + 300
+        assert "context_length_exceeded" in learned["reason"]
+        assert session.context.policy.window == window
+        # So the request that sums it up is fitted to it as well.
+        refused, summary, retry = llm.requests[mark:]
+        assert summary[-1] == {"role": "user", "content": texts.COMPACTION_INSTRUCTION}
+        assert count_tokens(json.dumps(summary, ensure_ascii=False)) < window
+    finally:
+        await session.close()
+
+
+async def test_a_long_request_refused_in_words_that_are_not_recognized_is_summed_up_and_sent_once_more(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        before = await session._size()
+
+        # Nothing in it says "too long", and the status is one such a request is refused with.
+        llm.add(_Refused(400, "Bad Request: the request could not be processed"))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        llm.add(say("Went on."), finish())
+        ended = await _ask(session, events, "Go on.")
+
+        assert ended["reason"] == "completed" and ended["text"] == "Went on."
+        assert len(events.of("compacted")) == 1
+        # Shorter, it went through: the host is told the window that follows from it.
+        (learned,) = events.of("model_capability")
+        assert before < learned["context_window"] < before + 300
+        assert "could not be processed" in learned["reason"]
+        assert session.context.policy.window == learned["context_window"]
+    finally:
+        await session.close()
+
+
+async def test_a_request_refused_again_after_it_was_summed_up_is_reported_as_it_came(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    # Low enough that the request is still "long" after it was summed up: what every request
+    # begins with is more than this by itself.
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 1_000)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        llm.add(_Refused(400, "Bad Request: tool schema is not valid"))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        llm.add(_Refused(400, "Bad Request: tool schema is not valid"))
+        mark = len(llm.requests)
+        ended = await _ask(session, events, "Go on.")
+
+        # It was not about length. Tried once, not over and over; and nothing is told of a window.
+        assert ended["reason"] == "error" and "tool schema is not valid" in ended["error"]
+        assert len(llm.requests) - mark == 3
+        assert events.of("model_capability") == []
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize(
+    ("threshold", "refusal"),
+    [
+        # Too short for its length to be what was refused.
+        (10_000_000, _Refused(400, "Bad Request: the request could not be processed")),
+        # Long, and not a status a request that is too long is refused with.
+        (5_000, _Refused(401, "Unauthorized")),
+        (5_000, _Refused(429, "Too Many Requests")),
+        (5_000, _Refused(500, "Internal Server Error")),
+        # Long, and no status at all.
+        (5_000, RuntimeError("the connection was reset")),
+    ],
+)
+async def test_a_refusal_that_is_not_taken_for_one_of_length_fails_the_run_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threshold: int, refusal: Exception
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", threshold)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        llm.add(refusal)
+        mark = len(llm.requests)
+        ended = await _ask(session, events, "Go on.")
+
+        assert ended["reason"] == "error" and str(refusal) in ended["error"]
+        assert len(llm.requests) - mark == 1
+        assert events.of("compacted") == [] and events.of("model_capability") == []
+        assert session.context.policy.window == 256_000
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("long", [True, False])
+async def test_a_session_opened_again_after_its_last_request_failed_is_summed_up_first_when_it_is_long(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, long: bool
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000 if long else 10_000_000)
+    first_llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), first_llm)
+    await _ask(session, events, "First commission.", opening=True)
+    await _seed(session, events, first_llm)
+    # Not recognized as anything: the run fails, and the commission with it.
+    first_llm.add(RuntimeError("upstream error"))
+    assert (await _ask(session, events, "Go on."))["reason"] == "error"
+    await session.close()
+
+    # The next commission of the session finds the conversation as it was left.
+    llm = ScriptedLLM([[say("## Current Work\n- summed up"), finish()], [say("Fine now."), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(256_000)), llm)
+    try:
+        ended = await _ask(session, events, "Second commission.", opening=True)
+        if long:
+            # Sent as it was, it would fail as before if that was about its length, and so
+            # would every commission after it: summed up before the first request.
+            assert ended["text"] == "Fine now."
+            assert llm.requests[0][-1] == {"role": "user", "content": texts.COMPACTION_INSTRUCTION}
+            assert len(events.of("compacted")) == 1
+            # The commission that is opened stays whole.
+            assert any(message.get("content") == "Second commission." for message in llm.requests[1])
+        else:
+            assert ended["text"] == "## Current Work\n- summed up"
+            assert events.of("compacted") == []
+        # Nothing was learned of the model: the host is told of no window.
+        assert events.of("model_capability") == []
+
+        # Only once: the requests after it are fitted as every request is.
+        llm.add(say("And on."), finish())
+        await _ask(session, events, "More.")
+        assert len(events.of("compacted")) == (1 if long else 0)
     finally:
         await session.close()
 

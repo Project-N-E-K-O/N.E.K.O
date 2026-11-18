@@ -400,6 +400,36 @@ async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is
     assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
 
 
+async def test_a_commission_that_follows_one_up_whose_session_is_in_the_other_runtime_is_told_what_came_of_it(
+    hosts, tmp_path
+):
+    from config.prompts import prompts_nekoclaw_brain as brain_texts
+
+    llm = ScriptedLLM([_report("ready", "sorted 12 photos into D:/Photos/by-month"), _report("ready", "renamed")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    first = await _dispatch(host, "sort the photos")
+    assert (await wait_status(host, first, "done")).runtime == RUNTIME_DSH
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents._held_by == {}, what="the session being let go")
+
+    # What was said is in dsh, and dsh is gone: the built-in runtime takes the session.
+    await host.uninstall_dsh()
+    second = await _dispatch(host, "also rename the photos by date")
+    done = await wait_status(host, second, "done")
+    assert (done.session_id, done.continues, done.runtime) == (first, first, RUNTIME_BUILTIN)
+
+    # Nothing of the earlier commission is "above" in this runtime: it is told what came of it.
+    opening = _last_user_message(llm.requests[-1])
+    assert opening.startswith(f"Commission {second}\nalso rename the photos by date\n")
+    assert (
+        brain_texts.TASK_AGENT_COMMISSION_CONTINUES_CLEARED.format(
+            title="sort the photos", result="sorted 12 photos into D:/Photos/by-month"
+        )
+        in opening
+    )
+    assert brain_texts.TASK_AGENT_COMMISSION_CONTINUES.format(title="sort the photos") not in opening
+
+
 def _told_anew(request: Any, commission_id: str, dispatched: str, said: str) -> bool:
     """Whether a request ends with the commission told again, then what the user said."""
     message = _last_user_message(request)

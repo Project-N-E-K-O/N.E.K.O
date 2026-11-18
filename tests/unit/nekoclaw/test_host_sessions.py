@@ -377,6 +377,51 @@ async def test_stopping_a_commission_that_waits_for_a_place_to_be_answered_at_le
     assert (await host.ledger.get(first.commission_id)).status == "cancelled"
 
 
+async def test_a_commission_stopped_while_it_is_being_queued_again_lets_its_session_go(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("waiting", "Which separator?")]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+        "sort the photos": ScriptedLLM([[wait, *_report("ready", "sorted")]]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), max_task_agents=1)
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "waiting_user")
+    await wait_until(
+        lambda: host.task_agents._sessions[first.commission_id].run_ended, what="the asking run ending"
+    )
+    await host.task_agents._runtime.close(first.commission_id)
+    await _released(host, first.commission_id)
+    other = await _dispatch(host, "sort the photos")
+    await wait_status(host, other.commission_id, "working")
+    second = await _dispatch(host, "add a chart to the budget app")
+    await host.brain.settle()
+
+    # The answer finds no place free and queues the commission; it is stopped at the very
+    # moment its new status is written, so that is refused. It was in hand when it ended
+    # (being queued), and is in nobody's hands after: its session has to be let go here.
+    transition = host.ledger.transition
+
+    async def stopped_first(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if commission_id == first.commission_id and status == "queued":
+            assert (await transition(commission_id, "cancelled", reason="stopped by the user")).applied
+        return await transition(commission_id, status, **kwargs)
+
+    host.ledger.transition = stopped_first
+    assert await host.answer(first.commission_id, "a semicolon") is False
+    host.ledger.transition = transition
+    await wait_until(
+        lambda: first.commission_id not in host.task_agents._held_by, what="the session of the stopped one being let go"
+    )
+
+    release.set()
+    await wait_status(host, other.commission_id, "done")
+    done = await wait_status(host, second.commission_id, "done")
+    assert done.session_id == first.commission_id
+    assert (await host.ledger.get(first.commission_id)).status == "cancelled"
+
+
 async def test_a_commission_that_cannot_be_started_again_lets_its_session_go(hosts, tmp_path):
     there = {"yes": True}
 
@@ -886,6 +931,34 @@ async def test_a_sessions_files_are_not_claimed_while_it_is_in_use_and_nothing_s
     assert done.session_id == session_id
     # Given back twice, nothing happens.
     host.task_agents.release_files(session_id)
+
+
+async def test_a_failed_commission_is_not_taken_up_again_by_a_sentence_caught_by_a_stop(hosts, tmp_path):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "sorted")])
+    host = _host(hosts, tmp_path, llm)
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "failed")
+    await _released(host, first.commission_id)
+
+    # Everything is stopped while the sentence is still being looked at.
+    looked = host.brain._recently_over
+
+    async def stopped_meanwhile(lanlan_name: str) -> Any:
+        found = await looked(lanlan_name)
+        host.brain.drop_pending_dispatches()
+        return found
+
+    host.brain._recently_over = stopped_meanwhile
+    receipt = await _dispatch(host, "also the photos are on drive E: now")
+    host.brain._recently_over = looked
+
+    # A stop does not end a commission that is over already; taken up again, it would start
+    # its work after the stop.
+    assert (receipt.kind, receipt.reason) == ("no_capability", "stopped")
+    await host.brain.settle()
+    await host.task_agents.settle()
+    assert (await host.ledger.get(first.commission_id)).status == "failed"
+    assert host.task_agents.running == [] and len(llm.requests) == 1
 
 
 async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_its_commissions_were(hosts, tmp_path):

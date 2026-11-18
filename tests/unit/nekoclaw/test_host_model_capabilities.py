@@ -313,6 +313,32 @@ async def test_a_model_nothing_is_known_about_gets_the_window_of_the_setting(pat
     assert not path.exists()
 
 
+async def test_a_model_whose_window_is_written_down_is_managed_for_that(path):
+    import config.nekoclaw_settings as settings
+
+    store = ModelCapabilityStore(path)
+    free = "https://free.example.com/text/v1"
+
+    # The free tier's agent model cuts a long request off without saying so: nothing would
+    # ever be learned of its window, and a session managed for the setting would lose part
+    # of every request above what the model takes. It is the model of a user who set nothing.
+    assert settings.TASK_AGENT_KNOWN_CONTEXT_WINDOWS == {"free-agent-model": 128_000}
+    assert await store.context_window(free, "free-agent-model") == 128_000
+    assert await store.describe_window(free, "free-agent-model") == {"window": 128_000, "default": 128_000, "set": None}
+    # By name, whatever the address; and no other model.
+    assert await store.context_window(URL, " free-agent-model ") == 128_000
+    assert await store.context_window(free, "free-agent-model-2") == 256_000
+    assert await store.context_window(free, None) == 256_000
+
+    # What the user sets for it counts, as for any model; taken back, it is its own again.
+    assert await store.set_context_window(free, "free-agent-model", 64_000) == 64_000
+    assert await store.set_context_window(free, "free-agent-model", 200_000) == 200_000
+    assert await store.set_context_window(free, "free-agent-model", None) == 128_000
+    # And what a provider states for it still makes it smaller.
+    assert await store.note_context_window(free, "free-agent-model", 100_000) is True
+    assert await store.context_window(free, "free-agent-model") == 100_000
+
+
 async def test_the_user_sets_a_window_for_one_model_and_takes_it_back(path):
     store = ModelCapabilityStore(path)
 

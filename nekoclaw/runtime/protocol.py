@@ -88,6 +88,11 @@ class _Strict(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# The smallest window a session is managed for (the host's setting of the
+# same is ``TASK_AGENT_CONTEXT_WINDOW_MIN``; a test keeps the two equal).
+MIN_CONTEXT_WINDOW = 4_000
+
+
 class ModelConfig(_Strict):
     """Model endpoint of one session. ``http://`` endpoints are allowed."""
 
@@ -96,7 +101,7 @@ class ModelConfig(_Strict):
     # Travels inside the start command only; never read from argv or the environment.
     api_key: str | None = Field(default=None, repr=False)
     provider_type: str | None = None
-    context_window: int = Field(default=128_000, ge=4_000)
+    context_window: int = Field(default=128_000, ge=MIN_CONTEXT_WINDOW)
     max_output_tokens: int = Field(default=8_192, ge=256)
     request_timeout_seconds: float = Field(default=300.0, gt=0)
     max_retries: int = Field(default=2, ge=0)

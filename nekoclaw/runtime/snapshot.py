@@ -22,8 +22,11 @@ provider can only cache while it stays the same. So what a session was
 opened with is written to ``system.json`` in its directory and read from
 there when the session is opened again.
 
-A snapshot is replaced in one case only (``TaskAgentSession``): after the
-conversation was summed up, when the head of the request changes anyway.
+A snapshot is replaced after the conversation was summed up
+(``TaskAgentSession``), when the head of the request changes anyway; and
+when the session's working directory is no longer the one the snapshot was
+made for (the data was moved), because the system prompt names that
+directory and every path the task agent writes would be the old one.
 Until then the session is told of the tools it was opened with: one that is
 gone since is answered for by a stand-in, and one that came since is not
 told of. (A change every session has to take up when it is next opened is
@@ -53,6 +56,7 @@ _VERSION = 1
 # Why a snapshot was made.
 REASON_OPENED = "opened"
 REASON_COMPACTED = "compacted"
+REASON_MOVED = "moved"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +76,8 @@ class SystemSnapshot:
     tools: tuple[ToolDefinition, ...]
     reason: str = REASON_OPENED
     made_at: float = 0.0
+    # The working directory the system prompt names; empty when not on record.
+    workdir: str = ""
 
     @property
     def tool_names(self) -> frozenset[str]:
@@ -112,12 +118,13 @@ def read_snapshot(session_dir: Path) -> SystemSnapshot | None:
         tools.append(ToolDefinition(name, description, parameters))
     if len({tool.name for tool in tools}) != len(tools):
         return None
-    made_at = raw.get("made_at")
+    made_at, workdir = raw.get("made_at"), raw.get("workdir")
     return SystemSnapshot(
         system=system,
         tools=tuple(tools),
         reason=str(raw.get("reason") or REASON_OPENED),
         made_at=float(made_at) if isinstance(made_at, (int, float)) and not isinstance(made_at, bool) else 0.0,
+        workdir=workdir if isinstance(workdir, str) else "",
     )
 
 
@@ -131,6 +138,7 @@ def write_snapshot(session_dir: Path, snapshot: SystemSnapshot) -> None:
             "version": _VERSION,
             "reason": snapshot.reason,
             "made_at": snapshot.made_at or time.time(),
+            "workdir": snapshot.workdir,
             "system": snapshot.system,
             "tools": [
                 {"name": tool.name, "description": tool.description, "parameters": tool.parameters}

@@ -193,6 +193,10 @@ class _Session:
     # passed on to it waits in the notes, which go to it right after that work.
     ready: bool = False
     closing: bool = False
+    # A runtime was asked to open its session and took the request: from
+    # then on the session is the runtime's to close, also when the start
+    # fails after it.
+    opened_in_runtime: bool = False
     # The runtime the session is in and its name (``runtimes.py``), from the
     # moment it is started there.
     runtime: Any = None
@@ -1025,8 +1029,14 @@ class TaskAgentManager:
             # What the commission is: said once, in the session it is worked
             # on in, and again only where that is not there to be read, or
             # where the session has been at another commission since.
-            opening = await self._opening(commission, cleared=begun_in is None)
-            back_at_it = await self._opening(commission, cleared=False, back=True) if opened and not at_it else opening
+            # In three wordings, of which one is used: for a session whose
+            # conversation is there to be read in the runtime that takes the
+            # commission, for one that has none there (never begun, removed
+            # since, or in the other runtime), and for the first of these
+            # when the session was at another commission since.
+            onward = await self._opening(commission, cleared=False)
+            anew = await self._opening(commission, cleared=True) if commission.continues else onward
+            back_at_it = await self._opening(commission, cleared=False, back=True) if opened and not at_it else onward
 
             def first_message(runtime_name: str) -> tuple[str, bool]:
                 # The commission is opened when it starts, and again when it
@@ -1042,12 +1052,18 @@ class TaskAgentManager:
                 # what it is told now.
                 here = begun_in == runtime_name
                 opens = prompt is None or not opened or not here or not at_it
-                said = back_at_it if here and opened else opening
+                # Which runtime it is decides the wording, as it decides
+                # whether it is said: a commission that follows another up
+                # in a session that began in dsh and is taken by the
+                # built-in runtime finds nothing "above", and is told what
+                # came of the other instead.
+                said = anew if not here else back_at_it if opened else onward
                 parts = [*([said] if opens else []), *carried, *([prompt] if prompt is not None else [])]
                 return "\n\n".join([*parts, *notes]), opens
 
             text, opens = first_message(runtime_name)
             await runtime.start(spec)
+            session.opened_in_runtime = True
             if runtime_name == RUNTIME_DSH and session.session_id not in runtime.session_ids:
                 # dsh was made ready and still opened no session. It says
                 # why in an event, which is on its way and is where the
@@ -1057,12 +1073,14 @@ class TaskAgentManager:
                 # dsh have a session of it from before): the user is not
                 # left with a failed commission to hand in again.
                 session.dsh_refused = True
+                session.opened_in_runtime = False
                 runtime_name, runtime = RUNTIME_BUILTIN, self._runtimes.builtin()
                 session.runtime, session.runtime_name = runtime, runtime_name
                 text, opens = first_message(runtime_name)
                 await self._ledger.update(commission.id, runtime=runtime_name)
                 await self._ledger.update_session(session.session_id, runtime=runtime_name)
                 await runtime.start(spec)
+                session.opened_in_runtime = True
 
             async def stopped_meanwhile() -> bool:
                 current = await self._ledger.get(commission.id)
@@ -1106,6 +1124,10 @@ class TaskAgentManager:
                 await self._send_text(runtime, session, "steer", note)
             return True
         except asyncio.CancelledError:
+            if not self._closed and self._close_unstarted(session):
+                # Its session is open in a runtime: the place goes to the
+                # queue when its close comes back.
+                raise
             self._discard(commission_id)
             if not self._closed:
                 # Whoever started it was cancelled; the queue still gets the place.
@@ -1123,10 +1145,40 @@ class TaskAgentManager:
             # Kept before the session is let go: the user's next words may
             # take the commission up again while the failure is written.
             self._keep_unsent(session)
-            self._discard(commission_id)
+            if not self._close_unstarted(session):
+                self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             self._keep_unsent(session)
             return False
+
+    def _close_unstarted(self, session: _Session) -> bool:
+        """Close the runtime session of a start that failed after a runtime had opened it. False when none had.
+
+        Such a start is not over when it fails: the session is still open
+        in the runtime, without its work. Discarded as one that was never
+        opened, its place and the session it holds would be free while the
+        runtime still has it, and the next commission of the session would
+        be started into a session that is there already. Closed instead, it
+        keeps both until its close comes back, as every session does.
+        """
+        runtime = self._runtime_of(session)
+        if not session.opened_in_runtime or runtime is None or session.closing:
+            return False
+        session.closing = True
+
+        async def close() -> None:
+            try:
+                await runtime.close(session.session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a runtime that cannot close it no longer has it
+                logger.warning("closing the session of a start that failed did not work", exc_info=True)
+                if self._sessions.get(session.commission_id) is session:
+                    self._discard(session.commission_id)
+                    self._spawn(self._start_next())
+
+        self._spawn(close())
+        return True
 
     async def _sees_images(self, config: dict[str, Any]) -> bool:
         """Return whether the task agent model is sent pictures; see ``model_capabilities.py``."""
@@ -1651,7 +1703,12 @@ class TaskAgentManager:
                 # that transcript: what was kept is there, and is not sent
                 # again; nor is what the commission is, if this run took that.
                 session.carried = []
-                await self._note_opened(session)
+                if event.get("error") != PROCESS_EXITED_ERROR:
+                    await self._note_opened(session)
+                # (Said by the host for a runtime process that went away:
+                # nothing tells how far that got with what it was sent. What
+                # the commission is, is then said again when it is taken up;
+                # twice in the transcript does less harm than not at all.)
                 await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
