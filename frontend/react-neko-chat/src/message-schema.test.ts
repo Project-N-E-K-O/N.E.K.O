@@ -178,7 +178,7 @@ describe('message-schema', () => {
     });
     const props = parseChatWindowProps({ onComposerScreenshot });
 
-    expect(() => props.onComposerScreenshot?.()).not.toThrow();
+    expect(props.onComposerScreenshot?.()).toBe(true);
     expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
   });
 
