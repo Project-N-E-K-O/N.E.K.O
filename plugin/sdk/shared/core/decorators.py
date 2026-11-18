@@ -281,15 +281,9 @@ def _output_contract_from_signature(
         # output contract is checked at runtime, so only Pydantic models,
         # which can validate themselves, are inferred.
         return None, None
-    try:
-        # Validation mode, matching the check (the model validates output).
-        # Keys follow what finish()/model_dump() emits: field names unless
-        # the model serializes by alias. The check accepts both spellings.
-        config = getattr(model, "model_config", None)
-        by_alias = bool(config.get("serialize_by_alias", False)) if isinstance(config, Mapping) else False
-        schema = dict(model.model_json_schema(by_alias=by_alias))  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - keep the inferred schema
-        schema = dict(schema)
+    # Published like params=Model publishes input_schema (model_json_schema(),
+    # validation mode), matching the runtime check, which builds the model.
+    schema = dict(schema)
     if _hint_allows_none(hints.get("return", signature.return_annotation)):
         schema = dict(schema)
         defs = schema.pop("$defs", None)

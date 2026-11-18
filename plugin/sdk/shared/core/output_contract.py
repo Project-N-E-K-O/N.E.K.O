@@ -1,15 +1,13 @@
-"""Entry output contract (``output_schema``): build and run the checker.
+"""Entry output contract (``output_schema``): the runtime check, symmetric with inputs.
 
-The checker runs in the plugin process from ``EntryExecutor.invoke`` and is
-built once per entry (the caller caches it). It reuses existing validators:
+Inputs: ``params=Model`` is validated with the model at runtime; an
+``input_schema`` mapping is only published. Outputs work the same way:
 
-- A contract inferred from a Pydantic return annotation is checked by the
-  model itself (``TypeAdapter``), so field/model validators and formats apply.
-  Field names and aliases are both accepted: ``finish(data=model)`` emits
-  field names unless the model serializes by alias. A returned model
-  instance is trusted; it was validated when it was built.
-- An explicit ``output_schema`` mapping is checked with ``jsonschema``
-  (imported lazily, only for entries that declare one).
+- A contract inferred from a Pydantic return annotation is checked by building
+  the model from the returned data, with the same helper inputs use
+  (``entry_runtime._build_model_instance``). A returned model instance is
+  trusted; it was validated when it was built.
+- An explicit ``output_schema`` mapping is only published, never checked.
 
 Privacy: an issue carries only a field path and an error type. Validator
 messages quote the returned data, so they are never read. Path segments that
@@ -21,8 +19,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from itertools import islice
 from typing import get_args
+
+from .entry_runtime import _build_model_instance
 
 MAX_REPORTED_ISSUES = 20
 # Issue types starting with this mean the check itself could not run; they
@@ -31,15 +30,10 @@ CHECK_ERROR_PREFIX = "check_error:"
 _WILDCARD = "*"
 _CUSTOM_ERROR_TYPE = "custom_error"
 
-# Envelope keys written by ``ctx.finish`` (``build_finish_envelope``).
-_FINISH_ENVELOPE_KEYS = frozenset({
-    "success", "code", "data", "message", "error", "time", "trace_id", "meta",
-})
-
 
 @dataclass(frozen=True, slots=True)
 class OutputIssue:
-    """One mismatch: where (``$.items[0].name``) and what kind (``type``)."""
+    """One mismatch: where (``$.items[0].name``) and what kind (``int_parsing``)."""
 
     path: str
     type: str
@@ -51,31 +45,13 @@ class OutputIssue:
 OutputCheck = Callable[[object], list[OutputIssue]]
 
 
-def output_payload(value: object) -> object:
-    """The value the output contract describes.
-
-    An entry that returns ``ctx.finish(data=...)`` hands back an envelope; the
-    contract describes ``data``, the same payload ``llm_result_*`` checks.
-    """
-    if (
-        isinstance(value, Mapping)
-        and value.get("success") is True
-        and _FINISH_ENVELOPE_KEYS.issubset(value.keys())
-    ):
-        return value.get("data")
-    return value
-
-
 def build_output_check(meta: object) -> OutputCheck | None:
-    """Return the checker for an entry, or None when it declares no output contract."""
+    """The runtime check of an entry, or None (no contract, or an explicit one: publish only)."""
     model = getattr(meta, "output_model", None)
+    if not (isinstance(model, type) and is_pydantic_model(model)):
+        return None
     schema = getattr(meta, "output_schema", None)
-    schema = schema if isinstance(schema, Mapping) else None
-    if isinstance(model, type) and is_pydantic_model(model):
-        return _model_check(model, schema)
-    if schema is not None:
-        return _jsonschema_check(schema)
-    return None
+    return _model_check(model, schema if isinstance(schema, Mapping) else None)
 
 
 def is_violation(issues: Sequence[OutputIssue]) -> bool:
@@ -101,47 +77,30 @@ def is_pydantic_model(model: type) -> bool:
         return False
 
 
-def _check_error(exc: BaseException) -> list[OutputIssue]:
-    return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
-
-
-# ---------------------------------------------------------------------------
-# Pydantic model contracts
-# ---------------------------------------------------------------------------
-
-
 def _model_check(model: type, schema: Mapping[str, object] | None) -> OutputCheck:
-    from pydantic import TypeAdapter, ValidationError
+    from pydantic import ValidationError
 
-    adapter = TypeAdapter(model)
-    declared = _declared_names(schema) | _declared_names(model.model_json_schema())  # type: ignore[attr-defined]
-    nullable = _allows_null(schema)
+    declared = _declared_names(schema)
+    # ``Model | None`` publishes ``anyOf: [<model>, {"type": "null"}]``.
+    branches = schema.get("anyOf") if schema is not None else None
+    nullable = isinstance(branches, list) and {"type": "null"} in branches
 
     def check(value: object) -> list[OutputIssue]:
         if isinstance(value, model) or (value is None and nullable):
             return []
         try:
-            adapter.validate_python(value, by_alias=True, by_name=True)
+            _build_model_instance(model, value)  # type: ignore[arg-type]
         except ValidationError as exc:
-            try:
-                errors = exc.errors(include_url=False, include_input=False, include_context=False)
-                return [
-                    OutputIssue(_loc_path(error.get("loc", ()), declared, value), _error_type(error.get("type")))
-                    for error in errors[: MAX_REPORTED_ISSUES + 1]
-                ]
-            except Exception as path_exc:  # noqa: BLE001 - reporting must not fail the call
-                return _check_error(path_exc)
+            errors = exc.errors(include_url=False, include_input=False, include_context=False)
+            return [
+                OutputIssue(_loc_path(error.get("loc", ()), declared, value), _error_type(error.get("type")))
+                for error in errors[: MAX_REPORTED_ISSUES + 1]
+            ]
         except Exception as exc:  # noqa: BLE001 - a crashing custom validator is a checker failure
-            return _check_error(exc)
+            return [OutputIssue("$", f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         return []
 
     return check
-
-
-def _allows_null(schema: Mapping[str, object] | None) -> bool:
-    """``Model | None`` publishes ``anyOf: [<model>, {"type": "null"}]``."""
-    branches = schema.get("anyOf") if schema is not None else None
-    return isinstance(branches, list) and {"type": "null"} in branches
 
 
 def _builtin_error_types() -> frozenset[str]:
@@ -158,48 +117,6 @@ _BUILTIN_ERROR_TYPES = _builtin_error_types()
 def _error_type(raw: object) -> str:
     """Pydantic's own error types only; a custom error type is free text and may embed data."""
     return raw if isinstance(raw, str) and raw in _BUILTIN_ERROR_TYPES else _CUSTOM_ERROR_TYPE
-
-
-# ---------------------------------------------------------------------------
-# Explicit JSON Schema contracts
-# ---------------------------------------------------------------------------
-
-
-def _jsonschema_check(schema: Mapping[str, object]) -> OutputCheck:
-    try:
-        from jsonschema import validators
-        from referencing import Registry
-    except Exception as exc:  # noqa: BLE001 - missing dependency: report, never fail calls
-        failure = _check_error(exc)
-        return lambda _value: failure
-
-    validator_class = validators.validator_for(schema)
-    # A tuple is a JSON array too (results are JSON-encoded on the way out).
-    type_checker = validator_class.TYPE_CHECKER.redefine(
-        "array", lambda _checker, instance: isinstance(instance, (list, tuple))
-    )
-    # An empty registry without ``retrieve``: a remote or file ``$ref`` is
-    # unresolvable (a checker failure) instead of blocking I/O in the plugin.
-    validator = validators.extend(validator_class, type_checker=type_checker)(dict(schema), registry=Registry())
-    declared = _declared_names(schema)
-
-    def check(value: object) -> list[OutputIssue]:
-        try:
-            errors = list(islice(validator.iter_errors(value), MAX_REPORTED_ISSUES + 1))
-            # ``validator`` is the failing keyword; ``message`` quotes data and is not read.
-            return [
-                OutputIssue(_loc_path(list(error.absolute_path), declared, value), str(error.validator))
-                for error in errors
-            ]
-        except Exception as exc:  # noqa: BLE001 - malformed schema or unresolvable $ref
-            return _check_error(exc)
-
-    return check
-
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 
 
 def _loc_path(loc: Sequence[object], declared: frozenset[str], value: object) -> str:
@@ -244,12 +161,10 @@ def _declared_names(schema: object) -> frozenset[str]:
 
 __all__ = [
     "CHECK_ERROR_PREFIX",
-    "MAX_REPORTED_ISSUES",
     "OutputCheck",
     "OutputIssue",
     "build_output_check",
     "format_issues",
     "is_pydantic_model",
     "is_violation",
-    "output_payload",
 ]

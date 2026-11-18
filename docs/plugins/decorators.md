@@ -70,7 +70,7 @@ async def process(self, data: str, **_):
 
 `output_schema` is independent of `llm_result_fields` / `llm_result_model`: those decide what a model reads, `output_schema` describes the whole return value. The two can be combined.
 
-An explicit `output_schema` is checked with `jsonschema`; a contract inferred from a Pydantic return annotation is checked by the model itself. See [Output contract](./entries#output-contract).
+A contract inferred from a Pydantic return annotation is validated at runtime by the model (like `params`); an explicit `output_schema` is published only (like `input_schema`). See [Output contract](./entries#output-contract).
 
 ::: tip
 Use `**_` only when the handler intentionally accepts extra host-supplied fields. The runtime filters unsupported keyword arguments for handlers with explicit signatures, so it is not mandatory.

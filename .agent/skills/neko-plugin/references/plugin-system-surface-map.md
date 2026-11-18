@@ -62,7 +62,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - A `register_list_action(action)`: Adds or replaces a single plugin-list action. Use for manager-level actions that are not tied to a Hosted TSX surface.
 - A `clear_list_actions()`: Clears plugin-list actions. Use during shutdown/reload cleanup when actions are dynamic.
 - A `get_list_actions()`: Returns registered list actions. Use for diagnostics or UI context snapshots.
-- B `register_dynamic_entry(entry_id, handler, ..., output_schema=None, strict_output=False)`: Registers runtime-computed entries. Use for capabilities discovered after startup, such as adapter-discovered tools. Dynamic entries have no return annotation to infer from; pass `output_schema` explicitly.
+- B `register_dynamic_entry(entry_id, handler, ..., output_schema=None, strict_output=False)`: Registers runtime-computed entries. Use for capabilities discovered after startup, such as adapter-discovered tools. Dynamic entries have no return annotation to infer from; an explicit `output_schema` is published only.
 - B `unregister_dynamic_entry(entry_id)`: Removes a dynamic entry. Use when external capabilities disappear or config disables a runtime entry.
 - B `enable_entry(entry_id)`: Enables a dynamic entry and notifies the host. Static decorator entries are not toggled through this method.
 - B `disable_entry(entry_id)`: Disables a dynamic entry and notifies the host. Use instead of leaving dead dynamic handlers registered.
@@ -81,7 +81,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 ### Decorators
 
 - S `@neko_plugin`: Marks a class as a plugin class. Use the CLI scaffold's pattern; do not hand-set plugin metadata attrs.
-- S `@plugin_entry(id=None, name=None, description="", input_schema=None, params=None, kind="action", auto_start=False, persist=None, model_validate=True, timeout=None, llm_result_fields=None, llm_result_model=None, fields=None, metadata=None, quick_action=False, output_schema=None, strict_output=False)`: Registers a user/agent-callable entry. Runtime-triggered handlers must be `async def`; use `tr()` for names/descriptions. `output_schema` (or a Pydantic return annotation) declares the return contract; `strict_output=True` makes violations fail the call.
+- S `@plugin_entry(id=None, name=None, description="", input_schema=None, params=None, kind="action", auto_start=False, persist=None, model_validate=True, timeout=None, llm_result_fields=None, llm_result_model=None, fields=None, metadata=None, quick_action=False, output_schema=None, strict_output=False)`: Registers a user/agent-callable entry. Runtime-triggered handlers must be `async def`; use `tr()` for names/descriptions. A Pydantic return annotation declares the return contract and is validated at runtime (`strict_output=True` makes violations fail the call); an explicit `output_schema` is published only.
 - A `@lifecycle(id="startup|shutdown|reload|freeze|unfreeze|config_change", name=None, description="", metadata=None)`: Registers lifecycle handlers. Use for startup/shutdown/config behavior, not for user-callable work.
 - A `@message(id, name=None, description="", input_schema=None, source=None, metadata=None)`: Registers a message reaction handler. Use for host-message driven behavior.
 - C `@timer_interval(id, seconds, name=None, description="", auto_start=True, metadata=None)`: Registers a scheduled interval handler. Use only for lightweight recurring work with clear bounds.

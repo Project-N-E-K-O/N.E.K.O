@@ -800,14 +800,12 @@ def _check_entry_field_types(
     # A keyed table is not applied at all (warned separately): no publish hint.
     for key in ("output_schema", "strict_output") if applied else ():
         if key in item:
-            # The registry publishes it, but the output check runs in the
-            # plugin process against the decorator's contract only.
+            # The registry drops it: the output check runs from the decorator.
             issues.append((
                 "warning",
-                f"{label}.{key} only changes the published entry contract; the runtime output check "
-                f"uses @plugin_entry(output_schema=..., strict_output=...) / "
-                f"{label}.{key} 只改变发布的入口契约，运行时的输出检查只看 @plugin_entry 的声明 / "
-                f"{label}.{key} は公開されるエントリー契約だけを変更します。実行時の出力チェックは @plugin_entry の宣言のみを使います",
+                f"{label}.{key} is ignored; declare it on @plugin_entry instead / "
+                f"{label}.{key} 会被忽略，请在 @plugin_entry 上声明 / "
+                f"{label}.{key} は無視されます。@plugin_entry で宣言してください",
             ))
 
 
@@ -1242,19 +1240,14 @@ def _check_schema_keyword(
 
 
 def _check_output_schema_literal(decorator: ast.expr, label: str, issues: list[tuple[str, str]]) -> None:
-    """A literal output_schema must be a valid JSON Schema (the runtime checks with jsonschema)."""
-    value = _decorator_keyword_literal(decorator, "output_schema")
-    if not isinstance(value, dict):
+    """An explicit output_schema, like input_schema, is published but not checked at runtime."""
+    if _decorator_keyword_literal(decorator, "output_schema") is None:
         return
-    try:
-        from jsonschema import exceptions, validators
-    except ImportError:
-        return
-    try:
-        validators.validator_for(value).check_schema(value)
-    except exceptions.SchemaError as exc:
-        where = "/".join(str(part) for part in exc.absolute_path) or "<root>"
-        issues.append(("error", f"output_schema in {label} is not a valid JSON Schema ({exc.validator} at {where})"))
+    issues.append((
+        "warning",
+        f"output_schema in {label} is published only; the runtime does not validate returns against it "
+        f"(annotate the return with a Pydantic model for a runtime check)",
+    ))
 
 
 def _check_mutually_exclusive(decorator: ast.expr, names: set[str], label: str, issues: list[tuple[str, str]]) -> None:

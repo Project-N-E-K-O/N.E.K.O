@@ -107,10 +107,6 @@ class Capability:
     # (it works from screenshots, or hands one back). Such a tool is offered
     # only to a task agent whose model can.
     needs_images: bool = False
-    # What a call returns, as a JSON schema, when the entry declares one
-    # (``output_schema`` in ``GET /plugins``). Not published yet: the gateway
-    # leaves ``outputSchema`` out until calls return ``structuredContent``.
-    output_schema: dict[str, Any] | None = None
 
 
 # The two groups of built-in tools. A group's name is also its permission
@@ -227,11 +223,6 @@ def _schema(entry: dict[str, Any]) -> dict[str, Any]:
     return {"type": "object", "properties": {}}
 
 
-def _output_schema(entry: dict[str, Any]) -> dict[str, Any] | None:
-    schema = entry.get("output_schema")
-    return schema if isinstance(schema, dict) else None
-
-
 def _mcp_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     """Return ``(server, tool)`` when an ``mcp_adapter`` entry is a server's tool."""
     entry_id = str(entry.get("id") or "")
@@ -322,7 +313,6 @@ def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
                     title=f"{server}: {tool}",
                     description=description,
                     input_schema=_schema(entry),
-                    output_schema=_output_schema(entry),
                     permission="mcp_server",
                     permission_key=server,
                     one_step=False,
@@ -346,7 +336,6 @@ def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
                 title=f"{plugin_title}: {entry.get('name') or entry_id}",
                 description=description or str(plugin.get("description") or ""),
                 input_schema=_schema(entry),
-                output_schema=_output_schema(entry),
                 permission="plugin_entry",
                 permission_key=None,
                 one_step=True,

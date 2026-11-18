@@ -182,18 +182,18 @@ async def search(self, query: str):
     return Ok({"summary": "...", "count": 3})
 ```
 
-An explicit `output_schema` wins over the annotation. An entry with neither has no output contract, and nothing about it changes; `strict_output=True` alone has no effect.
+An explicit `output_schema` wins over the annotation. An entry with neither has no output contract, and nothing about it changes.
 
-**What is checked.** After each successful call, and before the automatic state snapshot, the return value is checked: the value inside `Ok(...)`, a bare return value, or the `data` of `self.finish(...)`. An `Err(...)` is a failure already and is not checked.
+**What is checked, symmetric with inputs.** `params=Model` is validated at runtime while an `input_schema` mapping is only published; outputs work the same way:
 
-- An inferred contract is checked by the model itself (Pydantic), so field and model validators and types such as `HttpUrl` apply. Field names and aliases are both accepted: `finish(data=model)` emits field names unless the model sets `serialize_by_alias`. The published schema is the model's validation-mode schema, keyed the same way. A returned model instance is trusted (it was validated when it was built). With `Model | None`, returning `None` passes.
-- An explicit `output_schema` is checked with [`jsonschema`](https://python-jsonschema.readthedocs.io/) against the returned Python values as they are (a `datetime` is not a JSON string, and a model instance or dataclass returned directly is not a JSON object; `finish()` data is already plain). A `$ref` is resolved only within the schema itself: remote or file references are never fetched, and such a check only logs a warning.
-- By default a mismatch writes a warning to the plugin log and the result is returned unchanged. The warning lists field paths and error types (for example `$.count (type)`), never the returned values. The same mismatch of the same entry is logged at most once a minute; the next warning says how many were suppressed.
-- With `strict_output=True` a mismatch fails the call with the error code `PLUGIN_OUTPUT_SCHEMA_VIOLATION`; `details.issues` lists the same `{"path", "type"}` pairs, and callers of `/runs` and `call_entry` see this code. The automatic state snapshot is skipped, but whatever the handler already did is not rolled back. A check that cannot run (a broken schema, a crashing validator) only logs a warning and never fails the call.
+- **Pydantic return annotation** (`-> Model` or `-> Model | None`; other annotations such as `list[Model]` are not inferred): after each successful call, and before the automatic state snapshot, the returned data is validated by building the model from it (the same way `params` are), so field and model validators and types such as `HttpUrl` apply. A returned model instance is trusted (it was validated when it was built); with `Model | None`, `None` passes. The data checked is the value inside `Ok(...)`, a bare return value, or the `data` of a `finish()`/`ok()` envelope; an `Err(...)` or a `fail()` envelope is a failure already and is not checked. The published schema is the model's `model_json_schema()`, published the way `params` are.
+- **Explicit `output_schema` mapping**: published only, like `input_schema`. It is not checked at runtime, and `strict_output` has no effect on it.
+- By default a mismatch writes a warning to the plugin log and the result is returned unchanged. The warning lists field paths and error types (for example `$.count (int_parsing)`), never the returned values. The same kind of mismatch of the same entry is logged at most once a minute; the next warning says how many were suppressed.
+- With `strict_output=True` a mismatch fails the call with the error code `PLUGIN_OUTPUT_SCHEMA_VIOLATION`; `details.issues` lists the same `{"path", "type"}` pairs. The automatic state snapshot is skipped, but whatever the handler already did is not rolled back. A validator that crashes only logs a warning and never fails the call.
 
-Known limitations: a model whose `@field_serializer` changes a field's shape (for example an `int` emitted as `"ID-3"`) cannot validate its own `finish()` output; declare an explicit `output_schema` for it, or return the instance. Nested models that disagree on `serialize_by_alias` are published with the outer model's setting.
+**Return the model, not a serialized dict.** The check builds the model from the returned data, with the model's input rules. Data that the model has already serialized may not read back: `finish(data=model)` emits field names (a field with an alias is then reported missing), and `@field_serializer`, `exclude=True` or differing validation and serialization aliases change the shape too. For such models, return the model instance itself, or turn `strict_output` off.
 
-The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. The task agent's capability gateway does not publish it yet, so the task agent's model does not see it.
+The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. It is declared on `@plugin_entry` only: `output_schema`/`strict_output` in a `[[plugin.entries]]` table are ignored (`neko-plugin validate` warns). The task agent's capability gateway does not publish it.
 
 ---
 

@@ -70,7 +70,7 @@ async def process(self, data: str, **_):
 
 `output_schema` は `llm_result_fields` / `llm_result_model` とは独立しています。後者はモデルが読むフィールドを決め、`output_schema` は戻り値全体を記述します。両方を同時に使えます。
 
-明示した `output_schema` は `jsonschema` で検査し、Pydantic の戻り値型注釈から推論した契約はモデル自身が検証します。[エントリーとパラメーター](./entries)の「出力契約」を参照してください。
+Pydantic の戻り値型注釈から推論した契約は実行時にモデルで検証され（`params` と同じ）、明示した `output_schema` は公開されるだけです（`input_schema` と同じ）。[エントリーとパラメーター](./entries)の「出力契約」を参照してください。
 
 ::: tip
 handler が host からの追加 field を意図的に受け取る場合だけ `**_` を使います。明示的な signature では runtime が未対応 keyword を filter するため、必須ではありません。

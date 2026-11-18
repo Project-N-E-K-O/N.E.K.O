@@ -214,18 +214,6 @@ def test_list_entries_projection_detaches_nested_schemas():
     assert schema["properties"]["count"]["type"] == "integer"
 
 
-def test_localization_leaves_the_output_contract_verbatim():
-    from plugin.server.application.plugins.query_service import _localized_entry
-
-    contract = {"const": {"$i18n": "status.ready"}}
-    entry = {"id": "e", "name": {"$i18n": "entry.name"}, "output_schema": contract}
-    i18n = SimpleNamespace(t=lambda key, locale=None, default=None, **_: f"<{key}>")
-    localized = _localized_entry(entry, i18n, "en")
-    assert localized["name"] == "<entry.name>"
-    assert localized["output_schema"] == {"const": {"$i18n": "status.ready"}}
-    assert list(localized) == ["id", "name", "output_schema"]
-
-
 def _cyclic() -> dict[str, object]:
     schema: dict[str, object] = {"type": "object"}
     schema["self"] = schema

@@ -333,22 +333,6 @@ def _build_entries_from_handlers(
 
 
 
-def _localized_entry(entry: dict[str, object], plugin_i18n: object, locale: str) -> dict[str, object]:
-    """Resolve i18n refs in an entry, leaving its output contract verbatim.
-
-    ``output_schema`` is checked at runtime exactly as declared; translating
-    an ``{"$i18n": ...}`` object inside ``const``/``enum`` would publish a
-    contract the check does not enforce.
-    """
-    if "output_schema" not in entry:
-        return resolve_i18n_refs(entry, plugin_i18n, locale=locale)  # type: ignore[arg-type,return-value]
-    rest = {key: value for key, value in entry.items() if key != "output_schema"}
-    localized = resolve_i18n_refs(rest, plugin_i18n, locale=locale)  # type: ignore[arg-type]
-    result = dict(localized) if isinstance(localized, Mapping) else rest
-    result["output_schema"] = entry["output_schema"]
-    return {key: result[key] for key in entry if key in result}
-
-
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
     for name, value in unhandled_entry_contract_fields(source, ENTRY_PROJECTION_SHAPED_FIELDS).items():
         if isinstance(value, Mapping):
@@ -834,7 +818,7 @@ def _build_plugin_list_sync(
                 seen=seen,
             )
             entries = [
-                _localized_entry(entry, plugin_i18n, effective_locale)
+                resolve_i18n_refs(entry, plugin_i18n, locale=effective_locale)  # type: ignore[misc]
                 for entry in entries
                 if isinstance(entry, dict)
             ]

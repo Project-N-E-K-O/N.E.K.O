@@ -403,16 +403,7 @@ def _group_text(group: str, tools: list[Capability]) -> str:
     return cut
 
 
-def _definition(capability: Capability, *, with_output: bool = False) -> dict[str, Any]:
-    """The tool definition of a capability.
-
-    ``with_output=True`` adds ``outputSchema``; no caller asks for it yet.
-    Every definition the gateway hands out today (search results, built-in
-    groups, the picked entries in an opening message) is model-visible text,
-    and calls answer with text only, no ``structuredContent``. MCP says a
-    declared ``outputSchema`` promises structured results, so publish it once
-    calls return ``structuredContent``.
-    """
+def _definition(capability: Capability) -> dict[str, Any]:
     from config.nekoclaw_settings import GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS
     from utils.tokenize import truncate_to_tokens
 
@@ -424,16 +415,11 @@ def _definition(capability: Capability, *, with_output: bool = False) -> dict[st
             "inputSchema": capability.input_schema,
         }
     description = capability.description or capability.title
-    definition = {
+    return {
         "name": capability.tool_name,
         "description": truncate_to_tokens(f"{capability.title}. {description}", GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS),
         "inputSchema": capability.input_schema,
     }
-    # Only entries that declare an output contract carry it (MCP name), so
-    # every other definition stays as it was.
-    if with_output and capability.output_schema is not None:
-        definition["outputSchema"] = capability.output_schema
-    return definition
 
 
 class CapabilityGateway:
@@ -780,8 +766,6 @@ class CapabilityGateway:
             # never one of them.)
             if capability.plugin_id not in candidates:
                 continue
-            # These definitions go into the commission's opening message, which
-            # the task agent's model reads, so they leave outputSchema out.
             definition = _definition(capability)
             cost = count_tokens(json.dumps(definition, ensure_ascii=False))
             if used + cost > GATEWAY_TOOL_LIST_MAX_TOKENS:

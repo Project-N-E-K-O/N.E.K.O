@@ -27,12 +27,12 @@ from plugin.sdk.shared.core.entry_runtime import (
     prepare_entry_kwargs,
     resolve_entry_timeout,
 )
+from plugin.core.responses import is_envelope
 from plugin.sdk.shared.core.output_contract import (
     OutputCheck,
     build_output_check,
     format_issues,
     is_violation,
-    output_payload,
 )
 
 UNSET_TIMEOUT = object()
@@ -130,7 +130,13 @@ class EntryExecutor:
         if check is None:
             return
         try:
-            issues = check(output_payload(result))
+            if is_envelope(result):
+                # finish()/ok() envelopes: the contract describes ``data``;
+                # a fail() envelope is a failure already and is not checked.
+                if result.get("success") is not True:
+                    return
+                result = result.get("data")
+            issues = check(result)
         except Exception as exc:
             # The checkers catch their own failures; anything left (a mapping
             # that raises when read, a metaclass raising in isinstance) is a

@@ -8,8 +8,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from plugin._types.errors import ErrorCode
-from plugin._types.exceptions import OUTPUT_SCHEMA_VIOLATION_CODE, PluginError
-from plugin.core.rpc import RpcRemoteError
+from plugin._types.exceptions import PluginError
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
@@ -409,22 +408,6 @@ async def _execute_trigger(
             trace_id=trace_id,
         )
     except PluginError as exc:
-        cause = exc.__cause__
-        if isinstance(cause, RpcRemoteError) and cause.code == OUTPUT_SCHEMA_VIOLATION_CODE:
-            # strict_output: keep the plugin's own code so callers can tell a
-            # contract violation from a crash. Other plugin errors keep INTERNAL.
-            remote_details = cause.details if isinstance(cause.details, Mapping) else {}
-            return fail(
-                OUTPUT_SCHEMA_VIOLATION_CODE,
-                cause.message,
-                details={
-                    **remote_details,
-                    "plugin_id": plugin_id,
-                    "entry_id": entry_id,
-                    "type": type(exc).__name__,
-                },
-                trace_id=trace_id,
-            )
         return fail(
             ErrorCode.INTERNAL,
             str(exc),

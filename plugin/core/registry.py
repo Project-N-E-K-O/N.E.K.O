@@ -924,6 +924,11 @@ def _normalized_entry_declaration(declaration: Dict[str, Any]) -> Dict[str, Any]
     records never alias the mutable configuration tables.
     """
     fields = entry_contract_fields(declaration)
+    # The output contract runs in the plugin process from the decorator; a
+    # manifest override would be published but never enforced, so it is not
+    # taken (neko-plugin validate warns about it).
+    for name in ("output_schema", "strict_output"):
+        fields.pop(name, None)
     for name in _ENTRY_DISPLAY_FIELDS:
         if name in declaration:
             fields[name] = declaration[name]
