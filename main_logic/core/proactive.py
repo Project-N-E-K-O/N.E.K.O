@@ -900,6 +900,9 @@ class ProactiveMixin:
             if not isinstance(callback, dict):
                 deliverable.append(callback)
                 continue
+            from main_logic.music_messages import music_callback_is_deliverable
+            if not music_callback_is_deliverable(self, callback):
+                callback[DELIVERY_RETRACTED_KEY] = True
             if callback_is_expired(callback):
                 callback[DELIVERY_RETRACTED_KEY] = True
             if callback.get(DELIVERY_RETRACTED_KEY):
@@ -3577,6 +3580,9 @@ class ProactiveMixin:
                 AGENT_CALLBACK_QUEUE_MAX_ITEMS,
             )
             context_source = "topic.hook" if callback.get("channel") == "topic_hook" else "proactive.callback"
+            from utils.music_capability_context import is_music_evidence
+            if is_music_evidence(callback):
+                context_source = "music_library.result"
             # Per-item input budget: summary/detail flow into the LLM verbatim.
             # Reuse the same source-policy normalizer as append_context() so
             # proactive/topic callbacks do not grow a parallel budget path.

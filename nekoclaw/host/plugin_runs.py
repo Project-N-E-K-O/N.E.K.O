@@ -103,7 +103,7 @@ def _normalize_timeout(value: Any) -> Any:
         return None
     try:
         seconds = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _TIMEOUT_UNSET
     return seconds if seconds > 0 else None
 
@@ -257,6 +257,7 @@ def describe_result(entry: dict[str, Any] | None, outcome: "RunOutcome", *, lang
     error = (outcome.run_error or outcome.error) if not outcome.success else None
     return parse_plugin_result(
         outcome.data,
+        plugin_id=outcome.plugin_id, entry_id=outcome.entry_id,
         llm_result_fields=llm_result_fields(entry),
         plugin_message=str(outcome.message or ""),
         error=error,
@@ -625,11 +626,23 @@ class PluginRunner:
                 )
 
         resolved_entry = str(requested_entry or "run")
+        # Autonomous playback must not replace an occupied or recently refused player.
+        playback = resolved_entry == "play_netease_music" or (
+            resolved_entry == "cloud_music" and plugin_args.get("action") == "play"
+        ) or (resolved_entry == "playlist" and plugin_args.get("action") in {
+            "curate", "replay", "next", "revise", "search", "resume",
+        })
+        if plugin_id == "netease_music" and playback and not latest_user_request:
+            from utils.proactive_music import proactive_music_block_reason
+            blocked = await proactive_music_block_reason(lanlan_name)
+            if blocked:
+                return rejected(blocked, blocked, resolved_entry)
         safe_args = dict(plugin_args)
         entry_timeout = resolve_entry_timeout(plugin, requested_entry, self._default_entry_timeout())
         try:
-            ctx = safe_args.get("_ctx")
+            ctx = safe_args.pop("_ctx", None)
             ctx = dict(ctx) if isinstance(ctx, dict) else {}
+            safe_args["_ctx"] = ctx
             # The host's character name wins over one the model wrote into
             # the arguments: which character the call is for is the host's
             # to say (owner, 2026-11-13).
@@ -641,6 +654,12 @@ class PluginRunner:
             # rewrote. A value the arguments already carry is kept.
             if latest_user_request:
                 ctx.setdefault("latest_user_request", latest_user_request)
+            if plugin_id == "netease_music":
+                # Commission user_text is supplied separately from model dispatch/args.
+                # An autonomous commission cannot manufacture authorization via _ctx.
+                ctx["latest_user_request"] = latest_user_request
+                ctx["request_source"] = "user" if latest_user_request else "proactive"
+                ctx["authorized_action"] = safe_args.get("action", "") if latest_user_request else ""
             entry_timeout = _ctx_entry_timeout(ctx, entry_timeout)
             ctx["entry_timeout"] = entry_timeout
             safe_args["_ctx"] = ctx

@@ -1687,6 +1687,10 @@ class LifecycleMixin:
             tool_definitions=tool_definitions,
             enable_long_response_summary=external_tts_enabled,
         )
+        from main_logic.music_context import music_context_tools
+        from config.prompts.prompts_music_context import music_conversation_rules
+        session.context_tools_provider = lambda: music_context_tools(self)
+        session.request_policy_provider = lambda: music_conversation_rules(self.user_language)
         session.on_proactive_done = self.handle_proactive_complete
         # A reply whose completion is skipped is closed by whoever took it
         # over: a displacing user reply reports it here; the owed wrap-up is

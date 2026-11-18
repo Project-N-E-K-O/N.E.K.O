@@ -278,6 +278,8 @@ window.LanLan1.setEmotion = function(emotion) {
         return;
     }
     if (activeType === 'pngtuber') return;
+    // Chat temporarily takes priority over the ambient listening expression.
+    if (window.nekoMusicListening && window.nekoMusicListening.applyChatEmotion(emotion)) return;
     // Live2D 模式
     if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setEmotion(emotion);

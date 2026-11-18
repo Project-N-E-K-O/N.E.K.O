@@ -869,7 +869,8 @@ class LexicalDecisionModel:
         from utils.tokenize import count_tokens, truncate_to_tokens
 
         fallback_route = "task_agent" if request.task_agent_available else "none"
-        all_plugins = request.plugins
+        from utils.music_capabilities import scoped_music_catalog
+        all_plugins = scoped_music_catalog(request.plugins, proactive=not request.user_text)
         if not all_plugins:
             return Selection(route=fallback_route, reason="No active plugins")
 
@@ -908,6 +909,9 @@ class LexicalDecisionModel:
             return Selection(route=fallback_route, reason="No plugin candidates", model_calls=calls)
 
         plugins_desc = annotate_keyword_hits(plugins_desc, hits)
+        if any(plugin.get("id") == "netease_music" for plugin in shown):
+            from config.prompts.prompts_music_assessment import music_query_guidance
+            plugins_desc += "\n" + music_query_guidance(request.lang)
         system = _loc(TASK_BRAIN_SELECT_PROMPT, request.lang).format(plugins_desc=plugins_desc)
         active_lines, active_rows = self._active_rows(request)
         user = build_selection_request(

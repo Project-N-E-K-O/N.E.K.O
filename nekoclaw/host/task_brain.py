@@ -825,6 +825,7 @@ class TaskBrain:
                 status="completed" if completed else terminal,
                 source_kind="plugin",
                 source_name=source_name,
+                plugin_id=outcome.plugin_id, entry_id=outcome.entry_id,
                 delivery_mode=delivery,
                 # Only a completed result keeps its own kind and expiry.
                 result_kind=result_kind if completed else "task_result",
@@ -841,6 +842,7 @@ class TaskBrain:
                 status="failed",
                 source_kind="plugin",
                 source_name=source_name,
+                plugin_id=outcome.plugin_id, entry_id=outcome.entry_id,
                 delivery_mode=delivery,
             )
         # The status and the report are stored together. When the commission

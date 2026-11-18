@@ -191,6 +191,8 @@ class Reporter:
         delivery_mode: str = "proactive",
         result_kind: str = "task_result",
         expires_in_s: float | None = None,
+        plugin_id: str | None = None,
+        entry_id: str | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         """Build the ``(kind, payload)`` row that reports how a commission ended.
 
@@ -202,7 +204,9 @@ class Reporter:
         from config import TASK_ERROR_MAX_TOKENS, TASK_LARGE_DETAIL_MAX_TOKENS, TASK_SUMMARY_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        summary = truncate_to_tokens(summary, TASK_SUMMARY_MAX_TOKENS)
+        from utils.music_capability_context import music_result_token_limit
+        music_limit = music_result_token_limit(plugin_id, entry_id) if success else None
+        summary = truncate_to_tokens(summary, music_limit or TASK_SUMMARY_MAX_TOKENS)
         payload = {
             "lanlan_name": commission.lanlan_name,
             "task_id": commission.id,
@@ -211,7 +215,7 @@ class Reporter:
             "success": success,
             "text": summary,
             "summary": summary,
-            "detail": truncate_to_tokens(detail, TASK_LARGE_DETAIL_MAX_TOKENS) if detail else "",
+            "detail": truncate_to_tokens(detail, music_limit or TASK_LARGE_DETAIL_MAX_TOKENS) if detail else "",
             "error_message": truncate_to_tokens(error_message, TASK_ERROR_MAX_TOKENS) if error_message else "",
             "direct_reply": False,
             "source_kind": source_kind,
@@ -220,6 +224,7 @@ class Reporter:
             "result_kind": result_kind,
             "expires_in_s": expires_in_s,
             "title": commission.title,
+            **({"metadata": {"music_library_evidence": True}} if music_limit else {}),
         }
         return KIND_TASK_RESULT, payload
 

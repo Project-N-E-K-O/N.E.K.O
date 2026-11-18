@@ -450,7 +450,31 @@ def _netease_proxy_redirect(url, song_id):
         url = 'https://' + url[7:]
     if not is_allowed_audio_url(url):
         return None
-    return RedirectResponse(url=f'/api/music/proxy?url={quote(url, safe="")}&netease_id={song_id}')
+    return RedirectResponse(
+        url=f"/api/music/proxy?url={quote(url, safe='')}&netease_id={song_id}"
+    )
+
+
+@router.get("/api/music/current/netease")
+async def current_netease_track(lanlan_name: str):
+    from main_routers.shared_state import get_session_manager
+
+    manager = get_session_manager().get(lanlan_name)
+    track = (
+        getattr(manager, "_current_netease_track", None)
+        if getattr(manager, "websocket", None)
+        else None
+    )
+    from main_logic.proactive_chat.music_refusal import is_music_refusal_cooldown_active
+    state = getattr(manager, "_music_playback_event_key", None)
+    blocked = None
+    if not getattr(manager, "websocket", None):
+        blocked = "no_connected_player"
+    elif is_music_refusal_cooldown_active(lanlan_name) or getattr(manager, "_proactive_music_cooldown", False):
+        blocked = "music_cooldown"
+    elif state and state[1] in {"playing", "paused", "buffering"}:
+        blocked = "player_occupied"
+    return {"track": track, "proactive_allowed": blocked is None, "proactive_block_reason": blocked}
 
 
 @router.get("/api/music/play/netease/{song_id}")
@@ -510,3 +534,12 @@ async def play_netease_music(song_id: str):
     mark_audio_unavailable(fallback_url, candidate_url=f'/api/music/play/netease/{song_id_int}')
     logger.warning(f"[音乐播放] 歌曲 {song_id_int} 没有可用音源")
     return JSONResponse(content={"success": False, "error": "歌曲没有可用音源"}, status_code=502)
+
+
+# Isolated text classifier; playback never awaits this endpoint.
+from utils.music_mood import MoodTrack, classifier as music_mood_classifier
+
+
+@router.post("/api/music/mood")
+async def classify_music_mood(track: MoodTrack):
+    return await music_mood_classifier.classify(track)

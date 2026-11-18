@@ -713,6 +713,7 @@ class _StreamingMixin:
         text: str,
         *,
         system_prefix: str | None = None,
+        system_prefix_history: str | None = None,
         system_prefix_images: Optional[list[str]] = None,
         turn_images: Optional[Sequence[str]] = None,
         # Capture channel for this turn's turn_images ("screen" / "camera"). Independent ASR frames
@@ -1105,7 +1106,12 @@ class _StreamingMixin:
             if history_replacement_text is not None
             else ""
         )
-        if history_replacement_text and _prefix_clean:
+        _prefix_history_only = system_prefix_history is not None and not history_replacement_text
+        if system_prefix_history is not None and _prefix_clean:
+            history_replacement_text = (
+                f"{system_prefix_history.strip()}\n\n{history_replacement_text or _user_text}"
+            ).strip()
+        elif history_replacement_text and _prefix_clean:
             history_replacement_text = f"{_prefix_clean}\n\n{history_replacement_text}"
         # Pending frame-bus snapshot; None means no frames (text-only turn) or already published.
         _pending_bus_frames = None
@@ -1192,6 +1198,8 @@ class _StreamingMixin:
         # This turn's resident blocks initially belong only to it, surviving for later turns after provider response;
         # bind before try so finally can access them.
         _resident_entry = None
+        from ._turn_context import _request_context_tools
+        _context_tools_token = _request_context_tools.set((self, getattr(turn_context, "tools", ()), response_generation))
         _ephemeral_context = getattr(turn_context, "ephemeral", None)
         if _ephemeral_context is not None:
             # Internal marker (not sent to provider): request views must not treat this as the user's turn.
@@ -2343,6 +2351,7 @@ class _StreamingMixin:
             # Before other cleanup, remove base64 from history so subsequent requests do not
             # resend it (token counter uses short image placeholders, invisible to truncation).
             response_cancelled = self._active_response_generation != response_generation
+            _request_context_tools.reset(_context_tools_token)
             interrupter_owned = self._take_interrupter_ownership(response_generation)
             self._release_tool_image_slots(_turn_tool_image_slots)
             self._finish_response_generation(response_generation)
