@@ -1381,9 +1381,9 @@ def _keep_known(
     # Files found gone here, asked about last: not put back on record by
     # what ``known`` tells of them, which was asked a moment before.
     gone_now: set[str] = set()
-    # And the ones found there here: on record, though the look a moment
-    # before found them gone.
-    found_now: set[str] = set()
+    # And the ones not found gone here (there, or not told of): on
+    # record, though the look a moment before found them gone.
+    not_gone_now: set[str] = set()
     status = _status_of(document)
     waited = status == ENTRY_PENDING
     if status == ENTRY_EXPIRED or (status == ENTRY_PENDING and not pending):
@@ -1400,7 +1400,7 @@ def _keep_known(
         if judged and known is not None and _speaks_no_more(known, answers):
             raise _Rewritten("a file the note was judged with does not speak for it by now", told=answers)
         gone_now = {path for path, stands in answers.items() if stands is False}
-        found_now = {path for path, stands in answers.items() if stands is True}
+        not_gone_now = {path for path, stands in answers.items() if stands is not False}
         if told is not None:
             told.update(answers)
         _set_evidence(document, [path for path in rested if path not in gone_now], apart)
@@ -1413,7 +1413,7 @@ def _keep_known(
         changed = True
     before, apart = _evidence_in(document), _outside_in(document)
     evidence = _joined(
-        [path for path in before if path not in known.gone or path in found_now],
+        [path for path in before if path not in known.gone or path in not_gone_now],
         [path for path in known.evidence if path not in gone_now],
         SPACE_EVIDENCE_MAX_PATHS,
     )
@@ -2361,6 +2361,11 @@ class TaskAgentSpace:
             fresh_text: list[bool] = []
 
             def add(text: str) -> str:
+                # What a look tells is of this attempt: the file is read
+                # again, and all of it done again, when it was saved
+                # meanwhile. Only what the write that stands was made
+                # with is told (below).
+                at_write.clear()
                 document = _parse_document(text)
                 fresh = not _said_already(document, content)
                 if must_say and (
@@ -2398,11 +2403,6 @@ class TaskAgentSpace:
                 # What is known of it beyond its words is kept on the same
                 # terms: only in an entry the host made. One the user wrote
                 # is theirs; it is given no evidence, no count and no state.
-                # What this look tells is of this attempt: the file is
-                # read again, and all of it done again, when it was saved
-                # meanwhile. Only what the write that stands was made
-                # with is told (below).
-                at_write.clear()
                 try:
                     noted = bool(marks) and _keep_known(
                         document, known, allowed, pending=pending, judged=by_files, told=at_write
@@ -2743,6 +2743,7 @@ class TaskAgentSpace:
         known: _Known,
         allowed: bool,
         *,
+        by_files: bool = False,
         told: dict[str, bool | None] | None = None,
     ) -> tuple[Entry, OSError | None]:
         """Have a pending entry take effect where it is, seen by the commissions of ``known`` as well.
@@ -2763,6 +2764,8 @@ class TaskAgentSpace:
 
         def change(text: str) -> str:
             took[:] = []
+            # What a look tells is of this attempt (as in ``_file_entry``).
+            at_write.clear()
             document = _parse_document(text)
             # Only as the host made it: one the user took over is theirs.
             # And as it was found: by its title. Given another since, it
@@ -2772,9 +2775,18 @@ class TaskAgentSpace:
             ):
                 return text
             empty[:] = [not _normal(document.body)]
-            # What this look tells is of this attempt (as in ``_file_entry``).
-            at_write.clear()
-            if empty[0] or not _keep_known(document, seen, allowed, told=at_write):
+            if empty[0]:
+                return text
+            changed = _keep_known(document, seen, allowed, told=at_write)
+            if by_files and _speaks_no_more(known, at_write):
+                # The note is in effect by its files and nothing else, and
+                # one that spoke for it is gone, or not told of, as this
+                # entry is asked about: nothing is written, and the note
+                # is judged anew (as in ``_fold``).
+                raise _Rewritten(
+                    "a file the note was judged with does not speak for it by now", told=at_write, of=pending.id
+                )
+            if not changed:
                 return text
             took[:] = [document]
             return _render_document(document)
@@ -3121,13 +3133,15 @@ class TaskAgentSpace:
         def found_gone(later: dict[str, bool | None]) -> tuple[str, ...]:
             # All that was found gone: as the note was judged, before
             # that when it is judged anew, and after, as it was written.
-            # Not one that the last look found again.
+            # Not one of which the last look told otherwise: found
+            # again, or not told of (that one stays on record, and is
+            # not said to be missing).
             return tuple(
                 path
                 for path in dict.fromkeys(
                     (*gone, *earlier_gone, *(path for path, stands in later.items() if stands is False))
                 )
-                if later.get(path) is not True
+                if path not in later or later[path] is False
             )
 
         def taken_along(pending: Entry) -> bool:
@@ -3231,7 +3245,7 @@ class TaskAgentSpace:
                     project, pending, home, known, allowed, by_files=by_files, told=later
                 )
             else:
-                _entry, failed = self._confirm(project, pending, known, allowed, told=later)
+                _entry, failed = self._confirm(project, pending, known, allowed, by_files=by_files, told=later)
             unlisted = failed or unlisted
         became = home is not None and home.status == ENTRY_PENDING
         brought = known

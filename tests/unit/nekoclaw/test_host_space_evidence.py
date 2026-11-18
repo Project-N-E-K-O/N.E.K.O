@@ -6815,3 +6815,88 @@ async def test_which_of_the_guesses_wait_still_is_told_by_the_file_of_each(space
 
     # In effect, or gone for good: it waits no longer. Not to be read just now: nothing says it does not wait.
     assert await space.still_pending(DEFAULT_PROJECT, names) == {"photo-dates", "video-dates"}
+
+
+async def test_a_file_found_gone_and_then_not_told_of_as_the_entry_is_written_stays_and_is_not_said_to_be_missing(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There when the write's turn came; gone as what waited was asked about; not told of as the entry is written.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone, None])
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "verified", ["src/app.py"])
+    )
+
+    # Of the answers about the file the last one counts, and it tells nothing: the file stays on record,
+    # does not count, and is not said to be missing.
+    assert len(looks) == 3 and reply.startswith("kept in") and "not found" not in reply
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+    assert "evidence_counted" not in _lesson_event(events, "c2")
+
+
+async def test_what_a_guess_of_the_title_was_told_in_a_write_that_was_given_up_is_not_what_is_told_of_the_note(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry, waiting = _memory(root) / "photo-dates.md", _memory(root) / "video-dates.md"
+
+    def gone_and_renamed() -> None:
+        # As the guess is read to take effect the file is gone; the user gives the guess another title at
+        # that moment, so it is read again, and is no longer the one that was to take effect.
+        (workdir / "src" / "app.py").unlink()
+        waiting.write_text(
+            waiting.read_text(encoding="utf-8").replace("name: Video dates", "name: Clip dates"), encoding="utf-8", newline="\n"
+        )
+        stamp = waiting.stat().st_mtime + 5
+        os.utime(waiting, (stamp, stamp))
+
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone_and_renamed])
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Video dates", "Use the EXIF date.", "verified", ["src/app.py"])
+    )
+
+    # Nothing was written with what that look told: the guess waits under its new title, and what the
+    # note brings is as it was found when the write's turn came.
+    assert len(looks) == 2 and reply.startswith("already in photo-dates.md") and "not found" not in reply
+    assert [(held["id"], held["title"]) for held in _pending(root)] == [("video-dates", "Clip dates")]
+    assert _rests_on(entry)[0] == (app,)
+    assert _lesson_event(events, "c2")["evidence_counted"] == [app]
+
+
+async def test_a_note_in_effect_by_a_file_alone_is_judged_anew_when_that_is_gone_as_a_guess_of_its_title_takes_effect(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "observed", ["README.md"]))
+    (workdir / "README.md").unlink()
+    assert (await space.check_evidence())["expired"] == 1
+    await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry, waiting = _memory(root) / "photo-dates.md", _memory(root) / "video-dates.md"
+    _named_for_nobody(waiting)
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There when the write's turn came; gone as the guess of that title was to take effect.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    # What the expired entry says, under the title of the guess, observed, with the file the guess rests on.
+    reply = await space.submit(
+        _commission(workdir), _lesson("Video dates", "Use the EXIF date.", "observed", ["src/app.py"])
+    )
+
+    # The file was all that spoke for it: judged anew without it, the note waits with the guess. The
+    # guess did not take effect, and the entry that had expired is not in effect again.
+    assert len(looks) == 2 and reply.startswith("not in effect yet") and "src/app.py (not found)" in reply
+    assert _head(entry).get("status") == "expired" and _in_effect(root) == ["photo-dates"]
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("video-dates", [])]
+    assert "Use the EXIF date." in waiting.read_text(encoding="utf-8")
