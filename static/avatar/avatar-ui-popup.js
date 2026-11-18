@@ -22,7 +22,7 @@ const AVATAR_POPUP_FALLBACK_PROACTIVE_CHAT_INTERVAL = 15;
 const AVATAR_POPUP_FALLBACK_PROACTIVE_VISION_INTERVAL = 10;
 
 function getAvatarPopupDefaultInterval(constKey, fallback) {
-    const value = window.appConst ? Number(window.appConst[constKey]) : NaN;
+    const value = window.appConst ? window.appConst[constKey] : undefined;
     return Number.isFinite(value) ? value : fallback;
 }
 

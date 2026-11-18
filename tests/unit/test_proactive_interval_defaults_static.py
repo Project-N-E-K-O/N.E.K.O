@@ -7,6 +7,7 @@ and must equal the app-state.js values. Previously the popup hard-coded 15s
 for the vision interval while the effective default was 10s.
 """
 
+import functools
 import json
 import re
 import textwrap
@@ -19,6 +20,7 @@ from tests.support.websocket_source_harness import _run_settings_node_harness
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_STATE_PATH = REPO_ROOT / "static" / "app" / "app-state.js"
 POPUP_PATH = REPO_ROOT / "static" / "avatar" / "avatar-ui-popup.js"
+APP_SETTINGS_PATH = REPO_ROOT / "static" / "app" / "app-settings.js"
 
 pytestmark = pytest.mark.frontend_contract
 
@@ -31,6 +33,7 @@ _INTERVALS = (
 )
 
 
+@functools.cache
 def _load_app_state() -> dict:
     """Run the real app-state.js in a minimal sandbox and read back defaults."""
     harness = textwrap.dedent(
@@ -91,4 +94,21 @@ def test_popup_interval_defaults_come_from_app_const():
         assert fallback, f"{fallback_name} not declared"
         assert int(fallback.group(1)) == loaded["const"][const_key], (
             f"{fallback_name} must equal app-state.js {const_key}"
+        )
+
+
+def test_app_settings_fallback_literals_match_app_const():
+    # app-settings.js keeps its own literal fallback for when appConst lacks the
+    # key; it must not drift from app-state.js either.
+    loaded = _load_app_state()
+    source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    for state_key, const_key, _ in _INTERVALS:
+        match = re.search(
+            state_key + r":\s*Number\.isFinite\(C\." + const_key + r"\)\s*"
+            r"\?\s*C\." + const_key + r"\s*:\s*(\d+)\s*,",
+            source,
+        )
+        assert match, f"app-settings.js default for {state_key} not found"
+        assert int(match.group(1)) == loaded["const"][const_key], (
+            f"app-settings.js fallback for {state_key} must equal {const_key}"
         )
