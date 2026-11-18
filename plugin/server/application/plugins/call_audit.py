@@ -27,6 +27,7 @@ _ring: deque[dict] = deque(maxlen=1000)
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
+_abandoned = False  # a timed-out close left its writer behind: never start a second one
 dropped = 0  # diagnostic only; increments from several threads may race
 
 
@@ -43,27 +44,28 @@ def audit_directory():
     return resolve_plugin_log_directory(log_subdir="plugin_call_audit")
 
 
-def _audit_logger() -> logging.Logger | None:
+def _audit_logger_locked() -> logging.Logger | None:
     global _listener
     log = logging.getLogger(_LOGGER_NAME)
-    with _lock:
-        if _closed:
-            return None
-        if _listener is not None:
-            return log
-        directory = audit_directory()
-        directory.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.handlers.RotatingFileHandler(
-            directory / "call_audit.jsonl", maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8",
-        )
-        file_handler.setFormatter(logging.Formatter("%(message)s"))
-        records: queue.Queue = queue.Queue(maxsize=2048)
-        log.handlers[:] = [_DroppingQueueHandler(records)]
-        log.setLevel(logging.INFO)
-        log.propagate = False
-        _listener = logging.handlers.QueueListener(records, file_handler)
-        _listener.start()
+    if _closed or _abandoned:
+        return None
+    if _listener is not None:
         return log
+    directory = audit_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    # delay=True: the writer thread opens the file on its first record.
+    file_handler = logging.handlers.RotatingFileHandler(
+        directory / "call_audit.jsonl", maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT,
+        encoding="utf-8", delay=True,
+    )
+    file_handler.setFormatter(logging.Formatter("%(message)s"))
+    records: queue.Queue = queue.Queue(maxsize=2048)
+    log.handlers[:] = [_DroppingQueueHandler(records)]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    _listener = logging.handlers.QueueListener(records, file_handler)
+    _listener.start()
+    return log
 
 
 def record(entry: dict) -> None:
@@ -71,10 +73,13 @@ def record(entry: dict) -> None:
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     _ring.append(item)
     try:
-        log = _audit_logger()
-        if log is not None:
-            # A full queue makes QueueHandler drop the record (handleError).
-            log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+        # Check and enqueue (non-blocking) under the lock close() takes, so
+        # everything accepted before a close is queued ahead of its sentinel.
+        with _lock:
+            log = _audit_logger_locked()
+            if log is not None:
+                # A full queue makes QueueHandler drop the record (handleError).
+                log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
     except Exception:
         pass
 
@@ -88,10 +93,10 @@ def close(timeout: float = 1.0) -> bool:
     """Flush what is queued within ``timeout`` and stop writing to the file.
 
     Bounded on purpose (``QueueListener.stop`` waits without a limit and
-    fails on a full queue): a stuck disk is abandoned to the daemon thread.
-    Later records stay in the ring only. Returns whether the flush finished.
+    fails on a full queue). Later records stay in the ring only. Returns
+    whether the flush finished.
     """
-    global _listener, _closed
+    global _listener, _closed, _abandoned
     with _lock:
         _closed = True
         listener, _listener = _listener, None
@@ -102,8 +107,12 @@ def close(timeout: float = 1.0) -> bool:
         listener.queue.put(None, timeout=timeout)  # QueueListener's stop sentinel
         listener._thread.join(max(0.0, deadline - time.monotonic()))
     except queue.Full:
-        return False
+        pass
     if listener._thread.is_alive():
+        # The stuck daemon writer still owns the file; an in-process restart
+        # keeps the ring only rather than racing it with a second writer.
+        with _lock:
+            _abandoned = True
         return False
     for handler in listener.handlers:
         handler.close()

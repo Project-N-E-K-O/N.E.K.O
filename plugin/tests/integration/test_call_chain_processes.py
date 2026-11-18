@@ -48,6 +48,7 @@ async def _world(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (frozenset(grants.get(p, ())), True))
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path / "audit")
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
+    monkeypatch.setattr(call_audit, "_abandoned", False)
     call_audit.close()
     call_audit.reopen()
     forwarded: list[dict] = []
@@ -66,14 +67,20 @@ async def _world(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(dispatch_service.state, "get_plugin_hosts_snapshot_cached", lambda timeout=1: hosts)
     router = PluginRouter()
     await router.start()
-    for plugin_id in ("chain_a", "chain_b", "chain_c"):
-        directory = tmp_path / plugin_id
-        directory.mkdir()
-        (directory / "__init__.py").write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
-        entry_point = f"plugins.{plugin_id}:CallChainFixturePlugin"
-        (directory / "plugin.toml").write_text(f"[plugin]\nid='{plugin_id}'\nname='{plugin_id}'\nentry='{entry_point}'\n")
-        hosts[plugin_id] = PluginHost(plugin_id, entry_point, directory / "plugin.toml", source_only=True)
-        await hosts[plugin_id].start(startup_timeout=10, startup_failure="abort")
+    try:
+        for plugin_id in ("chain_a", "chain_b", "chain_c"):
+            directory = tmp_path / plugin_id
+            directory.mkdir()
+            (directory / "__init__.py").write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+            entry_point = f"plugins.{plugin_id}:CallChainFixturePlugin"
+            (directory / "plugin.toml").write_text(f"[plugin]\nid='{plugin_id}'\nname='{plugin_id}'\nentry='{entry_point}'\n")
+            hosts[plugin_id] = PluginHost(plugin_id, entry_point, directory / "plugin.toml", source_only=True)
+            await hosts[plugin_id].start(startup_timeout=10, startup_failure="abort")
+    except BaseException:
+        await router.stop()
+        for host in hosts.values():
+            await host.shutdown(timeout=1)
+        raise
     return router, World(hosts, grants, forwarded, tmp_path / "audit")
 
 

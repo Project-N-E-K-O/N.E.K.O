@@ -43,11 +43,11 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
         from plugin.server.infrastructure.plugin_consent import consent_store
 
         record = consent_store.read(plugin_id)
-    except Exception:
+        if record.get("decision") != "approved":
+            return frozenset(), True
+        return frozenset(c for c in record.get("approved_capabilities") or () if isinstance(c, str)), True
+    except Exception:  # unreadable store or malformed record
         return frozenset(), False
-    if record.get("decision") != "approved":
-        return frozenset(), True
-    return frozenset(record.get("approved_capabilities") or ()), True
 
 
 def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink:
@@ -64,6 +64,7 @@ def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink:
 
 def begin_call(target: str, call_id: str, event_type: str, event_id: str,
                link: CallLink | None) -> CallRecord | None:
+    record = None
     try:
         record = registry.register(target, call_id, event_type, event_id, link)
         if record is not None:
@@ -78,6 +79,8 @@ def begin_call(target: str, call_id: str, event_type: str, event_id: str,
         return record
     except Exception as exc:
         logger.warning("call-chain registration failed: error_type={}", type(exc).__name__)
+        if record is not None:
+            registry.remove(record)  # the caller will not call end_call
         return None
 
 

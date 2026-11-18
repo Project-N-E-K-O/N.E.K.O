@@ -38,6 +38,7 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: (granted(p), True))
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path)
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
+    monkeypatch.setattr(call_audit, "_abandoned", False)
     call_audit.close()
     call_audit.reopen()
     yield tmp_path
@@ -189,7 +190,20 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
     started = time.monotonic()
     assert call_audit.close(0.3) is False
     assert time.monotonic() - started < 1.5
+    # The stuck writer keeps the file: a restart must not start a second one.
+    call_audit.reopen()
+    call_audit.record({"kind": "forward", "n": "after"})
+    assert call_audit._listener is None
     stuck.set()
+
+
+def test_failed_rights_lookup_does_not_leak_the_registration(gate, monkeypatch):
+    def broken(plugin_id):
+        raise TypeError("malformed consent")
+
+    monkeypatch.setattr(capability_gate, "granted_capabilities", broken)
+    assert capability_gate.begin_call("a", "r1", "plugin_entry", "x", None) is None
+    assert len(capability_gate.registry) == 0 and not capability_gate.registry.has_live_chain("a")
 
 
 @pytest.mark.parametrize(
