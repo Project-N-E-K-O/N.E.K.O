@@ -6547,3 +6547,35 @@ async def test_a_file_of_which_nothing_is_told_as_the_note_is_judged_anew_stays_
     # It waits. Asked about again, the file is told by that look: not known to be gone, it stays on record.
     assert len(looks) == 3 and reply.startswith("not in effect yet")
     assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [app])]
+
+
+async def test_a_file_of_which_nothing_is_told_at_all_is_on_record_and_is_not_said_to_have_counted(
+    space, root, workdir, events, monkeypatch
+):
+    app, readme = _where(workdir / "src" / "app.py"), _where(workdir / "README.md")
+    # Of one of the two files a new note names the disk says nothing, whenever it is asked.
+    _told_in_turn(monkeypatch, app, [None] * 9)
+
+    reply = await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py", "README.md"])
+    )
+
+    # In effect by the other. The one not told of is kept on record, and is not what the note took effect by.
+    assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert sorted(_rests_on(_memory(root) / "entry-point.md")[0]) == sorted([app, readme])
+    assert _lesson_event(events, "c1")["evidence_counted"] == [readme]
+
+
+async def test_a_file_found_as_the_note_is_judged_anew_speaks_for_it_though_nothing_was_told_of_it_just_before(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    # There as the note is judged; not told of as the entry was to take effect by it; there again from then on.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", None])
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    # Asked about again as the note is judged anew, it is told by that look: in effect by it.
+    assert len(looks) == 4 and reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
