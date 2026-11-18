@@ -832,10 +832,11 @@ class TaskBrain:
                 except Exception:  # noqa: BLE001 - showing progress must not disturb the call
                     logger.debug("a progress listener failed", exc_info=True)
 
-        # Asked last thing before the request for the run is sent: what
-        # was written down of the choice, the permissions and the list
-        # of plugins are waited for since NekoClaw was seen to be on,
-        # and it may have been switched off meanwhile.
+        # Asked last thing before the request for the run is handed to
+        # the HTTP client: what was written down of the choice, the
+        # permissions and the list of plugins are waited for since
+        # NekoClaw was seen to be on, and it may have been switched off
+        # meanwhile.
         still_on, turned_away = self._asks_whether_on()
         outcome = await self._runner.run_entry(
             commission_id=commission.id,
