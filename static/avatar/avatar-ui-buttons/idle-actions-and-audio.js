@@ -885,7 +885,10 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
             if (art.naturalWidth > 0) {
                 onLoad();
             } else {
+                // A synchronous image failure rejects the request before it has started.
+                state.presentationOnTerminal = null;
                 onError();
+                return false;
             }
         }
     }

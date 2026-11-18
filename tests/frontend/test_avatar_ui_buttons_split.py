@@ -693,7 +693,19 @@ def test_cat1_mouse_hover_selects_three_animations_and_restores_after_their_cycl
         assert button.evaluate("button => _nekoIdleCat1QuestionMarkKeyboardState.button === button")
         assert button.get_attribute("data-neko-cat1-visual-action") is None
         page.mouse.move(0, 0)
-        page.clock.fast_forward(duration - 1)
+        elapsed = 0
+        if filename == "cat-idle-cat1-wag-1.webp":
+            started_at = art.evaluate("img => img.__nekoIdleHoverStartedAt")
+            elapsed = 3000
+            page.clock.fast_forward(elapsed)
+            page.evaluate("() => { Math.random = () => 0.99; }")
+            page.mouse.move(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+            assert art.get_attribute("src") == src
+            art.evaluate("img => _playNekoIdleHoverArt(img, 'cat1')")
+            assert art.get_attribute("src") == src
+            assert art.evaluate("img => img.__nekoIdleHoverStartedAt") == started_at
+            page.mouse.move(0, 0)
+        page.clock.fast_forward(duration - elapsed - 1)
         assert art.get_attribute("src") == src
         page.clock.fast_forward(1)
         assert art.get_attribute("src") == expected_idle

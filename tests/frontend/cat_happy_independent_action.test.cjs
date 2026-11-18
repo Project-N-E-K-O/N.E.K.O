@@ -559,6 +559,19 @@ test('OIIA cues three rotations on the WebP timeline and cancels pending music o
   }
 });
 
+test('an already-failed OIIA image rejects the request before reporting a terminal', () => {
+  const h = harness();
+  h.art.complete = true;
+  h.art.naturalWidth = 0;
+
+  assert.equal(h.context._playNekoIdleCat1VisualAction(h.button, 'oiia', {
+    onTerminal: (result) => h.terminals.push(result),
+  }), false);
+  assert.equal(h.art.src, 'idle.gif?v=1');
+  assert.equal(h.timers.filter((timer) => !timer.cleared).length, 0);
+  assert.equal(h.terminals.length, 0);
+});
+
 test('five sleep-tier actions start in their filename tier and keep explicit terminal behavior', async () => {
   for (const [key, entry] of Object.entries(SLEEP_CASES)) {
     const h = harness();
