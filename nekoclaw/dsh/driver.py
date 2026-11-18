@@ -1162,7 +1162,9 @@ class DshRuntime:
         if not delivered:
             self._give_back(session, texts, of_run, late=late)
         elif late and self._sessions.get(session.id) is session and session.closing is None:
-            self._say_taken(session, _numbers_of(texts))
+            # (Said as of a run that is over: what is told of them is what
+            # that run came to.)
+            self._say_taken(session, _numbers_of(texts), late=True)
 
     async def _answers_settled(self, session: _Session) -> None:
         """Wait, a bounded while, until it is known of every answer that carried texts whether it reached dsh.
@@ -1211,10 +1213,13 @@ class DshRuntime:
             session.aborting = False
             session.run = asyncio.ensure_future(self._run(session))
 
-    def _say_taken(self, session: _Session, numbers: list[int]) -> None:
-        """Say of the texts with these numbers that dsh has them in its conversation; one ``taken`` each."""
+    def _say_taken(self, session: _Session, numbers: list[int], *, late: bool = False) -> None:
+        """Say of the texts with these numbers that dsh has them in its conversation; one ``taken`` each.
+
+        ``late`` says that the run that took them has ended already.
+        """
         for number in numbers:
-            self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=number))
+            self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=number, late=late))
 
     async def _run(self, session: _Session) -> None:
         """Send what is queued, turn after turn, until nothing is left; then announce the end."""

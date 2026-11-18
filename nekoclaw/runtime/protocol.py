@@ -393,6 +393,11 @@ class TakenEvent(_SessionEvent):
     # Which of the texts the session was given is in its conversation now,
     # counted from 1 in the order they were given.
     inputs: int
+    # True where this is said after the run that took the text has ended:
+    # it was not known until then that the text had got into the
+    # conversation. What is told of the text is then what that run came to,
+    # and not what the next one does.
+    late: bool = False
 
 
 class EndedEvent(_SessionEvent):

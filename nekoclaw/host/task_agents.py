@@ -290,6 +290,10 @@ class _Session:
     # refused need not be the last one sent (``_withdraw``).
     serial: int = 0
     numbered: dict[int, int] = field(default_factory=dict)
+    # How the last runs ended: up to which text each had taken, and what it
+    # ended on. For a text that is said to be taken only after its run
+    # ended (``_on_taken``): its senders are told what that run came to.
+    ends: list[tuple[int, str]] = field(default_factory=list)
     # The end of a run is being looked at this moment: whether the commission
     # is done with it, rests, or waits on. What waits to be handed to the
     # session is kept back meanwhile (``_hand_to``): steered in now, it would
@@ -2155,6 +2159,9 @@ class TaskAgentManager:
                 # What the run took is not refused any more.
                 for key in [key for key, value in session.numbered.items() if value <= upto]:
                     del session.numbered[key]
+                # (The last few: one that is said to be taken late is said
+                # so a moment after its run ended.)
+                session.ends = [*session.ends[-7:], (upto, said)]
             try:
                 await self._act_on_end(session, event)
             except asyncio.CancelledError:
@@ -2615,6 +2622,15 @@ class TaskAgentManager:
         self._unconfirmed.update(wakes)
         if not await self._confirm_taken() and (self._returning is None or self._returning.done()):
             self._returning = self._spawn(self._return_later())
+        if event.get("late") is True:
+            # The run that took it has ended, and told its senders nothing
+            # of it: it was not known to be taken then. They are told now,
+            # with what that run came to. Left to the end of the next run,
+            # they would be told what that one says, which is about
+            # something else.
+            ended = next((said for upto, said in session.ends if upto >= number), None)
+            if ended is not None:
+                await self._turn_over(session, ended, number)
 
     async def _unfire(self, wake_ids: list[int]) -> None:
         """Make wake requests pending again that were not handed on after all; what a stop dropped meanwhile stays dropped.

@@ -1949,8 +1949,9 @@ async def test_a_text_whose_answer_is_heard_of_after_its_turn_ended_is_dealt_wit
     told[0](reached)
     assert session.unsettled == []
     if reached:
-        # It got there after all: told of as taken now, and not sent again.
+        # It got there after all: told of as taken now, as of the run that is over, and not sent again.
         assert _taken(driver) == [1, 2] and session.run is None
+        assert [event["late"] for event in driver.events.of("taken")] == [False, True]
         assert len(driver.record("session/prompt")) == 1
         return
     # It did not: nobody else would give the session the text while it stays open, so it is

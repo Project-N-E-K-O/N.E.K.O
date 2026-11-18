@@ -5560,3 +5560,38 @@ async def test_a_run_whose_end_was_cut_off_as_the_host_shut_down_still_tells_the
     assert await _told(host) == ["the run's last words"]
     assert (await host.ledger.message_get(first.id)).notified_at is not None
 
+
+# ---------------------------------------------------------------------------
+# Review round 12: a text that is said to be taken after its run has ended
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_said_to_be_taken_after_its_run_ended_is_answered_with_what_that_run_came_to(hosts, tmp_path):
+    from nekoclaw.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, first, handing, second, later = await _two_notes_in_one_commission(host)
+    agents = host.task_agents
+    session = _Session(commission.id)
+    # Two texts were sent; each brought a note. The first is known to be taken as its run ends,
+    # the second is not: whether the answer that carried it reached the session is still open.
+    session.sent, session.handed = 2, {1: [handing.id], 2: [later.id]}
+    await agents._on_taken(session, {"type": "taken", "inputs": 1})
+    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 2, "text": "Both are in."})
+    assert await _told(host) == ["Both are in."]
+    assert (await host.ledger.message_get(second.id)).notified_at is None
+
+    # Another run has come and gone meanwhile (a task agent it started handed its result back).
+    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 3, "text": "Something else."})
+    assert await _told(host) == ["Both are in."]
+    # It got there after all, said once the run that took it is over.
+    await agents._on_taken(session, {"type": "taken", "inputs": 2, "late": True})
+
+    # Its sender is told now, with what the run that took it came to; not with what a later run said.
+    assert await _told(host) == ["Both are in.", "Both are in."] and session.took == {}
+    assert (await host.ledger.message_get(second.id)).notified_at is not None
+    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 4, "text": "And more."})
+    assert await _told(host) == ["Both are in.", "Both are in."]
+    # One that is said to be taken while its run goes on waits for the end of that run, as ever.
+    assert (await host.ledger.message_get(first.id)).notified_at is not None
+
