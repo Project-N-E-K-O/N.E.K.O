@@ -3288,3 +3288,39 @@ async def test_a_guess_of_a_review_is_counted_as_waiting_when_its_file_cannot_be
     assert [(entry.id, entry.status) for entry in await world.space.list_entries(DEFAULT_PROJECT)] == [
         ("photo-dates", "pending")
     ]
+
+
+async def test_a_guess_of_a_review_that_takes_effect_while_the_review_waits_to_be_written_is_not_counted_as_waiting(
+    world, tmp_path, judged
+):
+    from types import SimpleNamespace
+
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]},
+    ]
+    writing = world.space.write_review
+
+    async def confirmed_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        # Another commission files the same while the review waits its turn to be written: the guess takes effect.
+        other = SimpleNamespace(
+            id="other", parent_id=None, project=None, title="Sort photos", dispatch_text="", user_text="", status="done",
+            started_at=1.0, ended_at=2.0, workdir=str(folder),
+        )
+        kept = await world.space.submit(
+            other, {"title": "Photo dates", "content": "Use the EXIF date.", "category": "lesson", "confidence": "inferred"}
+        )
+        assert kept is not None and kept.startswith("kept in")
+        return await writing(*args, **kwargs)
+
+    world.space.write_review = confirmed_meanwhile
+    try:
+        first = await world.finished(workdir=str(folder))
+    finally:
+        world.space.write_review = writing
+
+    # As it stands once the review is written: nothing waits.
+    assert "waiting" not in (await world.reviews(first.id))[-1]
+    assert [(entry.id, entry.status) for entry in await world.space.list_entries(DEFAULT_PROJECT)] == [
+        ("photo-dates", "active")
+    ]

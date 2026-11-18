@@ -6815,6 +6815,10 @@ async def test_which_of_the_guesses_wait_still_is_told_by_the_file_of_each(space
 
     # In effect, or gone for good: it waits no longer. Not to be read just now: nothing says it does not wait.
     assert await space.still_pending(DEFAULT_PROJECT, names) == {"photo-dates", "video-dates"}
+    # Nor does what is no file any more: a directory by that name.
+    (_memory(root) / "video-dates.md").unlink()
+    (_memory(root) / "video-dates.md").mkdir()
+    assert await space.still_pending(DEFAULT_PROJECT, names) == {"photo-dates"}
 
 
 async def test_a_file_found_gone_and_then_not_told_of_as_the_entry_is_written_stays_and_is_not_said_to_be_missing(

@@ -763,10 +763,13 @@ class SpaceKeeper:
         maybe = {
             (layer, name) for layer, name in pending if (name if layer is None else f"{layer}/{name}") not in in_effect
         }
+        await self._space.write_review(project, commission, text, entries=tuple(kept))
         # Or it went into another entry, and is no file any more: only
         # what still waits is counted. One by one, by its own file: one
         # that is known to wait no longer is left out, and one that
-        # cannot be read just now is counted as it was noted.
+        # cannot be read just now is counted as it was noted. Counted
+        # once the review is written: writing it waits its turn, and a
+        # guess may take effect while it does.
         still: set[tuple[str | None, str]] = set()
         for layer in {layer for layer, _name in maybe}:
             names = {name for at, name in maybe if at == layer}
@@ -776,7 +779,6 @@ class SpaceKeeper:
                 there = names
             still.update((layer, name) for name in there)
         waiting = len(still)
-        await self._space.write_review(project, commission, text, entries=tuple(kept))
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
         if waiting:
             # Made by the review and not in effect yet: pending entries, in no index and not among its entries.

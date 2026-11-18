@@ -4128,7 +4128,8 @@ class TaskAgentSpace:
 
         Of the space (``project`` None) or of a project. One is not when
         its file is gone for good (it went into another entry, or was
-        removed), or says by now that it is in effect. One that cannot
+        removed), is no file any more (a directory stands in its place),
+        or says by now that it is in effect. One that cannot
         be read just now (held by another program, a disk that is away)
         is taken to wait still: nothing says that it does not.
         """
@@ -4141,7 +4142,9 @@ class TaskAgentSpace:
                 path = directory / f"{name}.md"
                 text = self._read_text(path)
                 if text is None:
-                    if not _gone_for_good(path):
+                    # Not gone for good, nor something else by that name
+                    # (a directory): a file, or one that cannot be told.
+                    if _may_be_a_file(path):
                         still.add(name)
                 elif _status_of(_parse_document(text)) == ENTRY_PENDING:
                     still.add(name)
