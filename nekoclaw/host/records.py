@@ -226,30 +226,38 @@ def read_record(
         cut = truncate_head_tail_tokens(text, kept - kept // 2 + mark_tokens, kept // 2, separator=RECORD_ENTRY_CUT_MARK)
         return f"#{position} {label}:\n{cut}"
 
-    blocks = [(position, block(position, label, text)) for position, label, text in _entries(path, max_bytes)]
-    if not blocks:
+    entries = list(_entries(path, max_bytes))
+    if not entries:
         raise RecordError("this session has no record that can be read: nothing was said in it, or it was removed")
-    sizes = [count_tokens(text) for _position, text in blocks]
+    made: dict[int, tuple[str, int]] = {}
+
+    def cut(index: int) -> tuple[str, int]:
+        # An entry as it is shown, and its size: made for those that are
+        # looked at for this stretch, not for the whole record every time.
+        if index not in made:
+            shown = block(*entries[index])
+            made[index] = (shown, count_tokens(shown))
+        return made[index]
+
     if at is None:
         # The last stretch: as many entries from the end as fit.
-        start, used = len(blocks), 0
-        while start > 0 and (start == len(blocks) or used + sizes[start - 1] <= segment_tokens):
+        start, used = len(entries), 0
+        while start > 0 and (start == len(entries) or used + cut(start - 1)[1] <= segment_tokens):
             start -= 1
-            used += sizes[start]
-        end = len(blocks)
+            used += cut(start)[1]
+        end = len(entries)
     else:
-        start = next((index for index, (position, _text) in enumerate(blocks) if position >= at), len(blocks))
-        if start >= len(blocks):
-            raise RecordError(f"the record ends before position {at}; its last entry is at {blocks[-1][0]}")
+        start = next((index for index, entry in enumerate(entries) if entry[0] >= at), len(entries))
+        if start >= len(entries):
+            raise RecordError(f"the record ends before position {at}; its last entry is at {entries[-1][0]}")
         end, used = start, 0
-        while end < len(blocks) and (end == start or used + sizes[end] <= segment_tokens):
-            used += sizes[end]
+        while end < len(entries) and (end == start or used + cut(end)[1] <= segment_tokens):
+            used += cut(end)[1]
             end += 1
-    chosen = blocks[start:end]
     return Stretch(
-        text="\n\n".join(text for _position, text in chosen),
-        first=chosen[0][0],
-        last=chosen[-1][0],
-        following=blocks[end][0] if end < len(blocks) else None,
-        entries=len(blocks),
+        text="\n\n".join(cut(index)[0] for index in range(start, end)),
+        first=entries[start][0],
+        last=entries[end - 1][0],
+        following=entries[end][0] if end < len(entries) else None,
+        entries=len(entries),
     )

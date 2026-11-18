@@ -442,6 +442,9 @@ class TaskAgentSession(SessionInbox):
         self._seq = 0
         # Texts taken through prompt, steer and follow_up; see EndedEvent.inputs.
         self._inputs = 0
+        # Those of them that are not in the conversation yet, each with its
+        # number; see TakenEvent.
+        self._given: list[tuple[int, AgentMessage]] = []
         self._closing = False
         self._abort_requested = False
         self._run_task: asyncio.Task[None] | None = None
@@ -843,6 +846,14 @@ class TaskAgentSession(SessionInbox):
     def _on_message(self, message: AgentMessage) -> None:
         if not self.transcript.is_registered(message):
             self._record(message)
+        for index, (number, given) in enumerate(self._given):
+            if given is message:
+                # One of the texts the session was given is in its
+                # conversation from here on: the model sees it, and a session
+                # opened again finds it.
+                del self._given[index]
+                self._emit(protocol.TakenEvent(session_id=self.session_id, inputs=number))
+                break
         if isinstance(message, UserMessage):
             # Text from the user: it authorizes goal management for this run and
             # makes an earlier run of identical tool calls irrelevant.
@@ -1310,6 +1321,7 @@ class TaskAgentSession(SessionInbox):
             raise SessionError("a run is in progress; use steer or follow_up to add to it")
         self._inputs += 1
         message = UserMessage(content=text)
+        self._given.append((self._inputs, message))
         if opening:
             # Its entry is known once the run has taken it (``_record``).
             self._opening_message = message
@@ -1341,19 +1353,23 @@ class TaskAgentSession(SessionInbox):
         if self._closing:
             raise SessionError("the session is closed")
         self._inputs += 1
+        message = UserMessage(content=text)
+        self._given.append((self._inputs, message))
         if self.running:
-            self.harness.steer_message(UserMessage(content=text))
+            self.harness.steer_message(message)
         else:
-            self._begin_run(UserMessage(content=text))
+            self._begin_run(message)
 
     def follow_up(self, text: str) -> None:
         if self._closing:
             raise SessionError("the session is closed")
         self._inputs += 1
+        message = UserMessage(content=text)
+        self._given.append((self._inputs, message))
         if self.running:
-            self.harness.follow_up_message(UserMessage(content=text))
+            self.harness.follow_up_message(message)
         else:
-            self._begin_run(UserMessage(content=text))
+            self._begin_run(message)
 
     def abort(self) -> bool:
         """Stop the current run and the session's background jobs.

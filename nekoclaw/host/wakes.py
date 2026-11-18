@@ -153,10 +153,6 @@ class SessionWakes:
             await self._ledger.wakes_void_all(STOPPED_REASON, before=before)
             if self._drop_before == before:
                 self._drop_before = None
-        if self._holds:
-            # Everything is being stopped: nothing is handed over until that
-            # is done (``release`` starts the next round).
-            return None
         now = self._clock()
         generation = self._generation
         # All that is due, a page after the other: with the first page
@@ -182,6 +178,9 @@ class SessionWakes:
 
         for key, wakes in groups.items():
             if self._closed or self._holds:
+                # Shutting down, or everything is being stopped: nothing
+                # (more) is handed over. What waits stays on record;
+                # ``release`` starts the next round.
                 return None
             held = self._held_until.get(key)
             if held is not None and held > now:

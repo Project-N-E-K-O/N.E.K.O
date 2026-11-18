@@ -172,6 +172,9 @@ SESSION_RECORD_SEARCH_REFUSED = (
     '(what="search") for what was said there.'
 )
 
+# Writing to a path that leads to another session's record, wherever the path is.
+SESSION_RECORD_WRITE_REFUSED = "This path leads to the record of another session. A session's record is its own and is never written."
+
 # Writing into another session's own directory is refused.
 SESSION_WRITE_REFUSED = (
     "This path is inside another session's own directory (its record, its outputs and its default "

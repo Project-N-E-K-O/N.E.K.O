@@ -48,6 +48,12 @@ per-session ``seq`` that increases by one:
   was started with, which the session is managed for from then on.
 * ``compacted``   - the conversation was summed up. The session's system
   prompt and tool definitions were put together anew after it.
+* ``taken``       - one of the texts the session was given (``prompt``,
+  ``steer``, ``follow_up``) is in its conversation now; ``inputs`` says which,
+  counted from 1 in the order they were given. A text that was given and is
+  dropped before that (an ``abort``, a ``close``) is never told of: a driver
+  that needs to know whether the model will ever see what it sent waits for
+  this, not for the next thing the session puts out.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,
@@ -361,6 +367,13 @@ class CompactedEvent(_SessionEvent):
 PROCESS_EXITED_ERROR = "the runtime process exited"
 
 
+class TakenEvent(_SessionEvent):
+    type: Literal["taken"] = "taken"
+    # Which of the texts the session was given is in its conversation now,
+    # counted from 1 in the order they were given.
+    inputs: int
+
+
 class EndedEvent(_SessionEvent):
     type: Literal["ended"] = "ended"
     reason: EndReason
@@ -433,6 +446,7 @@ SessionEvent = Union[
     UsageEvent,
     ModelCapabilityEvent,
     CompactedEvent,
+    TakenEvent,
     EndedEvent,
     ErrorEvent,
 ]
@@ -448,6 +462,7 @@ RuntimeEvent = Annotated[
         UsageEvent,
         ModelCapabilityEvent,
         CompactedEvent,
+        TakenEvent,
         EndedEvent,
         ErrorEvent,
         HostRequestEvent,

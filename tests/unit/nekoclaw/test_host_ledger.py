@@ -344,10 +344,11 @@ async def test_there_is_no_other_way_to_write_a_status():
     source = inspect.getsource(module)
     # A third one gives the commissions of an earlier build their sessions,
     # and names the one column it writes. A fourth notes that a commission
-    # rests, and names the two it writes.
-    assert source.count("UPDATE commissions SET") == 4
+    # rests, and a fifth takes that back; each names the two it writes.
+    assert source.count("UPDATE commissions SET") == 5
     assert source.count("UPDATE commissions SET session_id = ? WHERE id = ?") == 1
     assert source.count("UPDATE commissions SET resting_since = ?, updated_at = ? WHERE id = ?") == 1
+    assert source.count("UPDATE commissions SET resting_since = NULL, updated_at = ? ") == 1
     assert "status" not in module._UPDATABLE
     assert "host_instance" not in module._UPDATABLE
     assert "resting_since" not in module._UPDATABLE

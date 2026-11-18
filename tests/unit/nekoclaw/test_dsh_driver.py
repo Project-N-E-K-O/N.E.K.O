@@ -202,6 +202,8 @@ async def test_text_added_during_a_turn_is_the_next_turn_and_the_run_ends_once(t
     # dsh takes no text in the middle of a turn: both wait for it to end and go in together.
     assert [row["text"] for row in driver.record("session/prompt")] == ["!sleep 0.4\n!say one", "two\n\nthree"]
     assert ended["reason"] == "completed" and ended["inputs"] == 3
+    # Each text is told of as taken when it goes to dsh: the first with its own turn, the other two with the next.
+    assert [event["inputs"] for event in driver.events.of("taken")] == [1, 2, 3]
     assert len(driver.events.of("ended")) == 1
     assert _texts(driver.events) == "one\n\necho: two\n\nthree"
     assert ended["text"] == "echo: two\n\nthree"

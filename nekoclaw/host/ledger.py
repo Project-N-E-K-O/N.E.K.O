@@ -260,7 +260,8 @@ CREATE TABLE IF NOT EXISTS wake_requests (
     depth INTEGER NOT NULL DEFAULT 0,
     created_at REAL NOT NULL,
     fired_at REAL,
-    fired_into TEXT
+    fired_into TEXT,
+    taken_at REAL
 );
 CREATE INDEX IF NOT EXISTS wakes_pending ON wake_requests (status, due_at);
 CREATE INDEX IF NOT EXISTS wakes_by_session ON wake_requests (session_id, status);
@@ -484,6 +485,12 @@ class WakeRequest:
     set, word of a note it sent): it is that commission's, handed to it
     alone and dropped when it is over. A request without one is for the
     session, whatever it is at then: a note another session wrote.
+
+    ``fired`` says that it was handed to a commission (``fired_into``);
+    ``taken_at`` says when that commission's session was seen to have it
+    in its conversation. Between the two it is on its way: a session that
+    closes before taking it has it put back, and what a process leaves
+    like that when it ends is handed over again by the next.
     """
 
     id: int
@@ -499,6 +506,15 @@ class WakeRequest:
     created_at: float
     fired_at: float | None
     fired_into: str | None
+    taken_at: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class Resting:
+    """What ``Ledger.rest`` wrote: until when the commission rests, and since when."""
+
+    until: float
+    since: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +707,10 @@ class Ledger:
         for name, kind in _ADDED_COLUMNS:
             if name not in present:
                 conn.execute(f"ALTER TABLE commissions ADD COLUMN {name} {kind}")
+        # Likewise the wake requests of a build that did not yet tell handed over from taken.
+        wakes = {row["name"] for row in conn.execute("PRAGMA table_info(wake_requests)")}
+        if wakes and "taken_at" not in wakes:
+            conn.execute("ALTER TABLE wake_requests ADD COLUMN taken_at REAL")
 
     def _give_sessions(self, conn: sqlite3.Connection) -> None:
         """Give every task agent commission of an earlier build the session it had.
@@ -759,6 +779,13 @@ class Ledger:
         it when the process ended, and what it waits for is on record
         (``wake_requests``) and wakes it in this process as it would have
         in that one.
+
+        What an earlier process had put on record as handed to a
+        commission, and never saw taken, was on its way when that process
+        ended: it is pending again, before anything is failed, so that
+        what belongs to a commission that is failed here goes with it and
+        the notes other sessions wrote are handed over anew (to whatever
+        their session is at in this process).
         """
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -766,6 +793,14 @@ class Ledger:
             conn.execute(
                 f"UPDATE sessions SET status = 'closed' WHERE status IN ({marks})", sorted(LIVE_SESSION_STATUSES)
             )
+            on_its_way = conn.execute(
+                "SELECT wake_requests.id AS id FROM wake_requests "
+                "JOIN commissions ON commissions.id = wake_requests.fired_into "
+                "WHERE wake_requests.status = 'fired' AND wake_requests.taken_at IS NULL "
+                "AND COALESCE(commissions.host_instance, '') != ?",
+                (self.instance,),
+            ).fetchall()
+            self._unfire(conn, [int(row["id"]) for row in on_its_way], 0.0, "")
             rows = conn.execute(
                 "SELECT id FROM commissions WHERE status IN ('queued','working','waiting_user') "
                 "AND COALESCE(host_instance, '') != ? "
@@ -1324,6 +1359,7 @@ class Ledger:
         lanlan_name: str | None = None,
         project: str | None = None,
         kind: str | None = None,
+        kinds: Iterable[str] | None = None,
         status: str | None = None,
         limit: int = 200,
         commissions_each: int = 3,
@@ -1331,10 +1367,12 @@ class Ledger:
         """Return sessions, the one last in use first, each with the commissions last worked on in it.
 
         Of every character unless ``lanlan_name`` names one; ``project``,
-        ``kind`` and ``status`` narrow it down the same way. ``limit`` is
-        how many sessions are looked at, the ones last in use: what a
+        ``kind`` (or ``kinds``, any of several) and ``status`` narrow it
+        down the same way. ``limit`` is how many sessions are looked at,
+        the ones last in use among those that are asked for: what a
         caller looks through for words (``TaskAgentManager``) is that many
-        rows and no more, however many sessions there are.
+        rows and no more, however many sessions there are, and the kinds
+        it does not want take up none of them.
         """
         clauses: list[str] = []
         params: list[Any] = []
@@ -1342,6 +1380,10 @@ class Ledger:
             if value is not None:
                 clauses.append(f"{column} = ?")
                 params.append(value)
+        if kinds is not None:
+            wanted = [str(item) for item in kinds]
+            clauses.append(f"kind IN ({', '.join('?' for _ in wanted)})" if wanted else "0")
+            params.extend(wanted)
         sql = "SELECT * FROM sessions"
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
@@ -1426,8 +1468,8 @@ class Ledger:
 
     # -- resting, messages and wake requests ------------------------------
 
-    async def rest(self, commission_id: str) -> float | None:
-        """Let a commission rest if something it asked for is still to wake it; return when the first of that is due.
+    async def rest(self, commission_id: str) -> Resting | None:
+        """Let a commission rest if something it asked for is still to wake it; return until when, and since when.
 
         Looked at and written together: only a commission that is
         ``working`` and has a wake request of its own pending rests, and
@@ -1437,7 +1479,7 @@ class Ledger:
         see ``Commission.resting_since``.
         """
 
-        def work(conn: sqlite3.Connection) -> float | None:
+        def work(conn: sqlite3.Connection) -> Resting | None:
             row = conn.execute("SELECT status FROM commissions WHERE id = ?", (commission_id,)).fetchone()
             if row is None or row["status"] != "working":
                 return None
@@ -1452,7 +1494,28 @@ class Ledger:
                 "UPDATE commissions SET resting_since = ?, updated_at = ? WHERE id = ?", (now, now, commission_id)
             )
             self._event(conn, commission_id, "resting", {"until": float(due["due"])})
-            return float(due["due"])
+            return Resting(float(due["due"]), now)
+
+        return await self.run(work)
+
+    async def rest_over(self, commission_id: str, since: float) -> bool:
+        """Take back that a commission rests since ``since``: it was given more work as that was written down.
+
+        Only the rest that was written then: one it came to later, after
+        the run that work started, stays. Returns whether it was taken
+        back.
+        """
+
+        def work(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                "UPDATE commissions SET resting_since = NULL, updated_at = ? "
+                "WHERE id = ? AND status = 'working' AND resting_since = ?",
+                (self._clock(), commission_id, float(since)),
+            )
+            if not cursor.rowcount:
+                return False
+            self._event(conn, commission_id, "rest_over", {"since": float(since)})
+            return True
 
         return await self.run(work)
 
@@ -1608,12 +1671,7 @@ class Ledger:
         """
 
         def work(conn: sqlite3.Connection) -> list[Message]:
-            first = conn.execute(
-                "SELECT payload FROM events WHERE commission_id = ? AND type = 'woken' ORDER BY seq LIMIT 1",
-                (commission_id,),
-            ).fetchone()
-            named = _load(first["payload"]).get("wake_ids") if first is not None else None
-            ids = [int(item) for item in named or [] if isinstance(item, int) and not isinstance(item, bool)]
+            ids = self._opening_wakes(conn, commission_id)
             if not ids:
                 return []
             rows = conn.execute(
@@ -1917,14 +1975,54 @@ class Ledger:
             self._notify(commission, None)
         return commission
 
+    @staticmethod
+    def _unfire(conn: sqlite3.Connection, ids: list[int], stopped_at: float, reason: str) -> None:
+        """Make the wake requests among ``ids`` pending again that are on record as handed over and not as taken."""
+        if not ids:
+            return
+        marks = ", ".join("?" for _ in ids)
+        on_its_way = f"id IN ({marks}) AND status = 'fired' AND taken_at IS NULL"
+        if stopped_at:
+            conn.execute(
+                "UPDATE messages SET status = 'void', status_reason = ?, delivered_at = NULL, delivered_to = NULL "
+                "WHERE status = 'delivered' AND kind = 'note' AND created_at <= ? AND id IN "
+                f"(SELECT message_id FROM wake_requests WHERE {on_its_way} "
+                "AND commission_id IS NULL AND reason = 'message' AND message_id IS NOT NULL)",
+                [reason, stopped_at, *ids],
+            )
+            conn.execute(
+                "UPDATE wake_requests SET status = 'void', status_reason = ?, fired_at = NULL, fired_into = NULL "
+                f"WHERE {on_its_way} AND commission_id IS NULL AND created_at <= ?",
+                [reason, *ids, stopped_at],
+            )
+        conn.execute(
+            "UPDATE messages SET status = 'queued', delivered_at = NULL, delivered_to = NULL "
+            "WHERE status = 'delivered' AND id IN "
+            f"(SELECT message_id FROM wake_requests WHERE {on_its_way} "
+            "AND reason = 'message' AND message_id IS NOT NULL)",
+            ids,
+        )
+        conn.execute(
+            "UPDATE messages SET notified_at = NULL WHERE id IN "
+            f"(SELECT message_id FROM wake_requests WHERE {on_its_way} "
+            "AND reason = 'notice_expiry' AND message_id IS NOT NULL)",
+            ids,
+        )
+        conn.execute(
+            f"UPDATE wake_requests SET status = 'pending', fired_at = NULL, fired_into = NULL WHERE {on_its_way}",
+            ids,
+        )
+
     async def wakes_unfire(self, wake_ids: Iterable[int], *, stopped_at: float = 0.0, reason: str = "") -> None:
-        """Make wake requests pending again that were put on record as carried out and were not.
+        """Make wake requests pending again that were put on record as handed over and were not taken.
 
         Their text went into a session that closed before taking it, or
         the session could not take it after all. The message one of them
         was to hand over is queued again. They are handed over anew, to
         whatever their session is at by then; one whose commission is
-        over meanwhile is dropped there.
+        over meanwhile is dropped there. One that is on record as taken
+        stays as it is: what a session has in its conversation is not
+        handed over twice.
 
         A stop of everything drops the notes that wait. With
         ``stopped_at`` (when everything was last stopped), a note written
@@ -1935,42 +2033,38 @@ class Ledger:
         ids = [int(item) for item in wake_ids]
         if not ids:
             return
+        await self.run(lambda conn: self._unfire(conn, ids, float(stopped_at), reason))
+
+    async def wakes_taken(self, wake_ids: Iterable[int]) -> None:
+        """Put on record that what wake requests brought is in the conversation of the session it was handed to."""
+        ids = [int(item) for item in wake_ids]
+        if not ids:
+            return
 
         def work(conn: sqlite3.Connection) -> None:
-            marks = ", ".join("?" for _ in ids)
-            if stopped_at:
-                conn.execute(
-                    "UPDATE messages SET status = 'void', status_reason = ?, delivered_at = NULL, delivered_to = NULL "
-                    "WHERE status = 'delivered' AND kind = 'note' AND created_at <= ? AND id IN "
-                    f"(SELECT message_id FROM wake_requests WHERE id IN ({marks}) AND status = 'fired' "
-                    "AND commission_id IS NULL AND reason = 'message' AND message_id IS NOT NULL)",
-                    [reason, stopped_at, *ids],
-                )
-                conn.execute(
-                    "UPDATE wake_requests SET status = 'void', status_reason = ?, fired_at = NULL, fired_into = NULL "
-                    f"WHERE id IN ({marks}) AND status = 'fired' AND commission_id IS NULL AND created_at <= ?",
-                    [reason, *ids, stopped_at],
-                )
             conn.execute(
-                "UPDATE messages SET status = 'queued', delivered_at = NULL, delivered_to = NULL "
-                "WHERE status = 'delivered' AND id IN "
-                f"(SELECT message_id FROM wake_requests WHERE id IN ({marks}) AND status = 'fired' "
-                "AND reason = 'message' AND message_id IS NOT NULL)",
-                ids,
-            )
-            conn.execute(
-                "UPDATE messages SET notified_at = NULL WHERE id IN "
-                f"(SELECT message_id FROM wake_requests WHERE id IN ({marks}) AND status = 'fired' "
-                "AND reason = 'notice_expiry' AND message_id IS NOT NULL)",
-                ids,
-            )
-            conn.execute(
-                "UPDATE wake_requests SET status = 'pending', fired_at = NULL, fired_into = NULL "
-                f"WHERE id IN ({marks}) AND status = 'fired'",
-                ids,
+                f"UPDATE wake_requests SET taken_at = ? WHERE id IN ({', '.join('?' for _ in ids)}) "
+                "AND status = 'fired' AND taken_at IS NULL",
+                [self._clock(), *ids],
             )
 
         await self.run(work)
+
+    async def opening_wakes(self, commission_id: str) -> list[int]:
+        """Return the wake requests a commission was filed for (``create_for_wakes``): those its opening message brings."""
+
+        return await self.run(lambda conn: self._opening_wakes(conn, commission_id))
+
+    @staticmethod
+    def _opening_wakes(conn: sqlite3.Connection, commission_id: str) -> list[int]:
+        # What was handed to a commission as it was filed is what its first
+        # ``woken`` event names.
+        first = conn.execute(
+            "SELECT payload FROM events WHERE commission_id = ? AND type = 'woken' ORDER BY seq LIMIT 1",
+            (commission_id,),
+        ).fetchone()
+        named = _load(first["payload"]).get("wake_ids") if first is not None else None
+        return [int(item) for item in named or [] if isinstance(item, int) and not isinstance(item, bool)]
 
     async def wakes_void(self, wake_ids: Iterable[int], reason: str) -> None:
         """Drop pending wake requests, and the messages they were to hand over, with the reason."""

@@ -145,7 +145,43 @@ async def test_steer_reaches_the_model_before_its_next_request(tmp_path: Path) -
         assert _roles(second)[-3:] == ["assistant", "tool", "user"]
         assert second[-1]["content"] == "Also check the tests."
         assert len(llm.requests) == 2
+        # Each text it was given is told of once, by its number, when it is in the
+        # conversation: the steered one after what the request under way put out.
+        kinds = [(event["type"], event.get("inputs")) for event in events.events if event["type"] in ("taken", "tool_start")]
+        assert kinds == [("taken", 1), ("tool_start", None), ("taken", 2)]
     finally:
+        await session.close()
+
+
+async def test_a_text_that_is_dropped_before_it_is_in_the_conversation_is_never_told_of_as_taken(
+    tmp_path: Path,
+) -> None:
+    holder: dict[str, object] = {}
+    steered, gate = asyncio.Event(), asyncio.Event()
+
+    async def steer_and_wait() -> None:
+        holder["session"].steer("Also check the tests.")  # type: ignore[union-attr]
+        steered.set()
+        await gate.wait()
+
+    llm = ScriptedLLM([[steer_and_wait, say("ok"), finish()], [say("again"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    holder["session"] = session
+    try:
+        session.prompt("Start.")
+        await steered.wait()
+        # Stopped while the steered text waits for the next request: it is dropped.
+        assert session.abort() is True
+        ended = await events.wait_ended()
+        assert ended["reason"] == "aborted" and ended["inputs"] == 2
+        assert [event["inputs"] for event in events.of("taken")] == [1]
+        # What is given next is told of by its own number.
+        mark = len(events.events)
+        session.prompt("Go on.")
+        await events.wait_ended(start=mark)
+        assert [event["inputs"] for event in events.of("taken")] == [1, 3]
+    finally:
+        gate.set()
         await session.close()
 
 

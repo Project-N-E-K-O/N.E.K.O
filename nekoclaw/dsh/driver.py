@@ -1077,8 +1077,14 @@ class DshRuntime:
             except asyncio.TimeoutError:
                 return []
         texts, session.queue = session.queue, []
-        session.taken += len(texts)
+        self._take(session, len(texts))
         return texts
+
+    def _take(self, session: _Session, count: int) -> None:
+        """Count texts as taken and say so, one ``taken`` each: they are on their way into dsh's conversation."""
+        for _text in range(count):
+            session.taken += 1
+            self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=session.taken))
 
     async def _run(self, session: _Session) -> None:
         """Send what is queued, turn after turn, until nothing is left; then announce the end."""
@@ -1094,7 +1100,7 @@ class DshRuntime:
         try:
             while session.queue and not session.aborting and session.closing is None:
                 texts, session.queue = session.queue, []
-                session.taken += len(texts)
+                self._take(session, len(texts))
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:
