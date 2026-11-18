@@ -1998,6 +1998,10 @@ async def test_an_entry_is_changed_only_while_it_rests_on_the_files_that_were_lo
     assert "status" not in _head(path) and "(memory/entry-point.md)" in _index(root)
     # One that is not there any more is nothing to change.
     assert not await space._write(space._set_standing, DEFAULT_PROJECT, "no-such-entry", True, found)
+    # Nor is one that rests on nothing: there is nothing whose absence could have it expire.
+    await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E: here.", "verified"))
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "camera-drive", True, ((), ()))
+    assert "status" not in _head(_memory(root) / "camera-drive.md")
     # Nor is one that is in effect brought back: its line, which the user took out, is not put in again.
     index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
     kept = index.read_text(encoding="utf-8")
