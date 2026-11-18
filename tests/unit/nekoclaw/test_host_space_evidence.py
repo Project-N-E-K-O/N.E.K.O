@@ -1169,6 +1169,25 @@ async def test_what_the_user_removed_is_not_kept_again(space, root, workdir, eve
     assert space._added_by == {"c1": 1, "c4": 1}
 
 
+async def test_what_an_entry_said_when_it_was_removed_is_remembered_as_well_as_what_it_was_given(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
+    # Its text is replaced in an editor: the mark it keeps is still that of what it was given.
+    _said_instead(_memory(root) / "camera-drive.md", "It is E: here.", "The card reader is slot 2.")
+
+    assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+
+    (removed,) = _notes(root)["removed"]
+    assert removed["marks"] == [_digest("It is E: here."), _digest("The card reader is slot 2.")]
+    # What it said at the end is not kept again under another title, nor is what it was given.
+    again = await space.submit(_commission(workdir, id="c2"), _lesson("Card reader", "The card reader is slot 2.", "verified"))
+    assert again == REMOVED
+    assert await space.submit(_commission(workdir, id="c2"), _lesson("Drive of the camera", "It is E: here.", "verified")) == REMOVED
+    # One that says what it was given has one mark, not the same one twice.
+    await space.submit(_commission(workdir, id="c3"), _lesson("Backups", "They are on the NAS.", "verified"))
+    await space.delete_entry("backups", DEFAULT_PROJECT)
+    assert _notes(root)["removed"][-1]["marks"] == [_digest("They are on the NAS.")]
+
+
 async def test_what_was_removed_is_remembered_where_it_was(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
     await space.delete_entry("camera-drive", DEFAULT_PROJECT)
@@ -1416,6 +1435,30 @@ async def test_an_entry_that_cannot_be_read_after_the_writing_failed_keeps_its_l
     assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and "(memory/entry-point.md)" in _index(root)
     assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
     assert _index(root).count("(memory/entry-point.md)") == 1
+
+
+async def test_an_entry_that_was_deleted_while_it_was_coming_back_keeps_no_line(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back" + chr(10), encoding="utf-8")
+    entry = _memory(root) / "entry-point.md"
+    editing = TaskAgentSpace._edit_text
+
+    def deleted(self: TaskAgentSpace, path: Path, change: Any) -> bool:
+        if path == entry:
+            # The user deletes the file in the file manager right after its line was put back.
+            entry.unlink()
+            raise FileNotFoundError(2, "no such file")
+        return editing(self, path, change)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", deleted)
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+
+    # No later look sees a file that is not there: the line would point at nothing for good.
+    assert not entry.exists() and "(memory/entry-point.md)" not in _index(root)
 
 
 async def test_an_expired_entry_that_kept_a_line_loses_it_though_its_files_cannot_be_looked_at(space, root, workdir, monkeypatch):
@@ -2494,19 +2537,43 @@ async def test_a_copy_made_before_the_entry_came_to_say_what_was_removed_there_i
 
 
 def test_an_entry_is_told_to_be_one_that_was_removed_by_the_title_it_has_now():
-    from nekoclaw.host.space import _removed_there
+    from nekoclaw.host.space import _removed_from, _removed_there
 
-    removed = [{"marks": ["0" * 12], "title": "Camera drive", "at": "2027-01-15"}]
+    removed = _removed_from([{"marks": ["0" * 12], "title": "Camera drive", "at": "2027-01-15"}, {"marks": [], "title": ""}])
+    assert removed == ({"cameradrive"}, {"0" * 12})
     renamed = "---" + chr(10) + "name: camera DRIVE." + chr(10) + "---" + chr(10) + chr(10) + "Something else." + chr(10)
 
     # Called something else when its directory was listed, and saved under the title that was removed since.
     assert _removed_there(removed, renamed, "Where the camera is")
-    # Not read: the title it was listed under is all there is to go by.
-    assert _removed_there(removed, None, "Camera drive") and not _removed_there(removed, None, "Where the camera is")
     # Renamed away from the title that was removed, with another text: not one that was removed.
     other = renamed.replace("camera DRIVE.", "Where the camera is")
     assert not _removed_there(removed, other, "Camera drive")
-    assert not _removed_there([], renamed, "Camera drive")
+    # Written by hand with no title in it: the one it was listed under is its title.
+    assert _removed_there(removed, "Something else." + chr(10), "Camera drive")
+    assert not _removed_there(removed, "Something else." + chr(10), "Notes")
+    # A record with no title is the record of no title: an entry is not told by having none either.
+    assert not _removed_there(removed, "Something else." + chr(10), "")
+    assert not _removed_there(_removed_from([]), renamed, "Camera drive")
+
+
+async def test_a_record_of_a_title_alone_or_of_a_text_alone_still_keeps_an_entry_from_going_there(space, root, workdir):
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is somewhere.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Backups", "They are on the NAS.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Checked", "It is so.", "verified"))
+    notes = root / "projects" / "Budget app" / "notes.json"
+
+    # Records as someone may have written them by hand: one names a title and no text.
+    record = {"version": 1, "held": [], "removed": [{"marks": [], "title": "Camera drive", "at": "2027-01-15"}]}
+    notes.write_text(json.dumps(record), encoding="utf-8")
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["backups", "checked"]
+    # And one names a text and no title.
+    filed = await space.submit(_commission(workdir, id="c5"), _lesson("Backups again", "They are on the NAS.", "verified"))
+    assert filed == "kept in project _daily as backups-again.md"
+    record["removed"] = [{"marks": [_digest("They are on the NAS.")], "title": "", "at": "2027-01-15"}]
+    notes.write_text(json.dumps(record), encoding="utf-8")
+    assert await space.refile_entries("c5", DEFAULT_PROJECT, "Budget app") == []
+    assert sorted(entry.id for entry in await space.list_entries(DEFAULT_PROJECT)) == ["backups-again", "camera-drive"]
 
 
 async def test_an_entry_too_long_to_look_through_is_told_by_the_marks_of_what_it_was_given(space, root, workdir, monkeypatch):

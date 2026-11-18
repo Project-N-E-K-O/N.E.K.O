@@ -816,28 +816,31 @@ def _set_evidence(document: _Document, paths: list[str]) -> None:
         document.drop("evidence")
 
 
-def _removed_there(removed: Iterable[dict[str, Any]], text: str | None, title: str) -> bool:
-    """Whether an entry is one the user removed, going by the records of what was removed from a layer.
+def _removed_from(records: Iterable[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    """Return the titles and the marks of what was removed from a layer, as entries are compared to them."""
+    removed = list(records)
+    titles = {_normal(item.get("title")) for item in removed} - {""}
+    marks = {mark for item in removed for mark in _strings(item.get("marks"))}
+    return titles, marks
+
+
+def _removed_there(removed: tuple[set[str], set[str]], text: str, title: str) -> bool:
+    """Whether an entry is one the user removed, going by what was removed from a layer (``_removed_from``).
 
     By any of the texts it holds, or by its title, as a note that is
-    filed is told to be one (``_take_note``). An entry that cannot be
-    read is told by its title alone.
+    filed is told to be one (``_take_note``). ``text`` is the entry as
+    it was read to be copied; ``title`` is what it is called when its
+    text names no title.
 
     The texts it holds are the ones it was given, of which it keeps the
     marks, and what it says now: its text may have been replaced in an
     editor since, and a text that was removed elsewhere stands in it
     without a mark then, as all it says or as a part of it.
     """
-    records = list(removed)
-    document = _parse_document(text) if text is not None else None
-    # The title it has in the text that was read; ``title`` is the one it
-    # had when its directory was listed, for one that cannot be read.
-    name = _normal((document.get("name") if document is not None else "") or title)
-    if name and any(_normal(item.get("title")) == name for item in records):
+    titles, wanted = removed
+    document = _parse_document(text)
+    if _normal(document.get("name") or title) in titles:
         return True
-    wanted = {mark for item in records for mark in _strings(item.get("marks"))}
-    if document is None or not wanted:
-        return False
     if wanted & {*_listed(document, "texts"), _digest(document.body)}:
         return True
     # None when the entry is too long to look through: not told then.
@@ -2373,12 +2376,12 @@ class TaskAgentSpace:
             moved: list[str] = []
             own = {commission_id, *also}
             try:
-                removed = self._notes(paths.notes_file(target))["removed"]
+                removed = _removed_from(self._notes(paths.notes_file(target))["removed"])
             except OSError:
                 # What was removed there cannot be told: the entries go
                 # along, as a note that takes effect is kept then.
                 logger.warning("what was removed from a project cannot be read; entries go there unchecked", exc_info=True)
-                removed = []
+                removed = (set(), set())
             for entry in self._entries(origin, source):
                 if not entry.sources or not set(entry.sources) <= own:
                     continue
@@ -2393,7 +2396,7 @@ class TaskAgentSpace:
                     text = self._read_text(old)
                     if text is None:
                         break
-                    if removed and _removed_there(removed, text, entry.title):
+                    if any(removed) and _removed_there(removed, text, entry.title):
                         # The user removed this note from the project it
                         # would go to, and it is not kept there again: it
                         # stays where it is, which is a place they did not
@@ -2699,7 +2702,8 @@ class TaskAgentSpace:
         well.
 
         What was removed is remembered (``notes.json`` beside the index):
-        the marks of its texts and its title. A note that is the same, by
+        the marks of the texts it was given and of what it says at that
+        moment, and its title. A note that is the same, by
         either, is not kept again when a task agent or a review files it.
         Only what is removed through here is remembered; a file the user
         deletes by hand leaves nothing to tell it by.
@@ -2732,7 +2736,10 @@ class TaskAgentSpace:
             if text is not None:
                 document = _parse_document(text)
                 record = {
-                    "marks": _listed(document, "texts") or [_digest(document.body)],
+                    # Of the texts it was given, and of what it says now:
+                    # its text may have been replaced in an editor since,
+                    # and that is what the user saw and removed.
+                    "marks": list(dict.fromkeys([*_listed(document, "texts"), _digest(document.body)])),
                     "title": document.get("name") or name,
                     "at": _date(self._clock()),
                 }
@@ -2974,8 +2981,14 @@ class TaskAgentSpace:
             # through before it failed, and an entry that is in effect
             # keeps its line. One that cannot be read keeps it as well; if
             # it still says it expired, the next look goes on from there.
+            # One that is not there any more (the user deleted it at this
+            # very moment) is looked at by no later look: its line goes.
             now = self._read_text(path)
-            if now is not None and _parse_document(now).get("status").strip().lower() == ENTRY_EXPIRED:
+            if (
+                _parse_document(now).get("status").strip().lower() == ENTRY_EXPIRED
+                if now is not None
+                else not os.path.exists(path)
+            ):
                 try:
                     self._index_remove(paths.index(project), target)
                 except OSError:
