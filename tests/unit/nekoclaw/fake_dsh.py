@@ -35,6 +35,9 @@ with ``!`` is one step, carried out in order::
     !ask-finished <name>         a call of one of dsh's own tools that is carried
                                  out, and then a question about it
     !sleep <seconds>             wait; a cancel ends it
+    !until <file>                wait until that file is there (the test
+                                 writes it to let the turn go on); a cancel
+                                 ends it, and so does a minute
     !fail <message>              the prompt fails with that message
     !crash                       the process exits at once
 
@@ -338,6 +341,12 @@ def run_prompt(config: Config, session_id: str, session: dict[str, Any], text: s
             record("finished-ask", session=session_id, outcome=asked(session_id, call_id))
         elif verb == "sleep":
             cancel.wait(float(rest or "1"))
+        elif verb == "until":
+            # The turn stays open until the test lets it go by writing this file
+            # (or stops it); a test that never does is not waited for for ever.
+            let_go, deadline = Path(rest), time.monotonic() + 60
+            while not let_go.exists() and time.monotonic() < deadline and not cancel.wait(0.02):
+                pass
         elif verb == "fail":
             raise RpcError(-32603, "Internal error", f"turn failed: {rest}")
         elif verb == "crash":

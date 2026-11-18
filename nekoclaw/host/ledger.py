@@ -1813,8 +1813,7 @@ class Ledger:
             now = self._clock()
             if confirmed:
                 self._taken(conn, confirmed, now)
-            if among is not None and not among:
-                return 0
+            # (With none of them given, the list is empty, and no note is among them.)
             of_these = "" if among is None else f" AND wake_requests.id IN ({', '.join('?' for _ in among)})"
             asked = [commission_id, *(among or ())]
             # Those its session took. A note that was handed over and is
@@ -2225,13 +2224,18 @@ class Ledger:
 
         return await self.run(work)
 
-    async def wakes_on_their_way(self, commission_id: str) -> list[int]:
-        """Return the wake requests that are on record as handed to a commission and not as taken."""
+    async def wakes_on_their_way(self, commission_id: str, by: float) -> list[int]:
+        """Return the wake requests that are on record as handed to a commission and not as taken.
+
+        Those handed over by ``by``: what a commission was handed before
+        it ended, and not what it is handed once it is taken up again.
+        """
 
         def work(conn: sqlite3.Connection) -> list[int]:
             rows = conn.execute(
-                "SELECT id FROM wake_requests WHERE fired_into = ? AND status = 'fired' AND taken_at IS NULL ORDER BY id",
-                (commission_id,),
+                "SELECT id FROM wake_requests WHERE fired_into = ? AND status = 'fired' AND taken_at IS NULL "
+                "AND fired_at <= ? ORDER BY id",
+                (commission_id, float(by)),
             ).fetchall()
             return [int(row["id"]) for row in rows]
 

@@ -385,10 +385,17 @@ for a reason of the host's own (it doubles from ``OUTBOX_RETRY_BASE_SECONDS``)."
 
 REST_LOOK_RETRY_DELAYS: tuple[float, ...] = (0.2, 1.0)
 """The pauses before the ledger is asked again, after it could not be read,
-whether a commission whose run ended has asked to be woken. Only once these
-are used up does the commission end as one that asked for nothing: ended on
-the first failure, a time it had set would be dropped with it. Short, since
-the events of every other session wait meanwhile."""
+for what the end of a run means: how its commission stands, whether task
+agents it started are still at work, whether it has asked to be woken. Only
+once these are used up is the end given up on, or does the commission end
+as one that asked for nothing: ended on the first failure, a time it had
+set would be dropped with it. Short, since the events of every other
+session wait meanwhile."""
+
+TURNS_OWED_CLOSE_WAIT_SECONDS = 1.0
+"""How long shutting down gives what turns that are over still owe (word to
+the senders of the notes they took, and that those notes were taken) to be
+written, where the ledger could not be written when they ended."""
 
 # ---------------------------------------------------------------------------
 # Task agent space (design section 12.1; ``nekoclaw/host/space.py``)

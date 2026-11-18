@@ -294,19 +294,29 @@ class LocalEndpoint:
                     answer = work.result()
                 except asyncio.CancelledError:
                     return
-                # Looked at before the answer is written: a dsh that hung up
-                # as the work finished gets none.
-                listening = not gone.done()
+                # A dsh that hung up as the work finished gets no answer. The
+                # server may know of it and the watcher not yet: it is given
+                # the turns of the loop it takes to hear of it.
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                hung_up = gone.done()
+                if answer is None:
+                    await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
+                    await send({"type": "http.response.body", "body": b""})
+                else:
+                    await respond_json(send, 200, answer)
+                # Looked at again as the last of the answer is handed to the
+                # server, nothing awaited since. A server that finds the
+                # connection gone writes nothing and says nothing, so that
+                # the write went through does not show that it was sent: but
+                # it tells whoever waits for the request before it lets a
+                # write go on, and the watcher is done by now. One that is
+                # told so only because the answer is complete is not yet.
+                delivered = not hung_up and not gone.done()
             finally:
                 gone.cancel()
                 if not work.done():
                     work.cancel()
-            if answer is None:
-                await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
-                await send({"type": "http.response.body", "body": b""})
-            else:
-                await respond_json(send, 200, answer)
-            delivered = listening
         finally:
             if not delivered:
                 for step in undo:

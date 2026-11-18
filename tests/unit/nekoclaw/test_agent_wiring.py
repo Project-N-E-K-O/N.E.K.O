@@ -662,11 +662,35 @@ async def test_a_stop_that_is_cancelled_while_the_host_is_made_ready_lets_go_of_
     assert host.wakes._holds == 0
 
 
+async def test_a_host_built_while_a_stop_looks_for_the_record_hands_nothing_over_until_the_stop_is_through(
+    wiring, tmp_path, monkeypatch
+):
+    await _left_by_an_earlier_process(tmp_path)
+    exists = wiring.mount_module.ledger_exists
+    held: list[int] = []
+
+    async def looking() -> bool:
+        # As a page that asks for the tasks while the stop looks for the record: it builds the
+        # host and starts it. Started as usual, it would hand over what an earlier process left.
+        host = await wiring.mount_module.ready_host()
+        held.append(host.wakes._holds)
+        return await exists()
+
+    monkeypatch.setattr(wiring.mount_module, "ledger_exists", looking)
+
+    assert await wiring.mount_module.stop_everything() == 1
+
+    host = wiring.host_mount.peek_host()
+    assert held == [1] and host.wakes._holds == 0
+    assert wiring.mount_module._stops_on_their_way == 0 and wiring.mount_module._held_for_stops == []
+
+
 async def test_stopping_everything_without_a_record_builds_nothing(wiring, tmp_path):
     assert await wiring.mount_module.stop_everything() == 0
 
     assert wiring.host_mount.peek_host() is None
     assert not (tmp_path / "nekoclaw").exists()
+    assert wiring.mount_module._stops_on_their_way == 0
 
 
 async def test_stopping_everything_starts_every_stop_before_it_waits_for_one(wiring, monkeypatch):

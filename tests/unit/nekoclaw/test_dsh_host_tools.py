@@ -564,6 +564,7 @@ async def test_stopping_the_listener_drops_every_token_and_it_can_be_started_aga
         ("takes the answer", []),
         ("hangs up while the call is carried out", ["given back"]),
         ("hangs up as the answer is ready", ["given back"]),
+        ("hangs up while the answer is written, and the write says nothing", ["given back"]),
         ("is gone when the answer is written", ["given back"]),
     ],
 )
@@ -592,18 +593,33 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "wait_agent"}}).encode()
     request: list[dict[str, Any]] = [{"type": "http.request", "body": body, "more_body": False}]
 
+    hanging_up = asyncio.Event()
+
     async def receive() -> dict[str, Any]:
         if request:
             return request.pop(0)
-        if how in ("takes the answer", "is gone when the answer is written"):
+        if how == "is gone when the answer is written":
             await asyncio.Event().wait()
-        await handed.wait()
+        if how == "takes the answer":
+            # As a server does: whoever waits for more of the request is told that the
+            # connection is done with once the answer is complete.
+            await answered.wait()
+        elif how == "hangs up while the answer is written, and the write says nothing":
+            await hanging_up.wait()
+        else:
+            await handed.wait()
         return {"type": "http.disconnect"}
 
     async def send(message: dict[str, Any]) -> None:
         if how == "is gone when the answer is written":
             raise ConnectionError("the connection is closed")
         if message["type"] == "http.response.body":
+            if how == "hangs up while the answer is written, and the write says nothing":
+                # The server finds the connection gone as it gets to write: it writes
+                # nothing, and returns as if it had.
+                hanging_up.set()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
             answered.set()
 
     scope = {
