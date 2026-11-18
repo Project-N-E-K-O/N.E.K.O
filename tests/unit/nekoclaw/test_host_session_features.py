@@ -145,6 +145,7 @@ async def test_a_session_is_copied_into_one_that_answers_from_what_the_other_kno
                 [
                     call("write", {"file_path": "notes.txt", "content": "x"}, "call-w"),
                     call("capability_call", {"name": "computer", "arguments": {"action": "type"}}, "call-c", index=1),
+                    call("note_lesson", {"title": "photos", "body": "sorted by year"}, "call-n", index=2),
                     _used(1_200, 30),
                     finish("tool_calls"),
                 ],
@@ -198,7 +199,7 @@ async def test_a_session_is_copied_into_one_that_answers_from_what_the_other_kno
     # The tools that write, run commands and call capabilities are told of as before, and are not to be had.
     assert {"write", "capability_call", "capability_search"} <= set(_tool_names(scripts["where does the sorting stand"].overrides[0]))
     ended = {event.payload["tool_name"]: event.payload for event in await _events(host, asked.id, "tool_end")}
-    for withheld in ("write", "capability_call"):
+    for withheld in ("write", "capability_call", "note_lesson"):
         assert ended[withheld]["is_error"] and f"{withheld} is not available right now" in ended[withheld]["text"]
     assert not (Path(copy.workdir) / "notes.txt").exists()
     # Nor does the gateway carry anything out for it, whatever a session is opened with.
@@ -691,11 +692,20 @@ def test_the_last_messages_of_the_main_dialogue_are_kept_for_each_character():
     for index in range(settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES + 5):
         kept.note("Lan", ROLE_USER, f"message {index}")
     assert len(kept.recent("Lan")) == settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES
+    # One that is told of late and was said before all of these takes the place of none of them;
+    # nor does one that is old already when it is told of.
+    assert not kept.note("Lan", ROLE_USER, "said before all of them", at=clock.now - 5)
+    assert not kept.note("Lan", ROLE_USER, "from long ago", at=clock.now - settings.TASK_AGENT_EXCERPT_MAX_AGE_SECONDS - 1)
+    assert [turn.text for turn in kept.recent("Lan")] == [
+        f"message {index}" for index in range(5, settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES + 5)
+    ]
     # What was said long ago is not what a sentence dispatched now refers to.
     clock.now += settings.TASK_AGENT_EXCERPT_MAX_AGE_SECONDS + 1
     assert kept.recent("Lan") == []
     kept.note("Lan", ROLE_USER, "still there?")
     assert [turn.text for turn in kept.recent("Lan")] == ["still there?"]
+    # One that is old already when it is told of is not kept at all.
+    assert not kept.note("Lan", ROLE_CHARACTER, "said long ago", at=clock.now - settings.TASK_AGENT_EXCERPT_MAX_AGE_SECONDS - 1)
     kept.note("Mei", ROLE_USER, "hello again")
     kept.forget("Lan")
     assert kept.recent("Lan") == [] and [turn.text for turn in kept.recent("Mei")] == ["hello again"]
@@ -1566,6 +1576,31 @@ async def test_what_was_said_in_a_session_is_not_removed_while_a_copy_of_it_is_m
         host.ledger.create_session = create
     assert sorted(path.name for path in sessions.iterdir()) == there and manager._copying_from == {}
     assert [item.id for item in await host.ledger.forks_of(first.id)] == [copy.id]
+    # Whoever asked is cancelled while the copy is put on record: it is put on record all the same,
+    # or what was written would be found by nothing.
+    entered, go = asyncio.Event(), asyncio.Event()
+
+    async def slow(**kwargs: Any) -> Any:
+        entered.set()
+        await go.wait()
+        return await create(**kwargs)
+
+    host.ledger.create_session = slow
+    try:
+        asking = asyncio.ensure_future(host.fork_session(first.id))
+        await asyncio.wait_for(entered.wait(), 10)
+        asking.cancel()
+        await asyncio.gather(asking, return_exceptions=True)
+        go.set()
+
+        async def on_record() -> bool:
+            return len(await host.ledger.forks_of(first.id)) == 2
+
+        await wait_until(on_record, what="the copy being put on record")
+    finally:
+        go.set()
+        host.ledger.create_session = create
+    assert asking.cancelled() and manager._copying_from == {}
     # Refused before anything is looked at when its record is being removed this moment.
     assert manager.hold_files(first.id) is True
     with pytest.raises(ForkRefused, match="no longer kept"):
@@ -1622,6 +1657,85 @@ async def test_a_copy_that_was_no_longer_waited_for_is_removed_when_it_is_made_a
     await manager.settle()
     assert not Path(target).exists()
     assert await host.ledger.forks_of(first.id) == []
+
+
+async def test_an_excerpt_ends_where_the_sentence_was_dispatched_and_does_not_repeat_the_opening(hosts, tmp_path):
+    import time
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    # The same words as the sentence that is dispatched, with no words of the user's given apart from it.
+    said.note("Lan", ROLE_USER, "sort the photos")
+    # Said after the sentence was dispatched, while it was still being routed: not what it refers to.
+    said.note("Lan", ROLE_USER, "and what about the videos", at=time.time() + 60)
+
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+
+    await wait_status(host, first.id, "done")
+    opening = _user_messages(scripts["sort the photos"].requests[0])[0]
+    assert "User: the photos are on the desktop" in opening
+    assert "and what about the videos" not in opening
+    # The opening states the user's words itself (the dispatched sentence, there being no others).
+    assert "User: sort the photos" not in opening
+
+
+async def test_a_commission_that_is_queued_when_it_is_taken_up_again_begins_a_new_round_as_well(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("blocked", "the folder is locked"), _report("ready", "sorted")]),
+        "check the mail": ScriptedLLM([[wait, *_report("ready", "no mail")]]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), max_task_agents=1)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    second = (await _dispatch(host, "check the mail")).commissions[0]
+    await wait_until(lambda: scripts["check the mail"].requests, what="its first request")
+    # As after a round in which more usage was refused, in a session that was in use when
+    # everything was stopped: both are of the round that is over.
+    manager._refused_more.add(first.id)
+    manager._idle_stopped.add(first.id)
+
+    # The one place is taken: taken up again, it is queued.
+    assert await host.tell(first.id, "it is unlocked now")
+
+    assert first.id in manager._queue and (await host.ledger.get(first.id)).status == "queued"
+    assert first.id not in manager._refused_more and first.id not in manager._idle_stopped
+    release.set()
+    await wait_status(host, second.id, "done")
+    assert (await wait_status(host, first.id, "done")).result_summary == "sorted"
+
+
+async def test_what_a_request_used_is_written_with_the_next_when_the_ledger_did_not_take_it(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    before = await host.ledger.get(first.id)
+    add = host.ledger.add_usage
+    failing = [RuntimeError("the ledger is locked")]
+
+    async def sometimes(**kwargs: Any) -> None:
+        if failing:
+            raise failing.pop()
+        await add(**kwargs)
+
+    host.ledger.add_usage = sometimes
+    try:
+        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10})
+        assert (await host.ledger.get(first.id)).tokens == before.tokens
+        await manager._note_usage(first.id, first.id, {"input": 7, "output": 3, "cache_read": 50})
+    finally:
+        host.ledger.add_usage = add
+    after, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+    # Both requests, and what both used: the account is whole once the ledger takes it again.
+    assert (after.requests - before.requests, after.tokens - before.tokens) == (2, 170)
+    assert (session.requests, session.tokens) == (after.requests, after.tokens)
+    assert manager._usage_owed == {}
 
 
 async def test_what_was_kept_for_a_commission_goes_when_it_is_stopped_before_it_had_a_place(hosts, tmp_path):
@@ -1728,7 +1842,12 @@ async def test_which_sessions_are_summed_up_while_idle_is_told_by_what_the_ledge
     assert allowed()
     manager._idle_compacted_at.append(now - 60.0)
     assert not allowed()
-    assert list(manager._idle_compacted_at) == [now - 3_600.0, now - 60.0]
+    # Asked about a moment that has not come yet (a timer that was a little early asks so): by then
+    # one of the two is older than a day. Nothing is taken off the record for the asking, or what
+    # still counts now would be gone for whoever asks next.
+    assert manager._idle_compact_allowed(dataclasses.replace(fine, last_active_at=now), now + 23 * 3_600.0 + 100.0)
+    assert list(manager._idle_compacted_at) == [now - 25 * 3_600.0, now - 3_600.0, now - 60.0]
+    assert not allowed()
 
 
 async def test_a_commission_that_waits_for_the_user_as_it_is_is_not_asked_about_what_it_used(hosts, tmp_path, monkeypatch):

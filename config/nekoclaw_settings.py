@@ -316,13 +316,14 @@ TASK_AGENT_FORK_SECONDS = 60.0
 (``TaskAgentManager.fork_session``): a record is a file of a few megabytes at
 the most, and the time is mostly a runtime process coming up."""
 
-TASK_AGENT_FORK_WITHHELD_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call")
+TASK_AGENT_FORK_WITHHELD_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call", "note_lesson")
 """The tools a session that is a copy of another is opened without. It has
 the working directory of the session it was copied from, which may be at
 work there: one working directory is written by one session at a time. A
 copy reads, searches and answers. ``capability_call`` is among them: what
 it reaches (plugin entries, the keyboard and mouse, the browser) can write
-as well, and the gateway refuses a copy's calls besides. The tools stay in
+as well, and the gateway refuses a copy's calls besides; ``note_lesson``
+writes into the task agents' space, which later commissions go by. The tools stay in
 what the model is told of (as in the session they were copied from, so a
 provider's cache of that is used) and answer that they are not available."""
 

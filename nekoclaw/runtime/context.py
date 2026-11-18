@@ -746,7 +746,10 @@ class ContextManager:
                 return []
 
         done: list[Compaction] = []
-        for attempt in range(2):
+        # Once where the conversation could stay as it is: it is summed up
+        # because it was told to, and whoever told it to counted on one
+        # request.
+        for attempt in range(2 if or_drop else 1):
             tokens_before = await self.measure(transcript.messages)
             compaction = await self._compact(
                 transcript.rows(),

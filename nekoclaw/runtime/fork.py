@@ -56,6 +56,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -177,6 +178,11 @@ def whole_prefix(path: list[SessionEntry]) -> int:
     return kept
 
 
+def _lock_of(path: Path) -> Path:
+    """Return the lock file the storage keeps next to a record while it writes it."""
+    return path.with_name(f".{path.name}.lock")
+
+
 def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) -> ForkResult:
     """Copy what was said in the session kept in ``source_dir`` into ``target_dir``. Blocking.
 
@@ -221,8 +227,12 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
     )
     target_dir.mkdir(parents=True, exist_ok=True)
     # All of it or none: a copy that stopped half way would be opened as a
-    # conversation that ends in the middle of something.
-    _drive(JsonlSessionStorage(target_path).append_batch([*path, marker]))
+    # conversation that ends in the middle of something. Written under
+    # another name first, and given its own once the snapshot is there
+    # as well: what is left of a copy that failed is never a record.
+    partial = target_path.with_name(target_path.name + ".partial")
+    partial.unlink(missing_ok=True)
+    _drive(JsonlSessionStorage(partial).append_batch([*path, marker]))
     snapshot = read_snapshot(source_dir)
     if snapshot is not None:
         # As the other session begins its requests, so does this one. How
@@ -245,8 +255,14 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
             # put its own together and no longer begin its requests as
             # the other does. Taken back, the same copy can be made again.
             try:
-                target_path.unlink(missing_ok=True)
+                partial.unlink(missing_ok=True)
+                _lock_of(partial).unlink(missing_ok=True)
             except OSError:
                 logger.warning("the record of a copy that failed could not be removed", exc_info=True)
             raise ForkError(f"the system snapshot of the copy could not be written: {exc}") from exc
+    os.replace(partial, target_path)
+    try:
+        _lock_of(partial).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("the lock file of a copy's record under its first name could not be removed", exc_info=True)
     return ForkResult(upto=last, entries=len(path))

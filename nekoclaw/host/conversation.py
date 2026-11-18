@@ -77,7 +77,11 @@ class RecentConversation:
         by its id or, without one, by being what the same side said last).
         A long one is kept cut: an excerpt takes a part of it at the most.
         """
-        from config.nekoclaw_settings import TASK_AGENT_EXCERPT_KEPT_CHARS, TASK_AGENT_EXCERPT_KEPT_MESSAGES
+        from config.nekoclaw_settings import (
+            TASK_AGENT_EXCERPT_KEPT_CHARS,
+            TASK_AGENT_EXCERPT_KEPT_MESSAGES,
+            TASK_AGENT_EXCERPT_MAX_AGE_SECONDS,
+        )
 
         text = " ".join(str(text or "").split())
         if not lanlan_name or role not in (ROLE_USER, ROLE_CHARACTER) or not text:
@@ -91,7 +95,20 @@ class RecentConversation:
             return False
         if not event_id and turns and (turns[-1].role, turns[-1].text) == (role, text):
             return False
-        turns.append(Turn(role, text, float(at) if at is not None else self._clock(), event_id))
+        now = self._clock()
+        said_at = float(at) if at is not None else now
+        if said_at < now - TASK_AGENT_EXCERPT_MAX_AGE_SECONDS:
+            # Told of when it is old already: it would take the place of one that is not.
+            return False
+        if turns and said_at < turns[-1].at:
+            # Told of late: put where it was said, so that the ones that
+            # make room for a new one are the ones said first.
+            late = Turn(role, text, said_at, event_id)
+            ordered = sorted([*turns, late], key=lambda turn: turn.at)[-TASK_AGENT_EXCERPT_KEPT_MESSAGES:]
+            self._turns[lanlan_name] = deque(ordered, maxlen=TASK_AGENT_EXCERPT_KEPT_MESSAGES)
+            # Not kept when it was said before everything there is room for.
+            return any(turn is late for turn in ordered)
+        turns.append(Turn(role, text, said_at, event_id))
         return True
 
     def note_event(self, event: dict[str, Any]) -> bool:

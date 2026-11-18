@@ -1381,10 +1381,6 @@ async def test_a_session_left_as_being_summed_up_by_an_earlier_process_is_closed
 
 
 async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_and_keeps_its_rows(tmp_path):
-    import sqlite3
-
-    from nekoclaw.host.ledger import _ADDED_SESSION_COLUMNS, _USAGE_COLUMNS
-
     path = tmp_path / "ledger.db"
     first = Ledger(path)
     session = await first.create_session(lanlan_name="Lan", name="photos", kind="project", project="photos")
@@ -1395,9 +1391,12 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
     # of where a copy was made, or of how much a commission may use.
     conn = sqlite3.connect(path)
     try:
-        for name, _kind in _ADDED_SESSION_COLUMNS:
+        # Named here, not taken from the list the ledger adds columns from: a column that went
+        # missing from that list would otherwise be missing from this as well, and not be missed.
+        usage = ("requests", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write")
+        for name in ("forked_at", *usage, "context_tokens"):
             conn.execute(f"ALTER TABLE sessions DROP COLUMN {name}")
-        for name in (*_USAGE_COLUMNS, "usage_allowed"):
+        for name in (*usage, "usage_allowed"):
             conn.execute(f"ALTER TABLE commissions DROP COLUMN {name}")
         conn.execute("PRAGMA user_version=3")
         conn.commit()

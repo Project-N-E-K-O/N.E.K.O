@@ -928,12 +928,15 @@ class TaskAgentSession(SessionInbox):
                 )
                 yield AssistantErrorEvent(reason="aborted", error=stopped)
                 return
-        # Looked at again: the host may have been waited for (the user was
-        # asked), and the run stopped meanwhile. A run that was stopped is
-        # told nothing more, and its conversation is not summed up, which
-        # would be a request as long as all of it after the stop. The
-        # request below finds the stop itself.
-        if signal is None or not signal.is_cancelled():
+            if signal is not None and signal.is_cancelled():
+                # Stopped while the host was waited for (the user was
+                # asked). It ends here: nothing more is said to the
+                # session, its conversation is not summed up (a request
+                # as long as all of it, after the stop), and what is due
+                # after an earlier summary is left to the next run.
+                stopped = AssistantMessage(model=model, stop_reason="aborted", error_message="stopped")
+                yield AssistantErrorEvent(reason="aborted", error=stopped)
+                return
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1581,7 +1584,9 @@ class TaskAgentSession(SessionInbox):
             # As much is kept word for word as a summary before a request
             # keeps: this is not the conversation that was refused as too
             # long. Nor does anything have to go: without a whole summary
-            # the conversation stays as it is.
+            # the conversation stays as it is. What the host said about
+            # usage in a run that is over is not part of what is summed up.
+            self._drop_usage_notices()
             await self._fit(force=True, tight=False, or_drop=False)
             if self._compaction_due:
                 await self._after_compaction()

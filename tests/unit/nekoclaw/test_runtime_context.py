@@ -1091,7 +1091,9 @@ async def test_growing_context_is_compacted_before_the_request_is_sent(tmp_path:
         await session.close()
 
 
-async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_to_be_had(tmp_path: Path) -> None:
+async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_to_be_had(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Summed up with nothing wrong with its length (a session nothing is at work in): nothing has to go.
     policy = ContextPolicy(window=32_000, max_output=4_000)
     messages = [UserMessage(content="go")]
@@ -1130,3 +1132,23 @@ async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_t
     asked = []
     assert await _manager(tmp_path, narrow, asked).fit(Transcript(list(long), _counter()), force=True)
     assert len(asked) >= 1
+
+    # Summed up because it was told to, a conversation is summed up once: whoever told it to counted
+    # on one request. Where it has to get shorter it is looked at a second time while it is too long.
+    seen: list = []
+    inner = ContextManager._compact
+
+    async def counted(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        seen.append(kwargs.get("tight"))
+        return await inner(self, *args, **kwargs)
+
+    async def too_long_whatever_is_done(self, _messages) -> int:  # noqa: ANN001
+        return policy.threshold + 1
+
+    monkeypatch.setattr(ContextManager, "_compact", counted)
+    monkeypatch.setattr(ContextManager, "measure", too_long_whatever_is_done)
+    await _manager(tmp_path, policy, []).fit(Transcript(list(messages), _counter()), force=True, tight=False, or_drop=False)
+    once = list(seen)
+    seen.clear()
+    await _manager(tmp_path, policy, []).fit(Transcript(list(messages), _counter()), force=True, tight=False)
+    assert once == [False] and seen == [False, True]

@@ -603,10 +603,16 @@ async def test_a_request_waits_for_as_long_as_the_host_takes_to_answer_and_a_sto
         await asyncio.wait_for(waiting.wait(), 5)
         # (The run was told the time when it began. It is due again, as when a job ended meanwhile.)
         before, session._context_due = told_the_time(), True
+        # (And what follows a summary is due: the session was closed before it was done.)
+        session._compaction_due = True
+        compacted = len(events.of("compacted"))
         session.abort()
         assert (await asyncio.wait_for(events.wait_ended(start=mark), 5))["reason"] == "aborted"
         assert len(llm.requests) == 1
         assert fitted == [] and told_the_time() == before
+        # Left to the next run that is not stopped.
+        assert session._compaction_due is True and len(events.of("compacted")) == compacted
+        session._compaction_due = False
         # One that is not stopped while it waits is told the time and fitted as before.
         answer.set_result({})
         answer = asyncio.get_running_loop().create_future()
@@ -820,6 +826,17 @@ async def test_what_the_host_said_about_usage_holds_for_the_run_it_was_said_in(t
         await _ask(session, events, "Sort the photos.", opening=True)
         assert _said(llm.requests[0])[-1] == "user: No more may be used. Hand over what you have."
 
+        def notices() -> int:
+            return sum(1 for message in session.harness.message_list if getattr(message, "custom_type", None) == "notice:usage")
+
+        # Told to sum itself up before another run came: what was said about usage goes first, so
+        # that it is not written into a summary that later commissions read.
+        assert notices() == 1
+        mark = len(events.events)
+        session.compact()
+        await events.wait_ended(start=mark)
+        assert notices() == 0
+
         # The next run, of this commission (the user allowed more) or of another: the host is asked
         # anew, has nothing to say, and what it said before is not in front of the model any more.
         await _ask(session, events, "Go on then.")
@@ -923,8 +940,10 @@ async def test_a_copy_is_made_whole_or_not_at_all_and_does_not_pass_a_stale_snap
         patched.setattr(fork_module, "write_snapshot", unwritable)
         with pytest.raises(ForkError, match="snapshot of the copy could not be written"):
             fork_record(source, target)
-    assert not (target / TRANSCRIPT_FILE).exists()
+    assert not target.exists() or list(target.iterdir()) == []
     assert fork_record(source, target).entries > 0 and read_snapshot(target).compactions == 1
+    # Nothing is left of the name it was written under first, the lock file kept next to it included.
+    assert [path.name for path in target.iterdir() if ".partial" in path.name] == []
 
     # The other's snapshot is behind its record (summed up, and stopped before what every request
     # begins with was put together anew): the copy's is behind as well, so that it does the same on opening.
