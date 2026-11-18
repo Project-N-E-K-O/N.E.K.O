@@ -718,6 +718,35 @@ async def test_plugins_forbidden_while_the_model_chooses_are_not_called(server, 
     assert correction.payload["reason"] == "no_capability"
 
 
+async def test_nekoclaw_switched_off_while_the_model_chooses_calls_no_plugin_and_writes_nothing_down(
+    server, hosts, tmp_path
+):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"}, preference="查天气默认查上海")])
+    llm.gate = asyncio.Event()
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+
+    receipt = await _dispatch(host, "查天气，他说以后默认都查上海")
+    assert receipt.kind == "accepted"
+    await wait_until(lambda: _asked(llm), what="the fine selection being asked")
+    # Switched off while it is chosen who does it (the last capability switch went off, say).
+    on[0] = False
+    llm.gate.set()
+    await host.brain.settle()
+
+    # Nothing new is begun while it is off, by a plugin no more than by a task agent...
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed" and "switched off" in failed.status_reason
+    assert server.calls == []
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
+    # ...and nothing of what was chosen is written down: not who would have done it, nor what
+    # the sentence states for good.
+    assert [event.type for event in await host.ledger.events(receipt.commission_id) if event.type == "decision"] == []
+    assert await host.preferences.list() == []
+
+
 async def _asked(llm: FakeDecisionLLM) -> bool:
     return llm.count("fine") >= 1
 

@@ -4813,9 +4813,10 @@ async def test_what_was_said_before_nekoclaw_went_off_is_not_handed_to_a_commiss
     await _let_go(host)
     # It is on again, and the commission is done. What was said before the switch went off is not
     # handed over after it, though it was taken before; nor what was said after the sentence.
-    opening = _user_messages(llm.requests[0])[0]
-    assert "sort the photos" in opening
-    assert "on the desktop" not in opening and "from the trip" not in opening and "on again" not in opening
+    # (Nowhere in the request: not in the message that opens the commission, nor beside it.)
+    assert "sort the photos" in _user_messages(llm.requests[0])[0]
+    whole = json.dumps(llm.requests[0], ensure_ascii=False)
+    assert "on the desktop" not in whole and "from the trip" not in whole and "on again" not in whole
 
 
 def test_what_was_kept_of_the_main_dialogue_says_when_it_was_last_dropped() -> None:
@@ -4824,17 +4825,30 @@ def test_what_was_kept_of_the_main_dialogue_says_when_it_was_last_dropped() -> N
     assert kept.forgotten_at("Lan") == 0.0
     kept.note("Lan", ROLE_USER, "hello")
     kept.note("Mei", ROLE_USER, "hello there")
+    assert kept.times_dropped("Lan") == 0 and [turn.kept_in for turn in kept.recent("Lan")] == [0]
     clock.now = 600.0
     kept.forget("Lan")
     assert kept.forgotten_at("Lan") == 600.0 and kept.forgotten_at("Mei") == 0.0
+    assert kept.times_dropped("Lan") == 1 and kept.times_dropped("Mei") == 0
     # What was said before, told of only now, is kept for the one and not for the other.
     clock.now = 610.0
     assert not kept.note("Lan", ROLE_CHARACTER, "said before it was dropped", at=599.0)
     assert kept.note("Mei", ROLE_CHARACTER, "said before that as well", at=599.0)
     assert kept.note("Lan", ROLE_CHARACTER, "said after it was dropped", at=601.0)
+    # Each is kept with how many times what was kept had been dropped by then, one that is
+    # told of late as well.
+    assert kept.note("Lan", ROLE_USER, "said a little after that", at=605.0)
+    assert kept.note("Lan", ROLE_USER, "and told of late", at=603.0)
+    assert [(turn.text, turn.kept_in) for turn in kept.recent("Lan")] == [
+        ("said after it was dropped", 1),
+        ("and told of late", 1),
+        ("said a little after that", 1),
+    ]
+    assert [turn.kept_in for turn in kept.recent("Mei")] == [0, 0]
     clock.now = 700.0
     kept.forget()
     assert kept.forgotten_at("Lan") == 700.0 and kept.forgotten_at("Mei") == 700.0
+    assert kept.times_dropped("Lan") == 2 and kept.times_dropped("Mei") == 1
     assert kept.recent("Lan") == [] and kept.recent("Mei") == []
 
 
@@ -4872,6 +4886,172 @@ async def test_what_was_said_before_nekoclaw_went_off_is_not_handed_over_when_it
     assert [[turn.text for turn in turns] for turns in made] == [["the photos are on the desktop"]]
     # The message that opens the commission is made again before it is sent: what was said before
     # the switch went off is not in the request that is made after it.
-    opening = _user_messages(llm.requests[0])[0]
-    assert "sort the photos" in opening
-    assert "on the desktop" not in opening and "on again" not in opening
+    assert "sort the photos" in _user_messages(llm.requests[0])[0]
+    whole = json.dumps(llm.requests[0], ensure_ascii=False)
+    assert "on the desktop" not in whole and "on again" not in whole
+
+
+async def test_a_commission_that_is_stopped_while_its_opening_message_is_made_again_is_sent_nothing(hosts, tmp_path):
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("ready", "sorted")]),
+        "also rename them": ScriptedLLM([_report("ready", "renamed")]),
+    }
+    clock = _Clock(1_700_000_000.0)
+    said = RecentConversation(clock=clock)
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    manager = host.task_agents
+    earlier = (await _dispatch(host, "sort the photos")).commissions[0]
+    earlier = await wait_status(host, earlier.id, "done")
+    await _let_go(host)
+    runtime = manager._runtimes.builtin()
+    start, opening, send_text = runtime.start, manager._opening, manager._send_text
+    set_up: list[bool] = []
+    stopping: list[Any] = []
+    sent: list[str] = []
+
+    async def while_nekoclaw_goes_off_and_on_again(spec: Any) -> None:
+        await start(spec)
+        clock.now += 5
+        said.forget()
+        clock.now += 5
+        set_up.append(True)
+
+    async def stopped_while_it_is_made_again(commission: Any, **kwargs: Any) -> str:
+        made = await opening(commission, **kwargs)
+        if set_up and not stopping:
+            # The message that opens it is made again (what was kept was dropped while its session
+            # was set up), and the user stops the commission while that waits for something.
+            stopping.append(asyncio.ensure_future(host.abort(commission.id)))
+            await wait_status(host, commission.id, "cancelled")
+        return made
+
+    async def seen(runtime: Any, session: Any, kind: str, text: str, **kwargs: Any) -> Any:
+        sent.append(kind)
+        return await send_text(runtime, session, kind, text, **kwargs)
+
+    said.note("Lan", ROLE_USER, "the names should begin with the date")
+    clock.now += 5
+    # One that follows the first up, in its session: the message that opens it says what came of
+    # that one, and making it waits for something.
+    follow, _created = await host.ledger.create(
+        lanlan_name="Lan", title="also rename them", dispatch_text="also rename them", source="dispatch",
+        route="task_agent", lang="en", session_id=earlier.session_id, continues=earlier.id,
+    )
+    runtime.start, manager._opening, manager._send_text = while_nekoclaw_goes_off_and_on_again, stopped_while_it_is_made_again, seen
+    try:
+        assert await manager.submit(follow)
+        await wait_until(lambda: stopping, what="the commission being stopped")
+        await asyncio.gather(*stopping)
+        await manager.settle()
+    finally:
+        runtime.start, manager._opening, manager._send_text = start, opening, send_text
+    await _let_go(host)
+    # Nothing is sent to a session that is no longer the commission's (the next commission may be
+    # at work in it by then, and what comes of a message it did not ask for would be put down as its).
+    assert set_up == [True] and sent == [] and scripts["also rename them"].requests == []
+    assert (await host.ledger.get(follow.id)).status == "cancelled" and manager._sessions == {}
+
+
+async def test_what_was_kept_before_all_was_dropped_is_not_handed_over_though_the_clock_was_set_back(hosts, tmp_path):
+    import json
+
+    llm = ScriptedLLM([_report("ready", "sorted")])
+    clock = _Clock(1_700_000_000.0)
+    said = RecentConversation(clock=clock)
+    host = _host(hosts, tmp_path, llm, conversation=said)
+    manager = host.task_agents
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    chosen, go, undo = _held_while_it_is_chosen_who_does_it(host)
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await asyncio.wait_for(chosen.wait(), 10)
+        assert [turn.text for turn in manager._excerpts[first.id]] == ["the photos are on the desktop"]
+        # The clock of the machine is set back an hour, and NekoClaw goes off and on again: by the
+        # clock, what was kept for the commission was said after all was dropped.
+        clock.now -= 3_600
+        said.forget()
+        assert said.forgotten_at("Lan") < manager._excerpts[first.id][0].at
+        go.set()
+        await wait_status(host, first.id, "done")
+    finally:
+        undo()
+    await _let_go(host)
+    whole = json.dumps(llm.requests[0], ensure_ascii=False)
+    assert "sort the photos" in whole and "on the desktop" not in whole
+
+
+async def test_what_is_said_at_the_very_time_all_was_dropped_and_kept_after_it_is_handed_over(hosts, tmp_path):
+    import json
+
+    llm = ScriptedLLM([_report("ready", "sorted")])
+    # A clock that stands still: all of this happens at one time by it.
+    said = RecentConversation(clock=_Clock(1_700_000_000.0))
+    host = _host(hosts, tmp_path, llm, conversation=said)
+    said.note("Lan", ROLE_USER, "said before it went off")
+    said.forget()
+    assert said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    assert [(turn.text, turn.kept_in) for turn in said.recent("Lan")] == [("the photos are on the desktop", 1)]
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    whole = json.dumps(llm.requests[0], ensure_ascii=False)
+    assert "on the desktop" in whole and "before it went off" not in whole
+
+
+async def test_a_commission_takes_no_place_when_nekoclaw_goes_off_while_its_session_is_made_ready(hosts, tmp_path):
+    llm = ScriptedLLM([_report("ready", "sorted")])
+    on = [True]
+    host = _host(hosts, tmp_path, llm, enabled=lambda: on[0])
+    manager = host.task_agents
+    give_session = manager._give_session
+
+    async def while_nekoclaw_goes_off(commission: Any) -> Any:
+        given = await give_session(commission)
+        # It was on when it was chosen who does the commission, and goes off while the commission
+        # is given its session. It is on again by the time anyone looks once more.
+        on[0] = False
+        return given
+
+    manager._give_session = while_nekoclaw_goes_off
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        failed = await wait_status(host, first.id, "failed")
+    finally:
+        manager._give_session = give_session
+    on[0] = True
+    await host.brain.settle()
+    # It took no place and was not queued; she is told that it was not started.
+    assert "switched off" in failed.status_reason and llm.requests == []
+    assert manager._sessions == {} and not manager._queue and first.id not in manager._session_of
+    assert manager._excerpts == {} and manager._candidates == {}
+    (told,) = await outbox(host, "correction")
+    assert told.payload["reason"] == "no_capability" and told.payload["detail"] == "disabled"
+
+
+async def test_which_question_waits_is_forgotten_with_the_question(hosts, tmp_path):
+    release, wait = _gate()
+    llm = ScriptedLLM([[wait, *_report("ready", "sorted")]])
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_until(lambda: llm.requests, what="its first request")
+    session = manager._sessions[first.id]
+    other = asyncio.ensure_future(
+        manager.ask_user(first.id, {"kind": "questions", "questions": [{"question": "which folder?"}]})
+    )
+    try:
+        asked = await _asked(host, first.id)
+        assert asked["id"] and session.question_id == asked["id"]
+        assert await host.answer(first.id, "the left one", question_id=asked["id"])
+        assert (await asyncio.wait_for(other, 10))["text"] == "the left one"
+        # Nothing waits any more, and the session knows of no question: the same answer handed in
+        # once more is nobody's.
+        assert session.question_id == "" and session.question is None
+        assert not await host.answer(first.id, "the left one", question_id=asked["id"])
+    finally:
+        release.set()
+        if not other.done():
+            other.cancel()
+            await asyncio.gather(other, return_exceptions=True)
+    await wait_status(host, first.id, "done")
+    await _let_go(host)

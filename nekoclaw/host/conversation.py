@@ -61,6 +61,11 @@ class Turn:
     # When it was said (epoch seconds).
     at: float
     event_id: str = ""
+    # How many times what was kept for the character had been dropped
+    # when this was kept (``RecentConversation.times_dropped``): by
+    # this, and not by a clock, one that was taken from here before
+    # the last time is told from one that was kept after it.
+    kept_in: int = 0
 
 
 class RecentConversation:
@@ -69,9 +74,11 @@ class RecentConversation:
     def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
         self._turns: dict[str, deque[Turn]] = {}
-        # When what was kept was last dropped: for each character, and
-        # (under None) for all of them at once.
+        # When what was kept was last dropped, and how many times it
+        # was: for each character, and (under None) for all of them at
+        # once.
         self._forgotten_at: dict[str | None, float] = {}
+        self._dropped: dict[str | None, int] = {}
 
     def note(self, lanlan_name: str, role: str, text: str, *, at: float | None = None, event_id: str = "") -> bool:
         """Keep one message; returns whether it was kept.
@@ -135,12 +142,12 @@ class RecentConversation:
         if turns and said_at < turns[-1].at:
             # Told of late: put where it was said, so that the ones that
             # make room for a new one are the ones said first.
-            late = Turn(role, text, said_at, event_id)
+            late = Turn(role, text, said_at, event_id, self.times_dropped(lanlan_name))
             ordered = sorted([*turns, late], key=lambda turn: turn.at)[-TASK_AGENT_EXCERPT_KEPT_MESSAGES:]
             self._turns[lanlan_name] = deque(ordered, maxlen=TASK_AGENT_EXCERPT_KEPT_MESSAGES)
             # Not kept when it was said before everything there is room for.
             return any(turn is late for turn in ordered)
-        turns.append(Turn(role, text, said_at, event_id))
+        turns.append(Turn(role, text, said_at, event_id, self.times_dropped(lanlan_name)))
         return True
 
     def note_event(self, event: dict[str, Any]) -> bool:
@@ -173,9 +180,12 @@ class RecentConversation:
     def forget(self, lanlan_name: str | None = None) -> None:
         """Drop what is kept for a character, or for all of them.
 
-        And note when: what was said before this is not kept when it
-        is told of late (``note``), and is not handed on by whoever
-        took it from here before (``forgotten_at``).
+        And count it: what was taken from here before is not handed
+        on by whoever took it (``times_dropped``; by the count, which
+        no clock that is set back or stands still gets wrong). And
+        note when: what was said before this is not kept when it is
+        told of only later (``note``; of that, when it was said is
+        all there is to go by).
         """
         now = self._clock()
         if lanlan_name is None:
@@ -184,6 +194,11 @@ class RecentConversation:
         else:
             self._turns.pop(lanlan_name, None)
             self._forgotten_at[lanlan_name] = now
+        self._dropped[lanlan_name] = self._dropped.get(lanlan_name, 0) + 1
+
+    def times_dropped(self, lanlan_name: str) -> int:
+        """Return how many times what was kept for a character has been dropped (``Turn.kept_in``)."""
+        return self._dropped.get(None, 0) + self._dropped.get(lanlan_name, 0)
 
     def forgotten_at(self, lanlan_name: str) -> float:
         """Return when what was kept for a character was last dropped (epoch seconds); 0.0 for never."""

@@ -668,6 +668,18 @@ class TaskBrain:
         try:
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
+            if not self._switched_on():
+                # NekoClaw was switched off while it was chosen who does
+                # it. Nothing new is begun while it is off, by a task
+                # agent or by a plugin: a sentence dispatched now would
+                # be turned away. And nothing of what was chosen is
+                # written down: not the session it would have gone on
+                # in, nor what the sentence states for good.
+                # (The switch, not ``_is_enabled``: a brain that is being
+                # closed hands it over, and the start ends as failed
+                # because the host shut down, to be taken up again.)
+                await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
+                return
             goes_on = bool(follows) and selection.route == "task_agent" and self._task_agents is not None
             if goes_on:
                 commission = await self._ledger.update(commission.id, **(follows or {})) or commission
@@ -696,21 +708,29 @@ class TaskBrain:
                 )
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
-            elif selection.route == "task_agent" and self._task_agents is not None and not self._switched_on():
-                # NekoClaw was switched off while it was chosen who does
-                # it. Nothing new is handed to a task agent while it is
-                # off: a sentence dispatched now would be turned away.
-                # (The switch, not ``_is_enabled``: a brain that is being
-                # closed hands it over, and the start ends as failed
-                # because the host shut down, to be taken up again.)
-                await self._overturn_switched_off(commission)
             elif selection.route == "task_agent" and self._task_agents is not None:
-                await self._task_agents.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
+                turned_away: list[bool] = []
+
+                def still_on() -> bool:
+                    # Asked once its session is made ready, before it takes a
+                    # place: NekoClaw may have been switched off meanwhile.
+                    on = self._switched_on()
+                    if not on:
+                        turned_away.append(True)
+                    return on
+
+                await self._task_agents.submit(
+                    commission, candidate_plugin_ids=selection.shown_plugin_ids, still_wanted=still_on
+                )
                 # The task agents have it from here on (started, queued, or
                 # failed by them, with what was kept for it gone). Before
                 # that, a handing over that fails or is cut off leaves it
                 # with nobody, and what was kept goes below.
                 handed_over = True
+                if turned_away:
+                    # It took no place, and is nobody's: put down as what
+                    # it is, whatever the switch says by now.
+                    await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
             elif selection.route == "duplicate" and selection.duplicate_of:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
             else:
@@ -733,28 +753,20 @@ class TaskBrain:
     def _no_capability_text(self, commission: Commission, reason: str) -> str:
         return Receipt(kind="no_capability", commissions=[commission], reason=reason).text(commission.lang or "en")
 
-    async def _overturn_no_capability(self, commission: Commission, why: str) -> None:
-        """Accepted, yet nothing can do it: fail the commission and tell her."""
-        reason = await self._no_capability_reason()
+    async def _overturn_no_capability(self, commission: Commission, why: str, *, reason: str | None = None) -> None:
+        """Accepted, yet nothing can do it: fail the commission and tell her.
+
+        ``reason`` is what she is told when that is known already
+        (``disabled``: NekoClaw was switched off before anything had
+        the commission); else it is looked up.
+        """
+        reason = reason or await self._no_capability_reason()
         moved = await self._ledger.transition(
             commission.id, "failed", reason=f"nothing can do this: {why or reason}"
         )
         if moved.applied:
             await self._reporter.correction(
                 commission, reason="no_capability", detail=reason, text=self._no_capability_text(commission, reason)
-            )
-
-    async def _overturn_switched_off(self, commission: Commission) -> None:
-        """Accepted, and NekoClaw was switched off before a task agent had it: fail the commission and tell her."""
-        moved = await self._ledger.transition(
-            commission.id, "failed", reason="nothing can do this: NekoClaw was switched off meanwhile"
-        )
-        if moved.applied:
-            await self._reporter.correction(
-                commission,
-                reason="no_capability",
-                detail="disabled",
-                text=self._no_capability_text(commission, "disabled"),
             )
 
     async def _overturn_duplicate(self, commission: Commission, duplicate_of: str) -> None:

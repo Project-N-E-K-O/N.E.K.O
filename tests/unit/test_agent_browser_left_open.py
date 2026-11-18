@@ -1396,7 +1396,7 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekocla
     from pathlib import Path
 
     capability: list[str] = []
-    master: dict[str, bool] = {}
+    master: list[tuple[str, bool]] = []
     for path in sorted(Path(api_routes.__file__).parent.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for scope, function in _scopes(tree):
@@ -1409,11 +1409,12 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekocla
                 assert not any(isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)) for node in nodes), name
                 assert "forget_turns_if_nekoclaw_is_off" in {_called(node) for node in nodes}, name
             if any(_puts_the_master_switch_off(node) for node in nodes):
-                master[name] = "forget_turns_for_task_agents" in {_called(node) for node in nodes}
+                # Each by itself: one of the same name elsewhere does not stand for it.
+                master.append((name, "forget_turns_for_task_agents" in {_called(node) for node in nodes}))
 
     # With the master switch off, or the last capability switch, NekoClaw is off, and what was kept
     # of the main dialogue for task agents goes with the switch. A capability switch goes off by
     # the user's hand and by itself, in a dozen places: all of them by the one function that
     # drops what was kept in the same breath.
     assert capability == ["_shared.py:_put_switch_off"]
-    assert master == {"api_routes.py:admin_control": True, "api_routes.py:agent_command": True}
+    assert sorted(master) == [("api_routes.py:admin_control", True), ("api_routes.py:agent_command", True)]

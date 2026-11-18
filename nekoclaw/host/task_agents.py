@@ -861,11 +861,25 @@ class TaskAgentManager:
 
     # -- starting ---------------------------------------------------------
 
-    async def submit(self, commission: Commission, *, candidate_plugin_ids: Any = (), wait: bool = True) -> bool:
+    async def submit(
+        self,
+        commission: Commission,
+        *,
+        candidate_plugin_ids: Any = (),
+        wait: bool = True,
+        still_wanted: Callable[[], bool] | None = None,
+    ) -> bool:
         """Hand a commission to a task agent: now if a place is free, else when one is.
 
         With ``wait`` False a commission that finds no free place is failed
         instead of queued. Returns whether it was started or queued.
+
+        ``still_wanted`` is asked once its session is made ready, which
+        takes a moment, and before it takes a place or is queued, with
+        nothing awaited in between: a commission that is not wanted
+        any more (NekoClaw was switched off meanwhile) is neither
+        started nor queued, and is left as it is for whoever handed
+        it over to say what became of it.
         """
         self._candidates[commission.id] = tuple(str(item) for item in candidate_plugin_ids)
         stops = self._idle_stops
@@ -888,6 +902,11 @@ class TaskAgentManager:
             self._excerpts.pop(commission.id, None)
             self._session_of.pop(commission.id, None)
             await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
+            return False
+        if still_wanted is not None and not still_wanted():
+            self._candidates.pop(commission.id, None)
+            self._excerpts.pop(commission.id, None)
+            self._session_of.pop(commission.id, None)
             return False
         self._new_work_in(self._session_of.get(commission.id), stops)
         # Up to when it was filed, which is when the sentence was dispatched.
@@ -1098,9 +1117,9 @@ class TaskAgentManager:
             turns = [turn for turn in turns if turn.at <= upto]
         return list(turns)
 
-    def _dropped_at(self, commission: Commission) -> float:
-        """Return when what is kept of the main dialogue for a commission's character was last dropped; 0.0 for never."""
-        return self._conversation.forgotten_at(commission.lanlan_name) if self._conversation is not None else 0.0
+    def _times_dropped(self, commission: Commission) -> int:
+        """Return how many times what is kept of the main dialogue for a commission's character has been dropped."""
+        return self._conversation.times_dropped(commission.lanlan_name) if self._conversation is not None else 0
 
     def _excerpt(self, commission: Commission) -> str:
         """Return the part of a commission's opening message that holds what was said just before it; empty for none.
@@ -1121,9 +1140,11 @@ class TaskAgentManager:
             # may be before what is kept of the main dialogue was last
             # dropped (NekoClaw went off): what was said before that
             # is not handed to a task agent after it, wherever it was
-            # kept meanwhile.
-            since = self._dropped_at(commission)
-            turns = [turn for turn in turns if turn.at > since]
+            # kept meanwhile. (By how many times it had been dropped when
+            # each was kept, and not by when each was said: a clock
+            # may be set back, and says the same time twice.)
+            now_kept_in = self._times_dropped(commission)
+            turns = [turn for turn in turns if turn.kept_in == now_kept_in]
         if not turns:
             return ""
         # With the cap at nothing no line fits, and nothing is handed over.
@@ -1471,7 +1492,7 @@ class TaskAgentManager:
             # commission (the second wording) is told, besides, what she
             # and the user said just before it: a session with something
             # in it has that to tell what the commission refers to.
-            excerpt_as_of = self._dropped_at(commission)
+            excerpt_as_of = self._times_dropped(commission)
             excerpt = self._excerpt(commission)
             onward = await self._opening(commission, cleared=False)
             anew = (
@@ -1571,18 +1592,24 @@ class TaskAgentManager:
                 # What was passed on while the failure was being written.
                 self._keep_unsent(session)
                 return False
-            if await stopped_meanwhile():
-                # The stop has closed the session already.
-                await self._close_session(session)
-                return False
-            while excerpt and self._dropped_at(commission) != excerpt_as_of:
+            while True:
+                if await stopped_meanwhile():
+                    # The stop has closed the session already.
+                    await self._close_session(session)
+                    return False
+                if not excerpt or self._times_dropped(commission) == excerpt_as_of:
+                    # (Nothing is awaited between this and the message
+                    # being sent: it is not stopped, and the session is
+                    # still its own, when it is.)
+                    break
                 # What is kept of the main dialogue was dropped while the
                 # session was being set up, which takes a while (NekoClaw
                 # went off; it may be on again by now). What was said
                 # before that is not handed over after it: the opening
-                # message is made again, without it. (Looked at once
-                # more after that, which waits for something as well.)
-                excerpt_as_of = self._dropped_at(commission)
+                # message is made again, without it. Making it waits for
+                # something, so whether the commission was stopped, and
+                # whether more was dropped, is looked at once more.
+                excerpt_as_of = self._times_dropped(commission)
                 excerpt = self._excerpt(commission)
                 anew = (
                     await self._opening(commission, cleared=True, excerpt=excerpt)
@@ -3331,6 +3358,9 @@ class TaskAgentManager:
                 return await future
             finally:
                 session.question, session.at_answer = None, None
+                if session.question_id == question["id"]:
+                    # (Not what a report asked meanwhile, should there be one.)
+                    session.question_id = ""
                 # Back to working only from waiting: a commission stopped, or
                 # failed (by shutting down, say) meanwhile, stays as it is.
                 await asyncio.shield(
