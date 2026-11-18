@@ -562,6 +562,27 @@ def test_such_text_is_the_same_text_with_spaces_around_what_a_sentence_puts_ther
     assert _digest("他说don't做") != _digest("他说dont做")
 
 
+def test_a_full_stop_that_begins_a_name_stays_whatever_stands_before_it():
+    # A name in backticks, quotation marks or brackets, right after a character of such text.
+    for spaced, unspaced in [
+        ("读取 `.env` 配置", "读取`.env`配置"),
+        ("读取 “.env” 配置", "读取“.env”配置"),
+        ("改 (.gitignore) 里的", "改(.gitignore)里的"),
+        ("看 ../lib 目录", "看../lib目录"),
+        ("看 `../lib` 目录", "看`../lib`目录"),
+        ("说明 (见 .gitignore) 里", "说明(见.gitignore)里"),
+    ]:
+        assert _digest(spaced) == _digest(unspaced), spaced
+    assert _normal("读取`.env`配置") == "读取.env配置"
+    # Another file than the one without the full stop.
+    assert _digest("读取`.env`配置") != _digest("读取`env`配置")
+    assert _digest("读取“.env”配置") != _digest("读取“env”配置")
+    # Marks before the full stop go as they would without it; between narrow characters they stay.
+    assert _normal("用abc`.env做") == "用abc`.env做"
+    # A full stop the sentence goes on after is still the sentence's, with marks around it or without.
+    assert _digest("完成”.然后") == _digest("完成 然后") and _digest("完成.”然后") == _digest("完成 然后")
+
+
 async def test_the_same_words_filed_again_add_nothing_and_are_counted(space, root, workdir, events):
     await space.submit(
         _commission(workdir), _lesson("Photo dates", "Use the EXIF date, not the file date.", "verified")
@@ -1314,7 +1335,7 @@ async def test_an_entry_whose_line_cannot_be_put_back_stays_expired_and_is_tried
     assert _index(root) == "- [Entry point](memory/entry-point.md) — The app starts in app.py.\n"
 
 
-async def test_an_entry_that_got_its_line_back_and_still_says_it_expired_is_finished_at_the_next_look(space, root, workdir, monkeypatch):
+async def test_an_entry_that_cannot_be_written_when_it_comes_back_gets_no_line_and_is_tried_again(space, root, workdir, monkeypatch):
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
     (workdir / "README.md").unlink()
@@ -1327,9 +1348,42 @@ async def test_an_entry_that_got_its_line_back_and_still_says_it_expired_is_fini
             raise PermissionError(13, "in use")
         return editing(self, path, change)
 
-    # The line is written, and then the entry itself cannot be.
+    # The line is written, and then the entry itself cannot be: the line is taken out again, since the
+    # entry still says it expired.
     monkeypatch.setattr(TaskAgentSpace, "_edit_text", held)
     assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert _head(_memory(root) / "entry-point.md")["status"] == "expired"
+    assert "(memory/entry-point.md)" not in _index(root)
+    # That it could not be written is told to whoever asked, with the line gone again all the same.
+    with pytest.raises(PermissionError):
+        await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False)
+    assert "(memory/entry-point.md)" not in _index(root)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", editing)
+    assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
+    assert "status" not in _head(_memory(root) / "entry-point.md")
+    assert _index(root).count("(memory/entry-point.md)") == 1
+
+
+async def test_an_entry_that_kept_its_line_and_still_says_it_expired_is_finished_at_the_next_look(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
+    editing = TaskAgentSpace._edit_text
+    edits: list[str] = []
+
+    def held(self: TaskAgentSpace, path: Path, change: Any) -> bool:
+        edits.append(path.name)
+        # The line is added; after that neither the entry can be written nor the line taken out again.
+        if path.name == "entry-point.md" or edits.count("MEMORY.md") > 1:
+            raise PermissionError(13, "in use")
+        return editing(self, path, change)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", held)
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert edits == ["MEMORY.md", "entry-point.md", "MEMORY.md"]
     assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and "(memory/entry-point.md)" in _index(root)
 
     monkeypatch.setattr(TaskAgentSpace, "_edit_text", editing)
@@ -2200,3 +2254,66 @@ async def test_a_note_that_waited_goes_in_as_what_it_was_said_to_be(space, root,
     # What waited was seen, and the entry says so, though what confirmed it was a guess.
     assert _head(_memory(root) / "camera-drive.md")["confidence"] == "observed"
 
+
+async def test_what_the_user_removed_from_a_project_does_not_come_back_with_a_commission_that_goes_there(space, root, workdir):
+    await space.touch_project("Budget app")
+    # The user removed two notes from the project: one is known by its text, the other by its title.
+    project = _commission(workdir, id="c9", project="Budget app")
+    await space.submit(project, _lesson("Camera drive", "It is E: here.", "verified"))
+    await space.submit(project, _lesson("Backups", "They are on the NAS.", "verified"))
+    await space.delete_entry("camera-drive", "Budget app")
+    await space.delete_entry("backups", "Budget app")
+    # A commission that was one of the daily ones filed the same, and something else.
+    await space.submit(_commission(workdir), _lesson("Where the camera is", "It is E: here.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Backups", "They moved to the cloud.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Checked", "It is so.", "verified"))
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # Only what the user did not remove there goes along. The rest stays where it was, listed as it was.
+    assert moved == ["checked"]
+    assert [entry.id for entry in await space.list_entries("Budget app")] == ["checked"]
+    assert sorted(entry.id for entry in await space.list_entries(DEFAULT_PROJECT)) == ["backups", "where-the-camera-is"]
+    assert "(memory/backups.md)" in _index(root) and "(memory/where-the-camera-is.md)" in _index(root)
+    assert "Camera" not in _index(root, "Budget app") and "Backups" not in _index(root, "Budget app")
+
+
+async def test_entries_go_with_their_commission_though_what_was_removed_there_cannot_be_read(space, root, workdir):
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir), _lesson("Checked", "It is so.", "verified"))
+    notes = root / "projects" / "Budget app" / "notes.json"
+    notes.parent.mkdir(parents=True, exist_ok=True)
+    notes.write_text("{ not json", encoding="utf-8")
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["checked"]
+    assert notes.read_text(encoding="utf-8") == "{ not json"
+
+
+async def test_a_note_whose_text_is_in_an_entry_still_confirms_what_waits_under_its_title(space, root, workdir, events):
+    # c1 guessed something under one title; c2 knows something else, under another.
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+    await space.submit(_commission(workdir, id="c2"), _lesson("Card reader", "The card shows up as a drive.", "verified"))
+
+    # c3 files what c2 said, under the title of what c1 guessed.
+    reply = await space.submit(_commission(workdir, id="c3"), _lesson("Camera drive", "The card shows up as a drive."))
+
+    # Its own text is there already and uses no place. Another commission has now filed under the title of
+    # the guess, so the guess waits no longer: it is in the entry the note was found in.
+    assert reply == "already in card-reader.md in project _daily; nothing was added"
+    assert _notes(root)["held"] == []
+    said = (_memory(root) / "card-reader.md").read_text(encoding="utf-8").split("---" + chr(10), 2)[2]
+    assert "It is probably E: here." in said and said.count("The card shows up as a drive.") == 1
+    head = _head(_memory(root) / "card-reader.md")
+    assert (head["seen"], head["seen_by"], head["sources"]) == ("3", "c2, c1, c3", "c2, c1, c3")
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["card-reader"]
+    assert space._added_by == {"c1": 1, "c2": 1}
+
+
+async def test_a_text_of_ones_own_that_is_in_an_entry_is_not_judged_again(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
+
+    # Filed again by the same commission as a guess: it is in effect already, and does not begin to wait.
+    reply = await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "inferred"))
+
+    assert reply == "already in camera-drive.md in project _daily; nothing was added"
+    assert _notes(root)["held"] == [] and _head(_memory(root) / "camera-drive.md")["confidence"] == "verified"

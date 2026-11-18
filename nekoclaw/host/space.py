@@ -466,28 +466,31 @@ def _wide(char: str) -> bool:
     return bool(char) and unicodedata.east_asian_width(char) in "WF"
 
 
-def _of_the_sentence(word: str, marks: re.Match[str]) -> bool:
-    """Whether a run of marks inside a word that has wide characters belongs to the sentence, not to the word.
+def _kept_of(word: str, marks: re.Match[str]) -> str:
+    """Return what stays of a run of marks inside a word that has wide characters: what belongs to the word.
 
-    It does when one of them is a mark of such text only, or when a wide
-    character stands right before or after the run: two clauses with a
-    comma between them are written without a space. Between narrow
-    characters the run is part of what is written there, a call or a
-    key and its value, and stays.
+    The run belongs to the sentence, and goes, when one of its marks is
+    a mark of such text only, or when a wide character stands right
+    before or after it: two clauses with a comma between them are
+    written without a space. Between narrow characters the run is part
+    of what is written there, a call or a key and its value, and stays.
 
-    A full stop ends what stands before it, so it is the sentence's
-    only with a wide character after it. With a narrow one after it, it
-    begins a name (``.env``) or stands inside one (``app.py``), whatever
-    stands before.
+    The full stops a run ends with stay when a narrow character follows
+    them, whatever else the run holds and whatever stands before it:
+    there they begin a name (``.env``, ``../lib``) or stand inside one
+    (``app.py``). A full stop ends what stands before it, so it is the
+    sentence's only where the sentence goes on after it.
     """
     run = marks.group()
-    if any(char in _MARKS_OF_UNSPACED for char in run):
-        return True
     before = word[marks.start() - 1] if marks.start() else ""
     after = word[marks.end()] if marks.end() < len(word) else ""
-    if set(run) == {"."}:
-        return _wide(after)
-    return _wide(before) or _wide(after)
+    stops = ""
+    if after and not _wide(after):
+        rest = run.rstrip(".")
+        run, stops = rest, run[len(rest) :]
+    if any(char in _MARKS_OF_UNSPACED for char in run) or _wide(before) or _wide(after):
+        return stops
+    return run + stops
 
 
 def _normal(text: Any) -> str:
@@ -500,7 +503,7 @@ def _normal(text: Any) -> str:
     not ``310``, and ``>=`` is not ``<=``. In text that puts no spaces
     between words, the marks of a sentence are inside what reads as one
     word, and go as well; a mark that code is written with stays where
-    it stands between narrow characters (``_of_the_sentence``).
+    it stands between narrow characters (``_kept_of``).
     """
     folded = unicodedata.normalize("NFKC", str(text or "")).casefold()
     words: list[str] = []
@@ -508,9 +511,7 @@ def _normal(text: Any) -> str:
         word = "".join(char for char in word if unicodedata.category(char)[0] != "C")
         word = word.lstrip(_WORD_OPENERS).rstrip(_WORD_CLOSERS)
         if any(_wide(char) for char in word):
-            word = _MARKS_INSIDE_UNSPACED.sub(
-                lambda marks, word=word: "" if _of_the_sentence(word, marks) else marks.group(), word
-            )
+            word = _MARKS_INSIDE_UNSPACED.sub(lambda marks, word=word: _kept_of(word, marks), word)
         if word:
             words.append(word)
     return "".join(words)
@@ -808,6 +809,24 @@ def _set_evidence(document: _Document, paths: list[str]) -> None:
         document.set("evidence", json.dumps(paths, ensure_ascii=False))
     else:
         document.drop("evidence")
+
+
+def _removed_there(removed: Iterable[dict[str, Any]], text: str | None, title: str) -> bool:
+    """Whether an entry is one the user removed, going by the records of what was removed from a layer.
+
+    By any of the texts it holds, or by its title, as a note that is
+    filed is told to be one (``_take_note``). An entry that cannot be
+    read is told by its title alone.
+    """
+    marks: set[str] = set()
+    if text is not None:
+        document = _parse_document(text)
+        marks = set(_listed(document, "texts") or [_digest(document.body)])
+    name = _normal(title)
+    for item in removed:
+        if marks & set(_strings(item.get("marks"))) or (name and _normal(item.get("title")) == name):
+            return True
+    return False
 
 
 def _known_of_held(item: dict[str, Any], *, observer: str | None, seen_before: Iterable[str]) -> _Known:
@@ -1811,7 +1830,9 @@ class TaskAgentSpace:
         ``NoteRemoved``.
 
         When a note that waited is seen again by another commission, what
-        waited becomes an entry and what was filed now is added to it.
+        waited becomes an entry and what was filed now is added to it. So
+        it is when what is filed now is in an entry already: its text adds
+        nothing, and what waited under its title still goes in.
 
         The outcome says whether the note used one of the places its
         commission has (``charged``). With ``may_use_place`` False a note
@@ -1886,38 +1907,15 @@ class TaskAgentSpace:
         # that waited and is filed again.
         paid = own is not None and bool(observer) and observer in _strings(own.get("seen_by"))
         there = same is not None and has_text
-
-        if same is not None and has_text and same.status == ENTRY_ACTIVE:
-            # There already, and in effect: nothing is added but what is
-            # known of it. Unless the text was taken out of the entry since
-            # it was looked at a moment ago (the user, in an editor). Then
-            # it is added again, and that is told as what it is and uses a
-            # place like any other addition; with none left nothing is
-            # written, and what waits goes on waiting.
-            still_waits = False
-            try:
-                entry, how = self._file_entry(
-                    project,
-                    title=title,
-                    content=content,
-                    kind=note.kind,
-                    source=note.source,
-                    into=same,
-                    known=known,
-                    may_add=may_use_place or paid,
-                )
-            except _NoPlace:
-                still_waits = True
-                raise
-            except _LineNotAdded as exc:
-                raise _LineNotAdded(exc.entry, exc.how, charged=exc.how != _THERE and not paid) from exc
-            finally:
-                if own is not None and not still_waits:
-                    self._drop_held(notes_path, [mark])
-            return _Taken(entry, how, counted=entry.seen > same.seen, charged=how != _THERE and not paid)
+        # A text that an entry in effect has is in effect: there is nothing
+        # to judge. What is known of it is added to the entry, and what
+        # waited under its title in other words is confirmed by it like by
+        # any other note of that title.
+        settled = same is not None and has_text and same.status == ENTRY_ACTIVE
 
         in_effect = (
-            known.confidence == VERIFIED
+            settled
+            or known.confidence == VERIFIED
             or (known.confidence == OBSERVED and bool(known.evidence))
             or seen >= SPACE_SEEN_TO_TAKE_EFFECT
         )
@@ -1998,7 +1996,10 @@ class TaskAgentSpace:
         except _LineNotAdded as exc:
             entry, how, unlisted = exc.entry, exc.how, exc
         # As it turned out: a text that was in the entry when it was looked
-        # at, and was taken out before this was written, was added again.
+        # at, and was taken out before this was written (the user, in an
+        # editor), was added again. That is told as what it is and uses a
+        # place like any other addition; with none left it is not written
+        # (``may_add``), and what waits of it goes on waiting.
         charged = charged or (how != _THERE and not paid)
         if own is not None:
             self._drop_held(notes_path, [mark])
@@ -2338,7 +2339,8 @@ class TaskAgentSpace:
         project's index would not have it. ``also`` are the commissions of
         the task agents it started: what they filed is its own. An entry
         other commissions added to stays where it is, and so does every
-        entry of theirs.
+        entry of theirs, and one the user removed from where it would go
+        (by a text of it or by its title, as ``_take_note`` tells).
         The files are moved as they are, each under a name that is free,
         and so are their lines in the index: a line the user reworded goes
         along as it is, but for the file it points at. Raises OSError, with
@@ -2355,10 +2357,23 @@ class TaskAgentSpace:
             self._text_to_change(paths.index(source))
             moved: list[str] = []
             own = {commission_id, *also}
+            try:
+                removed = self._notes(paths.notes_file(target))["removed"]
+            except OSError:
+                # What was removed there cannot be told: the entries go
+                # along, as a note that takes effect is kept then.
+                logger.warning("what was removed from a project cannot be read; entries go there unchecked", exc_info=True)
+                removed = []
             for entry in self._entries(origin, source):
                 if not entry.sources or not set(entry.sources) <= own:
                     continue
                 old = origin / f"{entry.id}.md"
+                if removed and _removed_there(removed, self._read_text(old), entry.title):
+                    # The user removed this note from the project it would
+                    # go to, and it is not kept there again: it stays
+                    # where it is, which is a place they did not remove
+                    # it from.
+                    continue
                 name = self._free_name(destination, entry.id)
                 # Written where it goes before it is removed where it was,
                 # and removed there only as the file that was copied: one
@@ -2893,13 +2908,23 @@ class TaskAgentSpace:
             return False
         line = _index_line(document.get("name") or path.stem, target, document.get("description"))
         self._index_add(paths.index(project), line, target)
-        changed = self._edit_text(path, change)
+        try:
+            changed = self._edit_text(path, change)
+        except OSError:
+            # The entry could not be written: it still says it expired, and
+            # an entry that expired has no line. The line goes again, as
+            # far as that can be done; the next look tries anew, and finds
+            # the line there or not.
+            try:
+                self._index_remove(paths.index(project), target)
+            except OSError:
+                logger.warning("the line of an entry that could not be brought back could not be taken out", exc_info=True)
+            raise
         if not (still and still[0]):
             # Its files could not be seen to be there after all (the disk
             # they are on went at this very moment): it still says it
-            # expired, and an entry that expired has no line. While its
-            # files cannot be looked at nothing else would take the line
-            # out again.
+            # expired, and gets no line. While its files cannot be looked
+            # at nothing else would take the line out again.
             self._index_remove(paths.index(project), target)
         return changed
 
