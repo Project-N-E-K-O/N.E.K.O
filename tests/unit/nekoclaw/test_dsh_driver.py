@@ -2311,45 +2311,93 @@ async def test_what_a_turn_that_failed_began_with_is_told_of_once_when_an_answer
     assert said() == [(1, True), (3, True), (2, True)]
 
 
-async def test_a_call_that_is_handed_nothing_leaves_no_answer_to_hear_of(
-    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from config import nekoclaw_settings
+async def _handed_nothing(tmp_path: Path, dsh: Any, how: str, then: str) -> tuple[Any, Any, Path, list[Any]]:
+    """A session whose turn is held open, and a call of that turn that was handed nothing; with whom to tell how its answer fared.
+
+    ``how``: "woken" with nothing left for it (another call took what arrived, say), or
+    "waited out" (its time ran out). ``then`` is what the turn does once it is let go.
+    """
     from nekoclaw.dsh.host_tools import ON_ANSWERED
 
-    monkeypatch.setattr(nekoclaw_settings, "DSH_ANSWER_SETTLE_SECONDS", 0.05)
     host, _calls = _host()
     driver = dsh(host)
     await driver.started(make_spec(tmp_path))
     runtime = driver.runtime
     session = runtime._sessions["s1"]
     go = tmp_path / "go"
-    await runtime.prompt("s1", f"!until {go}\n!say went on")
+    await runtime.prompt("s1", f"!until {go}\n{then}")
     await _until(lambda: len(driver.record("session/prompt")) == 1, "the turn being with dsh")
+    told: list[Any] = []
+    marked = ON_ANSWERED.set(told)
     try:
-        told: list[Any] = []
-        marked = ON_ANSWERED.set(told)
-        try:
-            # One call of the turn waits and is woken with nothing left for it (another call
-            # took what arrived, say); another waits until its time is up.
+        if how == "woken":
             waiting = asyncio.ensure_future(runtime._take_input(session, 5.0))
             await _until(lambda: not session.arrived.is_set(), "the call waiting")
             session.arrived.set()
             assert await waiting == []
+        else:
             assert await runtime._take_input(session, 0.01) == []
-        finally:
-            ON_ANSWERED.reset(marked)
+    finally:
+        ON_ANSWERED.reset(marked)
+    # Heard of like any other answer, though it carries no text.
+    assert len(told) == 1 and session.awaited == []
+    return driver, session, go, told
+
+
+@pytest.mark.parametrize("how", ["woken", "waited out"])
+async def test_an_answer_with_no_text_in_it_that_went_nowhere_queues_nothing_again(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    from config import nekoclaw_settings
+
+    monkeypatch.setattr(nekoclaw_settings, "DSH_ANSWER_SETTLE_SECONDS", 0.05)
+    driver, session, go, told = await _handed_nothing(tmp_path, dsh, how, "!say went on")
+    go.write_text("", encoding="utf-8")
+    ended = await driver.events.wait_ended("s1")
+    # How it fared is not known as the turn ends; there is no text of it to name as open.
+    assert ended["reason"] == "completed" and ended["open_inputs"] == [] and len(session.unsettled) == 1
+
+    # It went nowhere, which is heard of with the run over. There is nothing to queue again:
+    # no run is begun for it (one would end at once with nothing done, and say so).
+    told[0](False)
+    await asyncio.sleep(0.2)
+    assert not session.unsettled and session.queue == [] and session.run is None
+    assert len(driver.events.of("ended")) == 1 and len(driver.record("session/prompt")) == 1
+
+
+@pytest.mark.parametrize("how", ["woken", "waited out"])
+@pytest.mark.parametrize("fared", ["early", "late", "nowhere"])
+async def test_an_answer_with_no_text_in_it_shows_as_well_that_dsh_had_begun_a_turn_that_failed(
+    tmp_path: Path, dsh, fared: str, how: str
+) -> None:
+    driver, session, go, told = await _handed_nothing(tmp_path, dsh, how, "!fail the model gave out")
+    try:
+        if fared == "early":
+            # Its answer got to dsh before the turn failed.
+            told[0](True)
     finally:
         go.write_text("", encoding="utf-8")
     ended = await driver.events.wait_ended("s1")
+    assert ended["reason"] == "error"
 
-    # Neither carried a text: there is nothing to tell of or to queue again, and nobody is to
-    # say how the answer fared. (Kept, one that went nowhere would begin a run with nothing
-    # to do, whose end would be announced.)
-    assert told == [] and session.answering == [] and not session.unsettled
-    assert ended["reason"] == "completed" and ended["open_inputs"] == []
+    def said() -> list[tuple[int, bool]]:
+        return [(event["inputs"], event["late"]) for event in driver.events.of("taken")]
+
+    if fared == "early":
+        # dsh made a call during the turn and had its answer: it had begun the turn, and
+        # what the turn began with is in its conversation, though the call carried no text.
+        assert said() == [(1, False)] and ended["open_inputs"] == []
+        return
+    # Not known as the turn fails: what the turn began with is open.
+    assert said() == [] and ended["open_inputs"] == [1]
+    told[0](fared == "late")
     await asyncio.sleep(0.2)
-    assert len(driver.events.of("ended")) == 1 and session.run is None
+    # Heard after the turn failed that the answer got there, the same holds. Heard that it
+    # went nowhere, it shows nothing: what the turn began with is not told of, and no run is
+    # begun for an answer that carried no text.
+    assert said() == ([(1, True)] if fared == "late" else [])
+    assert not session.unsettled and session.run is None
+    assert len(driver.events.of("ended")) == 1 and len(driver.record("session/prompt")) == 1
 
 
 async def test_what_a_run_left_open_whose_stop_dsh_answered_with_an_error_is_not_queued_again(

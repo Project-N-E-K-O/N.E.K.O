@@ -1141,26 +1141,25 @@ class DshRuntime:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""
         # The run the call belongs to: the one under way as it is made.
         of_run = session.runs if session.run is not None else None
+        waited_out = False
         if not session.queue:
             session.arrived.clear()
             try:
                 await asyncio.wait_for(session.arrived.wait(), max(0.0, seconds))
             except asyncio.TimeoutError:
-                return []
+                waited_out = True
         if of_run is None or session.runs != of_run or session.run is None or session.aborting:
             # Its run is over, or is being stopped, and dsh has not called
             # the call off yet. What is queued by now starts the next run,
             # or is that run's: handed to this call, it would go nowhere,
             # and the end of that run's turn would tell of it as taken.
             return []
-        texts, session.queue = session.queue, []
-        if not texts:
-            # Woken with nothing left for it (another call of the turn took
-            # what arrived). Like a call whose time ran out, it leaves no
-            # answer to hear of: there is nothing to tell of or to queue
-            # again, and an answer with no text in it that went nowhere
-            # would begin a run with nothing to do.
-            return []
+        # With nothing in it where the call's time ran out, or where it was
+        # woken with nothing left for it (another call of the turn took
+        # what arrived).
+        texts: list[str] = []
+        if not waited_out:
+            texts, session.queue = session.queue, []
         numbers = _numbers_of(texts)
         session.taken = max([session.taken, *numbers])
         # They go back as the result of a call dsh made. Whether dsh took
@@ -1174,7 +1173,10 @@ class DshRuntime:
             # The end of the turn waits for that (``_run``): where it did
             # not (dsh hung up on this one call, and its turn goes on),
             # they are queued again, ahead of what came since, and are not
-            # told of as taken.
+            # told of as taken. An answer with no text in it is heard of
+            # too, for what it shows where it gets there: that dsh is at
+            # work on the turn (``_answers_known``). There is nothing of
+            # it to queue again.
             outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             session.answering.append((outcome, numbers))
             on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered))
@@ -1235,10 +1237,10 @@ class DshRuntime:
     def _answers_known(self, session: _Session, began: list[int] | None = None) -> bool:
         """Leave of what a turn's calls were handed (``awaited``) the texts dsh is known to have; stop waiting for the rest.
 
-        Returns whether an answer that carried a text is known to have
-        got to dsh: dsh was at work on the turn then. (A call that was
-        handed nothing leaves no answer to hear of, and says nothing
-        either way.)
+        Returns whether the answer of any call of the turn is known to
+        have got to dsh, with a text in it or with none (a call whose
+        time ran out, or that was woken with nothing left for it): dsh
+        was at work on the turn then.
 
         Each text by the answer that carried it last: one whose answer
         went nowhere was queued again, and a later call of the turn may
@@ -1270,6 +1272,11 @@ class DshRuntime:
         (``_answered``): they were not told of as taken, and go with a
         turn that is under way or begin one.
         """
+        if not texts:
+            # The answer carried none: nothing to queue again, and no run
+            # to begin for it (one would end at once, with nothing done,
+            # and its end would be announced).
+            return
         if self._sessions.get(session.id) is not session or session.closing is not None:
             return
         if self._shutdowns:
@@ -1348,10 +1355,10 @@ class DshRuntime:
                         # its calls were handed and dsh is known to have
                         # (the answer got there) is in its conversation,
                         # and is told of as taken. With what the turn
-                        # began with, where a call of it was handed a
-                        # text and its answer got there: the turn was
-                        # under way by then, and not refused at the door.
-                        # An answer still on its way is not
+                        # began with, where a call of it was answered
+                        # (with a text or with none): the turn was under
+                        # way by then, and not refused at the door. An
+                        # answer still on its way is not
                         # waited for, here or at the end of a later turn,
                         # and is dealt with when it is known: where it
                         # got there, that shows the same of what the turn
