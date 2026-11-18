@@ -422,9 +422,11 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
     assert detector.replace_speaker_verifier.await_count == (
         1 + runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
     )
-    # Every step, the swaps and the reset alike, waited with the patched limit.
-    assert len(step_timeouts) >= 1 + runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
-    assert set(step_timeouts) == {0.02}
+    # Every step waited with the patched limit, and none went unbounded: the
+    # detach, the reset, each reinstall and each shadow close add one entry,
+    # so a step awaited without ``wait_for`` shortens the list.
+    attempts = runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
+    assert step_timeouts == [0.02] * (2 + 2 * attempts)
     assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
     assert runtime._speaker_verifier_degraded
     assert runtime._asr_candidate_rejection is None

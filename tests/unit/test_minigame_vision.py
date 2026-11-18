@@ -221,9 +221,17 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
             return
         await asyncio.wait_for(entered.wait(), 10)  # Hang guards below, not speed checks.
         if mode == "timeout":
+            # Just short of the configured 30 s the request is still running
+            # (it can only be early here, never late), and just past it the
+            # route has to give up: a deadline other than the configured one
+            # either ends it early or leaves it hanging into the guard below.
             loop = asyncio.get_running_loop()
             real_time = loop.time
-            monkeypatch.setattr(loop, "time", lambda: real_time() + 60.0)
+            shift = [29.0]
+            monkeypatch.setattr(loop, "time", lambda: real_time() + shift[0])
+            await asyncio.sleep(0.25)  # A few 0.1 s polls of the route.
+            assert not task.done()
+            shift[0] = 31.0
         if mode == "superseded":
             # Same textual identity cannot revive a response from another state object.
             current[0] = dict(state)

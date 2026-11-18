@@ -80,6 +80,16 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
             return deadline
 
         monkeypatch.setattr(manager, "_current_start_deadline", start_deadline_seen_by_tts)
+        # Record the deadline the TTS wait is actually given, against the real
+        # startup deadline at that moment.
+        tts_deadlines = []
+        real_ensure = manager.ensure_tts_pipeline_alive
+
+        async def ensure_tts_pipeline_alive(*args, **kwargs):
+            tts_deadlines.append((kwargs.get("deadline"), real_start_deadline()))
+            return await real_ensure(*args, **kwargs)
+
+        monkeypatch.setattr(manager, "ensure_tts_pipeline_alive", ensure_tts_pipeline_alive)
     starting = asyncio.create_task(manager.start_session(
         socket, request_id="tts-fallback",
         # The waits below are hang guards.
@@ -122,6 +132,12 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
         else:
             assert workers == ["configured"]
             assert len(started) == 1 and not failed
+            if outcome == "timeout":
+                # The TTS wait used the injected deadline (2 s early, less its
+                # own 0.1 s tail), not one of its own making.
+                assert tts_deadlines
+                for given, real in tts_deadlines:
+                    assert abs(given - (real - 2.1)) < 1e-6
             assert manager._live_tts_runtime_count() == 1
             assert not old.cleanup_task.cancelled()
         assert manager.session_start_failure_count == 0

@@ -320,14 +320,30 @@ async def test_execution_timeout_is_reported_before_late_score_finishes() -> Non
     # real-time queue timer out of the way; only 10 ms are left to execute.
     now = [0.0]
     scheduler = _scheduler(backend, deadline_seconds=30.0, clock=lambda: now[0])
+    # Record the timeout the execution wait is given: what is left of the
+    # injected deadline (10 ms), not the full nominal 30 s.
+    import sys
+    from main_logic.voice_identity_service.prewire_gate import scheduler as scheduler_module
+
+    waits = []
+    real_wait = asyncio.wait
+
+    def spy_wait(aws, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+        if sys._getframe(1).f_globals is scheduler_module.__dict__:
+            waits.append(timeout)
+        return real_wait(aws, timeout=timeout, return_when=return_when)
+
     try:
         receipt = scheduler.submit(_request("timeout"))
         now[0] = 30.0 - 0.01
+        asyncio.wait = spy_wait
 
         result = await scheduler.await_result(receipt)
         assert result.status is ScoreResultStatus.TIMED_OUT
         assert result.error_code == "execution_deadline_expired"
+        assert waits and all(abs(timeout - 0.01) < 1e-6 for timeout in waits)
     finally:
+        asyncio.wait = real_wait
         backend.release.set()
         await scheduler.close()
 

@@ -316,7 +316,8 @@ async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch)
         await _recover(runtime, guard=10)
         assert close_entered.is_set()
         covering = [scope["delay"] for scope in scopes if scope["close_inside"]]
-        assert covering and all(delay <= 0.03 for delay in covering)
+        # 1 us of slack for float rounding of deadline - now on a coarse clock.
+        assert covering and all(delay <= 0.03 + 1e-6 for delay in covering)
         assert len(callbacks) == 1
         assert runtime._asr_recovery_budget.attempts_used == 0
         observers["on_failure"].assert_awaited_once()
