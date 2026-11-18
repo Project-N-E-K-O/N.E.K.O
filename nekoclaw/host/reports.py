@@ -341,19 +341,27 @@ class Reporter:
         return await self._add(commission, KIND_RECEIPT, payload)
 
     async def note(self, lanlan_name: str, *, about: str, text: str, commission: Commission | None = None) -> int:
-        """Tell her something that needs no answer and is nobody's trouble: it comes along with her next turn.
+        """Show the user something of the host itself, as it is written: on the HUD, and to no model.
 
-        Never wakes her, so it costs no model call of its own; the text is
-        in what she reads on her next turn, once. Not tied to a commission
-        in what she is sent: it is about the host, and is not to be put
-        together with what a commission's own lines say.
+        For what is about how NekoClaw is set (the context length a model
+        is counted with, say), which the user is to know and no model has
+        any use for: she is not told, so it is in nobody's context, costs
+        no model call and no token, and is not worded anew. ``text`` is
+        written for the user to read as it stands.
+
+        Not tied to a commission in what is sent: it is about the host.
+        Shown once, where a front end is connected then; what it says is
+        on record wherever the host keeps it, for a screen to show later.
         """
         payload = {
             "lanlan_name": lanlan_name,
             "task_id": None,
             "receipt": about,
             "text": text,
-            "delivery_mode": "passive",
+            # Not into her context, and shown on the HUD (``send_report``
+            # of the agent server reads both).
+            "delivery_mode": "silent",
+            "visibility": ["hud"],
         }
         return await self._add(commission, KIND_RECEIPT, payload)
 

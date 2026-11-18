@@ -762,9 +762,11 @@ async def test_the_user_is_told_once_that_a_model_takes_less_context_than_was_as
     await host.task_agents._handle(learned)
 
     (note,) = (await outbox(host))[before:]
-    # Said to her, along with her next turn: nothing wakes her, and no model is called for it.
+    # Shown to the user on the HUD as it is written, and said to no model: it is about how
+    # NekoClaw is set, which she has no use for. Nothing is put into her context.
     assert note.kind == "receipt"
-    assert note.payload["delivery_mode"] == "passive" and note.payload["receipt"] == "context_window"
+    assert note.payload["delivery_mode"] == "silent" and note.payload["visibility"] == ["hud"]
+    assert note.payload["receipt"] == "context_window"
     assert note.payload["lanlan_name"] == "Lan" and note.payload["task_id"] is None
     # In the language of the commission, with the model and both numbers; and it names no
     # place to set the number in, there being none yet.
@@ -853,8 +855,10 @@ def test_the_reminder_is_there_in_every_language_and_is_short() -> None:
     for lang, text in texts.items():
         said = text.format(model="some-model", was=200_000, window=131_072)
         assert "some-model" in said and "200000" in said and "131072" in said, lang
-        # What it costs her next turn, once for a model.
+        # Short enough to be read on the HUD. (It is in no model's context.)
         assert count_tokens(said) <= 130, (lang, count_tokens(said))
+        # Written for the user to read as it stands, not for someone to pass on.
+        assert "用户" not in said and "使用者" not in said and "the user" not in said.lower(), lang
 
 
 async def test_that_a_sessions_conversation_was_summed_up_is_on_record_with_the_session(hosts, tmp_path):

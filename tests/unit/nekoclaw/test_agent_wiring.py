@@ -990,6 +990,37 @@ async def test_a_sentence_for_her_goes_out_as_a_message_from_the_system(wiring, 
     assert event["coalesce_key"] == f"nekoclaw:{kind}:c1"
 
 
+@pytest.mark.parametrize(
+    "said, shown",
+    [
+        (["hud"], ["hud"]),
+        # Only the HUD: nothing NekoClaw writes is rendered as a chat bubble of hers.
+        (["chat", "hud"], ["hud"]),
+        (["chat"], []),
+        (None, []),
+    ],
+)
+async def test_what_nekoclaw_tells_the_user_of_itself_is_shown_on_the_hud_and_said_to_no_model(wiring, said, shown):
+    payload = {
+        "lanlan_name": "Lan",
+        "task_id": None,
+        "receipt": "context_window",
+        "text": "The model takes less context than was assumed.",
+        "delivery_mode": "silent",
+        **({"visibility": said} if said is not None else {}),
+    }
+
+    sent = await wiring.mount_module.send_report(_item("receipt", payload))
+
+    assert sent is True
+    (event,) = wiring.events
+    assert event["event_type"] == "proactive_message"
+    # Silent: the main server puts it into no model's context, and still fires the HUD.
+    assert event["delivery_mode"] == "silent"
+    assert event["visibility"] == shown
+    assert event["text"] == "The model takes less context than was assumed."
+
+
 async def test_a_row_with_nothing_to_say_is_done_with_and_not_sent(wiring):
     sent = await wiring.mount_module.send_report(_item("correction", {"lanlan_name": "Lan", "text": "  "}))
 
