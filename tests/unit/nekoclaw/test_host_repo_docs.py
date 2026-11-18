@@ -832,9 +832,12 @@ async def test_a_look_for_the_list_that_does_not_come_back_does_not_keep_a_task_
 async def test_a_task_agent_starts_without_the_list_when_no_thread_can_be_started_to_look_for_it(hosts, tmp_path, monkeypatch):
     root = _repository(tmp_path, {"AGENTS.md": "a"})
 
+    tried: list[str] = []
+
     def no_thread(work: Any, *, name: str) -> Any:
         from nekoclaw.host.detached import NoThread
 
+        tried.append(name)
         raise NoThread("can't start new thread")
 
     monkeypatch.setattr("nekoclaw.host.detached.run_detached", no_thread)
@@ -845,7 +848,8 @@ async def test_a_task_agent_starts_without_the_list_when_no_thread_can_be_starte
     receipt = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
     done = await wait_status(host, receipt.commission_id, "done")
 
-    # The commission is not failed for it, and no look is counted as under way.
+    # The look was tried, once. The commission is not failed for it, and no look is counted as under way.
+    assert tried == ["nekoclaw-repo-documents"]
     assert done.status == "done" and "Files written for agents" not in _opening(llm)
     assert host.task_agents._document_scans == 0
 

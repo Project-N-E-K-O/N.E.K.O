@@ -851,38 +851,55 @@ def _place_of(path: str) -> str:
 
 
 class _Question:
-    """A question to the file system that may never be answered; see ``_asked``."""
+    """A question to the file system that may never be answered; see ``_asked``.
 
-    __slots__ = ("places", "answered", "given_up")
+    ``places`` is where the files it is about are; ``at`` the ones of
+    those places it is asked about at this moment, which is all of them
+    unless whoever asks says otherwise as it goes.
+    """
+
+    __slots__ = ("places", "at", "answered", "given_up")
 
     def __init__(self, places: Iterable[str]) -> None:
         self.places = frozenset(places)
+        self.at = self.places
         self.answered = False
         self.given_up = False
 
 
-# The questions to the file system that were given up on and are not answered
-# yet (``_asked``), and the lock they are counted under.
+# The questions to the file system that are out: asked, and not answered yet
+# (``_asked``). ``given_up`` marks the ones nobody waits for any more. And the
+# lock they are counted under.
 _ASKING = threading.Lock()
-_GIVEN_UP: set[_Question] = set()
+_OUT: set[_Question] = set()
+
+
+def _places_out() -> set[str]:
+    """Return the places a question that was given up on is at: nothing is asked about them until it is answered."""
+    with _ASKING:
+        return {place for other in _OUT if other.given_up for place in other.at}
 
 
 def _question(places: Iterable[str]) -> _Question:
-    """Return a question about ``places`` that may be asked. Raises TimeoutError when it may not; see ``_asked``."""
+    """Return a question about ``places`` that may be asked, counted as out. Raises TimeoutError when it may not; see ``_asked``."""
     from config.nekoclaw_settings import SPACE_EVIDENCE_ASKED_AT_ONCE
 
     question = _Question(places)
     with _ASKING:
-        if any(question.places & other.places for other in _GIVEN_UP):
+        if any(other.given_up and question.places & other.at for other in _OUT):
             raise TimeoutError("a question about that place is still unanswered")
-        full = len(_GIVEN_UP) >= SPACE_EVIDENCE_ASKED_AT_ONCE
+        full = len(_OUT) >= SPACE_EVIDENCE_ASKED_AT_ONCE
+        if not full:
+            # Counted before its thread is started, under the lock it was
+            # looked at with: two that begin at one moment are two.
+            _OUT.add(question)
     if full:
         logger.warning(
-            "%d questions to the file system are unanswered, which is as many as may be: nothing is known of the "
-            "files notes rest on until one of them is answered",
+            "%d questions to the file system are out, which is as many as may be: nothing is known of the files "
+            "notes rest on until one of them is answered",
             SPACE_EVIDENCE_ASKED_AT_ONCE,
         )
-        raise TimeoutError("too many questions to the file system are unanswered")
+        raise TimeoutError("too many questions to the file system are out")
     return question
 
 
@@ -893,19 +910,27 @@ def _asking(question: _Question, look: Callable[[], T]) -> Callable[[], T]:
         try:
             return look()
         finally:
-            with _ASKING:
-                question.answered = True
-                _GIVEN_UP.discard(question)
+            _answered(question)
 
     return answered
 
 
+def _answered(question: _Question) -> None:
+    """Take a question off the count: it was answered, or no thread could be started to ask it in."""
+    with _ASKING:
+        question.answered = True
+        _OUT.discard(question)
+
+
 def _give_up(question: _Question) -> None:
-    """Count a question as out, unless it was answered at that very moment."""
+    """Mark a question as one nobody waits for any more, unless it was answered at that very moment.
+
+    It stays out, and counted, until its thread comes back: giving up
+    ends the wait, not the question.
+    """
     with _ASKING:
         if not question.answered:
             question.given_up = True
-            _GIVEN_UP.add(question)
 
 
 def _asked(places: Iterable[str], look: Callable[[], T]) -> T:
@@ -919,13 +944,14 @@ def _asked(places: Iterable[str], look: Callable[[], T]) -> T:
     there is no answer by then; the thread ends when there is one.
 
     ``places`` is where the files are (``_place_of``). While a question
-    that was given up on is out, none is asked about any of its places:
-    TimeoutError at once, so that one share that does not answer costs
-    one thread, and the files elsewhere are still told about. With
-    ``SPACE_EVIDENCE_ASKED_AT_ONCE`` questions out none is asked about
-    any place, until one of them is answered (which, for a share that
-    never answers, is when the host is started again): that is logged.
-    TimeoutError as well when no thread can be started to ask in.
+    that was given up on is out, none is asked about the place it is
+    at: TimeoutError at once, so that one share that does not answer
+    costs one thread, and the files elsewhere are still told about. With
+    ``SPACE_EVIDENCE_ASKED_AT_ONCE`` questions out, given up on or not,
+    none is asked about any place until one of them is answered (which,
+    for a share that never answers, is when the host is started again):
+    that is logged. TimeoutError as well when no thread can be started
+    to ask in.
     """
     from config.nekoclaw_settings import SPACE_EVIDENCE_ASK_SECONDS
     from nekoclaw.host.detached import NoThread, wait_detached
@@ -937,18 +963,33 @@ def _asked(places: Iterable[str], look: Callable[[], T]) -> T:
         _give_up(question)
         raise
     except NoThread:
+        _answered(question)
         raise TimeoutError("the file system could not be asked") from None
 
 
-async def _asked_off_the_loop(places: Iterable[str], look: Callable[[], T]) -> T:
-    """``_asked`` for the event loop, where nothing is held while it waits: for ``SPACE_EVIDENCE_BEFORE_SECONDS``."""
+async def _asked_off_the_loop(places: Iterable[str], look: Callable[[Callable[[Iterable[str]], None]], T]) -> T:
+    """``_asked`` for the event loop, where nothing is held while it waits: for ``SPACE_EVIDENCE_BEFORE_SECONDS``.
+
+    One question may be about files in several places. ``look`` is
+    handed what it says where it is with, as it goes from one to the
+    next: given up on, the question is out for the place it is at, and
+    the others are still asked about (a share that does not answer
+    does not have the files of the working directory pass for
+    unanswered).
+    """
     from config.nekoclaw_settings import SPACE_EVIDENCE_BEFORE_SECONDS
     from nekoclaw.host.detached import NoThread, run_detached
 
     question = _question(places)
+
+    def at(now: Iterable[str]) -> None:
+        with _ASKING:
+            question.at = frozenset(now)
+
     try:
-        asking = run_detached(_asking(question, look), name="nekoclaw-space-file")
+        asking = run_detached(_asking(question, lambda: look(at)), name="nekoclaw-space-file")
     except NoThread:
+        _answered(question)
         raise TimeoutError("the file system could not be asked") from None
     # Looked at here when nobody waits for it any more.
     asking.add_done_callback(lambda done: done.cancelled() or done.exception())
@@ -1577,16 +1618,39 @@ class TaskAgentSpace:
         if not named:
             # No file is named: there is nothing to ask.
             return asked, ([], [], [])
-        places = {*(_place_of(root) for root in roots), *(_place_of(item.strip()) for item in named if os.path.isabs(item.strip()))}
+        from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS
 
-        def look() -> tuple[list[str], list[tuple[str, str]], list[str]]:
-            counted, others = evidence_of(raw, roots, looked_at=looked_at, outside=asked)
-            return counted, others, _outside_of(counted, roots)
+        inside = {_place_of(root) for root in roots}
+        first = named[: looked_at or SPACE_EVIDENCE_MAX_PATHS]
+        out = _places_out()
+        # A file in a place that does not answer is not looked for; the
+        # others are, and count as ever. (Where the work itself was done
+        # does not answer, none can be: the question is not asked.)
+        unasked = [item for item in first if os.path.isabs(item.strip()) and _place_of(item.strip()) in out]
+        wanted = [item for item in first if item not in unasked]
+        unseen = _not_looked_at(unasked, len(unasked)) if unasked else []
+        if not wanted:
+            return asked, ([], unseen, [])
+        places = {*inside, *(_place_of(item.strip()) for item in wanted if os.path.isabs(item.strip()))}
+
+        def look(at: Callable[[Iterable[str]], None]) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+            # One by one, saying where each is: as ``evidence_of`` does
+            # them, until enough of them count.
+            counted: list[str] = []
+            others: list[tuple[str, str]] = []
+            for item in wanted:
+                if len(counted) >= SPACE_EVIDENCE_MAX_PATHS:
+                    break
+                at([_place_of(item.strip())] if os.path.isabs(item.strip()) else inside)
+                found, rest = evidence_of([item], roots, looked_at=1, outside=asked)
+                counted, others = _joined(counted, found, SPACE_EVIDENCE_MAX_PATHS), [*others, *rest]
+            at(inside)
+            return counted, [*others, *unseen], _outside_of(counted, roots)
 
         try:
             return asked, await _asked_off_the_loop(places, look)
         except (TimeoutError, asyncio.TimeoutError):
-            return asked, ([], _not_looked_at(named, looked_at), [])
+            return asked, ([], _not_looked_at(first, len(first)), [])
 
     @staticmethod
     def _at_its_turn(
@@ -2465,7 +2529,11 @@ class TaskAgentSpace:
         def change(text: str) -> str:
             document = _parse_document(text)
             # Only as the host made it: one the user took over is theirs.
-            if _status_of(document) != ENTRY_PENDING:
+            # And as it was found: by its title. Given another since, it
+            # is about something else, and goes on waiting.
+            if _status_of(document) != ENTRY_PENDING or _normal(document.get("name") or path.stem) != _normal(
+                pending.title
+            ):
                 return text
             empty[:] = [not _normal(document.body)]
             if empty[0] or not _keep_known(document, seen, allowed):
@@ -2518,21 +2586,24 @@ class TaskAgentSpace:
         fit, the end of it would be lost with the file. Nor is one the
         user gave another title since it was found to be the same note;
         nor one that was found by its text (``by_text``) and no longer
-        says it: what it says now is not what the note confirmed.
+        says it: what it says now is not what the note confirmed. For
+        one found by its text, raises ``_Rewritten`` then: the note was
+        judged with what that entry rested on, and is judged anew
+        (``_take_note``).
         """
         path = self._paths().memory_dir(project) / f"{pending.id}.md"
         read = self._pending_as_read(path, project)
-        if read is None:
+        if read is None or _normal(read[2].title) != _normal(pending.title):
+            # Gone, taken over, or given another title since it was found
+            # to be the same note: it is about something else now, and
+            # waits under that title.
+            if by_text is not None:
+                raise _Rewritten("the pending entry is not what it was found as")
             return into, False, None
         before, said, as_read = read
-        if _normal(as_read.title) != _normal(pending.title):
-            # The user gave it another title since it was found to be
-            # the same note: it is about something else now, and waits
-            # under that title.
-            return into, False, None
         if by_text is not None and not _said_already(said, by_text):
             # Rewritten since: it waits, as what it says now.
-            return into, False, None
+            raise _Rewritten("the pending entry says something else by now")
         pending = as_read
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
@@ -2579,12 +2650,13 @@ class TaskAgentSpace:
         """Judge a note and keep it; see ``_judged``, which does it.
 
         Judged once more when a pending entry that had its text, and was
-        to take effect by it, says something else by the time it is
-        written (the user, saving it from an editor at that very
-        moment): what stands there now is not what the note confirmed,
-        and what that entry rested on does not speak for the note. The
-        second time nothing has that text, and the note is judged by
-        itself. Raises ``SpaceError`` when that happens twice running.
+        to take effect by it or to go into another entry with it, says
+        something else by the time it is written (the user, saving it
+        from an editor at that very moment): what stands there now is
+        not what the note confirmed, and what that entry rested on does
+        not speak for the note. The second time nothing has that text,
+        and the note is judged by itself. Raises ``SpaceError`` when
+        that happens twice running.
         """
         try:
             return self._judged(project, note, may_use_place=may_use_place, allowed=allowed)
@@ -2684,7 +2756,12 @@ class TaskAgentSpace:
         # One of which nothing is told just now stays on record, and does
         # not speak for it this time.
         on_record, untold = _recorded(own.evidence, own.evidence_outside, allowed) if own is not None else ([], [])
-        evidence = _joined(on_record, note.known.evidence, SPACE_EVIDENCE_MAX_PATHS)
+        # Asked about just now, after the note's own files were: a file
+        # that is found gone here is gone, though the note found it.
+        gone = {path for path in (own.evidence if own is not None else ()) if path not in on_record}
+        evidence = _joined(
+            on_record, [path for path in note.known.evidence if path not in gone], SPACE_EVIDENCE_MAX_PATHS
+        )
         apart = {*(own.evidence_outside if own is not None else ()), *note.known.outside}
         untold_now = {*untold, *note.known.untold}
         known = _Known(
