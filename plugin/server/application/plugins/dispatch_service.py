@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
 
-from plugin._types.exceptions import PluginError
+from plugin._types.exceptions import OUTPUT_SCHEMA_VIOLATION_CODE, PluginError
 from plugin.core.rpc import RpcClosedError, RpcRemoteError
 from plugin.core.state import state
 from plugin.logging_config import get_logger
@@ -193,10 +193,20 @@ class PluginDispatchService:
             raise
         except PluginError as exc:
             cause = exc.__cause__
+            details: dict[str, object] = {}
+            if (
+                isinstance(cause, RpcRemoteError)
+                and cause.code == OUTPUT_SCHEMA_VIOLATION_CODE
+                and isinstance(cause.details, Mapping)
+            ):
+                # strict_output: keep the issue list (paths and types only), as
+                # /runs does. Other plugin errors keep their previous details.
+                details.update(cause.details)
+            details.update({"plugin_id": to_plugin, "event_id": event_id})
             raise ServerDomainError(
                 code=cause.code if isinstance(cause, RpcRemoteError) else "PLUGIN_EXECUTION_FAILED",
                 message=str(exc), status_code=502,
-                details={"plugin_id": to_plugin, "event_id": event_id},
+                details=details,
             ) from exc
         except RUNTIME_ERRORS as exc:
             logger.error(

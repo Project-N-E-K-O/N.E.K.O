@@ -10,7 +10,7 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin._types.entry_metadata import unhandled_entry_contract_fields
+from plugin._types.entry_metadata import ENTRY_PROJECTION_SHAPED_FIELDS, unhandled_entry_contract_fields
 from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
@@ -40,19 +40,6 @@ from .llm_tool import (
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
 
 
-# Contract fields the ENTRY_UPDATE register payload shapes itself, or leaves
-# out on purpose (``dynamic`` is set by the host; the rest were never sent).
-_DYNAMIC_REGISTER_HANDLED_FIELDS = frozenset({
-    "kind", "auto_start", "enabled", "metadata", "llm_result_fields",
-    "timeout", "model_validate", "persist", "llm_result_schema",
-    "dynamic", "extra", "quick_action", "quick_action_config", "return_message",
-})
-# Contract fields ``list_entries`` shapes itself, or leaves out on purpose.
-_LIST_ENTRIES_HANDLED_FIELDS = frozenset({
-    "kind", "enabled", "dynamic", "auto_start", "timeout", "model_validate",
-    "llm_result_fields", "llm_result_schema", "metadata",
-    "persist", "extra", "quick_action", "quick_action_config", "return_message",
-})
 
 
 def _entry_listing(entry_id: str, meta: object, *, enabled: bool, dynamic: bool) -> dict[str, Any]:
@@ -73,7 +60,7 @@ def _entry_listing(entry_id: str, meta: object, *, enabled: bool, dynamic: bool)
         "llm_result_schema": dict(getattr(meta, "llm_result_schema", None) or {}),
         "metadata": dict(getattr(meta, "metadata", None) or {}),
     }
-    listing.update(unhandled_entry_contract_fields(meta, _LIST_ENTRIES_HANDLED_FIELDS))
+    listing.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
     return listing
 
 
@@ -354,7 +341,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
             meta_dict["llm_result_schema"] = dict(llm_schema)
         # Any contract field not shaped above travels as-is, so a field added to
         # ENTRY_CONTRACT_FIELDS reaches the host without editing this payload.
-        meta_dict.update(unhandled_entry_contract_fields(meta, _DYNAMIC_REGISTER_HANDLED_FIELDS))
+        meta_dict.update(unhandled_entry_contract_fields(meta, ENTRY_PROJECTION_SHAPED_FIELDS))
         self._notify_host_comm({
             "type": "ENTRY_UPDATE",
             "action": "register",

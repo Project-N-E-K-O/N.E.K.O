@@ -108,7 +108,8 @@ class Capability:
     # only to a task agent whose model can.
     needs_images: bool = False
     # What a call returns, as a JSON schema, when the entry declares one
-    # (``output_schema`` in ``GET /plugins``). Exported as MCP ``outputSchema``.
+    # (``output_schema`` in ``GET /plugins``). Not published yet: the gateway
+    # leaves ``outputSchema`` out until calls return ``structuredContent``.
     output_schema: dict[str, Any] | None = None
 
 

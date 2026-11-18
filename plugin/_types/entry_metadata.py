@@ -39,6 +39,17 @@ ENTRY_OPT_IN_CONTRACT_FIELDS = (
     "strict_output",
 )
 
+# Contract fields every hand-built entry projection (IPC registration,
+# list_entries, registry previews, GET /plugins entries) writes with its own
+# shaping or leaves out on purpose. One shared set so the projections cannot
+# drift apart; any field not listed is carried by
+# unhandled_entry_contract_fields, so a new contract field reaches all of them.
+ENTRY_PROJECTION_SHAPED_FIELDS = frozenset({
+    "kind", "auto_start", "enabled", "dynamic", "persist", "model_validate",
+    "timeout", "llm_result_fields", "llm_result_schema", "return_message",
+    "metadata", "extra", "quick_action", "quick_action_config",
+})
+
 # Wire shapes of the contract fields, for code that coerces declared values
 # (registry config overlay, ``neko-plugin validate``). Fields in neither tuple
 # have their own rules at each consumer: ``kind`` (text), ``persist``

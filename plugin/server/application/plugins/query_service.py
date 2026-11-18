@@ -4,7 +4,7 @@ import asyncio
 import dataclasses
 from collections.abc import Mapping
 
-from plugin._types.entry_metadata import unhandled_entry_contract_fields
+from plugin._types.entry_metadata import ENTRY_PROJECTION_SHAPED_FIELDS, unhandled_entry_contract_fields
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
@@ -330,14 +330,6 @@ def _build_entries_from_handlers(
     return entries, seen
 
 
-# Contract fields ``GET /plugins`` entries shape themselves, or leave out on
-# purpose. Any other contract field is carried by ``_carry_contract_fields``,
-# so both entry sources (handlers and previews) publish a new field alike.
-_LISTED_ENTRY_HANDLED_FIELDS = frozenset({
-    "timeout", "llm_result_fields", "llm_result_schema", "metadata", "return_message",
-    "kind", "auto_start", "enabled", "dynamic", "persist", "model_validate",
-    "extra", "quick_action", "quick_action_config",
-})
 
 
 def _require_string_keys(value: object, *, context: str) -> None:
@@ -364,7 +356,7 @@ def _require_string_keys(value: object, *, context: str) -> None:
 
 
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
-    for name, value in unhandled_entry_contract_fields(source, _LISTED_ENTRY_HANDLED_FIELDS).items():
+    for name, value in unhandled_entry_contract_fields(source, ENTRY_PROJECTION_SHAPED_FIELDS).items():
         if isinstance(value, Mapping):
             try:
                 _require_string_keys(value, context=f"{context}.{name}")

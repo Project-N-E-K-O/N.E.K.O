@@ -19,6 +19,7 @@ from plugin.sdk.shared.constants import (
     PERSIST_ATTR,
 )
 from .events import EventMeta, QuickActionConfig
+from .output_contract import is_pydantic_model
 from .result_contract import (
     fields_from_schema,
     model_schema_from_type,
@@ -273,11 +274,17 @@ def _output_contract_from_signature(
     output contract describes the whole return value, so it must accept it.
     """
     model, schema = _infer_llm_result_model_from_signature(signature, hints)
-    if model is None or schema is None or not _is_pydantic_model_type(model):
+    if model is None or schema is None or not is_pydantic_model(model):
         # llm_result inference also accepts any class with a schema(); the
         # output contract is checked at runtime, so only Pydantic models,
         # which can validate themselves, are inferred.
         return None, None
+    try:
+        # Published by field name: model_dump() and finish() put field names
+        # on the wire, not aliases (llm_result_schema keeps its own spelling).
+        schema = dict(model.model_json_schema(by_alias=False))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - keep the inferred schema
+        schema = dict(schema)
     if _hint_allows_none(hints.get("return", signature.return_annotation)):
         schema = dict(schema)
         defs = schema.pop("$defs", None)
@@ -287,17 +294,6 @@ def _output_contract_from_signature(
             nullable["$defs"] = defs
         schema = nullable
     return model, schema
-
-
-def _is_pydantic_model_type(model: type) -> bool:
-    try:
-        from pydantic import BaseModel
-    except ImportError:  # pragma: no cover - pydantic is a hard dependency
-        return False
-    try:
-        return issubclass(model, BaseModel)
-    except TypeError:
-        return False
 
 
 def _hint_allows_none(hint: object) -> bool:

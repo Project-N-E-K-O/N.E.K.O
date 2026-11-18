@@ -55,23 +55,13 @@ def _meta(**extra: object) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _handled_sets() -> dict[str, frozenset[str]]:
-    from plugin.core import registry
-    from plugin.sdk.plugin import base
-    from plugin.server.application.plugins import query_service
+def test_projection_shaped_fields_name_real_contract_fields() -> None:
+    # A typo here would silently carry the real field a second time.
+    from plugin._types.entry_metadata import ENTRY_PROJECTION_SHAPED_FIELDS
 
-    return {
-        "dynamic_register": base._DYNAMIC_REGISTER_HANDLED_FIELDS,
-        "list_entries": base._LIST_ENTRIES_HANDLED_FIELDS,
-        "preview": registry._PREVIEW_HANDLED_FIELDS,
-        "plugins_listing": query_service._LISTED_ENTRY_HANDLED_FIELDS,
-    }
-
-
-@pytest.mark.parametrize("projection", sorted(_handled_sets()))
-def test_handled_sets_name_real_contract_fields(projection: str) -> None:
-    # A typo in a handled set would silently carry the real field twice.
-    assert _handled_sets()[projection] <= set(ENTRY_CONTRACT_FIELDS)
+    assert ENTRY_PROJECTION_SHAPED_FIELDS <= set(ENTRY_CONTRACT_FIELDS)
+    # New (opt-in) contract fields are carried, never shaped by hand.
+    assert not ENTRY_PROJECTION_SHAPED_FIELDS & {"output_schema", "strict_output"}
 
 
 def test_field_shape_tuples_name_real_contract_fields() -> None:

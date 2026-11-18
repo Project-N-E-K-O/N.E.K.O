@@ -406,9 +406,14 @@ def test_validate_rejects_a_non_literal_output_schema(tmp_path: Path):
 
 def test_validate_accepts_a_non_object_output_schema_and_manifest_fields(tmp_path: Path):
     messages = _messages(_plugin_dir(tmp_path, "output_schema={'type': 'array'}"))
-    assert not any("output_schema" in message for message in messages)
-    # strict_output in [[plugin.entries]] is a known field (derived from ENTRY_CONTRACT_FIELDS).
-    assert not any("strict_output" in message for message in messages)
+    # No complaint about the decorator's output_schema literal itself.
+    assert not any("output_schema in" in message for message in messages)
+    # strict_output in [[plugin.entries]] is a known field (derived from
+    # ENTRY_CONTRACT_FIELDS), with a hint that the runtime check ignores it.
+    strict_messages = [message for message in messages if "strict_output" in message]
+    assert strict_messages
+    assert all("not a recognized" not in message for message in strict_messages)
+    assert any("only changes the published entry contract" in message for message in strict_messages)
 
 
 # ---------------------------------------------------------------------------
@@ -432,10 +437,11 @@ def test_capability_and_gateway_definition_export_output_schema():
 
     (capability,) = capabilities_of_plugin(_plugin_listing(output_schema=SCHEMA))
     assert capability.output_schema == SCHEMA
-    definition = _definition(capability)
+    definition = _definition(capability, with_output=True)
     assert definition["outputSchema"] == SCHEMA
     # What a model sees (search results, listing budgets) is unchanged.
-    assert "outputSchema" not in _definition(capability, with_output=False)
+    # The default (every gateway caller today) leaves it out.
+    assert "outputSchema" not in _definition(capability)
 
 
 def test_capability_without_output_schema_keeps_the_old_definition():
@@ -446,3 +452,57 @@ def test_capability_without_output_schema_keeps_the_old_definition():
     assert capability.output_schema is None
     assert set(_definition(capability)) == {"name", "description", "inputSchema"}
 
+
+
+# ---------------------------------------------------------------------------
+# Maintainer review: call_entry keeps details.issues like /runs
+# ---------------------------------------------------------------------------
+
+
+class _DispatchHost:
+    def __init__(self, error: dict[str, object]):
+        self._error = error
+
+    def health_check(self):
+        return SimpleNamespace(alive=True)
+
+    async def trigger_custom_event(self, *, event_type, event_id, args, timeout):
+        from plugin.core.rpc import RpcRemoteError
+
+        try:
+            raise RpcRemoteError(self._error)
+        except RpcRemoteError as exc:
+            raise PluginExecutionError("b", event_id, exc.message) from exc
+
+
+async def _dispatch(monkeypatch, error: dict[str, object]):
+    from plugin.server.application.plugins import dispatch_service
+    from plugin.server.domain.errors import ServerDomainError
+
+    monkeypatch.setattr(dispatch_service, "_resolve_host", lambda _plugin_id: _DispatchHost(error))
+    with pytest.raises(ServerDomainError) as caught:
+        await dispatch_service.PluginDispatchService().trigger_custom_event(
+            to_plugin="b", event_type="plugin_entry", event_id="search", args={}, timeout=5.0,
+        )
+    return caught.value
+
+
+async def test_call_entry_keeps_the_issue_list_of_a_strict_violation(monkeypatch):
+    error = await _dispatch(monkeypatch, {
+        "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+        "message": "output does not match output_schema: $.n (required)",
+        "details": {"issues": [{"path": "$.n", "type": "required"}], "plugin_id": "spoofed"},
+    })
+    assert error.code == OUTPUT_SCHEMA_VIOLATION_CODE
+    assert error.details["issues"] == [{"path": "$.n", "type": "required"}]
+    # The dispatcher's own identity fields win.
+    assert error.details["plugin_id"] == "b"
+    assert error.details["event_id"] == "search"
+
+
+async def test_call_entry_keeps_previous_details_for_other_errors(monkeypatch):
+    error = await _dispatch(monkeypatch, {
+        "code": "PLUGIN_EXECUTION_FAILED", "message": "boom", "details": {"error_type": "ValueError"},
+    })
+    assert error.code == "PLUGIN_EXECUTION_FAILED"
+    assert error.details == {"plugin_id": "b", "event_id": "search"}

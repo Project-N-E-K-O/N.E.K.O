@@ -392,7 +392,7 @@ def _group_text(group: str, tools: list[Capability]) -> str:
     parts = [
         TOOL_GROUP_LOADED_HEADER.format(name=_group_name(group), call_tool=CALL_TOOL),
         BUILTIN_GROUP_GUIDANCE[group],
-        "\n".join(json.dumps(_definition(capability, with_output=False), ensure_ascii=False) for capability in tools),
+        "\n".join(json.dumps(_definition(capability), ensure_ascii=False) for capability in tools),
     ]
     text = "\n\n".join(parts)
     cut = truncate_to_tokens(text, GATEWAY_TOOL_GROUP_MAX_TOKENS)
@@ -403,14 +403,14 @@ def _group_text(group: str, tools: list[Capability]) -> str:
     return cut
 
 
-def _definition(capability: Capability, *, with_output: bool = True) -> dict[str, Any]:
+def _definition(capability: Capability, *, with_output: bool = False) -> dict[str, Any]:
     """The tool definition of a capability.
 
-    ``with_output=False`` leaves out ``outputSchema``. Every definition the
-    gateway hands out today (search results, the picked entries in an opening
-    message) is model-visible text, and calls answer with text only, no
-    ``structuredContent``, so they all pass ``with_output=False``: MCP says a
-    declared ``outputSchema`` promises structured results. Publish it once
+    ``with_output=True`` adds ``outputSchema``; no caller asks for it yet.
+    Every definition the gateway hands out today (search results, built-in
+    groups, the picked entries in an opening message) is model-visible text,
+    and calls answer with text only, no ``structuredContent``. MCP says a
+    declared ``outputSchema`` promises structured results, so publish it once
     calls return ``structuredContent``.
     """
     from config.nekoclaw_settings import GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS
@@ -782,7 +782,7 @@ class CapabilityGateway:
                 continue
             # These definitions go into the commission's opening message, which
             # the task agent's model reads, so they leave outputSchema out.
-            definition = _definition(capability, with_output=False)
+            definition = _definition(capability)
             cost = count_tokens(json.dumps(definition, ensure_ascii=False))
             if used + cost > GATEWAY_TOOL_LIST_MAX_TOKENS:
                 continue
@@ -963,7 +963,7 @@ class CapabilityGateway:
                 name=_group_name(item), summary=BUILTIN_GROUP_SUMMARIES[item], search_tool=SEARCH_TOOL
             )
             if isinstance(item, str)
-            else json.dumps(_definition(item, with_output=False), ensure_ascii=False)
+            else json.dumps(_definition(item), ensure_ascii=False)
             for item in matches
         ]
         return truncate_to_tokens("\n".join(blocks), GATEWAY_RESULT_MAX_TOKENS)

@@ -110,7 +110,15 @@ class EntryExecutor:
         check = self._output_check(event_id, meta)
         if check is None:
             return
-        issues = check(output_payload(result))
+        try:
+            payload = output_payload(result)
+        except Exception as exc:
+            # A mapping whose accessors raise: not a verdict on the contract.
+            self._logger.warning(
+                f"Plugin entry output could not be checked: entry={label}, error_type={type(exc).__name__}"
+            )
+            return
+        issues = check(payload)
         if not issues:
             return
         summary = format_issues(issues)

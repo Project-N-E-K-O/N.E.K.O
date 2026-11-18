@@ -94,7 +94,7 @@ def build_output_check(meta: object) -> OutputCheck | None:
     """Return the checker for an entry, or None when it declares no output contract."""
     model = getattr(meta, "output_model", None)
     schema = getattr(meta, "output_schema", None)
-    if isinstance(model, type) and _is_pydantic_model(model):
+    if isinstance(model, type) and is_pydantic_model(model):
         return _pydantic_check(model, schema if isinstance(schema, Mapping) else None)
     if isinstance(schema, Mapping):
         return _JsonSchemaCheck(schema)
@@ -117,7 +117,8 @@ def format_issues(issues: Sequence[OutputIssue]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _is_pydantic_model(model: type) -> bool:
+def is_pydantic_model(model: type) -> bool:
+    """Whether ``model`` is a Pydantic v2 ``BaseModel`` subclass."""
     try:
         from pydantic import BaseModel
     except ImportError:  # pragma: no cover - pydantic is a hard dependency
@@ -132,7 +133,13 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     from pydantic import TypeAdapter, ValidationError
 
     adapter = TypeAdapter(model)
+    # Field names (what model_dump()/finish() put on the wire, and what the
+    # published schema uses) plus aliases (what Pydantic puts in a loc).
     declared = _declared_names(schema) if schema is not None else frozenset()
+    try:
+        declared = declared | _declared_names(model.model_json_schema())  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - alias names only refine paths
+        pass
     # ``Model | None`` publishes a nullable schema; the model alone rejects None.
     nullable = schema is not None and not _JsonSchemaCheck(schema)(None)
 
@@ -151,7 +158,9 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         except Exception as exc:  # noqa: BLE001 - uncopyable data cannot be checked safely
             return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         try:
-            adapter.validate_python(probe)
+            # Results arrive by field name (model_dump() in finish(), transport
+            # of returned models); accept aliases too.
+            adapter.validate_python(probe, **_BY_NAME_AND_ALIAS)
         except ValidationError as exc:
             # include_input/include_context off: only loc and type are read,
             # but nothing that quotes the data is even materialized.
@@ -180,6 +189,19 @@ def _builtin_error_types() -> frozenset[str]:
 
 
 _BUILTIN_ERROR_TYPES = _builtin_error_types()
+
+
+def _by_name_and_alias() -> dict[str, bool]:
+    """``validate_python`` options accepting field names and aliases (Pydantic >= 2.11)."""
+    try:
+        from pydantic import VERSION
+    except ImportError:  # pragma: no cover
+        return {}
+    major, minor = (int(part) for part in VERSION.split(".")[:2])
+    return {"by_alias": True, "by_name": True} if (major, minor) >= (2, 11) else {}
+
+
+_BY_NAME_AND_ALIAS = _by_name_and_alias()
 _CUSTOM_ERROR_TYPE = "custom_error"
 
 
@@ -381,7 +403,13 @@ class _JsonSchemaCheck:
             self._add(issues, path, "anyOf", limit)
         one_of = schema.get("oneOf")
         if isinstance(one_of, list) and one_of:
-            if sum(1 for b in one_of if self._matches(b, value, depth)) != 1:
+            matched = 0
+            for branch in one_of:
+                if self._matches(branch, value, depth):
+                    matched += 1
+                    if matched > 1:
+                        break  # already a violation; later branches cannot change it
+            if matched != 1:
                 self._add(issues, path, "oneOf", limit)
         if "not" in schema and self._matches(schema["not"], value, depth):
             self._add(issues, path, "not", limit)

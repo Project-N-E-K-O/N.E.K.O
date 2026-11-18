@@ -41,6 +41,7 @@ from plugin._types.events import EventHandler, EventMeta, EVENT_META_ATTR
 from plugin._types.entry_metadata import (
     ENTRY_CONTRACT_BOOL_FIELDS,
     ENTRY_CONTRACT_MAPPING_FIELDS,
+    ENTRY_PROJECTION_SHAPED_FIELDS,
     entry_contract_fields,
     unhandled_entry_contract_fields,
 )
@@ -849,13 +850,6 @@ def _set_declared_result_fields(preview: Dict[str, Any], declared: Any) -> None:
         preview["llm_result_fields"] = _entry_string_list(declared)
 
 
-# Contract fields every entry preview shapes itself, or leaves out on purpose.
-# Any other contract field is carried by unhandled_entry_contract_fields.
-_PREVIEW_HANDLED_FIELDS = frozenset({
-    "kind", "auto_start", "timeout", "model_validate", "llm_result_fields",
-    "llm_result_schema", "metadata", "return_message",
-    "enabled", "dynamic", "persist", "extra", "quick_action", "quick_action_config",
-})
 
 
 def _entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]:
@@ -893,7 +887,7 @@ def _entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]:
     meta_dict = getattr(event_meta, "metadata", None)
     if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
         preview["llm_result_fields"] = meta_dict["llm_result_fields"]
-    for name, value in unhandled_entry_contract_fields(event_meta, _PREVIEW_HANDLED_FIELDS).items():
+    for name, value in unhandled_entry_contract_fields(event_meta, ENTRY_PROJECTION_SHAPED_FIELDS).items():
         preview[name] = _entry_mapping(value) if name in ENTRY_CONTRACT_MAPPING_FIELDS else value
     return preview
 

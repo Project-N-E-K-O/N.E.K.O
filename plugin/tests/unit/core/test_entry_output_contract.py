@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from plugin._types.exceptions import (
     OUTPUT_SCHEMA_VIOLATION_CODE,
@@ -924,3 +924,53 @@ async def test_an_old_call_does_not_overwrite_the_current_entry_cache():
     release.set()
     await call
     assert runtime._output_checks["entry"][0] is new_meta
+
+
+# ---------------------------------------------------------------------------
+# Review round 5 (maintainer + bots)
+# ---------------------------------------------------------------------------
+
+
+class Aliased(BaseModel):
+    user_id: int = Field(alias="userId")
+
+
+async def test_aliased_model_returned_through_finish_passes_strict():
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> Aliased:
+        return build_finish_envelope(data=Aliased(userId=3), delivery="silent")  # type: ignore[return-value]
+
+    meta = _meta_of(entry)
+    # Published by field name, which is what finish()/model_dump() emit.
+    assert set(meta.output_schema["properties"]) == {"user_id"}
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    result = await runtime.invoke("plugin_entry", "entry", {})
+    assert result["data"] == {"user_id": 3}
+
+    check = build_output_check(meta)
+    assert check({"userId": 3}) == []
+    assert [(i.path, i.type) for i in check({})] == [("$.userId", "missing")]
+
+
+def test_one_of_stops_at_the_second_match():
+    expensive: dict[str, object] = {"type": "integer"}
+    for _ in range(25):
+        expensive = {"oneOf": [expensive, expensive]}
+    # Two cheap matches decide it before the budget-eating third branch runs.
+    schema = {"oneOf": [{"type": "integer"}, {"type": "number"}, expensive]}
+    assert _issues(schema, 1) == [("$", "oneOf")]
+
+
+async def test_envelope_extraction_failure_is_logged_not_raised(caplog):
+    class Hostile(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("hostile mapping")
+
+    returned = Hostile(success=True)
+    runtime = _runtime_for(returned, output_schema=EXPLICIT, strict_output=True)
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
+    assert "could not be checked" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text

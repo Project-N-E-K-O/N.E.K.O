@@ -771,6 +771,17 @@ def _check_entry_field_types(item: dict[str, object], label: str, issues: list[t
     for key in _PLUGIN_ENTRY_BOOL_FIELDS:
         _check_entry_bool(item.get(key), f"{label}.{key}", issues)
     _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
+    for key in ("output_schema", "strict_output"):
+        if key in item:
+            # The registry publishes it, but the output check runs in the
+            # plugin process against the decorator's contract only.
+            issues.append((
+                "warning",
+                f"{label}.{key} only changes the published entry contract; the runtime output check "
+                f"uses @plugin_entry(output_schema=..., strict_output=...) / "
+                f"{label}.{key} 只改变发布的入口契约，运行时的输出检查只看 @plugin_entry 的声明 / "
+                f"{label}.{key} は公開されるエントリー契約だけを変更します。実行時の出力チェックは @plugin_entry の宣言のみを使います",
+            ))
 
 
 def _check_entry_bool(value: object, label: str, issues: list[tuple[str, str]]) -> None:
