@@ -1015,6 +1015,65 @@ async def test_an_event_of_a_kind_is_looked_for_in_one_commission(ledger):
     assert await ledger.has_event(second.id, "opened") is False
 
 
+async def test_her_commissions_that_ended_lately_are_chosen_and_ordered_before_they_are_counted(ledger):
+    async def ended(title: str, status: str = "done", **values: Any) -> Any:
+        values.setdefault("route", "task_agent")
+        commission = await _file(ledger, title=title, **values)
+        await ledger.update(commission.id, session_id=values.get("session_id", commission.id))
+        await _walk(ledger, commission.id, status)
+        return commission
+
+    # Filed first, and long at work.
+    long = await _file(ledger, title="reorganise the archive", route="task_agent")
+    await ledger.update(long.id, session_id=long.id)
+    await _walk(ledger, long.id, "working")
+    ledger.clock.now += 10
+    filed_later = [await ended(f"small job {index}") for index in range(4)]
+    stopped = await ended("stopped one", "cancelled")
+    failed = await ended("failed one", "failed")
+    # None of these can be gone on with: a plugin's, a task agent's own, one without a session,
+    # one that is stuck, another character's.
+    await ended("by a plugin", route="plugin")
+    child = await ended("a part", parent_id=long.id)
+    bare = await _file(ledger, title="never given a session", route="task_agent")
+    await _walk(ledger, bare.id, "done")
+    await ended("stuck", "blocked")
+    await ended("hers", lanlan_name="Mio")
+    ledger.clock.now += 10
+    assert (await ledger.transition(long.id, "done")).applied
+
+    lately = await ledger.ended_lately("Lan", since=0.0, limit=3)
+
+    # The one that ended last comes first, although six were filed after it; and the limit
+    # counts what can be gone on with, not what was filed.
+    assert [item.id for item in lately] == [long.id, failed.id, stopped.id]
+    everything = await ledger.ended_lately("Lan", since=0.0, limit=50)
+    assert [item.id for item in everything] == [long.id, failed.id, stopped.id, *[item.id for item in reversed(filed_later)]]
+    assert child.id not in [item.id for item in everything]
+    # Only what ended since.
+    assert [item.id for item in await ledger.ended_lately("Lan", since=ledger.clock.now, limit=50)] == [long.id]
+    assert await ledger.ended_lately("Nobody", since=0.0, limit=50) == []
+
+
+async def test_a_commission_of_this_build_left_without_a_session_is_not_given_one_on_opening(tmp_path):
+    path = tmp_path / "nekoclaw" / "ledger.db"
+    ledger = Ledger(path)
+    # As a process that ended between filing it for a task agent and giving it its session
+    # leaves it; it belongs to a project, whose session it is to be worked on in.
+    left = await _file(ledger, title="add a chart", route="task_agent", project="Budget app")
+    await ledger.close()
+
+    ledger = Ledger(path)
+    try:
+        again = await ledger.get(left.id)
+        assert again.session_id is None and await ledger.get_session(left.id) is None
+        # Given one when it is taken up: its project's.
+        given, session = await ledger.give_session(left.id, kind="project", name="Budget app")
+        assert (session.kind, session.project, given.session_id) == ("project", "Budget app", session.id)
+    finally:
+        await ledger.close()
+
+
 async def test_the_commission_whose_opening_message_a_session_took_last(ledger):
     first = await _file(ledger, title="add a CSV export", session_id="s1")
     second = await _file(ledger, title="add a chart", session_id="s1")

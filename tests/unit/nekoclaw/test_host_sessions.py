@@ -334,6 +334,80 @@ async def test_a_blocked_commission_taken_up_again_waits_for_its_session_like_an
     assert await host.ledger.opened_last(first.commission_id) == first.commission_id
 
 
+async def test_stopping_a_commission_that_waits_for_a_place_to_be_answered_at_lets_its_session_go(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("waiting", "Which separator?")]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+        "sort the photos": ScriptedLLM([[wait, *_report("ready", "sorted")]]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), max_task_agents=1)
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "waiting_user")
+    await wait_until(
+        lambda: host.task_agents._sessions[first.commission_id].run_ended, what="the asking run ending"
+    )
+    # The runtime closes the idle session; the one place goes to something else.
+    await host.task_agents._runtime.close(first.commission_id)
+    await _released(host, first.commission_id)
+    other = await _dispatch(host, "sort the photos")
+    await wait_status(host, other.commission_id, "working")
+    second = await _dispatch(host, "add a chart to the budget app")
+    await host.brain.settle()
+
+    # Answered with no place free: it waits for one, still holding its session.
+    assert await host.answer(first.commission_id, "a semicolon")
+    assert (await host.ledger.get(first.commission_id)).status == "queued"
+    assert host.task_agents._held_by == {
+        first.commission_id: first.commission_id,
+        other.commission_id: other.commission_id,
+    }
+
+    # Stopped there. No runtime has its session open, so none will say that it is over.
+    await host.abort(first.commission_id)
+    await wait_until(
+        lambda: first.commission_id not in host.task_agents._held_by, what="the session of the stopped one being let go"
+    )
+
+    release.set()
+    await wait_status(host, other.commission_id, "done")
+    done = await wait_status(host, second.commission_id, "done")
+    assert done.session_id == first.commission_id
+    assert (await host.ledger.get(first.commission_id)).status == "cancelled"
+
+
+async def test_a_commission_that_cannot_be_started_again_lets_its_session_go(hosts, tmp_path):
+    there = {"yes": True}
+
+    async def model() -> Any:
+        return {"model": "fake-model", "api_key": "test-key"} if there["yes"] else None
+
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("blocked", "no access")]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), task_agent_model=model)
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "blocked")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+
+    # Taken up again while no model is set: it takes its session, and the start fails.
+    there["yes"] = False
+    await host.tell(first.commission_id, "you have access now")
+    await wait_status(host, first.commission_id, "failed")
+    await host.task_agents.settle()
+    # Over, and never in a runtime: nothing held on to the session for it.
+    await _let_go(host)
+
+    there["yes"] = True
+    second = await _dispatch(host, "add a chart to the budget app")
+    done = await wait_status(host, second.commission_id, "done")
+    assert done.session_id == first.commission_id
+
+
 async def test_a_queued_commission_of_a_session_that_is_stopped_never_starts(hosts, tmp_path):
     release, wait = _gate()
     scripts = {

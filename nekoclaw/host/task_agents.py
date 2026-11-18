@@ -1294,6 +1294,19 @@ class TaskAgentManager:
         if self._queue:
             self._spawn(self._start_next())
 
+    def _settle_hold_of(self, commission_id: str) -> None:
+        """Have the hold on a commission's session looked at again, if it holds one.
+
+        For where a commission leaves the hands it was in (the queue, a
+        start or a queueing under way) with no runtime session of its own
+        to end: whoever looked while it was in hand left the hold alone,
+        and nobody would look again. The session would stay held by a
+        commission that is over, and nothing else would ever start in it.
+        """
+        session_id = self._session_of.get(commission_id)
+        if session_id is not None and self._held_by.get(session_id) == commission_id and not self._closed:
+            self._spawn(self._settle_hold(session_id))
+
     def _on_commission_change(self, commission: Commission, previous: str | None) -> None:
         """A ledger listener: a commission that held its session without a place in a runtime is over."""
         del previous
@@ -1845,6 +1858,8 @@ class TaskAgentManager:
         finally:
             self._requeueing.discard(parent_id)
         if not moved.applied:
+            # Not queued after all (it was stopped meanwhile, say).
+            self._settle_hold_of(parent_id)
             return
         if self._closed:
             await self._ledger.transition(parent_id, "failed", reason=_SHUT_DOWN_REASON)
@@ -1872,6 +1887,10 @@ class TaskAgentManager:
         self._resume.pop(commission_id, None)
         session = self._sessions.get(commission_id)
         if session is None:
+            # It may have held its session without a place in a runtime (it
+            # waited for an answer, or for a place to be taken up again at):
+            # no runtime session ends, so the hold is looked at here.
+            self._settle_hold_of(commission_id)
             return
         if session.question is not None and not session.question.done():
             session.question.cancel()
@@ -1943,7 +1962,14 @@ class TaskAgentManager:
             # session behind a commission that says it is working.
             self._taking_up.add(commission_id)
             launch = self._spawn(self._launch(commission_id, prompt=text))
-            launch.add_done_callback(lambda _done: self._taking_up.discard(commission_id))
+
+            def taken_up(_done: Any) -> None:
+                self._taking_up.discard(commission_id)
+                # A start that failed left the commission over while it was
+                # still on its way here: its session is let go now.
+                self._settle_hold_of(commission_id)
+
+            launch.add_done_callback(taken_up)
             return await asyncio.shield(launch)
         # Its old session is still on its way out, or no place is free: it is
         # queued. That runs as a task shutting down waits for, so a shutdown
@@ -1969,6 +1995,8 @@ class TaskAgentManager:
             if commission_id not in self._sessions:
                 self._candidates.pop(commission_id, None)
                 self._notes.pop(commission_id, None)
+                # Not queued after all (it was stopped meanwhile, say).
+                self._settle_hold_of(commission_id)
             return False
         self._resume[commission_id] = text
         if commission_id not in self._queue:

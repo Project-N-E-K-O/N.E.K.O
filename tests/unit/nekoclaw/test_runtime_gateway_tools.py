@@ -570,6 +570,30 @@ async def test_session_offers_gateway_tools_next_to_the_built_in_ones(tmp_path, 
         await session.close()
 
 
+async def test_a_group_is_loaded_with_its_name_alone_through_the_search_tool_of_a_session_opened_without_groups(
+    tmp_path, gateway
+):
+    from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL, _CALL_TOOL_DEFINITION, _search_tool_definition
+
+    # As the host lists its two tools while no group of built-in tools can be used.
+    gateway.tools = [_search_tool_definition([]), _CALL_TOOL_DEFINITION]
+    gateway.results[SEARCH_TOOL] = {"content": [{"type": "text", "text": "the browser tools"}], "isError": False}
+    llm = ScriptedLLM([[call(SEARCH_TOOL, {"group": "browser"}), finish("tool_calls")], [say("Loaded."), finish()]])
+    session, events = await open_session(_spec(tmp_path, gateway), llm)
+    try:
+        assert {SEARCH_TOOL, CALL_TOOL} <= set(events.of("started")[0]["tools"])
+        session.prompt("open the page")
+        await events.wait_ended()
+
+        # The call reaches the gateway: the definition the session keeps does not ask for a query.
+        asked = [body["params"] for body in gateway.requests if body.get("method") == "tools/call"]
+        assert [(item["name"], item["arguments"]) for item in asked] == [(SEARCH_TOOL, {"group": "browser"})]
+        end = events.of("tool_end")[0]
+        assert (end["tool_name"], end["is_error"], end["text"]) == (SEARCH_TOOL, False, "the browser tools")
+    finally:
+        await session.close()
+
+
 async def test_gateway_tool_is_not_put_before_the_runtimes_permission_hook(tmp_path, gateway):
     asked: list[dict[str, Any]] = []
 

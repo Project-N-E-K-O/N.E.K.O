@@ -110,6 +110,9 @@ ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 HOST_ENDED_REASON = "the host process ended before this finished"
 
 _SCHEMA_VERSION = 3
+# The first version in which a commission is worked on in a session that is a
+# row of its own; a ledger of an earlier one has its commissions given theirs.
+_SESSIONS_SINCE_VERSION = 3
 _BUSY_TIMEOUT_SECONDS = 5.0
 
 _SCHEMA = """
@@ -468,12 +471,20 @@ class Ledger:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            # As the ledger was left: 0 for one that is made now.
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             conn.executescript(_SCHEMA)
             self._add_columns(conn)
             # Not in the script above: in a ledger of an earlier build the
             # column is only there once it was added.
             conn.execute("CREATE INDEX IF NOT EXISTS commissions_by_session ON commissions (session_id)")
-            self._give_sessions(conn)
+            if version < _SESSIONS_SINCE_VERSION:
+                # Only a ledger of a build without sessions. In one of this
+                # build a commission without a session was never given one
+                # (the process ended in between, or was shutting down): it
+                # is given one when it is taken up, its project's if it has
+                # a project, which a session under its own id would not be.
+                self._give_sessions(conn)
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             self._reconcile(conn)
         except BaseException:
@@ -1067,6 +1078,28 @@ class Ledger:
                 self._event(conn, commission_id, kind, payload)
 
         await self.run(work)
+
+    async def ended_lately(self, lanlan_name: str, *, since: float, limit: int) -> list[Commission]:
+        """Return her commissions a task agent worked on in a session that ended since ``since``, the last to end first.
+
+        Done, failed or stopped; her own (not one a task agent started for
+        itself). Chosen and ordered here, before the limit: taken from the
+        newest by when they were filed, one that was long at work and has
+        just ended would be left out behind those filed after it.
+        """
+        statuses = sorted(ENDED_STATUSES - {"blocked"})
+
+        def work(conn: sqlite3.Connection) -> list[Commission]:
+            rows = conn.execute(
+                "SELECT * FROM commissions WHERE lanlan_name = ? AND route = 'task_agent' "
+                "AND parent_id IS NULL AND session_id IS NOT NULL "
+                f"AND status IN ({', '.join('?' for _ in statuses)}) AND updated_at >= ? "
+                "ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                (lanlan_name, *statuses, since, int(limit)),
+            ).fetchall()
+            return [item for item in (_commission(row) for row in rows) if item]
+
+        return await self.run(work)
 
     async def opened_last(self, session_id: str) -> str | None:
         """Return the commission whose opening message a session took last; None when it took none.

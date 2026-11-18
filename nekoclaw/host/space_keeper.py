@@ -1082,10 +1082,14 @@ class SpaceKeeper:
             logger.warning("an old transcript could not be removed", exc_info=True)
         snapshot = directory / SYSTEM_SNAPSHOT_NAME
         try:
-            # Of no use without the transcript: a session with nothing said is
-            # put together anew. Not counted as something removed by itself.
-            if snapshot.is_file() and not snapshot.is_symlink():
+            # Goes with the transcript, and only once that is gone: a session
+            # that still has what was said goes on with the system prompt it
+            # was opened with. Of no use without the transcript: a session
+            # with nothing said is put together anew.
+            gone = not transcript.exists() and not transcript.is_symlink()
+            if gone and snapshot.is_file() and not snapshot.is_symlink():
                 snapshot.unlink()
+                removed = True
         except OSError:
             failed = True
             logger.warning("the system snapshot of an old session could not be removed", exc_info=True)

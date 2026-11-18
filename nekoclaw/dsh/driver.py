@@ -378,7 +378,7 @@ class DshRuntime:
         if session is not None:
             session.local_reply_due = True
 
-    def _on_window(self, session_id: str, tokens: int, said: str) -> None:
+    def _on_window(self, session_id: str, model: Any, tokens: int, said: str) -> None:
         """A session's model endpoint refused a request as too long and stated its window.
 
         Told to the host when the window is smaller than the one the
@@ -386,9 +386,19 @@ class DshRuntime:
         sessions for this model with that window from then on. This
         session stays in its dsh process, which was started for the window
         it has and sums the conversation up as dsh does.
+
+        ``model`` is the one the refused request went to. A request can
+        outlast its session (one that did not close in time is forgotten,
+        its requests are not called off), and under the id there may be
+        another session by then, with another model: what that endpoint
+        said of its window is not about this one's, and the host would put
+        it down for the wrong model.
         """
         session = self._sessions.get(session_id)
         if session is None:
+            return
+        asked = session.spec.model
+        if (getattr(model, "base_url", None), getattr(model, "model", None)) != (asked.base_url, asked.model):
             return
         stated = max(int(tokens), _MIN_CONTEXT_WINDOW)
         if stated >= session.spec.model.context_window or stated in session.windows_told:

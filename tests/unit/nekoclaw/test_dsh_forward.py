@@ -480,7 +480,7 @@ def _learning_forwarder(handler: Any, learned: list[tuple[str, int, str]]) -> Mo
         lambda session_id, used: None,
         report_tool=REPORT,
         transport=httpx.MockTransport(handler),
-        on_window=lambda session_id, tokens, said: learned.append((session_id, tokens, said)),
+        on_window=lambda session_id, model, tokens, said: learned.append((session_id, model.model, tokens, said)),
     )
     forwarder.bind(PROCESS, "slot-3", "commission-1", ModelConfig(model="real-model", base_url="http://model.test/v1", api_key="sk-real", auto_extra_body=False))
     return forwarder
@@ -488,7 +488,7 @@ def _learning_forwarder(handler: Any, learned: list[tuple[str, int, str]]) -> Mo
 
 @pytest.mark.parametrize("status", [400, 413, 422])
 async def test_the_window_an_endpoint_states_when_a_request_is_too_long_is_handed_on(status: int) -> None:
-    learned: list[tuple[str, int, str]] = []
+    learned: list[tuple[str, str, int, str]] = []
     refusal = {
         "error": {
             "message": "The maximum context length is 32768 tokens. However, you requested 40000 tokens.",
@@ -503,8 +503,9 @@ async def test_the_window_an_endpoint_states_when_a_request_is_too_long_is_hande
 
     # dsh is told the refusal as it came; the host is told the window.
     assert asgi.status == status and json.loads(asgi.body) == refusal
-    assert [(session, tokens) for session, tokens, _said in learned] == [("commission-1", 32_768)]
-    assert "maximum context length is 32768" in learned[0][2]
+    # With the model the request went to: under the session's id there may be another by then.
+    assert [item[:3] for item in learned] == [("commission-1", "real-model", 32_768)]
+    assert "maximum context length is 32768" in learned[0][3]
 
 
 @pytest.mark.parametrize(
@@ -545,7 +546,7 @@ async def test_an_answer_that_is_no_refusal_is_not_read_for_a_window() -> None:
 
 
 async def test_a_listener_that_fails_does_not_fail_the_request() -> None:
-    def broken(session_id: str, tokens: int, said: str) -> None:
+    def broken(session_id: str, model: Any, tokens: int, said: str) -> None:
         raise RuntimeError("no room")
 
     refusal = {"error": {"message": "The maximum context length is 8192 tokens."}}

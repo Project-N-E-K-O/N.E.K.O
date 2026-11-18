@@ -1165,6 +1165,75 @@ async def test_a_session_whose_files_could_not_be_removed_is_tried_again_next_ro
     assert [event.type for event in await world.ledger.events(stuck.id)][-1] == "session_cleaned"
 
 
+async def test_the_system_prompt_stays_with_a_transcript_that_could_not_be_removed(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    commission = await world.finished("its transcript is open in an editor", calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    (directory / "system.json").write_text("{}", encoding="utf-8")
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    unlink = Path.unlink
+
+    def held_open(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "transcript.jsonl":
+            raise PermissionError("in use")
+        unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+    await world.keeper.tidy(force=True)
+
+    # What was said is still there, so the session goes on with the system prompt it was
+    # opened with: without the file it would be put together anew in the middle of a conversation.
+    assert (directory / "transcript.jsonl").is_file() and (directory / "system.json").is_file()
+    assert (await world.space.read_state())["sessions_to_retry"] == [commission.id]
+    assert (await world.ledger.get_session(commission.id)).status != "cleared"
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert not (directory / "transcript.jsonl").exists() and not (directory / "system.json").exists()
+    assert (await world.ledger.get_session(commission.id)).status == "cleared"
+
+
+async def test_a_session_of_which_only_the_system_prompt_was_left_is_cleared_by_the_round_that_removes_it(
+    world, monkeypatch
+):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    commission = await world.finished("its system prompt is open in an editor", calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    (directory / "system.json").write_text("{}", encoding="utf-8")
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    unlink = Path.unlink
+
+    def held_open(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "system.json":
+            raise PermissionError("in use")
+        unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+    await world.keeper.tidy(force=True)
+
+    # The transcript and the tool output are gone, the system prompt is not: tried again.
+    assert not (directory / "transcript.jsonl").exists() and not (directory / "outputs").exists()
+    assert (directory / "system.json").is_file()
+    assert (await world.space.read_state())["sessions_to_retry"] == [commission.id]
+    assert (await world.ledger.get_session(commission.id)).status != "cleared"
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    # The round that removes what was left puts on record that the session is cleared.
+    assert not (directory / "system.json").exists()
+    assert (await world.space.read_state())["sessions_to_retry"] == []
+    assert (await world.ledger.get_session(commission.id)).status == "cleared"
+    assert [event.type for event in await world.ledger.events(commission.id)][-1] == "session_cleaned"
+
+
 async def test_a_session_that_never_lets_go_does_not_hold_the_later_ones_back(world, monkeypatch):
     from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
 

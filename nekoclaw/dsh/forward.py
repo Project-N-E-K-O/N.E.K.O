@@ -291,7 +291,9 @@ class ModelForwarder:
         if found is None:
             return
         try:
-            self._on_window(route.session_id, found[0], found[1])
+            # With the model the request went to: under the session's id
+            # there may be another session by now, with another model.
+            self._on_window(route.session_id, route.model, found[0], found[1])
         except Exception:  # noqa: BLE001 - learning must not fail the request
             logger.exception("handing on the window a model endpoint stated failed")
 

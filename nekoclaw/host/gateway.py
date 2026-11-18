@@ -137,10 +137,11 @@ _SEARCH_TOOL_DEFINITION = {
         "by what they do. Returns their names, descriptions and argument schemas. Call one with "
         f"{CALL_TOOL}."
     ),
+    # Nothing is required: a group of built-in tools is loaded with
+    # ``group`` alone (``_search_tool_definition``).
     "inputSchema": {
         "type": "object",
         "properties": {"query": {"type": "string", "description": "What the capability should do."}},
-        "required": ["query"],
     },
 }
 
@@ -326,20 +327,28 @@ def _first_call(group: str, capabilities: list[Capability]) -> tuple[Capability,
 def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
     """Return the search tool as offered to a task agent that can call ``capabilities``.
 
-    Without a built-in tool among them it is the plain search tool, word
-    for word. With some, its description ends in one line about each of
-    their groups, with the group's first call, which is all a request
-    carries of a group that was not loaded, and it takes ``group``.
+    With a built-in tool among them, its description ends in one line
+    about each of their groups, with the group's first call, which is all a
+    request carries of a group that was not loaded, and ``group`` names
+    them. Without one it says nothing of groups, and still takes ``group``:
+    a session keeps the definition it was opened with, a group that is
+    switched on while it lasts is named by a search result
+    (``TOOL_GROUP_POINTER``), and loading it with ``group`` alone has to be
+    a call the definition allows.
     """
-    groups = _groups_of(capabilities)
-    if not groups:
-        return _SEARCH_TOOL_DEFINITION
     from config.prompts.prompts_nekoclaw_builtin import (
         BUILTIN_GROUP_SUMMARIES,
         TOOL_GROUP_ARGUMENT,
+        TOOL_GROUP_ARGUMENT_UNNAMED,
         TOOL_GROUP_FIRST_CALL,
         TOOL_GROUPS_INTRO,
     )
+
+    groups = _groups_of(capabilities)
+    if not groups:
+        schema = _SEARCH_TOOL_DEFINITION["inputSchema"]
+        properties = {**schema["properties"], "group": {"type": "string", "description": TOOL_GROUP_ARGUMENT_UNNAMED}}
+        return {**_SEARCH_TOOL_DEFINITION, "inputSchema": {**schema, "properties": properties}}
 
     lines = [str(_SEARCH_TOOL_DEFINITION["description"]), TOOL_GROUPS_INTRO.format(call_tool=CALL_TOOL)]
     for group in groups:

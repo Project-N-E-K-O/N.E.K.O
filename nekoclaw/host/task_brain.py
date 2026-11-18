@@ -400,17 +400,10 @@ class TaskBrain:
         """
         from config.nekoclaw_settings import FOLLOW_UP_RECENT_SECONDS, FOLLOW_UP_ROWS
 
-        over = await self._ledger.select(
-            lanlan_name=lanlan_name,
-            statuses=ENDED_STATUSES - {"blocked"},
-            updated_since=self._ledger._clock() - FOLLOW_UP_RECENT_SECONDS,
-            limit=FOLLOW_UP_ROWS * 4,
-        )
-        mine = [
-            item for item in over if item.parent_id is None and item.route == "task_agent" and item.session_id
-        ]
         # Newest by when they ended, which is when they last changed.
-        return sorted(mine, key=lambda item: item.updated_at, reverse=True)[:FOLLOW_UP_ROWS]
+        return await self._ledger.ended_lately(
+            lanlan_name, since=self._ledger._clock() - FOLLOW_UP_RECENT_SECONDS, limit=FOLLOW_UP_ROWS
+        )
 
     async def _denied_mcp(self) -> McpDenial:
         """Return the MCP server settings as of now."""

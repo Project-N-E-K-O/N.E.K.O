@@ -247,8 +247,11 @@ async def test_without_any_capability_the_two_tools_are_offered_all_the_same(hos
     # lasts: a plugin installed later is reached through these two.
     tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
     assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
-    # The plain search tool: no group of built-in tools is told of.
-    assert list(tools[0]["inputSchema"]["properties"]) == ["query"]
+    # The plain search tool: no group of built-in tools is told of. It takes ``group`` all
+    # the same, by itself: the session keeps this definition, and a group that is switched
+    # on later is loaded through it.
+    assert tools[0] == PLAIN_SEARCH_TOOL
+    assert "required" not in tools[0]["inputSchema"] and "enum" not in tools[0]["inputSchema"]["properties"]["group"]
     found = await _call(host, grant, SEARCH_TOOL, {"query": "what the weather is"})
     # Said for now only: the session goes on, and what can be called changes.
     assert _text(found).startswith("No capabilities are available right now.")
@@ -1045,10 +1048,17 @@ PLAIN_SEARCH_TOOL = {
         "by what they do. Returns their names, descriptions and argument schemas. Call one with "
         "capability_call."
     ),
+    # ``group`` without a name to choose from: a group that is switched on while a session
+    # lasts is named by a search result, and loaded with ``group`` alone.
     "inputSchema": {
         "type": "object",
-        "properties": {"query": {"type": "string", "description": "What the capability should do."}},
-        "required": ["query"],
+        "properties": {
+            "query": {"type": "string", "description": "What the capability should do."},
+            "group": {
+                "type": "string",
+                "description": "Instead of query: the tool group a search result names, to get its tools.",
+            },
+        },
     },
 }
 GROUPS_INTRO = TOOL_GROUPS_INTRO.format(call_tool="capability_call")
