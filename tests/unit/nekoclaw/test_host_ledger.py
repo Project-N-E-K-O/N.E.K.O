@@ -1265,3 +1265,116 @@ async def test_sessions_an_earlier_process_left_open_are_closed_on_open(tmp_path
         assert (await second.get_session(mine.id)).status == "running"
     finally:
         await second.close()
+
+
+# ---------------------------------------------------------------------------
+# What model requests use, and sessions made from others
+# ---------------------------------------------------------------------------
+
+
+async def test_what_requests_use_is_added_up_with_the_session_and_up_the_line_of_commissions(ledger):
+    parent = await _file(ledger, title="sort the photos")
+    child = await _file(ledger, title="count", source="task_agent", parent_id=parent.id)
+    other = await _file(ledger, title="tidy")
+    session = await ledger.create_session(lanlan_name="Lan", name="photos")
+    assert (session.requests, session.tokens, session.context_tokens) == (0, 0, 0)
+    assert (parent.requests, parent.tokens, parent.usage_allowed) == (0, 0, None)
+
+    await ledger.add_usage(
+        session_id=session.id, commission_id=child.id, tokens_in=100, tokens_out=20, cache_read=300, cache_write=40,
+        context_tokens=460,
+    )
+    await ledger.add_usage(session_id=session.id, commission_id=child.id, tokens_in=7, context_tokens=None)
+    # For no commission: the session's alone. Two requests at once, and nothing below nought.
+    await ledger.add_usage(session_id=session.id, requests=2, tokens_in=-5, tokens_out=1)
+    # For no session: a commission's alone.
+    await ledger.add_usage(commission_id=parent.id, tokens_out=3)
+
+    session = await ledger.get_session(session.id)
+    assert (session.requests, session.tokens_in, session.tokens_out, session.tokens_cache_read, session.tokens_cache_write) == (
+        4, 107, 21, 300, 40,
+    )
+    # The length of the conversation is what the last request that told it said.
+    assert (session.tokens, session.context_tokens) == (468, 460)
+    child, parent, other = [await ledger.get(item.id) for item in (child, parent, other)]
+    assert (child.requests, child.tokens) == (2, 467)
+    # What a task agent it started used is the commission's own as well.
+    assert (parent.requests, parent.tokens_in, parent.tokens_out, parent.tokens) == (3, 107, 23, 470)
+    assert (other.requests, other.tokens) == (0, 0)
+    # Nothing else of a commission changes with it, and nobody is told.
+    assert parent.updated_at == other.updated_at and parent.status == "queued"
+
+    # How much the work a commission belongs to has used and may: told of the one no task agent started.
+    for asked in (child.id, parent.id):
+        standing = await ledger.usage_standing(asked)
+        assert (standing.root, standing.used, standing.allowed) == (parent.id, 470, None)
+    assert await ledger.usage_standing("nobody") is None and await ledger.allow_usage("nobody", 5) is None
+    # Allowed more: so much on top of what it has used by now, written with that one.
+    allowed = await ledger.allow_usage(child.id, 1_000)
+    assert (allowed.root, allowed.used, allowed.allowed) == (parent.id, 470, 1_470)
+    assert (await ledger.get(parent.id)).usage_allowed == 1_470 and (await ledger.get(child.id)).usage_allowed is None
+    events = [(event.type, event.payload) for event in await ledger.events(parent.id) if event.type == "usage_allowed"]
+    assert events == [("usage_allowed", {"used": 470, "allowed": 1_470})]
+    # Neither is written by an update of other columns.
+    for values in ({"usage_allowed": 5}, {"requests": 9}, {"tokens_in": 9}):
+        with pytest.raises(ValueError):
+            await ledger.update(parent.id, **values)
+    with pytest.raises(ValueError):
+        await ledger.update_session(session.id, tokens_out=9)
+    with pytest.raises(ValueError):
+        await ledger.update_session(session.id, context_tokens=9)
+
+
+async def test_a_session_made_from_another_names_it_and_only_a_closed_one_is_marked_as_being_summed_up(ledger):
+    source = await ledger.create_session(lanlan_name="Lan", name="photos", kind="project", project="photos")
+    copy = await ledger.create_session(
+        lanlan_name="Lan", name="photos/fork", kind="fork", project="photos", forked_from=source.id, forked_at="e42"
+    )
+    again = await ledger.create_session(lanlan_name="Lan", name="photos/fork", kind="fork", forked_from=source.id)
+    await ledger.create_session(lanlan_name="Lan", name="elsewhere", kind="fork", forked_from=copy.id)
+    assert (copy.kind, copy.forked_from, copy.forked_at, copy.status) == ("fork", source.id, "e42", "closed")
+    assert again.name == "photos/fork-2" and again.forked_at is None
+    assert [item.id for item in await ledger.forks_of(source.id)] == [copy.id, again.id]
+    assert await ledger.forks_of("nobody") == []
+    # A copy is not taken for the session of the project it was copied from.
+    found, made = await ledger.project_session("Lan", "photos")
+    assert found.id == source.id and not made
+    # Where a copy came from is said when it is made, and not changed afterwards.
+    with pytest.raises(ValueError):
+        await ledger.update_session(copy.id, forked_from="other")
+    with pytest.raises(ValueError):
+        await ledger.update_session(copy.id, forked_at="e1")
+
+    # Only a session nothing has open is marked as being summed up, and only one so marked is closed again by that.
+    assert await ledger.begin_compacting(source.id) is True
+    assert (await ledger.get_session(source.id)).status == "compacting"
+    assert await ledger.begin_compacting(source.id) is False
+    for status in ("running", "waiting", "cleared"):
+        await ledger.update_session(copy.id, status=status)
+        assert await ledger.begin_compacting(copy.id) is False
+        assert (await ledger.get_session(copy.id)).status == status
+    assert await ledger.begin_compacting("nobody") is False
+    # A commission got to work in it meanwhile: where it stands by that is not written over.
+    await ledger.update_session(source.id, status="running")
+    await ledger.end_compacting(source.id, compacted=False)
+    kept = await ledger.get_session(source.id)
+    assert (kept.status, kept.compacted_at) == ("running", None)
+    await ledger.update_session(source.id, status="compacting")
+    ledger.clock.now = 2_000.0
+    await ledger.end_compacting(source.id, compacted=True)
+    kept = await ledger.get_session(source.id)
+    assert (kept.status, kept.compacted_at) == ("closed", 2_000.0)
+
+
+async def test_a_session_left_as_being_summed_up_by_an_earlier_process_is_closed_on_opening(tmp_path):
+    path = tmp_path / "ledger.db"
+    first = Ledger(path)
+    session = await first.create_session(lanlan_name="Lan", name="photos", kind="project", project="photos")
+    assert await first.begin_compacting(session.id)
+    await first.close()
+
+    second = Ledger(path)
+    try:
+        assert (await second.get_session(session.id)).status == "closed"
+    finally:
+        await second.close()

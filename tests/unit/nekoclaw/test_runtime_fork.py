@@ -418,6 +418,10 @@ async def test_an_idle_session_sums_its_conversation_up_when_it_is_told_to(tmp_p
         assert len(messages) < length_before
         assert any("the four steps are done" in getattr(message, "text", "") for message in messages)
         assert any(getattr(message, "text", "").startswith("Finished step 3.") for message in messages)
+        # (More than the last answer: nothing was wrong with the length of this conversation,
+        # so it is not cut down as one that was refused for its length is.)
+        assert any(getattr(message, "text", "").startswith("Finished step 2.") for message in messages)
+        assert not any(getattr(message, "text", "").startswith("Finished step 0.") for message in messages)
         # The snapshot was put together anew, as after any summary.
         saved = json.loads((Path(spec.session_dir) / SYSTEM_FILE).read_text(encoding="utf-8"))
         assert saved["reason"] == "compacted" and saved["compactions"] == 1
@@ -488,8 +492,11 @@ async def test_summing_up_is_refused_while_a_run_is_under_way_and_stops_at_once_
         assert not any(entry.type == "compaction" for entry in _entries(Path(spec.session_dir)))
 
         # A session nobody knows.
+        refusals = len(recorder.of("error"))
         await runtime.compact("nobody")
-        assert recorder.of("error")[-1]["command"] == "compact"
+        assert [(event["session_id"], event["command"]) for event in recorder.of("error")[refusals:]] == [
+            ("nobody", "compact")
+        ]
     finally:
         release.set()
         await runtime.shutdown()
@@ -596,3 +603,43 @@ def test_a_fork_and_a_compact_command_are_read_as_what_they_are() -> None:
     event = protocol.parse_event({"type": "forked", "session_id": "b", "source_session_id": "a", "upto": "e1", "entries": 3})
     assert isinstance(event, protocol.ForkedEvent)
     assert protocol.UsageEvent(session_id="a").summary is False
+
+
+async def test_a_copy_that_ends_before_a_summary_holds_the_conversation_as_it_was_then(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    await _seed(session, events, llm)
+    before_summary = _entries(Path(spec.session_dir))[-1].id
+    llm.add(say("## Current Work\n- the four steps are done"), finish())
+    mark = len(events.events)
+    session.compact()
+    await events.wait_ended(start=mark)
+    await session.close()
+    source_dir = Path(spec.session_dir)
+    assert read_snapshot(source_dir).compactions == 1
+
+    # All of it: the summary is part of the copy, and the copy is counted as summed up once.
+    whole = make_spec(tmp_path, "whole", model=_small_model())
+    fork_record(source_dir, Path(whole.session_dir))
+    assert read_snapshot(Path(whole.session_dir)).compactions == 1
+    # Up to where it stood before it was summed up: every word of then, and no summary.
+    early = make_spec(tmp_path, "early", model=_small_model())
+    result = fork_record(source_dir, Path(early.session_dir), upto=before_summary)
+    assert result.upto == before_summary
+    assert read_snapshot(Path(early.session_dir)).compactions == 0
+    assert not any(entry.type == "compaction" for entry in _entries(Path(early.session_dir)))
+
+    for target, summed in ((whole, True), (early, False)):
+        asked = ScriptedLLM([[say("Here."), finish()]])
+        copy, copy_events = await open_session(target, asked)
+        try:
+            await _ask(copy, copy_events, "Where does it stand?")
+            said = " ".join(_said(asked.requests[0]))
+            assert ("the four steps are done" in said) is summed
+            assert ("s0w10 s0w11" in said) is not summed
+            # Nothing is put together anew for it: it begins as the session it was copied from does.
+            assert not copy_events.of("compacted")
+            assert _system_of(asked.requests[0]) == read_snapshot(source_dir).system
+        finally:
+            await copy.close()

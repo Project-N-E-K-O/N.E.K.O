@@ -304,22 +304,34 @@ async def test_the_request_that_sums_a_conversation_up_is_counted_and_is_not_one
         return True
 
     release, wait = _gate()
-    host = _host(hosts, tmp_path, ScriptedLLM([[wait, *_report("ready", "done")]]), task_agent_meter=meter)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.none"}), _used(1_000, 10), finish("tool_calls")],
+            [wait, *_report("ready", "done", "call-2")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm, task_agent_meter=meter)
     first = (await _dispatch(host, "sort the photos")).commissions[0]
-    await wait_status(host, first.id, "working")
+    await wait_until(lambda: len(llm.requests) == 2, what="its second request")
+    await host.task_agents.settle()
     session = host.task_agents._sessions[first.id]
-    # (Its first request is counted before it is sent.)
-    await wait_until(lambda: counted, what="its first request being counted")
-    assert counted == [first.id]
+    # Its first request was counted before it was sent, and its usage has come since:
+    # the next one that reports usage is counted when it does.
+    assert counted == [first.id] and session.prepaid_requests == 0
+    assert (await host.ledger.get(first.id)).requests == 1
 
     summary = {"type": "usage", "session_id": first.id, "input": 9_000, "output": 700, "cache_read": 2_000, "summary": True}
     await host.task_agents._on_usage(session, summary)
 
+    # Not one of the run's requests: nothing is taken from the daily quota for it.
     assert counted == [first.id]
     kept = await host.ledger.get(first.id)
-    assert (kept.requests, kept.tokens_in, kept.tokens_cache_read, kept.tokens_out) == (1, 9_000, 2_000, 700)
-    # It says nothing of how long the conversation is.
-    assert (await host.ledger.get_session(first.id)).context_tokens == 0
+    assert (kept.requests, kept.tokens_in, kept.tokens_cache_read, kept.tokens_out) == (2, 10_000, 2_000, 710)
+    # It says nothing of how long the conversation is: that stays as the request before it left it.
+    assert (await host.ledger.get_session(first.id)).context_tokens == 1_010
+    # A request of the run is counted.
+    await host.task_agents._on_usage(session, {"type": "usage", "session_id": first.id, "input": 5, "output": 1})
+    assert counted == [first.id, first.id]
     release.set()
     await wait_status(host, first.id, "done")
 
@@ -347,6 +359,15 @@ async def test_a_commission_that_has_used_what_it_may_asks_before_its_next_reque
         ]
     )
     host = _host(hosts, tmp_path, llm)
+    # What a request used is written down a moment after the session has gone on to its next
+    # step: it is counted all the same when that step is asked about.
+    noted = host.task_agents._note_usage
+
+    async def a_moment_later(*args: Any) -> None:
+        await asyncio.sleep(0.15)
+        await noted(*args)
+
+    monkeypatch.setattr(host.task_agents, "_note_usage", a_moment_later)
     first = (await _dispatch(host, "sort the photos")).commissions[0]
 
     question = await _asked(host, first.id)
@@ -864,8 +885,12 @@ def _idle_on(monkeypatch: Any, *, after: float = 0.05, min_tokens: int = 5_000) 
 
 
 async def _idle_work_over(host: Any) -> None:
+    """Wait until nothing is to be summed up, and nothing is being: no timer, and no task the manager started."""
     manager = host.task_agents
-    await wait_until(lambda: not manager._idle_timers and not manager._compacting, what="the summing up being over")
+    await wait_until(
+        lambda: not manager._idle_timers and not manager._compacting and not manager._starting,
+        what="the summing up being over",
+    )
     await manager.settle()
 
 
@@ -1077,3 +1102,156 @@ def test_summing_up_idle_sessions_is_off_and_bounded_when_it_is_on():
     # A session that is being summed up is one only a running host can have so, and a copy is a kind of its own.
     assert "compacting" in SESSION_STATUSES and "compacting" in LIVE_SESSION_STATUSES
     assert "fork" in SESSION_KINDS
+
+
+async def test_what_was_copied_from_a_session_goes_when_that_sessions_record_goes(hosts, tmp_path):
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("ready", "sorted by year")]),
+        "tidy the downloads": ScriptedLLM([_report("ready", "tidy")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    other = (await _dispatch(host, "tidy the downloads")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await wait_status(host, other.id, "done")
+    await _let_go(host)
+    copies = [await host.fork_session(first.id), await host.fork_session(first.id)]
+    assert [copy.name for copy in copies] == [f"{first.title}/fork", f"{first.title}/fork-2"]
+    unrelated = await host.fork_session(other.id)
+    # One of the two is done with already.
+    assert await host.discard_fork(copies[0].id)
+
+    # The record of the session they were made from is removed (being old, or because its owner says so).
+    assert await host.space_keeper.clear_session(first.id)
+
+    for copy in copies:
+        assert (await host.ledger.get_session(copy.id)).status == "cleared"
+        assert not (Path(copy.session_dir) / "transcript.jsonl").exists()
+    # A copy of another session stays, and so does that session.
+    assert (await host.ledger.get_session(unrelated.id)).status == "closed"
+    assert (Path(unrelated.session_dir) / "transcript.jsonl").is_file()
+    assert (await host.ledger.get_session(other.id)).status == "closed"
+    # A copy cannot be made of a session whose record is gone.
+    with pytest.raises(ForkRefused, match="no longer kept"):
+        await host.fork_session(first.id)
+
+
+async def test_a_session_a_commission_is_at_work_in_or_waits_for_is_not_summed_up(hosts, tmp_path, monkeypatch):
+    _idle_on(monkeypatch, after=0.0, min_tokens=0)
+    release, wait = _gate()
+    scripts = {
+        "add a CSV export": ScriptedLLM([[say("Looking."), _used(9_000, 30), finish()], [wait, *_report("ready", "export added")]]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+    }
+    host = _host(hosts, tmp_path, _scripts_by_session(scripts), task_agent_model=_small_window, max_task_agents=1)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await _idle_work_over(host)
+    second = (await _dispatch(host, "add a chart to the budget app")).commissions[0]
+    await wait_status(host, second.id, "done")
+    await _let_go(host)
+    await _idle_work_over(host)
+    requests = len(scripts["add a CSV export"].requests) + len(scripts["add a chart"].requests)
+    marked: list[str] = []
+    begin = host.ledger.begin_compacting
+
+    async def spy(session_id: str) -> bool:
+        marked.append(session_id)
+        return await begin(session_id)
+
+    monkeypatch.setattr(host.ledger, "begin_compacting", spy)
+
+    # Held by a commission, or being cleared: it is not even looked at, and nothing is asked.
+    manager._held_by[first.id] = "someone"
+    assert await manager._idle_compact(first.id) is False
+    del manager._held_by[first.id]
+    assert manager.hold_files(first.id) is True
+    assert await manager._idle_compact(first.id) is False
+    manager.release_files(first.id)
+    assert marked == []
+    assert len(scripts["add a CSV export"].requests) + len(scripts["add a chart"].requests) == requests
+    assert (await host.ledger.get_session(first.id)).status == "closed"
+    # With neither in the way it is looked at (and found to hold too little to sum up).
+    await manager._idle_compact(first.id)
+    assert marked == [first.id]
+    assert (await host.ledger.get_session(first.id)).status == "closed"
+    release.set()
+
+
+async def test_which_sessions_are_summed_up_while_idle_is_told_by_what_the_ledger_has_of_them(hosts, tmp_path, monkeypatch):
+    import dataclasses
+
+    from nekoclaw.host.ledger import Session
+
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 3_600.0)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_MIN_TOKENS", 100_000)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS", 6 * 3_600.0)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACTS_PER_DAY", 2)
+    manager = _host(hosts, tmp_path, ScriptedLLM()).task_agents
+    now = 1_000_000.0
+    fine = Session(
+        id="s", name="Budget app", lanlan_name="Lan", kind="project", project="Budget app", workdir=None,
+        session_dir=None, runtime="builtin", parent_id=None, forked_from=None, status="closed", created_at=0.0,
+        last_active_at=now - 3_600.0, compacted_at=None, context_tokens=100_000,
+    )
+
+    def allowed(**changes: Any) -> bool:
+        return manager._idle_compact_allowed(dataclasses.replace(fine, **changes), now)
+
+    assert allowed()
+    assert not manager._idle_compact_allowed(None, now)
+    # One that goes on being handed commissions, and holds its conversation in the built-in runtime.
+    assert [allowed(kind=kind) for kind in ("single", "child", "fork")] == [False, False, False]
+    assert not allowed(runtime="dsh")
+    # Closed: not at work, not waiting, not being summed up already, and not emptied.
+    assert [allowed(status=status) for status in ("running", "waiting", "compacting", "cleared")] == [False] * 4
+    # Long enough, idle for long enough, and not summed up lately (by itself on the way, or while idle).
+    assert not allowed(context_tokens=99_999)
+    assert not allowed(last_active_at=now - 3_599.0)
+    assert not allowed(compacted_at=now - 6 * 3_600.0 + 1) and allowed(compacted_at=now - 6 * 3_600.0)
+    # So many within a day, all sessions together; older ones no longer count.
+    manager._idle_compacted_at.extend([now - 25 * 3_600.0, now - 3_600.0])
+    assert allowed()
+    manager._idle_compacted_at.append(now - 60.0)
+    assert not allowed()
+    assert list(manager._idle_compacted_at) == [now - 3_600.0, now - 60.0]
+
+
+async def test_a_commission_that_waits_for_the_user_as_it_is_is_not_asked_about_what_it_used(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            # It asks which folder is meant, and is over what it may use by then.
+            [call("report", {"status": "waiting", "summary": "which folder do you mean?"}), _used(900, 200), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted the Pictures folder"}, "call-2"), _used(990, 20), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    waiting = await wait_status(host, first.id, "waiting_user")
+    await host.task_agents.settle()
+    assert waiting.question()["kind"] == "report" and (await host.ledger.get(first.id)).tokens == 1_100
+
+    # Asked before a request while it waits like that (its run ends with the question, so a
+    # runtime does not come to ask; one that did would be told to go on): one question is
+    # open, its own. It is not asked a second one on top, nor told to hand anything over.
+    assert await host.task_agents._cb_budget(first.id, {}) is None
+    assert [item.payload["question"]["kind"] for item in await outbox(host, "question")] == ["report"]
+    assert await _events(host, first.id, "usage_refused") == []
+    assert host.task_agents._sessions[first.id].wind_up_left is None
+    assert host.task_agents._refused_more == set()
+
+    # Answered, it is at work again: asked about what it used before its next request, like any other.
+    assert await host.answer(first.id, "the Pictures folder")
+
+    async def asked_about_usage() -> bool:
+        current = await host.ledger.get(first.id)
+        return current.status == "waiting_user" and (current.question() or {}).get("category") == "usage_limit"
+
+    await wait_until(asked_about_usage, what="the question about what it used")
+    assert len(llm.requests) == 1
+    assert await host.answer(first.id, "ok", choice="once")
+    assert (await wait_status(host, first.id, "done")).result_summary == "sorted the Pictures folder"

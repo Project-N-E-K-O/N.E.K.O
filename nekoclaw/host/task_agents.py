@@ -765,8 +765,11 @@ class TaskAgentManager:
     async def _give_session(self, commission: Commission) -> Commission:
         """Make known the session a commission is worked on in, giving it one when it has none.
 
-        A commission that follows another up was filed with that one's
-        session. Otherwise: a task agent started by another gets a session
+        A commission that names a session keeps it: one that follows
+        another up was given that one's session once it was chosen for a
+        task agent (``TaskBrain._second_round``), and one that is to be
+        worked on in a copy of a session was filed with the copy
+        (``fork_session``). Otherwise: a task agent started by another gets a session
         of its own, whose parent is the session of the one that started it;
         a commission filed under a project gets the project's session, the
         one all commissions of that project are worked on in, for this
@@ -871,9 +874,11 @@ class TaskAgentManager:
         from config.prompts import prompts_nekoclaw_brain as texts
         from nekoclaw.host.conversation import excerpt_lines
 
+        # (Nothing is kept for a task agent another one started: ``_keep_excerpt``.)
         turns = self._excerpts.get(commission.id)
-        if not turns or commission.parent_id is not None or TASK_AGENT_EXCERPT_MAX_TOKENS <= 0:
+        if not turns:
             return ""
+        # With the cap at nothing no line fits, and nothing is handed over.
         lines = excerpt_lines(
             turns,
             lanlan_name=commission.lanlan_name,
