@@ -307,7 +307,10 @@ class SpaceKeeper:
     commission's session is kept (blocking; ``TaskAgentManager.session_dir_of``).
     ``hold_session`` and ``release_session`` are the manager's: while a
     session is held for cleaning, its commission is not taken up again, and
-    one that is in use is not held.
+    one that is in use is not held. ``forget_dsh_session`` removes what dsh
+    kept of the session a session directory belongs to (blocking;
+    ``DshInstallation.forget_session``): for a commission that ran in dsh,
+    what was said is there and not in a transcript.
     """
 
     def __init__(
@@ -319,6 +322,7 @@ class SpaceKeeper:
         session_dir_of: Callable[[Commission], Path] | None = None,
         hold_session: Callable[[str], bool] | None = None,
         release_session: Callable[[str], None] | None = None,
+        forget_dsh_session: Callable[[Path], bool] | None = None,
         clock: Callable[[], float] = time.time,
         review_delay: float | None = None,
     ) -> None:
@@ -328,6 +332,7 @@ class SpaceKeeper:
         self._session_dir_of = session_dir_of
         self._hold_session = hold_session
         self._release_session = release_session
+        self._forget_dsh_session = forget_dsh_session
         self._clock = clock
         self._review_delay = review_delay
         # From when on commissions are looked after: the first round of
@@ -1071,6 +1076,25 @@ class SpaceKeeper:
             return _NOT_REMOVED
         return _REMOVED if removed else _NOTHING
 
+    def _clean(self, directory: Path, commission_id: str) -> str:
+        """Remove what was said in a session, wherever it is kept. Blocking; returns what ``_clean_session`` does.
+
+        The built-in runtime keeps it in the session directory
+        (``_clean_session``). For a session that ran in dsh it is in the home
+        of dsh, which never removes it: the host does, here.
+        """
+        outcome = self._clean_session(directory, commission_id)
+        forget = self._forget_dsh_session
+        if forget is None or directory.name != commission_id or directory.parent.name != "sessions":
+            return outcome
+        try:
+            if forget(directory) and outcome == _NOTHING:
+                return _REMOVED
+        except OSError:
+            logger.warning("what dsh kept of an old session could not be removed", exc_info=True)
+            return _NOT_REMOVED
+        return outcome
+
     async def _clean_one(self, commission: Commission, until: float) -> str:
         """Clean the session of one commission the query found, if it is still to be cleaned.
 
@@ -1096,7 +1120,7 @@ class SpaceKeeper:
             # this still waits for the removing to finish before the hold
             # below is given back and before shutting down goes on: nothing
             # opens the session while its files are still being removed.
-            return await to_thread_through_cancellation(self._clean_session, Path(directory), current.id)
+            return await to_thread_through_cancellation(self._clean, Path(directory), current.id)
         except (OSError, ValueError):
             logger.warning("the session of an old commission could not be looked at", exc_info=True)
             return _NOT_REMOVED

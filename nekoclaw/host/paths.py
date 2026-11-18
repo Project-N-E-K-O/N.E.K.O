@@ -53,6 +53,12 @@ DEFAULT_PROJECT = "_daily"
 # looks whether it is there, and a test keeps the two names the same.
 TRANSCRIPT_NAME = "transcript.jsonl"
 
+# In the directory of a session that ran in dsh: which of dsh's sessions is
+# this one's. dsh keeps what was said itself; the dsh driver writes this note
+# and names it (``nekoclaw.dsh.profile.SESSION_FILE``). The host only looks
+# whether it is there, and a test keeps the two names the same.
+DSH_SESSION_NAME = "dsh-session.json"
+
 # Separators, drive and stream colons, characters Windows forbids in a name,
 # and control characters.
 _UNSAFE_CHARACTERS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -197,6 +203,15 @@ class HostPaths:
 
     def model_capabilities_json(self) -> Path:
         return self.root() / "model_capabilities.json"
+
+    def dsh(self) -> Path:
+        """Return where dsh is installed, for a user who downloaded it (``nekoclaw.dsh.install``).
+
+        Its program, its own home and what the user added to it. Not part
+        of what moves when the storage location is changed: the program is
+        downloaded again, and what was said in dsh's sessions stays behind.
+        """
+        return self.root() / "dsh"
 
     def space(self) -> SpacePaths:
         """Return the paths of the task agent space."""

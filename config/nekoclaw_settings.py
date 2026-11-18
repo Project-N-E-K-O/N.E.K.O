@@ -443,6 +443,14 @@ snapshot: what a dialog of the page says, and the address of a page in the
 list of pages. Longer text is cut and the number of characters left out is
 told."""
 
+GATEWAY_CLEARED_CALL_SECONDS = 30.0
+"""How long what the gateway ruled on before a call was made (the permission,
+the user's agreement to open a browser they closed) waits for that call. The
+call follows at once, so this only has to cover a busy moment. When it is up
+the ruling is dropped, and an agreement to open the browser with it, whether
+or not another call comes by: a call whose turn was stopped never comes, and
+one that comes later is ruled on anew."""
+
 GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS = 200
 """Cap on a plugin's request for confirmation when the gateway puts it to the
 user; it reaches the main dialogue model as part of a report."""
@@ -537,3 +545,136 @@ PLUGIN_SHORT_DESCRIPTION_REREAD_SECONDS = 60.0
 """How long a short-descriptions file that exists but could not be read (held
 open by another program) is left alone before it is read again."""
 
+
+# ---------------------------------------------------------------------------
+# The dsh runtime (``nekoclaw/dsh/``)
+# ---------------------------------------------------------------------------
+# dsh (DeepSeek Harness) is an agent runtime the user may download. It is a
+# developer preview whose releases break compatibility, and the permission
+# guard (``nekoclaw/dsh/profile.py``) rests on one of its internal events, so
+# exactly one version is used: the one everything here was verified against.
+
+DSH_VERSION = "0.2.1rc2"
+"""The release of ``deepseek-harness-runtime-bin`` on PyPI that is downloaded
+and driven. Another version found on the disk is not used."""
+
+DSH_PACKAGE = "deepseek-harness-runtime-bin"
+
+DSH_WHEELS: dict[str, dict[str, str | int]] = {
+    "win-x64": {
+        "file": "deepseek_harness_runtime_bin-0.2.1rc2-py3-none-win_amd64.whl",
+        "path": "bc/95/8164c49a5d3430add58db8aeba6546cd05c9ab7ddd2ea3e1acf174448d86",
+        "sha256": "d38c18f5117859feedaaa791a0eea37b8644bc187118e7e6f3afa231a5381cb7",
+        "size": 83860784,
+    },
+    "macos-arm64": {
+        "file": "deepseek_harness_runtime_bin-0.2.1rc2-py3-none-macosx_14_0_arm64.whl",
+        "path": "10/99/723905c63929056e05494e8a659bc8eb9adf671ee6712fb4316930b97ac8",
+        "sha256": "96a173abd14141d5328a78791b69729cbfe22fa3e9daf1dc2600d0daa4d6bb28",
+        "size": 90016291,
+    },
+    "macos-x64": {
+        "file": "deepseek_harness_runtime_bin-0.2.1rc2-py3-none-macosx_14_0_x86_64.whl",
+        "path": "7b/b5/8bd76d1247955ba1f502bd684f9307352a879d703475b547cb6934495b6e",
+        "sha256": "80614eee24916ce97d692baf8aed3ba146ed00fc2155d266cb0ede98d9354139",
+        "size": 93636346,
+    },
+    "linux-x64": {
+        "file": "deepseek_harness_runtime_bin-0.2.1rc2-py3-none-manylinux_2_28_x86_64.whl",
+        "path": "01/f3/1f7b9ea37ece210a5e432089bd63d048b2c45acc910561ec5e730c46a532",
+        "sha256": "0a0a4eb85a22cd9339972e6a5ced77a27ec791353a5b220e3e10b8cdbbdeca39",
+        "size": 94615763,
+    },
+    "linux-arm64": {
+        "file": "deepseek_harness_runtime_bin-0.2.1rc2-py3-none-manylinux_2_28_aarch64.whl",
+        "path": "2e/36/dd6d86ab8e4dd4ec2b3ed09ccb3bb28864d86c4e1c31189f7753bd0c07c6",
+        "sha256": "71ed869e3e9a0e3ea398521730889d2d7e154767834165f1553755818e3f2a78",
+        "size": 96833408,
+    },
+}
+"""The file of ``DSH_VERSION`` for each platform dsh is released for, by
+dsh's own platform tag: its name, where it lies below ``packages/`` on a PyPI
+host, its SHA-256 and its size in bytes. The release is not signed; a
+download whose SHA-256 differs is deleted and not installed. There is no
+build for Windows on ARM."""
+
+DSH_MIN_MACOS = 14
+DSH_MIN_GLIBC = (2, 28)
+"""The oldest macOS and the oldest C library of a Linux the files above run
+on, as their names say (``macosx_14_0``, ``manylinux_2_28``). On an older
+system dsh would be installed and then not start, so it counts as a platform
+dsh is not released for."""
+
+DSH_DOWNLOAD_HOSTS: tuple[str, ...] = (
+    "https://files.pythonhosted.org/packages",
+    "https://pypi.tuna.tsinghua.edu.cn/packages",
+    "https://mirrors.aliyun.com/pypi/packages",
+)
+"""Where the file is fetched from, tried in this order: PyPI, then two
+mirrors of it that are reachable where PyPI is slow. They serve the same
+file; the SHA-256 is checked whichever answered."""
+
+DSH_DOWNLOAD_CONNECT_SECONDS = 15.0
+DSH_DOWNLOAD_READ_SECONDS = 60.0
+"""How long one host gets to accept the connection, and to send the next
+piece of the file, before the next host is tried."""
+
+DSH_SESSION_SLOTS = 16
+"""How many sessions one dsh process can hold at a time. Each takes one of
+this many model names the process is configured with, which is how a model
+request is told from another session's (``nekoclaw/dsh/forward.py``). More
+than ``TASK_AGENT_MAX_CONCURRENT``: a session that is closing still holds
+its name while the next one starts."""
+
+DSH_IDLE_EXIT_SECONDS = 300.0
+"""How long every session of a dsh process has to be idle before its sessions
+are closed and the process is ended, which gives its memory back (230 MB and
+more). A commission taken up again later resumes its dsh session. The same
+time the built-in runtime's child process waits."""
+
+DSH_READY_SECONDS = 60.0
+"""How long a dsh process gets to answer the first request after it was
+started. It answers within a second once its file is in the disk cache; the
+first start after a download reads 270 MB."""
+
+DSH_GUARD_READY_SECONDS = 10.0
+"""How long after that first answer the permission guard is waited for to say
+it was loaded. A process whose guard did not load is ended and not used: its
+tools would act without asking."""
+
+DSH_REQUEST_SECONDS = 60.0
+"""How long dsh gets to answer a request that does no work of its own:
+creating, resuming and closing a session, choosing its model."""
+
+DSH_CLOSE_SECONDS = 15.0
+"""How long a dsh process gets to exit after it was told to before it is
+killed; closing a session waits this long too."""
+
+DSH_MODEL_RETRIES = 2
+"""How often dsh repeats a model request that failed in a way worth
+repeating; the built-in runtime's ``ModelConfig.max_retries``."""
+
+DSH_FORWARD_CONNECT_SECONDS = 30.0
+"""How long the model endpoint gets to accept a forwarded request. How long
+it may take to send the next piece of its answer is the session's
+``ModelConfig.request_timeout_seconds``."""
+
+DSH_HOST_TOOL_SECONDS = 50.0
+"""How long a call of one of the host's tools may take on dsh. dsh gives a
+tool of a service it was handed 60 seconds and then fails the call, with no
+way to ask for more; a call that would run into that is answered before it
+does, saying that it is still under way."""
+
+DSH_SPILL_KEPT_DAYS = 30
+"""How long dsh keeps the full text of a tool result too long for the
+context; it removes older ones when it starts."""
+
+DSH_STDERR_LINES_KEPT = 40
+"""How many of the last lines dsh wrote to its standard error are kept, for
+the reason given when it could not be started."""
+
+DSH_RETRY_SECONDS = 300.0
+"""How long after dsh could not be made ready (its process did not come up,
+or did not load the permission guard) new commissions go to the built-in
+runtime without trying dsh again. A commission that began in dsh is tried
+there all the same: only dsh has what was said in it."""
