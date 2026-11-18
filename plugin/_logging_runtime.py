@@ -11,8 +11,8 @@ import logging
 import os
 import sys
 
-# Standard streams replaced after fork. They stay referenced so their finalizers
-# never flush a buffer whose lock a vanished parent thread may hold.
+# Standard streams replaced after fork. They stay referenced so no finalizer
+# flushes them while the child runs (multiprocessing children leave via os._exit).
 _ABANDONED_STD_STREAMS: list = []
 
 
@@ -70,20 +70,21 @@ def reopen_inherited_std_streams():
     The inherited objects share the file-buffer hazard above, and the child keeps
     writing to them. They are never flushed or closed: their raw descriptors are
     the child's real fd 1/2, so only the Python objects are replaced. Inherited
-    console handlers follow the replacement.
+    console handlers follow the replacement; other saved references to the old
+    objects do not. Unbuffered streams (python -u) have no buffer lock and stay.
     """
     replaced = {}
     for name in ("stdout", "stderr"):
         old = getattr(sys, name)
-        if not isinstance(old, io.TextIOWrapper):
+        if not isinstance(old, io.TextIOWrapper) or not isinstance(old.buffer, (io.BufferedWriter, io.BufferedRandom)):
             continue
         new = replaced.get(old)
         if new is None:
             try:
                 new = open(old.fileno(), "w", buffering=1 if old.line_buffering else -1,
                            encoding=old.encoding, errors=old.errors, closefd=False)
-            except (OSError, ValueError):
-                continue
+            except Exception:
+                continue  # A fork hook must never fail the child; keep the old stream.
             replaced[old] = new
             _ABANDONED_STD_STREAMS.append(old)
         setattr(sys, name, new)

@@ -306,6 +306,22 @@ def test_fork_while_parent_thread_writes_stdout_gives_child_fresh_std_streams(
     assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-console-marker") == 1
 
 
+@_POSIX_FORK
+def test_fork_hook_keeps_unbuffered_std_streams():
+    """python -u streams have no buffer lock; reopening them would add buffering."""
+    import io
+    import sys
+    from plugin._logging_runtime import reopen_inherited_std_streams
+
+    def child_main():
+        unbuffered = io.TextIOWrapper(io.FileIO(os.dup(1), "w"), write_through=True)
+        sys.stdout = unbuffered
+        reopen_inherited_std_streams()
+        return 0 if sys.stdout is unbuffered else 2
+
+    assert _run_forked(child_main, lambda timeout_ms=0: None, "fork hook blocked") == 0
+
+
 def test_public_file_logger_and_sdk_helpers_use_host_sink(isolated_log_dir):
     from plugin.core.plugin_logger import PluginFileLogger, enable_plugin_file_logging
     from plugin.sdk.shared.logging import get_plugin_logger
