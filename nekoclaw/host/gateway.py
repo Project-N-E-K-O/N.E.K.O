@@ -777,8 +777,10 @@ class CapabilityGateway:
             # never one of them.)
             if capability.plugin_id not in candidates:
                 continue
-            definition = _definition(capability)
-            cost = count_tokens(json.dumps(_definition(capability, with_output=False), ensure_ascii=False))
+            # These definitions go into the commission's opening message, which
+            # the task agent's model reads, so they leave outputSchema out.
+            definition = _definition(capability, with_output=False)
+            cost = count_tokens(json.dumps(definition, ensure_ascii=False))
             if used + cost > GATEWAY_TOOL_LIST_MAX_TOKENS:
                 continue
             listed.append(definition)

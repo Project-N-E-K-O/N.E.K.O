@@ -210,6 +210,21 @@ async def test_only_the_two_tools_are_listed_and_what_was_picked_for_a_commissio
     assert await host.gateway.candidate_definitions(commission.id) == []
 
 
+async def test_an_output_schema_is_not_told_to_the_task_agent_model(host, server):
+    # The picked entries are written into the commission's opening message,
+    # which the model reads; an entry's output contract stays out of it.
+    described = entry("today", "Today's weather for a city")
+    described["output_schema"] = {"type": "object", "properties": {"summary": {"type": "string"}}}
+    server.add_plugin(plugin("weather", "Weather lookups", [described]), today=_returns(finish({"reply": "ok"})))
+    commission = await _commission(host)
+    _grant(host, commission, "weather")
+
+    picked = await host.gateway.candidate_definitions(commission.id)
+
+    assert [item["name"] for item in picked] == ["plugin__weather__today"]
+    assert set(picked[0]) == {"name", "description", "inputSchema"}
+
+
 async def test_what_was_picked_is_called_by_name_through_the_call_tool_or_directly(host, server):
     _catalog(server)
     grant = _grant(host, await _commission(host), "weather")

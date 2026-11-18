@@ -70,7 +70,7 @@ async def process(self, data: str, **_):
 
 `output_schema` 和 `llm_result_fields` / `llm_result_model` 互不影响：后两者决定模型读哪些字段，`output_schema` 描述整个返回值。两者可以同时用。
 
-显式的 `output_schema` 用内置的 JSON Schema 子集校验，支持的关键字：`type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、本文档内的 `$ref`。其他关键字会被忽略、不参与校验，所以 `strict_output=True` 也只强制校验这些关键字。从 Pydantic 返回注解推导出的契约由模型自己校验。
+显式的 `output_schema` 用内置的 JSON Schema 子集校验，支持的关键字：`type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、本文档内的 `$ref`。其他关键字会被忽略、不参与校验，所以 `strict_output=True` 也只强制校验这些关键字。从 Pydantic 返回注解推导出的契约由模型自己校验。
 
 ::: tip
 只有在处理器有意接受宿主额外字段时才使用 `**_`。显式签名的处理器会由运行时过滤不支持的关键字参数，因此它不是硬性要求。

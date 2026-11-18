@@ -14,7 +14,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from plugin._types.exceptions import (
     OUTPUT_SCHEMA_VIOLATION_CODE,
@@ -570,3 +570,107 @@ async def test_checker_failure_is_logged_but_not_a_strict_failure(caplog):
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
         assert await runtime.invoke("plugin_entry", "entry", {}) is deep
     assert "check_error:" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Review round 1: the check never touches the returned value; data keys stay out
+# ---------------------------------------------------------------------------
+
+
+class Counted(BaseModel):
+    n: int = 0
+
+    @model_validator(mode="after")
+    def bump(self):
+        self.n += 1
+        return self
+
+
+class Mutating(BaseModel):
+    items: list[int]
+
+    @model_validator(mode="before")
+    @classmethod
+    def eat(cls, data):
+        if isinstance(data, dict):
+            data["items"].append(99)
+        return data
+
+
+async def test_returned_model_instance_is_not_revalidated():
+    returned = Counted()
+    assert returned.n == 1
+    meta = EventMeta(event_type="plugin_entry", id="entry", output_schema=Counted.model_json_schema(), output_model=Counted)
+
+    async def entry():
+        return returned
+
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    assert await runtime.invoke("plugin_entry", "entry", {}) is returned
+    assert returned.n == 1
+
+
+async def test_validators_never_mutate_the_returned_data():
+    returned = {"items": [1]}
+    meta = EventMeta(event_type="plugin_entry", id="entry", output_schema=Mutating.model_json_schema(), output_model=Mutating)
+
+    async def entry():
+        return returned
+
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    assert await runtime.invoke("plugin_entry", "entry", {}) == {"items": [1]}
+
+
+class IntKeys(BaseModel):
+    scores: dict[int, int]
+    rows: list[int]
+
+
+def test_integer_mapping_keys_are_not_put_in_paths():
+    check = build_output_check(SimpleNamespace(output_schema=IntKeys.model_json_schema(), output_model=IntKeys))
+    issues = [(i.path, i.type) for i in check({"scores": {123456789: "x"}, "rows": [1, "y"]})]
+    assert ("$.scores.*", "int_parsing") in issues
+    assert ("$.rows[1]", "int_parsing") in issues
+    assert all("123456789" not in path for path, _kind in issues)
+
+
+class Exploding(BaseModel):
+    n: int
+
+    @model_validator(mode="after")
+    def boom(self):
+        raise TypeError("not a validation error")
+
+
+async def test_a_crashing_custom_validator_warns_but_does_not_fail_strict(caplog):
+    meta = EventMeta(
+        event_type="plugin_entry", id="entry",
+        output_schema=Exploding.model_json_schema(), output_model=Exploding, strict_output=True,
+    )
+
+    async def entry():
+        return {"n": 1}
+
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        assert await runtime.invoke("plugin_entry", "entry", {}) == {"n": 1}
+    assert "check_error:TypeError" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "expected"),
+    [
+        ({"$defs": {"deny": False}, "$ref": "#/$defs/deny"}, 1, [("$", "false")]),
+        ({"$defs": {"allow": True}, "$ref": "#/$defs/allow"}, 1, []),
+        ({"$ref": "#/$defs/missing"}, 1, []),
+        ({"$ref": "https://example.com/schema.json"}, 1, []),
+        ({"type": "object", "patternProperties": {}, "additionalProperties": False}, {"unexpected": 1}, [("$.*", "additionalProperties")]),
+        (
+            {"type": "object", "patternProperties": {"^x_": {"type": "integer"}}, "additionalProperties": False},
+            {"x_a": 1, "x_b": "no", "y": 1},
+            [("$.*", "type"), ("$.*", "additionalProperties")],
+        ),
+    ],
+)
+def test_review_round_one_schema_cases(schema, value, expected):
+    assert _issues(schema, value) == expected

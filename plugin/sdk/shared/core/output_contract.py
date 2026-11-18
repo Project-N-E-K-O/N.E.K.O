@@ -22,6 +22,7 @@ Two checkers:
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -44,7 +45,7 @@ _WILDCARD = "*"
 SUPPORTED_KEYWORDS = frozenset({
     "$ref", "$defs", "definitions",
     "type", "enum", "const",
-    "properties", "required", "additionalProperties",
+    "properties", "patternProperties", "required", "additionalProperties",
     "items", "prefixItems", "minItems", "maxItems",
     "minLength", "maxLength", "pattern",
     "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
@@ -135,32 +136,57 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     def check(value: object) -> list[OutputIssue]:
         if value is None and nullable:
             return []
+        if isinstance(value, model):
+            # Validated when it was built. Validating it again would rerun
+            # after-validators on the very object the caller receives.
+            return []
         try:
-            adapter.validate_python(value)
+            # Validators may mutate their input; check a private copy so the
+            # returned value is never touched.
+            probe = copy.deepcopy(value)
+        except Exception as exc:  # noqa: BLE001 - uncopyable data cannot be checked safely
+            return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
+        try:
+            adapter.validate_python(probe)
         except ValidationError as exc:
             # include_input/include_context off: only loc and type are read,
             # but nothing that quotes the data is even materialized.
             errors = exc.errors(include_url=False, include_input=False, include_context=False)
+            # Paths are resolved against an untouched copy of the input.
+            shape = copy.deepcopy(value)
             return [
-                OutputIssue(path=_loc_path(error.get("loc", ()), declared), type=str(error.get("type") or "invalid"))
+                OutputIssue(path=_loc_path(error.get("loc", ()), declared, shape), type=str(error.get("type") or "invalid"))
                 for error in errors[:MAX_REPORTED_ISSUES + 1]
             ]
-        except Exception as exc:  # noqa: BLE001 - a broken custom validator is an issue, not a crash
-            return [OutputIssue(path="$", type=f"validator_error:{type(exc).__name__}")]
+        except Exception as exc:  # noqa: BLE001 - a crashing custom validator is a checker failure
+            return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         return []
 
     return check
 
 
-def _loc_path(loc: Sequence[object], declared: frozenset[str]) -> str:
+def _loc_path(loc: Sequence[object], declared: frozenset[str], value: object) -> str:
+    """Render a Pydantic ``loc`` without any segment that comes from the data.
+
+    The loc is walked along the input: an integer is kept only where the
+    input holds a list (an index); mapping keys, integer or not, are kept only
+    when the schema declares them, otherwise they become ``*``.
+    """
     path = "$"
+    current: object = value
     for part in loc:
-        if isinstance(part, int) and not isinstance(part, bool):
+        if isinstance(current, (list, tuple)) and isinstance(part, int) and not isinstance(part, bool):
             path += f"[{part}]"
-        elif isinstance(part, str) and part in declared:
+            current = current[part] if 0 <= part < len(current) else None
+            continue
+        if isinstance(part, str) and part in declared:
             path += f".{part}"
         else:
             path += f".{_WILDCARD}"
+        if isinstance(current, Mapping):
+            current = current.get(part)
+        else:
+            current = getattr(current, part, None) if isinstance(part, str) else None
     return path
 
 
@@ -209,9 +235,10 @@ class _JsonSchemaCheck:
 
     # -- helpers -----------------------------------------------------------
 
-    def _resolve(self, ref: object) -> Mapping[str, object] | None:
+    def _resolve(self, ref: object) -> object:
+        """The referenced schema (a mapping or a boolean), or ``_UNRESOLVED``."""
         if not isinstance(ref, str) or not ref.startswith("#"):
-            return None
+            return _UNRESOLVED
         node: object = self._root
         for token in ref[1:].split("/"):
             if token == "":
@@ -222,8 +249,8 @@ class _JsonSchemaCheck:
             elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
                 node = node[int(token)]
             else:
-                return None
-        return node if isinstance(node, Mapping) else None
+                return _UNRESOLVED
+        return node if isinstance(node, (Mapping, bool)) else _UNRESOLVED
 
     def _pattern(self, pattern: str) -> re.Pattern[str] | None:
         if pattern not in self._patterns:
@@ -272,7 +299,8 @@ class _JsonSchemaCheck:
                 self._add(issues, path, "ref_depth", limit)
                 return
             target = self._resolve(schema["$ref"])
-            if target is not None:
+            # An unresolvable (e.g. external) reference is not ours to judge.
+            if target is not _UNRESOLVED:
                 self._check(target, value, path, issues, depth + 1, limit=limit)  # $ref hop
 
         expected = schema.get("type")
@@ -358,11 +386,22 @@ class _JsonSchemaCheck:
         for name, sub_schema in properties.items():
             if name in value:
                 self._check(sub_schema, value[name], f"{path}.{name}", issues, 0, limit=limit)
+        patterns: list[tuple[re.Pattern[str], object]] = []
+        pattern_properties = schema.get("patternProperties")
+        if isinstance(pattern_properties, Mapping):
+            for raw, sub_schema in pattern_properties.items():
+                compiled = self._pattern(raw) if isinstance(raw, str) else None
+                if compiled is not None:
+                    patterns.append((compiled, sub_schema))
         additional = schema.get("additionalProperties")
-        if additional is None or additional is True or "patternProperties" in schema:
-            return
         for key, item in value.items():
             if key in properties:
+                continue
+            matched = [sub for compiled, sub in patterns if isinstance(key, str) and compiled.search(key)]
+            for sub_schema in matched:
+                # Pattern-matched keys come from the data too.
+                self._check(sub_schema, item, f"{path}.{_WILDCARD}", issues, 0, limit=limit)
+            if matched or additional is None or additional is True:
                 continue
             # Undeclared keys come from the data: never put them in a path.
             child = f"{path}.{_WILDCARD}"
@@ -418,6 +457,9 @@ def _json_default(value: object) -> object:
     if isinstance(value, (bytes, bytearray)):
         return bytes(value).decode("utf-8", errors="replace")
     return str(value)
+
+
+_UNRESOLVED = object()
 
 
 class _Enough(Exception):

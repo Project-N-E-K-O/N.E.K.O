@@ -191,7 +191,7 @@ An explicit `output_schema` wins over the annotation. An entry with neither has 
   For an explicit schema, only the supported keywords listed below are enforced; a constraint written with any other keyword is not checked, in strict mode either.
 - The warning is written on every mismatching call and is not rate-limited, so an entry called often with a wrong shape can flood the plugin log. Fix the return value or the contract rather than leaving it.
 
-A model inferred from the annotation is checked by the model itself. An explicit schema is checked with a built-in subset of JSON Schema: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `anyOf`, `oneOf`, `allOf`, `not` and local `$ref`. Any other keyword is ignored and takes no part in the check.
+A model inferred from the annotation is checked by the model itself. An explicit schema is checked with a built-in subset of JSON Schema: `type`, `enum`, `const`, `properties`, `patternProperties`, `required`, `additionalProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `anyOf`, `oneOf`, `allOf`, `not` and local `$ref`. Any other keyword is ignored and takes no part in the check.
 
 The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries, and the task agent's tool definitions carry it as `outputSchema`.
 
