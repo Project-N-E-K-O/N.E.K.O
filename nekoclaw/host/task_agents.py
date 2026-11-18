@@ -67,6 +67,7 @@ import contextlib
 import dataclasses
 import json
 import logging
+import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -227,6 +228,10 @@ class _Session:
     # asked goes on. Set and taken away with the question it was asked
     # with (``_ask``): the answer to another one does not do it.
     at_answer: Callable[[], None] | None = None
+    # Which question the commission waits with (its ``id`` in what the
+    # ledger has of it), asked through a tool call or by a report: an
+    # answer that was read against another one is not this one's.
+    question_id: str = ""
     ask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # True after a ``waiting`` report: the answer becomes the session's next work.
     awaiting_prompt: bool = False
@@ -1107,6 +1112,14 @@ class TaskAgentManager:
 
         # (Nothing is kept for a task agent another one started: ``_keep_excerpt``.)
         turns = self._excerpts.get(commission.id)
+        if turns and self._conversation is not None:
+            # Taken when the commission was filed or handed over, which
+            # may be before what is kept of the main dialogue was last
+            # dropped (NekoClaw went off): what was said before that
+            # is not handed to a task agent after it, wherever it was
+            # kept meanwhile.
+            since = self._conversation.forgotten_at(commission.lanlan_name)
+            turns = [turn for turn in turns if turn.at > since]
         if not turns:
             return ""
         # With the cap at nothing no line fits, and nothing is handed over.
@@ -2160,7 +2173,7 @@ class TaskAgentManager:
             return
         commission_id = session.commission_id
         if status == "waiting":
-            question = {"kind": "report", "question": summary, "details": details}
+            question = {"kind": "report", "question": summary, "details": details, "id": uuid.uuid4().hex}
             moved = await self._ledger.transition(
                 commission_id,
                 "waiting_user",
@@ -2169,6 +2182,7 @@ class TaskAgentManager:
             )
             if moved.applied and moved.commission is not None:
                 session.awaiting_prompt = True
+                session.question_id = question["id"]
                 session.run_ended = False
                 session.held_answer = None
                 await self._reporter.question(moved.commission, question)
@@ -3141,11 +3155,24 @@ class TaskAgentManager:
             self._spawn(self._start_next())
         return True
 
-    async def answer(self, commission_id: str, text: str, choice: str | None = None) -> bool:
-        """Give the user's answer to a commission that waits for it."""
+    async def answer(
+        self, commission_id: str, text: str, choice: str | None = None, *, question_id: str | None = None
+    ) -> bool:
+        """Give the user's answer to a commission that waits for it.
+
+        ``question_id`` is which question the answer was read against
+        (the ``id`` of what the commission asked, as the ledger had
+        it then). Reading a sentence as an answer takes a while, and
+        that question may be answered or gone by now, with another
+        one waiting in its place: the answer is not that one's, and
+        is turned away with nothing changed. Not said (None), the
+        answer is for whichever question waits.
+        """
         session = self._sessions.get(commission_id)
         if session is None:
-            return await self._answer_closed(commission_id, text)
+            return await self._answer_closed(commission_id, text, question_id=question_id)
+        if question_id is not None and question_id != session.question_id:
+            return False
         if session.question is not None and not session.question.done():
             if session.at_answer is not None:
                 # With nothing awaited between this and the answer being
@@ -3165,7 +3192,9 @@ class TaskAgentManager:
             return await self._deliver_answer(session, text)
         return False
 
-    async def _answer_closed(self, commission_id: str, text: str, *, claimed: bool = False) -> bool:
+    async def _answer_closed(
+        self, commission_id: str, text: str, *, claimed: bool = False, question_id: str | None = None
+    ) -> bool:
         """Answer a ``waiting`` report whose session was closed meanwhile.
 
         A runtime with nothing to do exits after a while and closes its idle
@@ -3190,6 +3219,9 @@ class TaskAgentManager:
             # that waits for it; only the question of a report can be answered
             # this way.
             if question.get("kind") != "report":
+                return False
+            if question_id is not None and question_id != question.get("id"):
+                # Read against another question than the one it waits with now.
                 return False
             await self._ledger.append_event(commission_id, "answered", {"text": text, "resumed": True})
             return await self._take_up_again(commission_id, text, same_round=True)
@@ -3261,6 +3293,10 @@ class TaskAgentManager:
             raise RuntimeError("the commission has no session to ask for")
         async with session.ask_lock:
             future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+            # Which question this is, for whoever reads a sentence as
+            # its answer: by the time the answer is handed in, another
+            # question may wait in its place (``answer``).
+            question = {**question, "id": uuid.uuid4().hex}
             moved = await self._ledger.transition(
                 commission_id,
                 "waiting_user",
@@ -3269,7 +3305,7 @@ class TaskAgentManager:
             )
             if not moved.applied or moved.commission is None:
                 raise RuntimeError(f"the commission cannot wait for the user ({moved.refusal})")
-            session.question, session.at_answer = future, at_answer
+            session.question, session.at_answer, session.question_id = future, at_answer, question["id"]
             try:
                 await self._reporter.question(moved.commission, question)
                 return await future

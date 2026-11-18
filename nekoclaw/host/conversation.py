@@ -69,6 +69,9 @@ class RecentConversation:
     def __init__(self, *, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
         self._turns: dict[str, deque[Turn]] = {}
+        # When what was kept was last dropped: for each character, and
+        # (under None) for all of them at once.
+        self._forgotten_at: dict[str | None, float] = {}
 
     def note(self, lanlan_name: str, role: str, text: str, *, at: float | None = None, event_id: str = "") -> bool:
         """Keep one message; returns whether it was kept.
@@ -111,6 +114,10 @@ class RecentConversation:
                 # say): kept as it is, the message would be the newest
                 # there is, and never old, for as long as this runs.
                 said_at = now
+        if said_at < self.forgotten_at(lanlan_name):
+            # Said before what was kept was dropped, and told of only
+            # now: it goes the way of what was said then.
+            return False
         if not event_id:
             # Told twice without an id: the same words by the same side as
             # the message said just before it. By when it was said, and
@@ -164,11 +171,23 @@ class RecentConversation:
         return [turn for turn in self._turns.get(lanlan_name, ()) if turn.at >= since]
 
     def forget(self, lanlan_name: str | None = None) -> None:
-        """Drop what is kept for a character, or for all of them."""
+        """Drop what is kept for a character, or for all of them.
+
+        And note when: what was said before this is not kept when it
+        is told of late (``note``), and is not handed on by whoever
+        took it from here before (``forgotten_at``).
+        """
+        now = self._clock()
         if lanlan_name is None:
             self._turns.clear()
+            self._forgotten_at = {None: now}
         else:
             self._turns.pop(lanlan_name, None)
+            self._forgotten_at[lanlan_name] = now
+
+    def forgotten_at(self, lanlan_name: str) -> float:
+        """Return when what was kept for a character was last dropped (epoch seconds); 0.0 for never."""
+        return max(self._forgotten_at.get(None, 0.0), self._forgotten_at.get(lanlan_name, 0.0))
 
 
 def excerpt_lines(

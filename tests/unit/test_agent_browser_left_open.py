@@ -1204,7 +1204,8 @@ async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the
 
 
 _CAPABILITY_SWITCHES = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}
-_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+# (A lambda is part of what it stands in: what it sets, that one sets.)
+_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
 def _own_nodes(function: ast.AST) -> list[ast.AST]:
@@ -1217,6 +1218,15 @@ def _own_nodes(function: ast.AST) -> list[ast.AST]:
         if not isinstance(node, _FUNCTIONS):
             todo.extend(ast.iter_child_nodes(node))
     return found
+
+
+def _scopes(tree: ast.Module) -> list[tuple[str, ast.AST]]:
+    """Every function of a module by itself, and what the module does as it is loaded."""
+    return [
+        (getattr(scope, "name", "<module>"), scope)
+        for scope in ast.walk(tree)
+        if isinstance(scope, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
 
 
 def _is_true(node: ast.AST | None) -> bool:
@@ -1240,7 +1250,10 @@ def _set_by(node: ast.AST) -> list[ast.AST]:
     """What a node sets, or takes out, as it stands there (a row that is taken apart is one of them)."""
     if isinstance(node, (ast.Assign, ast.Delete)):
         return list(node.targets)
-    if isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.comprehension)):
+    if isinstance(node, ast.AnnAssign):
+        # (A type said for it and nothing more: nothing is set.)
+        return [node.target] if node.value is not None else []
+    if isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension)):
         return [node.target]
     if isinstance(node, ast.withitem) and node.optional_vars is not None:
         return [node.optional_vars]
@@ -1338,6 +1351,13 @@ def test_a_switch_is_put_off_though_what_was_kept_could_not_be_dropped_and_that_
         ('Modules.agent_flags["something_else"], reason = False, ""', False),
         ('on, reason = Modules.agent_flags["browser_use_enabled"], ""', False),
         ('on = other = Modules.agent_flags["browser_use_enabled"] = True', False),
+        # In a lambda: part of the function it stands in.
+        ('(lambda: [None for Modules.agent_flags["browser_use_enabled"] in (False,)])()', True),
+        ('off = lambda: Modules.agent_flags.update(browser_use_enabled=False)', True),
+        ('on = lambda: Modules.agent_flags.get("browser_use_enabled")', False),
+        # A type said for it, and nothing set.
+        ('Modules.agent_flags["browser_use_enabled"]: bool', False),
+        ("Modules.agent_flags: dict", False),
         # Put on, read, or another switch than the three.
         ('Modules.agent_flags["browser_use_enabled"] = True', False),
         ('Modules.agent_flags["browser_use_enabled"]: bool = True', False),
@@ -1353,6 +1373,25 @@ def test_what_puts_a_capability_switch_off_is_told_from_what_does_not(statement:
     assert any(_puts_a_capability_switch_off(node) for node in _own_nodes(function)) is puts_one_off
 
 
+def test_what_a_module_does_as_it_is_loaded_and_what_stands_in_a_class_is_looked_at_as_well() -> None:
+    tree = ast.parse(
+        'Modules.agent_flags["browser_use_enabled"] = False\n'
+        "def reads():\n"
+        '    return Modules.agent_flags.get("browser_use_enabled")\n'
+        "class Kept:\n"
+        '    off = lambda: Modules.agent_flags.pop("user_plugin_enabled", None)\n'
+        "    def puts_one_off(self):\n"
+        '        del Modules.agent_flags["computer_use_enabled"]\n'
+    )
+    found = [
+        (scope, sum(_puts_a_capability_switch_off(node) for node in _own_nodes(function)))
+        for scope, function in _scopes(tree)
+    ]
+    # What stands in the module and in the class (a lambda among it) is the module's; each
+    # function is looked at by itself, and not once more as part of what it stands in.
+    assert sorted(found) == [("<module>", 2), ("puts_one_off", 1), ("reads", 0)]
+
+
 def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
     from pathlib import Path
 
@@ -1360,11 +1399,9 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekocla
     master: dict[str, bool] = {}
     for path in sorted(Path(api_routes.__file__).parent.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for function in ast.walk(tree):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for scope, function in _scopes(tree):
             nodes = _own_nodes(function)
-            name = f"{path.name}:{function.name}"
+            name = f"{path.name}:{scope}"
             if any(_puts_a_capability_switch_off(node) for node in nodes):
                 capability.append(name)
                 # In one go: the switch, and what was kept, with nothing waited for in between.

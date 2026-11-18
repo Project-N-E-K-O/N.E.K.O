@@ -735,6 +735,11 @@ def test_the_last_messages_of_the_main_dialogue_are_kept_for_each_character():
     assert kept.recent("Lan") == [] and [turn.text for turn in kept.recent("Mei")] == ["hello again"]
     kept.forget()
     assert kept.recent("Mei") == []
+    # What was said before all was dropped, and is told of only now, is not kept either.
+    assert kept.forgotten_at("Lan") == clock.now and kept.forgotten_at("Mei") == clock.now
+    clock.now += 10
+    assert not kept.note("Lan", ROLE_USER, "said before all was dropped", at=clock.now - 11)
+    assert kept.recent("Lan") == []
     # One that is told of late stands where it was said: the newest are the ones said last.
     kept.note("Lan", ROLE_USER, "said second", at=clock.now - 2)
     kept.note("Lan", ROLE_CHARACTER, "said first", at=clock.now - 3)
@@ -4419,6 +4424,7 @@ async def test_the_answer_to_another_question_of_the_commission_is_not_where_wha
         commission = await host.ledger.get(first.id)
         return commission.status == "waiting_user" and (commission.question() or {}).get("category") == "usage_limit"
 
+    other: asyncio.Future[Any] | None = None
     manager._permissions.ask_each_time, host.ledger.transition = seen, slow_to_wait_for_the_other_answer
     try:
         first = (await _dispatch(host, "sort the photos")).commissions[0]
@@ -4449,6 +4455,10 @@ async def test_the_answer_to_another_question_of_the_commission_is_not_where_wha
     finally:
         release.set()
         go.set()
+        if other is not None and not other.done():
+            # (It did not get its answer: not left waiting for one.)
+            other.cancel()
+            await asyncio.gather(other, return_exceptions=True)
         manager._permissions.ask_each_time, host.ledger.transition = ask_each_time, transition
     assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 200 + 1_000
     assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
@@ -4542,6 +4552,7 @@ async def test_what_was_said_before_the_answer_and_is_not_handled_in_time_comes_
     manager = host.task_agents
     handle, reach = manager._handle, manager._reach
     held, go, given_up = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    marks: list[tuple[bool, bool]] = []
 
     async def held_up_by_something_else(event: dict[str, Any]) -> None:
         if event.get("type") == "held-up":
@@ -4552,7 +4563,10 @@ async def test_what_was_said_before_the_answer_and_is_not_handled_in_time_comes_
 
     async def not_for_long(reached: Any, within: float = 0.0) -> None:
         # (As when the ten seconds it waits at the most have gone by.)
+        there = reached is not None and not reached.done()
         await reach(reached, 0.05)
+        # Whether there was a mark to wait for, and whether the wait for it ran out.
+        marks.append((there, reached is not None and reached.cancelled()))
         given_up.set()
 
     async def more_is_allowed() -> bool:
@@ -4570,6 +4584,8 @@ async def test_what_was_said_before_the_answer_and_is_not_handled_in_time_comes_
         manager._reach = not_for_long
         assert await asyncio.wait_for(host.answer(first.id, "ok", choice="once"), 5)
         await asyncio.wait_for(given_up.wait(), 5)
+        # The mark was there, and was not reached in the time it is waited for.
+        assert marks[0] == (True, True)
         # The commission is not kept waiting for it: as much again from what is written down by now.
         await wait_until(more_is_allowed, what="more being allowed")
         assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
@@ -4584,3 +4600,228 @@ async def test_what_was_said_before_the_answer_and_is_not_handled_in_time_comes_
     assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
     assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
     assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0
+
+
+def _over_twice() -> ScriptedLLM:
+    """Three requests: it has used what it may before the second, and what it was allowed on top before the third."""
+    return ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
+            [call("glob", {"pattern": "*.b"}, "call-2"), _used(1_000, 100), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted"}, "call-3"), _used(100, 30), finish("tool_calls")],
+        ]
+    )
+
+
+async def _asked_after(host: Any, commission_id: str, earlier: dict[str, Any]) -> dict[str, Any]:
+    """Wait until a commission waits for the user with another question than ``earlier``, and return it."""
+
+    async def asked_again() -> bool:
+        commission = await host.ledger.get(commission_id)
+        return commission.status == "waiting_user" and (commission.question() or {}).get("id") not in (None, earlier["id"])
+
+    await wait_until(asked_again, what="its next question")
+    return (await host.ledger.get(commission_id)).question()
+
+
+async def test_an_answer_read_against_a_question_that_is_gone_is_not_given_to_the_one_that_waits_now(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    host = _host(hosts, tmp_path, _over_twice())
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    asked = await _asked(host, first.id)
+    assert asked["category"] == "usage_limit" and asked["id"]
+    # One that was read against another question altogether is not the answer to this one.
+    assert not await host.answer(first.id, "ok", choice="once", question_id="another-question")
+    assert (await host.ledger.get(first.id)).status == "waiting_user"
+    assert await host.answer(first.id, "ok", choice="once", question_id=asked["id"])
+    # It has used what it was allowed on top as well, and asks again: a question of its own.
+    again = await _asked_after(host, first.id, asked)
+    assert again["category"] == "usage_limit" and again["detail"]["used"] == tokens_text(2_200)
+    # The answer to the first, handed in once more (it was read as one while that still waited).
+    # The user has said nothing to this one: it goes on waiting, and nothing more is allowed.
+    assert not await host.answer(first.id, "ok", choice="once", question_id=asked["id"])
+    assert (await host.ledger.get(first.id)).status == "waiting_user"
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
+    assert manager._usage_reading == 0 and manager._usage_late == []
+    # Said without which question it is for, it is for the one that waits, as it always was.
+    assert await host.answer(first.id, "ok", choice="once")
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    assert (await host.ledger.usage_standing(first.id)).allowed == 2_200 + 1_000
+
+
+async def test_a_sentence_read_as_the_answer_to_a_question_does_not_answer_the_one_asked_after_it(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    host = _host(hosts, tmp_path, _over_twice())
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    asked = await _asked(host, first.id)
+    triage = host.brain._decision.triage
+    seen: list[dict[str, Any]] = []
+
+    async def while_the_question_is_answered_another_way(request: Any) -> Any:
+        read = await triage(request)
+        if not seen:
+            # The sentence is read as the answer to the question that waits. Before it is handed
+            # in that one is answered (by a button, say), and the commission asks its next.
+            assert await host.answer(first.id, "ok", choice="once")
+            seen.append(await _asked_after(host, first.id, asked))
+        return read
+
+    host.brain._decision.triage = while_the_question_is_answered_another_way
+    try:
+        receipt = await _dispatch(host, "yes, go ahead")
+    finally:
+        host.brain._decision.triage = triage
+    (again,) = seen
+    # Not passed on as the answer to a question the user has not been asked when they said it:
+    # she is told it is unclear what was meant, and the question still waits.
+    assert receipt.kind == "ambiguous"
+    waiting = await host.ledger.get(first.id)
+    assert waiting.status == "waiting_user" and waiting.question()["id"] == again["id"]
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
+    # Said again, it is read against the question that waits now, and answers it.
+    assert (await _dispatch(host, "yes, go ahead")).kind == "answered"
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+
+
+async def test_an_answer_read_against_another_question_is_not_the_answer_to_what_a_report_asks(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("waiting", "And where do the sorted ones go?", "call-2"),
+            _report("ready", "sorted", "call-3"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    earlier = await _asked(host, first.id)
+    assert earlier["kind"] == "report" and earlier["id"]
+    await wait_until(lambda: manager._sessions[first.id].run_ended, what="the run that asked being over")
+    assert not await host.answer(first.id, "on the desktop", question_id="another-question")
+    assert (await host.ledger.get(first.id)).status == "waiting_user" and len(llm.requests) == 1
+    assert await host.answer(first.id, "on the desktop", question_id=earlier["id"])
+    asked = await _asked_after(host, first.id, earlier)
+    assert asked["question"] == "And where do the sorted ones go?"
+    await wait_until(lambda: manager._sessions[first.id].run_ended, what="the run that asked being over")
+    # The answer to the question before, handed in once more: not the answer to this one.
+    assert not await host.answer(first.id, "on the desktop", question_id=earlier["id"])
+    assert (await host.ledger.get(first.id)).status == "waiting_user" and len(llm.requests) == 2
+
+    # The same once its session was closed under it (a runtime with nothing to do closes its idle
+    # sessions): the answer takes the commission up again only if it is the answer to that question.
+    await manager._runtimes.builtin().close(first.id)
+    await manager.settle()
+    assert first.id not in manager._sessions and (await host.ledger.get(first.id)).status == "waiting_user"
+    assert not await host.answer(first.id, "the left one", question_id=earlier["id"])
+    assert (await host.ledger.get(first.id)).status == "waiting_user" and len(llm.requests) == 2
+    assert await host.answer(first.id, "the left one", question_id=asked["id"])
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    assert "on the desktop" in _user_messages(llm.requests[1])[-1]
+    assert "the left one" in _user_messages(llm.requests[2])[-1]
+
+
+def _held_while_it_is_chosen_who_does_it(host: Any) -> tuple[asyncio.Event, asyncio.Event, Any]:
+    """Hold a commission where it has been chosen who does it; returns (chosen, go, undo)."""
+    select = host.brain._decision.select
+    chosen, go = asyncio.Event(), asyncio.Event()
+
+    async def held(request: Any, triage: Any) -> Any:
+        selection = await select(request, triage)
+        chosen.set()
+        await go.wait()
+        return selection
+
+    host.brain._decision.select = held
+
+    def undo() -> None:
+        go.set()
+        host.brain._decision.select = select
+
+    return chosen, go, undo
+
+
+async def test_a_commission_that_was_being_routed_when_nekoclaw_went_off_is_not_handed_to_a_task_agent(hosts, tmp_path):
+    llm = ScriptedLLM([_report("ready", "sorted")])
+    on = [True]
+    host = _host(hosts, tmp_path, llm, enabled=lambda: on[0])
+    chosen, go, undo = _held_while_it_is_chosen_who_does_it(host)
+    try:
+        receipt = await _dispatch(host, "sort the photos")
+        assert receipt.kind == "accepted"
+        first = receipt.commissions[0]
+        await asyncio.wait_for(chosen.wait(), 10)
+        # Switched off while it was chosen who does it (the last capability switch went off, say:
+        # nothing under way is stopped for that, and this was not under way yet).
+        on[0] = False
+        go.set()
+        failed = await wait_status(host, first.id, "failed")
+    finally:
+        undo()
+    await host.brain.settle()
+    # Nothing new is handed to a task agent while it is off, as a sentence dispatched now would
+    # be turned away; she is told so, having said it was taken.
+    assert "switched off" in failed.status_reason and llm.requests == [] and host.task_agents.running == []
+    (told,) = await outbox(host, "correction")
+    assert told.payload["reason"] == "no_capability" and told.payload["detail"] == "disabled"
+    assert host.task_agents._excerpts == {}
+
+
+async def test_what_was_said_before_nekoclaw_went_off_is_not_handed_to_a_commission_started_after_it(hosts, tmp_path):
+    llm = ScriptedLLM([_report("ready", "sorted")])
+    clock = _Clock(1_700_000_000.0)
+    said = RecentConversation(clock=clock)
+    host = _host(hosts, tmp_path, llm, conversation=said)
+    manager = host.task_agents
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    said.note("Lan", ROLE_CHARACTER, "the ones from the trip?")
+    clock.now += 5
+    chosen, go, undo = _held_while_it_is_chosen_who_does_it(host)
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await asyncio.wait_for(chosen.wait(), 10)
+        # What was said before it was kept for it when it was filed...
+        assert [turn.text for turn in manager._excerpts[first.id]] == ["the photos are on the desktop", "the ones from the trip?"]
+        # ...and NekoClaw goes off, and on again, while it is chosen who does it: what is kept of
+        # the main dialogue goes with the switch (the agent server sees to that).
+        clock.now += 5
+        said.forget()
+        clock.now += 5
+        said.note("Lan", ROLE_USER, "it is on again")
+        go.set()
+        await wait_status(host, first.id, "done")
+    finally:
+        undo()
+    await _let_go(host)
+    # It is on again, and the commission is done. What was said before the switch went off is not
+    # handed over after it, though it was taken before; nor what was said after the sentence.
+    opening = _user_messages(llm.requests[0])[0]
+    assert "sort the photos" in opening
+    assert "on the desktop" not in opening and "from the trip" not in opening and "on again" not in opening
+
+
+def test_what_was_kept_of_the_main_dialogue_says_when_it_was_last_dropped() -> None:
+    clock = _Clock(500.0)
+    kept = RecentConversation(clock=clock)
+    assert kept.forgotten_at("Lan") == 0.0
+    kept.note("Lan", ROLE_USER, "hello")
+    kept.note("Mei", ROLE_USER, "hello there")
+    clock.now = 600.0
+    kept.forget("Lan")
+    assert kept.forgotten_at("Lan") == 600.0 and kept.forgotten_at("Mei") == 0.0
+    # What was said before, told of only now, is kept for the one and not for the other.
+    clock.now = 610.0
+    assert not kept.note("Lan", ROLE_CHARACTER, "said before it was dropped", at=599.0)
+    assert kept.note("Mei", ROLE_CHARACTER, "said before that as well", at=599.0)
+    assert kept.note("Lan", ROLE_CHARACTER, "said after it was dropped", at=601.0)
+    clock.now = 700.0
+    kept.forget()
+    assert kept.forgotten_at("Lan") == 700.0 and kept.forgotten_at("Mei") == 700.0
+    assert kept.recent("Lan") == [] and kept.recent("Mei") == []

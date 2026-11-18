@@ -567,7 +567,11 @@ class TaskBrain:
             is_permission = (target.question() or {}).get("kind") == "permission"
             if is_permission and triage.choice is None:
                 return Receipt(kind="unclear_answer", commissions=[target], model_calls=calls)
-            delivered = await self.answer(target.id, text, choice=triage.choice)
+            # As the answer to the question it was read against: that one
+            # may be answered, or gone, by now, with another in its place.
+            delivered = await self.answer(
+                target.id, text, choice=triage.choice, question_id=(target.question() or {}).get("id")
+            )
             return Receipt(kind="answered" if delivered else "ambiguous", commissions=[target], model_calls=calls)
         if triage.kind == "tell" and targets:
             delivered = await self.tell(targets[0].id, text)
@@ -692,6 +696,14 @@ class TaskBrain:
                 )
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
+            elif selection.route == "task_agent" and self._task_agents is not None and not self._switched_on():
+                # NekoClaw was switched off while it was chosen who does
+                # it. Nothing new is handed to a task agent while it is
+                # off: a sentence dispatched now would be turned away.
+                # (The switch, not ``_is_enabled``: a brain that is being
+                # closed hands it over, and the start ends as failed
+                # because the host shut down, to be taken up again.)
+                await self._overturn_switched_off(commission)
             elif selection.route == "task_agent" and self._task_agents is not None:
                 await self._task_agents.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
                 # The task agents have it from here on (started, queued, or
@@ -730,6 +742,19 @@ class TaskBrain:
         if moved.applied:
             await self._reporter.correction(
                 commission, reason="no_capability", detail=reason, text=self._no_capability_text(commission, reason)
+            )
+
+    async def _overturn_switched_off(self, commission: Commission) -> None:
+        """Accepted, and NekoClaw was switched off before a task agent had it: fail the commission and tell her."""
+        moved = await self._ledger.transition(
+            commission.id, "failed", reason="nothing can do this: NekoClaw was switched off meanwhile"
+        )
+        if moved.applied:
+            await self._reporter.correction(
+                commission,
+                reason="no_capability",
+                detail="disabled",
+                text=self._no_capability_text(commission, "disabled"),
             )
 
     async def _overturn_duplicate(self, commission: Commission, duplicate_of: str) -> None:
@@ -1055,11 +1080,18 @@ class TaskBrain:
             return False
         return await self._task_agents.tell(commission_id, text, still_wanted=still_wanted)
 
-    async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
-        """Give the user's answer to a commission that waits for one."""
+    async def answer(
+        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+    ) -> bool:
+        """Give the user's answer to a commission that waits for one.
+
+        ``question_id`` says which question it answers (the ``id`` of
+        what the commission asked): turned away when another one waits
+        by now. Not said, it is for whichever waits.
+        """
         if self._task_agents is None:
             return False
-        return await self._task_agents.answer(commission_id, text, choice)
+        return await self._task_agents.answer(commission_id, text, choice, question_id=question_id)
 
     # -- query ------------------------------------------------------------
 

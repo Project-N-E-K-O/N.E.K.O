@@ -351,9 +351,11 @@ class NekoClawHost:
         self._first_use()
         return await self.brain.tell(commission_id, text)
 
-    async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
+    async def answer(
+        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+    ) -> bool:
         self._first_use()
-        return await self.brain.answer(commission_id, text, choice=choice)
+        return await self.brain.answer(commission_id, text, choice=choice, question_id=question_id)
 
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
