@@ -528,5 +528,25 @@ def test_validate_flags_non_table_mapping_fields(tmp_path: Path):
         toml_path.read_text(encoding="utf-8").replace("strict_output = true\n", 'output_schema = "typo"\n'),
         encoding="utf-8",
     )
-    messages = _messages(plugin_dir)
-    assert any("output_schema must be a table" in message for message in messages)
+    from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
+
+    flagged = [(level, message) for level, message in validate_plugin_dir(plugin_dir) if "output_schema must be a table" in message]
+    assert flagged
+    assert all(level == "warning" for level, _message in flagged)
+    assert any("registry replaces" in message for _level, message in flagged)
+
+
+def test_validate_keyed_table_type_hint_does_not_claim_a_replacement(tmp_path: Path):
+    from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
+
+    plugin_dir = _plugin_dir(tmp_path, "output_schema={'type': 'array'}")
+    toml_path = plugin_dir / "plugin.toml"
+    toml_path.write_text(
+        toml_path.read_text(encoding="utf-8").replace(
+            '[[plugin.entries]]\nid = "run"\nstrict_output = true\n', '[plugin.entries.run]\noutput_schema = "typo"\n'
+        ),
+        encoding="utf-8",
+    )
+    flagged = [(level, message) for level, message in validate_plugin_dir(plugin_dir) if "output_schema must be a table" in message]
+    assert flagged and all(level == "warning" for level, _message in flagged)
+    assert not any("registry replaces" in message for _level, message in flagged)

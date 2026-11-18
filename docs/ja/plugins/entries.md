@@ -190,7 +190,7 @@ async def search(self, query: str):
 
 - デフォルトでは、合わない場合はプラグインログに警告を 1 件書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (type)`）だけが含まれ、戻り値の内容は記録されません。
 - `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗し、`details.issues` に同じ `{"path", "type"}` の一覧が入ります。`/runs` と `call_entry` の呼び出し側はこのコードを受け取ります。
-  明示した schema では、下記の対応キーワードだけが強制されます。それ以外のキーワードで書いた制約は、strict モードでも検査されません。strict モードで呼び出しが失敗するのは不一致が確定した場合だけです。検査を完了できなかった場合（参照の循環、作業量の上限、チェッカー自体のエラー）は `check_error:…` の警告を記録するだけで、呼び出しは失敗しません。
+  明示した schema では、下記の対応キーワードだけが強制されます。それ以外のキーワードで書いた制約は、strict モードでも検査されません。strict モードで呼び出しが失敗するのは不一致が確定した場合だけです。検査を完了できなかった場合（参照の循環、作業量の上限、チェッカー自体のエラー）は `check_error:…` の警告を記録するだけで、呼び出しは失敗しません。戻り値をチェッカーに渡すことすらできない場合（読み取り時に例外を出すマッピングなど）は、代わりに別の警告 `Plugin entry output could not be checked`（例外の種類付き）を記録します。この場合も呼び出しは失敗しません。
 - 警告は合わない呼び出しのたびに書かれ、頻度制限はありません。高頻度で呼ばれるエントリーの戻り値がずっと合わないと、プラグインログが警告で埋まります。戻り値か契約を直してください。
 
 シリアライズ済みの出力（普通の dict、または `finish()` の `data`）は、明示した schema かモデルから推論した schema かに関係なく、常に公開された schema で検査します。モデル独自の validator は入力のルールなので、出力の検査には使われません。モデルのインスタンスをそのまま返した場合は検証済みとして扱います（構築時に検証済みのため。モデルが `revalidate_instances` を設定している場合だけ再検証します）。既知の制限: ネストしたモデル同士で `serialize_by_alias` の設定が異なる場合、生成される schema はすべての階層で外側のモデルの設定を使います。schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（配列形式の `items` と組み合わせた場合のみ）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref`（`$defs` と `definitions` はその参照先としてのみ使われます） で、それ以外のキーワードは無視され、検証に関与しません。解決できない `$ref`（存在しないポインター、外部 URL）も同様に無視され、検証に関与しません。

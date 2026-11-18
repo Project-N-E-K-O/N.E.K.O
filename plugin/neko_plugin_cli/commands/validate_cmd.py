@@ -783,14 +783,20 @@ def _check_entry_field_types(
     _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
     for key in ENTRY_CONTRACT_MAPPING_FIELDS:
         if key in item and not isinstance(item[key], dict):
-            # The registry coerces a non-table to an empty mapping, silently.
             # Warning, not error: these fields were never checked before.
-            issues.append((
-                "warning",
-                f"{label}.{key} must be a table; the registry replaces any other value with an empty table / "
-                f"{label}.{key} 必须是表，其他值会被注册表替换为空表 / "
-                f"{label}.{key} はテーブルである必要があります。それ以外の値は空のテーブルに置き換えられます",
-            ))
+            if applied:
+                # The registry coerces a non-table to an empty mapping, silently.
+                message = (
+                    f"{label}.{key} must be a table; the registry replaces any other value with an empty table / "
+                    f"{label}.{key} 必须是表，其他值会被注册表替换为空表 / "
+                    f"{label}.{key} はテーブルである必要があります。それ以外の値は空のテーブルに置き換えられます"
+                )
+            else:
+                message = (
+                    f"{label}.{key} must be a table / {label}.{key} 必须是表 / "
+                    f"{label}.{key} はテーブルである必要があります"
+                )
+            issues.append(("warning", message))
     # A keyed table is not applied at all (warned separately): no publish hint.
     for key in ("output_schema", "strict_output") if applied else ():
         if key in item:

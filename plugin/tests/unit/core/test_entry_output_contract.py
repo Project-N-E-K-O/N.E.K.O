@@ -1227,3 +1227,30 @@ async def test_inferred_model_output_through_finish_passes_strict_for_common_typ
     ).model_dump(mode="python")
     assert check(dumped) == []
     assert [(i.path, i.type) for i in check({**dumped, "color": "blue"})] == [("$.color", "enum")]
+
+
+def test_field_name_keys_cannot_stand_in_for_published_output_keys():
+    check = build_output_check(SimpleNamespace(
+        output_schema=SplitAliases.model_json_schema(by_alias=True, mode="serialization"), output_model=SplitAliases,
+    ))
+    assert [(i.path, i.type) for i in check({"count": 3, "total": 5})] == [("$.outTotal", "required")]
+    assert [(i.path, i.type) for i in check({"count": 3, "outTotal": "bad", "total": 5})] == [("$.outTotal", "type")]
+    assert check({"count": 3, "outTotal": 5}) == []
+
+
+class EmptyAlias(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    n: int = Field(serialization_alias="")
+
+
+async def test_empty_string_serialization_alias_passes_strict_through_finish():
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> EmptyAlias:
+        return build_finish_envelope(data=EmptyAlias(n=3), delivery="silent")  # type: ignore[return-value]
+
+    meta = _meta_of(entry)
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    result = await runtime.invoke("plugin_entry", "entry", {})
+    assert result["data"] == {"": 3}

@@ -188,7 +188,7 @@ async def search(self, query: str):
 
 - 默认只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (type)`），不记录返回的内容。
 - 设 `strict_output=True` 时，不符合契约会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表。`/runs` 和 `call_entry` 的调用方都能拿到这个错误码。
-  对显式 schema，只有下面列出的支持关键字才会被强制校验；用其他关键字写的约束不会被检查，strict 模式下也一样。strict 只在确认不符合时才让调用失败：检查没能完成（引用成环、超出工作量上限、检查器自身出错）时只记一条 `check_error:…` 告警，不会让调用失败。
+  对显式 schema，只有下面列出的支持关键字才会被强制校验；用其他关键字写的约束不会被检查，strict 模式下也一样。strict 只在确认不符合时才让调用失败：检查没能完成（引用成环、超出工作量上限、检查器自身出错）时只记一条 `check_error:…` 告警，不会让调用失败。如果返回值连交给检查器都做不到（比如读取时会抛异常的映射），会改记另一条告警 `Plugin entry output could not be checked`（附异常类型），同样不会让调用失败。
 - 每次不符合都会记一条告警，不限频。高频调用的入口如果返回结构一直不对，会刷满插件日志，请修正返回值或契约。
 
 已经序列化的输出（普通字典，或 `finish()` 的 `data`）一律按发布出去的 schema 检查，不论 schema 是显式写的还是从 model 推导的；model 里自定义的 validator 属于输入规则，不参与输出检查。直接返回 model 实例时视为已校验（构造时已经校验过；只有 model 设了 `revalidate_instances` 时才会重新校验）。已知局限：内外层 model 的 `serialize_by_alias` 设置不一致时，生成的 schema 对每一层都按外层的设置。schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（仅配合数组形式的 `items`）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`（`$defs`、`definitions` 只作为它的引用目标）。其他关键字会被忽略、不参与校验。引用不到的 `$ref`（不存在的指针、外部 URL）同样忽略、不参与校验。
