@@ -3340,3 +3340,14 @@ async def test_a_directory_that_cannot_be_removed_while_the_host_shuts_down_is_t
     # The host is shutting down, or has: nothing comes by later to remove it, so this does.
     await manager._remove_fork_dir("a-copy", left)
     assert len(attempts) == 3 and not left.exists() and manager._forks_given_up == {}
+
+
+async def test_counting_a_summing_up_lets_go_of_those_older_than_a_day(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    manager = host.task_agents
+    day = 24 * 3600.0
+    manager._idle_compacted_at.extend([0.0, 10.0, day + 5.0])
+    # Counted by when it was asked for; what was a day or more before that no longer counts, and
+    # is not kept.
+    manager._count_idle_compact(day + 10.0)
+    assert list(manager._idle_compacted_at) == [day + 5.0, day + 10.0]

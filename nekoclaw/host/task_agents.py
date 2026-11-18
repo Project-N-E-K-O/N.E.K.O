@@ -4271,12 +4271,8 @@ class TaskAgentManager:
                 if asked or compacted:
                     # The session was told to sum itself up: a request the
                     # host made by itself, whatever became of it, and one
-                    # of those the day has a limit for. By when it was
-                    # told, and what is older than a day goes.
-                    told_at = asked_at or self._ledger._clock()
-                    while self._idle_compacted_at and told_at - self._idle_compacted_at[0] >= 24 * 3600.0:
-                        self._idle_compacted_at.popleft()
-                    self._idle_compacted_at.append(told_at)
+                    # of those the day has a limit for. By when it was told.
+                    self._count_idle_compact(asked_at or self._ledger._clock())
             # Whatever became of it (also when a commission cut it short):
             # the runtime lets go of the session before anyone else has
             # it. In a task of its own, waited for here: cancelled while
@@ -4291,6 +4287,18 @@ class TaskAgentManager:
             )
             self._idle_over[session_id] = over
             await asyncio.shield(over)
+
+    def _count_idle_compact(self, told_at: float) -> None:
+        """Count a summing up the host asked for by itself against the day's limit; what is older than a day goes.
+
+        A method of its own, and not a loop where it is called from: that
+        is a ``finally`` a ``return`` passes through, and a loop there
+        loses what was returned when the application is built (see
+        ``tests/unit/test_no_return_through_looping_finally.py``).
+        """
+        while self._idle_compacted_at and told_at - self._idle_compacted_at[0] >= 24 * 3600.0:
+            self._idle_compacted_at.popleft()
+        self._idle_compacted_at.append(told_at)
 
     async def _idle_compact_over(
         self,

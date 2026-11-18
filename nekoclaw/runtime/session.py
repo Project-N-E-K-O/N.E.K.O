@@ -1636,6 +1636,11 @@ class TaskAgentSession(SessionInbox):
                 self.transcript.rewrite(as_it_was)
                 self.context.invalidate()
                 self._compactions, self._compaction_due = before, due_before
+                if self._gateway is not None:
+                    # Nor is the gateway to take what it handed over before
+                    # (a group of tools and how they are used) for gone:
+                    # the conversation that is back holds it.
+                    self._gateway.compactions = before
                 made = False
             if self._compaction_due:
                 # Also when no summary was made now and one from before the

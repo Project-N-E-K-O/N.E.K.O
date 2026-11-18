@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import types
 from pathlib import Path
 from typing import Any
 
@@ -1442,6 +1443,9 @@ async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
         length = len(session.harness.message_list)
         writer = session._recorder
         append = writer._append_blocking
+        # (What tells the capability gateway how often the conversation was summed up.)
+        gateway = types.SimpleNamespace(compactions=0)
+        session._gateway = gateway
 
         def not_the_summary(entry: Any) -> None:
             if entry.type == "compaction":
@@ -1459,6 +1463,8 @@ async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
         assert not events.of("compacted")
         assert len(session.harness.message_list) == length and session._compactions == 0
         assert session._compaction_due is False and not read_snapshot(Path(spec.session_dir)).compactions
+        # Nor is the gateway told of one: it would take the tools it handed over for forgotten.
+        assert gateway.compactions == 0
         assert '"type":"compaction"' not in (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
 
         # Summed up again once the record takes it: told of, and the summary stands for what was
@@ -1473,7 +1479,9 @@ async def test_a_summary_the_record_did_not_take_is_not_told_of_as_a_summing_up(
         (summary,) = [entry for entry in on_record if entry.type == "compaction"]
         assert "said again: the four steps are done" in summary.summary
         assert set(summary.replaces_entry_ids) <= {entry.id for entry in on_record}
+        assert gateway.compactions == 1
     finally:
+        session._gateway = None
         await session.close()
 
 
