@@ -1158,6 +1158,13 @@ class SpaceKeeper:
             if outcome == _REMOVED:
                 # With the session, and with each commission of it.
                 await asyncio.shield(self._ledger.mark_session_cleared(current.id))
+            if outcome != _NOT_REMOVED:
+                # What was copied from it goes with it: a session made from
+                # this one (``fork_session``) holds what was said here, and
+                # is of no use once this one starts over from nothing.
+                for copy in await self._ledger.forks_of(current.id):
+                    if copy.status != "cleared":
+                        await self._clean_one(copy.id, float("inf"))
             return outcome
         except (OSError, ValueError):
             logger.warning("an old session could not be looked at", exc_info=True)
@@ -1165,6 +1172,19 @@ class SpaceKeeper:
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)
+
+    async def clear_session(self, session_id: str) -> bool:
+        """Remove what was said in a session now, however lately it was in use. Returns whether nothing of it is left.
+
+        For a session whose owner is done with it (a copy that was made to
+        ask something). As when an old session is cleaned: only what the
+        runtime wrote into the session's own directory, never its working
+        directory; not while a commission is at work in it or waits for
+        it; and the session is ``cleared`` afterwards.
+        """
+        if self._session_dir_of is None:
+            return False
+        return await self._clean_one(session_id, float("inf")) != _NOT_REMOVED
 
     @staticmethod
     def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:

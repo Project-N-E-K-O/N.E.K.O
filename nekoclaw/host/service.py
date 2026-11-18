@@ -125,8 +125,19 @@ class NekoClawHost:
         on_builtin_activity: ActivityListener | None = None,
         dsh: Any = None,
         dsh_runtime_factory: Any = None,
+        conversation: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
+        # What she and the user said lately, from which a commission that
+        # opens a new session is handed an excerpt. This process's own
+        # (``conversation.py``), which the agent server feeds, unless
+        # another is given.
+        if conversation is None:
+            from nekoclaw.host.conversation import recent_conversation
+
+            conversation = recent_conversation()
+        self.conversation = conversation
+        self._task_agent_model = task_agent_model
         # Where dsh is, for a user who downloaded it; a page about the
         # runtimes reads and changes it through the methods further down.
         # Only the module that knows where dsh would be is imported here;
@@ -195,6 +206,8 @@ class NekoClawHost:
             space=self.space,
             dsh=self.dsh,
             dsh_runtime_factory=dsh_runtime_factory,
+            conversation=self.conversation,
+            switched_on=enabled,
         )
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
@@ -345,6 +358,52 @@ class NekoClawHost:
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
         return await self.brain.complete_deferred(commission_id)
+
+    # -- sessions ---------------------------------------------------------
+    #
+    # For whoever works with sessions as such (a screen that shows what a
+    # commission used; one session asking another something): nothing in
+    # this build calls these yet.
+
+    async def usage(self, commission_id: str) -> dict[str, Any] | None:
+        """Return what a commission has used, what it may, and what its model's sessions are managed for.
+
+        ``TaskAgentManager.usage_of``, with ``window``: what
+        ``ModelCapabilityStore.describe_window`` says of the task agent
+        model as it is configured now (its window, where a conversation is
+        summed up, what was learned of it). None for an unknown commission.
+        """
+        self._first_use()
+        usage = await self.task_agents.usage_of(commission_id)
+        if usage is None:
+            return None
+        window = None
+        try:
+            config = await self._task_agent_model()
+            if config and config.get("model"):
+                window = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
+        except Exception:  # noqa: BLE001 - what was used is told all the same
+            logger.warning("reading the window of the task agent model failed", exc_info=True)
+        return {**usage, "window": window}
+
+    async def fork_session(self, session_id: str, *, name: str | None = None, upto: str | None = None) -> Any:
+        """Make a session from another by copying what was said in it; see ``TaskAgentManager.fork_session``."""
+        self._first_use()
+        return await self.task_agents.fork_session(session_id, name=name, upto=upto)
+
+    async def discard_fork(self, session_id: str) -> bool:
+        """Remove what was said in a session that is a copy of another, now. Returns whether it is gone.
+
+        For a copy that was made to ask something and has answered. Only
+        a session of kind ``fork``; False while a commission is at work
+        in it. Its working directory is the other session's and is not
+        touched.
+        """
+        self._first_use()
+        session = await self.ledger.get_session(session_id)
+        if session is None or session.kind != "fork":
+            return False
+        return await self.space_keeper.clear_session(session_id)
 
     # -- dsh --------------------------------------------------------------
     #

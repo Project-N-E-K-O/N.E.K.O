@@ -327,9 +327,15 @@ class TaskBrain:
 
         Called when everything is stopped: such a dispatch has no commission
         yet, so stopping the commissions under way would miss it, and it
-        would start its work right after the stop.
+        would start its work right after the stop. Likewise what the task
+        agents' host does by itself in sessions nothing is at work in
+        (summing one up): no commission stands for it either, and it makes
+        no model request after a stop.
         """
         self._dispatch_generation += 1
+        drop_idle_work = getattr(self._task_agents, "drop_idle_work", None)
+        if drop_idle_work is not None:
+            drop_idle_work()
 
     async def settle(self) -> None:
         """Wait for everything running in the background (second rounds, calls)."""
@@ -1059,6 +1065,7 @@ class TaskBrain:
             QUERY_ROW_MAX_TOKENS,
         )
         from config.prompts.prompts_nekoclaw_brain import NO_CAPABILITY_REASONS, QUERY_TEXTS
+        from nekoclaw.host.reports import tokens_text
         from utils.tokenize import truncate_to_tokens
 
         lang = prompt_language(lang)
@@ -1118,7 +1125,12 @@ class TaskBrain:
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
 
         def line(commission: Commission) -> str:
-            parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
+            stands = status_word(commission.status, lang)
+            if commission.tokens > 0:
+                # What it used so far, its task agents' requests counted in:
+                # she can say what a task cost when she is asked.
+                stands = f"{stands} · {words['used'].format(tokens=tokens_text(commission.tokens))}"
+            parts = [f"- {commission.title} ({stands})"]
             asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
             if asking:
                 return asking

@@ -377,6 +377,32 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
         return False
 
 
+def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
+    """Keep one message of the main dialogue in memory for the excerpt a new task agent session is handed.
+
+    A commission comes with one dispatched sentence and the user's last
+    words; what they refer to was said a few messages earlier. The NekoClaw
+    host hands a commission that opens a new session the last few messages
+    as background, and takes them from here: this process is told of every
+    message anyway, so a dispatch asks the main server for nothing more.
+
+    Gated on NekoClaw being on, as the plugin stores are gated on user
+    plugins: with it off nothing is dispatched, and a resident copy of what
+    was said would be retention that buys nothing. Memory only (a few
+    messages for each character, ``nekoclaw/host/conversation.py``); a
+    synchronous append, like the hops above. Nothing said is logged.
+    """
+    if not nekoclaw_on():
+        return False
+    try:
+        from nekoclaw.host.conversation import recent_conversation
+
+        return bool(recent_conversation().note_event(event))
+    except Exception:
+        logger.debug("[NekoClaw] keeping a message for task agents failed")
+        return False
+
+
 def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
     """Forward an observed fact; never run plugin callbacks in this receive path."""
     if not _user_plugins_enabled():
@@ -499,6 +525,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
     if event_type == "conversation_turn_observed":
         _forward_user_context(event)
         _forward_conversation_turn(event)
+        _note_turn_for_task_agents(event)
         return
     if event_type == "conversation_fact_observed":
         _forward_conversation_fact(event)

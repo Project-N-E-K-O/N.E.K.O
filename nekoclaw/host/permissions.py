@@ -103,6 +103,12 @@ BROWSER_REOPEN = "browser_reopen"
 # Commands the settings forbid stay forbidden.
 SPACE_COMMAND = "space_command"
 
+# Nor is this one: the work on a commission has used as many tokens as one
+# commission may, and the user is asked whether it is to go on with as many
+# again (``TaskAgentManager``). Asked each time that much is used; what is
+# allowed is allowed once.
+USAGE_LIMIT = "usage_limit"
+
 _FILE_VERSION = 1
 # The mode of every category while an existing file cannot be read.
 _UNREADABLE_MODE = "deny"

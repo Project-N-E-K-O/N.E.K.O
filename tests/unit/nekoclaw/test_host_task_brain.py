@@ -1312,11 +1312,21 @@ async def test_query_lists_only_her_own_commissions(server, hosts, tmp_path):
     assert other.text == "没有任务记录。"
 
 
-async def test_query_view_has_at_most_eight_rows_and_400_tokens(server, hosts, tmp_path):
-    from config.nekoclaw_settings import QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS, QUERY_ROW_MAX_TOKENS
+async def test_query_view_has_at_most_eight_rows_and_520_tokens(server, hosts, tmp_path):
+    from config.nekoclaw_settings import (
+        QUERY_LEDGER_ROWS,
+        QUERY_PERMISSION_ROW_MAX_TOKENS,
+        QUERY_RESULT_MAX_TOKENS,
+        QUERY_ROW_MAX_TOKENS,
+        QUERY_USAGE_MAX_TOKENS,
+    )
     from utils.tokenize import count_tokens
 
-    assert (QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS) == (8, 400)
+    assert (QUERY_LEDGER_ROWS, QUERY_RESULT_MAX_TOKENS) == (8, 520)
+    # A line was given the room for what its commission used when that was added to it (80 and 120
+    # before), and the whole answer the room for that in every line.
+    assert (QUERY_ROW_MAX_TOKENS, QUERY_PERMISSION_ROW_MAX_TOKENS, QUERY_USAGE_MAX_TOKENS) == (100, 140, 16)
+    assert QUERY_RESULT_MAX_TOKENS - 400 <= QUERY_LEDGER_ROWS * QUERY_USAGE_MAX_TOKENS
     host = _host(hosts, tmp_path, server, FakeDecisionLLM())
     long = "很长很长的结果 " * 300
     for number in range(20):
