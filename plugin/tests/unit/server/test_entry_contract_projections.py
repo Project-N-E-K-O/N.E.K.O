@@ -248,3 +248,16 @@ def test_malformed_output_schema_drops_only_itself_from_get_plugins(broken_schem
     by_id = {item["id"]: item for item in entries}
     assert "output_schema" not in by_id["broken"]
     assert by_id["fine"]["output_schema"] == {"type": "object"}
+
+
+def test_projection_detaches_nested_levels_around_an_uncopyable_default():
+    from types import MappingProxyType
+
+    from plugin.sdk.plugin.base import _entry_listing
+    from plugin.sdk.shared.core.events import EventMeta
+
+    schema = {"type": "object", "properties": {"count": {"type": "integer", "default": MappingProxyType({"a": 1})}}}
+    meta = EventMeta(event_type="plugin_entry", id="e", output_schema=schema)
+    item = _entry_listing("e", meta, enabled=True, dynamic=False)
+    item["output_schema"]["properties"]["count"]["type"] = "string"
+    assert schema["properties"]["count"]["type"] == "integer"

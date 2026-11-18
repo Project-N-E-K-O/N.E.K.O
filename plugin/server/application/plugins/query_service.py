@@ -340,7 +340,7 @@ def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, con
                 # itself instead of failing the whole plugin list.
                 json.dumps(value, allow_nan=False)
                 value = _normalize_mapping(value, context=f"{context}.{name}")
-            except (TypeError, ValueError, ServerDomainError):
+            except (TypeError, ValueError, RecursionError, ServerDomainError):
                 logger.warning("dropping malformed entry field: {}.{}", context, name)
                 continue
         entry_dict[name] = value

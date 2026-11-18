@@ -126,12 +126,31 @@ def unhandled_entry_contract_fields(
 def detached_copy(value: object) -> object:
     """A deep copy, so a projection or a registration never aliases the caller's containers.
 
-    Falls back to a shallow copy of the top level when something inside cannot
-    be deep-copied (a lock in metadata, for instance).
+    When something inside cannot be deep-copied (a ``MappingProxyType``
+    default, a lock in metadata), every mapping and list level is still
+    copied and only the uncopyable leaves are shared.
     """
     try:
         return copy.deepcopy(value)
     except Exception:
-        if isinstance(value, Mapping):
-            return dict(value)
-        return list(value) if isinstance(value, list) else value
+        return _copy_containers(value, {})
+
+
+def _copy_containers(value: object, memo: dict[int, object]) -> object:
+    if not isinstance(value, (Mapping, list)):
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+    if id(value) in memo:
+        return memo[id(value)]
+    if isinstance(value, Mapping):
+        copied: dict[object, object] = {}
+        memo[id(value)] = copied
+        for key, item in value.items():
+            copied[key] = _copy_containers(item, memo)
+        return copied
+    copied_list: list[object] = []
+    memo[id(value)] = copied_list
+    copied_list.extend(_copy_containers(item, memo) for item in value)
+    return copied_list
