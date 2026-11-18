@@ -40,6 +40,8 @@ UNSET_TIMEOUT = object()
 # most once per interval; the next warning reports how many were suppressed.
 _WARN_INTERVAL = 60.0
 _WARN_KEYS_MAX = 1024
+# Keys ok(), fail() and finish() all write (``meta`` is optional).
+_ENVELOPE_KEYS = frozenset({"success", "code", "data", "message", "error", "time", "trace_id"})
 
 
 class EntryExecutor:
@@ -115,8 +117,12 @@ class EntryExecutor:
             self._warned[(event_id, key)] = (last[0], last[1] + 1)
             return
         if len(self._warned) >= _WARN_KEYS_MAX:
-            # Many distinct mismatches: start over rather than grow without bound.
-            self._warned.clear()
+            # Drop records whose window is over first; only if that is not
+            # enough, start over rather than grow without bound.
+            for stale in [k for k, (at, _n) in self._warned.items() if now - at >= _WARN_INTERVAL]:
+                del self._warned[stale]
+            if len(self._warned) >= _WARN_KEYS_MAX:
+                self._warned.clear()
         self._warned[(event_id, key)] = (now, 0)
         suffix = f", suppressed={last[1]}" if last is not None and last[1] else ""
         self._logger.warning(f"{message}{suffix}")
@@ -139,10 +145,10 @@ class EntryExecutor:
                 if not result.is_ok():
                     return
                 result = result.value
-            if is_envelope(result) and "data" in result:
+            if is_envelope(result) and _ENVELOPE_KEYS.issubset(result.keys()):
                 # finish()/ok() envelopes: the contract describes ``data``;
                 # a fail() envelope is a failure already and is not checked.
-                # ("data" too: a model may have success/error/time fields.)
+                # All keys every producer writes: a model may have a few of them.
                 if result.get("success") is not True:
                     return
                 result = result.get("data")

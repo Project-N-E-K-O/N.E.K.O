@@ -1241,8 +1241,8 @@ def _check_schema_keyword(
 
 def _check_output_schema_literal(decorator: ast.expr, label: str, issues: list[tuple[str, str]]) -> None:
     """An explicit output_schema, like input_schema, is published but not checked at runtime."""
-    if _decorator_keyword_literal(decorator, "output_schema") is None:
-        return
+    if not isinstance(_decorator_keyword_literal(decorator, "output_schema"), dict):
+        return  # not a dict literal: reported by the shape check, or not static
     issues.append((
         "warning",
         f"output_schema in {label} is published only; the runtime does not validate returns against it "

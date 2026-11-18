@@ -62,7 +62,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - A `register_list_action(action)`: Adds or replaces a single plugin-list action. Use for manager-level actions that are not tied to a Hosted TSX surface.
 - A `clear_list_actions()`: Clears plugin-list actions. Use during shutdown/reload cleanup when actions are dynamic.
 - A `get_list_actions()`: Returns registered list actions. Use for diagnostics or UI context snapshots.
-- B `register_dynamic_entry(entry_id, handler, ..., output_schema=None, strict_output=False)`: Registers runtime-computed entries. Use for capabilities discovered after startup, such as adapter-discovered tools. Dynamic entries have no return annotation to infer from; an explicit `output_schema` is published only.
+- B `register_dynamic_entry(entry_id, handler, ..., output_schema=None)`: Registers runtime-computed entries. Use for capabilities discovered after startup, such as adapter-discovered tools. Dynamic entries have no return annotation to infer from; an explicit `output_schema` is published only.
 - B `unregister_dynamic_entry(entry_id)`: Removes a dynamic entry. Use when external capabilities disappear or config disables a runtime entry.
 - B `enable_entry(entry_id)`: Enables a dynamic entry and notifies the host. Static decorator entries are not toggled through this method.
 - B `disable_entry(entry_id)`: Disables a dynamic entry and notifies the host. Use instead of leaving dead dynamic handlers registered.

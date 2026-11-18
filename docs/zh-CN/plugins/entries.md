@@ -189,11 +189,11 @@ async def search(self, query: str):
 - **返回注解是 Pydantic model**（`-> Model` 或 `-> Model | None`；`list[Model]` 等其他写法不推导）：每次调用成功后、自动保存状态之前，用返回的数据构造这个 model 来校验（和 `params` 的做法相同），所以 field / model validator 和 `HttpUrl` 这类类型都会生效。直接返回 model 实例时视为已校验（构造时已经校验过）；`Model | None` 时返回 `None` 也能通过。检查的是 `Ok(...)` 里的值、直接返回的值，或 `finish()`/`ok()` 信封里的 `data`；`Err(...)` 和 `fail()` 信封本身就是失败，不检查。发布出去的 schema 是 model 的 `model_json_schema()`，和 `params` 的发布方式相同。
 - **显式写的 `output_schema` 字典**：和 `input_schema` 一样只发布，运行时不校验，`strict_output` 对它不起作用。
 - 默认不符合时只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (int_parsing)`），不记录返回的内容。同一个入口的同一种不符合，一分钟内最多记一次，下一条会写明期间被抑制了多少条。
-- 设 `strict_output=True` 时，不符合会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表。这时会跳过自动保存状态，但 handler 已经做过的事不会回滚。validator 自身崩溃时只记告警，不会让调用失败。
+- 设 `strict_output=True` 时，不符合会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，其他插件经 `call_entry` 调用时能拿到这个错误码；`/runs` 按现有行为把插件错误显示为 `INTERNAL`。字段路径记在插件日志的告警里。这时会跳过自动保存状态，但 handler 已经做过的事不会回滚。validator 自身崩溃时只记告警，不会让调用失败。
 
 **请返回 model 本身，不要返回序列化后的字典。** 检查是用返回的数据、按 model 的输入规则构造 model。model 已经序列化过的数据不一定能还原：`finish(data=model)` 输出的是字段名（字段设了别名时会被报成缺失），`@field_serializer`、`exclude=True`、校验别名和序列化别名不同，也都会改变形状。这类 model 请直接返回实例，或者不开 `strict_output`。
 
-插件的入口列表里会带上 `output_schema`（和 `strict_output`）。它只能在 `@plugin_entry` 上声明：写在 `[[plugin.entries]]` 表里的 `output_schema`/`strict_output` 会被忽略（`neko-plugin validate` 会提示）。任务 Agent 的能力网关不对外发布它。
+插件的入口列表里会带上 `output_schema`（和 `strict_output`）。`register_dynamic_entry()` 和 Router 的 `add_entry()` 也能声明显式的 `output_schema`（只发布）；运行时检查只来自 `@plugin_entry` 上的 Pydantic 返回注解。写在 `[[plugin.entries]]` 表里的 `output_schema`/`strict_output` 会被忽略（`neko-plugin validate` 会提示）。任务 Agent 的能力网关不对外发布它。
 
 ---
 

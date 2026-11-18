@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import copy
 import tempfile
-from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
-from plugin._types.exceptions import OUTPUT_SCHEMA_VIOLATION_CODE, PluginExecutionError
 from plugin.sdk.plugin.base import NekoPluginBase
 from plugin.sdk.plugin.decorators import plugin_entry
 from plugin.sdk.shared.constants import EVENT_META_ATTR
@@ -366,3 +364,9 @@ def test_manifest_overrides_of_the_output_contract_are_not_published():
     # Published and enforced must agree: the check runs from the decorator.
     assert "output_schema" not in declared and "strict_output" not in declared
     assert declared["timeout"] == 5
+
+
+def test_validate_gives_no_publish_hint_for_a_non_dict_output_schema(tmp_path: Path):
+    messages = _messages(_plugin_dir(tmp_path, "output_schema='typo'"))
+    assert any("dict literal" in message for message in messages)
+    assert not any("published only" in message for message in messages)

@@ -474,12 +474,13 @@ class Status(BaseModel):
     success: bool
     error: str | None = None
     time: float
+    data: int = 0
 
 
 async def test_a_model_with_envelope_like_fields_is_not_mistaken_for_an_envelope():
     @plugin_decorators.plugin_entry(id="entry", strict_output=True)
     async def entry() -> Status:
-        return {"success": True, "error": None, "time": 1.5}  # type: ignore[return-value]
+        return {"success": True, "error": None, "time": 1.5, "data": 3}  # type: ignore[return-value]
 
     runtime = _executor({"entry": entry}, {"entry": _meta_of(entry)})
-    assert await runtime.invoke("plugin_entry", "entry", {}) == {"success": True, "error": None, "time": 1.5}
+    assert await runtime.invoke("plugin_entry", "entry", {}) == {"success": True, "error": None, "time": 1.5, "data": 3}
