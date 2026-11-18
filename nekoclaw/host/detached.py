@@ -14,6 +14,8 @@
 
 """Blocking work that may never come back, run where it holds nothing up.
 
+``run_detached`` is for the event loop, ``wait_detached`` for a thread.
+
 A look at a folder the user works in can hang for as long as the folder
 does not answer: a network share that is down, a volume that went away.
 Nothing stops such a call. What can be done is to wait for it only so
@@ -40,7 +42,9 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
     no worker of the default executor. Whoever waits for the future
     decides how long (``asyncio.wait_for`` around ``asyncio.shield``);
     the work goes on in its thread whether or not anybody still waits,
-    and the future is done when it comes back, however it ended. What
+    and the future is done when it comes back, however it ended: once
+    the loop has run what hands it over. A loop that was closed before
+    that takes nothing, and the future is left as it was. What
     the work raises is raised for whoever waits. For ``StopIteration``,
     which a future does not take, that is a RuntimeError that names it;
     and when the work was ended by something that is no ``Exception``
@@ -83,3 +87,34 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
 
     threading.Thread(target=run, name=name, daemon=True).start()
     return done
+
+
+def wait_detached(work: Callable[[], T], *, name: str, seconds: float) -> T:
+    """Run blocking work in a thread of its own, and wait for it in this thread for no longer than ``seconds``.
+
+    For a caller that is not on the event loop and holds something
+    others wait for (work under a lock, in a worker thread): it gets on
+    after ``seconds`` whatever the work does. Returns what the work
+    returns and raises what it raises. Raises TimeoutError when it has
+    not come back by then; it goes on in its thread, a daemon thread
+    like that of ``run_detached``.
+
+    Raises RuntimeError when no thread can be started.
+    """
+    came: list[tuple[T | None, Exception | None]] = []
+
+    def run() -> None:
+        try:
+            came.append((work(), None))
+        except Exception as exc:  # noqa: BLE001 - raised for whoever waits for it
+            came.append((None, exc))
+
+    thread = threading.Thread(target=run, name=name, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    if not came:
+        raise TimeoutError(f"{name} has not come back")
+    result, error = came[0]
+    if error is not None:
+        raise error
+    return result  # type: ignore[return-value]

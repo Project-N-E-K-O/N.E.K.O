@@ -67,6 +67,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable, Iterable
@@ -275,7 +276,9 @@ class _Rested:
 
     ``place`` is where it stands among the entries of that call;
     ``outside`` are the files that lie outside the working directories;
-    ``listed`` is whether one that says it expired still has its line.
+    ``listed`` is whether one that says it expired still has its line;
+    ``signature`` is what its file was when it was read
+    (``TaskAgentSpace._signature``), None when that could not be told.
     """
 
     place: int
@@ -285,6 +288,7 @@ class _Rested:
     outside: tuple[str, ...]
     expired: bool
     listed: bool
+    signature: tuple[int, int] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,6 +825,92 @@ def _drive_away(path: Any) -> bool:
     return bool(anchor) and not os.path.exists(anchor)
 
 
+# What was asked of the file system under the lock on the space's writes and
+# has not been answered yet, by what was asked (``_asked``).
+_ASKING = threading.Lock()
+_UNANSWERED: set[str] = set()
+
+
+def _asked(key: str, look: Callable[[], T]) -> T:
+    """Ask the file system about files a note rests on, and wait for the answer only so long.
+
+    For what is asked under the lock on the space's writes. A file on a
+    share that does not answer would hold up every write for as long as
+    it does not, and a write that is cancelled waits for its work all
+    the same. So the question is asked in a thread of its own and
+    waited for ``SPACE_EVIDENCE_ASK_SECONDS``. Raises TimeoutError when
+    there is no answer by then; the thread ends when there is one.
+    Until then the same question (``key``) is not asked again, and with
+    ``SPACE_EVIDENCE_ASKED_AT_ONCE`` of them out none is: TimeoutError
+    at once. So it is when no thread can be started to ask in.
+    """
+    from config.nekoclaw_settings import SPACE_EVIDENCE_ASK_SECONDS, SPACE_EVIDENCE_ASKED_AT_ONCE
+    from nekoclaw.host.detached import wait_detached
+
+    with _ASKING:
+        if key in _UNANSWERED or len(_UNANSWERED) >= SPACE_EVIDENCE_ASKED_AT_ONCE:
+            raise TimeoutError("the file system has not answered")
+        _UNANSWERED.add(key)
+
+    def answered() -> T:
+        try:
+            return look()
+        finally:
+            with _ASKING:
+                _UNANSWERED.discard(key)
+
+    try:
+        return wait_detached(answered, name="nekoclaw-space-file", seconds=SPACE_EVIDENCE_ASK_SECONDS)
+    except RuntimeError:
+        with _ASKING:
+            _UNANSWERED.discard(key)
+        raise TimeoutError("the file system could not be asked") from None
+
+
+def evidence_asked(
+    raw: Any, bases: Iterable[str | os.PathLike[str]], *, looked_at: int | None = None, outside: bool = False
+) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+    """``evidence_of`` for a caller under the lock on the space's writes: waited for only so long (``_asked``).
+
+    Returns the files that count, the others with why they do not, and
+    the ones among the first that lie outside ``bases``. When the file
+    system does not answer, none counts, and each is said not to have
+    been looked at.
+    """
+    from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS
+
+    roots = [str(base) for base in bases if base]
+    named = [item for item in (raw if isinstance(raw, (list, tuple)) else []) if isinstance(item, str) and item.strip()]
+    if not named:
+        # No file is named: there is nothing to ask.
+        return [], [], []
+
+    def look() -> tuple[list[str], list[tuple[str, str]], list[str]]:
+        counted, others = evidence_of(raw, roots, looked_at=looked_at, outside=outside)
+        return counted, others, _outside_of(counted, roots)
+
+    try:
+        return _asked("evidence\n" + json.dumps([roots, named, looked_at, outside]), look)
+    except TimeoutError:
+        unseen = [_one_line(item.strip()) for item in named[: looked_at or SPACE_EVIDENCE_MAX_PATHS]]
+        return [], [(_cut(text, 24), "not looked at, the disk does not answer") for text in unseen if text], []
+
+
+def _stood(paths: list[str]) -> dict[str, bool | None]:
+    """Return whether each of ``paths`` is there (``_stands``), asked together and waited for only so long.
+
+    For a caller under the lock on the space's writes (``_asked``).
+    None of them is in what is returned when the file system does not
+    answer: nothing is known of any.
+    """
+    if not paths:
+        return {}
+    try:
+        return _asked("stands\n" + "\n".join(paths), lambda: {path: _stands(path) for path in paths})
+    except TimeoutError:
+        return {}
+
+
 def _standing(paths: Iterable[Any], outside: Iterable[str] = (), allowed: bool = True) -> list[str]:
     """Return the files among ``paths`` that are there at this moment.
 
@@ -828,13 +918,13 @@ def _standing(paths: Iterable[Any], outside: Iterable[str] = (), allowed: bool =
     again later: one that was removed since no longer speaks for the note.
     Nor does one outside the working directories (``outside``) while the
     user does not let task agents read there unasked: it is not looked at.
+    Nor does one of which the file system tells nothing in time
+    (``_stood``): this is asked under the lock on the space's writes.
     """
     apart = set(outside)
-    return [
-        path
-        for path in paths
-        if isinstance(path, str) and path and (allowed or path not in apart) and _stands(path)
-    ]
+    wanted = [path for path in paths if isinstance(path, str) and path and (allowed or path not in apart)]
+    there = _stood(wanted)
+    return [path for path in wanted if there.get(path)]
 
 
 def _gone(evidence: Iterable[str], outside: Iterable[str] = (), allowed: bool = True) -> bool | None:
@@ -1067,15 +1157,11 @@ def _keep_known(document: _Document, known: _Known | None, allowed: bool = True,
         document.drop("status")
         document.drop("expired")
         document.drop("notice")
-        _set_evidence(
-            document,
-            [
-                path
-                for path in _evidence_in(document)
-                if (path in apart and not allowed) or _stands(path) is not False
-            ],
-            apart,
-        )
+        rested = _evidence_in(document)
+        # Asked under the lock on the space's writes, so only for so long;
+        # one of which nothing is told stays, like one that cannot be told.
+        there = _stood([path for path in rested if allowed or path not in apart])
+        _set_evidence(document, [path for path in rested if there.get(path) is not False], apart)
         changed = True
     if known is None:
         return changed
@@ -1357,7 +1443,7 @@ class TaskAgentSpace:
         # The last look at those files, and the entries a look that was
         # given up on is still at (``check_evidence``).
         self._evidence_look: asyncio.Future[Any] | None = None
-        self._evidence_unanswered: set[tuple[str | None, str]] = set()
+        self._evidence_unanswered: set[tuple[str | None, str, tuple[str, ...]]] = set()
 
     # -- plumbing ---------------------------------------------------------
 
@@ -1379,6 +1465,43 @@ class TaskAgentSpace:
             self._lock = asyncio.Lock()
         async with self._lock:
             return await to_thread_through_cancellation(work, *args)
+
+    async def _evidence_before(
+        self, look: Callable[[bool], tuple[list[str], list[tuple[str, str]], list[str]]]
+    ) -> tuple[bool, tuple[list[str], list[tuple[str, str]], list[str]]]:
+        """Look for the files a note names before its write takes its turn. Returns whether the ones outside the working directories were looked for, and what was found.
+
+        No file a note names is looked for under the lock on the space's
+        writes: on a share that does not answer it would hold up every
+        write, for as long as the answer is waited for
+        (``evidence_asked``). ``look`` is told whether task agents may
+        read outside the working directories unasked, as that is now;
+        it is asked again once the write's turn has come
+        (``_as_allowed``).
+        """
+        asked = await self._outside_allowed()
+        return asked, await self._read(look, asked)
+
+    @staticmethod
+    def _as_allowed(
+        asked: bool, found: tuple[list[str], list[tuple[str, str]], list[str]], allowed: bool
+    ) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+        """Return what ``_evidence_before`` found, as it counts now that the write's turn has come.
+
+        The user may have taken back meanwhile that task agents read
+        outside the working directories unasked: a file found out there
+        does not count then. Where they gave it meanwhile, the files
+        out there were not looked for, and do not count this time.
+        """
+        counted, others, apart = found
+        if not asked or allowed or not apart:
+            return found
+        out = set(apart)
+        return (
+            [path for path in counted if path not in out],
+            [*others, *((path, "outside the working directory") for path in counted if path in out)],
+            [],
+        )
 
     async def _write_judged(self, work: Callable[[bool], T]) -> T:
         """Run blocking work that judges notes, told whether files outside the working directories may be looked at.
@@ -2201,10 +2324,17 @@ class TaskAgentSpace:
         """Have a pending entry take effect where it is, seen by the commissions of ``known`` as well.
 
         Nothing is added to what it says. Returns the entry, and what
-        kept its line out of the index if anything did.
+        kept its line out of the index if anything did. One that says
+        nothing (emptied in the console) has nothing that could take
+        effect: it is removed, as it is when there is nothing of it to
+        put into another entry (``_fold``).
         """
         paths = self._paths()
         path = paths.memory_dir(project) / f"{pending.id}.md"
+        read = self._pending_as_read(path, project)
+        if read is not None and not _normal(read[1].body):
+            self._discard_as_read(path, read[0])
+            return pending, None
         seen = _Known(confidence=pending.confidence or INFERRED, observer=known.observer, seen_before=known.seen_before)
 
         def change(text: str) -> str:
@@ -2226,7 +2356,15 @@ class TaskAgentSpace:
         return entry, None
 
     def _fold(
-        self, project: str | None, pending: Entry, into: Entry, known: _Known, allowed: bool, *, may_add: bool = True
+        self,
+        project: str | None,
+        pending: Entry,
+        into: Entry,
+        known: _Known,
+        allowed: bool,
+        *,
+        may_add: bool = True,
+        by_text: str | None = None,
     ) -> tuple[Entry, bool, OSError | None]:
         """Put what a pending entry says into an entry that is not pending, and remove its file.
 
@@ -2244,7 +2382,9 @@ class TaskAgentSpace:
         And one that holds a text longer than a text may be (written so
         in an editor) is not put into the other entry at all: cut to
         fit, the end of it would be lost with the file. Nor is one the
-        user gave another title since it was found to be the same note.
+        user gave another title since it was found to be the same note;
+        nor one that was found by its text (``by_text``) and no longer
+        says it: what it says now is not what the note confirmed.
         """
         path = self._paths().memory_dir(project) / f"{pending.id}.md"
         read = self._pending_as_read(path, project)
@@ -2255,6 +2395,9 @@ class TaskAgentSpace:
             # The user gave it another title since it was found to be
             # the same note: it is about something else now, and waits
             # under that title.
+            return into, False, None
+        if by_text is not None and not _said_already(said, by_text):
+            # Rewritten since: it waits, as what it says now.
             return into, False, None
         pending = as_read
         # What it says of itself goes along: how it is known, and of the
@@ -2462,7 +2605,9 @@ class TaskAgentSpace:
             # Its text waits beside an entry that is not pending and has
             # that text or that title: the two are one entry from now on.
             was = same
-            home, moved, unlisted = self._fold(project, own, same, known, allowed, may_add=may_use_place or paid)
+            home, moved, unlisted = self._fold(
+                project, own, same, known, allowed, may_add=may_use_place or paid, by_text=content
+            )
             waits = [item for item in waits if item[0] is not own]
         elif own is not None or same is not None:
             # The pending entry that has the text, else the entry that is
@@ -2611,10 +2756,16 @@ class TaskAgentSpace:
         counted_files: list[str] = []
         other_files: list[tuple[str, str]] = []
 
-        def work(allowed: bool) -> _Taken:
-            # Looked for in here, off the event loop: it reads the file system.
+        # What was found of the files it names, before the write took its turn.
+        looked: list[tuple[bool, tuple[list[str], list[tuple[str, str]], list[str]]]] = []
+
+        def look(asked: bool) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+            # Off the event loop: it reads the file system.
             bases = self._bases(getattr(commission, "workdir", None), getattr(commission, "project", None))
-            evidence, others = evidence_of(lesson.get("evidence"), bases, outside=allowed)
+            return evidence_asked(lesson.get("evidence"), bases, outside=asked)
+
+        def work(allowed: bool) -> _Taken:
+            evidence, others, apart = self._as_allowed(*looked[0], allowed)
             counted_files[:] = evidence
             other_files[:] = others
             note = _Note(
@@ -2626,7 +2777,7 @@ class TaskAgentSpace:
                     # Not said: the weakest, which takes effect last.
                     confidence=_confidence(lesson.get("confidence")) or INFERRED,
                     evidence=tuple(evidence),
-                    outside=tuple(_outside_of(evidence, bases)),
+                    outside=tuple(apart),
                     observer=counted,
                 ),
             )
@@ -2643,6 +2794,7 @@ class TaskAgentSpace:
         newly_seen = revived = False
         try:
             try:
+                looked.append(await self._evidence_before(look))
                 taken = await self._write_judged(work)
             finally:
                 # However it ended, the place is settled here and nowhere
@@ -2834,11 +2986,16 @@ class TaskAgentSpace:
             and count_tokens(item.strip()) <= TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS
         ][:TASK_AGENT_REVIEW_ENTRY_EVIDENCE_MAX_PATHS]
 
+        # The ones it gave first, then what its words name: a model does
+        # not always fill in what it was asked for.
+        named = list(dict.fromkeys([*given, *paths_named_in(f"{title}\n{description}\n{content}")]))
+        # Looked for before the write takes its turn; see ``_evidence_before``.
+        looked = await self._evidence_before(
+            lambda asked: evidence_asked(named, roots, looked_at=len(named), outside=asked)
+        )
+
         def work(allowed: bool) -> _Taken:
-            # The ones it gave first, then what its words name: a model
-            # does not always fill in what it was asked for.
-            named = list(dict.fromkeys([*given, *paths_named_in(f"{title}\n{description}\n{content}")]))
-            found, _others = evidence_of(named, roots, looked_at=len(named), outside=allowed)
+            found, _others, apart = self._as_allowed(*looked, allowed)
             note = _Note(
                 title=title,
                 content=content,
@@ -2848,7 +3005,7 @@ class TaskAgentSpace:
                 known=_Known(
                     confidence=OBSERVED if found else INFERRED,
                     evidence=tuple(found),
-                    outside=tuple(_outside_of(found, roots)),
+                    outside=tuple(apart),
                     observer=observer,
                 ),
             )
@@ -3351,22 +3508,23 @@ class TaskAgentSpace:
         that waited long enough are removed whatever becomes of the
         rest. Then the files are looked at in a thread of its own, entry
         by entry, for no longer than ``SPACE_EVIDENCE_LOOK_SECONDS``.
-        What was found by then is used, and the next call begins at the
-        entry the look was at: a disk that answers slowly is got through
-        a few entries a call. A look that was given up on ends once the
-        entry it is at answers; until then that entry is passed over,
-        and with
+        What was found by then is used, and the next call goes on after
+        the entry the look was at: a disk that answers slowly is got
+        through a few entries a call, and an entry whose files never
+        answer in time does not keep the looks from the ones after it.
+        A look that was given up on (also when whoever tidies up was
+        stopped while it waited) ends once the entry it is at answers;
+        until then that entry is passed over as long as it rests on the
+        same files, and with
         ``SPACE_EVIDENCE_LOOKS_AT_ONCE`` of them out none is started:
         the entries that rest on files are passed over, and the pending
         ones are still seen to.
 
         No file is looked at under the lock on the space's writes. An
-        entry is changed when it still rests on the files that were
-        looked at (``_set_standing``), and when task agents may read
-        outside the working directories as they might at the look.
+        entry is changed when it is as it was read before the look
+        (``_set_standing``), and when task agents may read outside the
+        working directories as they might at the look.
         """
-        import threading
-
         from config.nekoclaw_settings import (
             SPACE_EVIDENCE_ENTRIES_PER_UPKEEP,
             SPACE_EVIDENCE_LOOK_SECONDS,
@@ -3404,6 +3562,7 @@ class TaskAgentSpace:
             old: list[tuple[str | None, str]] = []
             indexes: dict[str | None, str] = {}
             for place, (scope, path) in enumerate(turn):
+                signature = self._signature(path)
                 text = self._read_text(path)
                 if text is None:
                     continue
@@ -3413,7 +3572,11 @@ class TaskAgentSpace:
                         old.append((scope, path.stem))
                     continue
                 evidence = _evidence_in(document)
-                if not evidence or not _listed(document, "texts") or (scope, path.stem) in unanswered:
+                if not evidence or not _listed(document, "texts"):
+                    continue
+                if (scope, path.stem, tuple(evidence)) in unanswered:
+                    # A look at these very files is still out. (Resting on
+                    # others by now, it is looked at.)
                     continue
                 expired = document.get("status").strip().lower() == ENTRY_EXPIRED
                 listed = False
@@ -3426,7 +3589,9 @@ class TaskAgentSpace:
                         indexes[scope] = self._read_text(paths.index(scope)) or ""
                     listed = self._index_line_in(indexes[scope], f"{paths.MEMORY_DIR}/{path.stem}.md") is not None
                 rested.append(
-                    _Rested(place, scope, path.stem, tuple(evidence), tuple(_outside_in(document)), expired, listed)
+                    _Rested(
+                        place, scope, path.stem, tuple(evidence), tuple(_outside_in(document)), expired, listed, signature
+                    )
                 )
             return rested, old, start, len(turn), len(files)
 
@@ -3468,33 +3633,38 @@ class TaskAgentSpace:
                 logger.warning("no thread could be started to look at the files the entries rest on")
         if looking is not None:
             self._evidence_look = looking
+            stopped: asyncio.CancelledError | None = None
             try:
                 await asyncio.wait_for(asyncio.shield(looking), SPACE_EVIDENCE_LOOK_SECONDS)
             except asyncio.TimeoutError:
                 logger.warning("looking at the files the entries rest on took too long; the rest is left for later")
-            except asyncio.CancelledError:
-                stop.set()
-                raise
+            except asyncio.CancelledError as exc:
+                # Whoever tidies up was stopped. The look is given up on
+                # like one that took too long, and counted as out.
+                stopped = exc
             # It looks at no further entry, and ends once the one it is at
             # answers.
             stop.set()
             got = len(found)
             if got < len(rested):
                 at = rested[got]
-                # Where the next call begins. While this look is out, the
-                # entry is passed over.
-                reached = at.place
+                # The next call goes on after it, and comes to it again in
+                # its turn: one that never answers in time would have every
+                # call begin with it, and get no further.
+                reached = at.place + 1
                 if not looking.done():
-                    key = (at.scope, at.id)
+                    key = (at.scope, at.id, at.evidence)
                     self._evidence_unanswered.add(key)
 
-                    def back(done: asyncio.Future[None], key: tuple[str | None, str] = key) -> None:
+                    def back(done: asyncio.Future[None], key: tuple[str | None, str, tuple[str, ...]] = key) -> None:
                         self._evidence_unanswered.discard(key)
                         # Looked at here, as nobody waits for it any more.
                         if not done.cancelled():
                             done.exception()
 
                     looking.add_done_callback(back)
+            if stopped is not None:
+                raise stopped
         if total:
             self._evidence_looked_until = (start + reached) % total
 
@@ -3518,8 +3688,7 @@ class TaskAgentSpace:
                     await self._write(self._unlist_expired, item.scope, item.id)
                     continue
                 changed = await self._write_judged(
-                    lambda may, item=item, expire=expire: may == allowed
-                    and self._set_standing(item.scope, item.id, expire, (item.evidence, item.outside))
+                    lambda may, item=item, expire=expire: may == allowed and self._set_standing(item, expire)
                 )
             except (OSError, ValueError):
                 logger.warning("an entry of the task agent space could not be marked as expired or in effect", exc_info=True)
@@ -3562,22 +3731,23 @@ class TaskAgentSpace:
         self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{path.stem}.md")
         return True
 
-    def _set_standing(
-        self, project: str | None, entry_id: str, expire: bool, found: tuple[tuple[str, ...], tuple[str, ...]]
-    ) -> bool:
+    def _set_standing(self, item: _Rested, expire: bool) -> bool:
         """Mark an entry as expired, or as in effect again, and see to its line in the index. Returns whether it changed.
 
-        ``found`` is what the entry rested on when its files were looked
-        at: the files, and which of them lie outside the working
-        directories. No file is looked at here, under the lock on the
-        space's writes: a share that does not answer would hold up every
-        write. The entry is changed when it is still what was looked at:
-        one the host made, not pending, that rests on those very files.
-        One that was filed again with another file since, or that the
-        user took over, is left for the next look.
+        ``item`` is the entry as it was read before its files were looked
+        at. No file is looked at here, under the lock on the space's
+        writes: a share that does not answer would hold up every write.
+        The entry is changed when it is still what was read then. One
+        whose file was written since is left for the next look: filed
+        again meanwhile, it may rest on the same files and have been
+        confirmed by a file that is back, and what was found before
+        says nothing of it any more. So is one that, by the time it is
+        written, is not the host's, is pending, or rests on other files
+        (the user, saving it from an editor at that very moment).
         """
         paths = self._paths()
-        path = paths.memory_dir(project) / f"{safe_segment(entry_id)}.md"
+        project, found = item.scope, (item.evidence, item.outside)
+        path = paths.memory_dir(project) / f"{safe_segment(item.id)}.md"
         target = f"{paths.MEMORY_DIR}/{path.stem}.md"
         today = _date(self._clock())
         still: list[bool] = []
@@ -3609,7 +3779,7 @@ class TaskAgentSpace:
                 document.drop("expired")
             return _render_document(document)
 
-        if not path.is_file():
+        if not path.is_file() or item.signature is None or self._signature(path) != item.signature:
             return False
         if expire:
             # The file first: one that says it expired while its line is

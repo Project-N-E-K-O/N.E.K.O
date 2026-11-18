@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from nekoclaw.host.detached import run_detached
+from nekoclaw.host.detached import run_detached, wait_detached
 
 
 async def test_what_the_work_returns_is_handed_back():
@@ -134,3 +134,42 @@ def test_work_that_comes_back_after_the_loop_was_closed_is_dropped_quietly(monke
 
     # Nobody waits for it any more: it ends, and nothing is raised in its thread.
     assert not thread.is_alive() and failed == []
+
+
+# ---------------------------------------------------------------------------
+# Waited for in a thread (``wait_detached``)
+# ---------------------------------------------------------------------------
+
+
+def test_what_work_waited_for_in_a_thread_returns_or_raises_is_handed_on():
+    ran_in: list[tuple[str, bool]] = []
+
+    def work() -> int:
+        thread = threading.current_thread()
+        ran_in.append((thread.name, thread.daemon))
+        return 7
+
+    def failing() -> None:
+        raise ValueError("no such folder")
+
+    assert wait_detached(work, name="nekoclaw-test-wait", seconds=30) == 7
+    # In a thread of its own, one the process does not wait for when it exits.
+    assert ran_in == [("nekoclaw-test-wait", True)]
+    with pytest.raises(ValueError, match="no such folder"):
+        wait_detached(failing, name="nekoclaw-test-wait", seconds=30)
+
+
+def test_work_waited_for_in_a_thread_is_given_up_on_when_its_time_is_up_and_goes_on():
+    release, over = threading.Event(), threading.Event()
+
+    def work() -> None:
+        release.wait(120)
+        over.set()
+
+    try:
+        with pytest.raises(TimeoutError):
+            wait_detached(work, name="nekoclaw-test-wait", seconds=0.05)
+        assert not over.is_set()
+    finally:
+        release.set()
+    assert over.wait(30)

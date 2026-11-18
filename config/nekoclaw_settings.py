@@ -292,6 +292,18 @@ disk, and never ends on a share that does not answer. Past this, what was
 found so far is used, the entry the look is at is left out this time, and
 the rest of the tidying goes on."""
 
+SPACE_EVIDENCE_ASK_SECONDS = 2.0
+"""How long a write to the task agent space waits to be told whether the
+files a note names are there. Asked while the write holds the lock every
+write of the space takes, so a share that does not answer would hold them
+all up. On a disk the answer takes far less than a millisecond. Past this,
+nothing is known of those files: the note is kept without them."""
+
+SPACE_EVIDENCE_ASKED_AT_ONCE = 8
+"""Most such questions that are out, each in a thread of its own until the
+file system answers it. The same one is not asked again meanwhile; with so
+many out none is asked, and nothing is known of the files."""
+
 SPACE_EVIDENCE_LOOKS_AT_ONCE = 4
 """Most looks that were given up on and have not come back. Each is at one
 entry, in a thread of its own, until the files of that entry answer; such
