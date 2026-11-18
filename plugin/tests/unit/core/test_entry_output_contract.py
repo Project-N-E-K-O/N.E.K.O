@@ -1175,3 +1175,55 @@ def test_alias_and_field_name_cannot_overwrite_each_other():
     )
     # The published key carries a wrong value; the field-name key is not part of the contract.
     assert [(i.path, i.type) for i in check({"userId": "bad", "user_id": 3})] == [("$.userId", "type")]
+
+
+class Color(str, __import__("enum").Enum):
+    RED = "red"
+
+
+class Rich(BaseModel):
+    model_config = ConfigDict(ser_json_timedelta="float")
+    when: __import__("datetime").datetime
+    day: __import__("datetime").date
+    price: __import__("decimal").Decimal
+    color: Color
+    wait: __import__("datetime").timedelta
+    tags: set[str]
+    maybe: int | None = None
+
+    @__import__("pydantic").computed_field  # type: ignore[misc]
+    @property
+    def label(self) -> str:
+        return f"{self.color.value}"
+
+
+async def test_inferred_model_output_through_finish_passes_strict_for_common_types():
+    import datetime
+    from decimal import Decimal
+
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> Rich:
+        value = Rich(
+            when=datetime.datetime(2026, 1, 1, 12, 0),
+            day=datetime.date(2026, 1, 1),
+            price=Decimal("1.50"),
+            color=Color.RED,
+            wait=datetime.timedelta(seconds=3),
+            tags={"a"},
+        )
+        return build_finish_envelope(data=value, delivery="silent")  # type: ignore[return-value]
+
+    meta = _meta_of(entry)
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    await runtime.invoke("plugin_entry", "entry", {})
+    # The same data as a plain dict (what model_dump() emits) passes too, and
+    # a wrong type is still a confirmed mismatch.
+    check = build_output_check(meta)
+    dumped = Rich(
+        when=datetime.datetime(2026, 1, 1), day=datetime.date(2026, 1, 1), price=Decimal("2"),
+        color=Color.RED, wait=datetime.timedelta(seconds=1), tags=set(),
+    ).model_dump(mode="python")
+    assert check(dumped) == []
+    assert [(i.path, i.type) for i in check({**dumped, "color": "blue"})] == [("$.color", "enum")]

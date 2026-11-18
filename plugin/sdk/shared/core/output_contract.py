@@ -18,9 +18,11 @@ keywords are ignored rather than guessed at):
 - A contract inferred from a Pydantic return annotation is the model's
   serialization-mode schema. The one exception is an entry that returns a
   model instance: it was validated when built, and is revalidated (on a copy)
-  only when the model's ``revalidate_instances`` asks for it. The full ``jsonschema`` package is not a
-  runtime dependency of N.E.K.O, and pulling it in adds a native extension
-  (``rpds-py``) to every packaged build for a warning-level feature.
+  only when the model's ``revalidate_instances`` asks for it.
+
+The full ``jsonschema`` package is not a runtime dependency of N.E.K.O, and
+pulling it in adds a native extension (``rpds-py``) to every packaged build
+for a warning-level feature, hence the built-in subset.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, get_args
 from urllib.parse import unquote
@@ -151,7 +154,8 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         declared = declared | frozenset(getattr(model, "model_fields", {}) or {})
     except Exception:  # noqa: BLE001 - extra names only refine paths
         pass
-    published = _JsonSchemaCheck(schema, json_form=_pydantic_json_form) if schema is not None else None
+    render = _pydantic_json_form(model)
+    published = _JsonSchemaCheck(schema, json_form=render) if schema is not None else None
 
     def check(value: object) -> list[OutputIssue]:
         if not isinstance(value, model):
@@ -185,16 +189,44 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     return check
 
 
-def _pydantic_json_form(value: object) -> object:
-    """Serialized output as Pydantic's JSON mode renders it.
+def _pydantic_json_form(model: type) -> Callable[[object], object]:
+    """Render serialized output as Pydantic's JSON mode would for ``model``.
 
-    The published contract is Pydantic's serialization schema, so the value is
-    rendered by the same rules (Decimal and datetime as strings, nested models
-    by their own alias settings) before it is checked.
+    The published contract is the model's serialization schema, so the value
+    is rendered by the same rules: the model's ``ser_json_*`` settings and its
+    ``serialize_by_alias`` for any model instances nested in the data.
     """
     from pydantic_core import to_jsonable_python
 
-    return to_jsonable_python(value)
+    config = getattr(model, "model_config", None)
+    config = config if isinstance(config, Mapping) else {}
+    options: dict[str, Any] = {
+        "by_alias": bool(config.get("serialize_by_alias", False)),
+        "bytes_mode": config.get("ser_json_bytes", "utf8"),
+        "inf_nan_mode": config.get("ser_json_inf_nan", "null"),
+    }
+    if "ser_json_temporal" in config:
+        options["temporal_mode"] = config["ser_json_temporal"]
+    # to_jsonable_python's timedelta_mode also turns datetimes into numbers,
+    # unlike the model's own ser_json_timedelta; convert timedeltas up front.
+    timedelta_as_float = "ser_json_temporal" not in config and config.get("ser_json_timedelta") == "float"
+
+    def render(value: object) -> object:
+        if timedelta_as_float:
+            value = _timedeltas_as_seconds(value)
+        return to_jsonable_python(value, **options)
+
+    return render
+
+
+def _timedeltas_as_seconds(value: object) -> object:
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    if isinstance(value, Mapping):
+        return {key: _timedeltas_as_seconds(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_timedeltas_as_seconds(item) for item in value]
+    return value
 
 
 def _builtin_error_types() -> frozenset[str]:
