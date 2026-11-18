@@ -247,34 +247,110 @@ test('hydrating only the prompt preference does not reschedule proactive chat', 
   assert.equal(schedules, 0);
 });
 
-test('MMD popup refresh keeps the model-specific cursor-follow choice', () => {
-  const events = new Map();
-  const tracking = {checked: true, updates: 0, updateStyle() {this.updates++;}};
-  const prompt = {checked: true};
-  const window = {
-    mouseTrackingEnabled: true,
-    activityContextPromptEnabled: true,
-    addEventListener(name, fn) {events.set(name, fn);},
+function animationSettingsBoot(prefix, initiallyEnabled) {
+  function element() {
+    return {
+      children: [], style: {}, attributes: new Map(), listeners: new Map(),
+      appendChild(child) {this.children.push(child); child.parentElement = this; return child;},
+      setAttribute(name, value) {this.attributes.set(name, String(value));},
+      getAttribute(name) {return this.attributes.get(name) ?? null;},
+      addEventListener(name, fn) {
+        const handlers = this.listeners.get(name) || [];
+        handlers.push(fn);
+        this.listeners.set(name, handlers);
+      },
+      dispatchEvent(event) {
+        for (const handler of this.listeners.get(event.type) || []) handler(event);
+      },
+      matches() {return false;},
+      querySelector(selector) {
+        for (const child of this.children) {
+          if (selector === `#${child.id}`) return child;
+          const found = child.querySelector(selector);
+          if (found) return found;
+        }
+        return null;
+      },
+    };
+  }
+  const calls = [];
+  const localStorage = {setItem() {assert.fail('popup synchronization must not persist settings');}};
+  const document = {
+    body: element(), createElement: element,
+    getElementById() {return {};},
+    querySelector(selector) {return this.body.querySelector(selector);},
   };
-  const document = {getElementById() {return {};}, querySelector(selector) {
-    return selector === '#mmd-activity-context-prompt' ? prompt : null;
-  }};
-  const sandbox = {window, document, requestAnimationFrame(fn) {fn();}, MMDManager: class {}};
+  const window = {
+    mouseTrackingEnabled: initiallyEnabled,
+    addEventListener() {}, localStorage,
+    saveNEKOSettings() {calls.push(['save', window.mouseTrackingEnabled, manager._getMouseTrackingState()]);},
+  };
+  const sandbox = {
+    window, document, localStorage, console: {log() {}},
+    requestAnimationFrame(fn) {fn();},
+    Live2DManager: class {}, VRMManager: class {}, MMDManager: class {},
+  };
   vm.createContext(sandbox);
   for (const file of ['avatar-ui-popup.js', 'avatar-ui-popup-config.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar', file), 'utf8'), sandbox);
   }
-  const manager = new sandbox.MMDManager();
-  manager.cursorFollow = {enabled: false};
-  const popup = {querySelector(selector) {
-    return selector === '#mmd-mouse-tracking-toggle' ? tracking : null;
-  }};
-  manager._onPopupShow(popup, 'settings');
-  assert.equal(tracking.checked, false);
-  assert.equal(tracking.updates, 1);
-  assert.equal(window.mouseTrackingEnabled, true);
-  assert.equal(prompt.checked, true);
-  manager.cursorFollow.enabled = true;
-  manager._onPopupShow(popup, 'settings');
-  assert.equal(tracking.checked, true);
-});
+  const managerName = {live2d: 'Live2DManager', vrm: 'VRMManager', mmd: 'MMDManager'}[prefix];
+  const manager = new sandbox[managerName]();
+  manager.cursorFollow = {enabled: initiallyEnabled, setEnabled(enabled) {this.enabled = enabled;}};
+  manager._createSidePanelContainer = () => Object.assign(element(), {_expand() {}});
+  const toggle = manager._onMouseTrackingToggle;
+  manager._onMouseTrackingToggle = enabled => {
+    calls.push(['toggle', enabled]);
+    toggle.call(manager, enabled);
+  };
+  const popup = element();
+  document.body.appendChild(popup);
+  const panel = manager._createAnimationSettingsSidePanel();
+  const tracking = panel.querySelector(`#${prefix}-mouse-tracking-toggle`);
+  const trackingRow = tracking.parentElement;
+  const modeRow = trackingRow.parentElement.children[1];
+  return {
+    manager, window, popup, panel, tracking, trackingRow, modeRow, calls,
+    setExternalState(enabled) {
+      manager.cursorFollow.enabled = enabled;
+      // Deliberately disagree with the MMD model to catch global-state overwrites.
+      window.mouseTrackingEnabled = prefix === 'mmd' ? !enabled : enabled;
+    },
+    assertTrackingState(enabled) {
+      assert.equal(tracking.checked, enabled, 'checkbox');
+      assert.equal(trackingRow.children[1].children[0].style.opacity, enabled ? '1' : '0', 'indicator');
+      assert.equal(trackingRow.getAttribute('aria-checked'), String(enabled), 'accessible switch state');
+      assert.equal(modeRow.style.opacity, enabled ? '1' : '0.4', 'mode opacity');
+      assert.equal(modeRow.style.pointerEvents, enabled ? 'auto' : 'none', 'mode pointer input');
+      assert.equal(modeRow.tabIndex, enabled ? 0 : -1, 'mode keyboard focus');
+    },
+  };
+}
+
+for (const prefix of ['live2d', 'vrm', 'mmd']) {
+  for (const initiallyEnabled of [false, true]) {
+    test(`${prefix} retained popup fully refreshes tracking (initially ${initiallyEnabled}) without saving`, () => {
+      const h = animationSettingsBoot(prefix, initiallyEnabled);
+      // Animation settings are a body-mounted side panel, not popup descendants.
+      assert.equal(h.popup.querySelector(`#${prefix}-mouse-tracking-toggle`), null);
+      h.assertTrackingState(initiallyEnabled);
+      for (const enabled of [!initiallyEnabled, initiallyEnabled]) {
+        h.setExternalState(enabled);
+        h.manager._onPopupShow(h.popup, 'settings');
+        h.assertTrackingState(enabled);
+        assert.equal(h.panel.querySelector(`#${prefix}-mouse-tracking-toggle`), h.tracking);
+        assert.equal(h.window.mouseTrackingEnabled, prefix === 'mmd' ? !enabled : enabled);
+        assert.deepEqual(h.calls, [], 'reopening must not toggle the model or persist settings');
+      }
+    });
+  }
+
+  test(`${prefix} tracking click and keyboard toggles synchronize before saving the new state`, () => {
+    const h = animationSettingsBoot(prefix, false);
+    for (const [type, key, enabled] of [['click', undefined, true], ['keydown', 'Enter', false], ['keydown', ' ', true]]) {
+      h.trackingRow.dispatchEvent({type, key, stopPropagation() {}, preventDefault() {}});
+      h.assertTrackingState(enabled);
+      assert.deepEqual(h.calls.splice(0), [['toggle', enabled], ['save', enabled, enabled]]);
+    }
+  });
+}

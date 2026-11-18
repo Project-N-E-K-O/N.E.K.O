@@ -1505,10 +1505,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         updateIndicatorStyle(isChecked);
         updateTrackingToggleRowBackground(trackingClickArea, isChecked);
     };
-    checkbox.updateStyle = updateRowStyle;
-    updateRowStyle();
-    checkbox.addEventListener('change', updateRowStyle);
-
     const label = document.createElement('span');
     label.textContent = window.t ? window.t('settings.toggles.mouseTracking') : '跟踪鼠标';
     label.setAttribute('data-i18n', 'settings.toggles.mouseTracking');
@@ -1521,14 +1517,11 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     trackingClickArea.appendChild(indicator);
     trackingClickArea.appendChild(label);
     bindTrackingToggleRowHover(trackingClickArea, () => checkbox.checked);
-    updateRowStyle();
 
     const handleTrackingChange = () => {
         const enabled = !checkbox.checked;
         checkbox.checked = enabled;
-        updateRowStyle();
-        updateTrackingModeToggleState();
-        trackingClickArea.setAttribute('aria-checked', String(enabled));
+        syncTrackingState();
         // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
         // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
         if (typeof manager._onMouseTrackingToggle === 'function') {
@@ -1542,7 +1535,6 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         handleTrackingChange();
     });
     trackingClickArea.setAttribute('role', 'switch');
-    trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
     trackingClickArea.tabIndex = 0;
     trackingClickArea.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -1605,8 +1597,15 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     bindTrackingToggleRowHover(modeClickArea, () => modeCheckbox.checked);
     updateModeRowStyle();
 
-    // 初始化跟踪模式按钮状态
-    updateTrackingModeToggleState();
+    // Refresh retained controls without toggling the model or saving settings.
+    const syncTrackingState = () => {
+        updateRowStyle();
+        trackingClickArea.setAttribute('aria-checked', String(checkbox.checked));
+        updateTrackingModeToggleState();
+    };
+    checkbox.updateStyle = syncTrackingState;
+    checkbox.addEventListener('change', syncTrackingState);
+    syncTrackingState();
 
     const handleModeChange = () => {
         if (checkbox.checked !== true) return;

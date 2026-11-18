@@ -37,7 +37,8 @@ function createSettingsPopupShowSync(prefix) {
         const mouseTracking = prefix === 'mmd' && typeof this._getMouseTrackingState === 'function'
             ? this._getMouseTrackingState()
             : window.mouseTrackingEnabled;
-        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
+        // Animation settings live in a body-mounted side panel, outside popup.
+        syncCheckbox(document.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
         const contextPrompt = document.querySelector(`#${prefix}-activity-context-prompt`);
         if (contextPrompt && typeof window.activityContextPromptEnabled !== 'undefined') {
             contextPrompt.checked = window.activityContextPromptEnabled !== false;
