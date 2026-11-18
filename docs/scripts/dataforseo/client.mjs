@@ -5,6 +5,7 @@ export const DATAFORSEO_ENDPOINTS = Object.freeze({
   searchVolume: '/v3/keywords_data/google_ads/search_volume/live',
   keywordDifficulty: '/v3/dataforseo_labs/google/bulk_keyword_difficulty/live',
   organicSerp: '/v3/serp/google/organic/live/advanced',
+  bingOrganicSerp: '/v3/serp/bing/organic/live/advanced',
 })
 
 export class DataForSeoApiError extends Error {

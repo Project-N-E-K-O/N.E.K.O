@@ -52,6 +52,7 @@
 | `DATAFORSEO_LOGIN` | DataForSEO API Basic Auth 登录名 |
 | `DATAFORSEO_PASSWORD` | DataForSEO API 密码 |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | 同时拥有两站 GSC 只读权限、两个 GA4 Viewer 权限的完整服务账号 JSON |
+| `BING_WEBMASTER_API_KEY` | 对已验证站点有访问权限的 Bing 站长账号 API Key |
 | `SEO_REPORTS_TOKEN` | 只授予私有仓库 `Project-N-E-K-O/N.E.K.O.OfficialWebsite` **Actions: Read** 的 fine-grained token，用于读取 `.cn` 排名与 IndexNow artifact |
 
 禁止把上述凭证提交到 Git、Markdown、`docs/public` 或任何 `VITE_*` 变量。Measurement ID 可以公开，API 密码和服务账号私钥不可以。
@@ -65,6 +66,12 @@
 5. 分别把两个数字 Property ID 写入 `GA4_PROPERTY_ID` 与 `GA4_CN_PROPERTY_ID`。
 
 CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.online` 流量误报成 `.cn`。
+
+## Bing 取数
+
+1. 从 [Bing Webmaster Tools](https://www.bing.com/webmasters/) 的「设置 → API Access → API Key」复制密钥，保存到日报仓库 `Project-N-E-K-O/N.E.K.O` 的 Actions Secret。用同一个 Bing 账号验证或访问所需的站点。
+2. 手动运行 `SEO GEO Daily Report` 的 `dry-run`，在日报的 Bing 段核对站点流量和查询表现。站点流量采用 API 最新返回日，查询平均排名采用 `AvgImpressionPosition`。密钥缺失或没有返回数据行时对应来源显示 `UNKNOWN`，请求失败时显示 `FAILED`。
+3. `paid` 模式使用现有 DataForSEO 凭证，按深度 10 采集 `.online` 英文组，19 词预计增加 $0.038。开启 `include_bing_cn` 可增加 `.cn` 中文组，8 词预计增加 $0.016。日报按组展示 API 已报告费用。 [Bing Webmaster API 授权](https://learn.microsoft.com/en-us/bingwebmaster/getting-access) · [DataForSEO Bing 价格](https://dataforseo.com/pricing/serp/bing-organic-serp-api)
 
 ## 时间窗口
 

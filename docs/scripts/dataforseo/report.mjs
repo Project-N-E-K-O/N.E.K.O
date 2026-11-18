@@ -345,14 +345,19 @@ function serpErrorDetails(entry, error, attempts, incurredCostUsd) {
   }
 }
 
-async function requestSerpWithRetries(client, entry, task, retryOptions) {
+export function createSerpRequester(client, { endpoint = DATAFORSEO_ENDPOINTS.organicSerp, timeoutMs, retryOptions } = {}) {
+  const retry = normalizeRetryOptions(retryOptions)
+  return (entry, task) => requestSerpWithRetries(client, entry, task, retry, endpoint, timeoutMs)
+}
+
+async function requestSerpWithRetries(client, entry, task, retryOptions, endpoint, timeoutMs) {
   let attempts = 0
   let costUsd = 0
 
   while (attempts < retryOptions.maxAttempts) {
     attempts += 1
     try {
-      const payload = await client.post(DATAFORSEO_ENDPOINTS.organicSerp, [task])
+      const payload = await client.post(endpoint, [task], { timeoutMs })
       costUsd += payloadCost(payload)
       return { payload, error: null, attempts, costUsd }
     } catch (error) {
@@ -393,6 +398,7 @@ async function requestSerpWithRetries(client, entry, task, retryOptions) {
 }
 
 async function collectSerp(client, config, { depth, includeAiOverview, retryOptions }) {
+  const requestSerp = createSerpRequester(client, { retryOptions })
   const items = []
   const errors = []
   let costUsd = 0
@@ -413,7 +419,7 @@ async function collectSerp(client, config, { depth, includeAiOverview, retryOpti
     }
     if (includeAiOverview) task.load_async_ai_overview = true
 
-    const request = await requestSerpWithRetries(client, entry, task, retryOptions)
+    const request = await requestSerp(entry, task)
     costUsd += request.costUsd
     if (request.error) {
       const details = serpErrorDetails(entry, request.error, request.attempts, request.costUsd)
@@ -491,11 +497,10 @@ export async function createDataForSeoReport({
   }
 
   if (plan.mode === 'all' || plan.mode === 'serp') {
-    const normalizedRetryOptions = normalizeRetryOptions(retryOptions)
     const serp = await collectSerp(client, config, {
       depth: plan.serpDepth,
       includeAiOverview: plan.includeAiOverview,
-      retryOptions: normalizedRetryOptions,
+      retryOptions,
     })
     report.serp = serp.items
     report.errors.push(...serp.errors)

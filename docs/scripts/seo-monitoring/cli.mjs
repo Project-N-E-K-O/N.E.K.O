@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+import { DataForSeoClient } from '../dataforseo/client.mjs'
+import { collectBingRankings, collectBingWebmaster } from './bing.mjs'
 import {
   collectGa4,
   collectGsc,
@@ -167,7 +169,7 @@ async function main() {
     const duplicateSites = propertyId ? duplicates.get(propertyId) : null
     const indexNowPath = options.indexNow.get(definition.id)
       || process.env[definition.indexNow.statusPathEnv]
-    const [gsc, ga4, technical, indexNow] = await Promise.all([
+    const [gsc, ga4, technical, indexNow, bing] = await Promise.all([
       accessToken
         ? safely(() => collectGsc({
           siteUrl,
@@ -196,9 +198,26 @@ async function main() {
         `${definition.indexNow.statusPathEnv} is not configured`,
         { missingStatus: 'not_run' },
       ),
+      collectBingWebmaster(definition.origin, {
+        apiKey: process.env.BING_WEBMASTER_API_KEY,
+      }),
     ])
-    return { definition, gsc, ga4, technical, indexNow }
+    return { definition, gsc, ga4, technical, indexNow, bing }
   }))
+
+  const paid = process.env.COLLECTION_KIND === 'paid'
+  const login = process.env.DATAFORSEO_LOGIN
+  const password = process.env.DATAFORSEO_PASSWORD
+  const client = paid && login?.trim() && password?.trim()
+    ? new DataForSeoClient({ login, password })
+    : null
+  const bingRankings = await Promise.all(definitions
+    .filter(definition => definition.bingRanking)
+    .map(definition => collectBingRankings(definition, {
+      client,
+      paid,
+      includeCn: process.env.INCLUDE_BING_CN === 'true',
+    })))
 
   const report = buildMonitoringReport({
     config,
@@ -206,6 +225,7 @@ async function main() {
     window,
     dataForSeoInputs,
     siteInputs,
+    bingRankings,
     previousReport: previousReport?.status === 'unavailable' ? null : previousReport,
     previousReportEvidence: process.env.PREVIOUS_REPORT_EVIDENCE ?? options.previousReport,
   })

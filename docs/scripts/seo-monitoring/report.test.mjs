@@ -176,6 +176,43 @@ function technical(origin) {
   }
 }
 
+test('Bing Markdown shows observed values and independent unavailable sources', () => {
+  const report = buildMonitoringReport({
+    config,
+    generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} },
+    dataForSeoInputs: [],
+    siteInputs: [{
+      definition: { id: 'cn', label: '.cn 产品主页' },
+      gsc: unavailable('no GSC fixture'),
+      ga4: unavailable('no GA4 fixture'),
+      technical: technical('https://project-neko.cn'),
+      bing: {
+        traffic: { status: 'FAILED', reason: 'HTTP 403', rows: [] },
+        queries: {
+          status: 'OBSERVED',
+          rows: [{ date: '2026-07-28', query: 'desktop | pet', clicks: 0, impressions: 4, position: 3.5 }],
+        },
+      },
+    }],
+    bingRankings: [{
+      id: 'online-en',
+      label: '.online en / United States',
+      depth: 10,
+      status: 'UNKNOWN',
+      reason: 'dry-run 未请求付费排名',
+      rows: [],
+    }],
+  })
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /## Bing 搜索表现与排名/u)
+  assert.ok(markdown.includes('| .cn 产品主页 | desktop \\| pet | 0 | 4 | 3.50 |'))
+  assert.match(markdown, /站点流量 \| FAILED · N\/A（HTTP 403）/u)
+  assert.match(markdown, /UNKNOWN · N\/A（dry-run 未请求付费排名）/u)
+  assert.ok(!report.blockers.some(blocker => blocker.includes('Bing')))
+  assert.equal(report.sites[0].bing.queries.status, 'OBSERVED')
+})
+
 test('rank buckets distinguish observed off-100 results, failures, and not-run rows', () => {
   assert.deepEqual(rankBuckets([
     { organicRank: 2, error: null, collectionStatus: 'observed' },

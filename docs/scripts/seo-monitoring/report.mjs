@@ -819,6 +819,7 @@ export function buildMonitoringReport({
   window,
   dataForSeoInputs,
   siteInputs,
+  bingRankings = [],
   previousReport = null,
   previousReportEvidence = null,
 }) {
@@ -846,6 +847,7 @@ export function buildMonitoringReport({
       ga4: input.ga4,
       technical: input.technical,
       indexNow: normalizedIndexNow(input.indexNow),
+      bing: input.bing,
     }
   })
   const keywordMaster = segments.flatMap(segment => segment.keywordRows)
@@ -885,6 +887,7 @@ export function buildMonitoringReport({
     overallStatus: partial ? 'partial' : 'complete',
     sites,
     dataForSeoSegments: segments,
+    bingRankings,
     keywordMaster,
     searchFrequency,
     aiCitationFrequency,
@@ -1096,6 +1099,63 @@ function aiCrawlerCell(site) {
   return `允许 ${policy.checked} 个监测爬虫（${explicit} 个显式规则，其余继承通用规则）`
 }
 
+function renderBingMarkdown(sites, rankings) {
+  if (rankings.length === 0 && !sites.some(site => site.bing)) return []
+  const lines = [
+    '## Bing 搜索表现与排名',
+    '',
+    '| 站点 | 来源 | 状态 | 最新数据日期 | 点击 | 曝光 |',
+    '|---|---|---|---|---:|---:|',
+  ]
+  for (const site of sites) {
+    const traffic = site.bing?.traffic
+    const queries = site.bing?.queries
+    const latest = traffic?.rows[0]
+    const label = escapeCell(site.label)
+    lines.push(`| ${label} | 站点流量 | ${bingStatusCell(traffic)} | ${latest?.date ?? 'N/A'} | ${display(latest?.clicks)} | ${display(latest?.impressions)} |`)
+    lines.push(`| ${label} | 查询表现 | ${bingStatusCell(queries)} | ${queries?.rows[0]?.date ?? 'N/A'} | N/A | N/A |`)
+  }
+  lines.push(
+    '',
+    '- 站点流量取 Bing API 最近有数据的一天，包含 Web、Chat、新闻等搜索入口。查询表取 API 最新日期的前 10 个查询，按曝光排序。平均排名取查询的平均曝光位置。',
+    '',
+    '| 站点 | 查询 | 点击 | 曝光 | 平均排名 |',
+    '|---|---|---:|---:|---:|',
+  )
+  let queryCount = 0
+  for (const site of sites) {
+    const rows = site.bing?.queries?.rows ?? []
+    for (const row of rows.filter(row => row.date === rows[0].date).slice(0, 10)) {
+      lines.push(`| ${escapeCell(site.label)} | ${escapeCell(row.query)} | ${row.clicks} | ${row.impressions} | ${display(row.position, 2)} |`)
+      queryCount += 1
+    }
+  }
+  if (queryCount === 0) lines.push('| N/A | N/A | N/A | N/A | N/A |')
+
+  lines.push('', '### Bing 自然排名（DataForSEO）', '')
+  for (const segment of rankings) {
+    const cost = Number.isFinite(segment.knownCostUsd)
+      ? `，已确认费用 $${segment.knownCostUsd.toFixed(4)}${segment.billingUncertain ? '，部分扣费状态待确认' : ''}`
+      : ''
+    const observed = segment.rows.length > 0 ? `，有效结果 ${segment.observed}/${segment.rows.length}` : ''
+    lines.push(`- ${escapeCell(segment.label)}（深度 ${segment.depth}）：${bingStatusCell(segment)}${observed}${cost}`)
+  }
+  lines.push('', '| 关键词组 | 关键词 | 状态 | 自然排名 | 命中 URL |', '|---|---|---|---:|---|')
+  for (const segment of rankings) {
+    for (const row of segment.rows) {
+      const rank = row.status === 'OBSERVED' ? row.rank ?? '本次采样未命中' : 'N/A'
+      lines.push(`| ${escapeCell(segment.label)} | ${escapeCell(row.keyword)} | ${bingStatusCell(row)} | ${rank} | ${escapeCell(row.matchedUrl ?? 'N/A')} |`)
+    }
+  }
+  if (!rankings.some(segment => segment.rows.length > 0)) lines.push('| N/A | N/A | UNKNOWN | N/A | N/A |')
+  return [...lines, '']
+}
+
+function bingStatusCell(value) {
+  const status = value?.status ?? 'UNKNOWN'
+  return value?.reason ? `${status} · N/A（${escapeCell(value.reason)}）` : status
+}
+
 export function renderMarkdown(report) {
   const cn = siteById(report, 'cn')
   const online = siteById(report, 'online')
@@ -1123,7 +1183,7 @@ export function renderMarkdown(report) {
     `- 搜索可见频率（GSC 近 7 个完整日的日均曝光）：\`.cn\` **${visibilityHeadline(report, 'cn')}** · \`.online\` **${visibilityHeadline(report, 'online')}**`,
     `- AI Overview 频率：**${aiFrequencyHeadline(report)}**`,
     `- GSC sitemap 覆盖：\`.cn\` ${sitemapCoverageCell(cn)} · \`.online\` ${sitemapCoverageCell(online)}`,
-    `- DataForSEO 已报告费用：**$${report.dataForSeoCost.knownUsd.toFixed(4)}**（${report.dataForSeoCost.reportedSegments}/${report.dataForSeoCost.totalSegments} 个段提供费用证据${report.dataForSeoCost.complete ? '' : '，总额尚不完整'}）`,
+    `- Google DataForSEO 已报告费用：**$${report.dataForSeoCost.knownUsd.toFixed(4)}**（${report.dataForSeoCost.reportedSegments}/${report.dataForSeoCost.totalSegments} 个段提供费用证据${report.dataForSeoCost.complete ? '' : '，总额尚不完整'}）`,
     `- 一句话结论：${report.blockers.length > 0
       ? `数据链路有 ${report.blockers.length} 个阻塞；今日 TODO 先修采集，不凭空给出增长结论。`
       : report.actions.selected.length > 0
@@ -1207,6 +1267,7 @@ export function renderMarkdown(report) {
     `- GSC 新查询：${report.sites.flatMap(site => site.gsc?.newQueries ?? []).slice(0, 10).map(item => item.query).join('、') || 'N/A'}`,
     '- 限制：GSC 的最新完整日由 API `first_incomplete_date` 动态解析；query/page 维度仍可能受 API top rows 限制。',
     '',
+    ...renderBingMarkdown(report.sites, report.bingRankings ?? []),
     '## 🤖 GEO / AI 搜索战况',
     '',
     `- DataForSEO AIO 触发频率：${aiFrequency?.observedQueries > 0 ? `${aiFrequency.triggeredQueries}/${aiFrequency.observedQueries}（${percentage(aiFrequency.triggerRate)}）` : 'N/A（未运行或无可信 artifact）'}`,

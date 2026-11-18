@@ -31,6 +31,11 @@ on:
         required: true
         type: boolean
         default: true
+      include_bing_cn:
+        description: 'Paid only: collect Bing rankings for the .cn Chinese keyword group'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -320,6 +325,10 @@ jobs:
         working-directory: docs
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+          INCLUDE_BING_CN: ${{ inputs.include_bing_cn }}
           GA4_PROPERTY_ID: ${{ vars.GA4_PROPERTY_ID }}
           GA4_CN_PROPERTY_ID: ${{ vars.GA4_CN_PROPERTY_ID }}
           GSC_SITE_URL: ${{ vars.GSC_SITE_URL }}
