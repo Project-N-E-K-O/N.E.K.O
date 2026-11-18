@@ -376,6 +376,28 @@ def _cut(text: Any, max_tokens: int) -> str:
     return truncate_to_tokens(_plain_lines(str(text or "")).strip(), max_tokens).strip()
 
 
+def _shown(path: Any, max_tokens: int) -> str:
+    """Return a path as a task agent is told of it: whole when it is short, else its end.
+
+    What tells one file from another stands last, its name and the
+    directories next to it. A path that is too long is cut at the
+    front, a directory at a time, and says that it was.
+    """
+    from utils.tokenize import count_tokens
+
+    text = _one_line(path)
+    if count_tokens(text) <= max_tokens:
+        return text
+    parts = text.replace("\\", "/").split("/")
+    while len(parts) > 1:
+        parts = parts[1:]
+        shorter = ".../" + "/".join(parts)
+        if count_tokens(shorter) <= max_tokens:
+            return shorter
+    # A name that is too long by itself.
+    return _cut(".../" + parts[-1], max_tokens)
+
+
 def _parse_document(text: str) -> _Document:
     lines = text.split("\n")
     if not lines or lines[0].strip() != "---":
@@ -1163,7 +1185,7 @@ def _uncounted(others: list[tuple[str, str]]) -> str:
         return ""
     from config.prompts.prompts_nekoclaw_space import SPACE_EVIDENCE_NOT_COUNTED
 
-    return SPACE_EVIDENCE_NOT_COUNTED.format(paths=", ".join(f"{_cut(path, 40)} ({why})" for path, why in others))
+    return SPACE_EVIDENCE_NOT_COUNTED.format(paths=", ".join(f"{_shown(path, 40)} ({why})" for path, why in others))
 
 
 def _outside_in(document: _Document) -> list[str]:
@@ -1287,6 +1309,20 @@ def _removed_there(removed: tuple[set[str], set[str]], text: str, title: str) ->
     return bool(_standing_marks(document.body, wanted))
 
 
+def _speaks_no_more(known: _Known, told: dict[str, bool | None]) -> bool:
+    """Whether a file that spoke for a note is gone, or not told of, now that it was asked about once more.
+
+    ``told`` is what was told this time of each file that was asked
+    about: True, False, or None for nothing. A file spoke for the note
+    when it was found as the note was judged: it is among
+    ``known.evidence`` and not among ``known.untold``. Of two answers
+    the later one counts, so a note that is in effect by its files and
+    nothing else is judged anew then (``_judged``); for both ways a
+    pending entry takes effect, where it is and in another entry.
+    """
+    return any(path in told and not told[path] and path not in known.untold for path in known.evidence)
+
+
 def _keep_known(
     document: _Document, known: _Known | None, allowed: bool = True, *, pending: bool = False, judged: bool = False
 ) -> bool:
@@ -1307,8 +1343,10 @@ def _keep_known(
     nothing but the files ``known`` tells of, asked a moment before.
     Asked about once more here, a file that spoke for the note may be
     gone, or nothing may be told of it: of two answers the later one
-    counts. Raises ``_Rewritten`` then, with nothing changed, and the
-    note is judged anew (``_take_note``). A note that takes effect by
+    counts. Raises ``_Rewritten`` then, with nothing of this entry
+    changed, and the note is judged anew (``_take_note``); the pending
+    entries it confirmed by its title before that have taken effect,
+    each by itself (``_judged``). A note that takes effect by
     something else (checked by hand, seen by enough commissions) is
     not held up: it is written, without the files found gone.
     """
@@ -1330,11 +1368,7 @@ def _keep_known(
         # one of which nothing is told stays, like one that cannot be told.
         asked = [path for path in rested if allowed or path not in apart]
         there = _stood(asked)
-        if (
-            judged
-            and known is not None
-            and any(path in asked and not there.get(path) and path not in known.untold for path in known.evidence)
-        ):
+        if judged and known is not None and _speaks_no_more(known, {path: there.get(path) for path in asked}):
             raise _Rewritten("a file the note was judged with does not speak for it by now")
         gone_now = {path for path in asked if there.get(path) is False}
         _set_evidence(document, [path for path in rested if path not in gone_now], apart)
@@ -1792,9 +1826,7 @@ class TaskAgentSpace:
         there = _stood(counted)
         gone = [path for path in counted if there.get(path) is False]
         if gone:
-            # By its name: where it really is is long, and would be cut
-            # before the name.
-            others = [*others, *((os.path.basename(path), "not found") for path in gone)]
+            others = [*others, *((path, "not found") for path in gone)]
             counted = [path for path in counted if path not in gone]
             apart = [path for path in apart if path not in gone]
         return counted, others, apart, [path for path in counted if not there.get(path)]
@@ -2752,14 +2784,8 @@ class TaskAgentSpace:
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
         rested, untold = _recorded(pending.evidence, pending.evidence_outside, allowed)
-        if (
-            by_text is not None
-            and by_files
-            and any(
-                path in known.evidence and path not in known.untold and (path not in rested or path in untold)
-                for path in pending.evidence
-            )
-        ):
+        told = {path: (None if path in untold else True) if path in rested else False for path in pending.evidence}
+        if by_text is not None and by_files and _speaks_no_more(known, told):
             # In effect by its files and nothing else (``by_files``), and
             # asked about once more, a file that spoke for the note is
             # gone, or nothing is told of it: of two answers the later
@@ -3222,12 +3248,10 @@ class TaskAgentSpace:
             def as_judged(gone: tuple[str, ...]) -> None:
                 # Asked about once more as the note was judged, a file it
                 # named may be gone that was there a moment before: it did
-                # not count, and is told with the others that did not. By
-                # its name: where it really was is long, and would be cut
-                # before the name.
+                # not count, and is told with the others that did not.
                 dropped = [path for path in counted_files if path in gone]
                 counted_files[:] = [path for path in counted_files if path not in gone]
-                other_files.extend((os.path.basename(path), "not found") for path in dropped)
+                other_files.extend((path, "not found") for path in dropped)
 
             try:
                 taken = self._take_note(project, note, may_use_place=reserved, allowed=allowed)

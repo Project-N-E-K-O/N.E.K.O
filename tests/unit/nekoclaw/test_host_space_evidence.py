@@ -6119,3 +6119,65 @@ async def test_a_note_a_second_commission_files_takes_effect_where_it_waits_thou
     # Seen by two: it does not stand on the file. Judged once, in effect, and the file that is gone is off its record.
     assert asked == [1] and reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
     assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
+
+
+def test_a_path_is_told_whole_when_it_is_short_and_by_its_end_when_it_is_long():
+    from nekoclaw.host.space import _shown
+    from utils.tokenize import count_tokens
+
+    assert _shown("src/app.py", 40) == "src/app.py"
+    long = "D:/a-directory-with-a-name-so-long/that-the-path-is-cut/before-the-name-of-the-file/" + "further/" * 30 + "src/app.py"
+    told = _shown(long, 40)
+    # Cut at the front, a directory at a time, and saying so; what stands last is what tells files apart.
+    assert told.startswith(".../") and told.endswith("/src/app.py") and count_tokens(told) <= 40
+    assert long.endswith(told[len(".../") :])
+    # Written with the other stroke, it is cut all the same.
+    assert _shown(long.replace("/", "\\"), 40).endswith("/src/app.py")
+    # A name too long by itself is cut like any text.
+    assert count_tokens(_shown("D:/work/" + "name-" * 80 + ".txt", 40)) <= 40
+
+
+async def test_two_files_of_one_name_that_are_gone_once_the_turn_of_the_write_has_come_are_told_apart(
+    space, root, workdir, monkeypatch
+):
+    deep = workdir / "a-directory-with-a-name-so-long-that-the-path-is-cut-before-the-name-of-the-file"
+    for directory in ("src", "tests"):
+        (deep / directory).mkdir(parents=True)
+        (deep / directory / "notes.txt").write_text("notes\n", encoding="utf-8")
+    writing = space._write_judged
+
+    async def then_removed(work: Any) -> Any:
+        for directory in ("src", "tests"):
+            (deep / directory / "notes.txt").unlink()
+        return await writing(work)
+
+    monkeypatch.setattr(space, "_write_judged", then_removed)
+    named = [str((deep / directory / "notes.txt").relative_to(workdir)) for directory in ("src", "tests")]
+
+    reply = await space.submit(_commission(workdir), _lesson("Notes", "The notes are kept in notes.txt.", "observed", named))
+
+    assert reply.startswith("not in effect yet")
+    assert "src/notes.txt (not found)" in reply and "tests/notes.txt (not found)" in reply
+
+
+async def test_a_file_outside_that_may_no_longer_be_read_once_the_turn_of_the_write_has_come_is_told_by_its_end(
+    open_space, setting, root, workdir, tmp_path, monkeypatch
+):
+    setting.allowed = True
+    far = tmp_path / "elsewhere-in-a-directory-with-a-name-so-long-that-the-path-is-cut-before-the-name-of-the-file" / "kept"
+    far.mkdir(parents=True)
+    (far / "camera.ini").write_text("drive=E\n", encoding="utf-8")
+    writing = open_space._write_judged
+
+    async def then_taken_back(work: Any) -> Any:
+        # Found out there when it was looked for; while the write waited, the user took the leave back.
+        setting.allowed = False
+        return await writing(work)
+
+    monkeypatch.setattr(open_space, "_write_judged", then_taken_back)
+
+    reply = await open_space.submit(
+        _commission(workdir), _lesson("Drive", "It is drive E.", "observed", [str(far / "camera.ini")])
+    )
+
+    assert reply.startswith("not in effect yet") and "kept/camera.ini (outside the working directory)" in reply
