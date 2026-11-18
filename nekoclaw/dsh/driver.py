@@ -1318,10 +1318,15 @@ class DshRuntime:
                         # Cut short by an error, and not by a stop: what
                         # its calls were handed and dsh is known to have
                         # (the answer got there) is in its conversation,
-                        # and is told of as taken. An answer still on its
-                        # way is not waited for, here or at the end of a
-                        # later turn, and is dealt with when it is known.
+                        # and is told of as taken. With what the turn
+                        # began with, where a call of it was answered: the
+                        # turn was under way by then, and not refused at
+                        # the door. An answer still on its way is not
+                        # waited for, here or at the end of a later turn,
+                        # and is dealt with when it is known.
                         self._answers_known(session)
+                        if session.awaited:
+                            self._say_taken(session, sent)
                         self._say_taken(session, session.awaited)
                     # (Asked to stop before dsh answered, with an error as
                     # it happens: what the turn's calls were handed goes
@@ -1370,12 +1375,14 @@ class DshRuntime:
         # What this run leaves open. Of those texts it may still be said
         # that the run took them, and of no others: its end names them.
         left = [session.unsettled[outcome] for outcome in session.unsettled.keys() - earlier]
-        if reason == "aborted":
-            # What was queued when it was stopped is dropped with it. Nor
-            # is what its calls were handed queued again, whenever it is
-            # heard that an answer of theirs went nowhere: the session is
-            # not being stopped any more by then, and the text would
-            # begin the turn the stop was to prevent.
+        if reason == "aborted" or session.aborting:
+            # Stopped, whatever dsh answered the stop with (an error
+            # leaves the reason at that). What was queued when it was
+            # stopped is dropped with it. Nor is what its calls were
+            # handed queued again, whenever it is heard that an answer of
+            # theirs went nowhere: the session is not being stopped any
+            # more by then, and the text would begin the turn the stop
+            # was to prevent.
             session.queue.clear()
             for item in left:
                 item.again = False
