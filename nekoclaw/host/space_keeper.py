@@ -56,7 +56,7 @@ from typing import Any
 from nekoclaw.host.decision import TIER_ARCHIVE, TIER_REVIEW
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
 from nekoclaw.host.paths import DEFAULT_PROJECT, SYSTEM_SNAPSHOT_NAME, TRANSCRIPT_NAME, safe_segment
-from nekoclaw.host.space import ENTRY_TYPES, Project, SpaceError, TaskAgentSpace
+from nekoclaw.host.space import ENTRY_PENDING, ENTRY_TYPES, Project, SpaceError, TaskAgentSpace
 
 logger = logging.getLogger(__name__)
 
@@ -760,13 +760,21 @@ class SpaceKeeper:
         # As it stands now: a later entry of the same review may have had
         # an earlier one take effect (the same note, with a file this time).
         in_effect = set(kept)
-        waiting = len(
-            {
-                (layer, name)
-                for layer, name in pending
-                if (name if layer is None else f"{layer}/{name}") not in in_effect
-            }
-        )
+        maybe = {
+            (layer, name) for layer, name in pending if (name if layer is None else f"{layer}/{name}") not in in_effect
+        }
+        # Or it went into another entry, and is no file any more: only
+        # what still waits is counted, as it is on file.
+        still: set[tuple[str | None, str]] = set()
+        for layer in {layer for layer, _name in maybe}:
+            names = {name for at, name in maybe if at == layer}
+            try:
+                there = {entry.id for entry in await self._space.list_entries(layer) if entry.status == ENTRY_PENDING}
+            except (SpaceError, OSError):
+                # Not to be told just now: counted as it was noted.
+                there = names
+            still.update((layer, name) for name in names if name in there)
+        waiting = len(still)
         await self._space.write_review(project, commission, text, entries=tuple(kept))
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
         if waiting:

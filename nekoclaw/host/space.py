@@ -1381,6 +1381,9 @@ def _keep_known(
     # Files found gone here, asked about last: not put back on record by
     # what ``known`` tells of them, which was asked a moment before.
     gone_now: set[str] = set()
+    # And the ones found there here: on record, though the look a moment
+    # before found them gone.
+    found_now: set[str] = set()
     status = _status_of(document)
     waited = status == ENTRY_PENDING
     if status == ENTRY_EXPIRED or (status == ENTRY_PENDING and not pending):
@@ -1397,6 +1400,7 @@ def _keep_known(
         if judged and known is not None and _speaks_no_more(known, answers):
             raise _Rewritten("a file the note was judged with does not speak for it by now", told=answers)
         gone_now = {path for path, stands in answers.items() if stands is False}
+        found_now = {path for path, stands in answers.items() if stands is True}
         if told is not None:
             told.update(answers)
         _set_evidence(document, [path for path in rested if path not in gone_now], apart)
@@ -1409,7 +1413,7 @@ def _keep_known(
         changed = True
     before, apart = _evidence_in(document), _outside_in(document)
     evidence = _joined(
-        [path for path in before if path not in known.gone],
+        [path for path in before if path not in known.gone or path in found_now],
         [path for path in known.evidence if path not in gone_now],
         SPACE_EVIDENCE_MAX_PATHS,
     )
@@ -2733,7 +2737,13 @@ class TaskAgentSpace:
         return any(has and observer in entry.seen_by for entry, has in waits)
 
     def _confirm(
-        self, project: str | None, pending: Entry, known: _Known, allowed: bool
+        self,
+        project: str | None,
+        pending: Entry,
+        known: _Known,
+        allowed: bool,
+        *,
+        told: dict[str, bool | None] | None = None,
     ) -> tuple[Entry, OSError | None]:
         """Have a pending entry take effect where it is, seen by the commissions of ``known`` as well.
 
@@ -2762,12 +2772,19 @@ class TaskAgentSpace:
             ):
                 return text
             empty[:] = [not _normal(document.body)]
-            if empty[0] or not _keep_known(document, seen, allowed):
+            # What this look tells is of this attempt (as in ``_file_entry``).
+            at_write.clear()
+            if empty[0] or not _keep_known(document, seen, allowed, told=at_write):
                 return text
             took[:] = [document]
             return _render_document(document)
 
+        # What was told of the files it rests on, as it was read to be
+        # written: for whoever writes what the note brings to another entry.
+        at_write: dict[str, bool | None] = {}
         self._edit_text(path, change)
+        if told is not None:
+            told.update(at_write)
         if empty and empty[0]:
             # Removed, if it still says nothing as it is read for that.
             read = self._pending_as_read(path, project)
@@ -2856,7 +2873,7 @@ class TaskAgentSpace:
         answers: dict[str, bool | None] = {
             path: (None if path in untold else True) if path in rested else False for path in pending.evidence
         }
-        if by_text is not None and by_files and _speaks_no_more(known, answers):
+        if by_files and _speaks_no_more(known, answers):
             # In effect by its files and nothing else (``by_files``), and
             # asked about once more, a file that spoke for the note is
             # gone, or nothing is told of it: of two answers the later
@@ -3087,24 +3104,30 @@ class TaskAgentSpace:
 
         def spoke(later: dict[str, bool | None]) -> tuple[str, ...]:
             # Of the files the note named, the ones that spoke for it in
-            # the end: on record with it, and there by the last answer
-            # about each. That is what a look after the note was judged
-            # told (``later``), where there was one: it may have found a
-            # file of which nothing was told as the note was judged, or
-            # found one gone, or been told nothing of it. Else what was
-            # told as the note was judged.
+            # the end: there by the last answer about each. That is what
+            # a look after the note was judged told (``later``), where
+            # there was one: it may have found a file that was gone, or
+            # not told of, as the note was judged (such a one is on
+            # record: it stays where a pending entry takes effect, and
+            # goes along where one goes into another entry); or found
+            # one gone, or been told nothing of it. Else what was told
+            # as the note was judged: found then, and told of.
             return tuple(
                 path
                 for path in note.known.evidence
-                if path in known.evidence
-                and (later[path] is True if path in later else path not in known.untold)
+                if (later[path] is True if path in later else path in known.evidence and path not in known.untold)
             )
 
         def found_gone(later: dict[str, bool | None]) -> tuple[str, ...]:
             # All that was found gone: as the note was judged, before
             # that when it is judged anew, and after, as it was written.
+            # Not one that the last look found again.
             return tuple(
-                dict.fromkeys((*gone, *earlier_gone, *(path for path, stands in later.items() if stands is False)))
+                path
+                for path in dict.fromkeys(
+                    (*gone, *earlier_gone, *(path for path, stands in later.items() if stands is False))
+                )
+                if later.get(path) is not True
             )
 
         def taken_along(pending: Entry) -> bool:
@@ -3204,9 +3227,11 @@ class TaskAgentSpace:
             if home is not None and home.status != ENTRY_PENDING and _normal(pending.title) == _normal(home.title):
                 # What it rested on is asked about as it goes: a file
                 # found gone then is not what the note brings to the entry.
-                home, _added, failed = self._fold(project, pending, home, known, allowed, told=later)
+                home, _added, failed = self._fold(
+                    project, pending, home, known, allowed, by_files=by_files, told=later
+                )
             else:
-                _entry, failed = self._confirm(project, pending, known, allowed)
+                _entry, failed = self._confirm(project, pending, known, allowed, told=later)
             unlisted = failed or unlisted
         became = home is not None and home.status == ENTRY_PENDING
         brought = known

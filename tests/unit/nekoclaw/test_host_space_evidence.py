@@ -6257,11 +6257,12 @@ async def test_a_file_the_note_names_that_is_gone_as_its_pending_entry_takes_eff
     assert payload["kept"] is True and "evidence_counted" not in payload
 
 
-async def test_a_file_the_note_names_that_was_gone_as_the_note_was_judged_did_not_count_though_it_is_back_by_then(
+async def test_a_file_the_note_names_that_was_gone_as_the_note_was_judged_counts_when_it_is_back_as_the_entry_is_written(
     space, root, workdir, events, monkeypatch
 ):
     from nekoclaw.host import space as module
 
+    app = _where(workdir / "src" / "app.py")
     await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
     real = module._recorded
     asked: list[int] = []
@@ -6281,11 +6282,11 @@ async def test_a_file_the_note_names_that_was_gone_as_the_note_was_judged_did_no
         _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"])
     )
 
-    # In effect, as two commissions have filed it. The note was judged without the file, and that is what is told.
-    assert asked == [1] and reply.startswith("kept in") and "src/app.py (not found)" in reply
-    assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
-    payload = _lesson_event(events, "c2")
-    assert payload["kept"] is True and "evidence_counted" not in payload
+    # In effect, as two commissions have filed it. Of the answers about the file the last one counts: it
+    # is there as the entry is written, so it stays on record, counts, and is not said to be missing.
+    assert asked == [1] and reply.startswith("kept in") and "not found" not in reply
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+    assert _lesson_event(events, "c2")["evidence_counted"] == [app]
 
 
 async def test_a_path_with_nothing_to_be_read_against_is_told_so_though_the_file_system_cannot_be_asked(
@@ -6642,6 +6643,8 @@ async def test_a_file_found_as_a_pending_entry_was_to_take_effect_speaks_for_the
     # Judged anew with what that look told of each: the one that is gone does not count, and the one it
     # found speaks for the note, though nothing was told of it before. In effect by that one.
     assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"] and "src/app.py (not found)" in reply
+    # In effect: it says so itself, and has its line in the index.
+    assert "status" not in _head(waiting) and "- [Entry point](memory/entry-point.md)" in _index(root)
     assert _rests_on(waiting)[0] == (readme,)
     assert _lesson_event(events, "c2")["evidence_counted"] == [readme]
 
@@ -6700,3 +6703,62 @@ def test_a_path_that_cannot_be_used_is_told_as_it_was_named(workdir):
     assert [why for _name, why in others] == ["not a usable path"] * 3
     assert others[0][0].startswith("notes/a  b/") and others[1][0].startswith("notes/a b/")
     assert others[2][0] == "notes/a b more"
+
+
+# ---------------------------------------------------------------------------
+# Review round 25
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_in_effect_by_a_file_alone_is_judged_anew_when_that_is_gone_as_a_guess_of_its_title_goes_into_the_entry(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry, waiting = _memory(root) / "photo-dates.md", _memory(root) / "photo-dates-2.md"
+    _named_for_nobody(waiting)
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There when the write's turn came; gone as the guess of that title was to go into the entry.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    # Other words under the title, observed, with that file: the only thing that speaks for them. (From
+    # the commission that filed the entry: one that had not would be a second to have seen the title.)
+    reply = await space.submit(
+        _commission(workdir), _lesson("Photo dates", "Screenshots have no EXIF date.", "observed", ["src/app.py"])
+    )
+
+    # Judged anew without the file, the note waits with the guess; nothing went into the entry.
+    assert len(looks) == 2 and reply.startswith("not in effect yet") and "src/app.py (not found)" in reply
+    said = entry.read_text(encoding="utf-8")
+    assert "Screenshots have no EXIF date." not in said and "Videos may have none." not in said
+    assert "Screenshots have no EXIF date." in waiting.read_text(encoding="utf-8")
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("photo-dates-2", [])]
+
+
+async def test_a_file_found_gone_as_a_guess_of_the_title_takes_effect_where_it_is_is_not_given_to_the_entry_with_the_note(
+    space, root, workdir, events, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry, waiting = _memory(root) / "photo-dates.md", _memory(root) / "video-dates.md"
+
+    def gone() -> None:
+        (workdir / "src" / "app.py").unlink()
+
+    # There when the write's turn came; gone as the guess takes effect where it is.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", gone])
+
+    # Another commission files, under the title of the guess, what the entry says: checked, with that file.
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Video dates", "Use the EXIF date.", "verified", ["src/app.py"])
+    )
+
+    assert len(looks) == 2 and reply.startswith("already in photo-dates.md") and "src/app.py (not found)" in reply
+    # The guess took effect, without the file; and the entry is not made to rest on it either.
+    assert "status" not in _head(waiting) and _rests_on(waiting)[0] == () and _rests_on(entry)[0] == ()
+    assert "evidence_counted" not in _lesson_event(events, "c2")
