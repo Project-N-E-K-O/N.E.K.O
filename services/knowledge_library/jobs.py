@@ -12,6 +12,33 @@ from utils.file_utils import atomic_write_json
 from .models import LibraryError, new_id, now
 
 
+async def wait_for_embedding(operation: Callable[[], Awaitable], *, check_cancelled: Callable[[], None] | None = None):
+    """Wait out encoder pressure inside the same call and frozen job inputs.
+
+    Only admission pressure is retried. Missing models and genuine inference
+    failures keep their existing semantics; no new job or runner is created.
+    Application cancellation uses a flag rather than cancelling the runner, so
+    check it between attempts as well as after a successfully awaited call.
+    """
+    while True:
+        if check_cancelled is not None:
+            check_cancelled()
+        try:
+            result = await operation()
+        except LibraryError as error:
+            if error.code != "embedding_busy":
+                raise
+            if check_cancelled is not None:
+                check_cancelled()
+            # A small asynchronous delay avoids a hot retry loop while keeping
+            # cancel/close responsive without consuming a task retry attempt.
+            await asyncio.sleep(0.1)
+            continue
+        if check_cancelled is not None:
+            check_cancelled()
+        return result
+
+
 async def run_sync(function: Callable, *args):
     """Keep ownership until a cancelled await's real worker thread has exited."""
     worker = asyncio.create_task(asyncio.to_thread(function, *args))

@@ -15,6 +15,7 @@ from utils.text_chunking import OVERLAP_CHARS, source_windows
 
 from .models import LibraryError, LibraryLimits
 from .embedding_compat import semantic_cosine
+from .jobs import wait_for_embedding
 from .package_validate import CHUNKING_VERSION
 from .persistence import ensure_directory, sync_directory, sync_file
 
@@ -80,7 +81,12 @@ async def plan_chunks(chunks: list[dict], embedder, *, specification: dict,
         if check_cancelled:
             check_cancelled()
         batch = inputs[offset:offset + 16]
-        ranges = await planner([value for _chunk, value in batch], expected_spec=specification)
+        # Pressure retries only this frozen planning batch, never the preceding
+        # completed windows or the runner that owns the document/package.
+        ranges = await wait_for_embedding(
+            lambda: planner([value for _chunk, value in batch], expected_spec=specification),
+            check_cancelled=check_cancelled,
+        )
         if not isinstance(ranges, list) or len(ranges) != len(batch):
             raise LibraryError("embedding_plan_invalid")
         for (chunk, value), parts in zip(batch, ranges):

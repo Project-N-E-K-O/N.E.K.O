@@ -1199,6 +1199,10 @@ class EmbeddingService:
             try:
                 vectors = await self._run_inference([text], priority)
             except InferenceBusy:
+                if priority == "background":
+                    # Borrowers must wait without treating pressure as a
+                    # missing model, native failure or consumed retry.
+                    raise
                 return None  # Queue pressure must not disable the shared encoder.
             except Exception as e:  # noqa: BLE001 — sticky inference failure
                 if not self._closing:
@@ -1237,6 +1241,10 @@ class EmbeddingService:
             try:
                 vectors = await self._run_inference(active_texts, priority)
             except InferenceBusy:
+                if priority == "background":
+                    # Preserve the retryable signal before the generic native
+                    # failure handler; no sticky disable is warranted here.
+                    raise
                 return result
             except Exception as e:  # noqa: BLE001
                 if not self._closing:
@@ -1248,25 +1256,53 @@ class EmbeddingService:
         finally:
             await self._end_operation()
 
+    def _background_batches(self, texts: list[str]) -> list[list[str]]:
+        """Group exact tokenizer lengths by padded token cost in input order."""
+        if self._tokenizer is None:
+            raise RuntimeError("session not loaded")
+        budget = _hardware.resolve_background_token_budget(self._ram_gb)
+        encoded = self._tokenizer.encode_batch(texts)
+        batches, batch = [], []
+        longest = 0
+        for text, value in zip(texts, encoded):
+            length = len(value.ids)
+            if length > budget:
+                # Normal loaded tokenizers cap inputs at 1024 tokens. Reject
+                # incompatible custom lengths rather than exceed the budget.
+                raise ValueError("background_token_limit")
+            candidate_longest = max(longest, length)
+            if batch and candidate_longest * (len(batch) + 1) > budget:
+                batches.append(batch)
+                batch, longest = [], 0
+            batch.append(text)
+            longest = max(longest, length)
+        if batch:
+            batches.append(batch)
+        return batches
+
     async def _run_inference(self, texts: list[str], priority: str):
-        """Keep a slot until the actual native worker exits, including cancellation."""
-        # A four-text build batch measurably delays foreground memory calls.
-        # Background work therefore releases admission after each text, trading
-        # batching throughput for latency. A running native text is still not
-        # preemptible; cancellation drains it before releasing the slot.
+        """Release ownership between bounded background token batches only."""
+        # Use the already loaded tokenizer, never a second encoder or a cold
+        # load. Count pad-to-longest cost rather than characters or row count.
         background = priority == "background"
-        batches = ([text] for text in texts) if background else (texts,)
+        batches = await self._run_blocking(self._background_batches, texts) if background else (texts,)
         vectors = []
         for batch in batches:
-            async with self._inference_queue.slot(priority):
-                if self._closing or not self.is_available():
-                    return []
-                rows = await self._run_blocking(self._infer_blocking, batch)
-            if background and (len(rows) != 1 or rows[0] is None):
-                return []  # The caller receives all-missing, never a partial batch.
-            vectors.extend(rows)
-            if background:
-                await asyncio.sleep(0)  # Give newly arrived foreground work a queue turn.
+            while batch:
+                async with self._inference_queue.slot(priority) as fairness_turn:
+                    if self._closing or not self.is_available():
+                        return []
+                    # A guaranteed turn during foreground pressure runs only
+                    # one row. Keep the remainder ordered for a later slot;
+                    # normal idle turns still use the full token microbatch.
+                    current = batch[:1] if background and fairness_turn else batch
+                    rows = await self._run_blocking(self._infer_blocking, current)
+                if background and (len(rows) != len(current) or any(row is None for row in rows)):
+                    return []  # The caller receives all-missing, never a partial batch.
+                vectors.extend(rows)
+                batch = batch[len(current):]
+                if background:
+                    await asyncio.sleep(0)  # Give newly arrived foreground work a queue turn.
         return vectors
 
     def _on_inference_error(self, error: Exception, *, sticky: bool) -> None:

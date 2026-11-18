@@ -22,6 +22,7 @@ class Encoder:
     def __init__(self, root):
         self.root = root
         self.loads = 0
+        self.ready = True
         self.calls = []
         self.priorities = []
         for name in ("model.onnx", "model.onnx_data", "tokenizer.json"):
@@ -41,6 +42,10 @@ class Encoder:
 
     def is_disabled(self):
         return False
+
+    def is_available(self):
+        """Expose model readiness without allowing the borrowing API to load it."""
+        return self.ready
 
     def dim(self):
         return 2
@@ -94,13 +99,82 @@ async def test_browser_requests_are_refused_before_computation(client):
     assert not encoder.calls
 
 
-async def test_explicit_batch_loads_once_and_uses_non_sticky_inference(client):
+async def test_explicit_batch_borrows_ready_model_without_loading(client):
+    """Library inference never changes the model owner's loading lifecycle."""
     http, encoder = client
     spec = (await http.get("/internal/knowledge-library/embeddings/spec")).json()["specification"]
     response = await http.post("/internal/knowledge-library/embeddings/batch", json={"texts": ["private source"], "specification": spec})
     assert response.json()["vectors"] == [[1.0, 0.0]]
-    assert encoder.loads == 1
+    assert encoder.loads == 0
     assert encoder.calls == [(["private source"], False)]
+
+
+@pytest.mark.parametrize("priority", ["foreground", "background"])
+async def test_unloaded_model_is_unavailable_and_never_loaded_by_batch(client, priority):
+    """Missing readiness is distinct from temporary queue pressure."""
+    http, encoder = client
+    encoder.ready = False
+    spec = (await http.get("/internal/knowledge-library/embeddings/spec")).json()["specification"]
+    response = await http.post("/internal/knowledge-library/embeddings/batch", json={
+        "texts": ["private source"], "specification": spec, "priority": priority,
+    })
+    assert response.status_code == 503
+    assert response.json() == {"ok": False, "reason": "embedding_unavailable"}
+    assert encoder.loads == 0 and encoder.calls == []
+
+
+@pytest.mark.parametrize("busy", [False, True])
+async def test_native_queue_busy_is_not_reported_as_inference_failure(client, monkeypatch, busy):
+    """Preserve the retryable queue reason across the real HTTP boundary."""
+    from memory._embeddings.scheduling import InferenceBusy
+
+    http, encoder = client
+    spec = (await http.get("/internal/knowledge-library/embeddings/spec")).json()["specification"]
+
+    async def unavailable_vectors(*_args, **_kwargs):
+        if busy:
+            raise InferenceBusy("embedding_busy")
+        return [None]
+
+    monkeypatch.setattr(encoder, "embed_batch", unavailable_vectors)
+    response = await http.post("/internal/knowledge-library/embeddings/batch", json={
+        "texts": ["private source"], "specification": spec, "priority": "background",
+    })
+    assert response.status_code == (429 if busy else 503)
+    assert response.json() == {"ok": False, "reason": "embedding_busy" if busy else "embedding_failed"}
+    assert encoder.loads == 0
+
+
+async def test_foreground_preflight_accepts_more_than_two_concurrent_requests(client, monkeypatch):
+    """Borrowing foreground RPCs must not inherit the old two-request cap."""
+    http, encoder = client
+    spec = (await http.get("/internal/knowledge-library/embeddings/spec")).json()["specification"]
+    entered, release = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    active = 0
+    original = compute._check_token_lengths
+
+    def preflight(*args):
+        nonlocal active
+        with lock:
+            active += 1
+            if active == 4:
+                entered.set()
+        assert release.wait(3)
+        return original(*args)
+
+    monkeypatch.setattr(compute, "_check_token_lengths", preflight)
+    tasks = [asyncio.create_task(http.post("/internal/knowledge-library/embeddings/batch", json={
+        "texts": ["source"], "specification": spec,
+    })) for _ in range(4)]
+    try:
+        assert await asyncio.to_thread(entered.wait, 1), "Foreground admission rejected or serialized a request"
+        assert all(not task.done() for task in tasks)
+    finally:
+        release.set()
+        responses = await asyncio.gather(*tasks)
+    assert all(response.status_code == 200 for response in responses)
+    assert encoder.loads == 0
 
 
 async def test_identity_drift_and_oversized_input_do_not_run_model(client):

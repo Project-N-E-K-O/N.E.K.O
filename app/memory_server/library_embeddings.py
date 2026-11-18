@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from memory._embeddings.resources import resource_file_identity
+from memory._embeddings.scheduling import InferenceBusy
 from utils.http.knowledge_proxy import BodyTooLarge, capped_body
 
 PROCESSING_VERSION = "neko-onnx-last-token-truncate-l2-v1"
@@ -35,25 +36,23 @@ class _InputTokenLimit(ValueError):
 
 
 class _ComputationBusy(RuntimeError):
-    """Reject excess RPC work before hashing, tokenization or cold model loading."""
+    """Report temporary background preprocessing pressure without loading models."""
 
 
 @contextmanager
 def _computation(request: Request, priority: str):
-    """Reserve bounded preprocessing/native ownership on the serving app.
+    """Track preprocessing ownership with a bounded background lane.
 
-    Background work has one slot; two foreground slots remain independent so
-    builds cannot fill every preprocessing worker. All slot changes happen on
-    the owning event loop without awaits. A request holds its slot until its
-    actual worker exits, including cancellation, rather than just until its
-    HTTP caller stops awaiting it.
+    Background work has one slot, while foreground requests have no admission
+    cap. All slot changes happen on the owning event loop without awaits. A
+    request holds its slot until its actual worker exits, including cancellation,
+    rather than just until its HTTP caller stops awaiting it.
     """
     owner = getattr(request.app.state, "knowledge_library_computation", None)
     if owner is None:
         owner = {"foreground": 0, "background": 0}
         request.app.state.knowledge_library_computation = owner
-    limit = 1 if priority == "background" else 2
-    if owner[priority] >= limit:
+    if priority == "background" and owner[priority] >= 1:
         raise _ComputationBusy()
     owner[priority] += 1
     try:
@@ -132,7 +131,7 @@ def _plan_parts(service, spec: dict, inputs: list[dict]) -> list[list[dict]]:
 
 
 def _check_token_lengths(service, spec: dict, texts: list[str]) -> None:
-    """Validate the exact model inputs with special tokens before loading ONNX."""
+    """Validate exact model inputs without changing the encoder's lifecycle."""
     tokenizer = _full_tokenizer(service, spec)
     if any(_token_count(tokenizer, text) > spec["max_length"] for text in texts):
         raise _InputTokenLimit()
@@ -297,17 +296,17 @@ async def embed_batch(request: Request):
             spec = await _run_blocking(_specification, service)
             if payload.get("specification") != spec:
                 return _failure("embedding_incompatible", 409)
-            await _run_blocking(_check_token_lengths, service, spec, texts)
-            # Admission includes cold load and all preprocessing, not just the
-            # native queue. Cancellation drains each real worker before release.
-            if not await service.request_load():
+            # Only the model owner's warmup may load it. Borrowers distinguish
+            # a not-ready encoder from temporary scheduling pressure below.
+            if not service.is_available():
                 return _failure("embedding_unavailable")
+            await _run_blocking(_check_token_lengths, service, spec, texts)
             vectors = await service.embed_batch(texts, sticky_failure=False, priority=priority)
             if len(vectors) != len(texts) or any(value is None for value in vectors):
                 return _failure("embedding_failed")
             if await _run_blocking(_specification, service) != spec:
                 return _failure("embedding_incompatible", 409)
-    except _ComputationBusy:
+    except (_ComputationBusy, InferenceBusy):
         return _failure("embedding_busy", 429)
     except _InputTokenLimit:
         return _failure("input_token_limit", 422)

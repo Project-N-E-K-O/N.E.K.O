@@ -18,6 +18,7 @@ import zipfile
 
 from .models import LibraryError
 from .indexing import plan_chunks
+from .jobs import wait_for_embedding
 from .persistence import ensure_directory, sync_directory, sync_file
 from .package_validate import (
     CHUNKING_VERSION, DEFAULT_LIMITS, FORMAT_VERSION, PACKAGE_FORMAT, PACKAGE_SUFFIX,
@@ -204,7 +205,7 @@ async def build_package(snapshot: dict, output_path: Path, embedder: Any, *,
     if embedder is None:
         raise LibraryError("embedding_unavailable")
     manifest, documents, chunks = await run_package_io(_prepare, snapshot, limits)
-    spec = validate_specification(await embedder.specification(), limits)
+    spec = validate_specification(await wait_for_embedding(embedder.specification, check_cancelled=check_cancelled), limits)
     if expected_spec is not None and spec != validate_specification(expected_spec, limits):
         raise LibraryError("package_embedding_identity_changed")
     # Even legacy snapshots are replanned with the actual tokenizer before a
@@ -232,14 +233,19 @@ async def build_package(snapshot: dict, output_path: Path, embedder: Any, *,
             if check_cancelled is not None:
                 check_cancelled()
             batch = chunks[start:start + 4]
-            if validate_specification(await embedder.specification(), limits) != spec:
+            if validate_specification(await wait_for_embedding(embedder.specification, check_cancelled=check_cancelled), limits) != spec:
                 raise LibraryError("package_embedding_identity_changed")
             compute = getattr(embedder, "embed_background", None)
             texts = [row["embedding_text"] for row in batch]
-            vectors = (await compute(texts, expected_spec=spec) if callable(compute)
-                       else await embedder.embed_batch(texts))
+            # Resume the same batch after pressure clears, leaving already
+            # written vector rows and the original expected identity intact.
+            vectors = await wait_for_embedding(
+                lambda: (compute(texts, expected_spec=spec) if callable(compute)
+                         else embedder.embed_batch(texts)),
+                check_cancelled=check_cancelled,
+            )
             await run_package_io(_guarded, write_guard, _append_vectors, vector_path, vectors, len(batch), spec["dimension"])
-        if validate_specification(await embedder.specification(), limits) != spec:
+        if validate_specification(await wait_for_embedding(embedder.specification, check_cancelled=check_cancelled), limits) != spec:
             raise LibraryError("package_embedding_identity_changed")
         digest, size = await run_package_io(hash_file, vector_path, limits.max_expanded_bytes)
         files["vectors.f32"] = {"bytes": size, "sha256": digest}

@@ -45,6 +45,20 @@ def resolve_dim_for_ram(ram_gb: float | None, min_ram_gb: float) -> int | None:
     return 256
 
 
+def resolve_background_token_budget(ram_gb: float | None) -> int:
+    """Bound padded background activations without changing model enablement.
+
+    These conservative scheduling budgets follow the existing memory tiers.
+    Unknown RAM takes the smallest budget; the separate model policy still
+    decides whether this device may load an encoder at all.
+    """
+    if ram_gb is None or ram_gb < 8:
+        return 1024
+    if ram_gb < 16:
+        return 2048
+    return 4096
+
+
 def auto_int8_or_none(
     has_vnni: bool,
     vnni_absence_confirmed: bool,

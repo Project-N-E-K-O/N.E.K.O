@@ -95,22 +95,83 @@ async def test_background_queue_is_bounded_without_disabling_foreground():
         pass
 
 
+async def test_foreground_admission_accepts_more_than_the_old_32_waiters():
+    """Accept every interactive request and release cancelled waiters cleanly."""
+    from memory._embeddings.scheduling import InferenceQueue
+
+    queue = InferenceQueue()
+    completed = []
+
+    async def request(index):
+        async with queue.slot("foreground"):
+            completed.append(index)
+
+    tasks = []
+    try:
+        async with queue.slot("background"):
+            tasks = [asyncio.create_task(request(index)) for index in range(64)]
+            # Every waiter reaches its first suspension before this next turn.
+            await asyncio.sleep(0)
+            assert queue._waiting["foreground"] == 64
+            assert not any(task.done() for task in tasks)
+            tasks[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await tasks[0]
+            assert queue._waiting["foreground"] == 63
+        await asyncio.wait_for(asyncio.gather(*tasks[1:]), 3)
+        assert sorted(completed) == list(range(1, 64))
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def test_background_gets_a_turn_after_bounded_foreground_burst():
     from memory._embeddings.scheduling import InferenceQueue
 
     queue = InferenceQueue(foreground_burst=2)
     order = []
+    background_turns = []
 
     async def run(name, priority):
-        async with queue.slot(priority):
+        async with queue.slot(priority) as minimum_batch:
             order.append(name)
+            if priority == "background":
+                background_turns.append(minimum_batch)
 
     async with queue.slot("background"):
         background = asyncio.create_task(run("background", "background"))
         front = [asyncio.create_task(run(str(i), "foreground")) for i in range(4)]
         await asyncio.sleep(0)
     await asyncio.wait_for(asyncio.gather(background, *front), 3)
-    assert order.index("background") <= 2
+    assert order.index("background") == 2
+    assert background_turns == [True]
+
+
+async def test_fresh_background_does_not_inherit_an_uncontended_foreground_burst():
+    """Only interactive work that overtook a real background waiter counts."""
+    from memory._embeddings.scheduling import InferenceQueue
+
+    queue = InferenceQueue(foreground_burst=2)
+    order = []
+    turns = []
+    for _index in range(4):
+        async with queue.slot("foreground"):
+            pass
+
+    async def run(priority):
+        async with queue.slot(priority) as minimum_batch:
+            order.append(priority)
+            if priority == "background":
+                turns.append(minimum_batch)
+
+    async with queue.slot("foreground"):
+        background = asyncio.create_task(run("background"))
+        foreground = asyncio.create_task(run("foreground"))
+        await asyncio.sleep(0)
+    await asyncio.wait_for(asyncio.gather(background, foreground), 3)
+    assert order == ["foreground", "background"]
+    assert turns == [False]
 
 
 def _ready_service(monkeypatch):
@@ -118,8 +179,13 @@ def _ready_service(monkeypatch):
     from memory import embeddings
 
     monkeypatch.setattr(embeddings, "_cpu_is_blocklisted", lambda: False)
-    service = embeddings.EmbeddingService(model_dir="unused", ram_gb=16, has_vnni=True, has_avx2=True)
+    service = embeddings.EmbeddingService(model_dir="unused", ram_gb=4, has_vnni=True, has_avx2=True)
     service._state = embeddings.EmbeddingState.READY
+    # Full-length rows on the lowest enabled tier occupy one token microbatch,
+    # so these lifecycle tests still exercise a yield after each native call.
+    service._tokenizer = SimpleNamespace(
+        encode_batch=lambda texts: [SimpleNamespace(ids=range(1024)) for _text in texts],
+    )
     return service
 
 
@@ -145,7 +211,12 @@ async def test_service_keeps_native_slot_until_cancelled_thread_really_exits(mon
         background = asyncio.create_task(service.embed_batch(["background"], priority="background"))
         foreground = asyncio.create_task(service.embed("foreground"))
         tasks.extend([background, foreground])
-        await asyncio.sleep(0)
+        async def wait_for_both_priorities():
+            # Background token planning runs off-loop before native admission.
+            while service._inference_queue._waiting != {"foreground": 1, "background": 1}:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_both_priorities(), 2)
         assert service._inference_queue._waiting == {"foreground": 1, "background": 1}
         first.cancel()
         await asyncio.sleep(0)
@@ -164,13 +235,14 @@ async def test_service_keeps_native_slot_until_cancelled_thread_really_exits(mon
 
 
 async def test_queue_pressure_is_not_a_sticky_model_failure(monkeypatch):
-    from memory._embeddings.scheduling import InferenceQueue
+    from memory._embeddings.scheduling import InferenceBusy, InferenceQueue
 
     service = _ready_service(monkeypatch)
     service._inference_queue = InferenceQueue(max_background=0)
     service._infer_blocking = lambda texts: [[1.0] for _ in texts]
     try:
-        assert await service.embed_batch(["background"], priority="background") == [None]
+        with pytest.raises(InferenceBusy):
+            await service.embed_batch(["background"], priority="background")
         assert service.is_available()
         assert await service.embed("foreground") == [1.0]
     finally:

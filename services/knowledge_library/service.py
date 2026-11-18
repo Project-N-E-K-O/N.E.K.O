@@ -9,7 +9,7 @@ from typing import Callable
 
 from .documents import parse_source
 from . import indexing
-from .jobs import JobContext, JobManager, run_sync
+from .jobs import JobContext, JobManager, run_sync, wait_for_embedding
 from .models import EmbeddingAdapter, LibraryError, LibraryLimits, checked_id, digest, new_id, now
 from .store import LibraryStore
 
@@ -293,7 +293,7 @@ class LibraryService:
         if self.embedder is None:
             return
         try:
-            specification = await self.embedder.specification()
+            specification = await wait_for_embedding(self.embedder.specification, check_cancelled=context.check_cancelled)
             context.check_cancelled()
             version["chunks"] = await indexing.plan_chunks(
                 version["chunks"], self.embedder, specification=specification, max_chunks=self.limits.max_chunks,
@@ -314,8 +314,13 @@ class LibraryService:
                 batch = pending[offset:offset + 4]
                 compute = getattr(self.embedder, "embed_background", None)
                 texts = [chunk["embedding_text"] for chunk in batch]
-                rows = (await compute(texts, expected_spec=specification) if callable(compute)
-                        else await self.embedder.embed_batch(texts))
+                # Keep busy admission inside the current batch. Letting it
+                # reach the outer error handler would silently drop vectors.
+                rows = await wait_for_embedding(
+                    lambda: (compute(texts, expected_spec=specification) if callable(compute)
+                             else self.embedder.embed_batch(texts)),
+                    check_cancelled=context.check_cancelled,
+                )
                 vectors = await context.run_sync(indexing.checked_vectors, rows, len(batch), specification)
                 for chunk, vector in zip(batch, vectors):
                     chunk["vector"] = vector
@@ -337,10 +342,10 @@ class LibraryService:
         vector = spec = None
         if self.embedder is not None:
             try:
-                spec = await self.embedder.specification()
+                spec = await wait_for_embedding(self.embedder.specification)
                 # Bind the query's actual vector to the same identity used for
                 # ranking, independently of shared-cache refresh timing.
-                rows = await self.embedder.embed_batch([query], expected_spec=spec)
+                rows = await wait_for_embedding(lambda: self.embedder.embed_batch([query], expected_spec=spec))
                 vector = (await run_sync(indexing.checked_vectors, rows, 1, spec))[0]
             except Exception:
                 vector = spec = None

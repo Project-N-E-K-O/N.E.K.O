@@ -120,6 +120,14 @@ async def test_real_onnx_build_install_and_cross_dimension_query(tmp_path, monke
             report["install_seconds"] = time.perf_counter() - started
             assert not owner.is_available(), "install unexpectedly loaded the query model"
             query = prepared["snapshot"]["chunks"][0]["embedding_text"]
+            # A library query must not load the consumer's model either. The
+            # isolated owner explicitly supplies warmup before semantic lookup.
+            unloaded = await consumer.search(installed["library_id"], query)
+            assert unloaded["semantic_state"] == "unavailable"
+            assert not owner.is_available(), "query unexpectedly loaded the model"
+            started = time.perf_counter()
+            assert await owner.request_load()
+            report["load_128_seconds"] = time.perf_counter() - started
             started = time.perf_counter()
             result = await consumer.search(installed["library_id"], query)
             report["cold_query_seconds"] = time.perf_counter() - started

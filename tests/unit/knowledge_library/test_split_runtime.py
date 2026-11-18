@@ -51,6 +51,10 @@ compute._encoder = lambda: owner
 @asynccontextmanager
 async def lifespan(app):
     try:
+        # This isolated owner explicitly stands in for production warmup.
+        # Library RPCs only borrow READY models and must never trigger loading.
+        if not await owner.request_load():
+            raise RuntimeError("isolated native model warmup failed")
         yield
     finally:
         await owner.close()
