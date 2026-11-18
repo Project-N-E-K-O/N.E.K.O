@@ -247,7 +247,7 @@ async def test_one_file_that_exists_is_enough_and_the_others_are_named(space, ro
         _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py", "src/gone.py"]),
     )
 
-    assert reply == "kept in project _daily as entry-point.md Not counted as evidence: src/gone.py (not found)."
+    assert reply == "kept in project _daily as entry-point.md. Not counted as evidence: src/gone.py (not found)."
     assert json.loads(_head(_memory(root) / "entry-point.md")["evidence"]) == [(workdir / "src" / "app.py").as_posix()]
 
 
@@ -286,6 +286,17 @@ def test_a_path_that_leads_out_of_the_directories_is_not_looked_at(tmp_path, wor
         return isfile(path)
 
     monkeypatch.setattr(os.path, "isfile", watched)
+    # Following its links is looking at it too: that reads the file system where the path leads.
+    from nekoclaw.runtime import permissions
+
+    followed: list[str] = []
+    is_inside = permissions.is_inside
+
+    def following(path: Path, root: Path) -> bool:
+        followed.append(str(path))
+        return is_inside(path, root)
+
+    monkeypatch.setattr(permissions, "is_inside", following)
 
     counted, others = evidence_of(
         [str(outside), "../secret.txt", "src/../../secret.txt", "//server/share/file.txt", "src/app.py"], [str(workdir)]
@@ -295,7 +306,24 @@ def test_a_path_that_leads_out_of_the_directories_is_not_looked_at(tmp_path, wor
     assert [why for _path, why in others] == ["outside the working directory"] * 4
     # Nothing is told about a file a task agent would have to ask before it may read: it is not even looked for.
     assert os.path.normpath(str(workdir / "src" / "app.py")) in looked
-    assert not [path for path in looked if "secret" in path or "server" in path]
+    assert not [path for path in [*looked, *followed] if "secret" in path or "server" in path]
+    assert followed == [os.path.normpath(str(workdir / "src" / "app.py"))]
+
+
+def test_a_path_whose_links_lead_out_of_the_directory_is_not_looked_for(workdir, monkeypatch):
+    from nekoclaw.runtime import permissions
+
+    looked: list[str] = []
+    isfile = os.path.isfile
+    monkeypatch.setattr(os.path, "isfile", lambda path: looked.append(str(path)) or isfile(path))
+    # As if ``src`` were a link to a directory somewhere else.
+    monkeypatch.setattr(permissions, "is_inside", lambda path, root: "src" not in Path(path).parts)
+
+    counted, others = evidence_of(["src/app.py", "README.md"], [str(workdir)])
+
+    assert counted == [(workdir / "README.md").as_posix()]
+    assert others == [("src/app.py", "outside the working directory")]
+    assert looked == [os.path.normpath(str(workdir / "README.md"))]
 
 
 def test_no_directory_to_look_in_means_no_evidence(workdir):
@@ -834,6 +862,22 @@ async def test_an_entry_does_not_expire_while_it_cannot_be_told_whether_its_file
     assert "status" not in _head(_memory(root) / "entry-point.md")
 
 
+async def test_an_entry_is_changed_only_while_its_files_are_as_they_were_found(space, root, workdir):
+    await _filed_with_a_file(space, workdir)
+    # Found gone a moment ago and back by the time the entry is to be changed: it is looked at once more, and left.
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True)
+    assert "status" not in _head(_memory(root) / "entry-point.md") and "(memory/entry-point.md)" in _index(root)
+
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    # And the other way round: found back, and gone again.
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False)
+    assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and _index(root) == ""
+    # One that is not there any more is nothing to change.
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "no-such-entry", True)
+
+
 def test_whether_a_file_is_there_cannot_be_told_while_its_disk_is_not(tmp_path, monkeypatch):
     from nekoclaw.host import space as module
 
@@ -889,7 +933,7 @@ async def test_a_note_filed_into_an_entry_that_expired_brings_it_back(space, roo
 
     # A guess of the commission that filed it does not bring it back; a note that takes effect does.
     assert weak == HELD_INFERRED
-    assert again == "added to entry-point.md in project _daily It had expired and is in effect again."
+    assert again == "added to entry-point.md in project _daily. It had expired and is in effect again."
     head = _head(_memory(root) / "entry-point.md")
     assert "status" not in head and "expired" not in head and head["seen"] == "2"
     # It rests on what is there now: the files that are gone would have it expire at the next look.
@@ -911,7 +955,7 @@ async def test_the_same_text_filed_again_brings_an_expired_entry_back_only_when_
     strong = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "verified"))
 
     assert weak == HELD_OBSERVED + " Not counted as evidence: src/app.py (not found)."
-    assert strong == "already in entry-point.md in project _daily; nothing was added It had expired and is in effect again."
+    assert strong == "already in entry-point.md in project _daily; nothing was added. It had expired and is in effect again."
     head = _head(_memory(root) / "entry-point.md")
     assert "status" not in head and "evidence" not in head and head["confidence"] == "verified"
     assert _notes(root)["held"] == []
@@ -1089,3 +1133,71 @@ async def test_an_entry_that_expired_goes_with_its_commission_and_gets_no_line(s
     assert moved == ["entry-point"]
     assert _head(_memory(root, "Budget app") / "entry-point.md")["status"] == "expired"
     assert "entry-point" not in _index(root, "Budget app")
+
+
+# ---------------------------------------------------------------------------
+# What a task agent is told about notes
+# ---------------------------------------------------------------------------
+
+
+def test_a_task_agent_is_told_what_to_file_and_how_to_read_what_was_filed():
+    from config.prompts import prompts_nekoclaw as runtime_texts
+    from config.prompts import prompts_nekoclaw_dsh as dsh_texts
+    from config.prompts import prompts_nekoclaw_space as texts
+    from config.prompts.prompts_nekoclaw_tools import NEKOCLAW_TOOL_SCHEMAS
+
+    filing = runtime_texts.NOTE_LESSON_GUIDANCE
+    # Before something is filed: what, what not, where to look first, and how to write a day.
+    for said in (
+        "When the user corrects you, or approves of a way of working that was not the obvious one",
+        "what applies, why, and when it applies",
+        "Leave out what the files or their history already show, and what matters to this commission only",
+        "to add to something on file, use its exact title",
+        "Write a day as its date",
+    ):
+        assert said in filing
+    # In dsh the same words, with the tool called what dsh calls it.
+    assert filing.replace("note_lesson", "mcp__host__note_lesson") in dsh_texts.DSH_HOST_TOOLS_SECTION
+    assert "{{" not in dsh_texts.DSH_HOST_TOOLS_SECTION
+    # When something is read back: it was true then, is checked first, and gives way to what is found now.
+    reading = texts.SPACE_BRIEF_NOTE
+    for said in (
+        "A note says what held when it was written",
+        "check that the files and commands it names are still there",
+        "go by what you find and submit a correction",
+    ):
+        assert said in reading
+    # How it is known and the files that show it are asked for with the tool itself.
+    schema = NEKOCLAW_TOOL_SCHEMAS["note_lesson"]["parameters"]
+    assert schema["properties"]["confidence"]["enum"] == ["verified", "observed", "inferred"]
+    assert schema["properties"]["evidence"] == {
+        "type": "array",
+        "description": "Files that show it, as paths relative to the working directory; only files that exist count.",
+        "items": {"type": "string"},
+    }
+    assert schema["required"] == ["title", "content", "category", "confidence"]
+
+
+async def test_what_is_said_about_reading_notes_costs_the_fullest_space_a_few_lines_of_one_index(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    # Every part longer than its cap, and the space where an ordinary data root has it.
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, "Budget app")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
+    (root / "projects" / "Budget app" / "MEMORY.md").write_text("- [project entry](memory/y.md) — words\n" * 2000, encoding="utf-8")
+    ordinary = texts.SPACE_BRIEF_NOTE.replace("{root}", "D:/Documents/N.E.K.O/nekoclaw/task_agent_space")
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", ordinary)
+
+    brief = await space.brief("Budget app")
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    note, *sections = brief.split("\n\n")
+    assert count_tokens(note) < 170
+    lines = [len(section.split("\n")) - 2 for section in sections]
+    # The cap on the whole was not raised for it. What is over comes off the index of the project, three
+    # of the 29 lines it had; the rules, which are the user's, and the other index are whole.
+    assert lines == [1, 29, 1, 26]
+    assert [count_tokens(sections[position]) for position in (0, 2)] == [265, 266]

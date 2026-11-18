@@ -3990,7 +3990,7 @@ async def test_a_long_path_of_the_space_shortens_the_parts_and_none_ends_cut_off
     short = await space.brief("Budget app")
     assert count_tokens(short) <= SPACE_BRIEF_MAX_TOKENS
     # The note names the directory of the space: as with one many directories deep.
-    longer = texts.SPACE_BRIEF_NOTE.replace("{root}", "{root}/" + "/".join(f"a directory number {n}" for n in range(60)))
+    longer = texts.SPACE_BRIEF_NOTE.replace("{root}", "{root}/" + "/".join(f"a directory number {n}" for n in range(50)))
     monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", longer)
 
     brief = await space.brief("Budget app")

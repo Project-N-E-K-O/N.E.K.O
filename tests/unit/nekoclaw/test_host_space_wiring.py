@@ -175,7 +175,7 @@ async def test_a_lesson_rests_on_the_files_of_the_folder_the_task_agent_works_in
     assert (entry.id, entry.confidence, entry.seen_by) == ("photo-dates", "observed", (done.id,))
     assert entry.evidence == ((Path(done.workdir) / "notes.txt").as_posix(),)
     assert (
-        "lesson submitted. kept in project _daily as photo-dates.md Not counted as evidence: missing.txt (not found)."
+        "lesson submitted. kept in project _daily as photo-dates.md. Not counted as evidence: missing.txt (not found)."
     ) in llm.requests[2][-1]["content"]
     # A guess is kept apart, in no index, and the task agent is told so.
     assert "lesson submitted. not in effect yet, and in no index: it was filed as inferred." in llm.requests[3][-1]["content"]

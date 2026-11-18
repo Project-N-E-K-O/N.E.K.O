@@ -1618,12 +1618,13 @@ class TaskAgentSpace:
         ]
         own = next((item for item in waiting if item.get("mark") == mark), None)
         observer = note.known.observer
+        # How many commissions have seen it, this one counted. An entry
+        # nobody is named for (one the user wrote, or filed from the
+        # console) counts as seen once, by whoever put it there.
         if same is not None:
-            counted = bool(observer) and observer not in (same.seen_by or same.sources)
-            seen = same.seen + (1 if counted else 0)
+            seen = same.seen + (1 if observer and observer not in (same.seen_by or same.sources) else 0)
         else:
             observers = {seen_by for item in waiting for seen_by in _strings(item.get("seen_by"))}
-            counted = bool(observer) and bool(observers) and observer not in observers
             seen = max(len(observers | ({observer} if observer else set())), 1)
         # What was said of the same text before counts with what is said now.
         known = _Known(
@@ -1899,6 +1900,9 @@ class TaskAgentSpace:
         # lists it: the index may be one that cannot be read.
         unlisted = "" if listed else "; the index could not be read or written, so it may have no line there yet"
         more = (" It had expired and is in effect again." if revived else "") + _uncounted(other_files)
+        if more:
+            # Sentences of their own, after the one that says what became of it.
+            more = f".{more}"
         if how == _CREATED:
             return f"kept in {where} as {entry_id}.md{unlisted}{more}"
         if how == _ADDED:
@@ -1982,6 +1986,8 @@ class TaskAgentSpace:
         ``file_entry``.
         """
         roots = [str(base) for base in bases if base]
+        # Kept in a line of names separated by commas: it is one name there.
+        observer = _one_line(observer or source).replace(",", " ") or None
 
         def work() -> _Taken:
             evidence, _others = evidence_of(paths_named_in(f"{title}\n{description}\n{content}"), roots)
@@ -1991,9 +1997,7 @@ class TaskAgentSpace:
                 kind=kind,
                 description=description,
                 source=source,
-                known=_Known(
-                    confidence=OBSERVED if evidence else INFERRED, evidence=tuple(evidence), observer=observer or source
-                ),
+                known=_Known(confidence=OBSERVED if evidence else INFERRED, evidence=tuple(evidence), observer=observer),
             )
             return self._take_note(project, note)
 
