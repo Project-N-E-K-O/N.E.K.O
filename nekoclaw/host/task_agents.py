@@ -113,11 +113,6 @@ _IDLE_COMPACT_KINDS = frozenset({"project"})
 # before the ledger had the session idle for long enough: more than the
 # steps of a wall clock, so that the next look is not early again.
 _IDLE_TIMER_MARGIN_SECONDS = 0.05
-# How far below what it may use a commission is let on without waiting for
-# the runtimes' events to be caught up with: more than the requests that
-# can be on their way add up to (a request is a context window at the
-# most, and a commission has a few task agents).
-_USAGE_FAR_TOKENS = 1_000_000
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -3311,16 +3306,11 @@ class TaskAgentManager:
         session = self._sessions.get(commission_id or "")
         if limit <= 0 or commission_id is None or session is None or session.closing:
             return None
-        if session.wind_up_left is None:
-            # Far from what it may use, by what is written down so far:
-            # what is still on its way from the runtimes (the usage of the
-            # requests just made) cannot make up the difference, so the
-            # pump is not waited for.
-            so_far = await self._ledger.usage_standing(commission_id)
-            if so_far is not None and so_far.root not in self._refused_more:
-                may = so_far.allowed if so_far.allowed is not None else limit
-                if so_far.used + _USAGE_FAR_TOKENS < may:
-                    return None
+        # Always, however far from the line the account stands: what is
+        # still on its way from the runtimes has no bound to go by (a
+        # window can be of any size, and a commission has several task
+        # agents), so nothing is concluded from what is written down so
+        # far alone.
         await self._caught_up()
         if self._sessions.get(commission_id) is not session or session.closing:
             # Over meanwhile: its run ends by itself.

@@ -1571,33 +1571,6 @@ async def test_a_copy_that_was_no_longer_waited_for_is_removed_when_it_is_made_a
     assert await host.ledger.forks_of(first.id) == []
 
 
-async def test_far_from_what_it_may_use_a_request_does_not_wait_for_the_events_to_be_caught_up_with(
-    hosts, tmp_path, monkeypatch
-):
-    release, wait = _gate()
-    llm = ScriptedLLM([[say("Working."), _used(1_100, 20), wait, *_report("ready", "sorted")]])
-    host = _host(hosts, tmp_path, llm)
-    first = (await _dispatch(host, "sort the photos")).commissions[0]
-    await wait_until(lambda: llm.requests, what="its first request")
-    manager = host.task_agents
-    waited: list[int] = []
-    caught_up = manager._caught_up
-
-    async def watched() -> None:
-        waited.append(1)
-        await caught_up()
-
-    manager._caught_up = watched
-    # Five million as it comes, and next to nothing used: let on at once.
-    assert settings.TASK_AGENT_USAGE_LIMIT_TOKENS == 5_000_000
-    assert await manager._cb_budget(first.id, {}) is None and waited == []
-    # Within a million of the line, what is on its way is waited for before the account is looked at.
-    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 900_000)
-    assert await manager._cb_budget(first.id, {}) is None and waited == [1]
-    release.set()
-    await wait_status(host, first.id, "done")
-
-
 async def test_what_was_kept_for_a_commission_goes_when_it_is_stopped_before_it_had_a_place(hosts, tmp_path):
     release, wait = _gate()
     scripts = {
