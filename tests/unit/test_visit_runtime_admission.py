@@ -1921,9 +1921,14 @@ async def test_a_seal_wrapper_left_by_shutdown_is_retired_by_stop_all(tmp_path, 
 
 
 async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tmp_path, monkeypatch):
-    # The visit's own 0.5 s wait still runs out first (the flush is held until
-    # the handover); a long total budget leaves stop_all's later wait enough
-    # room that a stalled runner cannot make it cancel the cleanup instead.
+    # stop_all waits for a handed-over cleanup at most one step cap
+    # (``_SHUTDOWN_TASK_WAIT_S``, 0.5 s shipped) of what is left of the total
+    # budget, so that cap is what a stalled runner has to fit the real flush
+    # into before the cleanup is cancelled. Raise it to 2 s, with a total
+    # budget large enough to leave stop_all its full cap after the visit's
+    # own wait. The visit's own wait still runs out first: the flush is held
+    # until the handover.
+    monkeypatch.setattr(rtm, "_SHUTDOWN_TASK_WAIT_S", 2.0)
     monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 10.0)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
@@ -1940,7 +1945,7 @@ async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tm
 
     rt.outbox.flush = slow_flush
     try:
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 30)  # Hang guard, well past the budget.
         cleanup = rt.outbox.close_task
         assert cleanup is not None and cleanup.done()
         assert not cleanup.cancelled()                    # First await file deletion with a deadline, without immediate cancellation.

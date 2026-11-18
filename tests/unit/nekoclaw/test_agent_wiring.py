@@ -24,13 +24,13 @@ desktop or a browser either.
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from tests.fake_clock import patch_module_asyncio
 from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, pick_plugin, wait_until
 from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, finish, plugin
 
@@ -2060,18 +2060,17 @@ async def test_shutting_the_host_down_is_bounded_and_the_steps_still_finish(wiri
     real_wait_for = asyncio.wait_for
 
     def spy_wait_for(awaitable, timeout):
-        if sys._getframe(1).f_globals is wiring.mount_module.__dict__:
-            budgets.append(timeout)
+        budgets.append(timeout)
         return real_wait_for(awaitable, timeout)
 
-    monkeypatch.setattr(asyncio, "wait_for", spy_wait_for)
+    patch_module_asyncio(monkeypatch, wiring.mount_module, wait_for=spy_wait_for)
 
     # The steps cannot finish before ``release``, so returning at all proves
     # the caller stopped waiting at its budget; one that waited for the steps
-    # would hang into this guard. The guard stays under the shipped 4 s budget
-    # so that a caller ignoring the patched 0.05 s budget fails too.
+    # would hang into this guard. Which budget it waited with is checked on
+    # the spy below, so the guard itself can be generous.
     try:
-        await asyncio.wait_for(wiring.mount_module.shutdown_nekoclaw_host(), 3)
+        await asyncio.wait_for(wiring.mount_module.shutdown_nekoclaw_host(), 10)
         assert not finished.is_set()
         assert budgets == [0.05]
     finally:

@@ -13,6 +13,7 @@ from PIL import Image
 
 from main_routers.game_router import vision
 from utils import game_vision as service
+from tests.fake_clock import patch_module_asyncio
 
 
 def jpeg(width=8, height=8):
@@ -207,11 +208,24 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
     if mode == "wrong_generation":
         payload["sdk_route_instance_id"] = "older"
     if mode == "timeout":
-        # The deadline is only reached once the analysis is in flight: the
-        # loop clock is moved past it after ``entered`` below. A short real
-        # deadline (20 ms, later 0.5 s) could expire before ``_analyze`` ran
-        # on a stalled runner, leaving no in-flight analysis to cancel.
+        # The route reads a frozen clock that only this test moves, so its
+        # 30 s deadline is reached exactly when the test says, after the
+        # analysis is in flight, however slowly the runner gets there.
         monkeypatch.setattr(vision, "REQUEST_TIMEOUT", 30.0)
+        route_now = [0.0]
+        real_get_running_loop = asyncio.get_running_loop
+
+        class _RouteLoop:
+            def __init__(self, loop):
+                self._loop = loop
+
+            def time(self):
+                return route_now[0]
+
+            def __getattr__(self, name):
+                return getattr(self._loop, name)
+
+        patch_module_asyncio(monkeypatch, vision, get_running_loop=lambda: _RouteLoop(real_get_running_loop()))
     request = Request(payload)
     task = asyncio.create_task(vision.game_sdk_vision_analyze("example-game", request))
     try:
@@ -221,17 +235,14 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
             return
         await asyncio.wait_for(entered.wait(), 10)  # Hang guards below, not speed checks.
         if mode == "timeout":
-            # Just short of the configured 30 s the request is still running
-            # (it can only be early here, never late), and just past it the
-            # route has to give up: a deadline other than the configured one
-            # either ends it early or leaves it hanging into the guard below.
-            loop = asyncio.get_running_loop()
-            real_time = loop.time
-            shift = [29.0]
-            monkeypatch.setattr(loop, "time", lambda: real_time() + shift[0])
+            # Just short of the configured 30 s the request keeps running; at
+            # 30 s the route has to give up. A deadline other than the
+            # configured one either ends it early here or leaves it hanging
+            # into the guard below.
+            route_now[0] = 29.9
             await asyncio.sleep(0.25)  # A few 0.1 s polls of the route.
             assert not task.done()
-            shift[0] = 31.0
+            route_now[0] = 30.0
         if mode == "superseded":
             # Same textual identity cannot revive a response from another state object.
             current[0] = dict(state)

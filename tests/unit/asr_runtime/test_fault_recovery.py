@@ -1,7 +1,6 @@
 """Exercise owned fault recovery with the real runtime and lifecycle."""
 
 import asyncio
-import sys
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock
@@ -13,6 +12,7 @@ from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResul
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame, VoiceInputAudioPipeline
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from main_logic.voice_turn.contracts import AsrSubmitStatus
+from tests.fake_clock import patch_module_asyncio
 from tests.unit.asr_runtime._scenarios import _start_runtime_with_callback_candidates
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
@@ -306,12 +306,7 @@ async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch)
         finally:
             scope["close_inside"] = close_entered.is_set() and not scope["close_before"]
 
-    def timeout_for_runtime(delay):
-        if sys._getframe(1).f_globals is asr_runtime_module.__dict__:
-            return spy_timeout(delay)
-        return real_timeout(delay)
-
-    monkeypatch.setattr(asyncio, "timeout", timeout_for_runtime)
+    patch_module_asyncio(monkeypatch, asr_runtime_module, timeout=spy_timeout)
     try:
         await _recover(runtime, guard=10)
         assert close_entered.is_set()

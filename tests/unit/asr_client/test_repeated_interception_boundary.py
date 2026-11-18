@@ -98,7 +98,7 @@ async def test_second_gap_waits_for_old_final_and_prepared_successor_without_spl
 
     callbacks.on_prepare_turn.side_effect = prepare
     boundary = asyncio.create_task(runtime.discontinue_input(
-        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
     ))
     final = None
     try:
@@ -149,9 +149,12 @@ async def test_successor_preparation_does_not_refresh_boundary_absolute_deadline
     boundary = asyncio.create_task(runtime.discontinue_input(ingress_token=token.ingress, deadline=deadline))
     final = asyncio.create_task(runtime._handle_independent_asr_final("prefix final", runtime._asr_session_epoch, "glm"))
     try:
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), _SETTLE_S)
+        # Hang guard well past the boundary's own 80 ms deadline, so a stalled
+        # runner cannot let the guard fire first; ``boundary.done()`` below
+        # still tells the two apart.
         with pytest.raises(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(boundary), 0.5)
+            await asyncio.wait_for(asyncio.shield(boundary), _SETTLE_S)
         assert boundary.done()  # The boundary's deadline, not the test timeout.
         assert session.signal_user_activity_end.await_count == 1
         release.set()
@@ -169,7 +172,7 @@ async def test_successor_preparation_does_not_refresh_boundary_absolute_deadline
 async def test_cancelled_second_gap_preserves_pending_audio_and_prior_final():
     runtime, callbacks, _detector, session, lifecycle, token, order, prefix, successor = await _scenario()
     boundary = asyncio.create_task(runtime.discontinue_input(
-        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
     ))
     try:
         await _assert_waiting(boundary)
@@ -195,7 +198,7 @@ async def test_waiting_boundary_and_late_final_cannot_seal_replacement_session()
     runtime, callbacks, _detector, old_session, _lifecycle, token, _order, _prefix, _successor = await _scenario()
     old_epoch = runtime._asr_session_epoch
     boundary = asyncio.create_task(runtime.discontinue_input(
-        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+        ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
     ))
     try:
         await _assert_waiting(boundary)
@@ -245,7 +248,7 @@ async def test_second_gap_entering_during_active_successor_preparation_waits_for
         # This boundary starts after the old final has changed the lifecycle;
         # checking only the DRAINING entry state misses this real interleaving.
         boundary = asyncio.create_task(runtime.discontinue_input(
-            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         ))
         await _assert_waiting(boundary)
         assert lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
@@ -606,7 +609,7 @@ async def test_ingress_ledger_switch_rebinds_discard_without_settling_old_unknow
         assert Stage.UNKNOWN in old_receipts
         assert not old_tag.settled
         await runtime.discontinue_input(
-            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=token.ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         )
         assert lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
         await runtime._handle_independent_asr_final("old uncertain capture", runtime._asr_session_epoch, "soniox")
@@ -630,7 +633,7 @@ async def test_ingress_ledger_switch_rebinds_discard_without_settling_old_unknow
         assert new_ledger is not old_ledger
         assert lifecycle.pre_roll_bytes == 800
         await runtime.discontinue_input(
-            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         )
         assert lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
         assert old_receipts == old_before
@@ -640,7 +643,7 @@ async def test_ingress_ledger_switch_rebinds_discard_without_settling_old_unknow
         assert result.status is AsrSubmitStatus.ACCEPTED
         assert lifecycle.pre_roll_bytes == 800
         await runtime.discontinue_input(
-            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + 1,
+            ingress_token=successor_ingress, deadline=asyncio.get_running_loop().time() + _SETTLE_S,
         )
         assert new_receipts == [Stage.NOT_SENT]
         assert new_tag.settled

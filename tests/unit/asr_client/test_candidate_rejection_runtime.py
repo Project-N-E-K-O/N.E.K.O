@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -22,6 +21,7 @@ from main_logic.asr_client.speaker_shadow.contracts import (
     SpeakerShadowCandidateKey,
 )
 from main_logic.voice_turn.contracts import VoiceTurnToken
+from tests.fake_clock import patch_module_asyncio
 
 
 class _RejectionLease:
@@ -397,11 +397,10 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
     real_wait_for = asyncio.wait_for
 
     def spy_wait_for(awaitable, timeout):
-        if sys._getframe(1).f_globals is runtime_module.__dict__:
-            step_timeouts.append(timeout)
+        step_timeouts.append(timeout)
         return real_wait_for(awaitable, timeout)
 
-    monkeypatch.setattr(asyncio, "wait_for", spy_wait_for)
+    patch_module_asyncio(monkeypatch, runtime_module, wait_for=spy_wait_for)
 
     outcome = await runtime._reject_speaker_candidate(
         _shadow_candidate(),

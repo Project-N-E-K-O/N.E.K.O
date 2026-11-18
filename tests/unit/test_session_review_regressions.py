@@ -72,10 +72,13 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
         # deadline, and the TTS wait still ends by timing out.
         real_start_deadline = manager._current_start_deadline
 
+        shim_hits = []
+
         def start_deadline_seen_by_tts():
             task = asyncio.current_task()
             deadline = real_start_deadline()
             if task is not None and task.get_coro().__name__ == "_start_session_start_tts_if_needed":
+                shim_hits.append(deadline)
                 return deadline - 2.0
             return deadline
 
@@ -135,6 +138,9 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
             if outcome == "timeout":
                 # The TTS wait used the injected deadline (2 s early, less its
                 # own 0.1 s tail), not one of its own making.
+                # The shim matched the TTS step; were it renamed, the shim
+                # would silently stop applying and the 0.1 s tail return.
+                assert shim_hits
                 assert tts_deadlines
                 for given, real in tts_deadlines:
                     assert abs(given - (real - 2.1)) < 1e-6

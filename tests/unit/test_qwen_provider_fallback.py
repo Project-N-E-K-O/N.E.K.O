@@ -227,13 +227,15 @@ async def test_recovery_capacity_deadline_ignores_loop_clock_origin(monkeypatch,
     # The guard is only there so a deadline read on the shifted loop clock
     # (-100000: about a day away) fails instead of hanging. The other wrong
     # reading (+100000: already past) gives up at the first 10 ms backpressure
-    # check, which the lower bound catches; a stalled runner can only make the
-    # elapsed time longer, so no upper bound on it is asserted.
+    # check, which the lower bound catches. The upper bound is far above
+    # anything a stalled runner adds to the expected ~0.06 s, and still
+    # catches a wait that overran the recovery deadline by seconds before
+    # reporting backpressure.
     with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
         await asyncio.wait_for(session._wait_for_audio_queue_capacity(
             _AsrWorkerRequest("audio", 0, audio=b"aa"),
         ), 10)
-    assert time.monotonic() - started >= 0.04
+    assert 0.04 <= time.monotonic() - started < 5
 
 
 def _state():

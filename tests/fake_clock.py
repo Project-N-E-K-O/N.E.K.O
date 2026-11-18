@@ -28,6 +28,7 @@ put it.  Everything the module does not override still resolves to the real
 ``time``.
 """
 
+import asyncio as _real_asyncio
 import time as _real_time
 
 
@@ -53,3 +54,38 @@ def patch_module_clock(monkeypatch, module, **overrides):
         patch_module_clock(monkeypatch, sender_module, monotonic=lambda: next(stamps))
     """
     monkeypatch.setattr(module, "time", _ScopedTime(**overrides))
+
+
+class _ScopedAsyncio:
+    """Stands in for the ``asyncio`` module inside one importing module."""
+
+    def __init__(self, **overrides):
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        try:
+            return self._overrides[name]
+        except KeyError:
+            return getattr(_real_asyncio, name)
+
+
+def patch_module_asyncio(monkeypatch, module, **overrides):
+    """Point ``module.asyncio`` at a stand-in that overrides only ``overrides``.
+
+    For spying on the timeouts one module passes (``wait_for``, ``timeout``,
+    ``wait``) or giving it its own view of the loop clock, without replacing
+    ``asyncio`` for every other caller in the process. Everything not
+    overridden resolves to the real ``asyncio``.
+
+    Example::
+
+        timeouts = []
+        real_wait_for = asyncio.wait_for
+
+        def wait_for(awaitable, timeout):
+            timeouts.append(timeout)
+            return real_wait_for(awaitable, timeout)
+
+        patch_module_asyncio(monkeypatch, runtime_module, wait_for=wait_for)
+    """
+    monkeypatch.setattr(module, "asyncio", _ScopedAsyncio(**overrides))

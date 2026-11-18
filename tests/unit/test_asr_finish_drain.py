@@ -352,7 +352,7 @@ async def test_finish_resource_retirement_cannot_extend_caller_deadline(monkeypa
     from main_logic.asr_client import _infra
 
     # The worker's own close bound (5 s shipped) is pushed past the guard
-    # below, so a finish that waited for the retirement instead of its 30 ms
+    # below, so a finish that waited for the retirement instead of its own
     # deadline could not finish in time by way of that bound either.
     monkeypatch.setattr(_infra, "_WORKER_CLOSE_TIMEOUT_SECONDS", 60.0)
     release_worker = asyncio.Event()

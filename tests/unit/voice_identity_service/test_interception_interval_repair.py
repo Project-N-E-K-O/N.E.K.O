@@ -136,11 +136,12 @@ class _BlockedFlush(_Tse):
 @pytest.mark.asyncio
 async def test_finish_deadline_includes_flush_and_fences_late_output():
     worker = _BlockedFlush()
-    # The shared test config arms a 10 ms prefix deadline. On a stalled runner
-    # it could fire while finish() was waiting on the blocked flush, retire the
-    # runtime and end finish() as ``runtime_output_revoked`` before its own
-    # 30 ms deadline was reached. Push it out of the way: this case is about
-    # the finish deadline alone.
+    # The shared test config keeps the default 1 s prefix deadline (plus the
+    # capture support, about 1.1 s from the fed audio). A runner stalled that
+    # long could fire it while finish() was waiting on the blocked flush,
+    # retire the runtime and end finish() as ``runtime_output_revoked``
+    # instead of its own 30 ms deadline. Push it out of the way: this case is
+    # about the finish deadline alone.
     runtime = PrewireInterceptionFactory(replace(_config(), finish_timeout_seconds=0.03, prefix_deadline_seconds=30.0), score_backend=_Scorer(), classifier=_Classifier(), tse_factory=lambda _: worker).create(None, ingress_token=None)
     try:
         await _feed(runtime, 2000)
