@@ -55,7 +55,7 @@ from typing import Any
 
 from nekoclaw.host.decision import TIER_ARCHIVE, TIER_REVIEW
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
-from nekoclaw.host.paths import DEFAULT_PROJECT, TRANSCRIPT_NAME, safe_segment
+from nekoclaw.host.paths import DEFAULT_PROJECT, SYSTEM_SNAPSHOT_NAME, TRANSCRIPT_NAME, safe_segment
 from nekoclaw.host.space import ENTRY_TYPES, Project, SpaceError, TaskAgentSpace
 
 logger = logging.getLogger(__name__)
@@ -64,8 +64,6 @@ logger = logging.getLogger(__name__)
 _REVIEWED_AT_ONCE = frozenset({"done", "cancelled"})
 _REVIEWABLE = frozenset({"done", "cancelled", "failed"})
 _OUTPUTS_NAME = "outputs"
-# Statuses in which what was said in a session is no longer needed once it is old.
-_CLEANABLE = frozenset({"done", "failed", "cancelled"})
 # What became of one session that was looked at.
 _REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
@@ -304,12 +302,15 @@ class SpaceKeeper:
     ``llm`` is a ``DecisionLLM`` that knows ``TIER_REVIEW`` and
     ``TIER_ARCHIVE``; without one nothing is reviewed and projects are
     archived without a summary. ``session_dir_of`` returns where a
-    commission's session is kept (blocking; ``TaskAgentManager.session_dir_of``).
+    session is kept (blocking; ``TaskAgentManager.session_dir_of``).
     ``hold_session`` and ``release_session`` are the manager's: while a
-    session is held for cleaning, its commission is not taken up again, and
-    one that is in use is not held. ``forget_dsh_session`` removes what dsh
-    kept of the session a session directory belongs to (blocking;
-    ``DshInstallation.forget_session``): for a commission that ran in dsh,
+    commission is held for its review, it is not taken up again, and one
+    that is in use is not held. ``hold_files`` and ``release_files`` are
+    the manager's too, and about a session: while its files are held for
+    cleaning, no commission is started in it, and a session in use is not
+    held. ``forget_dsh_session`` removes what dsh kept of the session a
+    session directory belongs to (blocking;
+    ``DshInstallation.forget_session``): for a session that ran in dsh,
     what was said is there and not in a transcript.
     """
 
@@ -319,9 +320,11 @@ class SpaceKeeper:
         space: TaskAgentSpace,
         ledger: Ledger,
         llm: Any = None,
-        session_dir_of: Callable[[Commission], Path] | None = None,
+        session_dir_of: Callable[[Any], Path] | None = None,
         hold_session: Callable[[str], bool] | None = None,
         release_session: Callable[[str], None] | None = None,
+        hold_files: Callable[[str], bool] | None = None,
+        release_files: Callable[[str], None] | None = None,
         forget_dsh_session: Callable[[Path], bool] | None = None,
         clock: Callable[[], float] = time.time,
         review_delay: float | None = None,
@@ -332,6 +335,8 @@ class SpaceKeeper:
         self._session_dir_of = session_dir_of
         self._hold_session = hold_session
         self._release_session = release_session
+        self._hold_files = hold_files
+        self._release_files = release_files
         self._forget_dsh_session = forget_dsh_session
         self._clock = clock
         self._review_delay = review_delay
@@ -1028,32 +1033,43 @@ class SpaceKeeper:
             self._summaries.pop(project.name, None)
             logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary) or kept)
 
-    def _ended_long_ago(
+    def _closed_long_ago(
         self, conn: sqlite3.Connection, after: float, after_id: str, until: float
     ) -> list[sqlite3.Row]:
-        """Return a batch of old ended commissions that come after ``(after, after_id)``, in that order.
+        """Return a batch of old sessions nothing is going on in that come after ``(after, after_id)``, in that order.
 
-        The id is part of the order and of where the scan stands: with the
-        time alone, commissions that share one time and do not fit in one
-        batch would be skipped by the next.
+        A session is as old as the last change of any commission in it
+        (``last_active_at``), so one that a commission was worked on in
+        lately keeps everything said in it, also by the commissions before
+        that one. Nothing is going on in it when none of its commissions is
+        under way or blocked (a blocked one is taken up again where it
+        stopped): told by the commissions, as it always was, and not by
+        what the session's own status says. One that was cleared already
+        has nothing left. The id is part of the order and of where the
+        scan stands: with the time alone, sessions that share one time and
+        do not fit in one batch would be skipped by the next.
         """
         return conn.execute(
-            "SELECT * FROM commissions WHERE route = 'task_agent' AND status IN ('done', 'failed', 'cancelled') "
-            "AND (updated_at > ? OR (updated_at = ? AND id > ?)) AND updated_at <= ? "
-            "ORDER BY updated_at ASC, id ASC LIMIT ?",
+            "SELECT * FROM sessions WHERE status != 'cleared' "
+            "AND (last_active_at > ? OR (last_active_at = ? AND id > ?)) AND last_active_at <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM commissions WHERE commissions.session_id = sessions.id "
+            "AND commissions.status IN ('queued', 'working', 'waiting_user', 'blocked')) "
+            "ORDER BY last_active_at ASC, id ASC LIMIT ?",
             (after, after, after_id, until, _CLEAN_BATCH),
         ).fetchall()
 
     @staticmethod
-    def _clean_session(directory: Path, commission_id: str) -> str:
+    def _clean_session(directory: Path, session_id: str) -> str:
         """Remove what was said in a session; its working directory is not touched. Blocking.
 
         Only in a directory that is a session's by its place and name, and
-        only the two things the runtime writes there. Returns ``removed``,
-        ``nothing`` (there was nothing to remove) or ``not_removed``
-        (something is still there: held open by another program, say).
+        only what the runtime writes there: the transcript, the tool
+        output it kept, and the system prompt the session was opened with.
+        Returns ``removed``, ``nothing`` (there was nothing to remove) or
+        ``not_removed`` (something is still there: held open by another
+        program, say).
         """
-        if directory.name != commission_id or directory.parent.name != "sessions":
+        if directory.name != session_id or directory.parent.name != "sessions":
             return _NOTHING
         removed = failed = False
         transcript = directory / TRANSCRIPT_NAME
@@ -1064,6 +1080,15 @@ class SpaceKeeper:
         except OSError:
             failed = True
             logger.warning("an old transcript could not be removed", exc_info=True)
+        snapshot = directory / SYSTEM_SNAPSHOT_NAME
+        try:
+            # Of no use without the transcript: a session with nothing said is
+            # put together anew. Not counted as something removed by itself.
+            if snapshot.is_file() and not snapshot.is_symlink():
+                snapshot.unlink()
+        except OSError:
+            failed = True
+            logger.warning("the system snapshot of an old session could not be removed", exc_info=True)
         outputs = directory / _OUTPUTS_NAME
         try:
             if outputs.is_dir() and not outputs.is_symlink():
@@ -1076,16 +1101,16 @@ class SpaceKeeper:
             return _NOT_REMOVED
         return _REMOVED if removed else _NOTHING
 
-    def _clean(self, directory: Path, commission_id: str) -> str:
+    def _clean(self, directory: Path, session_id: str) -> str:
         """Remove what was said in a session, wherever it is kept. Blocking; returns what ``_clean_session`` does.
 
         The built-in runtime keeps it in the session directory
         (``_clean_session``). For a session that ran in dsh it is in the home
         of dsh, which never removes it: the host does, here.
         """
-        outcome = self._clean_session(directory, commission_id)
+        outcome = self._clean_session(directory, session_id)
         forget = self._forget_dsh_session
-        if forget is None or directory.name != commission_id or directory.parent.name != "sessions":
+        if forget is None or directory.name != session_id or directory.parent.name != "sessions":
             return outcome
         try:
             if forget(directory) and outcome == _NOTHING:
@@ -1095,38 +1120,59 @@ class SpaceKeeper:
             return _NOT_REMOVED
         return outcome
 
-    async def _clean_one(self, commission: Commission, until: float) -> str:
-        """Clean the session of one commission the query found, if it is still to be cleaned.
+    async def _clean_one(self, session_id: str, until: float) -> str:
+        """Clean one session the query found, if it is still to be cleaned.
 
-        Held against being taken up again for as long as its files are
-        removed, and looked up again once it is held: a commission that was
-        taken up between the query and now is at work on that very transcript.
+        Held against a commission being started in it for as long as its
+        files are removed, and looked up again once it is held: a session
+        that a commission was taken up in between the query and now is at
+        work on that very transcript. Once what was said is gone the
+        session is ``cleared``: it can still be gone on with, from nothing
+        but its working directory.
         """
         from utils.asyncio_executor import to_thread_through_cancellation
 
-        if self._hold_session is not None and not self._hold_session(commission.id):
-            # In use, or on its way to be. Not passed over: a commission
-            # whose taking up fails before its status changes is as old as
-            # it was, and the scan does not come by it again. It is looked
-            # at again next round; one that went on to work and ended anew
-            # is dropped then, being young.
+        if self._hold_files is not None and not self._hold_files(session_id):
+            # In use, or on its way to be. Not passed over: a session whose
+            # commission fails to be taken up before its status changes is
+            # as old as it was, and the scan does not come by it again. It
+            # is looked at again next round; one that went on to work and
+            # was closed anew is dropped then, being young.
             return _NOT_REMOVED
         try:
-            current = await self._ledger.get(commission.id)
-            if current is None or current.status not in _CLEANABLE or current.updated_at > until:
+            current = await self._ledger.get_session(session_id)
+            if current is None or current.status == "cleared" or current.last_active_at > until:
+                return _NOTHING
+            if await self._ledger.select(session_id=session_id, statuses=ACTIVE_STATUSES, limit=1):
                 return _NOTHING
             directory = await asyncio.to_thread(self._session_dir_of, current)
             # A thread cannot be stopped. Cancelled (the host shutting down),
             # this still waits for the removing to finish before the hold
             # below is given back and before shutting down goes on: nothing
             # opens the session while its files are still being removed.
-            return await to_thread_through_cancellation(self._clean, Path(directory), current.id)
+            outcome = await to_thread_through_cancellation(self._clean, Path(directory), current.id)
+            if outcome == _REMOVED:
+                await asyncio.shield(self._note_cleared(current.id))
+            return outcome
         except (OSError, ValueError):
-            logger.warning("the session of an old commission could not be looked at", exc_info=True)
+            logger.warning("an old session could not be looked at", exc_info=True)
             return _NOT_REMOVED
         finally:
-            if self._release_session is not None:
-                self._release_session(commission.id)
+            if self._release_files is not None:
+                self._release_files(session_id)
+
+    async def _note_cleared(self, session_id: str) -> None:
+        """Put on record that what was said in a session is gone: with the session, and with each commission of it."""
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE sessions SET status = 'cleared' WHERE id = ?", (session_id,))
+            rows = conn.execute(
+                "SELECT id FROM commissions WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+            ).fetchall()
+            for row in rows:
+                self._ledger._event(conn, row["id"], "session_cleaned", {"session_id": session_id})
+
+        await self._ledger.run(work)
 
     @staticmethod
     def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:
@@ -1158,9 +1204,8 @@ class SpaceKeeper:
         return min(float(noted), due), True
 
     async def _clean_sessions(self, now: float, state: dict[str, Any]) -> None:
-        """Remove what was said in sessions whose commission ended long ago."""
+        """Remove what was said in sessions nothing was worked on in for a long time."""
         from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
-        from nekoclaw.host.ledger import _commission
 
         if self._session_dir_of is None:
             return
@@ -1180,7 +1225,7 @@ class SpaceKeeper:
         if after > until:
             # The scan stands beyond what is old by now: it got there by a
             # clock that was ahead (or sessions are kept longer than they
-            # were). Commissions that ended since, by the clock as it is
+            # were). Sessions that were closed since, by the clock as it is
             # now, lie before where it stands and would never be come by.
             # So it begins anew; what it comes by a second time has nothing
             # left to remove.
@@ -1197,30 +1242,28 @@ class SpaceKeeper:
         # back, so the others get their turn.
         still: list[str] = waiting[_CLEAN_BATCH:]
 
-        async def clean(commission: Commission) -> None:
-            outcome = await self._clean_one(commission, until)
-            if outcome == _REMOVED:
-                await self._ledger.append_event(commission.id, "session_cleaned", {})
-            elif outcome == _NOT_REMOVED:
-                still.append(commission.id)
+        async def clean(session_id: str) -> None:
+            if await self._clean_one(session_id, until) == _NOT_REMOVED:
+                still.append(session_id)
 
-        for commission_id in waiting[:_CLEAN_BATCH]:
-            commission = await self._ledger.get(commission_id)
-            if commission is not None:
-                await clean(commission)
+        for session_id in waiting[:_CLEAN_BATCH]:
+            if await self._ledger.get_session(session_id) is not None:
+                await clean(session_id)
         reached, reached_id = after, after_id
         if until >= after:
-            rows = await self._ledger.run(
-                lambda conn: [_commission(row) for row in self._ended_long_ago(conn, after, after_id, until)]
+            found = await self._ledger.run(
+                lambda conn: [
+                    (str(row["id"]), float(row["last_active_at"]))
+                    for row in self._closed_long_ago(conn, after, after_id, until)
+                ]
             )
-            found = [item for item in rows if item is not None]
-            for commission in found:
-                if commission.id not in waiting:
-                    await clean(commission)
+            for session_id, _last_active_at in found:
+                if session_id not in waiting:
+                    await clean(session_id)
             if len(found) >= _CLEAN_BATCH:
                 # A full batch leaves the rest to the next round, which goes
                 # on right after the last one of this round.
-                reached, reached_id = found[-1].updated_at, found[-1].id
+                reached_id, reached = found[-1]
             else:
                 # Everything up to ``until`` is done with. The largest id
                 # there can be keeps what is of exactly that time, and was

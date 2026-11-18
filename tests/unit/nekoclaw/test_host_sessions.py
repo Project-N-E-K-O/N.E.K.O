@@ -718,3 +718,65 @@ async def test_a_follow_up_to_a_commission_of_a_project_waits_for_the_projects_s
     await wait_status(host, second.commission_id, "done")
     done = await wait_status(host, follow.commission_id, "done")
     assert done.result_summary == "now with semicolons"
+
+
+# ---------------------------------------------------------------------------
+# Removing what was said in an old session
+# ---------------------------------------------------------------------------
+
+
+async def test_a_sessions_files_are_not_claimed_while_it_is_in_use_and_nothing_starts_in_it_while_they_are(
+    hosts, tmp_path
+):
+    release, wait = _gate()
+    scripts = {
+        "add a CSV export": ScriptedLLM([[wait, *_report()]]),
+        "add a chart": ScriptedLLM([_report()]),
+        "translate the help pages": ScriptedLLM([_report("ready", "translated")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "working")
+    second = await _dispatch(host, "add a chart to the budget app")
+    await host.brain.settle()
+    session_id = first.commission_id
+
+    # At work on one commission, with another waiting for it.
+    assert host.task_agents.hold_files(session_id) is False
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+    await wait_status(host, second.commission_id, "done")
+    await _released(host, second.commission_id)
+    await _let_go(host)
+
+    assert host.task_agents.hold_files(session_id) is True
+    # Claimed once.
+    assert host.task_agents.hold_files(session_id) is False
+    third = await _dispatch(host, "translate the help pages of the budget app into French")
+    await wait_until(lambda: third.commission_id in host.task_agents.running, what="the third taking its place")
+    await asyncio.sleep(0.05)
+    # It has its place, and waits there: the session is not opened under the hands that remove its files.
+    assert third.commission_id in host.task_agents.running
+    assert (await host.ledger.get(third.commission_id)).status == "queued"
+    assert scripts["translate the help pages"].requests == []
+
+    host.task_agents.release_files(session_id)
+    done = await wait_status(host, third.commission_id, "done")
+    assert done.session_id == session_id
+    # Given back twice, nothing happens.
+    host.task_agents.release_files(session_id)
+
+
+async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_its_commissions_were(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "done")
+    await _released(host, receipt.commission_id)
+    await _let_go(host)
+
+    assert host.task_agents.hold_files(receipt.commission_id) is True
+    host.task_agents.release_files(receipt.commission_id)
+    # A session this process has never heard of is in nobody's hands either.
+    assert host.task_agents.hold_files("some-old-session") is True
+    host.task_agents.release_files("some-old-session")

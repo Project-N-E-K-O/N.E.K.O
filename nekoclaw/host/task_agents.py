@@ -421,9 +421,13 @@ class TaskAgentManager:
         # made (``_rule_on_host_tool``): the queries it was for, the refusal
         # or None, and until when it waits for the call (event loop time).
         self._search_rulings: dict[str, tuple[tuple[str, ...], str | None, float]] = {}
-        # Commissions whose old session files are being removed right now
+        # Commissions whose review is being written down right now
         # (``hold_session``); a start of one of them waits for that.
         self._held: dict[str, asyncio.Event] = {}
+        # Sessions whose old files are being removed right now
+        # (``hold_files``); a commission is started in one of them once that
+        # is done.
+        self._clearing: dict[str, asyncio.Event] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -885,9 +889,14 @@ class TaskAgentManager:
         try:
             held = self._held.get(commission_id)
             if held is not None:
+                # Its review is being written down this moment: it goes on
+                # once that is done.
+                await held.wait()
+            clearing = self._clearing.get(session.session_id)
+            if clearing is not None:
                 # What was said in its session long ago is being removed
                 # this moment; the session is opened once that is done.
-                await held.wait()
+                await clearing.wait()
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
@@ -2380,17 +2389,40 @@ class TaskAgentManager:
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
 
-    def session_dir_of(self, commission: Commission) -> Any:
-        """Return where a commission's session is kept. Blocking; see ``_session_dir_of``."""
-        return self._session_dir_of(commission)
+    def session_dir_of(self, session: Any) -> Any:
+        """Return where a session is kept (``session`` is a ``ledger.Session``). Blocking; see ``_session_dir_of``."""
+        return self._session_dir_of(session)
+
+    def hold_files(self, session_id: str) -> bool:
+        """Claim a session's files for removal. False when the session is in use.
+
+        In use means a commission holds it, or one that is worked on in it
+        has a place, waits for one, or is being taken up again. Looking and
+        claiming happen with no await in between. Until ``release_files``,
+        a commission that is to be started in the session waits instead of
+        opening files that are being removed under it.
+        """
+        if session_id in self._held_by or session_id in self._clearing:
+            return False
+        in_hand = (*self._sessions, *self._queue, *self._taking_up, *self._requeueing)
+        if any(self._session_of.get(commission_id) == session_id for commission_id in in_hand):
+            return False
+        self._clearing[session_id] = asyncio.Event()
+        return True
+
+    def release_files(self, session_id: str) -> None:
+        """Give back what ``hold_files`` claimed; a start that waited goes on."""
+        clearing = self._clearing.pop(session_id, None)
+        if clearing is not None:
+            clearing.set()
 
     def hold_session(self, commission_id: str) -> bool:
-        """Claim a commission's session files for removal. False when the commission is in use.
+        """Claim a commission for writing its review down. False when the commission is in use.
 
         In use means it holds a session, waits for a place, or is being
         taken up again. Looking and claiming happen with no await in
-        between. Until ``release_session``, a start of the commission waits
-        instead of opening files that are being removed under it.
+        between. Until ``release_session``, the commission is not taken up
+        again: what is written is about the commission as it was.
         """
         if (
             commission_id in self._sessions
@@ -2409,8 +2441,14 @@ class TaskAgentManager:
         if held is not None:
             held.set()
 
-    def _session_dir_of(self, commission: Commission) -> Any:
-        """Return where a commission's session is kept. Blocking: it looks at files.
+    def _session_dir_of(self, commission: Any) -> Any:
+        """Return where a session is kept. Blocking: it looks at files.
+
+        ``commission`` is whatever has the session's ``id``, ``project``,
+        ``session_dir`` and ``workdir`` on record: a ``ledger.Session``,
+        with the working directory its first commission brings while it
+        has none itself. (Named for what it was when a commission and its
+        session were one; what follows says commission in that sense.)
 
         Where it was when the commission was first taken up, when that is on
         record: the data root may have been moved since through the storage
