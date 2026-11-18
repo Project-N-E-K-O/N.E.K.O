@@ -130,6 +130,10 @@ class Dsh:
         """The sessions it holds, as the driver tells them: one it did not open is not among them."""
         return self.inner.core.session_ids
 
+    def resumed(self, session_id: str) -> bool:
+        """Whether dsh took up the session it had, as the driver tells it."""
+        return session_id in self.session_ids and not self._behaviour.get("log_gone", False)
+
     async def shutdown(self) -> None:
         self.shut_down = True
         await self.inner.shutdown()
@@ -382,6 +386,28 @@ async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_
 
     assert done.runtime == RUNTIME_BUILTIN
     assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
+
+
+@pytest.mark.parametrize("log_gone", [True, False])
+async def test_a_commission_whose_session_dsh_cannot_take_up_is_told_what_it_is_once_more(hosts, tmp_path, log_gone):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    commission_id = await _dispatch(host, "sort the photos")
+    await wait_status(host, commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    # The note that ties the session to one of dsh's is there. What dsh kept of that one is
+    # not (dsh was installed anew, say): asked to take it up, dsh begins another.
+    host.fake.behaviour["log_gone"] = log_gone
+
+    assert await host.tell(commission_id, "it is on drive D")
+    done = await wait_status(host, commission_id, "done")
+
+    assert done.runtime == RUNTIME_DSH
+    # In a session in which nothing was said, the user's words alone would say nothing of
+    # what the commission is; where dsh did take it up, that is there to be read.
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D") is log_gone
+    if not log_gone:
+        assert _last_user_message(llm.requests[-1]) == "it is on drive D"
 
 
 async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is(hosts, tmp_path):

@@ -363,7 +363,7 @@ async def test_a_session_resumes_in_a_new_process_without_being_told_again(tmp_p
     started = await second.started(spec)
     await second.run("s1", "go on")
 
-    assert started["resumed"] is True
+    assert started["resumed"] is True and second.runtime.resumed("s1") is True
     resumed = second.record("session/resume")
     assert [row["session"] for row in resumed] == [dsh_session] and resumed[0]["pid"] != first.record("session/new")[0]["pid"]
     assert len(second.record("session/new")) == 1
@@ -490,6 +490,8 @@ async def test_a_session_whose_log_is_gone_starts_anew(tmp_path: Path, dsh) -> N
     await second.run("s1", "begin again")
 
     assert started["type"] == "started" and started["resumed"] is False
+    # Told to the host as well, which opens the commission in it anew.
+    assert second.runtime.resumed("s1") is False and second.runtime.resumed("no such session") is False
     assert len(second.record("session/new")) == 2
     assert second.record("session/prompt")[-1]["text"].startswith("[From the host, for this commission]")
     kept = json.loads(Path(spec.session_dir, SESSION_FILE).read_text(encoding="utf-8"))

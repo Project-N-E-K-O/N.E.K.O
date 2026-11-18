@@ -329,12 +329,14 @@ def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
 
     With a built-in tool among them, its description ends in one line
     about each of their groups, with the group's first call, which is all a
-    request carries of a group that was not loaded, and ``group`` names
-    them. Without one it says nothing of groups, and still takes ``group``:
-    a session keeps the definition it was opened with, a group that is
-    switched on while it lasts is named by a search result
-    (``TOOL_GROUP_POINTER``), and loading it with ``group`` alone has to be
-    a call the definition allows.
+    request carries of a group that was not loaded. Without one it says
+    nothing of groups, and still takes ``group``.
+
+    ``group`` is any string, never one of a list: a session keeps the
+    definition it was opened with, a group that is switched on while it
+    lasts is named by a search result (``TOOL_GROUP_POINTER``), and
+    loading it with ``group`` alone has to be a call the definition
+    allows. Whether there is such a group is told when it is asked for.
     """
     from config.prompts.prompts_nekoclaw_builtin import (
         BUILTIN_GROUP_SUMMARIES,
@@ -363,11 +365,7 @@ def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What the capability should do."},
-                "group": {
-                    "type": "string",
-                    "enum": [_group_name(group) for group in groups],
-                    "description": TOOL_GROUP_ARGUMENT,
-                },
+                "group": {"type": "string", "description": TOOL_GROUP_ARGUMENT},
             },
         },
     }

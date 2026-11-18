@@ -198,6 +198,9 @@ class _Session:
     # then on the session is the runtime's to close, also when the start
     # fails after it.
     opened_in_runtime: bool = False
+    # What was said in the session had been removed, being old, when this
+    # start came to it (``_leave_cleared``).
+    cleared_before: bool = False
     # The runtime the session is in and its name (``runtimes.py``), from the
     # moment it is started there.
     runtime: Any = None
@@ -421,6 +424,10 @@ class TaskAgentManager:
         self._answering_closed: set[str] = set()
         # Being queued to be taken up again, while that status is written.
         self._requeueing: set[str] = set()
+        # What is taking a commission up again, or queueing it, right now
+        # for a sentence that may be called off (``still_wanted``): whether
+        # it is still wanted, and the task that does it (``_called_off``).
+        self._under_way: dict[str, tuple[Callable[[], bool], asyncio.Future[Any]]] = {}
         self._candidates: dict[str, tuple[str, ...]] = {}
         # What was ruled on a commission's web search before the call was
         # made (``_rule_on_host_tool``): the queries it was for, the refusal
@@ -938,6 +945,7 @@ class TaskAgentManager:
             kept = await self._ledger.get_session(session.session_id)
             if kept is None:
                 raise RuntimeError("the session of the commission is not on record")
+            session.cleared_before = kept.status == "cleared"
             # Where a session is kept and where its task agent works are the
             # session's, on record from when it was first opened. Until then
             # they follow from what its first commission brings: the working
@@ -1106,6 +1114,14 @@ class TaskAgentManager:
                 await self._ledger.update_session(session.session_id, runtime=runtime_name)
                 await runtime.start(spec)
                 session.opened_in_runtime = True
+            if runtime_name == RUNTIME_DSH and begun_in == RUNTIME_DSH and not runtime.resumed(session.session_id):
+                # dsh is noted to have the session, and could not take it up
+                # (its log is gone, say): it began a new one, in which
+                # nothing was said. So the commission is opened there as in
+                # a session that holds nothing, with what it is and, when
+                # it follows another up, what came of that one.
+                begun_in = None
+                text, opens = first_message(runtime_name)
 
             async def stopped_meanwhile() -> bool:
                 current = await self._ledger.get(commission.id)
@@ -1180,10 +1196,31 @@ class TaskAgentManager:
             # take the commission up again while the failure is written.
             self._keep_unsent(session)
             if not self._close_unstarted(session):
+                # Before the place is given back, which has the hold on the
+                # session looked at, and its status written.
+                await self._leave_cleared(session)
                 self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             self._keep_unsent(session)
             return False
+
+    async def _leave_cleared(self, session: _Session) -> None:
+        """Write a session down as cleared again after a start that failed before a runtime had it open.
+
+        What was said in it had been removed, being old. The commission
+        was set working on the way, which says of the session that it is
+        at work; when the hold on it is let go it would be written down as
+        closed, as one with a conversation in it. No runtime opened it:
+        nothing is in it still.
+        """
+        if not session.cleared_before or session.opened_in_runtime:
+            return
+        try:
+            await self._ledger.update_session(session.session_id, status="cleared")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the status is for showing; the start has failed as it is
+            logger.warning("noting that a session is still cleared failed", exc_info=True)
 
     def _close_unstarted(self, session: _Session) -> bool:
         """Close the runtime session of a start that failed after a runtime had opened it. False when none had.
@@ -1389,18 +1426,25 @@ class TaskAgentManager:
             return
         commission = await self._ledger.get(commission_id)
         waits = commission is not None and commission.status == "waiting_user"
-        kept = await self._ledger.get_session(session_id)
-        if self._held_by.get(session_id) != commission_id:
-            # Let go meanwhile, by another look at the same hold, and maybe
-            # taken by the next commission: its status is that one's to say.
-            return
         # What was said in it was removed, being old, and no runtime had it
         # open since (a commission that gets to work in it writes that it
         # is at work): the commission that held it failed, or was stopped,
         # before that. Nothing is in it still, which ``cleared`` says, and
         # which stands. (Held, it cannot be cleared between this look and
         # what is written below.)
-        empty = kept is not None and kept.status == "cleared" and not waits
+        empty = False
+        try:
+            kept = await self._ledger.get_session(session_id)
+            empty = kept is not None and kept.status == "cleared" and not waits
+        except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
+            # Taken for one with something in it, which nearly every one
+            # has. The hold is let go all the same: left here, nothing
+            # else would ever start in the session.
+            logger.warning("reading where a session stands failed", exc_info=True)
+        if self._held_by.get(session_id) != commission_id:
+            # Let go meanwhile, by another look at the same hold, and maybe
+            # taken by the next commission: its status is that one's to say.
+            return
         try:
             if not empty:
                 await self._ledger.update_session(session_id, status="waiting" if waits else "closed")
@@ -2091,6 +2135,13 @@ class TaskAgentManager:
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
             return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
         if commission.status == "queued" or (session is not None and not session.ready and not session.closing):
+            called_off = self._called_off(commission_id)
+            if called_off is not None:
+                # What is queueing it, or setting it up, was called off and
+                # ends the commission once it looks: this sentence, said
+                # after that, is not added to what goes down with it.
+                await asyncio.wait([called_off])
+                return await self.tell(commission_id, text, still_wanted=still_wanted)
             # Not started yet, or its session not yet given its work: it goes
             # along with the work when that is given.
             self._notes.setdefault(commission_id, []).append(text)
@@ -2137,6 +2188,16 @@ class TaskAgentManager:
             # Stopped while the ledger was read.
             return False
         if commission_id in self._taking_up or commission_id in self._requeueing:
+            called_off = self._called_off(commission_id)
+            if called_off is not None:
+                # The one under way was called off (everything was stopped
+                # after it began) and gives up once it gets to look. This
+                # sentence came after that: it does not go down with the
+                # other, said to have been passed on. It waits for the
+                # other to be out of the way and takes the commission up
+                # by itself.
+                await asyncio.wait([called_off])
+                return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
             # An earlier sentence is taking it up again or queueing it right
             # now: this one goes along with that rather than starting or
             # queueing a second time, which would then be refused.
@@ -2148,6 +2209,7 @@ class TaskAgentManager:
             # session behind a commission that says it is working.
             self._taking_up.add(commission_id)
             launch = self._spawn(self._launch(commission_id, prompt=text, still_wanted=still_wanted))
+            self._note_under_way(commission_id, still_wanted, launch)
 
             def taken_up(_done: Any) -> None:
                 self._taking_up.discard(commission_id)
@@ -2163,7 +2225,39 @@ class TaskAgentManager:
         # Marked at once, before anything is awaited, so a sentence arriving
         # meanwhile joins this one.
         self._requeueing.add(commission_id)
-        return await asyncio.shield(self._spawn(self._requeue(commission_id, text, still_wanted=still_wanted)))
+        queueing = self._spawn(self._requeue(commission_id, text, still_wanted=still_wanted))
+        self._note_under_way(commission_id, still_wanted, queueing)
+        return await asyncio.shield(queueing)
+
+    def _note_under_way(
+        self, commission_id: str, still_wanted: Callable[[], bool] | None, task: asyncio.Future[Any]
+    ) -> None:
+        """Keep, for as long as it runs, the task that takes a commission up again for a sentence that may be called off."""
+        if still_wanted is None:
+            return
+        entry = (still_wanted, task)
+        self._under_way[commission_id] = entry
+
+        def over(_done: Any) -> None:
+            if self._under_way.get(commission_id) is entry:
+                del self._under_way[commission_id]
+
+        # Before whoever waits for the task goes on: callbacks run in the
+        # order they were added.
+        task.add_done_callback(over)
+
+    def _called_off(self, commission_id: str) -> asyncio.Future[Any] | None:
+        """Return the task that is taking a commission up again when what it does that for is no longer wanted.
+
+        Everything was stopped after it began, say: it gives the commission
+        up, or ends it, once it gets to look. What is said of the
+        commission until then was said after the stop, and is not the
+        stop's to end.
+        """
+        under_way = self._under_way.get(commission_id)
+        if under_way is None or under_way[0]():
+            return None
+        return under_way[1]
 
     async def _requeue(
         self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None

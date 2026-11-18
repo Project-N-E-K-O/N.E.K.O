@@ -341,6 +341,10 @@ class TaskBrain:
     def _is_enabled(self) -> bool:
         if self._closed:
             return False
+        return self._switched_on()
+
+    def _switched_on(self) -> bool:
+        """Whether NekoClaw is switched on, whatever this brain itself is doing (``_is_enabled``)."""
         if self._enabled is None:
             return True
         try:
@@ -581,8 +585,13 @@ class TaskBrain:
             # to be written down, for its session to be set up): a stop may
             # come during that as well, and so may the switch. What is said
             # of it then is said below, where both are read again.
+            # The switch, not ``_is_enabled``: that says no as well once
+            # this brain is closed, which a host that shuts down does
+            # before it ends its task agents. A start caught by that is
+            # ended there, as failed because the host shut down, and can
+            # be taken up again; called off here, it would be stopped.
             if await self.tell(
-                earlier.id, text, still_wanted=lambda: self._is_enabled() and generation == self._dispatch_generation
+                earlier.id, text, still_wanted=lambda: self._switched_on() and generation == self._dispatch_generation
             ):
                 return Receipt(kind="told", commissions=[earlier], model_calls=calls)
             earlier = None

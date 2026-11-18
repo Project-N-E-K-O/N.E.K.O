@@ -153,6 +153,8 @@ class _Session:
     subagents: bool = False
     # dsh sessions its directory had before, which dsh could not resume.
     previous: tuple[str, ...] = ()
+    # Whether dsh took up the session it had of this one: what was said in it is there.
+    resumed: bool = False
     run: asyncio.Task[None] | None = None
     aborting: bool = False
     closing: asyncio.Future[None] | None = None
@@ -325,6 +327,16 @@ class DshRuntime:
     @property
     def session_ids(self) -> list[str]:
         return list(self._sessions)
+
+    def resumed(self, session_id: str) -> bool:
+        """Whether an open session goes on in the dsh session it had: what was said in it is there.
+
+        False for one that dsh began anew, having nothing to take up or no
+        longer being able to (its log is gone, the working directory is
+        another): whatever the session was told before is not in it.
+        """
+        session = self._sessions.get(session_id)
+        return session is not None and session.resumed
 
     @property
     def process_ids(self) -> list[int]:
@@ -859,6 +871,7 @@ class DshRuntime:
         session.opener = asyncio.ensure_future(self._open(session))
         try:
             resumed, tools = await session.opener
+            session.resumed = resumed
             process = session.process
             if self._sessions.get(session_id) is not session or process is None or not process.connection.alive:
                 # The process ended while the session's note was being

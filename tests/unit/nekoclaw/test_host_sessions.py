@@ -1180,7 +1180,7 @@ async def test_a_commission_being_set_up_again_gets_no_work_once_everything_was_
     await asyncio.wait_for(reached.wait(), 10)
     assert first.commission_id in agents.running
     # A second sentence joins the one that is taking it up.
-    assert await agents.tell(first.commission_id, "and the videos too") is True
+    assert await asyncio.wait_for(agents.tell(first.commission_id, "and the videos too"), 5) is True
     wanted["yes"] = False
     go_on.set()
     assert await telling is False
@@ -1200,6 +1200,138 @@ async def test_a_commission_being_set_up_again_gets_no_work_once_everything_was_
     said = "\n".join(_user_messages(llm.requests[-1]))
     assert "the photos are on drive E: now" in said
     assert "look on drive D:" not in said and "and the videos too" not in said
+
+
+async def test_a_sentence_said_after_a_stop_does_not_go_down_with_what_the_stop_called_off(hosts, tmp_path):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "sorted")])
+    host = _host(hosts, tmp_path, llm)
+    agents = host.task_agents
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "failed")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+    wanted = {"yes": True}
+    reached, go_on = asyncio.Event(), asyncio.Event()
+    configured = agents._model_config
+
+    async def slowly() -> Any:
+        reached.set()
+        await go_on.wait()
+        return await configured()
+
+    agents._model_config = slowly
+    telling = asyncio.ensure_future(
+        agents.tell(first.commission_id, "look on drive D:", still_wanted=lambda: wanted["yes"])
+    )
+    await asyncio.wait_for(reached.wait(), 10)
+    # Everything is stopped while it is being set up, and right after that the user says more
+    # of it. Added to what is being set up, that would be given up with it a moment later,
+    # and said to have been passed on.
+    wanted["yes"] = False
+    later = asyncio.ensure_future(
+        agents.tell(first.commission_id, "the photos are on drive E: now", still_wanted=lambda: True)
+    )
+    await asyncio.sleep(0.05)
+    assert not later.done() and first.commission_id not in agents._notes
+    go_on.set()
+    assert await telling is False
+    # It waited for the other to be out of the way, and took the commission up by itself.
+    assert await asyncio.wait_for(later, 10) is True
+    agents._model_config = configured
+    await wait_status(host, first.commission_id, "done")
+    said = "\n".join(_user_messages(llm.requests[-1]))
+    assert "the photos are on drive E: now" in said and "look on drive D:" not in said
+    assert agents._under_way == {}
+
+
+async def test_a_sentence_said_after_a_stop_is_not_added_to_a_commission_the_stop_is_about_to_end(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "sorted")]),
+        "translate the manual": ScriptedLLM([[wait, *_report()]]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), max_task_agents=1)
+    agents = host.task_agents
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "failed")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+    # The one place is taken: taken up again, the first one is queued.
+    other, _created = await host.ledger.create(
+        lanlan_name="Lan",
+        title="translate the manual",
+        dispatch_text="translate the manual",
+        source="dispatch",
+        route="task_agent",
+        lang="en",
+    )
+    assert await agents.submit(other)
+    await wait_status(host, other.id, "working")
+    wanted = {"yes": True}
+    reached, go_on = asyncio.Event(), asyncio.Event()
+    moving = host.ledger.transition
+
+    async def stopped_as_it_is_written(commission_id: str, status: str, **kwargs: Any) -> Any:
+        moved = await moving(commission_id, status, **kwargs)
+        if status == "queued":
+            # The stop looked before this was written; whoever queued it ends it on looking again.
+            wanted["yes"] = False
+            reached.set()
+            await go_on.wait()
+        return moved
+
+    host.ledger.transition = stopped_as_it_is_written
+    try:
+        telling = asyncio.ensure_future(
+            agents.tell(first.commission_id, "look on drive D:", still_wanted=lambda: wanted["yes"])
+        )
+        await asyncio.wait_for(reached.wait(), 10)
+        # Said after the stop. The commission reads as queued, and takes along what it is
+        # told while it is: this would be stopped with it, and said to have been passed on.
+        later = asyncio.ensure_future(
+            agents.tell(first.commission_id, "the photos are on drive E: now", still_wanted=lambda: True)
+        )
+        await asyncio.sleep(0.05)
+        assert not later.done() and first.commission_id not in agents._notes
+        go_on.set()
+        assert await telling is False
+        # The commission was stopped: nothing took the sentence, and that is what is said of it.
+        assert await asyncio.wait_for(later, 10) is False
+    finally:
+        host.ledger.transition = moving
+    await agents.settle()
+    assert (await host.ledger.get(first.commission_id)).status == "cancelled"
+    assert agents.queued == [] and first.commission_id not in agents._notes and agents._under_way == {}
+    release.set()
+    await wait_status(host, other.id, "done")
+
+
+async def test_a_host_that_shuts_down_does_not_stop_a_commission_that_is_being_taken_up_again(hosts, tmp_path):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "sorted")])
+    host = _host(hosts, tmp_path, llm)
+    first = await _dispatch(host, "sort the photos in my downloads folder")
+    await wait_status(host, first.commission_id, "failed")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+
+    assert host.task_agents.hold_session(first.commission_id) is True
+    dispatching = asyncio.ensure_future(_dispatch(host, "also the photos are on drive E: now"))
+    await wait_until(
+        lambda: _events(host, first.commission_id, "told"), what="the sentence being passed on to the commission"
+    )
+    assert not dispatching.done()
+    # A host that shuts down closes its brain before it ends its task agents. Those end a
+    # start they are caught at themselves, as failed because the host shut down, which can be
+    # taken up again. That the brain is closed is not a stop, which would end it for good.
+    host.brain._closed = True
+    try:
+        host.task_agents.release_session(first.commission_id)
+        receipt = await dispatching
+    finally:
+        host.brain._closed = False
+
+    assert (receipt.kind, receipt.commission_id) == ("told", first.commission_id)
+    assert (await wait_status(host, first.commission_id, "done", "cancelled")).status == "done"
 
 
 async def test_a_stop_that_lands_as_a_commission_taken_up_again_is_set_working_stops_it(hosts, tmp_path):
@@ -1234,6 +1366,9 @@ async def test_a_stop_that_lands_as_a_commission_taken_up_again_is_set_working_s
     assert len(llm.requests) == 1
     await _let_go(host)
     assert agents.running == [] and agents.queued == []
+    # Nothing said is kept for it: the session's end saw to that, as after any stop.
+    kept = (agents._notes, agents._carried, agents._resume, agents._under_way)
+    assert all(first.commission_id not in where for where in kept)
 
 
 @pytest.mark.parametrize("lands", ["as the ledger is read", "as it is queued"])
@@ -1309,31 +1444,53 @@ async def test_a_commission_waiting_for_a_place_to_be_taken_up_again_is_not_queu
     assert len(scripts["sort the photos"].requests) == 1 and agents.running == []
 
 
-async def test_a_session_that_was_cleared_stays_cleared_until_a_commission_gets_to_work_in_it(hosts, tmp_path):
+@pytest.mark.parametrize("fails", ["before it is set working", "as a runtime is asked to open it"])
+async def test_a_session_that_was_cleared_stays_cleared_until_a_commission_gets_to_work_in_it(hosts, tmp_path, fails):
+    from nekoclaw.host.task_agents import _Session
+
     llm = ScriptedLLM([_report(), _report("ready", "by year too")])
     host = _host(hosts, tmp_path, llm)
+    agents = host.task_agents
     first = await _dispatch(host, "sort the photos")
     done = await wait_status(host, first.commission_id, "done")
     await _released(host, first.commission_id)
     await _let_go(host)
     session_id = done.session_id
+    configured, runtime = agents._model_config, agents._runtimes.get("builtin")
+    start = runtime.start
+
+    async def no_model() -> None:
+        return None
+
+    async def not_coming_up(spec: Any) -> None:
+        raise RuntimeError("the runtime did not come up")
+
+    async def failing(text: str) -> None:
+        """Have a commission that follows up fail before a runtime has the session open."""
+        if fails == "before it is set working":
+            agents._model_config = no_model
+        else:
+            # The commission is set working by then, which says of the session that it is at work.
+            runtime.start = not_coming_up
+        try:
+            commission = await _follow_up(host, done, text)
+            failed = await wait_status(host, commission.id, "failed")
+            assert "could not be started" in failed.status_reason
+            await _let_go(host)
+        finally:
+            agents._model_config, runtime.start = configured, start
+
+    # In a session with a conversation in it, that changes nothing: it is closed, as it was.
     assert (await host.ledger.get_session(session_id)).status == "closed"
+    await failing("sort them by month as well")
+    assert (await host.ledger.get_session(session_id)).status == "closed"
+
     # What was said in it was removed since, being old.
     await host.ledger.mark_session_cleared(session_id)
     assert (await host.ledger.get_session(session_id)).status == "cleared"
     assert (await _events(host, done.id, "session_cleaned"))[-1].payload == {"session_id": session_id}
 
-    # A commission that follows up fails before a runtime has the session open.
-    configured = host.task_agents._model_config
-
-    async def no_model() -> None:
-        return None
-
-    host.task_agents._model_config = no_model
-    second = await _follow_up(host, done, "sort them by year as well")
-    await wait_status(host, second.id, "failed")
-    await _let_go(host)
-    host.task_agents._model_config = configured
+    await failing("sort them by year as well")
     # Nothing is in the session still. Written down as closed, it would read as one with a
     # conversation that is there to be removed.
     assert (await host.ledger.get_session(session_id)).status == "cleared"
@@ -1344,6 +1501,42 @@ async def test_a_session_that_was_cleared_stays_cleared_until_a_commission_gets_
     await _released(host, third.id)
     await _let_go(host)
     assert (await host.ledger.get_session(session_id)).status == "closed"
+    # And so does a start that fails after a runtime had it open: that one may have written to it.
+    await agents._leave_cleared(
+        _Session(commission_id=third.id, session_id=session_id, cleared_before=True, opened_in_runtime=True)
+    )
+    assert (await host.ledger.get_session(session_id)).status == "closed"
+    await agents._leave_cleared(_Session(commission_id=third.id, session_id=session_id, cleared_before=True))
+    assert (await host.ledger.get_session(session_id)).status == "cleared"
+
+
+async def test_a_session_is_let_go_also_when_where_it_stands_cannot_be_read(hosts, tmp_path):
+    import sqlite3
+
+    release, wait = _gate()
+    llm = ScriptedLLM([[wait, *_report()], _report("ready", "the videos too")])
+    host = _host(hosts, tmp_path, llm)
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    reading = host.ledger.get_session
+
+    async def unreadable(session_id: str | None) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    host.ledger.get_session = unreadable
+    try:
+        release.set()
+        done = await wait_status(host, first.commission_id, "done")
+        await _released(host, first.commission_id)
+        # What the session's status says is for showing. Held on because that could not be
+        # read, nothing else would ever start in the session.
+        await _let_go(host)
+    finally:
+        host.ledger.get_session = reading
+    assert (await host.ledger.get_session(done.session_id)).status == "closed"
+
+    second = await _follow_up(host, done, "sort the videos as well")
+    await wait_status(host, second.id, "done")
 
 
 async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_its_commissions_were(hosts, tmp_path):

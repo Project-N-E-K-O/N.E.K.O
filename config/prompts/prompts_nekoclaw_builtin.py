@@ -419,7 +419,10 @@ TOOL_GROUPS_INTRO = (
 
 # What the search tool's ``group`` argument is said to be: the way to a
 # group for a task that does not start with the group's first call.
-TOOL_GROUP_ARGUMENT = "Instead of query: a tool group to get the tools of, without making its first call."
+TOOL_GROUP_ARGUMENT = (
+    "Instead of query: a tool group to get the tools of, without making its first call. "
+    "One of those named above, or one a search result names."
+)
 
 # The same argument while there is no group to name. A session keeps the
 # tool definitions it was opened with; a group that is switched on while it

@@ -1097,7 +1097,9 @@ async def _search_tool(host: Any, grant: Any) -> dict[str, Any]:
 async def _groups_on_offer(host: Any, grant: Any) -> list[str]:
     """The groups the search tool tells this commission of, as it names them."""
     search = await _search_tool(host, grant)
-    return list(search["inputSchema"]["properties"].get("group", {}).get("enum", []))
+    # A line each in what the tool says of itself; the argument is not tied to them.
+    assert "enum" not in search["inputSchema"]["properties"]["group"]
+    return [line[2:].split(":")[0] for line in search["description"].splitlines() if line.startswith("- ")]
 
 
 async def _load(host: Any, grant: Any, group: str) -> dict[str, Any]:
@@ -1128,10 +1130,14 @@ async def test_builtin_tools_are_not_listed_and_the_search_tool_tells_of_their_g
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What the capability should do."},
+                # Any name: the session keeps this definition, and a group that is switched
+                # on while it lasts is named by a search result.
                 "group": {
                     "type": "string",
-                    "enum": ["browser", "desktop"],
-                    "description": "Instead of query: a tool group to get the tools of, without making its first call.",
+                    "description": (
+                        "Instead of query: a tool group to get the tools of, without making its first call. "
+                        "One of those named above, or one a search result names."
+                    ),
                 },
             },
         },
@@ -1317,7 +1323,7 @@ async def test_a_group_that_is_switched_off_is_not_told_of_and_cannot_be_loaded_
     found = _text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "operate the desktop with the mouse"}))
 
     assert search["description"].splitlines()[1:] == [GROUPS_INTRO, GROUP_LINES["browser"]]
-    assert search["inputSchema"]["properties"]["group"]["enum"] == ["browser"]
+    assert "enum" not in search["inputSchema"]["properties"]["group"]
     assert loaded["isError"] is True
     # With the provider's own words for why.
     assert _text(loaded) == (
@@ -1959,7 +1965,7 @@ async def test_a_tool_that_needs_pictures_is_kept_from_a_model_that_cannot_see_t
 
     # The desktop's only tool works from pictures: the group is not told of.
     assert search["description"].splitlines()[1:] == [GROUPS_INTRO, GROUP_LINES["browser"]]
-    assert search["inputSchema"]["properties"]["group"]["enum"] == ["browser"]
+    assert "enum" not in search["inputSchema"]["properties"]["group"]
     # The browser is handed over without its screenshot tool.
     assert browser["isError"] is False
     assert [item["name"] for item in _served(_text(browser))] == ["browser_navigate_page"]

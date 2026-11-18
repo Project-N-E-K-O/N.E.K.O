@@ -241,7 +241,10 @@ async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_mo
 
     # Neither group's tools are listed: they are loaded and called through these two.
     assert names == ["capability_search", "capability_call"]
-    groups = definitions[0]["inputSchema"]["properties"]["group"]["enum"]
+    told = definitions[0]["description"].splitlines()
+    groups = [line[2:].split(":")[0] for line in told if line.startswith("- ")]
+    # The argument takes any name: a group that is switched on later is loaded with this definition too.
+    assert "enum" not in definitions[0]["inputSchema"]["properties"]["group"]
     loaded = await client.call("capability_search", {"group": "desktop"})
     if sees_pictures:
         assert groups == ["browser", "desktop"]
@@ -754,7 +757,7 @@ async def test_task_agent_whose_model_takes_no_pictures_gets_the_browser_but_not
     # screenshots; nor has it the runtime's own picture tool.
     description = offered["capability_search"]["description"]
     assert "- browser:" in description and "- desktop:" not in description
-    assert offered["capability_search"]["parameters"]["properties"]["group"]["enum"] == ["browser"]
+    assert "enum" not in offered["capability_search"]["parameters"]["properties"]["group"]
     assert "read_image" not in offered
     system = llm.requests[0][0]["content"]
     assert _guidance("browser") not in system and _guidance("keyboard_mouse") not in system
