@@ -1644,6 +1644,21 @@ async def test_a_record_is_not_read_as_a_file_under_another_name_either(hosts, t
     assert await writing(project / "notes.txt") == {"allow": False, "reason": words.SESSION_RECORD_WRITE_REFUSED}
     assert (await writing(project / "plain.txt"))["allow"] is True
     await host.ledger.update_session(first.session_id, workdir=place.workdir)
+
+    # A second name for it among the files the reader itself works on: read and written
+    # there as a file of its own would be, were it not looked at.
+    def own(tool: str, path: Path) -> Any:
+        return rule(second.session_id, {"tool": tool, "category": "workdir_files", "path": str(path), "workdir": second.workdir})
+
+    mine = Path(second.workdir) / "kept.txt"
+    os.link(record, mine)
+    assert await own("read", mine) == {"allow": False, "reason": words.SESSION_RECORD_READ_REFUSED}
+    assert await own("write", mine) == {"allow": False, "reason": words.SESSION_RECORD_WRITE_REFUSED}
+    # A file of its own with two names is a file of its own.
+    twice = Path(second.workdir) / "twice.txt"
+    twice.write_text("x", encoding="utf-8")
+    os.link(twice, Path(second.workdir) / "twice again.txt")
+    assert (await own("read", twice))["allow"] is True and (await own("write", twice))["allow"] is True
     # A file of its own there is read as ever.
     plain = Path(place.workdir) / "plain.txt"
     plain.write_text("x", encoding="utf-8")

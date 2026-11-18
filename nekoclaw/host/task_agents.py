@@ -333,6 +333,18 @@ def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
     return True
 
 
+def _has_second_name(path: str) -> bool:
+    """Whether a path is a file that has more than one name (a hard link). Blocking."""
+    import os
+    import stat
+
+    try:
+        found = os.stat(path)
+    except OSError:
+        return False  # Not there: nothing to tell from it.
+    return stat.S_ISREG(found.st_mode) and found.st_nlink > 1
+
+
 def _shows_run_at_work(event: dict[str, Any]) -> bool:
     """Whether a session event shows a run at work on what it was given.
 
@@ -2926,9 +2938,18 @@ class TaskAgentManager:
             # agent works on: nobody is asked.
             category = "workdir_files"
         if (
-            (category in ("outside_read", "outside_write") or (writes and category == "workdir_files"))
-            and isinstance(path, str)
+            isinstance(path, str)
             and path
+            and (
+                category in ("outside_read", "outside_write")
+                or (writes and category == "workdir_files")
+                # A file among those the commission works on that has a
+                # second name may be another session's record under that
+                # name. (A link that leads elsewhere counts as outside the
+                # working directory already.) Only such a file is looked
+                # at: the others are read as ever, with nothing asked.
+                or (category == "workdir_files" and await asyncio.to_thread(_has_second_name, path))
+            )
         ):
             # What another session left is read without asking, and its own
             # directory is never written (``_rule_on_other_session``): not
@@ -4041,7 +4062,9 @@ class TaskAgentManager:
         directory, under their names) and by what a path leads to: a
         link under another name is the file it points at, and a file of
         the same name among the files it works on is a file like any
-        other. Nor is it read by way of the directory it is in: a search
+        other. A second name for a record is refused wherever it lies,
+        among the files the caller itself works on too. Nor is it read
+        by way of the directory it is in: a search
         of a directory that holds a session's own directory would open
         the record with the rest, so such a directory is not searched
         (unless ``names_only``: listing names reads no file); the
@@ -4082,15 +4105,13 @@ class TaskAgentManager:
             in_own = any(session_dir and is_inside(target, Path(session_dir)) for _id, _workdir, session_dir in places)
             in_work = any(workdir and is_inside(target, Path(workdir)) for _id, workdir, _session_dir in places)
             record = False
-            if in_own or in_work:
+            # A file with a second name (a hard link) may be a record under
+            # another name, wherever it lies: among the files the caller
+            # works on, too. One with a single name is what its path says,
+            # and is not compared file by file.
+            linked = _has_second_name(path)
+            if in_own or in_work or linked:
                 real = os.path.normcase(os.path.realpath(target))
-                try:
-                    # A file with a second name (a hard link) may be a
-                    # record under another name; one with a single name is
-                    # what its path says, and is not compared file by file.
-                    linked = os.stat(target).st_nlink > 1
-                except OSError:
-                    linked = False  # Not there: no record.
                 for _id, _workdir, session_dir in places:
                     for name in kept_files if session_dir else ():
                         kept = Path(session_dir) / name
@@ -4115,7 +4136,9 @@ class TaskAgentManager:
                 return {"allow": False, "reason": SESSION_WRITE_REFUSED}
             return {"allow": False, "reason": SESSION_RECORD_WRITE_REFUSED} if record else None
         if not in_own and not in_work:
-            return None
+            # In no place of another session: the usual rules, unless it is
+            # another session's record under a second name.
+            return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED} if record else None
         if await self._permissions.forbidden("outside_read"):
             return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
         if record:
