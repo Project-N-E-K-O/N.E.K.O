@@ -976,3 +976,22 @@ async def test_the_provider_ends_the_agreement_it_is_handed_back_and_no_other(st
     assert len(world.connected) == 1
     outcome = await asyncio.wait_for(stage.provider._run_browser("browser_navigate_page", {"url": THANKS}, second), 10.0)
     assert outcome.success, outcome.text
+
+
+@pytest.mark.parametrize("how", ["admin_control", "agent_command"])
+async def test_switching_the_master_switch_off_drops_what_was_kept_of_the_main_dialogue_for_task_agents(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    from nekoclaw.host import conversation
+
+    kept = conversation.RecentConversation()
+    monkeypatch.setattr(conversation, "_recent", kept)
+    assert kept.note("Lan", conversation.ROLE_USER, "sort the photos please")
+    assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
+
+    await _switch_the_master_off(how)
+
+    # Then and there, with no message of the main dialogue coming by: nothing from before the
+    # switch is handed to a task agent when it is switched on again.
+    assert stage.state.analyzer_enabled is False
+    assert kept.recent("Lan") == []

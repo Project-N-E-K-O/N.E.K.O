@@ -1152,3 +1152,61 @@ async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_t
     seen.clear()
     await _manager(tmp_path, policy, []).fit(Transcript(list(messages), _counter()), force=True, tight=False)
     assert once == [False] and seen == [False, True]
+
+
+async def test_a_conversation_that_could_stay_is_whole_again_when_its_summing_up_is_cancelled(tmp_path: Path) -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+
+    def conversation() -> list:
+        made: list = [UserMessage(content="go")]
+        for index in range(1, 9):
+            # About three thousand tokens each: what is cut before a summary is asked for.
+            made.extend(_call_turn(index, _words(625, f"big{index}x")))
+        return made
+
+    def said(messages: list) -> list[str]:
+        return [getattr(message, "text", None) or str(message.content) for message in messages]
+
+    # Cancelled while the summary is asked for: none was made, so the tool results that were cut
+    # for the request are whole again, as when the request fails.
+    messages = conversation()
+    whole = said(messages)
+    asked = asyncio.Event()
+    cut: list[bool] = []
+
+    async def never(prepared: list, max_tokens: int):  # noqa: ANN202
+        cut.append(any(texts.PRUNED_MIDDLE_MARKER in text for text in said(messages)))
+        asked.set()
+        await asyncio.Event().wait()
+
+    manager = ContextManager(
+        policy=policy, spill=SpillStore(tmp_path / "outputs"), summarize=never, new_entry_id=_counter()
+    )
+    fitting = asyncio.ensure_future(manager.fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False))
+    await asyncio.wait_for(asked.wait(), 10)
+    fitting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await fitting
+    # (They were cut when the summary was asked for.)
+    assert cut == [True]
+    assert said(messages) == whole
+
+    # Cancelled after the summary replaced the older part: the summary stays.
+    messages = conversation()
+    later: list[asyncio.Future] = []
+    manager = _manager(tmp_path, policy, [])
+    later.append(
+        asyncio.ensure_future(
+            manager.fit(
+                Transcript(messages, _counter()),
+                force=True,
+                tight=False,
+                or_drop=False,
+                on_compaction=lambda _compaction: later[0].cancel(),
+            )
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await later[0]
+    assert any(texts.SUMMARY_OPEN_TAG in text for text in said(messages))
+    assert len(messages) < len(whole)

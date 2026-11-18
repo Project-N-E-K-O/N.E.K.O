@@ -953,3 +953,122 @@ async def test_a_copy_is_made_whole_or_not_at_all_and_does_not_pass_a_stale_snap
     fork_record(source, stale)
     assert read_snapshot(stale).compactions == 0
     assert sum(1 for entry in _entries(stale) if entry.type == "compaction") == 1
+
+
+# ---------------------------------------------------------------------------
+# What the fourth round of review found
+# ---------------------------------------------------------------------------
+
+
+async def test_a_record_that_was_written_is_told_of_though_whoever_waited_was_cancelled_before_hearing_of_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = Recorder()
+    runtime = _runtime({"s1": ScriptedLLM([[say("Done."), finish()]])}, recorder)
+    spec = make_spec(tmp_path)
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do it.")
+        await recorder.wait_ended("s1")
+        copy = make_spec(tmp_path, "copy")
+        waiting: list[asyncio.Future[Any]] = []
+        in_thread = asyncio.to_thread
+
+        async def written_and_then_cancelled(func: Any, *args: Any, **kwargs: Any) -> Any:
+            made = await in_thread(func, *args, **kwargs)
+            if getattr(func, "__name__", "") == "fork_record":
+                # The record is written. Whoever waits for it is cancelled before getting to hear of it.
+                waiting[0].cancel()
+            return made
+
+        with monkeypatch.context() as patched:
+            patched.setattr(asyncio, "to_thread", written_and_then_cancelled)
+            waiting.append(
+                asyncio.ensure_future(
+                    runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+                )
+            )
+            await asyncio.gather(*waiting, return_exceptions=True)
+        assert waiting[0].cancelled()
+
+        # Said all the same, once: a host that no longer waits has to learn of the record, to remove it.
+        await recorder.wait_for(lambda event: event.get("type") == "forked" and event.get("session_id") == "copy")
+        await asyncio.sleep(0.05)
+        made = [event for event in recorder.of("forked") if event["session_id"] == "copy"]
+        assert len(made) == 1 and made[0]["source_session_id"] == "s1" and made[0]["entries"] > 0
+        assert not [event for event in recorder.of("error") if event.get("command") == "fork"]
+        assert "copy" not in runtime.core._forking and not runtime.core._copying
+    finally:
+        await runtime.shutdown()
+
+
+async def test_shutting_down_waits_for_a_record_that_is_being_copied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from nekoclaw.runtime import fork as fork_module
+
+    recorder = Recorder()
+    runtime = _runtime({"s1": ScriptedLLM([[say("Done."), finish()]])}, recorder)
+    spec = make_spec(tmp_path)
+    go, entered = threading.Event(), threading.Event()
+    real = fork_module.fork_record
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert go.wait(10)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fork_module, "fork_record", slow)
+    copying = None
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do it.")
+        await recorder.wait_ended("s1")
+        copy = make_spec(tmp_path, "copy")
+        copying = asyncio.ensure_future(
+            runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        )
+        await asyncio.to_thread(entered.wait, 10)
+
+        shutting = asyncio.ensure_future(runtime.shutdown())
+        await asyncio.sleep(0.2)
+        # The thread still writes: the runtime is not gone before it is said what became of the copy.
+        assert not shutting.done() and not recorder.of("forked")
+        go.set()
+        await asyncio.wait_for(shutting, 10)
+        made = [event for event in recorder.of("forked") if event["session_id"] == "copy"]
+        assert len(made) == 1 and made[0]["entries"] > 0
+        assert not runtime.core._copying and "copy" not in runtime.core._forking
+    finally:
+        go.set()
+        if copying is not None:
+            await asyncio.gather(copying, return_exceptions=True)
+        await runtime.shutdown()
+
+
+async def test_a_tool_called_in_place_of_a_summary_is_a_summary_that_failed(tmp_path: Path) -> None:
+    from nekoclaw.runtime.context import SUMMARY_FALLBACK
+
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+        # The request offers the tools, as every request of the session does, and the model calls one.
+        llm.add(say("Let me look at the files first."), call("glob", {"pattern": "*"}), usage(2_400, 40), finish("tool_calls"))
+
+        # As after a request that was refused as too long: the older part goes either way.
+        await session._fit(force=True)
+
+        said = "\n".join(
+            getattr(message, "text", None) or str(getattr(message, "content", "")) for message in session.harness.message_list
+        )
+        # What led up to the call sums nothing up: not kept as a summary that ends early.
+        assert "Let me look at the files first." not in said and SUMMARY_CUT_SHORT_NOTE not in said
+        assert SUMMARY_FALLBACK in said
+        # What the request used is told all the same.
+        told = events.of("usage")[-1]
+        assert (told["summary"], told["input"], told["output"]) == (True, 2_400, 40)
+        assert session._compactions == 1
+    finally:
+        await session.close()

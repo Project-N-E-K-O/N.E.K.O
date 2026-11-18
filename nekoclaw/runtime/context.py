@@ -75,7 +75,11 @@ SUMMARY_CUT_SHORT_NOTE = (
 
 
 class SummaryCutShort(RuntimeError):
-    """The model's summary ended at its length limit; ``text`` is what there is of it."""
+    """The model's summary ended at its length limit; ``text`` is what there is of it.
+
+    Only that: a reply that ended some other way without being a summary
+    (a tool was called instead) is a summary that failed.
+    """
 
     def __init__(self, text: str) -> None:
         super().__init__("the summary was cut short at its length limit")
@@ -749,31 +753,35 @@ class ContextManager:
         # Once where the conversation could stay as it is: it is summed up
         # because it was told to, and whoever told it to counted on one
         # request.
-        for attempt in range(2 if or_drop else 1):
-            tokens_before = await self.measure(transcript.messages)
-            compaction = await self._compact(
-                transcript.rows(),
-                tokens_before,
-                tight=(force if tight is None else tight) or attempt > 0,
-                pinned=pinned,
-                or_drop=or_drop,
-            )
-            if compaction is None:
-                break
-            transcript.rewrite(compaction.rows)
-            self.invalidate()
-            done.append(compaction)
-            if on_compaction is not None:
-                # Before the next await: a cancellation from here on must not
-                # leave the conversation ahead of what the caller has saved.
-                on_compaction(compaction)
-            if await self.measure(transcript.messages) <= self.policy.threshold:
-                break
-        if as_it_was is not None and not done and pruned is not None:
-            # Nothing was summed up, and nothing has to go: the tool
-            # results that were cut for it are whole again.
-            transcript.rewrite(as_it_was)
-            self.invalidate()
+        try:
+            for attempt in range(2 if or_drop else 1):
+                tokens_before = await self.measure(transcript.messages)
+                compaction = await self._compact(
+                    transcript.rows(),
+                    tokens_before,
+                    tight=(force if tight is None else tight) or attempt > 0,
+                    pinned=pinned,
+                    or_drop=or_drop,
+                )
+                if compaction is None:
+                    break
+                transcript.rewrite(compaction.rows)
+                self.invalidate()
+                done.append(compaction)
+                if on_compaction is not None:
+                    # Before the next await: a cancellation from here on must not
+                    # leave the conversation ahead of what the caller has saved.
+                    on_compaction(compaction)
+                if await self.measure(transcript.messages) <= self.policy.threshold:
+                    break
+        finally:
+            # Also when this is cancelled, or fails, while the summary is
+            # asked for. (One that was made stays, whatever comes after.)
+            if as_it_was is not None and not done and pruned is not None:
+                # Nothing was summed up, and nothing has to go: the tool
+                # results that were cut for it are whole again.
+                transcript.rewrite(as_it_was)
+                self.invalidate()
         return done
 
     async def _compact(

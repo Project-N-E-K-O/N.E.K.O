@@ -115,8 +115,11 @@ class RuntimeCore:
         self._abandoned: set[str] = set()
         # Keeps the tasks that close sessions alive until they are done.
         self._close_tasks: set[asyncio.Future[None]] = set()
-        # Sessions whose record is being made from another's right now.
+        # Sessions whose record is being made from another's right now,
+        # and the copying itself where it has begun: shutting down waits
+        # for it, so that it is said what became of each.
         self._forking: set[str] = set()
+        self._copying: set[asyncio.Future[Any]] = set()
         self.last_command_at = time.monotonic()
 
     # -- state ----------------------------------------------------------------
@@ -200,9 +203,6 @@ class RuntimeCore:
             self._reject(session_id, "fork", f'session "{session_id}" already exists')
             return
         self._forking.add(session_id)
-        # The copying itself, once it began: it goes on in its thread
-        # whatever becomes of whoever waits for it here.
-        copying: asyncio.Future[Any] | None = None
         try:
             for under_way in (self._starting.get(source_id), self._closing.get(source_id)):
                 if under_way is not None:
@@ -210,53 +210,54 @@ class RuntimeCore:
             source = self._sessions.get(source_id)
             if source is not None:
                 await source.flush()
-            copying = asyncio.ensure_future(
-                asyncio.to_thread(fork_record, Path(command.source_dir), Path(command.session_dir), upto=command.upto)
-            )
-            result = await asyncio.shield(copying)
-        except ForkError as exc:
-            self._reject(session_id, "fork", str(exc))
-        except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
+        except BaseException as exc:
+            # Nothing was written yet.
+            self._forking.discard(session_id)
+            if not isinstance(exc, Exception):
+                raise
+            # Reported to the host, never raised into the pump.
             logger.exception("could not copy session %s", source_id)
             self._reject(session_id, "fork", f"{type(exc).__name__}: {exc}")
-        else:
-            self._emit(
-                protocol.dump(
-                    protocol.ForkedEvent(
-                        session_id=session_id, source_session_id=source_id, upto=result.upto, entries=result.entries
+            return
+
+        def written(done: "asyncio.Future[Any]") -> None:
+            self._copying.discard(done)
+            self._forking.discard(session_id)
+            if done.cancelled():
+                return
+            failed = done.exception()
+            if failed is None:
+                made = done.result()
+                self._emit(
+                    protocol.dump(
+                        protocol.ForkedEvent(
+                            session_id=session_id, source_session_id=source_id, upto=made.upto, entries=made.entries
+                        )
                     )
                 )
-            )
-        finally:
-            if copying is not None and not copying.done():
-                # Whoever waited was cancelled, and the thread still
-                # writes: the session is not to be copied or started
-                # again before it is through. What became of the copy
-                # is said then, as it would have been: a host that no
-                # longer waits for it still has to learn that a record
-                # was written, to remove it.
-                def written(done: "asyncio.Future[Any]") -> None:
-                    self._forking.discard(session_id)
-                    if done.cancelled():
-                        return
-                    failed = done.exception()
-                    if failed is None:
-                        made = done.result()
-                        self._emit(
-                            protocol.dump(
-                                protocol.ForkedEvent(
-                                    session_id=session_id, source_session_id=source_id, upto=made.upto, entries=made.entries
-                                )
-                            )
-                        )
-                    elif isinstance(failed, ForkError):
-                        self._reject(session_id, "fork", str(failed))
-                    else:
-                        self._reject(session_id, "fork", f"{type(failed).__name__}: {failed}")
-
-                copying.add_done_callback(written)
+            elif isinstance(failed, ForkError):
+                self._reject(session_id, "fork", str(failed))
             else:
-                self._forking.discard(session_id)
+                logger.error("could not copy session %s", source_id, exc_info=failed)
+                self._reject(session_id, "fork", f"{type(failed).__name__}: {failed}")
+
+        # The copying itself: it goes on in its thread whatever becomes of
+        # whoever waits for it here, and until it is through the session
+        # is not to be copied or started again. What became of it is said
+        # by the copying when it is through, once, and not by whoever
+        # waits: one that is cancelled, be it while the thread still
+        # writes or after it has written and before this got to hear of
+        # it, leaves a host that still has to learn that a record was
+        # written, to remove it.
+        copying = asyncio.ensure_future(
+            asyncio.to_thread(fork_record, Path(command.source_dir), Path(command.session_dir), upto=command.upto)
+        )
+        self._copying.add(copying)
+        copying.add_done_callback(written)
+        try:
+            await asyncio.shield(copying)
+        except Exception:  # noqa: BLE001 - said to the host by ``written``
+            logger.debug("the copy of session %s was not made", source_id)
 
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         session_id = spec.session_id
@@ -406,7 +407,9 @@ class RuntimeCore:
                 for session_id, session in list(self._sessions.items()):
                     self._begin_close(session_id, session)
                 self._sessions.clear()
-                under_way = [*self._starting.values(), *self._closing.values()]
+                # A record that is being copied is written to its end, and
+                # what became of it is said, before the runtime is gone.
+                under_way = [*self._starting.values(), *self._closing.values(), *self._copying]
                 if not under_way:
                     break
                 remaining = None if deadline is None else max(0.0, deadline - loop.time())

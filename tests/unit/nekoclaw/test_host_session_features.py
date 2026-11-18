@@ -889,33 +889,8 @@ async def test_the_agent_server_keeps_what_was_said_only_while_nekoclaw_is_on(mo
     # comes by while it is off, so that nothing from before is handed over when it is switched on again.
     api_runtime.forget_turns_for_task_agents()
     assert kept.recent("Lan") == []
-    import ast
-
-    from app.agent_server import api_routes
-
-    def switches_it_off(node: ast.stmt) -> bool:
-        return (
-            isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled" for target in node.targets)
-            and isinstance(node.value, ast.Constant)
-            and node.value.value is False
-        )
-
-    def forgets(node: ast.stmt) -> bool:
-        call_ = node.value if isinstance(node, ast.Expr) else None
-        return isinstance(call_, ast.Call) and getattr(call_.func, "id", "") == "forget_turns_for_task_agents"
-
-    places = 0
-    for node in ast.walk(ast.parse(Path(api_routes.__file__).read_text(encoding="utf-8"))):
-        for body in (getattr(node, "body", None), getattr(node, "orelse", None)):
-            if not isinstance(body, list):
-                continue
-            for index, statement in enumerate(body):
-                if switches_it_off(statement):
-                    places += 1
-                    assert any(forgets(later) for later in body[index + 1 :]), f"line {statement.lineno}"
-    # Every place the master switch is switched off at drops what was kept.
-    assert places == 2
+    # (That both places the master switch is switched off at do this is run where the routes have
+    # their stage: tests/unit/test_agent_browser_left_open.py.)
     assert api_runtime._note_turn_for_task_agents({**event, "event_id": "e2b", "content": "again"}) is True
     # Off without the master switch (no capability left on): nothing more is kept, and what was
     # kept goes with the next message that comes by.
@@ -1970,10 +1945,13 @@ async def test_a_commission_that_comes_while_a_summed_up_session_is_given_back_w
 
 
 async def test_a_session_the_host_summed_up_is_not_given_back_before_the_runtime_says_it_is_closed(
-    hosts, tmp_path, monkeypatch
+    hosts, tmp_path, monkeypatch, caplog
 ):
+    import logging
+
     from nekoclaw.host import task_agents as task_agents_module
 
+    caplog.set_level(logging.WARNING, logger="nekoclaw.host.task_agents")
     _idle_on(monkeypatch, after=30.0)
     summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
     export = ScriptedLLM([*_long_work("export added"), summary])
@@ -2008,7 +1986,9 @@ async def test_a_session_the_host_summed_up_is_not_given_back_before_the_runtime
     try:
         task = manager._spawn(manager._idle_compact(first.id))
         await asyncio.wait_for(closing.wait(), 10)
-        await asyncio.sleep(0.3)
+        # Until the time the runtime is given is up, and that is noted: only from then on does this
+        # tell whether it is waited for all the same.
+        await wait_until(lambda: "has not said that session" in caplog.text, what="the wait for the runtime being noted")
         # Still the host's: what the runtime says of this opening of the session, late as it is, goes
         # to nobody else, and no commission is let into the session meanwhile.
         assert first.id in manager._service and first.id in manager._compacting
@@ -2022,3 +2002,172 @@ async def test_a_session_the_host_summed_up_is_not_given_back_before_the_runtime
     await wait_until(lambda: manager._idle_over == {}, what="the session being given back")
     assert manager._service == {} and manager._compacting == {}
     assert (await host.ledger.get_session(first.id)).status == "closed"
+
+
+# ---------------------------------------------------------------------------
+# What the fourth round of review found
+# ---------------------------------------------------------------------------
+
+
+async def test_shutting_down_removes_the_copies_that_are_on_no_record_and_keeps_the_one_that_is(hosts, tmp_path, monkeypatch):
+    from nekoclaw.runtime.fork import fork_record
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    # One that is on record: it was waited for.
+    kept = await host.fork_session(first.id)
+    runtime = manager._runtimes.builtin()
+    fork = runtime.fork
+    asked: list[Any] = []
+
+    async def slow(*args: Any, **kwargs: Any) -> None:
+        # The runtime does not get to it for now.
+        asked.append(kwargs)
+
+    runtime.fork = slow
+    try:
+        # One that was given up (the runtime took too long) ...
+        monkeypatch.setattr(settings, "TASK_AGENT_FORK_SECONDS", 0.05)
+        with pytest.raises(ForkRefused, match="did not answer in time"):
+            await host.fork_session(first.id)
+        # ... and one that is still waited for when the host shuts down.
+        monkeypatch.setattr(settings, "TASK_AGENT_FORK_SECONDS", 30.0)
+        asking = asyncio.ensure_future(host.fork_session(first.id))
+        await wait_until(lambda: len(asked) == 2, what="the runtime being asked for the second copy")
+    finally:
+        runtime.fork = fork
+    (gone,) = manager._forks_given_up.values()
+    (waited,) = manager._fork_dirs.values()
+    assert {gone, waited} == {told["session_dir"] for told in asked}
+    # The runtime wrote both after all, and stops before it has said so.
+    for told in asked:
+        fork_record(Path(told["source_dir"]), Path(told["session_dir"]))
+    assert Path(gone).exists() and Path(waited).exists()
+
+    await host.shutdown()
+
+    with pytest.raises(ForkRefused, match="shutting down"):
+        await asking
+    # On no record, so nothing would ever come by them: removed, now that nothing writes them any more.
+    assert not Path(gone).exists() and not Path(waited).exists()
+    assert manager._forks_given_up == {} and manager._fork_dirs == {} and manager._forks == {}
+    assert (Path(kept.session_dir) / "transcript.jsonl").exists()
+
+
+async def test_a_commission_fails_when_the_runtime_does_not_let_go_of_a_session_the_host_had_open(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host import task_agents as task_agents_module
+
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    scripts = {"add a CSV export": export, "add a chart": ScriptedLLM([_report("ready", "chart added")])}
+    host = _host(hosts, tmp_path, _scripts_by_session(scripts), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    # How long a commission waits for the session, here: a moment.
+    monkeypatch.setattr(task_agents_module, "_SERVICE_HANDOVER_SECONDS", 0.3)
+    runtime = manager._runtimes.builtin()
+    close = runtime.close
+    release = asyncio.Event()
+    closing = asyncio.Event()
+    later: list[Any] = []
+
+    async def slow(session_id: str) -> None:
+        if session_id != first.id or closing.is_set():
+            await close(session_id)
+            return
+
+        # Told to close the session the host had open, the runtime does not get to it.
+        async def when_it_gets_to_it() -> None:
+            await release.wait()
+            await close(session_id)
+
+        later.append(asyncio.ensure_future(when_it_gets_to_it()))
+        closing.set()
+
+    runtime.close = slow
+    try:
+        manager._spawn(manager._idle_compact(first.id))
+        await asyncio.wait_for(closing.wait(), 10)
+        # (Not a second time in this test.)
+        monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30.0)
+
+        second = (await _dispatch(host, "add a chart to the budget app")).commissions[0]
+
+        # It does not wait for ever: it fails, and is told why.
+        failed = await wait_status(host, second.id, "failed", timeout=10)
+        assert "still being closed" in failed.status_reason and "handed in again" in failed.status_reason
+        assert scripts["add a chart"].requests == []
+        # The session stays the host's: what the runtime says of that opening of it, late as it is,
+        # goes to nobody else, and nothing else is let into the session.
+        assert first.id in manager._service and first.id in manager._compacting and first.id in manager._idle_over
+        assert manager.hold_files(first.id) is False
+
+        release.set()
+        await wait_until(lambda: first.id not in manager._compacting, what="the session being given back")
+        assert manager._service == {} and manager._idle_over == {}
+        # Handed in again, it is worked on in the session, which was summed up meanwhile.
+        assert await host.tell(second.id, "try it again")
+        done = await wait_status(host, second.id, "done", timeout=10)
+        assert done.session_id == first.id and done.result_summary == "chart added"
+        assert "export added" in json.dumps(scripts["add a chart"].requests[0], ensure_ascii=False)
+    finally:
+        release.set()
+        runtime.close = close
+        await asyncio.gather(*later, return_exceptions=True)
+    session = await host.ledger.get_session(first.id)
+    assert session.compacted_at is not None
+
+
+async def test_a_host_that_shuts_down_does_not_wait_for_a_runtime_that_never_says_a_session_is_closed(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host import task_agents as task_agents_module
+
+    _idle_on(monkeypatch)
+    release, wait = _gate()
+    # The summary is being written, and takes its time.
+    export = ScriptedLLM([*_long_work("export added"), [wait, say("## Current Work\n- never used"), finish()]])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    manager = host.task_agents
+    await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
+    assert first.id in manager._compacting
+    monkeypatch.setattr(task_agents_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(task_agents_module, "_SERVICE_CLOSE_SECONDS", 0.05)
+    monkeypatch.setattr(task_agents_module, "_SERVICE_CLOSE_POLL_SECONDS", 0.05)
+    runtime = manager._runtimes.builtin()
+    close = runtime.close
+    told: list[str] = []
+
+    async def never(session_id: str) -> None:
+        # Told to close it, the runtime says nothing.
+        told.append(session_id)
+
+    runtime.close = never
+    try:
+        # Shutting down cuts the summing up short, and the runtime does not say that it closed the
+        # session. The host stops its runtimes next and gives the session to nobody: it waits the
+        # time a runtime is given for that, and no longer.
+        await asyncio.wait_for(host.shutdown(), 10)
+    finally:
+        runtime.close = close
+        release.set()
+        # (Were that still waited for, the runtime would say so now, and the shutting down could end.)
+        await close(first.id)
+    assert told == [first.id]
+    assert manager._service == {} and manager._idle_over == {} and manager._compacting == {}

@@ -96,8 +96,17 @@ WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
 # How long a runtime gets to say that a session the host had open by itself
-# is closed before that is noted in the log; it is waited for all the same.
+# is closed before that is noted in the log; it is waited for all the same
+# while the host is up, and whether it still is is looked at this often.
 _SERVICE_CLOSE_SECONDS = 15.0
+_SERVICE_CLOSE_POLL_SECONDS = 1.0
+# How long a commission waits for a session the host has open by itself to
+# be given back, before it fails with that as its reason.
+_SERVICE_HANDOVER_SECONDS = 30.0
+_SESSION_NOT_GIVEN_BACK = (
+    "its session is still being closed after the host had it open to sum it up; "
+    "it can be handed in again in a moment"
+)
 # The key of what is put among the runtimes' events to learn when they are
 # caught up with (``_caught_up``), and how long that is waited for.
 _REACHED = "nekoclaw/reached"
@@ -526,9 +535,13 @@ class TaskAgentManager:
         # (``hold_files``), or it would be made of a record that is going,
         # and kept when the session it came from starts over.
         self._copying_from: dict[str, int] = {}
-        # Copies whose making was given up (the runtime took too long),
-        # each with the directory it was to be written into.
+        # Copies whose making was given up (the runtime took too long,
+        # whoever asked for it left, the host shuts down), each with the
+        # directory it was to be written into.
         self._forks_given_up: dict[str, str] = {}
+        # Copies the runtime was asked for that are still waited for,
+        # each with the directory it is written into.
+        self._fork_dirs: dict[str, str] = {}
         # What requests used that the ledger did not take when it was to be
         # written, by session and commission (requests, input, output,
         # cache reads, cache writes): written with the next one.
@@ -1137,7 +1150,15 @@ class TaskAgentManager:
             # The host is summing its session up this moment, nothing having
             # been at work in it: that is cut short, and the session is the
             # commission's once the runtime has let go of it.
-            await self._stop_compacting(session.session_id)
+            if not await self._stop_compacting(session.session_id):
+                # The runtime has not said that it closed the session the
+                # host had open. Opened for the commission now, what the
+                # runtime says of that earlier opening would be taken for
+                # the commission's. So the commission fails, with this as
+                # its reason, and can be handed in again; the session
+                # stays the host's until the runtime has said that it is
+                # closed, or is gone.
+                raise RuntimeError(_SESSION_NOT_GIVEN_BACK)
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
@@ -3527,6 +3548,7 @@ class TaskAgentManager:
             self._pump = asyncio.ensure_future(self._pump_events())
         answer: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._forks[session_id] = answer
+        self._fork_dirs[session_id] = str(target_dir)
         try:
             await runtime.fork(
                 session_id,
@@ -3547,6 +3569,7 @@ class TaskAgentManager:
             raise
         finally:
             self._forks.pop(session_id, None)
+            self._fork_dirs.pop(session_id, None)
         if event.get("type") != "forked":
             raise ForkRefused(str(event.get("message") or "the runtime could not copy the session"))
         try:
@@ -3664,17 +3687,27 @@ class TaskAgentManager:
         else:
             self._idle_stopped.add(session_id)
 
-    async def _stop_compacting(self, session_id: str) -> None:
-        """Cut short the summing up of an idle session, and wait until the runtime has let go of the session."""
+    async def _stop_compacting(self, session_id: str) -> bool:
+        """Cut short the summing up of an idle session, and wait until the runtime has let go of the session.
+
+        Returns whether the session is free of it. The runtime gets
+        ``_SERVICE_HANDOVER_SECONDS`` to say that it closed the session.
+        When it does not, the session stays the host's (what the runtime
+        says of that opening later is still taken there, and the
+        session is given back then), and whoever asked goes without it.
+        """
         task = self._compacting.get(session_id)
         if task is None or task is asyncio.current_task():
-            return
+            return True
         self._cut_short(task)
-        await asyncio.wait([task])
+        loop = asyncio.get_running_loop()
+        until = loop.time() + _SERVICE_HANDOVER_SECONDS
+        await asyncio.wait([task], timeout=_SERVICE_HANDOVER_SECONDS)
         over = self._idle_over.get(session_id)
         if over is not None:
             # The task left while the session was being given back.
-            await asyncio.wait([over])
+            await asyncio.wait([over], timeout=max(0.0, until - loop.time()))
+        return self._compacting.get(session_id) is not task
 
     def _idle_compact_allowed(self, kept: Session | None, now: float) -> bool:
         """Whether a session, as the ledger has it, is to be summed up while idle: by its kind, its length and the limits."""
@@ -3954,16 +3987,24 @@ class TaskAgentManager:
                         # The runtime process went away, and the session with it.
                         return
 
-            # However long it takes. Given back before the runtime said
-            # so, the session could be taken by a commission, and what
-            # the runtime says of this opening of it afterwards (that it
-            # is closed) would be taken for that commission's.
+            # However long it takes, while the host is up. Given back
+            # before the runtime said so, the session could be taken by
+            # a commission, and what the runtime says of this opening of
+            # it afterwards (that it is closed) would be taken for that
+            # commission's. (A commission that is to be worked on in it
+            # does not wait as long: ``_stop_compacting``.) A host that
+            # shuts down stops its runtimes next and gives the session
+            # to nobody: it waits the first stretch and no longer.
             waiting = asyncio.ensure_future(gone())
             try:
                 done, _pending = await asyncio.wait({waiting}, timeout=_SERVICE_CLOSE_SECONDS)
                 if not done:
                     logger.warning("the runtime has not said that session %s is closed; still waited for", session_id)
-                await waiting
+                while not done and not self._closed:
+                    done, _pending = await asyncio.wait({waiting}, timeout=_SERVICE_CLOSE_POLL_SECONDS)
+                if done:
+                    # What the waiting failed with, if it did, is raised here.
+                    waiting.result()
             finally:
                 if not waiting.done():
                     waiting.cancel()
@@ -3978,13 +4019,18 @@ class TaskAgentManager:
 
     async def shutdown(self) -> None:
         """Stop the runtime and every session. Commissions under way end as failed."""
+        import shutil
+
         self._closed = True
         for session_id in list(self._idle_timers):
             self._drop_idle_timer(session_id)
-        for waiting in list(self._forks.values()):
+        for session_id, waiting in list(self._forks.items()):
             if not waiting.done():
+                # The runtime may write the copy all the same. Removed when
+                # it says it has, like the others nobody waits for any
+                # more, or below once the runtimes are stopped.
+                self._forks_given_up[session_id] = self._fork_dirs[session_id]
                 waiting.set_exception(ForkRefused("the host is shutting down"))
-        self._forks_given_up.clear()
         queued = list(self._queue)
         self._queue.clear()
         for commission_id in queued:
@@ -4018,6 +4064,14 @@ class TaskAgentManager:
                 await runtime.shutdown()
             except Exception:  # noqa: BLE001 - shutting down goes on regardless
                 logger.exception("shutting the runtime down failed")
+        # Copies nobody waited for any more, of which no runtime said what
+        # became of them before it stopped: they are on no record, and
+        # nothing would ever come by them to remove them. No runtime
+        # writes them from here on. (One that is on record stays: it was
+        # waited for, and is not among these.)
+        given_up, self._forks_given_up = self._forks_given_up, {}
+        for target in given_up.values():
+            await asyncio.to_thread(shutil.rmtree, target, True)
         for commission_id in list(self._sessions):
             self._discard(commission_id)
         self._held_by.clear()
