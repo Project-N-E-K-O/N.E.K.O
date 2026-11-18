@@ -145,6 +145,19 @@ _BUSY_TIMEOUT_SECONDS = 5.0
 # process had written nothing by then.
 AS_OPENED = -1
 
+
+def _covers(stop: int, other: int) -> bool:
+    """Return whether a stop up to ``stop`` drops all that one up to ``other`` drops.
+
+    Both as they are noted next to the ledger (``Ledger.note_stop_owed``).
+    ``AS_OPENED`` there is a stop that came while the file could not be
+    read: it stands for all that is in the file when it is next opened,
+    which is no less than any number noted before.
+    """
+    if stop == AS_OPENED:
+        return True
+    return other != AS_OPENED and stop >= other
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS commissions (
     id TEXT PRIMARY KEY,
@@ -732,7 +745,12 @@ class Ledger:
             high = conn.execute(
                 "SELECT COALESCE(MAX(id), 0) AS written, COALESCE(MAX(fired_order), 0) AS fired FROM wake_requests"
             ).fetchone()
-            self._opened_high = self._notes_high = int(high["written"])
+            # (What was there when it was first read, should it be read
+            # again: a stop that came before then is not to reach further
+            # because the file could only be opened later.)
+            if self._opened_high is None:
+                self._opened_high = int(high["written"])
+            self._notes_high = max(self._notes_high or 0, int(high["written"]))
             self._fired_high = max(self._fired_high, int(high["fired"]))
             self._reconcile(conn, path)
         except BaseException:
@@ -931,7 +949,7 @@ class Ledger:
         # what stays noted, and the next process, which reads it, drops
         # what is there: this one wrote nothing.)
         upto = self._marked(upto)
-        if noted is not None and noted[0] >= upto:
+        if noted is not None and _covers(noted[0], upto):
             return
         target.parent.mkdir(parents=True, exist_ok=True)
         beside = target.with_name(target.name + ".tmp")

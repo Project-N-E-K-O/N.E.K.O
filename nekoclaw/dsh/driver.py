@@ -1162,9 +1162,9 @@ class DshRuntime:
         if not delivered:
             self._give_back(session, texts, of_run, late=late)
         elif late and self._sessions.get(session.id) is session and session.closing is None:
-            # (Said as of a run that is over: what is told of them is what
-            # that run came to.)
-            self._say_taken(session, _numbers_of(texts), late=True)
+            # (Said as of a run that is over, and of which one: what is
+            # told of them is what that run came to.)
+            self._say_taken(session, _numbers_of(texts), late=of_run)
 
     async def _answers_settled(self, session: _Session) -> None:
         """Wait, a bounded while, until it is known of every answer that carried texts whether it reached dsh.
@@ -1194,9 +1194,11 @@ class DshRuntime:
         """
         if self._sessions.get(session.id) is not session or session.closing is not None:
             return
-        if session.aborting:
-            # Being stopped: what it was handed is dealt with as the stop
-            # deals with it.
+        if session.aborting or self._shutdowns:
+            # Being stopped, or the runtime is shutting down: what it was
+            # handed is dealt with as the stop deals with it, and no turn
+            # is begun behind the back of a shutdown. (Whoever sent it and
+            # never heard that it was taken has it handed over again.)
             return
         if not late and (session.runs != of_run or session.run is None):
             # The run is over: what it was handed is dealt with as its end
@@ -1207,19 +1209,23 @@ class DshRuntime:
         # In the order they were given, whichever of several answers is
         # heard of first: what is queued again was given before what
         # waits, and what one call was handed before what the next was.
-        session.queue = sorted([*texts, *session.queue], key=lambda text: getattr(text, "number", 0))
+        session.queue = sorted([*texts, *session.queue], key=lambda text: text.number)
         session.arrived.set()
         if session.run is None:
             session.aborting = False
             session.run = asyncio.ensure_future(self._run(session))
 
-    def _say_taken(self, session: _Session, numbers: list[int], *, late: bool = False) -> None:
+    def _say_taken(self, session: _Session, numbers: list[int], *, late: int | None = None) -> None:
         """Say of the texts with these numbers that dsh has them in its conversation; one ``taken`` each.
 
-        ``late`` says that the run that took them has ended already.
+        ``late`` is the run that took them, where that run has ended
+        already (the number its ``ended`` event carried).
         """
         for number in numbers:
-            self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=number, late=late))
+            self._emit(
+                session,
+                protocol.TakenEvent(session_id=session.id, inputs=number, late=late is not None, run=late),
+            )
 
     async def _run(self, session: _Session) -> None:
         """Send what is queued, turn after turn, until nothing is left; then announce the end."""
@@ -1237,7 +1243,11 @@ class DshRuntime:
                 texts, session.queue = session.queue, []
                 sent = _numbers_of(texts)
                 session.taken = max([session.taken, *sent])
+                # (Of this turn from here on. What a turn before it left
+                # open, cut off by an error as it was, is not waited for
+                # at the end of this one.)
                 session.awaited = []
+                session.answering = []
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:
@@ -1303,6 +1313,8 @@ class DshRuntime:
                 text=session.last_text if reason == "completed" else "",
                 error=error,
                 inputs=session.taken,
+                # (Counted on as the run ended, above.)
+                run=session.runs - 1,
             ),
         )
         if session.queue:

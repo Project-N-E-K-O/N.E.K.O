@@ -1952,6 +1952,8 @@ async def test_a_text_whose_answer_is_heard_of_after_its_turn_ended_is_dealt_wit
         # It got there after all: told of as taken now, as of the run that is over, and not sent again.
         assert _taken(driver) == [1, 2] and session.run is None
         assert [event["late"] for event in driver.events.of("taken")] == [False, True]
+        # And of which run: the one whose end was told of with that number.
+        assert driver.events.of("taken")[-1]["run"] == ended["run"] is not None
         assert len(driver.record("session/prompt")) == 1
         return
     # It did not: nobody else would give the session the text while it stays open, so it is
@@ -1972,6 +1974,45 @@ async def test_what_a_call_of_a_run_that_was_stopped_was_handed_is_not_queued_ag
         assert len(driver.record("session/prompt")) == 1 and _taken(driver) == [1]
     finally:
         go.write_text("", encoding="utf-8")
+
+
+async def test_an_answer_that_went_nowhere_begins_no_turn_while_the_runtime_shuts_down(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from config import nekoclaw_settings
+
+    monkeypatch.setattr(nekoclaw_settings, "DSH_ANSWER_SETTLE_SECONDS", 0.05)
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh)
+    go.write_text("", encoding="utf-8")
+    await driver.events.wait_ended("s1")
+    assert len(session.unsettled) == 1
+    # Heard of while the runtime is shutting down: no turn is begun behind its back.
+    driver.runtime._shutdowns += 1
+    try:
+        told[0](False)
+        assert session.queue == [] and session.run is None
+        assert len(driver.record("session/prompt")) == 1
+    finally:
+        driver.runtime._shutdowns -= 1
+
+
+async def test_what_a_turn_that_failed_left_open_is_not_waited_for_at_the_end_of_the_next(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from config import nekoclaw_settings
+
+    monkeypatch.setattr(nekoclaw_settings, "DSH_ANSWER_SETTLE_SECONDS", 30.0)
+    driver = dsh()
+    await driver.started(make_spec(tmp_path))
+    session = driver.runtime._sessions["s1"]
+    # As a turn that was cut off by an error leaves it: an answer of one of its calls still open.
+    session.answering = [(asyncio.get_running_loop().create_future(), [9])]
+
+    await driver.runtime.prompt("s1", "!say hello")
+    ended = await driver.events.wait_ended("s1", timeout=10.0)
+
+    # The next run does not sit out the wait for it, nor take it for one of its own.
+    assert ended["reason"] == "completed" and session.unsettled == []
 
 
 async def test_what_two_calls_were_handed_is_queued_again_in_the_order_it_was_given(tmp_path: Path, dsh) -> None:

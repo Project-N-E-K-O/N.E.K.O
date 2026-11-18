@@ -1142,15 +1142,21 @@ class TaskBrain:
         recent = [*ended, *recent]
 
         def line(commission: Commission) -> str:
-            head = f"- {commission.title} ({status_word(commission.status, lang)})"
+            head = bare = f"- {commission.title} ({status_word(commission.status, lang)})"
             if waiting.get(commission.id):
                 # What it waits for by its own asking, and what waits for it:
                 # right after its status, where a cut does not reach it.
                 head += f" [{waiting[commission.id]}]"
             parts = [head]
-            asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
-            if asking:
-                return asking
+            if commission.status == "waiting_user":
+                # What it asks is told whole before what it waits for
+                # besides: where the two do not fit in the row together,
+                # the note of what waits gives way, and not the end of the
+                # question, which is where the answers on offer are.
+                asking = waiting_row(bare, commission, words["asked"], lang)
+                noted = waiting_row(head, commission, words["asked"], lang) if head != bare else asking
+                if asking:
+                    return noted if noted.endswith(asking[len(bare) :]) else asking
             if commission.result_summary:
                 parts.append(words["result"].format(summary=commission.result_summary))
             elif commission.status_reason and commission.status in ("failed", "blocked"):

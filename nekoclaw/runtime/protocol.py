@@ -398,6 +398,10 @@ class TakenEvent(_SessionEvent):
     # conversation. What is told of the text is then what that run came to,
     # and not what the next one does.
     late: bool = False
+    # With ``late``: which run took the text, by the number its ``ended``
+    # event gave it (``EndedEvent.run``). A text may have gone to more than
+    # one run before it got into the conversation; this says which.
+    run: int | None = None
 
 
 class EndedEvent(_SessionEvent):
@@ -410,6 +414,9 @@ class EndedEvent(_SessionEvent):
     error: str | None = None
     # Texts the session had taken when the run finished; None for ``closed``.
     inputs: int | None = None
+    # A number for this run among the session's runs, where the runtime
+    # counts them: what a ``taken`` event that comes late names (its ``run``).
+    run: int | None = None
     # Background jobs of the session not yet gone when the run finished.
     jobs: int = 0
     # Those of them that tell the session when they finish, which starts its
