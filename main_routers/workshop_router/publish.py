@@ -43,6 +43,8 @@ import asyncio
 import threading
 import platform
 from pathlib import Path
+
+from services.model_workshop.paths import WorkshopError, identity
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -192,10 +194,60 @@ async def prepare_workshop_upload(request: Request):
     Prepare a Workshop upload: create a temp directory and copy the character card and model files into it.
     Returns the temp directory path for the subsequent upload.
     """
+    temp_item_dir = None
+    created_export = None
     try:
         import shutil
         import uuid
         from services.model_workshop.catalog import find_model_directory
+        from services.model_workshop.runtime import model_read_guard
+
+        async def drain_worker(worker):
+            # Keep asyncio.to_thread explicit at each call site for the existing
+            # worker/claim audit, while draining real I/O through cancellation.
+            future = asyncio.create_task(worker)
+            cancelled = False
+            while True:
+                try:
+                    result = await asyncio.shield(future)
+                    break
+                except asyncio.CancelledError:
+                    cancelled = True
+                    if future.done():
+                        break
+                except BaseException:
+                    if cancelled:
+                        raise asyncio.CancelledError from None
+                    raise
+            if cancelled:
+                if future.done() and not future.cancelled():
+                    future.exception()
+                raise asyncio.CancelledError
+            return result
+
+        def cleanup_export(content_folder):
+            # Only an atomically reserved directory with the same filesystem
+            # identity belongs to this request; a replacement is never disposable.
+            if created_export is None:
+                return
+            try:
+                current = identity(Path(content_folder))
+            except (OSError, WorkshopError):
+                return  # Missing/unverifiable ownership does not authorize cleanup.
+            if current == created_export:
+                with claim_content_folder(content_folder, purpose=CLEANUP_PURPOSE):
+                    shutil.rmtree(content_folder)
+
+        def copy_model(source, content_folder, *, tree=False):
+            # Guard the complete copy, not only discovery; existing Steam/card
+            # packaging cannot expose a pending or concurrently replaced install.
+            with model_read_guard(get_config_manager(), source):
+                # A file/child claim also conflicts with its ancestor export folder.
+                with claim_content_folder(content_folder, purpose=PUBLISH_PURPOSE):
+                    if tree:
+                        shutil.copytree(source, content_folder, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(source, content_folder)
         
         data = await request.json()
         chara_data = data.get('charaData')
@@ -239,9 +291,10 @@ async def prepare_workshop_upload(request: Request):
         os.makedirs(workshop_export_dir, exist_ok=True)
         
         # Create temporary item_xxx directory.
-        item_id = str(uuid.uuid4())[:8]  # Identify the item by the UUID's first eight characters.
+        item_id = uuid.uuid4().hex
         temp_item_dir = os.path.join(workshop_export_dir, f'item_{item_id}')
-        os.makedirs(temp_item_dir, exist_ok=True)
+        os.mkdir(temp_item_dir)
+        created_export = identity(Path(temp_item_dir))
         
         logger.info(f"创建临时上传目录: {temp_item_dir}")
         
@@ -251,7 +304,7 @@ async def prepare_workshop_upload(request: Request):
             if '..' in model_name or any(
                 not part or part == '.' or ':' in part or '\\' in part for part in path_parts
             ):
-                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
+                await drain_worker(asyncio.to_thread(cleanup_export, temp_item_dir))
                 return JSONResponse({
                     "success": False,
                     "error": "非法模型路径"
@@ -276,7 +329,7 @@ async def prepare_workshop_upload(request: Request):
 
             source_file = source_root.joinpath(*relative_parts) if source_root and relative_parts else None
             if source_file is None or not await asyncio.to_thread(source_file.is_file):
-                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
+                await drain_worker(asyncio.to_thread(cleanup_export, temp_item_dir))
                 return JSONResponse({
                     "success": False,
                     "error": f"模型文件不存在: {model_name}"
@@ -287,11 +340,11 @@ async def prepare_workshop_upload(request: Request):
                 # Keep textures relative to the model, including nested user model directories.
                 source_dir = source_root / relative_parts[0] if user_model else source_file.parent
                 dest_dir = package_root / source_dir.name
-                await asyncio.to_thread(shutil.copytree, source_dir, dest_dir, dirs_exist_ok=True)
+                await drain_worker(asyncio.to_thread(copy_model, source_dir, dest_dir, tree=True))
                 packaged_model = dest_dir / source_file.relative_to(source_dir)
             else:
                 packaged_model = package_root / source_file.name
-                await asyncio.to_thread(shutil.copy2, source_file, packaged_model)
+                await drain_worker(asyncio.to_thread(copy_model, source_file, packaged_model))
             logger.info(f"模型文件已复制到临时目录: {packaged_model}")
 
             chara_data[model_type] = packaged_model.relative_to(package_root).as_posix()
@@ -301,7 +354,7 @@ async def prepare_workshop_upload(request: Request):
             model_dir, _ = find_model_directory(model_name)
             if not model_dir or not os.path.exists(model_dir):
                 # Clean up temporary directories.
-                await asyncio.to_thread(shutil.rmtree, temp_item_dir, ignore_errors=True)
+                await drain_worker(asyncio.to_thread(cleanup_export, temp_item_dir))
                 return JSONResponse({
                     "success": False,
                     "error": f"模型目录不存在: {model_name}"
@@ -309,7 +362,7 @@ async def prepare_workshop_upload(request: Request):
             
             # Copy the entire model directory to the temporary directory.
             model_dest_dir = os.path.join(temp_item_dir, model_name)
-            await asyncio.to_thread(shutil.copytree, model_dir, model_dest_dir, dirs_exist_ok=True)
+            await drain_worker(asyncio.to_thread(copy_model, model_dir, model_dest_dir, tree=True))
             logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
         
         chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
@@ -349,6 +402,11 @@ async def prepare_workshop_upload(request: Request):
             response_data["preview_image"] = preview_image_path
         return JSONResponse(response_data)
         
+    except WorkshopError as exc:
+        # Only this request's UUID directory is disposable; never remove source data.
+        await drain_worker(asyncio.to_thread(cleanup_export, temp_item_dir))
+        return JSONResponse({"success": False, "error_code": str(exc),
+                             "error": "Model installation state is unavailable; try again later."}, status_code=409)
     except Exception as e:
         logger.error(f"准备上传失败: {e}")
         return JSONResponse({

@@ -495,6 +495,35 @@ def write_managed_json(
     return True
 
 
+@contextmanager
+def model_read_guard(config, path):
+    """Keep a managed bulk read on one published installation and storage root."""
+    state = snapshot(config)
+    # Corrupt local ownership still blocks local reads, but cannot own a proven
+    # outside-root builtin/Steam source. Do not broaden this guard to those paths.
+    if state.errors and (state.paths is None or state.relative(path) is not None):
+        raise WorkshopError("model_workshop_unavailable")
+    state.require(path)
+    captured = state.record_for(path)
+    if captured is None:
+        yield  # Ordinary/Steam sources retain their existing read semantics.
+        return
+    service = get_service(config)
+    if (state.paths.root, state.paths.root_identity) != (service.paths.root, service.paths.root_identity):
+        raise WorkshopError("model_workshop_root_changed")
+    installer = service.installer
+    # Bulk copies run entirely inside one worker: no thread lock spans await.
+    # Count the read as active and hold the storage fence so migration, edits,
+    # deletion or reinstallation cannot replace its source halfway through.
+    with service.activity(), installer.lifecycle(captured["package_sha256"]), installer.registry.lock, installer.mutation():
+        current = snapshot_for_mutation(config)
+        current.require(path)
+        row = current.record_for(path)
+        if row is None or row["install_id"] != captured["install_id"]:
+            raise WorkshopError("model_workshop_install_conflict")
+        yield
+
+
 def reject_managed_upload(config, path):
     """Old raw-upload entry points must not replace a managed model through a second writer."""
     if snapshot_for_mutation(config).record_for(path) is not None:

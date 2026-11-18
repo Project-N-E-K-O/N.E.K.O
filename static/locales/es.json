@@ -7387,6 +7387,7 @@
     "staging": "Preparando archivos del modelo…",
     "committing": "Finalizando instalación; no se puede cancelar…",
     "uploadUnknown": "La respuesta de subida se interrumpió. No se sabe si fue aceptada. Revisa la lista antes de volver a subirla.",
-    "previewRequested": "Vista previa solicitada. Comprueba el modelo y aplícalo con el botón de guardar existente."
+    "previewRequested": "Vista previa solicitada. Comprueba el modelo y aplícalo con el botón de guardar existente.",
+    "stateUnavailable": "El estado de instalación del modelo no está disponible. Inténtalo más tarde."
   }
 }

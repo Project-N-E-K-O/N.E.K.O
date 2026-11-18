@@ -448,6 +448,7 @@ def test_rejected_old_upload_preserves_managed_directory_and_local_edits(
     response = _legacy_upload(client, kind, target.name)
     assert response.status_code == 409, response.text
     assert response.json()['error_code'] == 'model_workshop_install_conflict'
+    assert response.json().get('error'), 'Legacy upload consumers require a readable error'
     assert target.is_dir()
     assert {str(path.relative_to(target)): path.read_bytes()
             for path in target.rglob('*') if path.is_file()} == before
@@ -466,6 +467,7 @@ def test_old_upload_uncertain_registry_preserves_existing_directory(legacy, monk
     monkeypatch.setattr(runtime, 'snapshot_for_mutation', unreadable)
     response = _legacy_upload(client, kind, target.name)
     assert response.status_code == 409, response.text
+    assert response.json().get('error'), 'Legacy upload consumers require a readable error'
     assert (target / 'local-edit.txt').read_bytes() == b'keep'
 
 

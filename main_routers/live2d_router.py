@@ -1356,7 +1356,9 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         except Exception as cleanup_err:
             logger.warning(f"清理导入失败的残留目录时出错: {cleanup_err}")
         if isinstance(e, WorkshopError):
-            return JSONResponse(status_code=409, content={"success": False, "error_code": str(e)})
+            return JSONResponse(status_code=409, content={"success": False, "error_code": str(e),
+                # Keep the old upload response contract for older clients.
+                "error": "Model Workshop rejected this upload; check the installation state and try again."})
         logger.error(f"上传Live2D模型失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 

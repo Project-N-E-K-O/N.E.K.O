@@ -7387,6 +7387,7 @@
     "staging": "Preparing model files…",
     "committing": "Finishing installation; cancellation is unavailable…",
     "uploadUnknown": "Upload response interrupted. Acceptance is unknown. Check the model list before uploading again.",
-    "previewRequested": "Preview requested. Check the displayed model, then apply it with the existing save button."
+    "previewRequested": "Preview requested. Check the displayed model, then apply it with the existing save button.",
+    "stateUnavailable": "Model installation state is unavailable. Please try again later."
   }
 }

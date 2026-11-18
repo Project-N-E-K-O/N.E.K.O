@@ -578,7 +578,9 @@ async def upload_mmd_zip(file: UploadFile = File(...)):
 
     except WorkshopError as exc:
         await _drain_sync(cleanup_owned_target)
-        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc)})
+        return JSONResponse(status_code=409, content={"success": False, "error_code": str(exc),
+            # Keep the old upload response contract for older clients.
+            "error": "Model Workshop rejected this upload; check the installation state and try again."})
     except zipfile.BadZipFile:
         await _drain_sync(cleanup_owned_target)
         return JSONResponse(status_code=400, content={"success": False, "error": "ZIP 文件损坏"})

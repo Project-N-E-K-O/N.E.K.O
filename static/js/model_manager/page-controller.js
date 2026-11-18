@@ -1323,13 +1323,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, characterName);
     }
 
+    function legacyModelUploadError(result) {
+        // Old upload handlers consume error, while workshop guards return a stable
+        // error_code. Translate only those codes; keep ordinary server errors intact.
+        const code = result?.error_code;
+        if (code === 'model_workshop_install_conflict') return t('modelWorkshop.conflict', 'Model installation conflict');
+        if (['model_workshop_busy', 'model_workshop_state_busy', 'model_workshop_closed'].includes(code)) {
+            return t('modelWorkshop.busy', 'Model service unavailable');
+        }
+        if (typeof code === 'string' && code.startsWith('model_workshop_')) {
+            return t('modelWorkshop.stateUnavailable', 'Model installation state unavailable');
+        }
+        return result?.error || t('modelWorkshop.importFailed', 'Model import failed');
+    }
+
     function createLive2DModelOption(model) {
         const option = document.createElement('option');
         const selection = getLive2DModelSelection(model);
         option.value = selection.name;
-        // Only a registry-associated package supplies an alternate display label.
-        // Ordinary/Steam labels and every runtime identifier retain their old meaning.
-        option.textContent = (model.model_workshop?.install_id && model.display_name) || selection.name;
+        // Live2D display_name also disambiguates ordinary and Steam duplicates.
+        // The native value/path/item_id remain separate from this backend label.
+        option.textContent = model.display_name || selection.name;
         option.setAttribute('data-model-type', 'live2d');
         option.dataset.modelName = selection.name;
         option.dataset.modelPath = selection.path;
@@ -8344,7 +8358,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         await loadMMDModels();
                     }
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.uploadFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) }), 3000);
                 }
             } catch (error) {
                 console.error('上传MMD模型失败:', error);
@@ -8570,7 +8584,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }, 1500);
             } else {
-                uploadStatus.textContent = t('live2d.uploadFailed', `✗ ${result.error}`, { error: result.error });
+                uploadStatus.textContent = t('live2d.uploadFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) });
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => {
                     uploadStatus.textContent = '';
@@ -8683,7 +8697,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(`${result.message}`, 3000);
                     await loadLive3DModels();
                 } else {
-                    showStatus(`上传失败: ${result.error}`, 3000);
+                    showStatus(t('live2d.uploadFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) }), 3000);
                 }
             } catch (error) {
                 console.error('上传MMD ZIP包失败:', error);
@@ -8798,7 +8812,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 }, 1500);
             } else {
-                uploadStatus.textContent = t('live2d.uploadVRMFailed', `✗ ${result.error}`, { error: result.error });
+                uploadStatus.textContent = t('live2d.uploadVRMFailed', 'Upload failed: {{error}}', { error: legacyModelUploadError(result) });
                 uploadStatus.style.color = '#dc3545';
                 setTimeout(() => {
                     uploadStatus.textContent = '';

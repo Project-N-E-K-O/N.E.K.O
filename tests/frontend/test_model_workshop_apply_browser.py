@@ -8,6 +8,8 @@ remain real; all writes stay in the temporary ConfigManager root/project.
 import copy
 import hashlib
 import json
+import os
+import re
 import shutil
 import socket
 import threading
@@ -29,6 +31,27 @@ from tests.unit.test_model_workshop_migration import owner as owner
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = '工坊 测试'
+
+MODEL_READY = '''data => {
+    if (data.kind === 'live2d') {
+        const manager=window.live2dManager;
+        const bounds=manager?.currentModel?.getBounds();
+        return manager?._lastLoadedModelPath === data.url && manager?._modelLoadState === 'ready'
+            && bounds?.width > 0 && bounds?.height > 0;
+    }
+    const manager=data.kind === 'vrm'?window.vrmManager:window.mmdManager;
+    const path=manager?.currentModel?.url;
+    const canvas=manager?.renderer?.domElement;
+    const visible=data.kind === 'vrm'?manager?.currentModel?.vrm?.scene?.visible
+        :manager?.currentModel?.mesh?.visible;
+    const rect=canvas?.getBoundingClientRect();
+    // VRM sets currentModel before its animation warmup and fade-in.
+    // Wait for the actual visible frame, not the early resource handle.
+    return path && new URL(path,location.href).href === new URL(data.url,location.href).href
+        && visible && (data.kind !== 'vrm' || (manager._loadState === 'ready' && !manager._isLoadingModel))
+        && rect?.width > 0 && rect?.height > 0 && Number(getComputedStyle(canvas).opacity) >= 0.99
+        && manager.renderer?.info?.render?.calls > 0;
+}'''
 
 
 @pytest.fixture
@@ -82,6 +105,33 @@ def full_manager_app(owner, monkeypatch, tmp_path):
             'request': request, **_vrm_defaults_ctx(), **_static_assets_ctx(),
             'model_workshop_enabled': True,
         })
+    @app.get('/workshop-host')
+    def workshop_host(request: Request):
+        # Real model renderers plus the actual home-page message receiver/reload
+        # parts. Chat startup is absent; no receiver or model reload is stubbed.
+        html = templates.get_template('templates/model_manager.html').render({
+            'request': request, **_vrm_defaults_ctx(), **_static_assets_ctx()})
+        excluded = {'named-window-registration.js', 'page-controller.js',
+                    'page-bridge.js', 'card-face.js', 'window-lifecycle.js',
+                    'background-model-drag.js'}
+        html = re.sub(r'<script[^>]+src="/static/js/model_manager/([^"?]+)(?:\?[^">]*)?"[^>]*></script>',
+                      lambda match: '' if match.group(1) in excluded else match.group(0), html)
+        bootstrap = ('<script src="/static/app/app-state.js"></script>'
+                     '<script src="/static/js/index.js"></script>'
+                     '<script>window.showStatusToast=()=>{};window.startPageConfigLoad();</script>')
+        html = html.replace('<head>', '<head>' + bootstrap, 1)
+        index = (ROOT / 'templates/index.html').read_text(encoding='utf-8')
+        sources = re.findall(r'/static/app/app-interpage/[^?" ]+\.js', index)
+        scripts = '<script src="/static/common-ui-hud.js"></script>'
+        scripts += ''.join('<script src="' + path + '"></script>' for path in sources)
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(html.replace('</body>', scripts + '</body>'))
+
+    @app.get('/bridge-sender')
+    def bridge_sender():
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse('<!doctype html><title>Isolated message sender</title>')
+
     import uvicorn
     sock = socket.socket()
     sock.bind(('127.0.0.1', 0))
@@ -103,6 +153,16 @@ def full_manager_app(owner, monkeypatch, tmp_path):
 
 
 def real_package(tmp_path, kind):
+    if kind == 'pmd':
+        # External binary resources stay out of Git. The acceptance runner supplies
+        # the independently sourced PMD directory after verifying its blob hashes.
+        supplied = os.environ.get('NEKO_WORKSHOP_PMD_SAMPLE', '')
+        if not supplied:
+            pytest.skip('A verified external PMD sample is required')
+        source = Path(supplied)
+        names = ('miku_v2.pmd', 'eyeM2.bmp', 'readme.txt', 'readme_miku_v2.txt')
+        return make_native_bundle(tmp_path, kind='mmd', entry='miku_v2.pmd',
+                                  files={name: (source / name).read_bytes() for name in names})
     source = ROOT / {'live2d': 'static/mao_pro', 'vrm': 'static/vrm/sister1.0.vrm', 'mmd': 'static/mmd/Miku'}[kind]
     if not source.exists():
         pytest.skip('Unpacked repository model resources are required for GPU acceptance')
@@ -112,7 +172,7 @@ def real_package(tmp_path, kind):
     return make_native_bundle(tmp_path, kind=kind, entry=entry, files=files)
 
 
-@pytest.mark.parametrize('kind', ['live2d', 'vrm', 'mmd'])
+@pytest.mark.parametrize('kind', ['live2d', 'vrm', 'mmd', 'pmd'])
 def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_manager_app, tmp_path, kind):
     from playwright.sync_api import sync_playwright
     url, cfg, applied = full_manager_app
@@ -140,26 +200,7 @@ def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_mana
             assert applied == []
             installed = page.request.get(url + '/api/model-market/installed').json()['items'][0]
             page.locator('[data-workshop="view"]').click()
-            ready = '''data => {
-                if (data.kind === 'live2d') {
-                    const manager=window.live2dManager;
-                    const bounds=manager?.currentModel?.getBounds();
-                    return manager?._lastLoadedModelPath === data.url && manager?._modelLoadState === 'ready'
-                        && bounds?.width > 0 && bounds?.height > 0;
-                }
-                const manager=data.kind === 'vrm'?window.vrmManager:window.mmdManager;
-                const path=manager?.currentModel?.url;
-                const canvas=manager?.renderer?.domElement;
-                const visible=data.kind === 'vrm'?manager?.currentModel?.vrm?.scene?.visible
-                    :manager?.currentModel?.mesh?.visible;
-                const rect=canvas?.getBoundingClientRect();
-                // VRM sets currentModel before its animation warmup and fade-in.
-                // Wait for the actual visible frame, not the early resource handle.
-                return path && new URL(path,location.href).href === new URL(data.url,location.href).href
-                    && visible && (data.kind !== 'vrm' || (manager._loadState === 'ready' && !manager._isLoadingModel))
-                    && rect?.width > 0 && rect?.height > 0 && Number(getComputedStyle(canvas).opacity) >= 0.99
-                    && manager.renderer?.info?.render?.calls > 0;
-            }'''
+            ready = MODEL_READY
             page.wait_for_function(ready, arg={'kind':kind,'url':installed['url']}, timeout=60000)
             page.wait_for_function("!isModelManagerSettingsWaiting() && !document.getElementById('save-position-btn').disabled")
             assert applied == []
@@ -176,7 +217,7 @@ def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_mana
             assert not avatar.get('asset_source_id')
             assert cfg.load_characters()['猫娘'][NAME]['_reserved']['character_origin']['source'] == 'steam_workshop'
             assert len(cfg.load_characters()['猫娘']) == 1
-            page.keyboard.press('Escape')  # Dismiss the existing optional card-face choice.
+            # Reopen without choosing card art; the model binding is already saved.
             page.reload()
             page.wait_for_function("document.querySelector('#model-workshop-panel')?.dataset.mounted === 'true'", timeout=90000)
             page.wait_for_function(ready, arg={'kind':kind,'url':installed['url']}, timeout=60000)
