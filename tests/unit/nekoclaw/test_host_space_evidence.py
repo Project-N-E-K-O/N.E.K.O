@@ -623,6 +623,30 @@ async def test_only_so_many_notes_wait_and_the_oldest_go(space, root, workdir, m
     assert [held["title"] for held in _notes(root)["held"]] == ["Guess 1", "Guess 9"]
 
 
+async def test_the_note_that_is_filed_is_never_the_one_that_goes_for_being_one_too_many(space, root, workdir, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 3)
+    # All within one tick of the clock: none has waited longer than another.
+    for number in range(3):
+        await space.submit(_commission(workdir, id=f"c{number}"), _lesson(f"Guess {number}", f"Guess number {number}."))
+    # Fewer may wait from now on, and the first of them is filed once more.
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 2)
+
+    await space.submit(_commission(workdir, id="c0"), _lesson("Guess 0", "Guess number 0."))
+
+    assert [held["title"] for held in _notes(root)["held"]] == ["Guess 0", "Guess 2"]
+
+
+async def test_a_guess_does_not_take_effect_for_naming_a_file(space, root, workdir):
+    reply = await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app probably starts in app.py.", "inferred", ["src/app.py"])
+    )
+
+    # That the file is there says nothing for what was only concluded.
+    assert reply == HELD_INFERRED
+    (held,) = _notes(root)["held"]
+    assert held["evidence"] == [(workdir / "src" / "app.py").as_posix()] and not _memory(root).exists()
+
+
 async def test_a_note_for_every_project_is_judged_and_waits_with_the_space(space, root, workdir):
     reply = await space.submit(
         _commission(workdir, project="blog"), _lesson("Use uv", "Python is run through uv.", scope="global")
@@ -857,9 +881,19 @@ async def test_an_entry_does_not_expire_while_it_cannot_be_told_whether_its_file
     stands = module._stands
     # The other is on a disk that is not there just now.
     monkeypatch.setattr(module, "_stands", lambda path: None if path.endswith("README.md") else stands(path))
+    touched: list[str] = []
+    setting = TaskAgentSpace._set_standing
+
+    def watched(self: TaskAgentSpace, project: Any, entry_id: str, expire: bool) -> bool:
+        touched.append(entry_id)
+        return setting(self, project, entry_id, expire)
+
+    monkeypatch.setattr(TaskAgentSpace, "_set_standing", watched)
 
     assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
     assert "status" not in _head(_memory(root) / "entry-point.md")
+    # Left alone at the first look already: the lock on every write is not taken for it.
+    assert touched == []
 
 
 async def test_an_entry_is_changed_only_while_its_files_are_as_they_were_found(space, root, workdir):

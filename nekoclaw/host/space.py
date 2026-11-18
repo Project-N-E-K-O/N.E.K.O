@@ -1653,8 +1653,8 @@ class TaskAgentSpace:
             or seen >= SPACE_SEEN_TO_TAKE_EFFECT
         )
         if not in_effect:
-            if record is None:
-                raise OSError("notes.json cannot be read, so a note that is not in effect yet cannot be kept")
+            # Raises OSError when the file it would wait in cannot be read:
+            # there is nowhere for it to wait then, and it is told so.
             self._hold(notes_path, note, mark)
             return _Taken(None, _HELD, confidence=known.confidence)
 
