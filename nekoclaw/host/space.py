@@ -527,6 +527,12 @@ def _digest(content: str) -> str:
     return hashlib.sha256(_normal(content).encode("utf-8")).hexdigest()[:12]
 
 
+# The mark of a text that says nothing once it is compared (empty, or marks of
+# a sentence only). An entry can come to keep it: emptied in the console, or
+# given a text that is nothing but such marks.
+_NO_TEXT = hashlib.sha256(b"").hexdigest()[:12]
+
+
 def _confidence(value: Any) -> str:
     """Return how a note is known as one of ``CONFIDENCES``, or empty for anything else."""
     known = str(value or "").strip().lower()
@@ -820,7 +826,10 @@ def _removed_from(records: Iterable[dict[str, Any]]) -> tuple[set[str], set[str]
     """Return the titles and the marks of what was removed from a layer, as entries are compared to them."""
     removed = list(records)
     titles = {_normal(item.get("title")) for item in removed} - {""}
-    marks = {mark for item in removed for mark in _strings(item.get("marks"))}
+    # The mark of no text tells nothing: it would be that of every entry
+    # that is empty and of every part of one that is. Left out here as
+    # well as where records are written, for the records that have it.
+    marks = {mark for item in removed for mark in _strings(item.get("marks"))} - {_NO_TEXT}
     return titles, marks
 
 
@@ -2773,11 +2782,12 @@ class TaskAgentSpace:
                     # One that says nothing (emptied, then removed) has no
                     # text to remember: the mark of nothing would be that
                     # of every empty entry and every empty part of one.
-                    "marks": list(
-                        dict.fromkeys(
-                            [*_listed(document, "texts"), *([_digest(document.body)] if _normal(document.body) else [])]
-                        )
-                    ),
+                    # It may be among the marks the entry keeps as well.
+                    "marks": [
+                        mark
+                        for mark in dict.fromkeys([*_listed(document, "texts"), _digest(document.body)])
+                        if mark != _NO_TEXT
+                    ],
                     "title": document.get("name") or name,
                     "at": _date(self._clock()),
                 }

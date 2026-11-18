@@ -1207,6 +1207,41 @@ async def test_an_entry_that_says_nothing_when_it_is_removed_leaves_no_mark_of_n
     assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["more-notes", "notes"]
 
 
+async def test_an_entry_emptied_in_the_console_and_removed_leaves_no_mark_of_nothing_either(space, root, workdir):
+    await space.touch_project("Budget app")
+    project = _commission(workdir, id="c9", project="Budget app")
+    await space.submit(project, _lesson("Camera drive", "It is E: here.", "verified"))
+    # Emptied in the console: the entry itself keeps the mark of the text it has now, which is none.
+    await space.edit_entry("camera-drive", "Budget app", content="")
+    assert _head(_memory(root, "Budget app") / "camera-drive.md")["texts"] == _digest("")
+    assert await space.delete_entry("camera-drive", "Budget app")
+
+    (removed,) = _notes(root, "Budget app")["removed"]
+    assert (removed["marks"], removed["title"]) == ([], "Camera drive")
+    # An entry with a part that comes to nothing still goes with its commission.
+    await space.submit(_commission(workdir), _lesson("Notes", "Something.", "verified"))
+    _said_instead(_memory(root) / "notes.md", "Something.", "Something." + chr(10) + chr(10) + "***" + chr(10) + chr(10) + "More.")
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["notes"]
+
+
+async def test_a_record_that_has_the_mark_of_nothing_is_read_without_it(space, root, workdir):
+    from nekoclaw.host.space import _removed_from
+
+    assert _removed_from([{"marks": [_digest(""), _digest("...")], "title": "Old"}]) == ({"old"}, set())
+    await space.touch_project("Budget app")
+    # As a build before this one may have written it.
+    notes = root / "projects" / "Budget app" / "notes.json"
+    record = {"version": 1, "held": [], "removed": [{"marks": [_digest("")], "title": "Old", "at": "2027-01-15"}]}
+    notes.write_text(json.dumps(record), encoding="utf-8")
+    await space.submit(_commission(workdir), _lesson("Notes", "Something.", "verified"))
+    _said_instead(_memory(root) / "notes.md", "Something.", "Something." + chr(10) + chr(10) + "..." + chr(10))
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["notes"]
+    # Nor is a note that comes to nothing refused as one the user removed.
+    reply = await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Dots", "...", "verified"))
+    assert reply == "kept in project Budget app as dots.md"
+
+
 async def test_what_was_removed_is_remembered_where_it_was(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
     await space.delete_entry("camera-drive", DEFAULT_PROJECT)
