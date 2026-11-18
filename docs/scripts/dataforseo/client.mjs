@@ -6,6 +6,7 @@ export const DATAFORSEO_ENDPOINTS = Object.freeze({
   keywordDifficulty: '/v3/dataforseo_labs/google/bulk_keyword_difficulty/live',
   organicSerp: '/v3/serp/google/organic/live/advanced',
   bingOrganicSerp: '/v3/serp/bing/organic/live/advanced',
+  bingChinaLocations: '/v3/serp/bing/locations/cn',
 })
 
 export class DataForSeoApiError extends Error {
@@ -162,23 +163,34 @@ export class DataForSeoClient {
     this.baseUrl = String(baseUrl).replace(/\/$/, '')
   }
 
-  async post(endpoint, tasks, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
-    if (typeof endpoint !== 'string' || !endpoint.startsWith('/v3/')) {
-      throw new TypeError('DataForSEO endpoint must start with /v3/')
-    }
+  async post(endpoint, tasks, options) {
     if (!Array.isArray(tasks) || tasks.length === 0) {
       throw new TypeError('DataForSEO request must contain at least one task')
+    }
+    return this.#request(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tasks),
+    }, options)
+  }
+
+  async get(endpoint, options) {
+    return this.#request(endpoint, { method: 'GET' }, options)
+  }
+
+  async #request(endpoint, request, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+    if (typeof endpoint !== 'string' || !endpoint.startsWith('/v3/')) {
+      throw new TypeError('DataForSEO endpoint must start with /v3/')
     }
 
     const authorization = Buffer.from(`${this.login}:${this.password}`, 'utf8').toString('base64')
     const normalizedTimeoutMs = normalizeTimeout(timeoutMs)
     const requestOptions = {
-      method: 'POST',
+      ...request,
       headers: {
+        ...request.headers,
         Authorization: `Basic ${authorization}`,
-        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(tasks),
     }
     if (normalizedTimeoutMs != null) {
       requestOptions.signal = AbortSignal.timeout(normalizedTimeoutMs)

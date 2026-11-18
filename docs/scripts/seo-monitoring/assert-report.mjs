@@ -684,6 +684,20 @@ function validateTechnical(site, failures) {
 }
 
 export function requiredFailures(report, level = 'core') {
+  if (level === 'bing-dry-run') {
+    const segments = report?.bingRankings
+    if (!Array.isArray(segments) || segments.length !== 2) {
+      return ['Bing dry-run must report both ranking groups']
+    }
+    return ['cn', 'online-en'].flatMap(id => {
+      const segment = segments.find(item => item?.id === id)
+      const planned = segment?.status === 'UNKNOWN'
+        && Array.isArray(segment.rows)
+        && segment.rows.length === 0
+        && !Object.hasOwn(segment, 'knownCostUsd')
+      return planned ? [] : [`Bing dry-run ${id} must have UNKNOWN status, empty rows and no reported cost`]
+    })
+  }
   const failures = []
   const requireIndexNow = level === 'daily' || level === 'all'
 
@@ -730,8 +744,8 @@ function parseArgs(argv) {
     else throw new TypeError(`Unknown argument: ${argv[index]}`)
   }
   if (!options.input) throw new TypeError('--input is required')
-  if (!['core', 'daily', 'all'].includes(options.level)) {
-    throw new TypeError('--level must be core, daily, or all')
+  if (!['core', 'daily', 'all', 'bing-dry-run'].includes(options.level)) {
+    throw new TypeError('--level must be core, daily, all, or bing-dry-run')
   }
   return options
 }

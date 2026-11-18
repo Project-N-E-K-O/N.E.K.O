@@ -746,7 +746,7 @@ function buildBlockerActions(blockers, sites, automationOwner) {
   }).sort(compareGrowthActions)
 }
 
-function buildTrustRows(sites, segments, rankComparison) {
+function buildTrustRows(sites, segments, rankComparison, bingRankings) {
   const rows = []
   for (const segment of segments) {
     rows.push({
@@ -799,6 +799,42 @@ function buildTrustRows(sites, segments, rankComparison) {
         evidence: site.origin,
       },
     )
+    if (site.bing) {
+      const { traffic, queries } = site.bing
+      const latest = traffic?.rows?.[0]
+      rows.push(
+        {
+          source: 'Bing Webmaster Tools',
+          target: `${site.label} · 站点流量`,
+          status: traffic?.status,
+          collectedAt: traffic?.collectedAt ?? null,
+          result: latest
+            ? `${latest.date} · ${latest.clicks} 次点击 / ${latest.impressions} 次曝光`
+            : traffic?.reason ?? 'N/A',
+          evidence: 'GetRankAndTrafficStats',
+        },
+        {
+          source: 'Bing Webmaster Tools',
+          target: `${site.label} · 查询表现（最新一周）`,
+          status: queries?.status,
+          collectedAt: queries?.collectedAt ?? null,
+          result: queries?.status === 'OBSERVED'
+            ? `${queries.latestDate ?? queries.rows[0]?.date} · 保留 ${queries.rows.length} 条查询`
+            : queries?.reason ?? 'N/A',
+          evidence: 'GetQueryStats',
+        },
+      )
+    }
+  }
+  for (const segment of bingRankings) {
+    rows.push({
+      source: 'DataForSEO Bing',
+      target: `${segment.label} · 自然排名`,
+      status: segment.status,
+      collectedAt: segment.collectedAt ?? null,
+      result: segment.reason ?? `有效结果 ${segment.observed}/${segment.rows.length}`,
+      evidence: 'Bing Organic SERP Live',
+    })
   }
   rows.push({
     source: 'Previous ranking report',
@@ -896,7 +932,7 @@ export function buildMonitoringReport({
     topTenChange,
     dataForSeoCost,
     blockers,
-    trust: buildTrustRows(sites, segments, rankComparison),
+    trust: buildTrustRows(sites, segments, rankComparison, bingRankings),
   }
 }
 
@@ -1113,24 +1149,24 @@ function renderBingMarkdown(sites, rankings) {
     const latest = traffic?.rows[0]
     const label = escapeCell(site.label)
     lines.push(`| ${label} | 站点流量 | ${bingStatusCell(traffic)} | ${latest?.date ?? 'N/A'} | ${display(latest?.clicks)} | ${display(latest?.impressions)} |`)
-    lines.push(`| ${label} | 查询表现 | ${bingStatusCell(queries)} | ${queries?.rows[0]?.date ?? 'N/A'} | N/A | N/A |`)
+    lines.push(`| ${label} | 查询表现（最新一周） | ${bingStatusCell(queries)} | ${queries?.latestDate ?? queries?.rows[0]?.date ?? 'N/A'} | N/A | N/A |`)
   }
   lines.push(
     '',
-    '- 站点流量取 Bing API 最近有数据的一天，包含 Web、Chat、新闻等搜索入口。查询表取 API 最新日期的前 10 个查询，按曝光排序。平均排名取查询的平均曝光位置。',
+    '- 站点流量取 Bing API 最近有数据的一天，包含 Web、Chat、新闻等搜索入口。查询数据每周更新，表格按 Bing API 最新日期显示曝光最高的 10 条。平均排名取查询的平均曝光位置。',
     '',
-    '| 站点 | 查询 | 点击 | 曝光 | 平均排名 |',
-    '|---|---|---:|---:|---:|',
+    '| 站点 | 查询（最新一周） | API 日期 | 点击 | 曝光 | 平均排名 |',
+    '|---|---|---|---:|---:|---:|',
   )
   let queryCount = 0
   for (const site of sites) {
     const rows = site.bing?.queries?.rows ?? []
     for (const row of rows.filter(row => row.date === rows[0].date).slice(0, 10)) {
-      lines.push(`| ${escapeCell(site.label)} | ${escapeCell(row.query)} | ${row.clicks} | ${row.impressions} | ${display(row.position, 2)} |`)
+      lines.push(`| ${escapeCell(site.label)} | ${escapeCell(row.query)} | ${row.date} | ${row.clicks} | ${row.impressions} | ${display(row.position, 2)} |`)
       queryCount += 1
     }
   }
-  if (queryCount === 0) lines.push('| N/A | N/A | N/A | N/A | N/A |')
+  if (queryCount === 0) lines.push('| N/A | N/A | N/A | N/A | N/A | N/A |')
 
   lines.push('', '### Bing 自然排名（DataForSEO）', '')
   for (const segment of rankings) {
@@ -1152,7 +1188,7 @@ function renderBingMarkdown(sites, rankings) {
 }
 
 function bingStatusCell(value) {
-  const status = value?.status ?? 'UNKNOWN'
+  const status = statusLabel(value?.status)
   return value?.reason ? `${status} · N/A（${escapeCell(value.reason)}）` : status
 }
 

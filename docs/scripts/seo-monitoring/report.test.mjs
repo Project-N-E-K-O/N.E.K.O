@@ -206,11 +206,16 @@ test('Bing Markdown shows observed values and independent unavailable sources', 
   })
   const markdown = renderMarkdown(report)
   assert.match(markdown, /## Bing 搜索表现与排名/u)
-  assert.ok(markdown.includes('| .cn 产品主页 | desktop \\| pet | 0 | 4 | 3.50 |'))
+  assert.match(markdown, /查询（最新一周） \| API 日期/u)
+  assert.ok(markdown.includes('| .cn 产品主页 | desktop \\| pet | 2026-07-28 | 0 | 4 | 3.50 |'))
   assert.match(markdown, /站点流量 \| FAILED · N\/A（HTTP 403）/u)
   assert.match(markdown, /UNKNOWN · N\/A（dry-run 未请求付费排名）/u)
   assert.ok(!report.blockers.some(blocker => blocker.includes('Bing')))
   assert.equal(report.sites[0].bing.queries.status, 'OBSERVED')
+  assert.deepEqual(
+    report.trust.filter(row => row.source.includes('Bing')).map(row => [row.evidence, row.status]),
+    [['GetRankAndTrafficStats', 'FAILED'], ['GetQueryStats', 'OBSERVED'], ['Bing Organic SERP Live', 'UNKNOWN']],
+  )
 })
 
 test('rank buckets distinguish observed off-100 results, failures, and not-run rows', () => {

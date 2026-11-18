@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { DATAFORSEO_ENDPOINTS, DataForSeoApiError } from '../dataforseo/client.mjs'
+import { DATAFORSEO_ENDPOINTS, DataForSeoApiError, DataForSeoClient } from '../dataforseo/client.mjs'
 import { collectBingRankings, collectBingWebmaster } from './bing.mjs'
 
 const origin = 'https://example.test'
@@ -64,6 +64,26 @@ test('Bing Webmaster distinguishes missing credentials, empty results, bad crede
   assert.match(timedOut.traffic.reason, /超时/u)
 })
 
+test('Bing Webmaster keeps at most 20 latest-date queries by impressions', async () => {
+  const olderQuery = { Date: '2011-09-09', Query: 'older query', Clicks: 1, Impressions: 100 }
+  const latestQueries = Array.from({ length: 24 }, (_, index) => ({
+    Date: date, Query: `query ${index}`, Clicks: 0, Impressions: index,
+  }))
+  const result = await collectBingWebmaster(origin, {
+    apiKey: 'test-fixture',
+    fetchImpl: async url => url.pathname.endsWith('/GetQueryStats')
+      ? Response.json({ d: [olderQuery, ...latestQueries] })
+      : Response.json({ d: [{ Date: date, Clicks: '0', Impressions: 10 }] }),
+  })
+  assert.equal(result.traffic.status, 'FAILED')
+  assert.equal(result.queries.status, 'OBSERVED')
+  assert.equal(result.queries.latestDate, '2011-09-16')
+  assert.equal(result.queries.distinctDateCount, 2)
+  assert.equal(result.queries.latestDateRowCount, 24)
+  assert.deepEqual(result.queries.rows.map(row => row.impressions), Array.from({ length: 20 }, (_, index) => 23 - index))
+  assert.ok(result.queries.rows.every(row => row.date === '2011-09-16'))
+})
+
 const definition = {
   id: 'online-en',
   label: '.online en / United States',
@@ -77,7 +97,10 @@ const definition = {
 }
 
 test('Bing SERP keeps zero-cost dry runs and the optional Chinese group offline', async () => {
-  const client = { post: () => assert.fail('Skipping Bing must send no paid requests') }
+  const client = {
+    get: () => assert.fail('Skipping Bing must send no location requests'),
+    post: () => assert.fail('Skipping Bing must send no paid requests'),
+  }
   const dry = await collectBingRankings(definition, { client })
   assert.equal(dry.status, 'UNKNOWN')
   assert.match(dry.reason, /dry-run/u)
@@ -86,8 +109,76 @@ test('Bing SERP keeps zero-cost dry runs and the optional Chinese group offline'
   assert.equal(cn.status, 'UNKNOWN')
   assert.match(cn.reason, /开关未开启/u)
 
+  const optedInDryRun = await collectBingRankings(
+    { ...definition, id: 'cn', bingRanking: 'opt-in' },
+    { client, includeCn: true },
+  )
+  assert.match(optedInDryRun.reason, /dry-run/u)
+
   const missing = await collectBingRankings(definition, { paid: true })
   assert.match(missing.reason, /未配置/u)
+})
+
+const chinaDefinition = {
+  ...definition,
+  id: 'cn',
+  bingRanking: 'opt-in',
+  keywordConfig: {
+    ...definition.keywordConfig,
+    locationCode: 2156,
+    languageCode: 'zh-CN',
+    keywords: ['AI 桌面助手'],
+  },
+}
+
+test('China Bing SERP checks the free location list before requesting paid ranks', async () => {
+  const requests = []
+  const client = new DataForSeoClient({
+    login: 'test-login',
+    password: 'test-password',
+    fetchImpl: async (url, options) => {
+      const path = new URL(url).pathname
+      requests.push(path)
+      assert.equal(options.headers.Authorization, `Basic ${Buffer.from('test-login:test-password').toString('base64')}`)
+      if (path === DATAFORSEO_ENDPOINTS.bingChinaLocations) {
+        assert.equal(options.method, 'GET')
+        assert.equal(options.body, undefined)
+        return Response.json({
+          status_code: 20000, cost: 0,
+          tasks: [{ status_code: 20000, result: [{ location_code: 2156, country_iso_code: 'CN' }] }],
+        })
+      }
+      assert.equal(options.method, 'POST')
+      assert.equal(JSON.parse(options.body)[0].location_code, 2156)
+      return Response.json({
+        status_code: 20000, cost: 0.002,
+        tasks: [{ status_code: 20000, result: [{ items: [{ type: 'organic', rank_group: 1, url: origin }] }] }],
+      })
+    },
+  })
+  const result = await collectBingRankings(chinaDefinition, { client, paid: true, includeCn: true })
+  assert.deepEqual(requests, [DATAFORSEO_ENDPOINTS.bingChinaLocations, DATAFORSEO_ENDPOINTS.bingOrganicSerp])
+  assert.equal(result.status, 'OBSERVED')
+  assert.equal(result.knownCostUsd, 0.002)
+})
+
+test('China Bing SERP skips paid requests when location support is absent or cannot be checked', async () => {
+  for (const [status, get] of [
+    ['UNSUPPORTED', async () => ({ tasks: [{ result: [] }] })],
+    ['FAILED', async () => { throw new DataForSeoApiError('sensitive fixture', { statusCode: 401 }) }],
+  ]) {
+    let posts = 0
+    const result = await collectBingRankings(chinaDefinition, {
+      client: { get, post: () => { posts += 1 } },
+      paid: true,
+      includeCn: true,
+    })
+    assert.equal(posts, 0)
+    assert.equal(result.status, status)
+    assert.deepEqual(result.rows, [])
+    assert.equal(Object.hasOwn(result, 'knownCostUsd'), false)
+    assert.doesNotMatch(JSON.stringify(result), /sensitive fixture/u)
+  }
 })
 
 test('Bing SERP reuses safe retries and distinguishes misses, empty results, and uncertain billing', async () => {

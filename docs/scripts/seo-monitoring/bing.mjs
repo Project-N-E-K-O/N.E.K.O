@@ -3,6 +3,7 @@ import { createSerpRequester, domainMatchesTarget, validateConfig } from '../dat
 
 const WEBMASTER_ORIGIN = 'https://ssl.bing.com'
 const SERP_DEPTH = 10
+const STORED_QUERY_LIMIT = 20
 
 function bingDate(value) {
   if (typeof value !== 'string') return null
@@ -57,7 +58,7 @@ async function getWebmasterRows(method, siteUrl, apiKey, parseRow, { fetchImpl, 
     if (rows.includes(null)) return { status: 'FAILED', reason: 'Bing 站长 API 返回无效数据行', rows: [] }
     if (rows.length === 0) return { status: 'UNKNOWN', reason: 'Bing 站长 API 未返回数据行', rows }
     rows.sort((left, right) => right.date.localeCompare(left.date) || right.impressions - left.impressions)
-    return { status: 'OBSERVED', rows }
+    return { status: 'OBSERVED', collectedAt: new Date().toISOString(), rows }
   } catch (error) {
     const reason = error?.name === 'TimeoutError' || error?.name === 'AbortError'
       ? 'Bing 站长 API 请求超时'
@@ -76,7 +77,37 @@ export async function collectBingWebmaster(siteUrl, {
     getWebmasterRows('GetRankAndTrafficStats', siteUrl, apiKey, trafficRow, options),
     getWebmasterRows('GetQueryStats', siteUrl, apiKey, queryRow, options),
   ])
-  return { traffic, queries }
+  if (queries.status !== 'OBSERVED') return { traffic, queries }
+  const latestDate = queries.rows[0].date
+  const latestRows = queries.rows.filter(row => row.date === latestDate)
+  return {
+    traffic,
+    queries: {
+      ...queries,
+      latestDate,
+      distinctDateCount: new Set(queries.rows.map(row => row.date)).size,
+      latestDateRowCount: latestRows.length,
+      rows: latestRows.slice(0, STORED_QUERY_LIMIT),
+    },
+  }
+}
+
+async function checkChinaLocation(client, locationCode) {
+  try {
+    const payload = await client.get(DATAFORSEO_ENDPOINTS.bingChinaLocations, { timeoutMs: 15_000 })
+    const tasks = payload?.tasks
+    if (!Array.isArray(tasks) || tasks.length === 0 || !tasks.every(task => Array.isArray(task?.result))) {
+      return { status: 'FAILED', reason: 'DataForSEO Bing 中国地区列表格式异常' }
+    }
+    const supported = tasks.some(task => task.result.some(location => (
+      location?.location_code === locationCode && location.country_iso_code === 'CN'
+    )))
+    if (supported) return { status: 'OBSERVED' }
+    return { status: 'UNSUPPORTED', reason: `DataForSEO Bing 中国地区列表未包含 ${locationCode}` }
+  } catch (error) {
+    const code = Number.isInteger(error?.statusCode) ? `（${error.statusCode}）` : ''
+    return { status: 'FAILED', reason: `DataForSEO Bing 中国地区校验失败${code}` }
+  }
 }
 
 export async function collectBingRankings(definition, {
@@ -100,6 +131,10 @@ export async function collectBingRankings(definition, {
     config = validateConfig(definition.keywordConfig)
   } catch {
     return { ...segment, status: 'FAILED', reason: 'Bing 排名配置无效', rows: [] }
+  }
+  if (definition.id === 'cn') {
+    const location = await checkChinaLocation(client, config.locationCode)
+    if (location.status !== 'OBSERVED') return { ...segment, ...location, rows: [] }
   }
   const requestSerp = createSerpRequester(client, {
     endpoint: DATAFORSEO_ENDPOINTS.bingOrganicSerp,
@@ -156,6 +191,7 @@ export async function collectBingRankings(definition, {
   return {
     ...segment,
     status,
+    collectedAt: new Date().toISOString(),
     observed,
     target: {
       domain: config.targetDomain,

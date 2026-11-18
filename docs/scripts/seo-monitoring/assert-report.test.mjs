@@ -382,6 +382,28 @@ function validReport() {
   }
 }
 
+test('the Bing dry-run contract requires both unspent ranking groups and permits Webmaster data', () => {
+  const bingRankings = [
+    { id: 'cn', status: 'UNKNOWN', rows: [] },
+    { id: 'online-en', status: 'UNKNOWN', rows: [] },
+  ]
+  const report = { bingRankings, sites: [{ bing: { traffic: { status: 'OBSERVED' } } }] }
+  assert.deepEqual(requiredFailures(report, 'bing-dry-run'), [])
+  assert.notEqual(requiredFailures({}, 'bing-dry-run').length, 0)
+  assert.notEqual(requiredFailures({ bingRankings: [] }, 'bing-dry-run').length, 0)
+  const [cn, online] = bingRankings
+  for (const invalid of [
+    { id: 'cn', status: 'UNKNOWN' },
+    { ...cn, knownCostUsd: 0 },
+    { ...cn, rows: [{ keyword: 'unexpected' }] },
+    { ...cn, rows: null },
+    { ...cn, status: 'OBSERVED' },
+    online,
+  ]) {
+    assert.notEqual(requiredFailures({ bingRankings: [invalid, online] }, 'bing-dry-run').length, 0)
+  }
+})
+
 test('a fully populated report passes core, daily, and all contracts', () => {
   const report = validReport()
   assert.deepEqual(requiredFailures(report, 'core'), [])

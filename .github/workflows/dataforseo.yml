@@ -326,8 +326,8 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           BING_WEBMASTER_API_KEY: ${{ secrets.BING_WEBMASTER_API_KEY }}
-          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
-          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+          DATAFORSEO_LOGIN: ${{ inputs.run_mode == 'paid' && secrets.DATAFORSEO_LOGIN || '' }}
+          DATAFORSEO_PASSWORD: ${{ inputs.run_mode == 'paid' && secrets.DATAFORSEO_PASSWORD || '' }}
           INCLUDE_BING_CN: ${{ inputs.include_bing_cn }}
           GA4_PROPERTY_ID: ${{ vars.GA4_PROPERTY_ID }}
           GA4_CN_PROPERTY_ID: ${{ vars.GA4_CN_PROPERTY_ID }}
@@ -412,3 +412,5 @@ jobs:
               and .rankingStatus == "not_run"
             ' "$status" >/dev/null
           done
+          report=".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level bing-dry-run
