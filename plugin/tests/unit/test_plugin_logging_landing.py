@@ -237,10 +237,12 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
                 while writer is not None and writer.is_alive():
                     if readable.poll(100):
                         os.read(reader, 1 << 16)
-                if fifo_stream is not None:
-                    fifo_stream.close()
             finally:
+                # Without a reader, any write still pending fails with EPIPE instead of blocking.
                 os.close(reader)
+                if fifo_stream is not None:
+                    with contextlib.suppress(OSError):
+                        fifo_stream.close()
     assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-marker") == 1
     plogging.logger.info("parent-after-fork-marker")
     assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
