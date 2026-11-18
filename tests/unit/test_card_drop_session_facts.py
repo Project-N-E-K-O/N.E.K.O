@@ -3308,7 +3308,13 @@ async def test_store_session_persists_the_shared_masked_profile(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_store_session_offloads_local_credential_io(monkeypatch):
+async def test_store_session_offloads_local_credential_io(tmp_path, monkeypatch):
+    # Keep the credential directory private to this test. _store_session also
+    # writes the device record beside community_auth.json; left on the
+    # process-wide ConfigManager root, that record closes the facts-sync upload
+    # gate for every later test in the same worker.
+    monkeypatch.setattr(C, "_auth_path", lambda: tmp_path / "community_auth.json")
+    monkeypatch.setattr(C, "_social_session_path", lambda: tmp_path / "social_session.json")
     event_loop_thread = threading.get_ident()
     worker_threads: dict[str, int] = {}
 

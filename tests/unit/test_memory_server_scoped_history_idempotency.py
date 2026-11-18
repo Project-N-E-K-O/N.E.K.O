@@ -27,6 +27,7 @@ import copy
 import hashlib
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,6 +97,21 @@ class FakePersona:
             row for row in self.display_names if row[0] != subject.key
         ]
         return {}
+
+
+def _assert_under_temp_root(path: Path) -> None:
+    """Never touch real runtime root directories: ``path`` must lie under the temp root.
+
+    Compares resolved paths. The sidecar sits under whatever the process-wide
+    ConfigManager points at: the isolated root from ``tests/real_root_isolation``
+    (built from ``tempfile.gettempdir()`` as-is), or pytest's basetemp once any
+    test in this worker has used the session-scoped ``clean_user_data_dir``
+    (pytest resolves basetemp). On Windows runners ``gettempdir()`` is the 8.3
+    short form (``C:\\Users\\RUNNER~1\\...``) and the resolved basetemp the long
+    form, so a plain string prefix check fails depending on test order.
+    """
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    assert path.resolve().is_relative_to(temp_root), (path, temp_root)
 
 
 def _cm(root: Path):
@@ -2568,8 +2584,6 @@ async def test_unrelated_subject_epochs_do_not_change_the_request_identity(env):
 
 
 async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
-    import tempfile
-
     from app.memory_server import locale_state
 
     env.llm.responses = [RuntimeError("LLM failed"), PART_ONLY_BATCH_FACTS]
@@ -2582,7 +2596,7 @@ async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
 
     await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    assert str(sidecar).startswith(tempfile.gettempdir())       # Never touch real runtime root directories.
+    _assert_under_temp_root(sidecar)
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()                                         # GP is absent from language storage after clearing.
@@ -2666,12 +2680,10 @@ async def test_forget_epochs_endpoint_reports_the_current_fence(env):
 
 
 async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
-    import tempfile
-
     from app.memory_server import locale_state
 
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    assert str(sidecar).startswith(tempfile.gettempdir())       # Never touch real runtime root directories.
+    _assert_under_temp_root(sidecar)
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()
@@ -2697,15 +2709,13 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
 
 
 def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row():
-    import tempfile
-
     from app.memory_server import locale_state
     from memory.scopes import MemorySubject
 
     name = "LocaleRaceChar"
     subject = MemorySubject.participant("neko_visit", "u_race")
     sidecar = Path(locale_state._subject_locale_path(name))
-    assert str(sidecar).startswith(tempfile.gettempdir())
+    _assert_under_temp_root(sidecar)
     (stale,) = locale_state.allocate_subject_prompt_locale_orders(name, [subject])
     locale_state.forget_subject_prompt_locale(name, subject)     # Clearing completes after allocation but before reservation persistence.
     locale_state.reserve_subject_prompt_locale_orders(name, [subject], orders=[stale])
