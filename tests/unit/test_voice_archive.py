@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from main_logic.voice_archive import (VoiceArchive, archive_event, drain_voice_archive,
-                                      rename_character_voice_archive)
+                                      rename_character_voice_archive, retire_voice_archive,
+                                      delete_character_voice_archive)
 
 
 def event(kind, sid='speech-a', **kwargs):
@@ -65,6 +66,46 @@ def test_queued_audio_is_discarded_after_disabling_and_reenabling(tmp_path):
         save_settings(mgr._config_manager, True)
         await drain_voice_archive(mgr)
         assert not (tmp_path/'voice_archive').exists()
+    asyncio.run(run())
+
+
+def test_repeated_enabled_save_preserves_authorized_queue(tmp_path):
+    from utils.voice_archive_settings import save_settings
+    async def run():
+        mgr = manager(tmp_path, enabled=True)
+        await archive_event(mgr, 'audio', 'record', data=b'\x01\x02')
+        # A second history window can save True again while the first one is
+        # already recording; this must not revoke earlier consent.
+        save_settings(mgr._config_manager, True)
+        await drain_voice_archive(mgr)
+        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT data FROM chunks') == [(b'\x01\x02',)]
+    asyncio.run(run())
+
+
+def test_settings_cannot_flip_between_final_consent_check_and_sqlite_commit(tmp_path):
+    from utils.voice_archive_settings import save_settings
+    async def run():
+        mgr = manager(tmp_path)
+        await archive_event(mgr, 'audio', 's', data=b'\x01\x02')
+        started, release = threading.Event(), threading.Event()
+        # The permission lock is held around this write, off the event loop.
+        while not hasattr(mgr, '_owner_voice_archive'):
+            await asyncio.sleep(0)
+        original = mgr._owner_voice_archive.write
+        def paused(event):
+            started.set()
+            release.wait(3)
+            original(event)
+        mgr._owner_voice_archive.write = paused
+        await asyncio.to_thread(started.wait, 3)
+        assert started.is_set()
+        turn_off = asyncio.create_task(asyncio.to_thread(save_settings, mgr._config_manager, False))
+        await asyncio.sleep(.02)
+        assert not turn_off.done()
+        release.set()
+        await drain_voice_archive(mgr)
+        await turn_off
+        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT speech_id FROM clips') == [('s',)]
     asyncio.run(run())
 
 
@@ -212,7 +253,22 @@ def test_enabling_mid_speech_never_claims_a_complete_recording(tmp_path):
         await archive_event(mgr, 'audio', 's', data=b'\1\0')
         await archive_event(mgr, 'done', 's')
         await drain_voice_archive(mgr)
-        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT archive_error FROM clips') == [(1,)]
+        # The first frame was never authorized, so even the later frames are
+        # suppressed; partial Ogg streams without bootstrap headers cannot play.
+        assert not (tmp_path/'voice_archive/archive.sqlite3').exists()
+    asyncio.run(run())
+
+
+def test_mid_speech_ogg_opt_in_does_not_expose_headerless_tail(tmp_path):
+    from utils.voice_archive_settings import save_settings
+    async def run():
+        mgr = manager(tmp_path, enabled=False)
+        await archive_event(mgr, 'audio', 's', data=b'OggS-bootstrap', format='ogg')
+        save_settings(mgr._config_manager, True)
+        await archive_event(mgr, 'audio', 's', data=b'page-without-headers', format='ogg')
+        await archive_event(mgr, 'done', 's')
+        await drain_voice_archive(mgr)
+        assert not (tmp_path/'voice_archive/archive.sqlite3').exists()
     asyncio.run(run())
 
 
@@ -292,6 +348,33 @@ def test_character_rename_keeps_recorded_voice_attached_to_history(tmp_path):
     assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT character,record_id FROM clips') == [
         ('Bob', 'durable-id'),
     ]
+
+
+def test_retired_character_rejects_late_archive_events(tmp_path):
+    async def run():
+        mgr = manager(tmp_path)
+        await archive_event(mgr, 'audio', 's', data=b'\x01\x02')
+        await retire_voice_archive(mgr)
+        await archive_event(mgr, 'audio', 's', data=b'\x03\x04')
+        await archive_event(mgr, 'done', 's')
+        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT data FROM chunks') == [(b'\x01\x02',)]
+        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT stream_complete FROM clips') == [(0,)]
+    asyncio.run(run())
+
+
+def test_deleting_character_purges_only_her_saved_voice_and_text(tmp_path):
+    archive = VoiceArchive(tmp_path / 'voice_archive/archive.sqlite3')
+    for character in ('Alice', 'Bob'):
+        for kind, fields in (('audio', {'data': b'\x01\x02', 'format': 'pcm_s16le_48000'}),
+                             ('text', {'text': 'private copy', 'is_first': True}),
+                             ('done', {})):
+            archive.write(dict(character=character, speech_id='s', kind=kind, **fields))
+    assert delete_character_voice_archive(tmp_path, 'Alice') == 1
+    path = archive.path
+    assert read(path, 'SELECT character FROM clips') == [('Bob',)]
+    assert read(path, 'SELECT count(*) FROM chunks') == [(1,)]
+    assert read(path, 'SELECT count(*) FROM text_events') == [(1,)]
+    assert delete_character_voice_archive(tmp_path, 'Alice') == 0
 
 
 def test_queue_overflow_marks_next_accepted_event_partial(tmp_path, monkeypatch):

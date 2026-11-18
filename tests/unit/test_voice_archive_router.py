@@ -13,7 +13,9 @@ from main_routers import voice_archive_router as api
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(api, 'get_config_manager', lambda: SimpleNamespace(app_docs_dir=tmp_path))
+    config = SimpleNamespace(app_docs_dir=tmp_path,
+                             load_characters=lambda: {'猫娘': {'YUI': {}, 'Other': {}}})
+    monkeypatch.setattr(api, 'get_config_manager', lambda: config)
     app = FastAPI()
     app.include_router(api.router)
     with TestClient(app, client=('127.0.0.1', 50000), base_url='http://localhost') as client:
@@ -74,3 +76,15 @@ def test_corrupt_archive_not_played(client):
     with closing(sqlite3.connect(archive.path)) as db, db:
         db.execute("UPDATE chunks SET data=x'0000'")
     assert c.get(url).status_code == 409
+
+
+def test_deleted_character_cannot_replay_old_clip_url(client, monkeypatch):
+    c, archive = client
+    save(archive, 'a', 'r')
+    url = c.get('/api/voice-archive/message?character=YUI&record_id=r').json()['clips'][0]['url']
+    monkeypatch.setattr(api, 'get_config_manager', lambda: SimpleNamespace(
+        app_docs_dir=archive.path.parent.parent,
+        load_characters=lambda: {'猫娘': {'Other': {}}},
+    ))
+    assert c.get('/api/voice-archive/message?character=YUI&record_id=r').status_code == 404
+    assert c.get(url).status_code == 404

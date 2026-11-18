@@ -1547,6 +1547,29 @@ async def on_shutdown():
             cancellation_budget=cancellation_budget,
         )
 
+        # Stop optional voice-archive producers before the loop tears down.
+        # Every queued SQLite commit finishes off-loop; otherwise event-loop
+        # cancellation can silently lose the final audio frames of a reply.
+        async def _drain_voice_archives():
+            from main_logic.voice_archive import retire_voice_archive
+            managers = [manager for _, manager in _iter_session_managers()]
+            if managers:
+                results = await asyncio.gather(
+                    *(retire_voice_archive(manager) for manager in managers),
+                    return_exceptions=True,
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        logger.warning("Voice archive shutdown drain failed: %s", type(result).__name__)
+
+        shutdown_cancellation = await _run_shutdown_step(
+            _drain_voice_archives,
+            what="voice archive drain",
+            deadline_monotonic=time.monotonic() + 10.0,
+            pending_cancellation=shutdown_cancellation,
+            cancellation_budget=cancellation_budget,
+        )
+
         # Wait for preload tasks if still running.
         if _preload_task:
             preload_task = _preload_task

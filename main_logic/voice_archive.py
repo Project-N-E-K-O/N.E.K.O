@@ -14,7 +14,6 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
-import time
 
 log = logging.getLogger(__name__)
 MAX_PENDING_EVENTS = 256
@@ -124,6 +123,28 @@ def rename_character_voice_archive(app_docs_dir, old_name: str, new_name: str) -
     return changed > 0
 
 
+def delete_character_voice_archive(app_docs_dir, character: str) -> int:
+    """Purge one deleted character's audio and duplicated text, not other owners.
+
+    Called only once the character deletion has committed. ``secure_delete``
+    overwrites removed SQLite cells rather than retaining their old payloads
+    in reusable pages, and a checkpoint releases the old WAL pages.
+    """
+    path = Path(app_docs_dir) / 'voice_archive' / 'archive.sqlite3'
+    if not path.is_file():
+        return 0
+    with closing(sqlite3.connect(path, timeout=2)) as db:
+        db.execute('PRAGMA foreign_keys=ON')
+        db.execute('PRAGMA secure_delete=ON')
+        with db:
+            for table in ('chunks', 'text_events'):
+                db.execute(f'DELETE FROM {table} WHERE clip_id IN '
+                           '(SELECT id FROM clips WHERE character=?)', (character,))
+            deleted = db.execute('DELETE FROM clips WHERE character=?', (character,)).rowcount
+        db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        return deleted
+
+
 def _mark_incomplete(manager, speech_id):
     failed = getattr(manager, '_owner_voice_archive_failed', None)
     if failed is None:
@@ -131,6 +152,21 @@ def _mark_incomplete(manager, speech_id):
     if len(failed) >= 256:
         failed.pop()
     failed.add(str(speech_id))
+
+
+def _reject_unconsented_speech(manager, speech_id):
+    """Never archive the tail of a speech whose start was not authorized.
+
+    Besides consent, this prevents an Ogg/Opus tail from being replayed after
+    its bootstrap headers were deliberately excluded on mid-speech opt-in.
+    """
+    rejected = getattr(manager, '_owner_voice_archive_unconsented', None)
+    if rejected is None:
+        rejected = manager._owner_voice_archive_unconsented = set()
+    if len(rejected) >= 256:
+        rejected.pop()
+    rejected.add(str(speech_id))
+    _mark_incomplete(manager, speech_id)
 
 
 async def _write_queued_events(manager, queue):
@@ -149,29 +185,25 @@ async def _write_queued_events(manager, queue):
                 continue
             sid = event['speech_id']
             try:
-                from utils.voice_archive_settings import load_settings, recording_gate
-                settings = await asyncio.to_thread(load_settings, cm)
-                gate = recording_gate(cm)
-                if (not settings['enabled'] or
-                        (gate is not None and
-                         (not gate[0] or event['produced_at_ns'] < gate[1]))):
-                    # Enabling a recording cannot retroactively authorize
-                    # speech produced while it was disabled, even if the
-                    # writer was backlogged until after the POST committed.
-                    _mark_incomplete(manager, sid)
+                if sid in getattr(manager, '_owner_voice_archive_unconsented', set()):
                     continue
-                if event['kind'] == 'text' and event.get('is_first'):
-                    cfg = await asyncio.to_thread(cm.get_core_config)
-                    event['metadata'] = {k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')}
-                    event['metadata']['character_voice_id'] = event.pop('character_voice_id', None)
-                event['archive_error'] = sid in getattr(manager, '_owner_voice_archive_failed', set())
 
                 def write_event():
+                    from utils.voice_archive_settings import write_if_recording_authorized
                     from utils.cloudsave_runtime import assert_cloudsave_writable
-                    assert_cloudsave_writable(cm, operation='voice_archive_write', target=str(archive.path))
-                    archive.write(event)
+                    def persist():
+                        if event['kind'] == 'text' and event.get('is_first'):
+                            cfg = cm.get_core_config()
+                            event['metadata'] = {k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')}
+                            event['metadata']['character_voice_id'] = event.pop('character_voice_id', None)
+                        event['archive_error'] = sid in getattr(manager, '_owner_voice_archive_failed', set())
+                        assert_cloudsave_writable(cm, operation='voice_archive_write', target=str(archive.path))
+                        archive.write(event)
+                    return write_if_recording_authorized(cm, event['recording_generation'], persist)
 
-                await asyncio.to_thread(write_event)
+                if not await asyncio.to_thread(write_event):
+                    _reject_unconsented_speech(manager, sid)
+                    continue
                 if event['kind'] == 'retry':
                     getattr(manager, '_owner_voice_archive_failed', set()).discard(sid)
             except asyncio.CancelledError:
@@ -197,6 +229,12 @@ async def drain_voice_archive(manager):
         await queue.join()
 
 
+async def retire_voice_archive(manager):
+    """Stop new events before draining a retiring character or application."""
+    manager._owner_voice_archive_retired = True
+    await drain_voice_archive(manager)
+
+
 def _enqueue_archive_event(manager, kind, speech_id, **values):
     """Enqueue a bounded, ordered archive event without awaiting disk or config IO.
 
@@ -206,19 +244,23 @@ def _enqueue_archive_event(manager, kind, speech_id, **values):
     cm = getattr(manager, '_config_manager', None)
     if cm is None or not speech_id:
         return
-    produced_at_ns = time.monotonic_ns()
     from utils.voice_archive_settings import recording_gate
     snapshot = recording_gate(cm)
     sid = str(speech_id)
-    if snapshot is not None and not snapshot[0]:
+    if getattr(manager, '_owner_voice_archive_retired', False):
         _mark_incomplete(manager, sid)
+        return
+    if sid in getattr(manager, '_owner_voice_archive_unconsented', set()):
+        return
+    if snapshot is not None and not snapshot[0]:
+        _reject_unconsented_speech(manager, sid)
         return
     character = str(getattr(manager, 'lanlan_name', ''))
     if not character:
         _mark_incomplete(manager, sid)
         return
     event = dict(values, kind=kind, character=character, speech_id=sid,
-                 produced_at_ns=produced_at_ns,
+                 recording_generation=snapshot[1] if snapshot is not None else 0,
                  proof=dict(getattr(manager, '_chat_original_turns', {}).get(sid, {})))
     if kind == 'audio':
         data = event.get('data')

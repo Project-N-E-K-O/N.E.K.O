@@ -37,6 +37,8 @@ def client(tmp_path, monkeypatch):
     class Config(SimpleNamespace):
         async def aload_characters(self):
             return {'猫娘': {'Alice': {}}}
+        def load_characters(self):
+            return {'猫娘': {'Alice': {}}}
     config = Config(memory_dir=tmp_path / 'memory', app_docs_dir=tmp_path, load_root_state=lambda: {}, get_runtime_config_path=lambda _: tmp_path/'voice_archive.json')
     monkeypatch.setattr(chat_history_router, 'get_config_manager', lambda: config)
     monkeypatch.setattr(voice_archive_router, 'get_config_manager', lambda: config)

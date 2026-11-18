@@ -48,6 +48,16 @@ class RecordingSettings(BaseModel):
     enabled: StrictBool
 
 
+def require_live_character(character: str):
+    """A deleted character's old clip URL must immediately become invalid."""
+    try:
+        characters = get_config_manager().load_characters().get('猫娘', {})
+    except Exception:
+        raise HTTPException(503, 'voice_unavailable', headers=HEADERS) from None
+    if character not in characters:
+        raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
+
+
 @router.get('/settings')
 def recording_settings():
     from utils.voice_archive_settings import load_settings
@@ -74,6 +84,7 @@ def message_audio(character: str = Query(min_length=1, max_length=200),
                   speech_id: str = Query(default='', max_length=200)):
     if not record_id and not speech_id:
         raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
+    require_live_character(character)
     with database() as db:
         db.execute('BEGIN')
         # Prefer durable history identity; live messages carry the server turn/speech ID.
@@ -105,6 +116,10 @@ def message_audio(character: str = Query(min_length=1, max_length=200),
 def clip_audio(clip_id: str, start: int):
     with database() as db:
         db.execute('BEGIN')
+        owner = db.execute('SELECT character FROM clips WHERE id=?', (clip_id,)).fetchone()
+        if owner is None:
+            raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
+        require_live_character(owner['character'])
         first = db.execute('SELECT format FROM chunks WHERE clip_id=? AND seq=?', (clip_id, start)).fetchone()
         if first is None or start < 0:
             raise HTTPException(404, 'voice_unavailable', headers=HEADERS)

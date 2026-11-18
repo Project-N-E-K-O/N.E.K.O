@@ -1408,9 +1408,9 @@ async def _rename_catgirl_transaction(
             # stable text-history record id. Drain any old-session writes and
             # migrate the owner in this rename transaction; failure triggers
             # the same rollback as other character data migrations.
-            from main_logic.voice_archive import drain_voice_archive, rename_character_voice_archive
+            from main_logic.voice_archive import retire_voice_archive, rename_character_voice_archive
             if old_archive_manager is not None:
-                await drain_voice_archive(old_archive_manager)
+                await retire_voice_archive(old_archive_manager)
             voice_archive_renamed, voice_archive_cancelled = await _await_thread_call_to_completion(
                 rename_character_voice_archive, _config_manager.app_docs_dir, old_name, new_name,
             )
@@ -1549,6 +1549,8 @@ async def _rename_catgirl_transaction(
                     ))
                 except Exception:
                     logger.exception("角色重命名回滚时恢复语音归档归属失败: %s -> %s", new_name, old_name)
+            if old_archive_manager is not None and not rename_committed:
+                old_archive_manager._owner_voice_archive_retired = False
             release_character_recent_transaction(recent_transaction)
 
     # Notify frontend only after data update, reload, and cover migration complete.
@@ -2183,6 +2185,19 @@ async def _cleanup_deleted_chat_avatar(directory, uid):
         return False
 
 
+async def _cleanup_deleted_voice_archive(config_manager, character: str) -> bool:
+    """Permanently remove voice data only after character deletion commits."""
+    from main_logic.voice_archive import delete_character_voice_archive
+    try:
+        await await_retirement(asyncio.to_thread(
+            delete_character_voice_archive, config_manager.app_docs_dir, character,
+        ))
+        return True
+    except Exception:
+        logger.exception("已删除角色的语音归档清理失败: %s", character)
+        return False
+
+
 async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
@@ -2229,6 +2244,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
 
 
 async def _delete_catgirl_transaction(_config_manager, characters, name: str):
+    old_archive_manager = (get_session_manager() or {}).get(name)
     deleted_character_uid = get_character_uid(characters["猫娘"][name])
     deleted_avatar_directory = chat_avatar_directory(_config_manager)
     safe_path_name = _validate_existing_character_path_name(name) is None
@@ -2282,6 +2298,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 if save_cancelled:
                     raise asyncio.CancelledError
 
+                if old_archive_manager is not None:
+                    from main_logic.voice_archive import retire_voice_archive
+                    await retire_voice_archive(old_archive_manager)
                 remove_one_catgirl = get_remove_one_catgirl()
                 await remove_one_catgirl(name)
 
@@ -2292,6 +2311,10 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 # The old rescue path leaves a published config delete committed
                 # on cancellation. Retire only its UID-owned display resource.
                 if unsafe_config_deleted:
+                    if old_archive_manager is not None:
+                        from main_logic.voice_archive import retire_voice_archive
+                        await _await_cleanup_to_completion(retire_voice_archive(old_archive_manager))
+                    await _await_cleanup_to_completion(_cleanup_deleted_voice_archive(_config_manager, name))
                     await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
                 raise
             except MaintenanceModeError as exc:
@@ -2303,6 +2326,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 )
                 if rollback_error:
                     raise exc from RuntimeError(rollback_error)
+                if old_archive_manager is not None:
+                    old_archive_manager._owner_voice_archive_retired = False
                 raise
             except Exception as exc:
                 rollback_error = await _rollback_character_operation(
@@ -2315,6 +2340,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 error_message = f"救援删除非法角色名失败: {exc}"
                 if rollback_error:
                     error_message = f"{error_message}; 回滚失败: {rollback_error}"
+                if old_archive_manager is not None:
+                    old_archive_manager._owner_voice_archive_retired = False
                 return JSONResponse({"success": False, "error": error_message}, status_code=500)
 
         # Every other end-of-identity path retires the sidecar stores; this
@@ -2333,6 +2360,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         retire_character_runtime_caches(name)
 
         avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
+        voice_cleanup_ok = await _cleanup_deleted_voice_archive(_config_manager, name)
         return {
             "success": True,
             "unsafe_name_rescue": True,
@@ -2340,6 +2368,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             "card_face_deleted": False,
             "memory_server_reloaded": memory_server_reloaded,
             **({"partial_success": True, "chat_avatar_cleanup_failed": True} if not avatar_cleanup_ok else {}),
+            **({"partial_success": True, "voice_archive_cleanup_failed": True} if not voice_cleanup_ok else {}),
         }
 
     characters_snapshot = copy.deepcopy(characters)
@@ -2362,6 +2391,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         retired_names: tuple[str, ...] = ()
         memory_server_reloaded = False
         delete_committed = False
+        voice_cleanup_ok = True
         released_memory_handle = False
         release_claim_token = create_derived_task_claim_token()
         try:
@@ -2481,6 +2511,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                 _config_manager.save_characters, characters,
             )
             # Fast path: stop only this character's threads, clear dictionaries, refresh globals; skip the other N-1.
+            if old_archive_manager is not None:
+                from main_logic.voice_archive import retire_voice_archive
+                await retire_voice_archive(old_archive_manager)
             remove_one_catgirl = get_remove_one_catgirl()
             await remove_one_catgirl(name)
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
@@ -2584,7 +2617,12 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         finally:
             release_character_recent_transaction(recent_transaction)
             if delete_committed:
+                voice_cleanup_ok = await _await_cleanup_to_completion(
+                    _cleanup_deleted_voice_archive(_config_manager, name),
+                )
                 avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
+            elif old_archive_manager is not None:
+                old_archive_manager._owner_voice_archive_retired = False
 
     pending_remove_ok = True
     pending_remove_error = ""
@@ -2598,6 +2636,8 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
     result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
     if not avatar_cleanup_ok:
         result.update({"partial_success": True, "chat_avatar_cleanup_failed": True})
+    if not voice_cleanup_ok:
+        result.update({"partial_success": True, "voice_archive_cleanup_failed": True})
     if not pending_remove_ok:
         result["partial_success"] = True
         result["pending_remove_ok"] = False
