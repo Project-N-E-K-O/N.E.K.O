@@ -1507,6 +1507,10 @@ class _ResponseMixin:
             gemini_text = "\n".join(gemini_text_parts)
             proactive_session = self._gemini_session
             proactive_scope = getattr(self, "_tool_scope_generation", 0)
+            if admission_check is not None and not admission_check():
+                # Checked before the tool wait too: settling may give up on a
+                # running tool, which is wasted if this inject is then refused.
+                raise RuntimeError("Gemini proactive inject admission rejected")
             await self._settle_tools_before_gemini_proactive()
             if self._gemini_session is not proactive_session:
                 # The settle is an await: a teardown OR a replacement session

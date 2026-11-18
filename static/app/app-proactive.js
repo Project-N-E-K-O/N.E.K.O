@@ -2057,7 +2057,13 @@
             }
 
             // Native desktop shells return encoded frames instead of a
-            // Chromium MediaStream.
+            // Chromium MediaStream. Do not start that capture once consent is gone.
+            if (!dataUrl && S.selectedScreenSourceId && !canProactiveVisionRunDuringSpeech()) {
+                stopProactiveVisionDuringSpeech();
+                releaseProactiveVisionStream();
+                return;
+            }
+            if (!dataUrl && S.selectedScreenSourceId && frameStale()) return;
             if (!dataUrl && S.selectedScreenSourceId) {
                 var desktopProvider = getDesktopProvider();
                 if (desktopProvider
@@ -2545,10 +2551,14 @@
         }
         if (isHomeTutorialFeatureSuppressed()) return false;
 
+        // Consent may be revoked while the remembered window was being checked.
+        if (!isProactiveVisionEnabledNow()) return false;
+
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
             if (isHomeTutorialFeatureSuppressed()) return false;
+            if (!isProactiveVisionEnabledNow()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;

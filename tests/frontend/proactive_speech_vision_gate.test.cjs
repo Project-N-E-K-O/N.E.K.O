@@ -608,3 +608,44 @@ test('text-chat vision does not keep the stream after another window revoked', a
     await kept.window.stopScreenSharing();
     assert.equal(keptStream.stopped, 0, 'text vision still holds the stream while allowed');
 });
+
+test('no native desktop capture is started after a revocation during capture', async () => {
+    let nativeCalls = 0;
+    let h;
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            acquireOrReuseCachedStream: async () => {
+                h.settings.proactiveVisionEnabled = false;
+                return null;
+            },
+        },
+    });
+    h.S.selectedScreenSourceId = 'window:1';
+    h.window.getDesktopCaptureProvider = () => ({
+        nativeFrameCapture: true,
+        captureSourceAsDataUrl: async () => { nativeCalls += 1; return { success: true, dataUrl: 'data:image/png;base64,X' }; },
+    });
+    h.window.captureDesktopSourceWithTimeout = async (provider, method, id) => provider[method](id);
+    h.window.startProactiveVisionDuringSpeech();
+    await h.heartbeat().fn();
+    assert.equal(nativeCalls, 0);
+    assert.equal(h.frames(), 0);
+});
+
+test('acquiring the vision stream stops when consent is revoked during the window check', async () => {
+    let backendCalls = 0;
+    let h;
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            fetchBackendScreenshot: async () => { backendCalls += 1; return { dataUrl: 'data:image/jpeg;base64,DESK' }; },
+        },
+    });
+    h.window.prepareRememberedWindowCapture = async () => {
+        h.settings.proactiveVisionEnabled = false;
+        return { required: false, allowed: true };
+    };
+    assert.equal(await h.window.acquireProactiveVisionStream(), false);
+    assert.equal(backendCalls, 0);
+});

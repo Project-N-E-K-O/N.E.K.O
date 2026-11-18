@@ -2338,7 +2338,9 @@ async def test_stepfun_analysis_without_discard_still_records_description(monkey
 async def test_inject_admission_rejection_sends_nothing():
     client = _make_client()
 
-    with pytest.raises(Exception):
+    from main_logic.omni_realtime_client._response_arbiter import ResponseAdmissionRejected
+
+    with pytest.raises(ResponseAdmissionRejected):
         await client.inject_text_and_request_response(
             "screen-aware text",
             events_before_text=({
@@ -2361,7 +2363,7 @@ async def test_gemini_inject_admission_rejection_sends_nothing():
     client = _make_client(api_type="gemini", model="gemini-live")
     client._gemini_session = AsyncMock()
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="Gemini proactive inject admission rejected"):
         await client.inject_text_and_request_response(
             "screen-aware text", admission_check=lambda: False,
         )
@@ -2402,6 +2404,7 @@ async def test_text_only_turn_does_not_add_a_queue_gate():
     seen = {}
 
     async def capture_inject(text, **kwargs):
+        seen["text"] = text
         seen.update(kwargs)
         raise RuntimeError("stop here")
 
@@ -2409,6 +2412,7 @@ async def test_text_only_turn_does_not_add_a_queue_gate():
 
     await client.prompt_ephemeral("plain", vision_allowed=lambda: True)
 
+    assert seen.get("text") == "plain", "the text-only turn must reach the inject"
     assert "admission_check" not in seen
     await client.close()
 
@@ -2436,4 +2440,19 @@ async def test_live_frame_captured_before_revocation_is_not_streamed_late():
         DUMMY_IMAGE_B64, source="screen", captured_at=time.monotonic() + 1.0,
     )
     assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_admission_is_checked_before_waiting_for_tools():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    client._settle_tools_before_gemini_proactive = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="Gemini proactive inject admission rejected"):
+        await client.inject_text_and_request_response(
+            "screen-aware text", admission_check=lambda: False,
+        )
+
+    client._settle_tools_before_gemini_proactive.assert_not_awaited()
     await client.close()
