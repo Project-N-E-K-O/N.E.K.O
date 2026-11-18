@@ -1075,3 +1075,9 @@ async def test_validation_and_serialization_aliases_that_differ_pass_strict():
     # The other direction: validation-alias keys are not what the contract
     # publishes, so they do not satisfy it.
     assert [i.type for i in check({"incoming": 3, "inTotal": 5})] == ["missing", "missing"]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_numbers_are_not_json_numbers(value):
+    assert _issues({"type": "number", "minimum": 0}, value) == [("$", "type")]
+    assert _issues({"type": "integer"}, value) == [("$", "type")]

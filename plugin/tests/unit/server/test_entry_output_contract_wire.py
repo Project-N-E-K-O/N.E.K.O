@@ -519,3 +519,14 @@ def test_validate_keyed_entries_table_gets_no_publish_hint(tmp_path: Path):
     messages = _messages(plugin_dir)
     assert any("keyed table" in message for message in messages)
     assert not any("only changes the published entry contract" in message for message in messages)
+
+
+def test_validate_flags_non_table_mapping_fields(tmp_path: Path):
+    plugin_dir = _plugin_dir(tmp_path, "output_schema={'type': 'array'}")
+    toml_path = plugin_dir / "plugin.toml"
+    toml_path.write_text(
+        toml_path.read_text(encoding="utf-8").replace("strict_output = true\n", 'output_schema = "typo"\n'),
+        encoding="utf-8",
+    )
+    messages = _messages(plugin_dir)
+    assert any("output_schema must be a table" in message for message in messages)

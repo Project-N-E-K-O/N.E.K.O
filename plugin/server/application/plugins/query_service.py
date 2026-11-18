@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import dataclasses
 from collections.abc import Mapping
 
@@ -357,6 +358,9 @@ def _require_string_keys(value: object, *, context: str) -> None:
         if leaving:
             ancestors.discard(id(node))
             continue
+        if isinstance(node, float) and not math.isfinite(node):
+            # JSONResponse uses allow_nan=False: NaN/Infinity cannot be listed.
+            raise invalid("a non-finite number")
         if not isinstance(node, (Mapping, list, tuple)):
             continue
         if id(node) in ancestors:
@@ -370,6 +374,24 @@ def _require_string_keys(value: object, *, context: str) -> None:
                 stack.append((item, False))
         else:
             stack.extend((item, False) for item in node)
+
+
+def _localized_entry(entry: dict[str, object], plugin_i18n: object, locale: str) -> dict[str, object]:
+    """Resolve i18n refs in an entry, leaving its output contract verbatim.
+
+    ``output_schema`` is checked at runtime exactly as declared; translating
+    an ``{"$i18n": ...}`` object inside ``const``/``enum`` would publish a
+    contract the check does not enforce.
+    """
+    if "output_schema" not in entry:
+        return resolve_i18n_refs(entry, plugin_i18n, locale=locale)  # type: ignore[arg-type,return-value]
+    contract = entry["output_schema"]
+    rest = {key: value for key, value in entry.items() if key != "output_schema"}
+    localized = resolve_i18n_refs(rest, plugin_i18n, locale=locale)  # type: ignore[arg-type]
+    result = dict(localized) if isinstance(localized, Mapping) else rest
+    result["output_schema"] = contract
+    # Keep the original key order.
+    return {key: result[key] for key in entry if key in result}
 
 
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
@@ -856,7 +878,7 @@ def _build_plugin_list_sync(
                 seen=seen,
             )
             entries = [
-                resolve_i18n_refs(entry, plugin_i18n, locale=effective_locale)  # type: ignore[misc]
+                _localized_entry(entry, plugin_i18n, effective_locale)
                 for entry in entries
                 if isinstance(entry, dict)
             ]

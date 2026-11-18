@@ -617,9 +617,10 @@ def _is_type(value: object, name: object) -> bool:
     if name == "integer":
         if isinstance(value, bool):
             return False
-        return isinstance(value, int) or (isinstance(value, float) and value.is_integer())
+        return isinstance(value, int) or (isinstance(value, float) and math.isfinite(value) and value.is_integer())
     if name == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        # NaN/Infinity are not JSON numbers (and slip past every bound check).
+        return _is_number(value)
     if name == "string":
         return isinstance(value, str)
     if name == "object":
