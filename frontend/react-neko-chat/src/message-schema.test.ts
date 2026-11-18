@@ -196,10 +196,15 @@ describe('message-schema', () => {
     // 结构性守卫：新增回调若绕过 hostCallback 直接写 z.function().input([...])，
     // 就会丢掉 rest 参数，宿主多传一个参数就会抛错。
     const callbacks = Object.entries(chatWindowPropsSchema.shape).flatMap(([key, schema]) => {
-      const inner = schema instanceof z.ZodOptional ? schema.unwrap() : schema;
+      let inner: unknown = schema;
+      // 拆掉 optional / nullable / default 等包装，避免套了多层的回调被漏检。
+      while (inner instanceof z.ZodOptional || inner instanceof z.ZodNullable || inner instanceof z.ZodDefault) {
+        inner = inner.unwrap();
+      }
       return inner instanceof z.ZodFunction ? [[key, inner] as const] : [];
     });
-    expect(callbacks.length).toBeGreaterThan(15);
+    // 精确数量：新增 / 删除回调时同步更新，防止覆盖面静默缩水。
+    expect(callbacks.map(([key]) => key)).toHaveLength(20);
     for (const [key, fn] of callbacks) {
       const input = fn._zod.def.input as z.core.$ZodTuple;
       expect(input._zod.def.rest, key).toBeInstanceOf(z.ZodUnknown);

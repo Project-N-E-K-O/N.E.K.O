@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 // @vitest-environment-options {"settings":{"enableIframePageLoading":true}}
 // happy-dom 21 默认不加载 iframe 页面（SSRF 修复），iframe.contentWindow 为空；这里测的就是
-// 宿主与插件 iframe 的通信，只在本文件恢复 <=20.x 的行为。本文件的 iframe 只允许 data: URL 或
-// srcdoc（宿主生成的内容）：assertNoNetworkIframes 在挂载、换 URL 和每条用例结束时检查，违反即失败。
+// 宿主与插件 iframe 的通信，只在本文件恢复 <=20.x 的行为。本文件的 iframe 只允许 data:/about:/blob: URL 或
+// srcdoc（宿主生成的内容）：assertNoNetworkIframes 在挂载、换 surface/URL 和每条用例结束时检查，违反即失败。
 // （没有用 happy-dom 的 fetch 拦截器预先拦截：拦截器总会被 await，改变 iframe 加载时序，
 // 会让本文件里断言计时器数量的用例失效。）
 
@@ -111,11 +111,14 @@ async function flushPromises() {
   await nextTick()
 }
 
+// Protocols that never hit the network, so they are safe with iframe page loading enabled.
+const NON_NETWORK_IFRAME_PROTOCOLS = new Set(['data:', 'about:', 'blob:'])
+
 function assertNoNetworkIframes(container: ParentNode) {
   for (const frame of container.querySelectorAll('iframe')) {
     const src = frame.getAttribute('src')
-    if (src && !src.startsWith('data:')) {
-      throw new Error(`iframe page loading is enabled in this file; use a data: URL or srcdoc, got ${src}`)
+    if (src && !NON_NETWORK_IFRAME_PROTOCOLS.has(new URL(src, location.href).protocol)) {
+      throw new Error(`iframe page loading is enabled in this file; use a data:/about:/blob: URL or srcdoc, got ${src}`)
     }
   }
 }
@@ -203,6 +206,7 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
     async setSurface(surface) {
       state.surface = surface
       await nextTick()
+      assertNoNetworkIframes(container)
       const currentIframe = container.querySelector('iframe') as HTMLIFrameElement | null
       if (currentIframe?.contentWindow) currentIframe.contentWindow.postMessage = postMessage
     },

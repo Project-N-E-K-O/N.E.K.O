@@ -18,11 +18,20 @@ export type {
 // 宿主回调统一走这里。zod 3 的 .args(...) 隐含 rest(z.unknown())，多传参数（例如 React 事件对象）
 // 不会被拒；zod 4 的 .input([...]) 默认不带 rest，所以在这里统一补上，新增回调时不会漏。
 // 返回值默认钉死为 void；需要把返回值交还宿主的（如截图）显式传 output。
-function hostCallback<const Args extends z.core.util.TupleItems, Out extends z.ZodType = z.ZodVoid>(
+function makeHostCallback<const Args extends z.core.util.TupleItems, Out extends z.ZodType>(args: Args, output: Out) {
+  return z.function().input(args, z.unknown()).output(output);
+}
+// 重载：不传 output 时类型和运行时都固定为 void；要别的返回值类型必须显式传 output，
+// 避免"泛型写了 Out 却没传 output"时类型与运行时校验不一致。
+function hostCallback<const Args extends z.core.util.TupleItems>(
   args: Args,
-  output?: Out,
-) {
-  return z.function().input(args, z.unknown()).output((output ?? z.void()) as Out);
+): ReturnType<typeof makeHostCallback<Args, z.ZodVoid>>;
+function hostCallback<const Args extends z.core.util.TupleItems, Out extends z.ZodType>(
+  args: Args,
+  output: Out,
+): ReturnType<typeof makeHostCallback<Args, Out>>;
+function hostCallback(args: z.core.util.TupleItems, output: z.ZodType = z.void()) {
+  return makeHostCallback(args, output);
 }
 
 const messageActionSchema = z.object({
