@@ -23,12 +23,16 @@ from plugin.server.messaging.handlers import registry as handler_registry
 
 pytestmark = pytest.mark.plugin_unit
 
+CLOCK = [0.0]
+_REAL_GRANTED = capability_gate.granted_capabilities
+
 
 @pytest.fixture
 def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "PLUGIN_CAPABILITY_POLICY", "observe")
     grants: dict[str, set[str]] = {}
-    monkeypatch.setattr(capability_gate, "registry", CallRegistry())
+    monkeypatch.setattr(capability_gate, "registry", CallRegistry(clock=lambda: CLOCK[0]))
+    CLOCK[0] = 0.0
     audit = CallAudit(path_resolver=lambda: tmp_path / "audit.jsonl")
     monkeypatch.setattr(capability_gate, "audit", audit)
     monkeypatch.setattr(
@@ -83,11 +87,73 @@ def test_child_record_extends_the_parent_chain():
     assert not registry.has_live_chain("a")
 
 
-def test_registry_is_bounded():
+def test_registry_is_bounded_and_counts_duplicates_apart():
     registry = CallRegistry(max_live=1)
     assert registry.register(target="a", call_id="1", event_type="e", event_id="x", link=None)
+    assert registry.register(target="a", call_id="1", event_type="e", event_id="x", link=None) is None
     assert registry.register(target="a", call_id="2", event_type="e", event_id="x", link=None) is None
-    assert registry.registry_full == 1
+    assert (registry.registry_full, registry.duplicates) == (1, 1)
+
+
+def test_unregistered_delivery_is_audited(gate, monkeypatch):
+    monkeypatch.setattr(capability_gate, "registry", CallRegistry(max_live=0))
+    assert capability_gate.begin_call("a", "r", "plugin_entry", "x", None) is None
+    (entry,) = capability_gate.audit.entries(limit=10)
+    assert entry["kind"] == "not_registered" and entry["target"] == "a"
+
+
+def test_using_a_narrower_own_record_is_possible_laundering(gate, monkeypatch, tmp_path):
+    # B is serving A's call (chain A,B) and also a direct run (chain B). Using
+    # the run's id while A's call is live drops A from the chain: flag it.
+    gate["b"] = {"memory.read"}
+    run = capability_gate.begin_call("b", "r0", "plugin_entry", "long", CallLink(Origin.of(ORIGIN_RUN)))
+    root = capability_gate.begin_call("a", "r1", "plugin_entry", "call", CallLink(Origin.of(ORIGIN_RUN)))
+    from_a = capability_gate.begin_call("b", "r2", "plugin_entry", "x", capability_gate.link_for_plugin_call("a", "r1"))
+    decision = capability_gate.check("b", "r0", "memory.read", "MEMORY_SEARCH")
+    assert decision.allowed and decision.chain == ("b",)
+    (entry,) = _decisions()
+    assert entry["verdict"] == "allow" and entry["flags"] == ["possible_laundering"]
+    # The same trick over a cross-plugin call marks the new delivery too.
+    link = capability_gate.link_for_plugin_call("b", "r0")
+    assert "possible_laundering" in link.flags
+    # Using the matching record is not flagged.
+    capability_gate.audit.close(1.0)
+    monkeypatch.setattr(capability_gate, "audit", CallAudit(path_resolver=lambda: tmp_path / "b.jsonl"))
+    capability_gate.check("b", "r2", "memory.read", "MEMORY_SEARCH")
+    assert _decisions()[0]["reason"] == "caller_chain"
+    assert "possible_laundering" not in _decisions()[0]["flags"]
+    for record in (from_a, root, run):
+        capability_gate.end_call(record, "ok", 0)
+    capability_gate.audit.close(1.0)
+
+
+@pytest.mark.parametrize("broken", ["consent", "registry"])
+async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken):
+    if broken == "consent":
+        from plugin.server.infrastructure import plugin_consent
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("SECRET store failure")
+
+        # The real resolver over a store that raises something unexpected.
+        monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
+        monkeypatch.setattr(plugin_consent.consent_store, "read", boom)
+    else:
+        def boom(*args, **kwargs):
+            raise RuntimeError("SECRET registry failure")
+
+        monkeypatch.setattr(capability_gate.registry, "register", boom)
+        monkeypatch.setattr(capability_gate.registry, "lookup", boom)
+
+    async def inner(ctx, request):
+        return "ok"
+
+    dispatcher = RpcDispatcher({"MEMORY_SEARCH": capability_gate.capability_checked("memory.read", inner)})
+    reply = await dispatcher.dispatch({"type": "MEMORY_SEARCH", "from_plugin": "a", "request_id": "q"})
+    assert reply == {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": "a", "request_id": "q", "result": "ok", "error": None}
+    manager = _manager()
+    assert await manager.trigger("entry", {"x": 1}, 2) == {"ok": 1}
+    assert manager.transport.sent[0]["args"] == {"x": 1}
 
 
 def test_uses_are_counted_and_returned_on_removal():
@@ -302,6 +368,7 @@ async def test_failed_delivery_is_removed_and_recorded_by_code(gate):
     ref.append(manager)
     with pytest.raises(Exception):
         await manager.trigger("entry", {}, 2)
+    # The plugin replied, so its entry is over: no lingering record.
     assert len(capability_gate.registry) == 0
     (forward,) = capability_gate.audit.entries(limit=10)
     assert forward["result"] == "PLUGIN_EXECUTION_FAILED"
@@ -358,9 +425,9 @@ async def test_timed_out_delivery_is_removed(gate):
     manager = PluginCommunicationResourceManager(plugin_id="a", transport=_Silent())  # type: ignore[arg-type]
     with pytest.raises(TimeoutError):
         await manager.trigger("entry", {}, 0.05)
-    assert len(capability_gate.registry) == 0
     (forward,) = capability_gate.audit.entries(limit=10)
     assert forward["result"] in {"DEADLINE_EXCEEDED", "TIMEOUT"}
+    _assert_lingers_then_expires(forward["call_id"])
 
 
 async def test_cancelled_delivery_is_removed(gate):
@@ -372,6 +439,17 @@ async def test_cancelled_delivery_is_removed(gate):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert len(capability_gate.registry) == 0
     (forward,) = capability_gate.audit.entries(limit=10)
     assert forward["result"] == "CANCELLED"
+    _assert_lingers_then_expires(forward["call_id"])
+
+
+def _assert_lingers_then_expires(call_id):
+    # The plugin may still be running the entry: a late use keeps its chain.
+    record = capability_gate.registry.lookup("a", call_id)
+    assert record is not None and record.ended_at is not None
+    capability_gate.check("a", call_id, "memory.read", "MEMORY_SEARCH")
+    (late,) = _decisions()
+    assert late["chain"] == ["a"] and "after_return" in late["flags"] and "unattributed" not in late["flags"]
+    CLOCK[0] += capability_gate.LINGER_SECONDS + 1
+    assert len(capability_gate.registry) == 0

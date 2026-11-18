@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -32,6 +33,7 @@ ORIGIN_SYSTEM = "system"
 FLAG_UNATTRIBUTED = "unattributed"
 FLAG_POSSIBLE_LAUNDERING = "possible_laundering"
 FLAG_CONSENT_UNAVAILABLE = "consent_unavailable"
+FLAG_AFTER_RETURN = "after_return"
 
 _MAX_REF_LENGTH = 128
 
@@ -71,6 +73,7 @@ class CallRecord:
     started: float
     rights: frozenset[str] | None = None
     uses: dict[str, int] = field(default_factory=dict)
+    ended_at: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,21 +125,28 @@ def normalize_parent_id(value: object) -> str | None:
 
 
 class CallRegistry:
-    """Live deliveries, shared by the router loop and every owner loop."""
+    """Live deliveries, shared by the router loop and every owner loop.
+
+    A delivery that ended without a result (caller timeout, cancellation,
+    failure) may still be running in the plugin. Such a record lingers for
+    ``linger`` seconds so late uses are still judged against its real chain.
+    """
 
     MAX_LIVE = 4096
 
     def __init__(self, *, max_live: int = MAX_LIVE, clock: Callable[[], float] = time.monotonic):
         self._lock = threading.Lock()
         self._records: dict[tuple[str, str], CallRecord] = {}
-        # plugin id -> live records where it was called by another plugin
-        self._callee_counts: dict[str, int] = {}
+        self._by_target: dict[str, set[CallRecord]] = {}
+        self._lingering: deque[tuple[float, CallRecord]] = deque()
         self._max_live = max_live
         self._clock = clock
         self.registry_full = 0
+        self.duplicates = 0
 
     def __len__(self) -> int:
         with self._lock:
+            self._prune_locked()
             return len(self._records)
 
     def register(
@@ -186,52 +196,84 @@ class CallRegistry:
             record.rights = rights_of(chain)
         key = (target, call_id)
         with self._lock:
-            if len(self._records) >= self._max_live or key in self._records:
+            self._prune_locked()
+            if key in self._records:
+                self.duplicates += 1
+                return None
+            if len(self._records) >= self._max_live:
                 self.registry_full += 1
                 return None
             self._records[key] = record
-            if len(chain) > 1:
-                self._callee_counts[target] = self._callee_counts.get(target, 0) + 1
+            self._by_target.setdefault(target, set()).add(record)
         return record
 
-    def remove(self, record: CallRecord) -> dict[str, int]:
-        """Drop a finished delivery; returns the capability uses it counted."""
+    def remove(self, record: CallRecord, *, linger: float = 0.0) -> dict[str, int]:
+        """End a delivery; returns the capability uses it counted so far."""
         key = (record.target, record.call_id)
         with self._lock:
-            if self._records.get(key) is not record:
+            if self._records.get(key) is not record or record.ended_at is not None:
                 return {}
-            del self._records[key]
-            if len(record.chain) > 1:
-                remaining = self._callee_counts.get(record.target, 0) - 1
-                if remaining > 0:
-                    self._callee_counts[record.target] = remaining
-                else:
-                    self._callee_counts.pop(record.target, None)
             uses, record.uses = record.uses, {}
+            if linger > 0:
+                record.ended_at = self._clock()
+                self._lingering.append((record.ended_at + linger, record))
+            else:
+                self._drop_locked(record)
             return uses
+
+    def _drop_locked(self, record: CallRecord) -> None:
+        if self._records.get((record.target, record.call_id)) is record:
+            del self._records[(record.target, record.call_id)]
+        group = self._by_target.get(record.target)
+        if group is not None:
+            group.discard(record)
+            if not group:
+                del self._by_target[record.target]
+
+    def _prune_locked(self) -> None:
+        now = self._clock()
+        while self._lingering and self._lingering[0][0] <= now:
+            _, record = self._lingering.popleft()
+            self._drop_locked(record)
 
     def lookup(self, plugin_id: str, request_id: object) -> CallRecord | None:
         parent = normalize_parent_id(request_id)
         if parent is None:
             return None
         with self._lock:
+            self._prune_locked()
             return self._records.get((plugin_id, parent))
+
+    def has_wider_live_chain(self, plugin_id: str, chain: tuple[str, ...]) -> bool:
+        """Whether another delivery to the plugin carries callers outside ``chain``.
+
+        A request attributed to a narrower chain while such a delivery is in
+        flight may be dropping its callers on purpose (possible laundering).
+        """
+        members = set(chain)
+        with self._lock:
+            self._prune_locked()
+            return any(
+                not members.issuperset(record.chain)
+                for record in self._by_target.get(plugin_id, ())
+            )
 
     def has_live_chain(self, plugin_id: str) -> bool:
         """Whether the plugin is currently being called by another plugin."""
-        with self._lock:
-            return self._callee_counts.get(plugin_id, 0) > 0
+        return self.has_wider_live_chain(plugin_id, (plugin_id,))
 
     def note_use(self, record: CallRecord, capability: str) -> bool:
+        """Count an allowed use for the end-of-call summary (live records only)."""
         key = (record.target, record.call_id)
         with self._lock:
-            if self._records.get(key) is not record:
+            if self._records.get(key) is not record or record.ended_at is not None:
                 return False
             record.uses[capability] = record.uses.get(capability, 0) + 1
             return True
 
 
 __all__ = [
+    "FLAG_AFTER_RETURN",
     "FLAG_CONSENT_UNAVAILABLE",
     "FLAG_POSSIBLE_LAUNDERING",
     "FLAG_UNATTRIBUTED",

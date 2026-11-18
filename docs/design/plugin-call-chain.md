@@ -103,8 +103,9 @@ Origin 只存指针，不存原文；`speaker` 字段预留为 `None`。Origin �
 - **记录** `CallRecord`（frozen）：`call_id`（= `req_id`）、`trace_id`、`depth`、`target`、`event_type`、`event_id`、`caller`（来源插件，宿主投递时为 `None`）、`parent_call_id`、`chain`（从根到自己的插件 id 元组，登记时一次算好）、`origin`（kind、ref）、`started`（monotonic）、`flags`（如 `possible_laundering`）。另有可变的 `uses: Counter[capability]`，只在登记表锁内改。
 - **登记**：在 `_trigger_local` / `_trigger_custom_event_local` 生成 `req_id` 之后、发送之前登记；`finally` 里摘除（成功、失败、超时、取消都摘）。摘除时写一条「转发」审计（结果码、耗时）和一条「放行聚合」审计（按能力计数）。
 - **查找**：`lookup(plugin_id, parent_request_id)`。`plugin_id` 永远是连接绑定的身份（`RpcContext.from_plugin` 或 `_route_message` 覆写后的 `plugin_id`），`parent_request_id` 只是查表的键。插件把父 id 伪造成别的插件的 `req_id`，键里的 `plugin_id` 对不上，查不到，按「插件自发」处理：借不到别人的权限，也不能把别人卷进自己的链。
-- **存活判断**：`has_live_chain(plugin_id)`：该插件当前是否作为「被别的插件调用的一方」存在于某条存活记录里（`len(chain) > 1`）。用于 `possible_laundering`。
-- **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`，调用照常进行（这时候它的子调用按插件自发处理）。
+- **存活判断**：`has_wider_live_chain(plugin_id, chain)`：该插件当前是否还有另一条存活记录，其链上有 `chain` 里没有的插件。用于 `possible_laundering`：没带父 id（链 = 自己）时等价于「它正被别的插件调用」；带的是**自己另一条更窄的记录**的 id 时也算（例如 B 同时在处理一个直接的 run 和 A 发来的调用，用 run 的 id 读记忆，就把 A 从链上甩掉了）。并发时合法的调用也会被这样标出来，只记不拦。
+- **结束但可能还在跑**：调用方超时、取消、传输出错时，插件里的入口可能还没停。这类记录不立即删除，标上结束时间后保留 30 秒（`LINGER_SECONDS`），期间的使用仍按它的链判定并打 `after_return`；插件已经回了结果（成功或报错）的记录立即删除。
+- **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`，并写一条去重后的 `not_registered` 审计，调用照常进行（这时候它的子调用按插件自发处理）。P2 要定满了以后是拒绝投递还是把这类请求一律当作可疑。
 - **并发**：宿主里多个 owner loop 和路由 loop 都会碰它，用 `threading.Lock`，临界区只有字典操作。
 
 宿主调用点用 `delivery_link(CallLink(...))` 说明这次投递的 Origin 和父记录（任务内的上下文值，只在同一个协程、同一个 loop 里有效）。`PluginCommunicationResourceManager.trigger` / `trigger_custom_event` 在**调用方的 loop 上**读出它，再作为显式参数 `call_link=` 交给跨 loop 执行的 `_trigger_local` / `_trigger_custom_event_local`，所以不依赖 contextvar 跨 loop。P0 测试表明 contextvar 在 3.11 下其实能经 `run_coroutine_threadsafe` 带过去（见 5.1），但这依赖 `Handle` 的实现细节，不作为设计前提；有测试证明跨 loop 时用的是显式参数。
@@ -126,6 +127,8 @@ def decide(capability: str, chain: tuple[str, ...], granted: Callable[[str], fro
 - `reason`：链上**除自己以外**有缺的 → `caller_chain`；只有自己缺 → `self_not_approved`；都不缺 → `None`。理由：P2 只强制 `caller_chain`，P3 才强制 `self_not_approved`，`caller_chain` 优先能让 P2 的拦截不受「自己也没确认」干扰。
 - `Decision` 同时给出 `caller_blocked`、`self_blocked` 两个布尔，阶段开关据此决定拦不拦（`should_reject(decision, mode, stage)`；P1 恒为 `False`）。
 - `granted` 读失败（consent 文件坏了）按空集处理，并在审计里标 `consent_unavailable`；observe 下不影响调用，enforce 下按失败放行还是失败拒绝，在 P2 的 PR 里定。
+
+**observe 下失败不改变调用**：登记、查表、读 consent、写审计任何一步抛异常，都只记异常类型（不记内容），调用照常进行；`check` 唯一会往外抛的是 enforce 阶段的 `CAPABILITY_NOT_GRANTED`。有注入故障的测试。
 
 宿主所有判定点都调同一个入口 `capability_gate.check(plugin_id, parent_request_id, capability, operation)`（`plugin/server/application/plugins/capability_gate.py`）：查表 → 组链（查不到时链 = `(plugin_id,)`，打 `unattributed`，`has_live_chain` 时再打 `possible_laundering`）→ `decide` → 记审计 → 按开关决定是否抛 `CAPABILITY_NOT_GRANTED`。**它不读 `_ctx`，也不读插件递交的视图**。
 
@@ -181,13 +184,14 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 | `result`（`ok` 或错误码）、`duration_ms` | ✓ | — | — | — |
 | `plugin`、`operation`、`capability`、`chain` | — | ✓ | — | ✓（plugin） |
 | `verdict`（`allow` / `would_deny` / `deny`）、`reason`、`blocked_by` | — | ✓ | — | — |
-| `flags`（`unattributed`、`possible_laundering`、`consent_unavailable`） | ✓（possible_laundering） | ✓ | — | — |
+| `flags`（`unattributed`、`possible_laundering`、`after_return`、`consent_unavailable`） | ✓（possible_laundering） | ✓ | — | — |
 | `counts`（能力 → 次数）、`suppressed` | — | `suppressed` | ✓ | ✓ |
 
 写入点：
 
 - `forward`、`allow_summary`：登记表摘除时（`_trigger_local` / `_trigger_custom_event_local` 的 `finally`）。宿主直接投递（`/runs`、工具、UI）也写，链长为 1。
-- `decision`：`capability_gate.check`。`would_deny` / `deny` 和带 `possible_laundering` 的放行**立即写**；有链的放行只给记录的 `uses` 计数，摘除时进 `allow_summary`。
+- `not_registered`：登记表满了没登记上的投递（按目标插件去重）。
+- `decision`：`capability_gate.check`。`would_deny` / `deny` 和带 `possible_laundering` / `after_return` 的放行**立即写**（同样按 60 秒去重）；有链的放行只给记录的 `uses` 计数，摘除时进 `allow_summary`。
 - `unattributed_summary`：没有链、也不可疑的放行（定时器、后台任务）按 `(plugin, capability)` 计数，60 秒刷一次，只写非零项；宿主关停时再刷一次。
 
 **不记**参数、返回值、对话正文、异常原文。`result` 只写错误码（`PluginError` 的 `code`，或 `PLUGIN_EXECUTION_FAILED` 这类固定码），`event_id` 是插件代码里的入口名，不是用户内容。测试用带哨兵字符串的参数、返回值、异常消息、push 正文跑一遍，断言 JSONL 和环形缓冲里都找不到哨兵。
@@ -286,6 +290,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 - `enforce` 下，`capability_gate.check` 在 `decision.caller_blocked` 时：RPC 抛 `CAPABILITY_NOT_GRANTED`；MESSAGE_PUSH 不转发、写 `deny` 审计。`self_not_approved` 和 `unattributed` 仍然放行。
 - SDK `push_message` 用 `ctx.call_chain.allows("messages.push")` 同步预检，拒绝时返回 `{"ok": False, "submitted": False, "reason": "capability_not_granted"}`（和现有 `payload_too_large` 同一套返回形状），不抛异常；宿主仍做最终判定。
 - SDK：`PluginCallError.code == "CAPABILITY_NOT_GRANTED"` 的文档和示例；视需要做 `call_chain` 关键字参数注入。
+- 归属更严：P1 只按插件带来的那一条记录判定，再用 `possible_laundering` 标出「同一插件还有更宽的存活链」。P2 拦截时要决定是否改为取该插件所有存活记录链的并集来判定（防止挑一条窄的），以及登记表满了以后怎么处理。
 - 补上 P1 没覆盖到的 `conversations.read` 入口：把 `bus.conversations.get` / `get_message` 挪到需要认证的控制 RPC（新增两个 handler，挂同一个判定包装器），SDK 对外接口不变，消息平面上的旧入口保留一个版本；要压测读对话的延迟和背压（今天这条路有独立的并发槽）。
 - 测试：借道被拒、自己没确认仍放行、unattributed 放行；拒绝不改变没有借道的调用；SDK 预检和宿主判定一致。
 - 回退：开关回到 `observe` 或 `off`。
