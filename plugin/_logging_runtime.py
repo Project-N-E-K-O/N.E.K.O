@@ -6,6 +6,7 @@ invoke this module or change its historical replacement policy.
 from __future__ import annotations
 
 import logging
+import os
 
 def all_loggers():
     yield logging.getLogger()
@@ -31,11 +32,31 @@ def replace_handlers(logger, old_handlers, new_handlers):
     logger.handlers = replacement
 
 
+def _abandon_inherited_stream(handler):
+    """Drop a stream copied over fork without flushing the parent's buffer.
+
+    A parent thread may have held the buffer's internal lock at fork time; that
+    lock is never released in the child, so flush or close would block forever.
+    The buffered bytes belong to the parent, which still writes them. Only the
+    child's copy of the raw descriptor is closed; that takes no buffer lock and
+    also stops any later finalizer of the buffer from flushing.
+    """
+    if getattr(handler, "_neko_pid", None) in (None, os.getpid()):
+        return
+    if not isinstance(handler, logging.FileHandler):
+        return  # Console streams are shared process-wide and never closed here.
+    stream, handler.stream = handler.stream, None
+    raw = getattr(getattr(stream, "buffer", stream), "raw", None)
+    if raw is not None:
+        raw.close()
+
+
 def close_unbound_handlers(handlers):
     """Borrowed handlers remain usable until their external owners detach them."""
     attached = {h for lg in all_loggers() for h in lg.handlers}
     for handler in set(handlers) - attached:
         try:
+            _abandon_inherited_stream(handler)
             handler.close()
         except Exception:
             pass  # Retiring a sink must not invalidate its installed replacement.

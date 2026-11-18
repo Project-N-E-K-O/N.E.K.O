@@ -167,6 +167,66 @@ def test_parent_initialization_then_real_fork_rebinds_both_logger_apis(isolated_
     assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
 
 
+
+@pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "mkfifo"), reason="requires POSIX fork")
+def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(isolated_log_dir, tmp_path):
+    """A child must not flush a file buffer whose lock a parent thread held at fork."""
+    import select
+    import signal
+    import threading
+    import time
+
+    plogging.setup_plugin_logging("PluginServer", own_root=True)
+    logging.getLogger("runtime-test.before-fork").info("parent-marker")
+    handler = plogging._active_file_handler("PluginServer")
+    assert handler is not None and handler.stream is not None
+    # Park a writer inside the buffered write: a FIFO nobody drains blocks the
+    # raw write while BufferedWriter's internal lock is held.
+    fifo = tmp_path / "parent-sink.fifo"
+    os.mkfifo(fifo)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    original_stream, original_max_bytes = handler.stream, handler.maxBytes
+    handler.maxBytes = 0  # A FIFO cannot report a rollover position.
+    handler.stream = open(fifo, "w", encoding="utf-8")
+    writer = threading.Thread(target=lambda: handler.stream.write("x" * (1 << 20)), daemon=True)
+    writer.start()
+    try:
+        assert select.select([reader], [], [], 10)[0], "parent writer never reached the raw write"
+        pid = os.fork()
+        if pid == 0:
+            try:
+                from plugin.core.host import _setup_plugin_logger
+                inherited = handler.stream
+                _setup_plugin_logger("demo", Path(__file__).resolve().parents[3])
+                logging.getLogger("runtime-test.child").info("child-marker")
+                # Reading .closed takes no buffer lock; the child's descriptor is released.
+                os._exit(0 if handler.stream is None and inherited.closed else 2)
+            except BaseException:
+                import traceback
+                traceback.print_exc()
+                os._exit(1)
+        deadline = time.monotonic() + 20
+        while True:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            if time.monotonic() > deadline:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+                pytest.fail("child blocked flushing a file stream inherited over fork")
+            time.sleep(0.05)
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        while writer.is_alive():
+            if select.select([reader], [], [], 0.1)[0]:
+                os.read(reader, 1 << 16)
+        handler.stream.close()
+        handler.stream, handler.maxBytes = original_stream, original_max_bytes
+        os.close(reader)
+    assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-marker") == 1
+    plogging.logger.info("parent-after-fork-marker")
+    assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
+
 def test_public_file_logger_and_sdk_helpers_use_host_sink(isolated_log_dir):
     from plugin.core.plugin_logger import PluginFileLogger, enable_plugin_file_logging
     from plugin.sdk.shared.logging import get_plugin_logger
