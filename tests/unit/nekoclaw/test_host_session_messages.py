@@ -905,6 +905,10 @@ async def test_a_commission_is_not_filed_for_a_note_once_everything_was_stopped(
     built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
     await _let_go(host)
     other = await wait_status(host, (await _dispatch(host, "something else")).commission_id, "done")
+    await _let_go(host)
+    # What waits is handed over here, by hand, one call at a time as the host does it:
+    # the host's own rounds are stopped, so that none of them hands the same note over meanwhile.
+    await host.wakes.close()
     await _note(host.ledger, other, built.session_id, "Rebuild it.")
     [wake] = await host.ledger.wakes_pending(session_id=built.session_id)
 
@@ -1285,3 +1289,27 @@ async def test_what_comes_together_for_a_session_starts_one_turn(hosts, tmp_path
     opening = await host.task_agents._opening(filed, cleared=False)
     assert "    The fence is done." in opening and "    So is the lawn." in opening
     assert len(set(re.findall(r"marked ([0-9a-f]{16})", opening))) == 2
+
+
+async def test_a_note_for_a_session_whose_record_was_removed_meanwhile_is_dropped(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built"), _report("ready", "other")]))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    other = await wait_status(host, (await _dispatch(host, "something else")).commission_id, "done")
+    await _let_go(host)
+    message, _refusal, _wait = await _note(host.ledger, other, built.session_id, "Rebuild it.")
+    # Written while the session could be written to; its record went, being old, before the note was handed over.
+    await host.ledger.mark_session_cleared(built.session_id)
+
+    host.wakes.kick()
+    await wait_until(
+        lambda: _nothing_pending(host, built.session_id), what="the note being dealt with"
+    )
+
+    # There is nothing in that session to go on with: no commission is filed for the note.
+    assert await _filed_for_notes(host) == []
+    dropped = await host.ledger.message_get(message.id)
+    assert (dropped.status, dropped.status_reason) == ("void", "its session's record was removed")
+
+
+async def _nothing_pending(host: Any, session_id: str) -> bool:
+    return await host.ledger.wakes_pending(session_id=session_id) == []
