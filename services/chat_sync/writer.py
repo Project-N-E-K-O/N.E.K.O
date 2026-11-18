@@ -22,7 +22,7 @@ _registry = {}
 _registry_lock = threading.RLock()
 # Every ChatSyncWriter, including one a newer writer replaced in _registry but a runtime still holds.
 _FORK_RESET_WRITERS = weakref.WeakSet()
-# Exceptions from rebuilds in this (fork child) process; see _reset_file_locks_after_fork.
+# (exception type name, message) of rebuilds that failed in this fork child; see _reset_file_locks_after_fork.
 _FORK_RESET_FAILURES: list = []
 
 
@@ -47,7 +47,8 @@ def _reset_file_locks_after_fork():
             # No output here: a write to a full, unread stdout pipe would block the hook
             # and the child's start. A lock left unrebuilt still fails loudly on use
             # (filelock raises "inherited across fork"); the cause is kept for inspection.
-            _FORK_RESET_FAILURES.append(exc)
+            # A summary, not the exception: its traceback would keep the object and this frame alive.
+            _FORK_RESET_FAILURES.append((type(exc).__name__, str(exc)))
 
 
 if hasattr(os, 'register_at_fork'):

@@ -126,7 +126,7 @@ def test_recent_file_lock_outside_cache_works_after_fork(tmp_path, monkeypatch):
 
 
 def _recent_child_uses_lock_object_after_one_failure(lock):
-    if [type(exc) for exc in recent_file._FORK_RESET_FAILURES] != [ZeroDivisionError]:
+    if [name for name, _ in recent_file._FORK_RESET_FAILURES] != ['ZeroDivisionError']:
         raise SystemExit(10)
     _recent_child_uses_lock_object(lock)
 
@@ -251,7 +251,7 @@ def test_chat_sync_writer_replaced_in_registry_works_after_fork(tmp_path):
 
 
 def _writer_child_uses_writer_object_after_one_failure(writer):
-    if [type(exc) for exc in chat_sync_writer._FORK_RESET_FAILURES] != [ZeroDivisionError]:
+    if [name for name, _ in chat_sync_writer._FORK_RESET_FAILURES] != ['ZeroDivisionError']:
         raise SystemExit(10)
     _writer_child_uses_writer_object(writer)
 

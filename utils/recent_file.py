@@ -275,7 +275,7 @@ class _RecentFileLock:
 
 # Every _RecentFileLock, including any a caller still references outside _LOCKS.
 _FORK_RESET_LOCKS: weakref.WeakSet = weakref.WeakSet()
-# Exceptions from rebuilds in this (fork child) process; see _reset_file_locks_after_fork.
+# (exception type name, message) of rebuilds that failed in this fork child; see _reset_file_locks_after_fork.
 _FORK_RESET_FAILURES: list = []
 _LOCKS: dict[str, _RecentFileLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -311,7 +311,8 @@ def _reset_file_locks_after_fork() -> None:
             # No output here: a write to a full, unread stdout pipe would block the hook
             # and the child's start. A lock left unrebuilt still fails loudly on use
             # (filelock raises "inherited across fork"); the cause is kept for inspection.
-            _FORK_RESET_FAILURES.append(exc)
+            # A summary, not the exception: its traceback would keep the object and this frame alive.
+            _FORK_RESET_FAILURES.append((type(exc).__name__, str(exc)))
 
 
 if hasattr(os, 'register_at_fork'):
