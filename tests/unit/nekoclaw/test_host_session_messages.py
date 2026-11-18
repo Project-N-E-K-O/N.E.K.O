@@ -3205,6 +3205,68 @@ async def test_what_other_sessions_and_the_host_say_is_not_sent_as_the_users_wor
     assert said("A wake you set is due") == [("prompt", False)]
 
 
+async def test_a_directory_that_holds_a_record_under_a_second_name_is_not_searched(hosts, tmp_path, monkeypatch):
+    import os
+
+    from config import nekoclaw_settings
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "one"), _report("ready", "two")]))
+    first = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    second = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
+    await _let_go(host)
+    place = await host.ledger.get_session(first.session_id)
+    record = Path(place.session_dir) / "transcript.jsonl"
+    rule = host.task_agents._cb_permission
+    # The other session works in a folder of the user's, apart from where its record is.
+    project = tmp_path / "a project of the user"
+    (project / "src" / "deep").mkdir(parents=True)
+    (project / "docs").mkdir()
+    (project / "src" / "main.py").write_text("x", encoding="utf-8")
+    await host.ledger.update_session(first.session_id, workdir=str(project))
+
+    def asked(tool: str, path: Path, category: str = "outside_read") -> Any:
+        return rule(
+            second.session_id, {"tool": tool, "category": category, "path": str(path), "workdir": second.workdir}
+        )
+
+    refused = {"allow": False, "reason": words.SESSION_RECORD_SEARCH_REFUSED}
+    # No record has a second name: what the other session works on is searched.
+    assert (await asked("grep", project))["allow"] is True
+    # A file of the project with two names, as a package manager leaves them, changes nothing.
+    os.link(project / "src" / "main.py", project / "src" / "main again.py")
+    os.link(project / "src" / "main.py", project / "docs" / "main too.py")
+    assert (await asked("grep", project))["allow"] is True
+    # Nor is the directory gone through at all, however much is in it: nothing is looked for.
+    with monkeypatch.context() as patched:
+        patched.setattr(nekoclaw_settings, "SESSION_RECORD_ALIAS_SCAN_ENTRIES", 1)
+        assert (await asked("grep", project))["allow"] is True
+
+    # The record under a second name, somewhere down in the project: a search of a directory
+    # it lies in would open it with the rest, and is refused; one of a directory beside it is
+    # not, though a file with two names lies there too (it is not the record).
+    os.link(record, project / "src" / "deep" / "notes.txt")
+    assert await asked("grep", project) == refused
+    assert await asked("grep", project / "src") == refused
+    assert (await asked("grep", project / "docs"))["allow"] is True
+    # Listing names reads no file.
+    assert (await asked("glob", project))["allow"] is True
+    # Among the files the caller itself works on, the same: a folder of its own that holds the
+    # second name is not searched, the others are.
+    mine = Path(second.workdir)
+    (mine / "kept").mkdir()
+    (mine / "plain").mkdir()
+    os.link(record, mine / "kept" / "notes.txt")
+    assert await asked("grep", mine, "workdir_files") == refused
+    assert await asked("grep", mine / "kept", "workdir_files") == refused
+    assert (await asked("grep", mine / "plain", "workdir_files"))["allow"] is True
+    # A directory with more entries than are looked at is taken to hold it: it cannot be told
+    # that it does not.
+    monkeypatch.setattr(nekoclaw_settings, "SESSION_RECORD_ALIAS_SCAN_ENTRIES", 1)
+    (project / "docs" / "a.txt").write_text("x", encoding="utf-8")
+    (project / "docs" / "b.txt").write_text("x", encoding="utf-8")
+    assert await asked("grep", project / "docs") == refused
+
+
 async def test_a_file_with_two_names_among_the_callers_own_files_is_read_whatever_the_settings_say_of_elsewhere(
     hosts, tmp_path
 ):

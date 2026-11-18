@@ -490,6 +490,48 @@ def _has_second_name(path: str) -> bool:
     return stat.S_ISREG(found.st_mode) and found.st_nlink > 1
 
 
+def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[str], limit: int) -> bool:
+    """Whether one of some files lies in a directory under any of its names, however deep. Blocking.
+
+    The files are told by device and number, which is what a second name
+    (a hard link) shares with the first. Read as a search of the
+    directory reads it: through no link. The directories in ``apart``
+    are not gone into (other sessions' own directories, which are ruled
+    on by themselves). No more than ``limit`` entries are looked at: a
+    directory that has more is taken to hold one of the files, as it
+    cannot be told that it does not.
+    """
+    import os
+    import stat
+
+    looked = 0
+    pending = [os.fspath(directory)]
+    while pending:
+        try:
+            entries = list(os.scandir(pending.pop()))
+        except OSError:
+            continue  # Not to be read: nor is it by a search.
+        for entry in entries:
+            looked += 1
+            if looked > limit:
+                return True
+            try:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if os.path.normcase(os.path.abspath(entry.path)) not in apart:
+                        pending.append(entry.path)
+                    continue
+                # (Asked of the file itself: what a directory tells of its
+                # entries does not have the number on every system.)
+                found = os.stat(entry.path, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISREG(found.st_mode) and found.st_nlink > 1 and (found.st_dev, found.st_ino) in files:
+                return True
+    return False
+
+
 def _shows_run_at_work(event: dict[str, Any]) -> bool:
     """Whether a session event shows a run at work on what it was given.
 
@@ -4779,7 +4821,10 @@ class TaskAgentManager:
         of a directory that holds a session's own directory would open
         the record with the rest, so such a directory is not searched
         (unless ``names_only``: listing names reads no file); the
-        directories inside it are. Reading outside working directories
+        directories inside it are. Nor is a directory searched that holds
+        a record under a second name, wherever that directory is: a
+        search reads through no link, but a second name is a file like
+        any other to it. Reading outside working directories
         that the settings forbid stays forbidden. (A shell command that
         reads a record is not looked into, as no shell command is.)
 
@@ -4798,6 +4843,7 @@ class TaskAgentManager:
             SESSION_RECORD_WRITE_REFUSED,
             SESSION_WRITE_REFUSED,
         )
+        from config.nekoclaw_settings import SESSION_RECORD_ALIAS_SCAN_ENTRIES
         from nekoclaw.runtime.permissions import is_inside
         from nekoclaw.runtime.snapshot import SYSTEM_FILE
 
@@ -4807,11 +4853,13 @@ class TaskAgentManager:
             return None
         kept_files = (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME)
 
-        def look() -> tuple[bool, bool, bool, bool]:
+        def look() -> tuple[bool, bool, bool, bool, bool]:
             # Whether the path is in another session's own directory,
             # whether it is in another session's working directory,
-            # whether it is one of the files a session keeps of itself, and
-            # whether it is a directory with such files somewhere in it.
+            # whether it is one of the files a session keeps of itself,
+            # whether it is a directory with such files somewhere in it,
+            # and whether it is a directory with a second name of such a
+            # file somewhere in it.
             target = Path(path)
             in_own = any(session_dir and is_inside(target, Path(session_dir)) for _id, _workdir, session_dir in places)
             in_work = any(workdir and is_inside(target, Path(workdir)) for _id, workdir, _session_dir in places)
@@ -4845,9 +4893,33 @@ class TaskAgentManager:
                 and target.is_dir()
                 and any(session_dir and is_inside(Path(session_dir), target) for _id, _workdir, session_dir in places)
             )
-            return in_own, in_work, record, holds
+            aliased = False
+            if not names_only and target.is_dir():
+                # Only a record that has a second name can lie anywhere
+                # under one, and it has none unless somebody gave it one:
+                # as a rule nothing is looked for, and no directory is
+                # gone through.
+                twice: set[tuple[int, int]] = set()
+                for _id, _workdir, session_dir in places:
+                    for name in kept_files if session_dir else ():
+                        try:
+                            kept = os.stat(Path(session_dir) / name)
+                        except OSError:
+                            continue  # Not there.
+                        if kept.st_nlink > 1:
+                            twice.add((kept.st_dev, kept.st_ino))
+                if twice:
+                    # (The sessions' own directories, where the records
+                    # lie under their first names, are ruled on above.)
+                    apart = {
+                        os.path.normcase(os.path.abspath(session_dir))
+                        for _id, _workdir, session_dir in places
+                        if session_dir
+                    }
+                    aliased = _lies_in(target, twice, apart, SESSION_RECORD_ALIAS_SCAN_ENTRIES)
+            return in_own, in_work, record, holds, aliased
 
-        in_own, in_work, record, holds = await asyncio.to_thread(look)
+        in_own, in_work, record, holds, aliased = await asyncio.to_thread(look)
         if writes:
             if in_own:
                 return {"allow": False, "reason": SESSION_WRITE_REFUSED}
@@ -4862,14 +4934,14 @@ class TaskAgentManager:
             # that is the working directory itself, or a folder in it.
             if record:
                 return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED}
-            if inside and in_own and holds:
+            if aliased or (inside and in_own and holds):
                 return {"allow": False, "reason": SESSION_RECORD_SEARCH_REFUSED}
             return None
         if await self._permissions.forbidden("outside_read"):
             return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
         if record:
             return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED}
-        if holds:
+        if holds or aliased:
             return {"allow": False, "reason": SESSION_RECORD_SEARCH_REFUSED}
         return PermissionDecision(True).to_json()
 
