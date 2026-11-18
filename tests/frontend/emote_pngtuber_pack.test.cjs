@@ -335,21 +335,6 @@ test('a scene without an animation entry still resolves by id', () => {
     );
 });
 
-// ── 每节点时长 ───────────────────────────────────────────────────────────────
-// 扁平包装不下触发条件或过渡，唯一能携带的时序就是这个节点演多少帧，
-// 所以换算必须显式、可测，而不是埋在闭包里。
-
-test('duration seconds convert to frame budgets, clamped', () => {
-    assert.equal(pack.framesForSeconds(0, 20, 60), 1, '0 = 单帧定格');
-    assert.equal(pack.framesForSeconds('', 20, 60), 60, '留空 = 整段');
-    assert.equal(pack.framesForSeconds(null, 20, 60), 60);
-    assert.equal(pack.framesForSeconds(1.5, 20, 60), 30);
-    assert.equal(pack.framesForSeconds(10, 20, 60), 60, '不能超过帧数上限');
-    assert.equal(pack.framesForSeconds(-3, 20, 60), 1, '负数按定格处理，而不是负帧');
-    assert.equal(pack.framesForSeconds('abc', 20, 60), 60);
-    assert.equal(pack.framesForSeconds(2, 0, 60), 40, '非法 fps 退回 20');
-});
-
 // ── 列表重建签名：决定"切一个选中项要不要重建 407 张卡" ──────────────────────
 test('选中项变了不该重建整张列表', () => {
     const items = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }];

@@ -2,13 +2,13 @@
 
 它替掉了节点编辑器入口（部件/调整/颜色在上游标签页已经定过，这里只该管
 "什么状态用哪条动画、演哪一段、多大多角度"）。这些测试钉住最容易烂的几件事：
-手柄拖出来的秒数真的进了图、舞台上拖的位置真的进了图、说话格只有 1 帧、
+手柄拖出来的秒数真的进了图、舞台上拖的位置真的进了图、说话格按包格式显示、
 以及页面上不能再出现没翻译的裸 key。
 """
 
 from __future__ import annotations
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 REVEAL = """() => {
     document.body.classList.remove('editor-empty');
@@ -292,9 +292,8 @@ def test_pose_controls_are_doubtful_when_flat(page: Page, running_server: str) -
     assert page.evaluate("() => !document.querySelector('.st-notice').hidden"), "该说明为什么摆不动"
 
 
-def test_the_talking_tile_is_one_frozen_frame(page: Page, running_server: str) -> None:
-    """运行时靠换 <img> src 做口型交替：给它多帧动画会被反复从头重载，永远播不动。"""
-    _boot(page, running_server)
+def test_flat_talking_tile_is_one_frozen_frame(page: Page, running_server: str) -> None:
+    _boot(page, running_server, fmt="flat")
     tiles = {tile["state"]: tile for tile in page.evaluate(TILES)}
     assert tiles["talking_image"]["stillOk"], tiles["talking_image"]
     page.evaluate("() => document.querySelector('[data-state=\"talking_image\"]').click()")
@@ -310,6 +309,39 @@ def test_the_talking_tile_is_one_frozen_frame(page: Page, running_server: str) -
     params = page.evaluate("() => window.__STAGE.getGraph().nodes.find(\
 n => n.params.stateKey === 'talking_image').params")
     assert params["startAt"] > 0, "拖起点＝挑定格在哪一帧"
+    assert params["seconds"] == 0, params
+
+
+def test_layered_talking_tile_has_an_editable_animation_range(page: Page, running_server: str) -> None:
+    _boot(page, running_server, fps=10, fmt="layered")
+    talking = page.locator('.st-tile[data-state="talking_image"]')
+    talking.click()
+    status = talking.locator(".st-tile-status")
+    span = page.locator(".st-span")
+    expect(status).to_have_text("20f")
+    expect(span).to_have_text("0.00s – 2.00s")
+
+    box = page.locator(".st-strip-canvas").bounding_box()
+    assert box is not None
+    y = box["y"] + box["height"] / 2
+    page.mouse.move(box["x"] + box["width"] * 0.98, y)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.65, y, steps=5)
+    page.mouse.up()
+    expect(span).to_have_text("0.00s – 1.30s")
+
+    page.mouse.move(box["x"] + 3, y)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.35, y, steps=5)
+    page.mouse.up()
+    expect(span).to_have_text("0.70s – 1.30s")
+    expect(status).to_have_text("6f")
+    params = page.evaluate("""() => window.__STAGE.getGraph().nodes.find(
+        n => n.params.stateKey === 'talking_image').params""")
+    assert params["startAt"] == 0.7 and params["seconds"] == 0.6, params
+
+    page.locator(".st-btn-whole").click()
+    expect(span).to_have_text("0.00s – 2.00s")
 
 
 def _pose(page: Page) -> dict:
@@ -817,9 +849,9 @@ def test_leaving_the_library_keeps_the_scroll_position(page: Page, running_serve
 
 
 def test_the_pane_shows_the_frame_the_still_state_froze_on(page: Page, running_server: str) -> None:
-    """说话位只烘一帧，而抽屉展开时台面是定格的 —— 检视窗就是唯一的反馈，
+    """平铺说话位只烘一帧，而抽屉展开时台面是定格的 —— 检视窗就是唯一的反馈，
     它必须跟着起止手柄选的帧走，不能一直停在同一条动画的某一帧。"""
-    _boot(page, running_server)
+    _boot(page, running_server, fmt="flat")
     page.evaluate("""() => document.querySelector('[data-state="talking_image"]').click()""")
     page.wait_for_timeout(500)
     page.click(".st-rail")

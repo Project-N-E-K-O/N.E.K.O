@@ -57,11 +57,13 @@
 
     /**
      * 同一个模板反复导入应当命中同一条目（否则库会被重复项塞满）。
-     * 用的是"包名 + 共享模型 key + 场景数 + 动画数"，和会话快照的指纹一致 ——
-     * 两份内容一样的副本会合并成一条，这是故意的：从编辑器的角度看它们就是同一个模板。
+     * Spine 使用后端计算的资源内容标识，与 ZIP 文件名无关。
+     * 下方旧键生成方式仅保留给已有库条目的读写。
      */
     function entryKeyFor(pkg) {
         if (!pkg) return '';
+        if (pkg.source?.builtIn === true && /^builtin:[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(pkg.id || '')) return pkg.id;
+        if (pkg.source?.kind === 'spine' && /^spine-[0-9a-f]{64}$/.test(pkg.id || '')) return pkg.id;
         const counts = pkg.counts || {};
         const parts = [
             text(pkg.source?.packageName),
@@ -82,6 +84,9 @@
         return {
             sceneId: text(src.sceneId),
             sceneListFilter: text(src.sceneListFilter),
+            groupId: text(src.groupId),
+            groups: Array.isArray(src.groups) ? [...src.groups] : [],
+            shots: Array.isArray(src.shots) ? [...src.shots] : [],
             packSceneIds: src.packSceneIds && typeof src.packSceneIds === 'object'
                 ? { ...src.packSceneIds } : {},
             packName: text(src.packName),
@@ -90,9 +95,8 @@
                 ? 'emotion' : 'talking',
             character: src.character && typeof src.character === 'object' ? {
                 skins: Array.isArray(src.character.skins) ? [...src.character.skins] : [],
-                sliders: Array.isArray(src.character.sliders) ? [...src.character.sliders] : [],
                 slots: Array.isArray(src.character.slots) ? [...src.character.slots] : [],
-            } : { skins: [], sliders: [], slots: [] },
+            } : { skins: [], slots: [] },
             adjustments: src.adjustments && typeof src.adjustments === 'object'
                 ? { ...src.adjustments } : {},
             adjustOverwrite: src.adjustOverwrite !== false,
@@ -116,9 +120,7 @@
             key,
             packageName: text(src.pkg?.source?.packageName) || text(src.packageName),
             displayName: text(src.pkg?.model?.displayName) || text(src.displayName) || text(src.pkg?.source?.sharedModelKey),
-            // sourceName = 来源名（目录导入＝文件夹名，zip 导入＝文件名去 .zip）：
-            // 卡片默认按它显示 —— 用户的心智是"我从哪拿来的这份模板"，不是作者写在
-            // model.meta.json 里的内部名。alias 是用户双击卡片改名后的结果，优先级最高。
+            // sourceName 保留上传 ZIP 的显示名，alias 是用户改名后的结果。
             sourceName: text(src.sourceName).slice(0, MAX_LABEL_CHARS),
             alias: text(src.alias).slice(0, MAX_LABEL_CHARS),
             importKind: src.importKind === 'directory' ? 'directory' : 'file',
@@ -131,9 +133,7 @@
 
     /**
      * 卡片显示名的唯一裁决处：用户改的名 > 来源名 > 包名（去 .zip）> 模板自报名。
-     * 自报名（model.meta.json 里的 DisplayName）垫底是有意的：同一作者的整套模型
-     * 往往全叫同一个名字（一排「YUI 道具风格版」没法认），来源才是用户区分它们的依据。
-     * 网页目录导入的临时包名 template-directory 没有信息量，视同没有。
+     * 旧网页目录记录的临时包名 template-directory 没有信息量，视同没有。
      */
     function entryLabel(entry) {
         if (!entry) return '';

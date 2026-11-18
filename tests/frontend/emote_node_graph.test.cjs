@@ -11,7 +11,7 @@ test('default graph is one 默认节点 feeding one idle output', () => {
     const initial = graph.defaultGraph();
     assert.deepEqual(initial.nodes.map((n) => n.type), ['source.default', 'output.state']);
     assert.equal(initial.links.length, 1);
-    const evaluated = graph.evaluate(initial, { sceneId: 'a.json#0', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    const evaluated = graph.evaluate(initial, { sceneId: 'a.json#0', skins: [], slots: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
     assert.equal(evaluated.outputs.length, 1);
     assert.equal(evaluated.outputs[0].stateKey, 'idle_image');
     assert.equal(evaluated.outputs[0].look.sceneId, 'a.json#0', '默认节点继承编辑器当前状态');
@@ -46,7 +46,7 @@ test('garbage in, empty graph out — never a throw', () => {
 
 test('socket typing is enforced in both directions', () => {
     const source = node('source.default', null, 's');
-    const mod = node('mod.text', { content: 'hi' }, 'm');
+    const mod = node('mod.skin', {}, 'm');
     const out = node('output.state', null, 'o');
     assert.equal(graph.canConnect(source, 'look', mod, 'look'), true);
     assert.equal(graph.canConnect(mod, 'look', out, 'look'), true);
@@ -71,7 +71,7 @@ test('a second link into the same input replaces the first', () => {
 
 test('a link that would create a cycle is rejected, leaving the graph untouched', () => {
     let g = graph.defaultGraph();
-    g.nodes.push(node('mod.text', { content: '!' }, 't'));
+    g.nodes.push(node('mod.skin', {}, 't'));
     g = graph.addLink(g, 'default', 'look', 't', 'look');
     g = graph.addLink(g, 't', 'look', 'out-idle', 'look');
     const before = JSON.stringify(g);
@@ -79,8 +79,8 @@ test('a link that would create a cycle is rejected, leaving the graph untouched'
     assert.equal(JSON.stringify(cyclic), before, 'output 节点没有输出端口，本就接不上');
     // 真正的环：mod -> mod 自身回路
     let g2 = graph.emptyGraph();
-    g2.nodes.push(node('mod.text', { content: 'a' }, 'm1'));
-    g2.nodes.push(node('mod.text', { content: 'b' }, 'm2'));
+    g2.nodes.push(node('mod.skin', {}, 'm1'));
+    g2.nodes.push(node('mod.transform', {}, 'm2'));
     g2 = graph.addLink(g2, 'm1', 'look', 'm2', 'look');
     const snapshot = JSON.stringify(g2);
     const result = graph.addLink(g2, 'm2', 'look', 'm1', 'look');
@@ -91,17 +91,15 @@ test('evaluation folds mods in topological order', () => {
     let g = graph.emptyGraph();
     g.nodes.push(node('source.default', null, 'src'));
     g.nodes.push(node('mod.transform', { x: 10, y: 0, scale: 2, mirror: true }, 'tf'));
-    g.nodes.push(node('mod.text', { content: '你好', side: 'front', size: 40, color: '#ff0000' }, 'txt'));
+    g.nodes.push(node('mod.skin', { groups: [{ group: 'eyes', value: '2' }] }, 'skin'));
     g.nodes.push(node('output.state', { stateKey: 'happy_image', seconds: 1.5 }, 'out'));
     g = graph.addLink(g, 'src', 'look', 'tf', 'look');
-    g = graph.addLink(g, 'tf', 'look', 'txt', 'look');
-    g = graph.addLink(g, 'txt', 'look', 'out', 'look');
+    g = graph.addLink(g, 'tf', 'look', 'skin', 'look');
+    g = graph.addLink(g, 'skin', 'look', 'out', 'look');
     const defaults = {
         sceneId: 'a.json#0',
         skins: [{ group: 'hair', value: '1' }],
-        sliders: [],
         slots: [],
-        texts: [],
         transform: { x: 5, y: 0, scale: 3, mirror: false },
     };
     const evaluated = graph.evaluate(g, defaults);
@@ -113,21 +111,19 @@ test('evaluation folds mods in topological order', () => {
     assert.equal(look.transform.x, 15, '位移是叠加的 (5 + 10)');
     assert.equal(look.transform.scale, 6, '缩放是相乘的 (3 * 2)');
     assert.equal(look.transform.mirror, true);
-    assert.deepEqual(look.skins, [{ group: 'hair', value: '1' }], '上游没改皮肤就应该原样穿过');
-    assert.equal(look.texts.length, 1);
-    assert.equal(look.texts[0].content, '你好');
+    assert.deepEqual(look.skins, [{ group: 'hair', value: '1' }, { group: 'eyes', value: '2' }]);
 });
 
 test('a mod node with no input still starts from the defaults base', () => {
     let g = graph.emptyGraph();
-    g.nodes.push(node('mod.text', { content: 'solo' }, 'm'));
+    g.nodes.push(node('mod.transform', { x: 12 }, 'm'));
     g.nodes.push(node('output.state', { stateKey: 'talking_image' }, 'out'));
     g = graph.addLink(g, 'm', 'look', 'out', 'look');
     const evaluated = graph.evaluate(g, {
-        sceneId: 'keep.json#2', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false },
+        sceneId: 'keep.json#2', skins: [], slots: [], transform: { x: 0, y: 0, scale: 1, mirror: false },
     });
     assert.equal(evaluated.outputs[0].look.sceneId, 'keep.json#2');
-    assert.equal(evaluated.outputs[0].look.texts[0].content, 'solo');
+    assert.equal(evaluated.outputs[0].look.transform.x, 12);
 });
 
 test('scene source overrides the inherited scene', () => {
@@ -136,9 +132,30 @@ test('scene source overrides the inherited scene', () => {
     g.nodes.push(node('output.state', { stateKey: 'click_image' }, 'out'));
     g = graph.addLink(g, 's', 'look', 'out', 'look');
     const evaluated = graph.evaluate(g, {
-        sceneId: 'a.json#0', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false },
+        sceneId: 'a.json#0', skins: [], slots: [], transform: { x: 0, y: 0, scale: 1, mirror: false },
     });
     assert.equal(evaluated.outputs[0].look.sceneId, 'b.json#7');
+});
+
+test('retired slider and text nodes keep the saved animation connected to its state', () => {
+    const saved = graph.normalizeGraph({
+        schemaVersion: 1,
+        nodes: [
+            { id: 'scene', type: 'source.scene', params: { sceneId: 'animation:idle' } },
+            { id: 'slider', type: 'mod.slider', params: { name: 'height', value: 1.5 } },
+            { id: 'text', type: 'mod.text', params: { content: 'Previous caption' } },
+            { id: 'idle', type: 'output.state', params: { stateKey: 'idle_image' } },
+        ],
+        links: [
+            { from: 'scene', to: 'slider' },
+            { from: 'slider', to: 'text' },
+            { from: 'text', to: 'idle' },
+        ],
+    });
+    const { outputs } = graph.evaluate(saved, { sceneId: 'animation:other' });
+    const plan = graph.planOutputs(saved, outputs, ['idle_image'], ['idle_image']);
+    assert.equal(plan.kept.length, 1);
+    assert.equal(plan.kept[0].look.sceneId, 'animation:idle');
 });
 
 test('slot tint only touches slots whose name carries the tag', () => {
@@ -149,8 +166,6 @@ test('slot tint only touches slots whose name carries the tag', () => {
     const evaluated = graph.evaluate(g, {
         sceneId: 'a#0',
         skins: [],
-        sliders: [],
-        texts: [],
         transform: { x: 0, y: 0, scale: 1, mirror: false },
         slots: [
             { name: 'Hair_Front', tintColor: { r: 1, g: 1, b: 1, a: 1 } },
@@ -167,8 +182,7 @@ test('params are coerced, clamped and never trusted', () => {
         schemaVersion: 1,
         nodes: [
             { id: 'n', type: 'mod.transform', params: { x: 99999, scale: -4, mirror: 'yes' } },
-            { id: 'c', type: 'mod.text', params: { content: 'x'.repeat(900), side: 'middle', size: 'big', color: 'red' } },
-            { id: 's', type: 'mod.slider', params: { name: 12, value: 'NaN' } },
+            { id: 'c', type: 'mod.slotTint', params: { tag: 42, color: 'red' } },
         ],
         links: [],
     };
@@ -177,12 +191,8 @@ test('params are coerced, clamped and never trusted', () => {
     assert.equal(tf.x, 500);
     assert.equal(tf.scale, 0.2);
     assert.equal(tf.mirror, false);
-    const txt = clean.nodes[1].params;
-    assert.equal(txt.content.length, 120);
-    assert.equal(txt.side, 'front', '非法选项回落到默认值而不是留下脏数据');
-    assert.equal(txt.size, 64);
-    assert.equal(txt.color, '#ffffff');
-    assert.equal(clean.nodes[2].params.name, '', '数字不该变成滑杆名');
+    assert.equal(clean.nodes[1].params.tag, '');
+    assert.equal(clean.nodes[1].params.color, '#ffffff');
 });
 
 test('duplicate node ids are made unique instead of confusing the evaluator', () => {
@@ -221,8 +231,8 @@ test('removeNode takes its links with it', () => {
     assert.equal(trimmed.links.length, 0);
 });
 
-test('every palette entry is constructible and round-trips through normalize', () => {
-    for (const type of graph.PALETTE) {
+test('every supported node round-trips through normalize', () => {
+    for (const type of Object.keys(graph.TYPES)) {
         const made = graph.makeNode(type, 12, 34, {}, `id-${type}`);
         assert.ok(made, type);
         const round = graph.normalizeGraph({ nodes: [made], links: [] });
@@ -343,7 +353,7 @@ test('同一槽位重复只留一条，未知槽位丢掉', () => {
 test('上游成环时查找会停住而不是转圈', () => {
     const g = {
         schemaVersion: 1,
-        nodes: [node('mod.skin', {}, 'a'), node('mod.slider', {}, 'b')],
+        nodes: [node('mod.skin', {}, 'a'), node('mod.transform', {}, 'b')],
         links: [
             { from: 'a', to: 'b', fromSocket: 'look', toSocket: 'look' },
             { from: 'b', to: 'a', fromSocket: 'look', toSocket: 'look' },
@@ -353,7 +363,7 @@ test('上游成环时查找会停住而不是转圈', () => {
 });
 
 const DEFAULT_LOOK = {
-    sceneId: 'scene-a', skins: [], sliders: [], slots: [], texts: [],
+    sceneId: 'scene-a', skins: [], slots: [], texts: [],
     transform: { x: 0, y: 0, scale: 1, mirror: false },
 };
 
@@ -406,7 +416,7 @@ test('source.image 整格替换为用户图片：输出带 imageId、不报 no-s
         node('output.state', { stateKey: 'happy_image', seconds: 1.5 }, 'out'),
     );
     g.links.push({ from: 'img', fromSocket: graph.LOOK, to: 'out', toSocket: graph.LOOK });
-    const evaluated = graph.evaluate(g, { sceneId: 'a.json#0', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    const evaluated = graph.evaluate(g, { sceneId: 'a.json#0', skins: [], slots: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
     assert.equal(evaluated.outputs.length, 1);
     const output = evaluated.outputs[0];
     assert.equal(output.imageId, 'smile.png', '图片 id 要跟到输出上');
@@ -423,7 +433,7 @@ test('source.image 没填 imageId 时回落到上游默认，按缺场景如实�
         node('output.state', { stateKey: 'idle_image' }, 'out'),
     );
     g.links.push({ from: 'img', fromSocket: graph.LOOK, to: 'out', toSocket: graph.LOOK });
-    const evaluated = graph.evaluate(g, { sceneId: '', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    const evaluated = graph.evaluate(g, { sceneId: '', skins: [], slots: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
     assert.equal(evaluated.outputs[0].imageId, '');
     assert.ok(evaluated.warnings.some((w) => w.startsWith('no-scene:')),
         '什么内容都没接时该如实报缺场景');
@@ -440,6 +450,6 @@ test('imageId 会随输出状态进 normalizeGraph 往返（存档往返不丢�
     assert.equal(restored.nodes.length, 2);
     const img = restored.nodes.find((n) => n.type === 'source.image');
     assert.equal(img.params.imageId, 'wink.png');
-    const evaluated = graph.evaluate(restored, { sceneId: '', skins: [], sliders: [], slots: [], texts: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
+    const evaluated = graph.evaluate(restored, { sceneId: '', skins: [], slots: [], transform: { x: 0, y: 0, scale: 1, mirror: false } });
     assert.equal(evaluated.outputs[0].imageId, 'wink.png');
 });

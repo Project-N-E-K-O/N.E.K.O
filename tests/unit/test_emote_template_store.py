@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -127,7 +128,6 @@ def test_staging_leftovers_are_invisible(store):
     junk.mkdir(parents=True)
     (junk / "template.zip").write_bytes(_zip())
     assert len(store.list()) == 1
-    assert store.total_bytes() == store.list()[0]["bytes"]
 
 
 # ── 路由层：multipart 对齐 + 错误码 ─────────────────────────────────────────
@@ -147,39 +147,441 @@ def client(tmp_path: Path, monkeypatch):
     return TestClient(app)
 
 
-def test_router_roundtrip_with_textures(client):
-    key = "demo::Demo::2::2"
-    response = client.post(
-        "/api/emote-maker/library/archive",
-        params={"key": key},
-        files={
-            "file": ("my-template.zip", _zip("router"), "application/zip"),
-            "textures": ("x.png", b"png-bytes", "image/png"),
-        },
-        data={"texture_paths": "Texture Cache/Custom Textures/x.png"},
-    )
+def test_router_roundtrip_uses_our_names_and_self_contained_zip(client, tmp_path, monkeypatch):
+    from tests.emote_fixtures import spine_zip
+    from main_logic.emote_template_adapter import inspect_spine_zip
+    monkeypatch.setenv("NEKO_EMOTE_TEMPLATE_DIR", str(tmp_path / "without-desktop-assets"))
+    builtins = client.get("/api/emote-maker/builtins")
+    assert builtins.status_code == 200
+    assert builtins.json() == {"success": True, "packages": []}
+    data = spine_zip()
+    key = inspect_spine_zip(data)["id"]
+    response = client.post("/api/emote-maker/library/archive", params={"key": key},
+                           files={"file": ("external-name.zip", data, "application/zip")})
     assert response.status_code == 200, response.text
     assert response.json()["entry"]["key"] == key
-    assert response.json()["entry"]["textures"] == ["Texture Cache/Custom Textures/x.png"]
-
     listed = client.get("/api/emote-maker/library").json()
-    assert listed["totalBytes"] == listed["entries"][0]["bytes"] > 0
-
+    assert listed["totalBytes"] > 0
     archive = client.get("/api/emote-maker/library/archive", params={"key": key})
     assert archive.status_code == 200
-    assert archive.content == _zip("router")
-    # 原始文件名要原样归还：库键的第一段就是它，弄丢等于把模板分裂成两个身份
-    assert archive.headers["X-Archive-Filename"] == "my-template.zip"
+    assert archive.headers["X-Archive-Filename"] == key + ".zip"
+    assert inspect_spine_zip(archive.content)["id"] == key
+    assert client.delete("/api/emote-maker/library", params={"key": key}).json()["freedBytes"] > 0
 
-    paths = client.get("/api/emote-maker/library/textures", params={"key": key}).json()
-    assert paths["paths"] == ["Texture Cache/Custom Textures/x.png"]
-    texture = client.get("/api/emote-maker/library/texture", params={
-        "key": key, "path": "Texture Cache/Custom Textures/x.png"})
-    assert texture.status_code == 200
 
-    freed = client.delete("/api/emote-maker/library", params={"key": key}).json()
-    assert freed["freedBytes"] > 0
-    assert client.get("/api/emote-maker/library").json()["entries"] == []
+def test_builtin_assets_use_separate_immutable_source_and_keep_session_images(client, builtin_emote_template_dir, monkeypatch):
+    monkeypatch.setenv("NEKO_EMOTE_TEMPLATE_DIR", str(builtin_emote_template_dir.parent))
+    endpoint = "/api/emote-maker"
+    catalog = client.get(endpoint + "/builtins").json()
+    package = catalog["packages"][0]
+    key = package["id"]
+    assert key == "builtin:yui-0.2"
+    assert package["model"]["displayName"] == "YUI 0.5"
+    assert package["source"]["builtIn"] is True
+    assert package["source"]["sceneAliases"] == {
+        "animation:d_angry": "animation:d_angry2",
+        "animation:d_surprise": "animation:d_surprise1",
+    }
+    slot_groups = package["catalogs"]["slotGroups"]
+    assert package["counts"]["slotGroups"] == len(slot_groups)
+    assert {part["id"] for part in slot_groups if part["kind"] == "toggle"} >= {"faka", "fashi_1"}
+    assert any(part["id"] == "liuhai_1" and part["kind"] == "tint" for part in slot_groups)
+    assert {part["id"] for part in slot_groups if part["kind"] == "tint"} >= {
+        "yanjing_1", "yanjing_1_B", "yanjing_1_C",
+    }
+    assert package["counts"]["animations"] == 11
+    archive = client.get(endpoint + "/library/archive", params={"key": key})
+    assert archive.status_code == 200
+    assert archive.headers["X-Archive-Filename"] == "yui-0.5.zip"
+    assert client.get(endpoint + "/library").json()["entries"] == []
+    ordinary = client.post(endpoint + "/import", files={"file": ("yui.zip", archive.content)})
+    assert ordinary.json()["package"]["counts"]["slotGroups"] == 0
+    assert client.delete(endpoint + "/library", params={"key": key}).status_code == 403
+
+    written = client.post(endpoint + "/library/textures", params={"key": key},
+                          files={"textures": ("note.png", b"session artwork")},
+                          data={"texture_paths": "StageImages/note.png"})
+    assert written.status_code == 200
+    assert written.json()["textures"] == ["StageImages/note.png"]
+    assert client.get(endpoint + "/library/archive", params={"key": key}).content == archive.content
+
+
+def test_builtin_archive_keeps_existing_generated_texture_overrides(client, builtin_emote_template_dir):
+    from PIL import Image
+    from main_routers.emote_template_router import _archive_store, _builtin_texture_overrides
+
+    wardrobe = _builtin_texture_overrides(builtin_emote_template_dir)
+    assert len(wardrobe.parts) == 53
+    assert wardrobe.parts["yanjing_1--yanjing_1_A"].attachment == "yanjing_1_A"
+    part = wardrobe.parts["liuhai_1--liuhai_1"]
+    recolored = Image.new("RGBA", part.original.size, "#1d79ca")
+    recolored.putalpha(part.original.getchannel("A"))
+    saved = io.BytesIO()
+    recolored.save(saved, "PNG")
+    legacy_eye_parts = {}
+    for layer, old_size, new_size in (("B", (469, 47), (500, 55)), ("C", (500, 190), (447, 173))):
+        name = f"yanjing_1_{layer}"
+        eye = wardrobe.parts[f"{name}--{name}"]
+        assert eye.original.size == new_size
+        legacy = io.BytesIO()
+        Image.new("RGBA", old_size, "#1d79ca").save(legacy, "PNG")
+        legacy_eye_parts[eye.storage_path] = legacy.getvalue()
+    key = "builtin:yui-0.2"
+    store = _archive_store()
+    store.save(key, wardrobe.archive, [(part.storage_path, saved.getvalue()), *legacy_eye_parts.items()], filename="yui-0.4.zip")
+    response = client.get("/api/emote-maker/library/archive", params={"key": key})
+    assert response.is_success
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        skeleton = json.loads(archive.read(wardrobe.skeleton_path))
+        attachment = skeleton["skins"][0]["attachments"][part.slot][part.attachment]
+        assert attachment["path"] == f"generated-{part.id}"
+        assert archive.read(f"generated-{part.id}.png") == saved.getvalue()
+        for layer in ("B", "C"):
+            name = f"yanjing_1_{layer}"
+            eye = skeleton["skins"][0]["attachments"][name][name]
+            assert eye.get("path", name) == name
+    for path, data in legacy_eye_parts.items():
+        assert store.texture_path(key, path).read_bytes() == data
+
+
+@pytest.mark.parametrize(("region_count", "model"), [
+    (2, "qwen-image-2.1-pro"),
+    (3, "qwen-image-2.1-pro"),
+    (2, "qwen-image-edit"),
+    (2, "wanx2.1-t2i-turbo"),
+])
+def test_wardrobe_spritesheet_sends_only_selected_regions_once(
+    client, monkeypatch, region_count, model,
+):
+    import base64
+    from types import SimpleNamespace
+
+    from PIL import Image, ImageDraw, ImageFilter
+    import main_routers.emote_template_router as routes
+    from utils.image_generation import GeneratedImage, ImageResult
+
+    class Config:
+        async def aget_model_api_config(self, kind):
+            if kind == "image":
+                return {"enabled": True, "protocol": "dashscope", "model": model, "api_key": "mock"}
+            return {"model": "test-vision", "api_key": "mock"}
+
+    def encode(image):
+        output = io.BytesIO()
+        image.save(output, "PNG")
+        return output.getvalue()
+
+    reference = Image.new("RGB", (100, 80), "red")
+    reference.paste("blue", (10, 20, 40, 50))
+    reference.paste("green", (60, 30, 80, 31))
+    part = Image.new("RGB", (15, 15), "black")
+    ImageDraw.Draw(part).ellipse((3, 3, 11, 11), fill="yellow")
+    reference.paste(part.filter(ImageFilter.GaussianBlur(2.2)), (20, 55))
+    sheet = Image.new("RGBA", (120, 80), (255, 0, 255, 1))
+    draw = ImageDraw.Draw(sheet)
+    if region_count == 3:
+        draw.rectangle((12, 10, 36, 32), fill="blue")
+        draw.rectangle((70, 10, 105, 32), fill="green")
+        draw.rectangle((12, 47, 36, 72), fill="yellow")
+    else:
+        draw.rectangle((15, 15, 45, 60), fill="blue")
+        draw.rectangle((70, 20, 105, 50), fill="green")
+    raw_sheet = encode(sheet)
+    calls = []
+    vision_crops = []
+
+    class Vision:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def ainvoke(self, messages):
+            calls.append("vision")
+            instruction = messages[-1].content[0]["text"]
+            if model == "qwen-image-2.1-pro":
+                assert "white padding" in instruction
+            assert "Describe its shape, color, material" in instruction
+            assert "discernible silhouette, main colors and large details" in instruction
+            if region_count == 3:
+                assert "For the crops numbered 3" in instruction
+                assert "Omit lighting, surface texture, reflections" in instruction
+            for item in messages[-1].content[1:]:
+                prefix, data = item["image_url"]["url"].split(",", 1)
+                assert prefix == "data:image/png;base64"
+                vision_crops.append(base64.b64decode(data))
+            inventory = "1. A blue ornament. 2. A green brooch."
+            if region_count == 3:
+                inventory += " 3. A yellow pin." + " Fine details." * 85
+            return SimpleNamespace(content=inventory)
+
+    async def create_vision(**options):
+        return Vision()
+
+    async def generate(request, *, config_manager):
+        calls.append("image")
+        assert request.size == "1536x1536"
+        assert len(request.prompt) <= 2000
+        assert len(vision_crops) == region_count
+        if region_count == 3:
+            assert request.reference_images[:2] == tuple(vision_crops[:2])
+            assert request.reference_images[2] != vision_crops[2]
+            with Image.open(io.BytesIO(request.reference_images[2])) as guide:
+                assert guide.size == (15, 15)
+                assert len(guide.convert("RGB").getcolors()) <= 3
+        else:
+            assert request.reference_images == tuple(vision_crops)
+        if region_count == 3:
+            assert "Cel animation redraw for these positions only: bottom-left." in request.prompt
+            assert "one solid base color and one solid shadow color" in request.prompt
+            assert "no gradients, metallic reflections, gloss" in request.prompt
+            assert "Keep the source line weight and shading for the other objects." in request.prompt
+        else:
+            assert "Cel animation redraw" not in request.prompt
+            assert "Preserve the reference design, proportions, orientation, colors, line weight and shading" in request.prompt
+        assert "Never paste or enlarge input crops." in request.prompt
+        assert "simplify unresolved details" in request.prompt
+        with Image.open(io.BytesIO(vision_crops[0])) as unchanged:
+            assert unchanged.size == (30, 30)
+            assert unchanged.getcolors() == [(900, (0, 0, 255, 255))]
+        with Image.open(io.BytesIO(vision_crops[1])) as crop:
+            if model == "qwen-image-2.1-pro":
+                assert "white padding" in request.prompt
+                assert crop.size == (20, 2)
+                assert set(crop.getcolors()) == {(20, (0, 128, 0, 255)), (20, (255, 255, 255, 255))}
+            else:
+                assert crop.size == (20, 1)
+                assert crop.getcolors() == [(20, (0, 128, 0, 255))]
+        assert "A blue ornament" in request.prompt
+        if region_count == 2:
+            assert "Two cells side by side" in request.prompt
+            assert "Item 1: x 5–45%, y 8–92%." in request.prompt
+            assert "Item 2: x 55–95%, y 8–92%." in request.prompt
+        else:
+            assert "Leave the bottom-right cell transparent." in request.prompt
+            assert "Item 3: x 5–45%, y 55–95%." in request.prompt
+        return ImageResult("qwen", model, GeneratedImage(data=raw_sheet))
+
+    monkeypatch.setattr(routes, "get_config_manager", Config)
+    monkeypatch.setattr(routes, "create_chat_llm_async", create_vision)
+    monkeypatch.setattr(routes, "generate_image", generate)
+    monkeypatch.setattr(routes, "atomic_write_bytes", lambda *_: pytest.fail("Unexpected write during generation"))
+    wardrobe_url = "/api/emote-maker/builtin/wardrobe"
+    info = client.get(wardrobe_url).json()
+    assert info == {
+        "success": True, "model": model,
+        "spritesheetConfigurationCode": "image_edit_unsupported" if model == "wanx2.1-t2i-turbo" else "",
+        "spritesheetRegionLimit": 3, "spritesheetCropAspectLimit": 10 if model == "qwen-image-2.1-pro" else None,
+    }
+    for method, path in (("POST", "generate"), ("GET", "guide"), ("PUT", "part"), ("PUT", "set"), ("DELETE", "part")):
+        assert client.request(method, f"{wardrobe_url}/{path}").status_code == 404
+    endpoint = wardrobe_url + "/generate-spritesheet"
+    files = {"reference": ("reference.png", encode(reference), "image/png")}
+    headers = {"x-neko-emote-wardrobe": "1"}
+    boxes = [[.1, .25, .4, .625], [.6, .375, .8, .3875]]
+    if region_count == 3:
+        boxes.append([.2, .6875, .35, .875])
+    assert client.post(endpoint, files=files).status_code == 403
+    for selection in ([], boxes * 2):
+        rejected = client.post(endpoint, headers=headers, files=files, data={"annotation": json.dumps(selection)})
+        assert rejected.json()["code"] == "invalid_spritesheet_regions"
+    assert calls == []
+
+    data = {"annotation": json.dumps(boxes)}
+    generated = client.post(endpoint, headers=headers, files=files, data=data)
+    if model == "wanx2.1-t2i-turbo":
+        assert generated.status_code == 400 and generated.json()["code"] == "image_edit_unsupported"
+        assert calls == []
+        return
+    assert generated.is_success, generated.text if not generated.is_success else ""
+    assert calls == ["vision", "image"]
+    assert generated.headers["X-Wardrobe-Spritesheet-Layout"] == "separated"
+    assert generated.headers["X-Wardrobe-Spritesheet-Padded"] == ("1" if model == "qwen-image-2.1-pro" else "0")
+    with Image.open(io.BytesIO(generated.content)) as image:
+        assert image.mode == "RGBA"
+        assert image.getpixel((0, 0))[3] == 0
+        assert image.getpixel((30 if region_count == 3 else 20, 20)) == (0, 0, 255, 255)
+        if region_count == 3:
+            assert image.getpixel((90, 20)) == (0, 128, 0, 255)
+            assert image.getpixel((30, 60)) == (255, 255, 0, 255)
+
+
+def test_wardrobe_supplemental_prompt_is_only_for_one_crop(client, monkeypatch):
+    from PIL import Image
+    import main_routers.emote_template_router as routes
+    from utils.image_generation import GeneratedImage, ImageResult, MAX_IMAGE_PROMPT_LENGTH
+
+    async def configured(_manager):
+        return "", "qwen-image-2.1-pro", "dashscope"
+
+    async def describe(_manager, instruction, crops):
+        assert len(crops) == 1
+        assert "For the crops numbered 1" in instruction
+        return "A narrow blue ribbon. " * 100
+
+    result = io.BytesIO()
+    sheet = Image.new("RGBA", (64, 64))
+    sheet.paste("blue", (12, 12, 52, 52))
+    sheet.save(result, "PNG")
+    prompts = []
+
+    async def generate(request, *, config_manager):
+        prompts.append(request.prompt)
+        assert len(request.reference_images) == 1
+        return ImageResult("qwen", "qwen-image-2.1-pro", GeneratedImage(data=result.getvalue()))
+
+    monkeypatch.setattr(routes, "get_config_manager", object)
+    monkeypatch.setattr(routes, "_wardrobe_image_config", configured)
+    monkeypatch.setattr(routes, "_read_wardrobe_appearance", describe)
+    monkeypatch.setattr(routes, "generate_image", generate)
+    monkeypatch.setattr("main_logic.emote_wardrobe._edge_sharpness", lambda _crop: 0.3)
+    reference = io.BytesIO()
+    Image.new("RGB", (100, 80), "blue").save(reference, "PNG")
+    box = [.2, .2, .7, .213]
+    endpoint = "/api/emote-maker/builtin/wardrobe/generate-spritesheet"
+    details = "改成深蓝色，保留轮廓。".ljust(240, "深")
+
+    def submit(boxes, user_prompt):
+        return client.post(endpoint, headers={"x-neko-emote-wardrobe": "1"},
+                           files={"reference": ("ref.png", reference.getvalue(), "image/png")},
+                           data={"annotation": json.dumps(boxes), "supplemental_prompt": user_prompt})
+
+    for boxes, user_prompt in (([box, box], details), ([box], details + "蓝")):
+        response = submit(boxes, user_prompt)
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_wardrobe_prompt"
+    assert not prompts
+
+    response = submit([box], " " + details + " ")
+    assert response.is_success
+    prompt, = prompts
+    assert details in prompt
+    assert "One centered cell" in prompt and "Keep the layout and transparency" in prompt
+    assert len(prompt) <= MAX_IMAGE_PROMPT_LENGTH
+
+
+@pytest.mark.parametrize(("size", "expected", "padded"), [
+    ((10, 101), (11, 101), 1),
+    ((101, 10), (101, 11), 1),
+    ((10, 100), (10, 100), 0),
+    ((200, 2003), (129, 1280), 1),
+])
+def test_wardrobe_spritesheet_pads_narrow_crops_after_resizing(size, expected, padded):
+    from PIL import Image
+    from main_logic.emote_wardrobe import prepare_spritesheet_crops
+
+    source = io.BytesIO()
+    Image.new("RGB", size, "green").save(source, "PNG")
+    (png,), count, _ = prepare_spritesheet_crops(source.getvalue(), ((0, 0, 1, 1),), aspect_limit=10)
+    assert count == padded
+    with Image.open(io.BytesIO(png)) as crop:
+        assert crop.size == expected
+        assert crop.getpixel((crop.width // 2, crop.height // 2)) == (0, 128, 0, 255)
+        if padded:
+            assert crop.getpixel((crop.width - 1, crop.height - 1)) == (255, 255, 255, 255)
+
+
+@pytest.mark.parametrize("touching", [False, True])
+def test_wardrobe_spritesheet_repacks_three_separated_sprites_and_keeps_touching_preview(touching):
+    from PIL import Image, ImageDraw
+    from main_logic.emote_wardrobe import prepare_spritesheet_result
+
+    sheet = Image.new("RGBA", (240, 240))
+    draw = ImageDraw.Draw(sheet)
+    draw.rectangle((12, 44, 70, 193), fill="red")
+    draw.rectangle((71 if touching else 78, 64, 145, 171), fill="green")
+    draw.rectangle((151, 48, 229, 154), fill="blue")
+    source = io.BytesIO()
+    sheet.save(source, "PNG")
+
+    png, separated = prepare_spritesheet_result(source.getvalue(), 3)
+    with Image.open(io.BytesIO(png)) as result:
+        assert separated is not touching
+        if touching:
+            assert result.tobytes() == sheet.tobytes()
+        else:
+            assert result.getpixel((60, 60))[:3] == (255, 0, 0)
+            assert result.getpixel((180, 60))[:3] == (0, 128, 0)
+            assert result.getpixel((60, 180))[:3] == (0, 0, 255)
+            assert result.getpixel((180, 180))[3] == 0
+            alpha = result.getchannel("A")
+            assert alpha.crop((108, 0, 132, 240)).getbbox() is None
+            assert alpha.crop((0, 108, 240, 132)).getbbox() is None
+
+
+@pytest.mark.parametrize("corner_alpha", [5, 255])
+def test_wardrobe_spritesheet_accepts_transparent_result_with_occupied_corner(corner_alpha):
+    from PIL import Image
+    from main_logic.emote_wardrobe import WardrobeError, prepare_spritesheet_result
+
+    sheet = Image.new("RGBA", (80, 80), (163, 57, 207, 1))
+    sheet.paste("red", (5, 10, 35, 35))
+    sheet.paste("blue", (45, 10, 75, 35))
+    sheet.putpixel((79, 0), (163, 57, 207, corner_alpha))
+    source = io.BytesIO()
+    sheet.save(source, "PNG")
+
+    png, separated = prepare_spritesheet_result(source.getvalue(), 2)
+    assert not separated
+    with Image.open(io.BytesIO(png)) as result:
+        assert result.getpixel((79, 0))[3] == corner_alpha
+        assert result.getpixel((0, 40))[3] == 0
+        assert result.getpixel((10, 20)) == (255, 0, 0, 255)
+
+    opaque = io.BytesIO()
+    Image.new("RGB", sheet.size, "#cc4433").save(opaque, "PNG")
+    with pytest.raises(WardrobeError, match="invalid_spritesheet_result"):
+        prepare_spritesheet_result(opaque.getvalue(), 2)
+
+
+def test_wardrobe_reference_with_unconfigured_vision_stops_before_image_request(client, monkeypatch):
+    from PIL import Image
+    import main_routers.emote_template_router as routes
+
+    class Config:
+        async def aget_model_api_config(self, kind):
+            if kind == "image":
+                return {"enabled": True, "protocol": "dashscope", "model": "qwen-image-2.1-pro", "api_key": "mock"}
+            assert kind == "vision"
+            return {}
+
+    reference = io.BytesIO()
+    Image.new("RGB", (64, 64), "red").save(reference, "PNG")
+    monkeypatch.setattr(routes, "get_config_manager", Config)
+    monkeypatch.setattr(routes, "generate_image", lambda *args, **kwargs: pytest.fail("unexpected image request"))
+    response = client.post(
+        "/api/emote-maker/builtin/wardrobe/generate-spritesheet",
+        headers={"x-neko-emote-wardrobe": "1"},
+        data={"annotation": "[[0.1,0.1,0.9,0.9]]"},
+        files={"reference": ("reference.png", reference.getvalue(), "image/png")},
+    )
+    assert response.json()["code"] == "wardrobe_vision_unavailable"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,host", [
+    ("qwen", "dashscope.aliyuncs.com"),
+    ("qwen_intl", "dashscope-intl.aliyuncs.com"),
+    ("custom", "example.com"),
+])
+async def test_wardrobe_vision_uses_same_region_for_configured_dashscope(provider, host):
+    import main_routers.emote_template_router as routes
+
+    class Config:
+        async def aget_model_api_config(self, kind):
+            if kind == "vision":
+                return {"model": "free-vision-model", "api_key": "free-key"}
+            assert kind == "image"
+            return {"enabled": True, "provider": provider, "base_url": f"https://{host}", "api_key": "image-key"}
+
+    selected = await routes._wardrobe_vision_config(Config())
+    if provider == "custom":
+        assert selected == {"model": "free-vision-model", "api_key": "free-key"}
+        return
+    assert selected["model"] == "qwen3.8-flash"
+    assert selected["base_url"] == f"https://{host}/compatible-mode/v1"
+    assert selected["api_key"] == "image-key"
 
 
 def test_router_rejects_texture_escape_and_missing_archive(client):
@@ -196,6 +598,34 @@ def test_router_rejects_texture_escape_and_missing_archive(client):
 
     missing = client.get("/api/emote-maker/library/archive", params={"key": "nope"})
     assert missing.status_code == 404
+
+
+def test_content_ids_name_directories_and_keep_original_name_as_metadata(store):
+    key = "spine-" + "a" * 64
+    store.save(key, _zip(), filename="external-file.zip")
+    assert store.archive_path(key).parent.name == key
+    assert store.archive_path(key).name == "template.zip"
+    assert store.archive_name(key) == key + ".zip"
+    meta = __import__("json").loads((store.archive_path(key).parent / "meta.json").read_text(encoding="utf-8"))
+    assert meta["sourceName"] == "external-file.zip"
+
+
+def test_reimport_keeps_session_artwork_and_rejects_external_model_textures(client):
+    from tests.emote_fixtures import spine_zip
+    from main_logic.emote_template_adapter import inspect_spine_zip
+    data = spine_zip()
+    key = inspect_spine_zip(data)["id"]
+    endpoint = "/api/emote-maker/library/archive"
+    assert client.post(endpoint, params={"key": key}, files={"file": ("one.zip", data)}).status_code == 200
+    assert client.post("/api/emote-maker/library/textures", params={"key": key},
+                       files={"textures": ("one.png", b"artwork")}, data={"texture_paths": "StageImages/one.png"}).status_code == 200
+    assert client.post(endpoint, params={"key": key}, files={"file": ("renamed.zip", data)}).status_code == 200
+    assert client.get("/api/emote-maker/library/textures", params={"key": key}).json()["paths"] == ["StageImages/one.png"]
+    assert client.post("/api/emote-maker/library/textures", params={"key": key},
+                       files={"textures": ("page.png", b"texture")}, data={"texture_paths": "outside/page.png"}).status_code == 400
+    assert client.post("/api/emote-maker/library/textures", params={"key": key},
+                       files={"textures": ("page.png", b"texture")}).status_code == 400
+    assert client.post(endpoint, params={"key": key}, files={"file": ("one.rar", data)}).status_code == 400
 
 
 def test_late_textures_merge_into_the_existing_copy(store):

@@ -3,41 +3,24 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import zipfile
 
-from playwright.sync_api import Page
+from PIL import Image, ImageDraw
+from playwright.sync_api import Page, expect
 
 import tests.frontend.test_emote_state_stage as harness
 
 
 def _template() -> bytes:
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as archive:
-        root, model = "wrapper/EmoteLab", "ModelA"
-        archive.writestr(f"{root}/SpineModels/{model}/model.meta.json",
-                         json.dumps({"DisplayName": "演示", "SharedModelKey": model}))
-        archive.writestr(f"{root}/SpineModels/{model}/{model}.skel.bytes", b"4.3.23")
-        archive.writestr(f"{root}/SpineModels/{model}/{model}.atlas.txt", "Page.png\nsize: 2, 3\n")
-        archive.writestr(f"{root}/SpineModels/{model}/Page.png", b"not-a-png")
-        archive.writestr(f"{root}/SpineModels/{model}/DisplayInfo/Animations.csv",
-                         "AnimationName,DisplayName,en\nANIM/A,生气,angry\n")
-        archive.writestr(f"{root}/Characters/{model}/{model}.json", json.dumps({
-            "SharedModelKey": model, "ActiveSkins": {"Items": []},
-            "SliderConstraints": [], "SlotGroups": [],
-        }))
-        archive.writestr(f"{root}/SceneLists/{model}/{model}.json", json.dumps({
-            "sharedModelKey": model,
-            "scenes": [{"name": f"场景{i}", "animationName": "ANIM/A",
-                        "cameraPosition": {"x": i, "y": 2, "z": 3}, "model": {}, "texts": []}
-                       for i in range(2)],
-        }))
-    return stream.getvalue()
+    from tests.emote_fixtures import spine_zip
+    return spine_zip()
 
 
 def _open_stage(page: Page, running_server: str, images=None) -> None:
-    """真导入模板 → 包装 create 注入活引用清单与导入桩 → 合成环境起舞台。"""
+    """导入模板，注入图片列表并记录贴图上传请求。"""
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
-    page.set_input_files("#emotelab-template-file", {
+    page.set_input_files("#template-archive-file", {
         "name": "first.zip", "mimeType": "application/zip", "buffer": _template(),
     })
     page.wait_for_function("() => document.body.classList.contains('editor-has-template')",
@@ -45,9 +28,8 @@ def _open_stage(page: Page, running_server: str, images=None) -> None:
     images = images if images is not None else []
     page.evaluate(harness.REVEAL)
     page.evaluate(harness.LOCALE, "/static/locales/zh-CN.json")
-    page.on("console", lambda msg: print("CONSOLE:", msg.text[:130]))
     page.evaluate(
-        """([flat, images]) => {
+        """(images) => {
             window.__userImages = images;   // 活引用：测试从浏览器侧往这里追加
             const posts = [];
             window.__texturePosts = posts;
@@ -64,9 +46,7 @@ def _open_stage(page: Page, running_server: str, images=None) -> None:
                 return original.apply(this, arguments);
             };
             window.NekoEmoteStateStage.setUserImages(window.__userImages);
-            window.__IMPORT_CLICKED = false;
-            window.NekoEmoteStateStage.setUserImages(window.__userImages);
-        }""", [False, images])
+        }""", images)
     page.evaluate(harness.BOOT, 1.0)
     page.wait_for_timeout(400)
     page.evaluate("() => document.querySelector('.st-rail').click()")
@@ -124,7 +104,7 @@ def test_import_persists_into_the_template_copy(page: Page, running_server: str)
         const file = new File([bytes], '我的图片.png', { type: 'image/png' });
         const transfer = new DataTransfer();
         transfer.items.add(file);
-        const input = document.querySelector('input[type=file][accept=".png,image/png"]');
+        const input = document.querySelector('input[type=file][accept*="image/gif"]');
         input.files = transfer.files;
         input.dispatchEvent(new Event('change', { bubbles: true }));
     }""")
@@ -132,6 +112,110 @@ def test_import_persists_into_the_template_copy(page: Page, running_server: str)
         "() => (window.__texturePosts || []).some((p) =>"
         "        p.paths.some((path) => path.startsWith('StageImages/')))",
         timeout=5000)
+
+
+def test_gif_stage_image_survives_reload_and_exports_timed_frames(
+    page: Page, running_server: str, builtin_emote_template_dir,
+) -> None:
+    source = io.BytesIO()
+    first = Image.new("RGBA", (32, 32))
+    second = first.copy()
+    ImageDraw.Draw(first).rectangle((4, 4, 23, 23), fill="red")
+    ImageDraw.Draw(second).rectangle((10, 10, 27, 27), fill="blue")
+    first.save(source, "GIF", save_all=True, append_images=[second], duration=[120, 280], loop=0, disposal=2)
+
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    page.locator('[data-template-built-in="true"] .template-lib-open').click()
+    page.locator('[data-animation-id="d_stand"]').wait_for()
+    page.locator("#inspector-tab-export").click()
+    page.locator("#pack-format").select_option("flat", force=True)
+    page.locator("#export-resolution").select_option("128", force=True)
+    page.locator("#pack-mode-graph").click()
+    page.locator("#open-state-stage-btn").click()
+    page.locator(".st-rail").click()
+    idle = page.locator('.st-tile[data-state="idle_image"] .st-tile-sub')
+    page.locator('.st-pick[data-scene="animation:d_stand"]').click()
+    expect(idle).to_have_text("d_stand")
+    page.keyboard.press("Control+z")
+    expect(idle).not_to_have_text("d_stand")
+    page.keyboard.press("Control+Shift+z")
+    expect(idle).to_have_text("d_stand")
+    page.locator(".st-drawer-head .list-segment-btn").last.click()
+    with page.expect_file_chooser() as chooser:
+        page.locator(".st-userimg-import").click()
+    chooser.value.set_files({"name": "state.GIF", "mimeType": "image/gif", "buffer": source.getvalue()})
+    gif = page.locator(".st-userimg").filter(has_text="state.GIF")
+    expect(gif).to_be_visible()
+    expect(gif.locator("img")).to_have_attribute("src", re.compile(r"^data:image/gif;"))
+
+    for state in ("idle_image", "click_image", "talking_image"):
+        page.locator(f'.st-tile[data-state="{state}"]').click()
+        gif.click()
+        expect(page.locator(f'.st-tile[data-state="{state}"] .st-tile-sub')).to_have_text("state.GIF")
+    talking = page.locator('.st-tile[data-state="talking_image"] .st-tile-sub')
+    page.keyboard.press("Control+z")
+    expect(talking).not_to_have_text("state.GIF")
+    page.keyboard.press("Control+Shift+z")
+    expect(talking).to_have_text("state.GIF")
+    page.locator(".st-rail").click()
+    page.locator(".st-bound-chip-x").click()
+    expect(talking).not_to_have_text("state.GIF")
+    page.keyboard.press("Control+z")
+    expect(talking).to_have_text("state.GIF")
+    page.locator('.st-tile[data-state="idle_image"]').click()
+    expect(page.locator(".st-span")).to_have_text("0.00s – 0.40s")
+    page.wait_for_function("""() => {
+        const canvas = document.querySelector('.st-stage');
+        const [r,,b] = canvas.getContext('2d').getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data;
+        return r < 20 && b > 200;
+    }""")
+    page.locator(".st-close").click()
+    page.reload(wait_until="networkidle")
+    page.locator('[data-template-built-in="true"] .template-lib-open').click()
+    page.locator('[data-animation-id="d_stand"]').wait_for()
+    page.locator("#inspector-tab-export").click()
+    with page.expect_download(timeout=45000) as download:
+        page.locator("#pack-export-btn").click()
+    with zipfile.ZipFile(download.value.path()) as archive:
+        for filename, durations, loop in (("idle.gif", [120, 280], 0), ("click.gif", [120, 280], None),
+                                          ("talking.gif", [120], 0)):
+            path = next(path for path in archive.namelist() if path.endswith("/" + filename))
+            with Image.open(io.BytesIO(archive.read(path))) as exported:
+                assert exported.n_frames == len(durations)
+                assert exported.info.get("loop") == loop
+                for index, duration in enumerate(durations):
+                    exported.seek(index)
+                    assert exported.info["duration"] == duration
+                    assert exported.convert("RGBA").getpixel((0, 0))[3] == 0
+
+    page.locator("#pack-format").select_option("layered", force=True)
+    with page.expect_download(timeout=45000) as download:
+        page.locator("#pack-export-btn").click()
+    with zipfile.ZipFile(download.value.path()) as archive:
+        path = next(path for path in archive.namelist() if path.endswith("/metadata.json"))
+        metadata = json.loads(archive.read(path))
+    states = [state for layer in metadata["layers"] for state in layer["states"] if state.get("visible")]
+    assert len(states) == 3
+    for state in states:
+        assert state["frames"] > 1
+        assert abs(state["frames"] / (state["animation_speed"] * 4) - .4) < 1e-6
+
+    page.locator("#open-state-stage-btn").click()
+    page.locator(".st-rail").click()
+    page.locator(".st-drawer-head .list-segment-btn").last.click()
+    failed_remove = "**/library/textures/remove?*"
+    page.route(failed_remove, lambda route: route.fulfill(status=500))
+    gif.locator(".st-userimg-remove").click()
+    expect(page.locator("#emote-toast")).to_have_text("删除图片失败，请重试。")
+    expect(gif).to_be_visible()
+    expect(gif.locator(".st-userimg-remove")).to_be_enabled()
+    page.unroute(failed_remove)
+
+    with page.expect_response(lambda response: "/library/textures/remove?" in response.url) as removal:
+        gif.locator(".st-userimg-remove").click()
+    assert removal.value.ok
+    assert b".gif" in removal.value.request.post_data_buffer
+    expect(gif).to_have_count(0)
 
 
 def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str) -> None:
@@ -142,12 +226,6 @@ def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str)
     _switch_to_images(page)
     label = page.evaluate(
         "() => document.querySelector('.st-userimg-grid .st-pick-label')?.textContent || null")
-    print("GRID-STATE:", page.evaluate(
-        '() => document.querySelector(".st-userimg-grid").textContent'))
-    page.screenshot(path="shots/stage_images.png")
-    page.screenshot(path="shots/stage_images.png")
-    print("GRID:", page.evaluate(
-        "() => document.querySelector('.st-userimg-grid').innerHTML.slice(0, 200)"))
     assert label == "我的图片.png", label
     assert page.evaluate("() => document.querySelector('.st-userimg-empty').hidden") is True
     assert page.evaluate(
@@ -165,7 +243,14 @@ def test_seeded_image_renders_and_click_assigns(page: Page, running_server: str)
     sub_after = page.evaluate(
         "() => document.querySelector('.st-tile.is-selected .st-tile-sub')?.textContent || ''")
     assert sub_after == "我的图片.png", sub_after
-    page.locator(".st-tile.is-selected").screenshot(path="shots/stage_tile_bound_image.png")
+
+    _switch_to_library(page)
+    page.locator('.st-pick[data-scene="anim-b"]').hover()
+    expect(page.locator(".st-anim")).to_have_attribute("data-scene", "anim-b")
+    expect(page.locator(".st-span")).to_have_text("0.00s – 12.00s")
+    assert harness._upstream_scene(page, "idle_image")["type"] == "source.image"
+    page.mouse.move(20, 20)
+    expect(page.locator(".st-anim")).to_have_attribute("data-scene", "images:img-mine")
 
     # 删除钮：从清单里移除（赋格不受影响，节点还在图上）
     page.evaluate("""() => {

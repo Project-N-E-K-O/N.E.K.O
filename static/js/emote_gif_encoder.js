@@ -24,16 +24,15 @@
     'use strict';
 
     if (typeof module === 'object' && module.exports) {
-        module.exports = factory(typeof globalThis !== 'undefined' ? globalThis : root);
+        module.exports = factory();
         return;
     }
 
-    root.NekoEmoteGifEncoder = factory(root);
-}(typeof window !== 'undefined' ? window : globalThis, function (root) {
+    root.NekoEmoteGifEncoder = factory();
+}(typeof window !== 'undefined' ? window : globalThis, function () {
     'use strict';
 
     const MAX_GIF_DIMENSION = 0xffff;
-    const MAX_GIF_COLORS = 256;
     const DEFAULT_COLOR_COUNT = 128;
     const TRANSPARENT_INDEX = 0;
 
@@ -501,7 +500,8 @@
         const explicit = Number(frame?.delayMs);
         const fallback = 1000 / finitePositive(options.fps, 20);
         const milliseconds = Number.isFinite(explicit) && explicit > 0 ? explicit : fallback;
-        return Math.max(1, Math.min(0xffff, Math.round(milliseconds / 10)));
+        const delay = milliseconds / 10;
+        return delay < 1.5 ? 1 : Math.max(2, Math.min(0xffff, delay));
     }
 
     // Accepts either the descriptor returned by buildAdaptivePalette (so a caller
@@ -563,9 +563,16 @@
             output.push(0x03, 0x01, loopCount & 0xff, (loopCount >>> 8) & 0xff, 0x00);
         }
 
+        let exactTime = 0;
+        let encodedTime = 0;
         for (const frame of frames) {
             const indices = quantizeFrame(frame, width, height, { ...options, colorCount, lookup });
-            const delay = frameDelayCentiseconds(frame, options);
+            // GIF timestamps are stored in centiseconds. Round cumulative time
+            // so a 33.33 ms interval does not lose 3.33 ms on every frame.
+            exactTime += frameDelayCentiseconds(frame, options);
+            const nextTime = Math.round(exactTime);
+            const delay = nextTime - encodedTime;
+            encodedTime = nextTime;
             const hasTransparency = options.transparent !== false;
             // Restore-to-background prevents transparent pixels in a later
             // full-size frame from revealing the previous frame underneath.

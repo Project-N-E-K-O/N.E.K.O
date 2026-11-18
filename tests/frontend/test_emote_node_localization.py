@@ -1,7 +1,7 @@
 """Localization reconciliation for the emote maker.
 
 The failure mode this exists for: labels are referenced through variables
-(`t(spec.titleKey)`, `t(stateLabel(key))`), so scripts/check_i18n.py cannot see them —
+(例如 `t(stateLabel(key))`), so scripts/check_i18n.py cannot see them —
 a missing key puts a raw dotted path on screen while CI stays green. So the key set is
 enumerated from the sources here and compared against all eight locale files.
 """
@@ -20,7 +20,7 @@ LOCALES = ['en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW']
 
 
 def _referenced_keys() -> set[str]:
-    """对账全部 emoteMaker 键：JS 字面量 + HTML 的 data-i18n* + 动态拼接的两族键。
+    """对账全部 emoteMaker 键：JS 字面量 + HTML 的 data-i18n* + 动态拼接的状态名。
 
     守卫原来只扫节点编辑器两个模块，于是 emote_maker.js 与页面里新加的键可以静默漏掉
     —— 有一批键连中文兜底都没有，界面会直接露出裸键名。这里把范围扩到所有来源。
@@ -42,18 +42,12 @@ def _referenced_keys() -> set[str]:
     page_html = (ROOT / 'templates' / 'emote_maker.html').read_text(encoding='utf-8')
     keys |= set(re.findall(
         r'data-i18n(?:-placeholder|-title|-aria|-alt)?="emoteMaker\.([A-Za-z0-9_]+)"', page_html))
-    # 动态拼接的两族键按字面量补齐
-    graph_src = (ROOT / 'static' / 'js' / 'emote_node_graph.js').read_text(encoding='utf-8')
-    keys |= {f'nodeCat.{c}' for c in re.findall(r"category: '([a-z]+)'", graph_src)}
-    keys |= {f'nodeParam.{p}' for p in re.findall(r"\{ id: '([A-Za-z]+)', widget:", graph_src)}
     pack_src = (ROOT / 'static' / 'js' / 'emote_pngtuber_pack.js').read_text(encoding='utf-8')
     # 与 stage 里的 stateLabel 同一条规则：去掉 _image、首字母大写
     keys |= {'packState' + k[:1].upper() + k[1:]
              for k in re.findall(r"key: '([a-z]+)_image'", pack_src)}
     # 全程只用裸名：混着带前缀和不带前缀两种形态，查找时 split 就会越界
-    return {k for k in keys
-            if k and k != 'packState' and not k.endswith('.')
-            and ('.' not in k or k.startswith(('nodeCat.', 'nodeParam.')))}
+    return {k for k in keys if k and k != 'packState' and '.' not in k}
 
 
 def test_every_emote_key_exists_in_all_eight_locales() -> None:

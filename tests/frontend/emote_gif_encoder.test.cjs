@@ -108,6 +108,16 @@ test('supports a one-shot GIF without the Netscape loop extension', () => {
     assert.equal(result.hasLoopExtension, false);
 });
 
+test('distributes centisecond rounding across the whole loop', () => {
+    const frames = Array.from({ length: 30 }, (_, index) => ({
+        ...rgbaFrame(2, 2, index), delayMs: 1000 / 30,
+    }));
+    const result = inspectGif(encoder.encode(frames));
+    const delays = result.delays.map(({ delay }) => delay);
+    assert.deepEqual(delays.slice(0, 6), [3, 4, 3, 3, 4, 3]);
+    assert.equal(delays.reduce((sum, delay) => sum + delay, 0), 100);
+});
+
 test('retains an opt-in 256-colour quality mode', () => {
     const result = inspectGif(encoder.encode([rgbaFrame(8, 8)], { colors: 256 }));
     assert.equal(result.colorTableEntries, 256);

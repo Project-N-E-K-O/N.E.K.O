@@ -1,5 +1,5 @@
 /*
- * Client-side, ephemeral ZIP asset store for EmoteLab packages.
+ * Client-side, ephemeral ZIP asset store for Spine ZIP packages.
  *
  * This bridge is deliberately independent from the server metadata adapter:
  * the selected File is read into memory, bounded with the same limits as the
@@ -28,15 +28,13 @@
     const MAX_FILE_BYTES = 64 * 1024 * 1024;
     const MAX_COMPRESSION_RATIO = 1000;
     const ALLOWED_SUFFIXES = Object.freeze([
-        '.json', '.csv', '.png', '.atlas.txt', '.skel.bytes'
-    ]);
-    const HISTORICAL_SEGMENTS = new Set([
-        '历史版本', 'history', 'historical', 'backup', 'backups'
+        '.json', '.png', '.atlas', '.skel', '.atlas.txt', '.skel.bytes'
     ]);
     const MIME_TYPES = Object.freeze({
         '.json': 'application/json',
-        '.csv': 'text/csv',
         '.png': 'image/png',
+        '.atlas': 'text/plain',
+        '.skel': 'application/octet-stream',
         '.atlas.txt': 'text/plain',
         '.skel.bytes': 'application/octet-stream'
     });
@@ -72,10 +70,6 @@
         if (lower.endsWith('.skel.bytes')) return '.skel.bytes';
         const index = lower.lastIndexOf('.');
         return index >= 0 ? lower.slice(index) : '';
-    }
-
-    function isHistorical(path) {
-        return normalizePath(path).split('/').some((part) => HISTORICAL_SEGMENTS.has(part.toLowerCase()));
     }
 
     function isAllowed(path) {
@@ -162,13 +156,13 @@
             }
 
             // Validate every path, but only retain active template resources.
-            // Scripts, executables, nested archives, and historical snapshots
+            // Scripts, executables and nested archives
             // are intentionally never handed to the renderer.
-            return isAllowed(path) && !isHistorical(path);
+            return isAllowed(path);
         };
 
         // Use the synchronous decoder deliberately.  The browser package is
-        // small enough for the local EmoteLab import path, while the async
+        // small enough for the local Spine ZIP import path, while the async
         // fflate worker adapter is not available in every Electron/Node
         // embedding (and would make the same API nondeterministic in tests).
         let files;
@@ -189,12 +183,12 @@
             } catch (pathError) {
                 return Promise.reject(pathError);
             }
-            if (!path || !isAllowed(path) || isHistorical(path)) continue;
+            if (!path || !isAllowed(path)) continue;
             retained.set(path, new Uint8Array(value));
         }
         if (!retained.size) {
             return Promise.reject(new ClientZipAssetStoreError(
-                'ZIP 中没有可读取的 EmoteLab 资源', 'no_assets'
+                'ZIP 中没有可读取的 Spine 资源', 'no_assets'
             ));
         }
         return Promise.resolve(retained);
@@ -346,154 +340,8 @@
         }
     }
 
-    /**
-     * Overlay user-selected Texture Cache files on top of a ZIP store.
-     *
-     * EmoteLab keeps Custom Textures outside the template ZIP.  The overlay
-     * stays in memory, resolves by exact path or unambiguous basename, and
-     * delegates all non-overridden assets to the ZIP store.
-     */
-    class ClientFileOverlayStore {
-        constructor(baseStore, files = []) {
-            if (!baseStore || typeof baseStore.open !== 'function') {
-                throw new ClientZipAssetStoreError('缺少基础模板资源仓库', 'invalid_input');
-            }
-            this._baseStore = baseStore;
-            this._files = new Map();
-            this._bytes = new Map();
-            this._urls = new Map();
-            this._released = false;
-            this.setFiles(files);
-        }
-
-        _assertLive() {
-            if (this._released) throw new ClientZipAssetStoreError('模板资源已释放', 'released');
-        }
-
-        setFiles(files = []) {
-            this._assertLive();
-            this._clearOverlay();
-            const seen = new Set();
-            let totalBytes = 0;
-            for (const file of Array.from(files || [])) {
-                if (!file || typeof file.arrayBuffer !== 'function') continue;
-                const rawPath = file.webkitRelativePath || file.name || '';
-                let path;
-                try { path = normalizePath(rawPath); } catch (_) { continue; }
-                if (!path || !isAllowed(path) || isHistorical(path)) continue;
-                const key = path.toLocaleLowerCase();
-                if (seen.has(key)) continue;
-                const size = Number(file.size) || 0;
-                if (size > MAX_FILE_BYTES || totalBytes + size > MAX_UNCOMPRESSED_BYTES) continue;
-                seen.add(key);
-                totalBytes += size;
-                this._files.set(path, file);
-            }
-            return this;
-        }
-
-        _clearOverlay() {
-            const urlApi = root && root.URL;
-            if (urlApi && typeof urlApi.revokeObjectURL === 'function') {
-                for (const url of this._urls.values()) {
-                    try { urlApi.revokeObjectURL(url); } catch (_) { /* best effort */ }
-                }
-            }
-            this._urls.clear();
-            for (const bytes of this._bytes.values()) bytes.fill(0);
-            this._bytes.clear();
-            this._files.clear();
-        }
-
-        _lookup(path) {
-            this._assertLive();
-            let normalized;
-            try { normalized = normalizePath(path); } catch (_) { return null; }
-            const exact = this._files.get(normalized);
-            if (exact) return { path: normalized, file: exact };
-            const requestedParts = normalized.split('/');
-            const requestedBase = requestedParts.at(-1)?.toLocaleLowerCase();
-            const matches = [...this._files.entries()]
-                .filter(([candidate]) => candidate.split('/').at(-1)?.toLocaleLowerCase() === requestedBase);
-            if (!matches.length) return null;
-            if (matches.length === 1) {
-                return { path: matches[0][0], file: matches[0][1] };
-            }
-            return null;
-        }
-
-        has(path) {
-            return Boolean(this._lookup(path)) || Boolean(this._baseStore.has?.(path));
-        }
-
-        list() {
-            this._assertLive();
-            const base = typeof this._baseStore.list === 'function' ? this._baseStore.list() : [];
-            return [...new Set([...base, ...this._files.keys()])];
-        }
-
-        async _readBytes(entry) {
-            const cached = this._bytes.get(entry.path);
-            if (cached) return cached;
-            const bytes = new Uint8Array(await entry.file.arrayBuffer());
-            this._bytes.set(entry.path, bytes);
-            return bytes;
-        }
-
-        get(path) {
-            const entry = this._lookup(path);
-            if (!entry) return this._baseStore.get?.(path) || null;
-            const bytes = this._bytes.get(entry.path);
-            return bytes ? bytes.slice() : null;
-        }
-
-        async open(path, options = {}) {
-            const entry = this._lookup(path);
-            if (!entry) return this._baseStore.open(path, options);
-            const bytes = await this._readBytes(entry);
-            const mode = options.as || 'arrayBuffer';
-            if (mode === 'bytes') return bytes.slice();
-            if (mode === 'text') return new TextDecoder(options.encoding || 'utf-8').decode(bytes);
-            if (mode === 'blob') return new Blob([bytes], { type: options.type || mimeFor(entry.path) });
-            return bytes.slice().buffer;
-        }
-
-        async url(path, options = {}) {
-            const entry = this._lookup(path);
-            if (!entry) return this._baseStore.url(path, options);
-            this._assertLive();
-            const cached = this._urls.get(entry.path);
-            if (cached) return cached;
-            const urlApi = root && root.URL;
-            if (!urlApi || typeof urlApi.createObjectURL !== 'function') {
-                throw new ClientZipAssetStoreError('当前环境不支持 Blob URL', 'url_unavailable');
-            }
-            const bytes = await this._readBytes(entry);
-            const url = urlApi.createObjectURL(new Blob([bytes], { type: options.type || mimeFor(entry.path) }));
-            this._urls.set(entry.path, url);
-            return url;
-        }
-
-        stats() {
-            return {
-                ...(this._baseStore.stats?.() || {}),
-                overlayFiles: this._files.size,
-                overlayObjectUrls: this._urls.size,
-                released: this._released,
-            };
-        }
-
-        release() {
-            if (this._released) return;
-            this._clearOverlay();
-            try { this._baseStore.release?.(); } catch (_) { /* best effort */ }
-            this._released = true;
-        }
-    }
-
     return Object.freeze({
         ClientZipAssetStore,
-        ClientFileOverlayStore,
         ClientZipAssetStoreError,
         constants: Object.freeze({
             MAX_ARCHIVE_BYTES,

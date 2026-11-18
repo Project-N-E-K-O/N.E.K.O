@@ -6,7 +6,7 @@
  * 派发 change。菜单挂在 document.body 上，侧栏的 overflow / backdrop-filter
  * 裁不到它。行被页面重建时，旧菜单跟着旧 select 一起拆掉。
  */
-(function (root) {
+(function () {
     'use strict';
 
     const valueDesc = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
@@ -23,19 +23,17 @@
         return opt ? opt.textContent.trim() : '';
     }
 
-    function closeMenu(menu) {
-        if (!menu) return;
+    function closeMenu({ menu, trigger }) {
         menu.classList.remove('is-open');
         menu.style.top = '';
         menu.style.left = '';
         menu.style.width = '';
-        const trigger = document.getElementById(menu.dataset.triggerId || '');
-        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        trigger.setAttribute('aria-expanded', 'false');
     }
 
-    function closeAll(exceptMenu) {
-        document.querySelectorAll('.emote-select-menu.is-open').forEach((menu) => {
-            if (menu !== exceptMenu) closeMenu(menu);
+    function closeAll(exceptEntry) {
+        tracked.forEach((entry) => {
+            if (entry !== exceptEntry && entry.menu.classList.contains('is-open')) closeMenu(entry);
         });
     }
 
@@ -47,7 +45,7 @@
         trigger.closest('.emote-select').classList.toggle('is-disabled', disabled);
         const aria = select.getAttribute('aria-label');
         if (aria) trigger.setAttribute('aria-label', aria);
-        if (disabled) closeMenu(entry.menu);
+        if (disabled) closeMenu(entry);
     }
 
     function iconSvg(kind) {
@@ -91,17 +89,17 @@
                 event.stopPropagation();
                 if (action === 'delete') {
                     dispatchSelectAction(entry.select, { action: 'delete', value: opt.value });
-                    closeMenu(entry.menu);
+                    closeMenu(entry);
                     return;
                 }
-                beginInlineRename(entry, item, opt, label);
+                beginInlineRename(entry, opt, label);
             });
             actions.appendChild(button);
         });
         item.appendChild(actions);
     }
 
-    function beginInlineRename(entry, item, opt, label) {
+    function beginInlineRename(entry, opt, label) {
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'emote-select-rename';
@@ -174,7 +172,7 @@
                     select.dispatchEvent(new Event('change', { bubbles: true }));
                 }
                 paint(entry);
-                closeMenu(menu);
+                closeMenu(entry);
                 triggerFocus(entry.trigger);
             });
             menu.appendChild(item);
@@ -203,7 +201,7 @@
     function openMenu(entry) {
         if (entry.select.disabled) return;
         suppressScrollClose = true;
-        closeAll(entry.menu);
+        closeAll(entry);
         buildMenu(entry);
         entry.menu.classList.add('is-open');
         entry.trigger.setAttribute('aria-expanded', 'true');
@@ -241,7 +239,7 @@
 
     function enhance(select) {
         if (!(select instanceof HTMLSelectElement)) return;
-        if (select.dataset.emoteSelect === '1') return;
+        if (select.dataset.emoteSelect === '1' || select.hasAttribute('data-native-select')) return;
         select.dataset.emoteSelect = '1';
 
         const wrap = document.createElement('div');
@@ -265,7 +263,6 @@
             trigger.id = select.id + '-trigger';
             menu.id = select.id + '-menu';
             trigger.setAttribute('aria-controls', menu.id);
-            menu.dataset.triggerId = trigger.id;
             document.querySelectorAll('label[for="' + CSS.escape(select.id) + '"]').forEach((label) => {
                 label.htmlFor = trigger.id;
             });
@@ -294,7 +291,7 @@
         trigger.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
-            if (menu.classList.contains('is-open')) closeMenu(menu);
+            if (menu.classList.contains('is-open')) closeMenu(entry);
             else openMenu(entry);
         });
         trigger.addEventListener('keydown', (event) => {
@@ -326,10 +323,10 @@
                 }
             } else if (event.key === 'Escape') {
                 event.preventDefault();
-                closeMenu(menu);
+                closeMenu(entry);
                 triggerFocus(trigger);
             } else if (event.key === 'Tab') {
-                closeMenu(menu);
+                closeMenu(entry);
             }
         });
 
@@ -355,20 +352,20 @@
         const target = event.target;
         if (!target || !target.closest) return;
         if (target.closest('.emote-select') || target.closest('.emote-select-menu')) return;
-        closeAll(null);
+        closeAll();
     }, true);
 
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') closeAll(null);
+        if (event.key === 'Escape') closeAll();
     });
 
-    window.addEventListener('resize', () => closeAll(null));
+    window.addEventListener('resize', () => closeAll());
 
     document.addEventListener('scroll', (event) => {
         if (suppressScrollClose) return;
         const target = event.target;
         if (target && target.classList && target.classList.contains('emote-select-menu')) return;
-        closeAll(null);
+        closeAll();
     }, true);
 
     new MutationObserver((mutations) => {
@@ -393,5 +390,4 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
     else boot();
 
-    root.NekoEmoteSelect = { enhanceAll: boot };
-})(typeof window !== 'undefined' ? window : globalThis);
+})();

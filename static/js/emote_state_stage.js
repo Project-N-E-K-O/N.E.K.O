@@ -1,7 +1,7 @@
 /*
  * 状态表演台 — the single advanced editor for what an exported avatar pack does.
  *
- * Scope discipline: the tabs upstream already decide skins / sliders / slot tints / text.
+ * Scope discipline: the tabs upstream already decide skins / slot tints.
  * This surface owns only the three things that are genuinely about the avatar itself:
  *   1. which animation each of the eight states uses,
  *   2. which part of it plays (the whole loop, or a range picked on the film strip),
@@ -70,6 +70,7 @@
         const model = options.model;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+        const onCommit = typeof options.onCommit === 'function' ? options.onCommit : () => {};
 
         const emptyList = () => [];
         // framesFor(sceneId, quality) -> frame[] | Promise<frame[]>
@@ -96,6 +97,7 @@
         const formatIsFlat = () => (
             typeof options.format === 'function' ? options.format() : options.format
         ) === 'flat';
+        const stateUsesStillFrame = (stateKey) => stateKey === 'talking_image' && formatIsFlat();
 
         let stageSize = 460;     // 舞台的逻辑边长（正方形）
 
@@ -136,6 +138,7 @@
         // 选中的那一格：id 而不是 stateKey，因为一个状态可能有多条输出（旧的图里也合法）
         let selected = (graph.nodes.find((node) => model.typeOf(node)?.category === 'output') || {}).id || null;
         const framesBySource = new Map();  // `${scene}|${quality}` -> 该动画的帧
+        let framesRevision = 0;
         const thumbsByScene = new Map();   // scene -> dataURL（状态行和动作库共用）
         const sliceByNode = new Map();     // nodeId  -> 落在起止范围内的帧
         let previewScene = null;           // 悬停试演的那条动画，不落进图里
@@ -145,6 +148,7 @@
         let playhead = 0;
         let playTimer = 0;
         let stripDrag = null;
+        let stripBefore = null;
         let stageDrag = null;
         let disposed = false;
 
@@ -399,7 +403,7 @@
 
         function sceneNodeFor(node) {
             if (!node) return null;
-            // 走完整条上游：中间可能插皮肤/滑杆节点，只看直接上游会把
+            // 走完整条上游：中间可能有外观节点，只看直接上游会把
             // "已经接了动画"读成"跟随默认外观"，选择器就会显示成错的。
             const source = model.findSource(graph, node.id, 'source');
             return source && source.type === 'source.scene' ? source : null;
@@ -407,10 +411,6 @@
 
         function selectedNode() {
             return nodeById(selected) || null;
-        }
-
-        function selectedState() {
-            return selectedNode()?.params.stateKey || 'idle_image';
         }
 
         function ensureNodeForState(stateKey) {
@@ -431,12 +431,24 @@
             return node;
         }
 
+        function snapshotGraph() {
+            return model.normalizeGraph(graph);
+        }
+
+        function editGraph(edit) {
+            const before = snapshotGraph();
+            edit();
+            onCommit(before, snapshotGraph());
+        }
+
         // ── frames and ranges ────────────────────────────────────────────────
         async function framesOf(sceneId, quality) {
             const tier = quality || 'full';
             const key = `${sceneId}|${tier}`;
             if (framesBySource.has(key)) return framesBySource.get(key);
+            const revision = framesRevision;
             const result = await framesFor(sceneId, tier);
+            if (revision !== framesRevision) return [];
             const list = Array.isArray(result) ? result : [];
             // 空结果不进缓存：那条动画可能只是还没采完，缓存住就永远空着
             if (list.length) framesBySource.set(key, list);
@@ -444,9 +456,7 @@
         }
 
         function activeSource(node) {
-            const imgKey = imageSourceKey(node);
-            if (imgKey) return imgKey;
-            return previewScene || committedScene(node);
+            return previewScene || imageSourceKey(node) || committedScene(node);
         }
 
         /** 图片源的 sourceKey（image:<id>），供 framesOf 走图片绘制路径。 */
@@ -477,7 +487,7 @@
                 .filter(Boolean);
         }
 
-        function activeQuality(node) {
+        function activeQuality() {
             return previewScene ? previewQuality : 'full';
         }
 
@@ -497,7 +507,7 @@
         }
 
         function activeFrames(node) {
-            return framesBySource.get(`${activeSource(node)}|${activeQuality(node)}`) || [];
+            return framesBySource.get(`${activeSource(node)}|${activeQuality()}`) || [];
         }
 
         /**
@@ -512,7 +522,7 @@
 
         /**
          * 起止范围落在胶片带的哪几帧、哪几个像素上。
-         * seconds 0 = 演到结尾，与烘包时 sliceFrames 的规则一致，
+         * seconds 0 = 演到结尾，与导出的采集规则一致，
          * 所以手柄显示的就是会被烘进包里的东西。
          */
         function rangeOf(frames, node) {
@@ -520,9 +530,8 @@
             const previewing = Boolean(previewScene);
             const total = frames.length;
             const params = node?.params || {};
-            // 说话位只烘一帧（运行时靠换 src 做口型交替，给它多帧动画会被反复重载），
-            // 所以这里把它当"单帧"显示：拖起点＝挑定格在哪一帧。
-            const still = !previewing && params.stateKey === 'talking_image';
+            // 平铺包的说话位用一帧和待机图交替，分层包按选中的区间播放说话动作。
+            const still = !previewing && stateUsesStillFrame(params.stateKey);
             const fullSeconds = total / rate;
             const startAt = previewing ? 0 : clamp(params.startAt, 0, Math.max(0, fullSeconds));
             const wanted = still ? 1 / rate
@@ -689,7 +698,8 @@
 
         function drawRuler(ctx, range) {
             const totalSeconds = range.total / range.rate;
-            const step = totalSeconds > 8 ? 2 : totalSeconds > 4 ? 1 : totalSeconds > 1.6 ? 0.5 : 0.25;
+            const step = totalSeconds > 16 ? Math.ceil(totalSeconds / 8)
+                : totalSeconds > 8 ? 2 : totalSeconds > 4 ? 1 : totalSeconds > 1.6 ? 0.5 : 0.25;
             ctx.strokeStyle = '#C7DCEB';
             ctx.fillStyle = '#63809C';
             ctx.lineWidth = 1;
@@ -941,8 +951,7 @@
 
                 let status = '';
                 let tweaked = false;
-                if (stateKey === 'talking_image' && node) {
-                    // 说话位只取一帧：标出来，免得用户以为拖起止手柄没生效
+                if (node && stateUsesStillFrame(stateKey)) {
                     status = t('emoteMaker.stageStillTag');
                 } else if (chosen) {
                     // 只有正在编辑的那一格报帧数——它是舞台上正在演的那个范围
@@ -993,7 +1002,7 @@
         async function loadSelected() {
             const node = selectedNode();
             if (!node) return;
-            await framesOf(activeSource(node), activeQuality(node));
+            await framesOf(activeSource(node), activeQuality());
             paint();
             syncAnimButton();
         }
@@ -1015,7 +1024,13 @@
                 // 定格那一格的终点本来就贴着起点，只有整条胶片带才是它的可选范围
                 const first = clamp(index, 0, range.still ? frames.length - 1 : range.lastFrame);
                 if (first === range.firstFrame) return;
-                updateParams({ startAt: first / range.rate });
+                const startAt = first / range.rate;
+                // 裁短过的片段按时长存储。移动起点时重算时长，让终点留在原处。
+                const seconds = Number(node.params.seconds) || 0;
+                updateParams({
+                    startAt,
+                    seconds: range.still || seconds <= 0 ? seconds : (range.lastFrame - first + 1) / range.rate,
+                });
             } else {
                 const last = clamp(index - 1, range.firstFrame, frames.length - 1);
                 const span = Math.max(MIN_SPAN_SECONDS, (last - range.firstFrame + 1) / range.rate);
@@ -1027,6 +1042,7 @@
         }
 
         stripCanvas.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 || stripDrag || stageDrag) return;
             const frames = activeFrames(selectedNode());
             if (!frames.length || previewScene) return;
             const range = rangeOf(frames, selectedNode());
@@ -1034,18 +1050,25 @@
             const x = (event.clientX - box.left) / box.width * stripW;
             // 单帧那一格只有起点有意义：终点手柄就挨在旁边，抓住哪个都该挪起点
             stripDrag = range.still || Math.abs(x - range.startPx) <= HANDLE_HIT_PX ? 'start' : 'end';
+            stripBefore = snapshotGraph();
             stripCanvas.setPointerCapture?.(event.pointerId);
             applyStripDrag(event.clientX);
         });
         stripCanvas.addEventListener('pointermove', (event) => {
             if (stripDrag) applyStripDrag(event.clientX);
         });
-        const endStripDrag = () => { stripDrag = null; };
+        const endStripDrag = () => {
+            if (!stripDrag) return;
+            stripDrag = null;
+            onCommit(stripBefore, snapshotGraph());
+            stripBefore = null;
+        };
         stripCanvas.addEventListener('pointerup', endStripDrag);
         stripCanvas.addEventListener('pointercancel', endStripDrag);
+        stripCanvas.addEventListener('lostpointercapture', endStripDrag);
 
         fullBtn.addEventListener('click', () => {
-            updateParams({ startAt: 0, seconds: 0 });
+            editGraph(() => updateParams({ startAt: 0, seconds: 0 }));
             playhead = 0;
             paint();
         });
@@ -1088,11 +1111,12 @@
 
         stage.addEventListener('pointerdown', (event) => {
             const node = selectedNode();
-            if (!node || formatIsFlat()) return;
+            if (!node || formatIsFlat() || event.button !== 0 || stageDrag || stripDrag) return;
             const center = stageCenter();
             stageDrag = {
                 angle: pointerAngle(event, center),
                 degrees: Number(node.params.degrees) || 0,
+                before: snapshotGraph(),
             };
             stage.setPointerCapture?.(event.pointerId);
             stage.classList.add('is-transforming');
@@ -1108,29 +1132,32 @@
         });
         const endStageDrag = () => {
             if (!stageDrag) return;
+            const { before } = stageDrag;
             stageDrag = null;
             stage.classList.remove('is-transforming');
+            onCommit(before, snapshotGraph());
             paint();
         };
         stage.addEventListener('pointerup', endStageDrag);
         stage.addEventListener('pointercancel', endStageDrag);
+        stage.addEventListener('lostpointercapture', endStageDrag);
 
         stage.addEventListener('wheel', (event) => {
-            if (formatIsFlat()) return;
+            if (formatIsFlat() || stageDrag || stripDrag) return;
             const node = selectedNode();
             if (!node) return;
             event.preventDefault();
             const step = event.shiftKey ? 25 : 5;
             const direction = event.deltaY < 0 ? 1 : -1;
-            setPose(Number(node.params.degrees) || 0,
-                (Number(node.params.scalePercent) || 100) + direction * step);
+            editGraph(() => setPose(Number(node.params.degrees) || 0,
+                (Number(node.params.scalePercent) || 100) + direction * step));
         }, { passive: false });
 
         // 键盘也得能摆正：这是唯一的精确输入口
         stage.setAttribute('tabindex', '0');
         stage.addEventListener('keydown', (event) => {
             const node = selectedNode();
-            if (!node || formatIsFlat()) return;
+            if (!node || formatIsFlat() || stageDrag || stripDrag) return;
             const degrees = Number(node.params.degrees) || 0;
             const scale = Number(node.params.scalePercent) || 100;
             const fine = event.shiftKey ? 1 : 5;
@@ -1147,15 +1174,15 @@
             const move = moves[event.key];
             if (!move) return;
             event.preventDefault();
-            move();
+            editGraph(move);
         });
 
         resetBtn.addEventListener('click', () => {
-            updateParams({ scalePercent: 100, degrees: 0 });
+            editGraph(() => updateParams({ scalePercent: 100, degrees: 0 }));
             paint();
         });
         stage.addEventListener('dblclick', () => {
-            updateParams({ scalePercent: 100, degrees: 0 });
+            editGraph(() => updateParams({ scalePercent: 100, degrees: 0 }));
             paint();
         });
 
@@ -1233,13 +1260,6 @@
             if (root) graph = model.addLink(graph, root.id, model.LOOK, node.id, model.LOOK);
         }
 
-        function imageNodeFor(node) {
-            if (!node) return null;
-            const link = graph.links.find((entry) => entry.to === node.id);
-            const source = link ? graph.nodes.find((entry) => entry.id === link.from) : null;
-            return source && source.type === 'source.image' ? source : null;
-        }
-
         // 本模块拿到的 t 只做翻译不插值（页面约定插值走 interpolate）；
         // 这里就地补一个同款，模板串的 {{x}} 有值就换。
         function fillParams(text, values) {
@@ -1295,7 +1315,7 @@
                 remove.textContent = '×';
                 remove.setAttribute('aria-label', entry.label);
                 remove.addEventListener('click', () => {
-                    removeBoundImage(selectedNode(), entry.id);
+                    editGraph(() => removeBoundImage(selectedNode(), entry.id));
                     rebuild();
                 });
                 chip.append(thumb, label, remove);
@@ -1303,7 +1323,7 @@
             });
             boundChips.replaceChildren(...chips);
             boundClear.onclick = () => {
-                entries.forEach((entry) => removeBoundImage(selectedNode(), entry.id));
+                editGraph(() => entries.forEach((entry) => removeBoundImage(selectedNode(), entry.id)));
                 rebuild();
             };
         }
@@ -1397,17 +1417,22 @@
                 remove.textContent = '×';
                 remove.setAttribute('aria-label', t('emoteMaker.stageUserImages')
                     + ' · ' + entry.label);
-                remove.addEventListener('click', (event) => {
+                remove.addEventListener('click', async (event) => {
                     event.stopPropagation();
-                    if (typeof options.onRemoveImage === 'function') {
-                        options.onRemoveImage(entry.id);
+                    if (typeof options.onRemoveImage !== 'function') return;
+                    remove.disabled = true;
+                    try {
+                        await options.onRemoveImage(entry.id);
+                    } finally {
+                        remove.disabled = false;
                     }
                 });
                 tile.append(thumb, text, remove);
                 // 点击 = 赋给当前选中的状态格
                 tile.addEventListener('click', () => {
                     if (rowClickGuard ? rowClickGuard.shouldSwallow() : tile.dataset.justDragged) return;
-                    applyImageTo(selectedNode(), entry.id);
+                    clearPreview();
+                    editGraph(() => applyImageTo(selectedNode(), entry.id));
                     loadSelected().then(renderUserImages);
                 });
                 holdToDrag(tile, { kind: 'image', id: entry.id, label: entry.label });
@@ -1547,13 +1572,13 @@
             }
 
             row.append(thumb, text);
-            row.addEventListener('mouseenter', () => previewLibrary(entry, row));
-            row.addEventListener('focus', () => previewLibrary(entry, row));
+            row.addEventListener('mouseenter', () => previewLibrary(entry));
+            row.addEventListener('focus', () => previewLibrary(entry));
             row.addEventListener('click', () => {
                 // 刚刚长按拖过 → 这一跳 click 不是"想选它"
                 if (rowClickGuard ? rowClickGuard.shouldSwallow() : row.dataset.justDragged) return;
                 clearPreview();
-                applySceneTo(selectedNode(), entry.isDefault ? '' : entry.value);
+                editGraph(() => applySceneTo(selectedNode(), entry.isDefault ? '' : entry.value));
                 loadSelected().then(refreshLibraryMarks);
             });
             holdToDrag(row, entry);
@@ -1589,7 +1614,7 @@
             });
         }
 
-        function previewLibrary(entry, row) {
+        function previewLibrary(entry) {
             previewName.textContent = entry.isDefault ? t('emoteMaker.stageUseDefaults') : entry.label;
             if (entry.isDefault) {
                 // "跟随默认外观"没有单条动画可演，恢复成这一格现在的样子
@@ -1781,11 +1806,27 @@
             // 动画列表可能被改名或增删：外部改动后请我重取帧源与选项
             refresh: async () => {
                 labelsCache = null;
+                framesRevision += 1;
                 framesBySource.clear();
                 sliceByNode.clear();
                 await loadSelected();
             },
-            getGraph: () => model.normalizeGraph(graph),
+            getGraph: snapshotGraph,
+            isEditing: () => Boolean(stripDrag || stageDrag),
+            setGraph(next) {
+                const stateKey = selectedNode()?.params.stateKey;
+                graph = model.normalizeGraph(next);
+                const node = stateKey ? ensureNodeForState(stateKey) : outputNodes()[0];
+                selected = node?.id || null;
+                clearPreview();
+                playhead = 0;
+                framesRevision += 1;
+                framesBySource.clear();
+                sliceByNode.clear();
+                paint();
+                refreshLibraryMarks();
+                void loadSelected();
+            },
 
             // 长按动画列表里的动画拖过来 → 落到哪一格
             containsPoint(x, y) {
@@ -1805,14 +1846,14 @@
                 });
             },
             async assignImage(stateKey, imageId) {
-                const node = ensureNodeForState(stateKey);
-                selected = node.id;
                 clearPreview();
-                console.log('[stage] assignImage: applying', imageId, 'to', stateKey);
-                applyImageTo(node, imageId);
+                editGraph(() => {
+                    const node = ensureNodeForState(stateKey);
+                    selected = node.id;
+                    applyImageTo(node, imageId);
+                });
                 await loadSelected();
                 renderUserImages();
-                console.log('[stage] assignImage: done, graph:', graph.nodes.length, 'nodes');
             },
 
             refreshUserImages: () => {
@@ -1823,10 +1864,12 @@
             },
 
             async assignScene(stateKey, sceneId) {
-                const node = ensureNodeForState(stateKey);
-                selected = node.id;
                 clearPreview();
-                applySceneTo(node, sceneId);
+                editGraph(() => {
+                    const node = ensureNodeForState(stateKey);
+                    selected = node.id;
+                    applySceneTo(node, sceneId);
+                });
                 await loadSelected();
                 // 刚拖完一条就想知道它占了哪几格；只改标记，不动滚动位置
                 refreshLibraryMarks();

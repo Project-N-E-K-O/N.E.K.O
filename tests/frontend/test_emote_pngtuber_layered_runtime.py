@@ -640,10 +640,17 @@ SLOT_PROBE = r"""async ([folder]) => {
     manager.drawLayeredState('idle');
     out.steps.push(snap('speech-end'));
 
-    // 4) 点击：占住自己那一格；600ms 定时器到点要做的就是把状态槽放开（restoreStateImage）
-    manager.showClickImage();
+    // 4) 点击只播一轮。即使返回定时器晚执行，动画也不会回卷到第一帧。
+    window.lanlan_config = { ...window.lanlan_config, model_type: 'pngtuber' };
+    manager.handleClick(new MouseEvent('click'));
     out.steps.push(snap('click'));
-    manager.restoreStateImage();
+    const clickLayer = manager.layeredMetadata.layers.find(layer => layer.name === 'click_image');
+    const clickState = clickLayer.states[3];
+    const clickImage = manager.layeredImages.get(clickLayer._imageIndex);
+    out.clickFrames = [0, 100, 170].map(ms => manager.stateFrameInfo(
+        clickLayer, clickState, clickImage, manager.layeredAnimationStart + ms,
+    ).frame);
+    await new Promise((r) => setTimeout(r, 280));
     out.steps.push(snap('click-released'));
 
     // 5) 点击还挂着时说话插进来：setSpeaking 会取消那个 600ms 定时器，
@@ -777,6 +784,7 @@ def test_speech_drag_click_take_the_state_slot(page, running_server):
         assert _step(out, "speech-end")["index"] == 0, "话说完该回到默认状态"
         assert _step(out, "speech-end")["shown"] == "idle", out["steps"]
         assert _step(out, "click")["index"] == 3, "点击没有切到 click 那一格"
+        assert out["clickFrames"] == [0, 1, 1], out["clickFrames"]
         assert _step(out, "click-released")["index"] == 0, "点击放开后没有回到该在的那一格"
         # 点击的 600ms 定时器被说话取消时，那一格必须一起放开，否则会卡在点击上
         assert _step(out, "click-cancelled-by-speech")["index"] == 1, out["steps"]

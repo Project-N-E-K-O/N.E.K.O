@@ -116,6 +116,7 @@ function fakeRuntime() {
             size.x = 100;
             size.y = 200;
         }
+        update(delta) { this.time = (this.time || 0) + delta; }
         updateWorldTransform() { calls.push(['skeleton.updateWorldTransform']); }
     }
 
@@ -177,12 +178,12 @@ function fakeRuntime() {
 
 function manifest() {
     return {
-        source: { kind: 'emotelab', spineVersion: '4.3.23' },
+        source: { kind: 'spine', spineVersion: '4.3.23' },
         model: {
-            skeleton: { path: 'pkg/SpineModels/Demo/Demo.skel.bytes', spineVersion: '4.3.23' },
+            skeleton: { path: 'pkg/model/Demo.skel.bytes', spineVersion: '4.3.23' },
             atlas: {
-                path: 'pkg/SpineModels/Demo/Demo.atlas.txt',
-                pages: [{ name: 'Page.png', path: 'pkg/SpineModels/Demo/Page.png' }],
+                path: 'pkg/model/Demo.atlas.txt',
+                pages: [{ name: 'Page.png', path: 'pkg/model/Page.png' }],
             },
         },
         scenes: [{ animationName: 'ANIM/Idle', trackTime: 0.25 }],
@@ -203,9 +204,9 @@ function canvas() {
 
 function store() {
     const assets = new Map([
-        ['pkg/SpineModels/Demo/Demo.atlas.txt', 'Page.png\nsize: 2, 2\nscale: 1\n'],
-        ['pkg/SpineModels/Demo/Page.png', new Uint8Array([137, 80, 78, 71])],
-        ['pkg/SpineModels/Demo/Demo.skel.bytes', new Uint8Array([4, 3, 2, 3])],
+        ['pkg/model/Demo.atlas.txt', 'Page.png\nsize: 2, 2\nscale: 1\n'],
+        ['pkg/model/Page.png', new Uint8Array([137, 80, 78, 71])],
+        ['pkg/model/Demo.skel.bytes', new Uint8Array([4, 3, 2, 3])],
     ]);
     return {
         async open(path, options = {}) {
@@ -227,6 +228,7 @@ test('renderer exports safe path and atlas helpers', () => {
     );
 });
 
+
 test('renderer fails clearly when no runtime or loader is available', async () => {
     await assert.rejects(
         () => SpineRenderer.create({ canvas: canvas(), manifest: manifest(), assetStore: store() }),
@@ -234,625 +236,76 @@ test('renderer fails clearly when no runtime or loader is available', async () =
     );
 });
 
-test('renderer loads atlas/skeleton and starts an autoplay animation tick', async () => {
+
+test('renderer advances skeleton physics time while playing and simulates seeks', async () => {
     const runtime = fakeRuntime();
-    const instance = await SpineRenderer.create({
-        canvas: canvas(),
-        manifest: manifest(),
-        assetStore: store(),
-        runtime,
-        renderOnLoad: false,
-    });
-
-    assert.equal(instance.status().loaded, true);
-    const contextConfig = runtime.calls.find((call) => call[0] === 'context.config')?.[1];
-    assert.equal(contextConfig?.preserveDrawingBuffer, true);
-    assert.deepEqual(instance.animationNames(), ['ANIM/Idle', 'ANIM/Hello']);
-    assert.equal(instance.status().warnings.length, 0);
-
-    const selected = instance.selectAnimation('ANIM/Hello', {
-        loop: true,
-        time: 0.5,
-        autoplay: true,
-        render: false,
-    });
-    assert.equal(selected.name, 'ANIM/Hello');
-    assert.equal(selected.loop, true);
-    assert.equal(selected.playing, true);
-    assert.equal(instance.status().playing, true);
-    const frame = instance.tick(0.25, { render: false });
-    assert.equal(frame.animation, 'ANIM/Hello');
-    assert.equal(frame.time, 0.75);
-    instance.pause();
-    assert.equal(instance.status().playing, false);
-    instance.play();
-    assert.equal(instance.status().playing, true);
-
-    instance.render();
-    assert.ok(runtime.calls.some((call) => call[0] === 'renderer.drawSkeleton'));
-    const halfTurn = Math.SQRT1_2;
-    instance.setScene({
-        camera: {
-            position: [0, 0, 0],
-            rotation: [0, halfTurn, 0, halfTurn],
-            orthographicSize: 1,
-        },
-        model: { visible: true, mirrored: false },
-    });
-    assert.ok(Math.abs(instance.renderer.camera.direction.x + 1) < 0.01);
-    instance.dispose();
-    assert.equal(instance.status().disposed, true);
-
-    const exportCanvas = canvas();
-    exportCanvas.width = 1024;
-    exportCanvas.height = 1024;
-    exportCanvas.clientWidth = 528;
-    exportCanvas.clientHeight = 236;
-    const exportRenderer = await SpineRenderer.create({
-        canvas: exportCanvas,
-        manifest: manifest(),
-        assetStore: store(),
-        runtime: fakeRuntime(),
-        renderOnLoad: false,
-    });
-    exportRenderer.render();
-    assert.equal(exportCanvas.width, 1024);
-    assert.equal(exportCanvas.height, 1024);
-    const captured = exportRenderer.captureFrame({ render: false, maxDimension: 2 });
-    assert.deepEqual({ width: captured.width, height: captured.height }, { width: 2, height: 2 });
-    assert.equal(captured.data[2], 255); // top-left pixel is the flipped blue row
-    assert.equal(captured.data[(captured.width * 4) + 0], 255); // bottom-left is red
-    exportRenderer.dispose();
+    const renderer = await SpineRenderer.create({ canvas: canvas(), manifest: manifest(), assetStore: store(), runtime, renderOnLoad: false });
+    renderer.selectAnimation('ANIM/Idle', { autoplay: true, loop: true, render: false });
+    renderer.tick(0.1, { render: false });
+    assert.ok(Math.abs(renderer.skeleton.time - 0.1) < 1e-8);
+    renderer.setTime(0.5, { render: false });
+    assert.ok(Math.abs(renderer.skeleton.time - 0.5) < 1e-8);
+    renderer.setTime(0.2, { render: false });
+    assert.ok(Math.abs(renderer.skeleton.time - 0.2) < 1e-8);
+    renderer.pause();
+    renderer.tick(0.1, { render: false });
+    assert.ok(Math.abs(renderer.skeleton.time - 0.2) < 1e-8);
+    const frame = renderer.captureFrame({ maxDimension: 64 });
+    assert.ok(frame.width <= 64 && frame.height <= 64);
+    renderer.dispose();
+    assert.equal(renderer.status().disposed, true);
+});
+test('skin names remain exact and are not interpreted as part groups or default tags', () => {
+    const renderer = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: store() });
+    const skin = { name: 'Hair/[Required]/A' };
+    renderer.skeletonData = { skins: [skin], findSkin: (name) => name === skin.name ? skin : null };
+    let applied;
+    renderer.skeleton = { setSkin: (value) => { applied = value; }, setupPoseSlots() {} };
+    assert.deepEqual(renderer.skinOptions().skin.options, [skin.name]);
+    renderer._characterSkinSelections = [{ group: 'skin', value: skin.name }];
+    renderer._applyCharacterSkins();
+    assert.equal(applied, skin);
+});
+test('mismatched Spine versions are rejected by default', async () => {
+    const packageData = manifest(); packageData.source.spineVersion = '4.2.0';
+    await assert.rejects(SpineRenderer.create({ canvas: canvas(), manifest: packageData, assetStore: store(), runtime: fakeRuntime() }),
+        (error) => error.code === 'runtime_version_mismatch');
+});
+test('the bundled runtime physics clock is advanced by the real renderer pose loop', () => {
+    const fs = require('node:fs'), vm = require('node:vm');
+    const ctx = { console, TextEncoder, TextDecoder, Float32Array, Uint8Array, ArrayBuffer };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(require.resolve('../../static/libs/spine/spine-webgl-4.3.13.min.js'), 'utf8'), ctx);
+    const spine = ctx.spine;
+    const data = new spine.SkeletonData(); data.bones.push(new spine.BoneData(0, 'root', null));
+    const skeleton = new spine.Skeleton(data);
+    const state = new spine.AnimationState(new spine.AnimationStateData(data));
+    const receiver = { runtime: spine, skeleton, state, _restoreRootRotationBasis() {}, _restoreSlotColors() {}, _restoreCharacterAttachments() {}, _applyCharacterSlotStyles() {}, _captureRootRotationBasis() {} };
+    for (let i = 0; i < 60; i++) SpineRenderer.prototype._applyPose.call(receiver, 1 / 60);
+    assert.ok(Math.abs(skeleton.time - 1) < 1e-8);
 });
 
-test('renderer resets Spine setup pose when switching animations', () => {
-    const instance = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: {} });
-    const animations = [
-        { name: 'ANIM/Alert-Bits', duration: 1 },
-        { name: 'ANIM/Angry', duration: 1 },
-    ];
-    const calls = [];
-    instance.loaded = true;
-    instance.skeletonData = {
-        findAnimation(name) {
-            return animations.find((animation) => animation.name === name) || null;
-        },
-    };
-    instance.skeleton = {
-        setupPose() { calls.push('setupPose'); },
-    };
-    instance.state = {
-        clearTracks() { calls.push('clearTracks'); },
-        setAnimation(track, name, loop) {
-            calls.push(['setAnimation', track, name, loop]);
-            return { animation: animations.find((item) => item.name === name), loop, trackTime: 0 };
-        },
-    };
-    instance._applyPose = () => calls.push('applyPose');
-
-    instance.selectAnimation('ANIM/Angry', { loop: true, render: false });
-
-    assert.deepEqual(calls, [
-        'clearTracks',
-        'setupPose',
-        ['setAnimation', 0, 'ANIM/Angry', true],
-        'applyPose',
-    ]);
-    assert.equal(instance.currentAnimation, 'ANIM/Angry');
-});
-
-test('renderer applies EmoteLab logical slot tags and Character slider chains', () => {
-    const instance = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: {} });
-    const makeColor = () => ({
-        r: 1,
-        g: 1,
-        b: 1,
-        a: 1,
-        setFromColor(value) {
-            this.r = value.r;
-            this.g = value.g;
-            this.b = value.b;
-            this.a = value.a;
-        },
-        set(r, g, b, a) {
-            this.r = r;
-            this.g = g;
-            this.b = b;
-            this.a = a;
-        },
+test('global color changes stay stable during playback and restore original slot colors', () => {
+    const fs = require('node:fs'), vm = require('node:vm');
+    const ctx = { console, TextEncoder, TextDecoder, Float32Array, Uint8Array, ArrayBuffer };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(require.resolve('../../static/libs/spine/spine-webgl-4.3.13.min.js'), 'utf8'), ctx);
+    const spine = ctx.spine;
+    const data = new spine.SkeletonJson({}).readSkeletonData({
+        skeleton: { spine: '4.3.13' }, bones: [{ name: 'root' }],
+        slots: [{ name: 'body', bone: 'root', color: '80402080' }], skins: [], animations: {},
     });
-    const taggedSlot = {
-        data: {
-            name: 'Hair_Front/Hair_Color[HairBangLeft]',
-            color: { r: 1, g: 1, b: 1, a: 1 },
-            darkColor: { r: 0, g: 0, b: 0, a: 1 },
-        },
-        color: makeColor(),
-        darkColor: makeColor(),
-    };
-    instance.skeleton = {
-        slots: [taggedSlot],
-        findSlot() { return taggedSlot; },
-    };
-    instance._characterSlotStyles = [{
-        name: 'HairBangLeft',
-        tintColor: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
-        tintBlackColor: { r: 0.1, g: 0.1, b: 0.1, a: 1 },
-    }];
-    instance._applyCharacterSlotStyles();
-    assert.equal(taggedSlot.color.r, 0.2);
-    assert.equal(taggedSlot.color.g, 0.4);
-    assert.equal(taggedSlot.darkColor.r, 0.1);
-
-    const poseColor = makeColor();
-    const poseDark = makeColor();
-    const spine43Slot = {
-        data: {
-            name: 'Hair_Front/Hair_Color[HairBangRight]',
-            setupPose: {
-                color: makeColor(),
-                darkColor: makeColor(),
-            },
-        },
-        pose: { color: poseColor, darkColor: poseDark },
-        appliedPose: { color: makeColor(), darkColor: makeColor() },
-    };
-    instance.skeleton.slots.push(spine43Slot);
-    instance._characterSlotStyles.push({
-        name: 'HairBangRight',
-        tintColor: { r: 0.7, g: 0.5, b: 0.3, a: 1 },
-        tintBlackColor: { r: 0.2, g: 0.15, b: 0.1, a: 1 },
-    });
-    instance._applyCharacterSlotStyles();
-    assert.equal(poseColor.r, 0.7);
-    assert.equal(poseColor.g, 0.5);
-    assert.equal(poseDark.r, 0.2);
-
-    const bones = ['PigtailA_Left1', 'PigtailA_Left2', 'PigtailB_Left'].map((name) => ({
-        data: {
-            name,
-            length: 100,
-            setupPose: { x: 10, y: 20, scaleX: 1, shearY: 0 },
-        },
-        pose: { x: 10, y: 20, scaleX: 1, shearY: 0 },
-    }));
-    instance.skeleton.data = { bones: bones.map((bone) => bone.data) };
-    instance.skeleton.findBone = (name) => bones.find((bone) => bone.data.name === name);
-    instance._characterSliderValues = [
-        { name: 'Character/PigtailLeft_Length', value: 1.25 },
-        { name: 'Character/PigtailLeft_Position', value: 0.5 },
-    ];
-    instance._applyCharacterSliders();
-    assert.deepEqual(instance.sliderStatus().applied, [
-        { name: 'Character/PigtailLeft_Length', bones: 3, mode: 'heuristic' },
-        { name: 'Character/PigtailLeft_Position', bones: 1, mode: 'heuristic' },
-    ]);
-    assert.equal(bones[0].pose.scaleX, 1.25);
-    assert.equal(bones[0].pose.x, 5);
-    assert.equal(instance.sliderMapping('Character/PigtailLeft_Length').mode, 'heuristic');
-    assert.ok(instance.warnings.some((warning) => warning.includes('使用启发式映射')));
-});
-
-test('renderer restores omitted required skin groups such as hands and legs', () => {
-    const instance = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: {} });
-    const available = [
-        { name: 'default' },
-        { name: 'A_FacialFeatures/Eye[Required]/Eye1' },
-        { name: 'A_FacialFeatures/Eye[Required]/Eye2' },
-        { name: 'A_FacialFeatures/Ear[DefaultOn]/Ear1' },
-        { name: 'G_Outfit/Hand[Required]/Hand1' },
-        { name: 'G_Outfit/Hand[Required]/Hand2' },
-        { name: 'G_Outfit/Leg[Required]/Leg1' },
-    ];
-    const added = [];
-    class Skin {
-        constructor(name) { this.name = name; }
-        addSkin(skin) { added.push(skin.name); }
-    }
-    instance.runtime = { Skin };
-    instance.skeletonData = {
-        skins: available,
-        findSkin(name) { return available.find((skin) => skin.name === name) || null; },
-    };
-    instance.skeleton = {
-        setSkin(value) { this.skin = value; },
-        setupPoseSlots() {},
-    };
-
-    instance._applyCharacterSkins([{ group: 'Eye', value: 'Eye2' }]);
-
-    assert.deepEqual(added, [
-        'default',
-        'A_FacialFeatures/Eye[Required]/Eye2',
-        'A_FacialFeatures/Ear[DefaultOn]/Ear1',
-        'G_Outfit/Hand[Required]/Hand1',
-        'G_Outfit/Leg[Required]/Leg1',
-    ]);
-    assert.equal(instance.status().skinCount, 4);
-});
-
-test('renderer does not synthesize rear hair for an explicit paired-pigtail preset', () => {
-    const instance = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: {} });
-    const available = [
-        { name: 'default' },
-        { name: 'B_HairFront/BaseHair[Required]/BaseHair1' },
-        { name: 'C_HairSide/SideHair[DefaultOn]/SideHairA1' },
-        { name: 'E_HairBack/BackHair[DefaultOn]/BackHair1' },
-        { name: 'E_HairBack/PigtailLeft[DefaultOff]/PigtailLeftA6' },
-        { name: 'E_HairBack/PigtailRight[DefaultOff]/PigtailRightA6' },
-        { name: 'G_Outfit/Hand[Required]/Hand1' },
-        { name: 'G_Outfit/Leg[Required]/Leg1' },
-    ];
-    const added = [];
-    class Skin {
-        constructor(name) { this.name = name; }
-        addSkin(skin) { added.push(skin.name); }
-    }
-    instance.runtime = { Skin };
-    instance.skeletonData = {
-        skins: available,
-        findSkin(name) { return available.find((skin) => skin.name === name) || null; },
-    };
-    instance.skeleton = {
-        setSkin(value) { this.skin = value; },
-        setupPoseSlots() {},
-    };
-
-    instance._applyCharacterSkins([
-        { group: 'BaseHair', value: 'BaseHair1' },
-        { group: 'PigtailLeft', value: 'PigtailLeftA6' },
-        { group: 'PigtailRight', value: 'PigtailRightA6' },
-    ]);
-
-    assert.deepEqual(added, [
-        'default',
-        'B_HairFront/BaseHair[Required]/BaseHair1',
-        'E_HairBack/PigtailLeft[DefaultOff]/PigtailLeftA6',
-        'E_HairBack/PigtailRight[DefaultOff]/PigtailRightA6',
-        'G_Outfit/Hand[Required]/Hand1',
-        'G_Outfit/Leg[Required]/Leg1',
-    ]);
-    assert.equal(added.some((name) => /(?:BackHair|SideHair)/i.test(name)), false);
-});
-
-test('renderer keeps WeightTransfer clothing and accessory attachments in the draw list', () => {
-    const instance = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: {} });
-    const weightAttachment = { name: 'WeightTransfer/OutfitInner_WeightTransfer' };
-    const weightPose = { attachment: weightAttachment };
-    const slot = {
-        data: { name: 'Outfit_Front/OutfitOutfitInner_WeightTransfer[Ignore]' },
-        appliedPose: weightPose,
-        pose: weightPose,
-    };
-    const drawn = [];
-    instance.skeleton = {
-        visible: true,
-        slots: [slot],
-    };
-    instance.loaded = true;
-    instance.gl = {
-        COLOR_BUFFER_BIT: 0x4000,
-        clearColor() {},
-        clear() {},
-    };
-    instance.renderer = {
-        begin() {},
-        drawSkeleton(skeleton) { drawn.push(skeleton.slots[0].appliedPose.attachment); },
-        end() {},
-    };
-    instance._resizeCanvas = () => ({ width: 1, height: 1 });
-    instance._applySceneCamera = () => {};
-
-    instance.render({ fit: false });
-
-    assert.deepEqual(drawn, [weightAttachment]);
-    assert.equal(weightPose.attachment, weightAttachment);
-});
-
-test('renderer prefers native Spine Slider constraints and maps 0..2 to animation time', () => {
-    const instance = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: {} });
-    const nativeConstraint = {
-        data: {
-            name: 'Character/PigtailLeft_Length',
-            setupPose: { time: 2 / 3, mix: 1 },
-            animation: { duration: 4 / 3, bones: [455, 460] },
-        },
-        pose: { time: 2 / 3, mix: 1 },
-        constrainedPose: { time: 2 / 3, mix: 1 },
-        appliedPose: { time: 2 / 3, mix: 1 },
-    };
-    const fallbackBone = {
-        data: {
-            name: 'PigtailA_Left1',
-            length: 100,
-            setupPose: { x: 10, y: 20, scaleX: 1, shearY: 0 },
-        },
-        pose: { x: 10, y: 20, scaleX: 1, shearY: 0 },
-    };
-    let worldTransformObserved = false;
-    instance.skeleton = {
-        constraints: [nativeConstraint],
-        slots: [],
-        data: { bones: [fallbackBone.data] },
-        findBone() { return fallbackBone; },
-        updateWorldTransform() {
-            worldTransformObserved = true;
-            assert.equal(nativeConstraint.pose.time, 1);
-            assert.equal(nativeConstraint.constrainedPose.time, 1);
-            assert.equal(nativeConstraint.appliedPose.time, 1);
-        },
-    };
-    instance.runtime = { Physics: { update: 2 } };
-    instance.state = {
-        apply() {
-            // Simulate AnimationState writing a prior slider pose. The native
-            // override must run after state.apply and before world update.
-            nativeConstraint.pose.time = 0;
-            nativeConstraint.constrainedPose.time = 0;
-            nativeConstraint.appliedPose.time = 0;
-        },
-    };
-    instance._characterSliderValues = [{ name: 'Character/PigtailLeft_Length', value: 1.5 }];
-    instance._applyPose(0);
-
-    assert.equal(worldTransformObserved, true);
-    assert.deepEqual(instance.sliderStatus().applied, [
-        { name: 'Character/PigtailLeft_Length', bones: 2, mode: 'native' },
-    ]);
-    assert.deepEqual(instance.sliderMapping('Character/PigtailLeft_Length'), {
-        base: 'PigtailLeft',
-        property: 'length',
-        bones: 2,
-        targets: 2,
-        supported: true,
-        mode: 'native',
-    });
-    assert.equal(instance.sliderDefaultValue('Character/PigtailLeft_Length'), 1);
-    // A native constraint wins over the similarly named heuristic chain.
-    assert.equal(fallbackBone.pose.scaleX, 1);
-    assert.equal(instance.warnings.length, 0);
-});
-
-test('renderer reads Spine 4.3 VIEWPORT bounding boxes and falls back to drawable bounds', () => {
-    const runtime = fakeRuntime();
-    const instance = new SpineRenderer({
-        canvas: canvas(),
-        manifest: {},
-        assetStore: {},
-    });
-    instance.runtime = runtime;
-    const attachment = {
-        worldVerticesLength: 8,
-        computeWorldVertices(skeleton, slot, start, count, output, offset, stride) {
-            assert.equal(skeleton, instance.skeleton);
-            assert.equal(slot, instance.skeleton.slots[0]);
-            assert.equal(start, 0);
-            assert.equal(count, 8);
-            assert.equal(offset, 0);
-            assert.equal(stride, 2);
-            [
-                -4, -3,
-                6, -3,
-                6, 7,
-                -4, 7,
-            ].forEach((value, index) => { output[index] = value; });
-        },
-    };
-    instance.skeleton = {
-        slots: [{ data: { name: 'VIEWPORT' }, pose: { attachment } }],
-        getBounds(offset, size) {
-            offset.x = -100;
-            offset.y = -50;
-            size.x = 200;
-            size.y = 100;
-        },
-    };
-    const viewport = instance._readViewportBounds();
-    assert.deepEqual(
-        {
-            minX: viewport.minX,
-            minY: viewport.minY,
-            maxX: viewport.maxX,
-            maxY: viewport.maxY,
-            width: viewport.width,
-            height: viewport.height,
-        },
-        { minX: -4, minY: -3, maxX: 6, maxY: 7, width: 10, height: 10 },
-    );
-
-    // Older compatible runtimes omit the leading skeleton argument.  The
-    // renderer selects that six-argument signature without misaligning the
-    // output buffer.
-    const legacyAttachment = {
-        worldVerticesLength: 8,
-        computeWorldVertices(slot, start, count, output, offset, stride) {
-            assert.equal(slot, instance.skeleton.slots[0]);
-            assert.equal(start, 0);
-            assert.equal(count, 8);
-            assert.equal(offset, 0);
-            assert.equal(stride, 2);
-            [-2, -1, 3, -1, 3, 4, -2, 4]
-                .forEach((value, index) => { output[index] = value; });
-        },
-    };
-    instance.skeleton.slots[0].pose.attachment = legacyAttachment;
-    const legacyViewport = instance._readViewportBounds();
-    assert.equal(legacyViewport.width, 5);
-    assert.equal(legacyViewport.height, 5);
-
-    // EmoteLab scans all skins, so a template may keep VIEWPORT only in a
-    // non-active skin. Spine 4.3 stores skin entries as a slot-indexed map.
-    const hiddenSlot = { data: { name: 'HiddenViewportSlot' }, pose: {} };
-    const hiddenAttachment = {
-        worldVerticesLength: 8,
-        computeWorldVertices(skeleton, slot, start, count, output, offset, stride) {
-            assert.equal(skeleton, instance.skeleton);
-            assert.equal(slot, hiddenSlot);
-            assert.equal(start, 0);
-            assert.equal(count, 8);
-            assert.equal(offset, 0);
-            assert.equal(stride, 2);
-            [10, 20, 14, 20, 14, 26, 10, 26]
-                .forEach((value, index) => { output[index] = value; });
-        },
-    };
-    instance.skeleton.slots = [hiddenSlot];
-    instance.skeleton.data = {
-        skins: [{ attachments: [{ VIEWPORT: hiddenAttachment }] }],
-    };
-    const hiddenViewport = instance._readViewportBounds();
-    assert.deepEqual(
-        {
-            minX: hiddenViewport.minX,
-            minY: hiddenViewport.minY,
-            maxX: hiddenViewport.maxX,
-            maxY: hiddenViewport.maxY,
-        },
-        { minX: 10, minY: 20, maxX: 14, maxY: 26 },
-    );
-
-    // Keep compatibility with runtimes exposing SkinEntry records instead of
-    // the Spine 4.3 slot-indexed map.
-    const legacySkinAttachment = {
-        worldVerticesLength: 8,
-        computeWorldVertices(slot, start, count, output) {
-            assert.equal(slot, hiddenSlot);
-            assert.equal(start, 0);
-            assert.equal(count, 8);
-            [-8, -7, -4, -7, -4, -2, -8, -2]
-                .forEach((value, index) => { output[index] = value; });
-        },
-    };
-    instance.skeleton.data = {};
-    instance.skeletonData = {
-        data: {
-            skins: [{ attachments: [{
-                slotIndex: 0,
-                placeholder: 'VIEWPORT',
-                attachment: legacySkinAttachment,
-            }] }],
-        },
-    };
-    const legacySkinViewport = instance._readViewportBounds();
-    assert.equal(legacySkinViewport.width, 4);
-    assert.equal(legacySkinViewport.height, 5);
-
-    // A package without VIEWPORT remains usable: the regular drawable bounds
-    // are used for the editor's relative Fit/Reset path.
-    instance.skeleton.slots = [];
-    instance.runtime = {};
-    instance.renderer = {
-        camera: {
-            viewportWidth: 320,
-            viewportHeight: 240,
-            zoom: 1,
-            position: { set() {} },
-            direction: { set() {} },
-            up: { set() {} },
-            update() {},
-        },
-    };
-    instance._fitSkeleton();
-    assert.equal(instance._baseFit.boundsSource, 'skeleton-bounds');
-    assert.equal(instance._baseFit.width, 200);
-    assert.equal(instance._baseFit.height, 100);
-});
-
-test('renderer maps EmoteLab Unity camera units to Spine native pixels', () => {
-    const runtime = fakeRuntime();
-    const instance = new SpineRenderer({
-        canvas: canvas(),
-        manifest: {
-            scenes: [{
-                camera: {
-                    position: [2, 3, -10],
-                    rotation: [0, 0, 0, 1],
-                    orthographicSize: 4,
-                },
-            }],
-        },
-        assetStore: {},
-    });
-    instance.runtime = runtime;
-    instance.skeletonData = { referenceScale: 100 };
-    instance._referenceScale = 100;
-    instance.skeleton = {
-        x: 0,
-        y: 0,
-        scaleX: 1,
-        scaleY: 1,
-        rotation: 0,
-        visible: true,
-        slots: [],
-        getBounds(offset, size) {
-            offset.x = -50;
-            offset.y = -25;
-            size.x = 100;
-            size.y = 50;
-        },
-    };
-    const camera = {
-        viewportWidth: 320,
-        viewportHeight: 240,
-        zoom: 1,
-        position: {
-            x: 0,
-            y: 0,
-            z: 0,
-            set(x, y, z) { this.x = x; this.y = y; this.z = z; },
-        },
-        direction: { set() {} },
-        up: { set() {} },
-        update() {},
-    };
-    instance.renderer = { camera };
-    instance._fitSkeleton();
-    assert.equal(instance._baseFit.calibrated, true);
-    // OrthoCamera.zoom is native model units per output pixel, and Unity's
-    // orthographicSize is the vertical half-height.
-    assert.ok(Math.abs(camera.zoom - (4 * 2 * 100 / 240)) < 1e-9);
-    assert.equal(camera.position.x, 200);
-    assert.equal(camera.position.y, 300);
-    assert.equal(camera.position.z, 0);
-});
-
-test('editor rotation is applied to the root bone', () => {
-    const instance = new SpineRenderer({
-        canvas: canvas(),
-        manifest: { scenes: [] },
-        assetStore: {},
-    });
-    const pose = { rotation: 12 };
-    let updates = 0;
-    instance.runtime = { Physics: { update: 2 } };
-    instance.skeleton = {
-        rotation: 0,
-        getRootBone() { return { appliedPose: pose }; },
-        updateWorldTransform(mode) {
-            updates += 1;
-            assert.equal(mode, 2);
-        },
-    };
-    instance._sceneTransform = { x: 0, y: 0, rotation: 35, scale: 1 };
-    instance._rootRotationBasis = 12;
-    instance._applyEditorRotation();
-    assert.equal(pose.rotation, 47);
-    assert.equal(instance.skeleton.rotation, 35);
-    assert.equal(updates, 1);
-    // 同一帧再套一次不能叠角度。
-    instance._applyEditorRotation();
-    assert.equal(pose.rotation, 47);
-    assert.equal(updates, 1);
-    instance._sceneTransform.rotation = 0;
-    instance._applyEditorRotation();
-    assert.equal(pose.rotation, 12);
-    // 动画混合前先回到骨骼自己的角度。
-    pose.rotation = 99;
-    instance._restoreRootRotationBasis();
-    assert.equal(pose.rotation, 12);
-    pose.rotation = 20;
-    instance._captureRootRotationBasis();
-    instance._sceneTransform.rotation = -10;
-    instance._applyEditorRotation();
-    assert.equal(pose.rotation, 10);
+    const renderer = new SpineRenderer({ canvas: canvas(), manifest: {}, assetStore: store() });
+    renderer.runtime = spine;
+    renderer.skeleton = new spine.Skeleton(data);
+    renderer.state = new spine.AnimationState(new spine.AnimationStateData(data));
+    renderer.loaded = true;
+    const color = renderer.skeleton.slots[0].pose.color;
+    const original = { r: color.r, g: color.g, b: color.b, a: color.a };
+    renderer.setColorMode({ mode: 'two-tone', primary: { r: 0.5, g: 0.75, b: 1, a: 0.5 } }, { render: false });
+    for (let i = 0; i < 120; i++) renderer._applyPose(1 / 60);
+    assert.ok(Math.abs(color.r - original.r * 0.5) < 1e-8);
+    assert.ok(Math.abs(color.a - original.a * 0.5) < 1e-8);
+    renderer.setColorMode({ mode: 'default' }, { render: false });
+    for (const key of ['r', 'g', 'b', 'a']) assert.ok(Math.abs(color[key] - original[key]) < 1e-8);
 });

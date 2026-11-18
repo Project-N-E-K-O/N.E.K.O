@@ -93,7 +93,7 @@ test('会话字段只认运行时真看得懂的值', () => {
     assert.deepEqual(session.packSceneIds, { idle_image: 'a.json#0' });
     assert.equal(library.normalizeSession({ packFormat: 'weird' }).packFormat, 'flat');
     assert.equal(library.normalizeSession({ packPriority: 'loud' }).packPriority, 'talking');
-    assert.deepEqual(library.normalizeSession(null).character, { skins: [], sliders: [], slots: [] });
+    assert.deepEqual(library.normalizeSession(null).character, { skins: [], slots: [] });
 });
 
 test('表演台的每状态设置活在节点图里，所以节点图必须跟着模板走', () => {

@@ -5,8 +5,8 @@
 
 1. **副本即唯一事实**：原件更新/删除/挪走都与这里无关；想更新就再导一次，
    同键原地覆盖（``save`` 永远是替换语义，没有合并）。
-2. **键即前端库条目键**（``包名::模型key::场景数::动画数``），可能含任意字符，
-   所以磁盘目录用的是键的 sha256，原名只回填在 meta.json 里供排查。
+2. 新包使用资源内容生成的 ``spine-<sha256>`` 作为库键和目录名；原文件名只作显示。
+   旧库键仍通过哈希定位原有副本，以便用户查看和删除，不批量重命名用户文件。
 3. **没有配额、没有过期清理**：占多少由调用方如实报告，删不删由用户决定；
    ``delete`` 是唯一释放入口。
 
@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 
@@ -35,23 +36,20 @@ TEXTURES_DIR = "textures"
 META_NAME = "meta.json"
 _KEY_HASH_ALGORITHM = "sha256"
 
-# 前端 ClientFileOverlayStore 只接受这些后缀；贴图是给渲染器用的，不是任意文件托管
-_ALLOWED_TEXTURE_SUFFIX = ".png"
-
-
 class EmoteTemplateStoreError(Exception):
     """副本存取失败。message 面向用户，可直接透传到接口响应。"""
 
 
 def dir_key_for(key: str) -> str:
-    """条目键 → 磁盘目录名。键里可以有 ``/``、``::``、任意 Unicode，直接当目录名
-    既不安全也不可移植，一律走 sha256。"""
+    """使用规范 Spine 内容标识作为目录名，旧格式库键保留原有哈希定位方式。"""
+    if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)):
+        return str(key)
     digest = hashlib.new(_KEY_HASH_ALGORITHM, str(key or "").encode("utf-8"))
     return digest.hexdigest()
 
 
 def normalize_texture_path(value: str) -> str:
-    """贴图相对路径：只允许仓库内部相对路径 + .png，挡掉绝对路径与 ``..``。"""
+    """限于副本内的 PNG，以及 StageImages 下的 GIF。"""
     raw = str(value or "").replace("\\", "/").strip()
     if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw) or "\x00" in raw:
         raise EmoteTemplateStoreError("贴图路径不合法")
@@ -59,7 +57,8 @@ def normalize_texture_path(value: str) -> str:
     if not parts or any(part == ".." for part in parts):
         raise EmoteTemplateStoreError("贴图路径不合法")
     path = "/".join(parts)
-    if not path.lower().endswith(_ALLOWED_TEXTURE_SUFFIX):
+    is_stage_gif = path.startswith("StageImages/") and PurePosixPath(path).suffix.lower() == ".gif"
+    if not path.lower().endswith(".png") and not is_stage_gif:
         raise EmoteTemplateStoreError("贴图只能是 PNG")
     return path
 
@@ -128,8 +127,6 @@ class EmoteTemplateArchiveStore:
             })
         return entries
 
-    def total_bytes(self) -> int:
-        return sum(entry["bytes"] for entry in self.list())
 
     def has(self, key: str) -> bool:
         entry_dir = self._entry_dir(key)
@@ -144,6 +141,8 @@ class EmoteTemplateArchiveStore:
 
     def archive_name(self, key: str) -> str:
         """当初那个 zip 的文件名；恢复时必须原样归还，库身份才不会分裂。"""
+        if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)):
+            return str(key) + ".zip"
         meta = self._read_meta(self._entry_dir(key))
         return str((meta or {}).get("archiveName") or "").strip() or "template.zip"
 
@@ -218,7 +217,8 @@ class EmoteTemplateArchiveStore:
                 "savedAt": int(time.time() * 1000),
                 "archiveBytes": len(archive),
                 "textureCount": len(cleaned),
-                "archiveName": str(filename or "").strip()[:200],
+                "archiveName": (str(key) + ".zip") if re.fullmatch(r"spine-[0-9a-f]{64}", str(key)) else str(filename or "").strip()[:200],
+                "sourceName": str(filename or "").strip()[:200],
             }
             (staging / META_NAME).write_text(
                 json.dumps(meta, ensure_ascii=False), encoding="utf-8"
@@ -261,7 +261,15 @@ class EmoteTemplateArchiveStore:
         for relative, blob in cleaned:
             target = self._safe_child(textures_dir, relative)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(blob)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(blob)
+                os.replace(temporary, target)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
         return {"key": str(key), "textures": self.texture_paths(key)}
 
     def remove_texture(self, key: str, relative: str) -> None:

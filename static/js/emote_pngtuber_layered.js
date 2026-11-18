@@ -36,7 +36,8 @@
     // pngtuber-core.js:16 — 帧进度 = floor(秒 * animation_speed * 4)
     const FRAME_SPEED_MULTIPLIER = 4;
     const MAX_STATES = 64;
-    const SHEET_MAX_EDGE = 4096;   // 超宽雪碧图会在解码端丢精度
+    const SHEET_MAX_EDGE = 4096; // Rows wrap at this width.
+    const SHEET_MAX_HEIGHT = 8192;
     const LAYER_DIR = 'layers';
 
     const PngtuberLayeredError = class extends Error {
@@ -87,10 +88,10 @@
             const frameH = positiveInt(state.height, frameHeight);
             const sheetWidth = positiveInt(state.sheetWidth, frameW * frames);
             const sheetHeight = positiveInt(state.sheetHeight, frameH);
-            if (sheetWidth > SHEET_MAX_EDGE || sheetHeight > SHEET_MAX_EDGE) {
+            if (sheetWidth > SHEET_MAX_EDGE || sheetHeight > SHEET_MAX_HEIGHT) {
                 // 与其悄悄截断成错位的图，不如报错：调用方可以改成纵向分块或多层。
                 throw new PngtuberLayeredError(
-                    `状态 ${state.stateKey} 的雪碧图 ${sheetWidth}x${sheetHeight} 超过 ${SHEET_MAX_EDGE}px 上限`,
+                    `状态 ${state.stateKey} 的雪碧图 ${sheetWidth}x${sheetHeight} 超过 ${SHEET_MAX_EDGE}x${SHEET_MAX_HEIGHT}px 上限`,
                     'sheet_too_large',
                     { stateKey: state.stateKey, sheetWidth, sheetHeight },
                 );
@@ -98,7 +99,8 @@
             if (!state.pngBytes || !state.pngBytes.length) {
                 throw new PngtuberLayeredError(`状态 ${state.stateKey} 缺少贴图数据`, 'missing_sheet');
             }
-            const fps = positiveInt(state.fps, 12);
+            const sampledFps = Number(state.fps);
+            const fps = Number.isFinite(sampledFps) && sampledFps > 0 ? sampledFps : 12;
             const path = `${LAYER_DIR}/${index}-${state.stateKey}.png`;
             // 网格从"这张表实际有多大"推出来，而不是采信调用方报的数字：超过
             // 4096px 的表会被合成方折成多行，运行时按 sx=(frame%hframes)*fw、
@@ -123,7 +125,7 @@
                 image_width: sheetWidth,
                 image_height: sheetHeight,
                 // fps 换算见文件头注释第 2 点
-                animation_speed: Number((fps / FRAME_SPEED_MULTIPLIER).toFixed(4)),
+                animation_speed: fps / FRAME_SPEED_MULTIPLIER,
                 x: Number.isFinite(Number(state.x)) ? Number(state.x) : 0,
                 y: Number.isFinite(Number(state.y)) ? Number(state.y) : 0,
                 // 分层绘制在"自己那个位置"读 layerState.scale / rotation
@@ -137,7 +139,7 @@
                 should_blink: false,
             };
             // 位置数组：非本店的位置显式不可见（见文件头注释第 1 点）
-            const layerStates = states.map((other, position) => (
+            const layerStates = states.map((_, position) => (
                 position === index ? { ...own } : {
                     state_index: position,
                     frame: 0,

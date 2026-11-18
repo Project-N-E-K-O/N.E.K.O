@@ -6,23 +6,16 @@
 (function () {
     'use strict';
 
-    // The helper is loaded as a small standalone UMD module so Node contract
-    // tests and the browser preview share the same EmoteLab enum semantics.
-    const sceneTextCompat = typeof window !== 'undefined'
-        ? window.NekoEmoteSceneText
-        : null;
-
     const CANVAS_SIZE = 1024;
-    // These defaults mirror the EmoteLab export profile found in the real
-    // YUI package: 240x240, 20 fps, 128 palette colours, and a 1 MB budget.
-    // The source Spine canvas remains 1024x1024; only the animated export is
-    // downsampled to the interchange profile.
+    // Default GIF output policy; source skeleton coordinates are preserved.
     const GIF_EXPORT_FPS = 20;
     const GIF_EXPORT_WIDTH = 240;
     const GIF_EXPORT_COLORS = 128;
     const GIF_EXPORT_MAX_BYTES = 1000000;
     const GIF_EXPORT_MAX_FRAMES = 120;
     const ICON_ROOT = '/static/icons/';
+    const PREVIEW_ZOOM_MIN = 0.75;
+    const PREVIEW_ZOOM_MAX = 4;
 
     const state = {
         inspectorTab: 'parts',
@@ -31,7 +24,7 @@
         colorMode: 'default',
         adjustments: { x: 0, y: 0, rotation: 0, scale: 100 },
         adjustOverwrite: true,
-        // 导出设置刻意放在 state 里但不进 cloneState()，所以不进撤销栈 ——
+        // 导出设置刻意放在 state 里但不进撤销栈 ——
         // Ctrl+Z 不该改到你的输出尺寸。它们单独持久化到 neko-emote-maker-export。
         exportFormat: 'png',
         exportTransparent: true,
@@ -54,24 +47,22 @@
         nodeGraph: null,
         // 形象包的编辑层级：基础只填一个待机场景，进阶交给节点图。
         packMode: 'basic',
-        groupPanelOpen: true,
+        groupPanelOpen: false,
         // 底部「批量导出」那颗按钮的气泡开合：只是当前浏览状态，不存盘
         groupPickerOpen: false,
         zoom: 1,
+        previewPan: { x: 0, y: 0 },
         assetQuery: '',
         animationId: 'idle',
         animationProgress: 0,
         animationSpeed: 1,
         animationPlaying: false,
         selectedSceneId: '',
-        selectedSceneListId: '',
         sceneListFilter: '',
         groupId: '',
         groups: [],
         shots: [],
         templateSkins: [],
-        templateSliders: [],
-        templateSliderDefaults: [],
         templateSlots: [],
         templateSlotDefaults: [],
         templateSlotGroup: ''
@@ -82,7 +73,6 @@
     // are never serialized into localStorage.
     let templatePackage = null;
     let templateAssetStore = null;
-    let textureCacheFiles = [];
     // 上次的导入方式，决定"重新打开"该弹哪个选择器。
     let lastImportKind = 'file';
     const groupLibrary = window.NekoEmoteGroupLibrary;
@@ -103,6 +93,7 @@
 
     const history = [];
     const future = [];
+    let historyBusy = false;
     let toastTimer = null;
     let spineRenderer = null;
     let spineRendererGeneration = 0;
@@ -111,25 +102,29 @@
 
     const $ = (selector) => document.querySelector(selector);
     const canvas = $('#emote-canvas');
-    const spineCanvas = $('#emote-spine-canvas');
-    const outlineCanvas = $('#emote-outline-canvas');
-    const textBehindCanvas = $('#emote-text-behind-canvas');
-    const textFrontCanvas = $('#emote-text-front-canvas');
+    let spineCanvas = $('#emote-spine-canvas');
+    const wardrobePlacements = $('#wardrobe-placements');
     const canvasFrame = $('#canvas-frame');
     const canvasStage = $('.canvas-stage');
     const assetGrid = $('#asset-grid');
     const assetSectionTitle = $('#asset-section-title');
     const animationDock = document.querySelector('.animation-dock');
+    const colorPanel = $('#inspector-panel-colors');
+    const colorBackToTop = $('#color-back-to-top');
     const templateSlotControls = $('#template-slot-controls');
+    const changedPartColors = $('#changed-part-colors');
+    const changedPartColorList = $('#changed-part-color-list');
+    const templateAttachmentSearch = $('#template-attachment-search');
+    const templateAttachmentControls = $('#template-attachment-controls');
+    const templateAttachmentEmpty = $('#template-attachment-empty');
     const zoomValue = $('#zoom-value');
     const toast = $('#emote-toast');
     const animationList = $('#animation-list');
     const animationProgress = $('#animation-progress');
     const animationTime = $('#animation-time');
     const animationSpeed = $('#animation-speed');
-    const templateFileInput = $('#emotelab-template-file');
-    const templateDirectoryInput = $('#emotelab-template-directory');
-    const templateDirectoryButton = $('#select-emotelab-template-directory-btn');
+    const templateFileInput = $('#template-archive-file');
+    const templateArchiveButton = $('#select-template-archive-btn');
     const templateImportStatus = $('#template-import-status');
     const templateRuntimeBadge = $('#template-runtime-badge');
     const templateCanvasStatus = $('#template-canvas-status');
@@ -138,15 +133,19 @@
     const inspectorEmptyState = $('#inspector-empty-state');
     const templateSceneListSelect = $('#template-scene-list-select');
     const templateSkinControls = $('#template-skin-controls');
-    const templateSliderControls = $('#template-slider-controls');
-    const assetSearchInput = $('#asset-search-input');
 
     const fallbackText = {
         'emoteMaker.title': '表情包制作',
         'emoteMaker.assetLibrary': '素材库',
         'emoteMaker.noTemplates': '模板暂未添加',
-        'emoteMaker.emptyLibraryHint': "模板库还是空的，导入一个试试",
-        'emoteMaker.selectTemplateFolder': '选择模板目录',
+        'emoteMaker.selectTemplateHint': '请选择一个模板',
+        'emoteMaker.selectTemplateArchive': "导入 Spine ZIP",
+        'emoteMaker.spineZipRequired': "请选择包含 Spine 骨架、图集和全部引用 PNG 贴图的 ZIP。",
+        'emoteMaker.spineSkin': "皮肤",
+        'emoteMaker.partFollowAnimation': '跟随动作',
+        'common.on': '开',
+        'common.off': '关',
+        'emoteMaker.spineChooseResource': "发现多组资源，请选择要导入的模型或图集。",
         'emoteMaker.importingTemplate': '正在读取模板…',
         'emoteMaker.importFailed': '模板添加失败',
         'emoteMaker.importFailedKeepCurrent': '模板读取失败，当前模板未更改。',
@@ -156,8 +155,6 @@
         'emoteMaker.templateCompatibilityWarning': "这个模板有些数据和当前版本对不上，能用的设置都保留了。",
         'emoteMaker.templatePendingPreview': '待预览',
         'emoteMaker.renameTemplate': '重命名模板',
-        'emoteMaker.templateFolderIncomplete': "这个目录缺东西，请选完整的模板目录。",
-        'emoteMaker.templateFolderCancelled': '未选择模板目录',
         'emoteMaker.templateNoRuntime': '预览暂不可用',
         'emoteMaker.templateLibrary': "已有模板",
         'emoteMaker.removeTemplateConfirm': "删除「{{name}}」？",
@@ -165,11 +162,86 @@
         'emoteMaker.confirmCancel': "取消",
         'emoteMaker.confirmDelete': "删除",
         'emoteMaker.archiveSaveFailed': "模板没存进本地库，下次打开可能要重新选文件",
+        'emoteMaker.archiveDeleteFailed': '本地模板副本删除失败，请重试',
+        'emoteMaker.builtinTemplate': '内置',
+        'emoteMaker.wardrobeGenerate': '猫猫辅助生成',
+        'emoteMaker.wardrobeModel': '生图模型',
+        'emoteMaker.wardrobeUnconfigured': '请在自定义 API 中配置生图模型和密钥。',
+        'emoteMaker.wardrobeVisionUnavailable': '生成挂件需要配置支持识图的视觉模型。',
+        'emoteMaker.wardrobeVisionFailed': '参考图识别失败，请检查视觉模型设置或稍后重试。',
+        'emoteMaker.wardrobeWorking': '正在生成挂件…',
+        'emoteMaker.wardrobeSaving': '正在更新模板…',
+        'emoteMaker.wardrobeInvalidImage': '请选择不超过 8 MB、长边不超过 8192 像素的 PNG、JPEG 或 WebP 单张图片。',
+        'emoteMaker.wardrobeFailed': '操作失败，请检查生图配置或稍后重试。',
+        'emoteMaker.wardrobeBusy': '已有挂件正在生成，请稍后再试。',
+        'emoteMaker.wardrobeSpriteGenerate': '生成挂件',
+        'emoteMaker.wardrobeSpriteSend': '配置的视觉和生图 API 仅接收框内的原图局部。生成的透明底挂件会自动存入素材库。',
+        'emoteMaker.wardrobeChooseReference': '选择参考图',
+        'emoteMaker.wardrobePromptInvalid': '补充提示词仅适用于单个选框，最多 240 个字符。',
+        'emoteMaker.wardrobeReferenceNavigator': '参考图导航',
+        'emoteMaker.wardrobeCropCount': '已选区域',
+        'emoteMaker.wardrobeCropPadded': '选框超出比例限制，生成时会自动补充空白区域。',
+        'emoteMaker.wardrobeCropLowResolution': '选框内像素较少，生成时可能丢失细节。可以换一张更清晰的参考图。',
+        'emoteMaker.wardrobeSpriteCrop': '在参考图上框选部件',
+        'emoteMaker.wardrobeCropBox': '裁切框',
+        'emoteMaker.wardrobeCropDelete': '删除选框',
+        'emoteMaker.wardrobeClearMarks': '清空选框',
+        'emoteMaker.wardrobeSpriteAdd': '添加所选部件',
+        'emoteMaker.wardrobeSpriteOpen': '打开挂件',
+        'emoteMaker.wardrobeLibrarySave': '存入素材库',
+        'emoteMaker.wardrobeLibrarySaved': '已存入素材库',
+        'emoteMaker.wardrobeLibrarySaveFailed': '无法存入素材库。可在当前预览中重试。',
+        'emoteMaker.wardrobeLibraryImport': '导入图片',
+        'emoteMaker.wardrobeLibraryEmpty': '导入图片或生成挂件后，可在这里取用。',
+        'emoteMaker.wardrobeLibraryInvalidImage': '请选择长边不超过 2048 像素、大小不超过 32 MB 的静态 PNG、JPG 或 WebP 图片。',
+        'emoteMaker.wardrobeLibraryConfirmDelete': '从素材库删除这个挂件素材？',
+        'emoteMaker.wardrobeLibraryFailed': '素材库操作失败，请重试。',
+        'emoteMaker.wardrobeSpriteOpenFailed': '无法打开挂件。请选择长边不超过 2048 像素、大小不超过 32 MB 的 PNG。',
+        'emoteMaker.wardrobeSpriteAdded': '已添加。关闭窗口后可在画布上拖动和缩放部件。',
+        'emoteMaker.wardrobePlacementTip': '可右键挂件设置跟随骨骼以及调整图层',
+        'emoteMaker.wardrobeSpriteSize': '等比缩放部件',
+        'emoteMaker.wardrobeSpriteRotate': '旋转部件',
+        'emoteMaker.wardrobeSpriteRemove': '移除部件',
+        'emoteMaker.wardrobeSpriteMove': '拖动部件，右键设置骨骼',
+        'emoteMaker.wardrobeSpriteBinding': '跟随骨骼',
+        'emoteMaker.wardrobeLayerUp': '上移一层',
+        'emoteMaker.wardrobeLayerDown': '下移一层',
+        'emoteMaker.wardrobeLayer': '图层',
+        'emoteMaker.wardrobeLayerFront': '角色最前面',
+        'emoteMaker.wardrobeLayerBack': '角色最后面',
+        'emoteMaker.wardrobeLayerAbove': '在 {{name}} 前面',
+        'emoteMaker.wardrobeSpriteAutoBinding': '自动匹配',
+        'emoteMaker.wardrobeSpriteFreeBinding': '固定在画布',
+        'emoteMaker.wardrobeSpriteNearbyBones': '落点候选',
+        'emoteMaker.wardrobeSpriteAllBones': '全部骨骼',
+        'emoteMaker.wardrobeBoneHead': '头部',
+        'emoteMaker.wardrobeBoneChest': '胸部',
+        'emoteMaker.wardrobeBoneHips': '腰胯',
+        'emoteMaker.wardrobeBoneUpperArm': '上臂',
+        'emoteMaker.wardrobeBoneForearm': '前臂',
+        'emoteMaker.wardrobeBoneHand': '手部',
+        'emoteMaker.wardrobeBoneThigh': '大腿',
+        'emoteMaker.wardrobeBoneShin': '小腿',
+        'emoteMaker.wardrobeSpriteUnsupported': '当前生图模型不支持使用参考图，请在 API 设置中更换模型。',
+        'emoteMaker.wardrobeSpriteResultFailed': '生成结果缺少可用的透明背景。',
+        'emoteMaker.wardrobeSpriteEmpty': '选框内没有可添加的部件。',
+        'emoteMaker.wardrobeSpriteSaveFailed': '保存部件改动失败，请重试。',
+        'emoteMaker.wardrobeMarkImageFailed': '未能加载图片，请检查参考图或重新选择部件。',
+        'emoteMaker.wardrobeInvalidMarks': '裁切框无效，请检查范围和数量。',
+        'emoteMaker.wardrobeProviderAccessDenied': '生图服务拒绝了请求，请检查密钥和模型权限。',
+        'emoteMaker.wardrobeProviderLimited': '生图服务触发了限流，请稍后重试。',
+        'emoteMaker.wardrobeProviderQuota': '生图账号额度已用完或账户欠费，请检查服务商账号。',
+        'emoteMaker.wardrobeProviderTimeout': '生图请求超时，请稍后重试。',
+        'emoteMaker.wardrobeProviderUnavailable': '生图服务暂时不可用，请稍后重试。',
+        'emoteMaker.wardrobeProviderRejected': '生图服务未接受这次生成请求，请检查参考图和所选模型。',
+        'emoteMaker.wardrobeProviderResponse': '生图服务返回的结果无法解析，请重试或更换模型。',
+        'emoteMaker.wardrobeDownloadFailed': '已收到生成结果，但下载贴图失败，请稍后重试。',
+        'emoteMaker.wardrobeLocalConnectionLost': '与本地服务的连接中断，请确认服务正在运行后重试。',
         'emoteMaker.templateLibraryEmpty': "目前只有这一个模板，再导入的会并排显示在这里。",
         'emoteMaker.templateInUse': "使用中",
         'emoteMaker.removeTemplate': "移除",
         'emoteMaker.templateSwitched': "已切换模板",
-        'emoteMaker.templateImportHint': '选择本地的模板目录，系统会自动识别里面的素材。',
+        'emoteMaker.templateImportHint': "请选择包含 Spine 骨架、图集和全部引用 PNG 贴图的 ZIP。",
         'emoteMaker.previewTitle': '表情包制作',
         'emoteMaker.searchParts': '搜索模板',
         'emoteMaker.addToGroup': "加入本组",
@@ -210,6 +282,7 @@
         'emoteMaker.groupContextAdd': "加入当前组",
         'emoteMaker.groupContextRemove': "移出当前组",
         'emoteMaker.groupContextHint': "右键中间的动作列表，就能加入当前组。",
+        'emoteMaker.batchExportTip': '右键动作板块中的内容可快速多选和添加/移除当前组',
         'emoteMaker.newGroupFromCurrent': "按当前配置创建组",
         'emoteMaker.newGroupHelp': "新建一个组，记下当前的大小、旋转和换装。之后加进组里的动作，预览和导出都用这一套。",
         'emoteMaker.groupNonePicked': "还没选组",
@@ -221,22 +294,28 @@
         'emoteMaker.selectNone': "取消全选",
         'emoteMaker.resetView': '重置视图',
         'emoteMaker.viewportHint': '滚轮缩放 · Alt+滚轮旋转 · 中键平移',
-        'emoteMaker.partsTab': '部件',
+        'emoteMaker.partsTab': '换装',
         'emoteMaker.adjustTab': '调整',
         'emoteMaker.colorsTab': '颜色',
         'emoteMaker.slotGroup': '色组',
-        'emoteMaker.exportTab': '导出设置',
+        'emoteMaker.exportTab': '导出',
         'emoteMaker.editorPanels': '编辑器面板',
         'emoteMaker.animationProgressLabel': "动作进度",
-        'emoteMaker.chooseParts': '选择模板',
-        'emoteMaker.adjustments': '模板调整',
+        'emoteMaker.chooseParts': '选择部件',
+        'emoteMaker.adjustments': '整体调整',
         'emoteMaker.overwrite': '覆盖默认值',
         'emoteMaker.positionX': '位置 X',
         'emoteMaker.positionY': '位置 Y',
         'emoteMaker.rotation': '旋转',
         'emoteMaker.scale': '缩放',
-        'emoteMaker.colorMode': '着色模式',
-        'emoteMaker.defaultColor': '原色',
+        'emoteMaker.colorSurface': '饱和度和明度',
+        'emoteMaker.colorHue': '色相',
+        'emoteMaker.colorHex': '十六进制颜色',
+        'emoteMaker.colorRecent': '最近使用',
+        'emoteMaker.colorChangedParts': '已改色部件',
+        'emoteMaker.colorBackToTop': '返回颜色面板顶部',
+        'emoteMaker.colorNoVisibleParts': '当前没有可调色的可见部件。',
+        'emoteMaker.partColor': '颜色',
         'emoteMaker.tintBlack': '阴影颜色',
         'emoteMaker.speed': '速度',
         'emoteMaker.exportFormat': '格式',
@@ -280,7 +359,7 @@
         'emoteMaker.packLayeredUnavailable': "分层打包功能没加载出来，刷新再试。",
         'emoteMaker.packModeAria': '编辑方式',
         'emoteMaker.packModeBasic': '基础',
-        'emoteMaker.packBasicDragHint': '长按中间的动作，拖到下面某一行，就能快速应用。',
+        'emoteMaker.packDragTip': '长按动作板块中内容可拖动到对应位置快速应用',
         'emoteMaker.packModeGraph': "进阶",
         'emoteMaker.stageOpen': "打开进阶设置",
         'emoteMaker.stageTitle': "进阶设置",
@@ -303,11 +382,12 @@
         'emoteMaker.stageUserImages': "图片库",
         'emoteMaker.stageImportImages': "导入图片",
         'emoteMaker.stageNoUserImages': "还没有导入图片，点「导入图片」加几张",
-        'emoteMaker.stageImagesPngOnly': "只支持 PNG 图片",
+        'emoteMaker.stageImagesSupportedFormats': "只支持 PNG 和 GIF 图片",
+        'emoteMaker.stageImagesInvalidGif': "无法读取 GIF。请选择长边不超过 2048 像素、最多 240 帧且不超过 32 MB 的 GIF。",
         'emoteMaker.stageImagesImported': "已导入 {{count}} 张图片",
         'emoteMaker.stageImagesSaveFailed': "图片没存进模板副本：下次打开可能要重新导入",
+        'emoteMaker.stageImageDeleteFailed': '删除图片失败，请重试。',
         'emoteMaker.stageImagesMissing': "{{count}} 个状态绑的图片不见了，已跳过",
-        'emoteMaker.nodeSourceImage': "用户图片",
         'emoteMaker.stageSearch': "搜索动作",
         'emoteMaker.packPlanSkipped': "已跳过未设置的槽位",
         'emoteMaker.packPriorityLabel': "状态优先级",
@@ -319,46 +399,15 @@
         'emoteMaker.graphCollapsedNotice': "同一状态设了两遍的，已保留你选的那个",
         'emoteMaker.stageUnavailable': "进阶设置没加载出来，刷新再试。",
         'emoteMaker.packNeedsTemplate': "先导入一个模板。",
-        'emoteMaker.nodeCat.source': '来源',
-        'emoteMaker.nodeCat.modify': '加工',
-        'emoteMaker.nodeCat.output': '输出',
-        'emoteMaker.nodeSourceDefault': '默认外观',
-        'emoteMaker.nodeSourceScene': "指定动作",
-        'emoteMaker.nodeModSkin': '皮肤',
-        'emoteMaker.nodeModSlider': '滑杆',
-        'emoteMaker.nodeModSlotTint': '色组着色',
-        'emoteMaker.nodeModText': '文字',
-        'emoteMaker.nodeModTransform': '变换',
-        'emoteMaker.nodeOutputState': '状态输出',
-        'emoteMaker.nodeParam.sceneId': "动作",
-        'emoteMaker.nodeParam.seconds': '时长',
-        'emoteMaker.nodeParam.stateKey': '状态',
-        'emoteMaker.nodeParam.groups': '皮肤',
-        'emoteMaker.nodeParam.name': '名称',
-        'emoteMaker.nodeParam.value': '数值',
-        'emoteMaker.nodeParam.tag': '标签',
-        'emoteMaker.nodeParam.color': '颜色',
-        'emoteMaker.nodeParam.secondary': '阴影',
-        'emoteMaker.nodeParam.content': '内容',
-        'emoteMaker.nodeParam.side': '图层',
-        'emoteMaker.nodeParam.size': '字号',
-        'emoteMaker.nodeParam.x': '偏移 X',
-        'emoteMaker.nodeParam.y': '偏移 Y',
-        'emoteMaker.nodeParam.scale': '缩放',
-        'emoteMaker.nodeParam.mirror': '镜像',
         'emoteMaker.nodeCycleWarning': '节点之间存在环，无法求值。',
         'emoteMaker.nodeNoOutput': "还没给任何状态挑动作，先设置再导出。",
         'emoteMaker.undo': '撤销',
         'emoteMaker.redo': '重做',
         'emoteMaker.fitWindow': '适应窗口',
         'emoteMaker.partSettings': '模板设置',
-        'emoteMaker.exportPng': '导出 PNG',
         'emoteMaker.transparentBackground': '透明背景',
         'emoteMaker.exportSuccess': 'PNG 已导出',
-        'emoteMaker.reset': '重置',
-        'emoteMaker.layerNames.background': '背景',
-        'emoteMaker.layerNames.expression': '表情',
-        'emoteMaker.layerNames.accessory': '配饰'
+        'emoteMaker.reset': '重置'
     };
 
     function t(key) {
@@ -408,23 +457,7 @@
         return playableMemo.value;
     }
 
-    function getVisibleImportedAnimations() {
-        const scenes = getImportedScenes();
-        const sceneAnimationIds = new Set(
-            scenes
-                .map((scene) => String(scene?.animation?.id || ''))
-                .filter(Boolean),
-        );
-        return getImportedAnimations().filter((item) => {
-            if (!item?.runtimeOnly) return true;
-            const id = String(item.id || '');
-            // Spine also exposes internal CHAR/*, slot and constraint tracks.
-            // They are useful to the runtime but are not user-facing actions.
-            // Keep runtime-only tracks when a scene references them, plus the
-            // conventional public ANIM/ namespace for incomplete catalogs.
-            return sceneAnimationIds.has(id) || /^(ANIM|EMOTE|MOTION|ACTION)(\/|$)/i.test(id);
-        });
-    }
+    function getVisibleImportedAnimations() { return getImportedAnimations(); }
 
     function getCatalogLabel(item) {
         if (!item) return '';
@@ -446,9 +479,12 @@
     function setCanvasMode(nativePreview) {
         if (canvas) canvas.hidden = Boolean(nativePreview);
         if (spineCanvas) spineCanvas.hidden = !nativePreview;
-        if (outlineCanvas) outlineCanvas.hidden = !nativePreview;
-        if (textBehindCanvas) textBehindCanvas.hidden = !nativePreview;
-        if (textFrontCanvas) textFrontCanvas.hidden = !nativePreview;
+        wardrobePlacements.hidden = !nativePreview || templatePackage?.source?.builtIn !== true;
+        if (wardrobePlacements.hidden) {
+            wardrobeArtworkBehind.hidden = true;
+            wardrobeSpriteMenu.hidden = true;
+            canvasFrame.classList.remove('wardrobe-solid-background');
+        }
         if (templateCanvasStatus) templateCanvasStatus.hidden = Boolean(nativePreview);
     }
 
@@ -491,31 +527,16 @@
         templateAssetStore = null;
     }
 
-    function buildTemplateAssetStore(zipStore, textureFiles = textureCacheFiles) {
-        if (!zipStore) return null;
-        const Overlay = window.NekoEmoteClientZipStore?.ClientFileOverlayStore;
-        if (!textureFiles.length || typeof Overlay !== 'function') return zipStore;
-        return new Overlay(zipStore, textureFiles);
-    }
-
-    function normalizeTextureCacheFiles(files) {
-        return Array.from(files || []).filter((file) => {
-            const path = String(file?.webkitRelativePath || file?.name || '').toLowerCase();
-            return path.endsWith('.png');
-        });
-    }
     function importFailureMessage(error) {
-        if (isIncompleteTemplateError(error)) {
-            return t('emoteMaker.templateFolderIncomplete');
-        }
+        if (error?.userMessage) return error.userMessage;
         return t('emoteMaker.importFailedKeepCurrent');
     }
 
-    function reportImportFailure(error, options = {}) {
+    function reportImportFailure(error) {
         const message = importFailureMessage(error);
         setTemplateImportStatus(
             message,
-            isIncompleteTemplateError(error) ? 'warning' : 'error',
+            'error',
         );
         showToast(message);
     }
@@ -551,30 +572,16 @@
             : [];
     }
 
-    function getTemplateSliderValues() {
-        if (Array.isArray(state.templateSliders) && state.templateSliders.length) {
-            return state.templateSliders.map((item) => ({ ...item }));
-        }
-        return Array.isArray(templatePackage?.character?.sliders)
-            ? templatePackage.character.sliders.map((item) => ({ ...item }))
-            : [];
-    }
-
     function getTemplateSlotStyles() {
-        if (Array.isArray(state.templateSlots) && state.templateSlots.length) {
-            return state.templateSlots.map((item) => ({
-                ...item,
-                tintColor: item?.tintColor ? { ...item.tintColor } : null,
-                tintBlackColor: item?.tintBlackColor ? { ...item.tintBlackColor } : null,
-            }));
+        const styles = new Map((templatePackage?.character?.slots || []).map((item) => [item.name, item]));
+        for (const item of state.templateSlots || []) {
+            if (styles.has(item.name)) styles.set(item.name, item);
         }
-        return Array.isArray(templatePackage?.character?.slots)
-            ? templatePackage.character.slots.map((item) => ({
-                ...item,
-                tintColor: item?.tintColor ? { ...item.tintColor } : null,
-                tintBlackColor: item?.tintBlackColor ? { ...item.tintBlackColor } : null,
-            }))
-            : [];
+        return Array.from(styles.values(), (item) => ({
+            ...item,
+            tintColor: item.tintColor ? { ...item.tintColor } : null,
+            tintBlackColor: item.tintBlackColor ? { ...item.tintBlackColor } : null,
+        }));
     }
 
     function colorToHex(value, fallback = '#ffffff') {
@@ -612,14 +619,17 @@
         if (!hasSpineRenderer()) return false;
         try {
             const look = renderLook();
+            const slots = look ? (look.slots || []).map((item) => ({ ...item })) : getTemplateSlotStyles();
+            if (colorDraft && !capturingFrames) {
+                const slot = slots.find((item) => item.name === colorDraft.name);
+                if (slot) slot[colorDraft.field] = colorDraft.value;
+            }
             spineRenderer.setCharacterState(look ? {
                 skins: (look.skins || []).map((item) => ({ ...item })),
-                sliders: (look.sliders || []).map((item) => ({ ...item })),
-                slots: (look.slots || []).map((item) => ({ ...item })),
+                slots,
             } : {
                 skins: getTemplateSkinSelections(),
-                sliders: getTemplateSliderValues(),
-                slots: getTemplateSlotStyles(),
+                slots,
             }, { render });
             return true;
         } catch (_) {
@@ -748,6 +758,59 @@
         spineAnimationFrameHandle = window.requestAnimationFrame(spineAnimationTick);
     }
 
+    function populateSpineMetadata(pkg, renderer) {
+        const animations = renderer.animations();
+        const scenes = animations.map((animation, index) => ({
+            id: 'animation:' + animation.name, name: animation.name,
+            source: { sceneList: 'spine:animations', index },
+            animation: { id: animation.name, time: 0, speed: 1, paused: true },
+        }));
+        const skins = renderer.skinOptions().skin?.options || [];
+        const defaultSkin = skins.includes('default') ? 'default' : skins[0];
+        pkg.catalogs.animations = animations.map((item) => ({ id: item.name, displayName: item.name, labels: {}, duration: item.duration }));
+        pkg.catalogs.skinGroups = skins.length ? [{ id: 'skin', displayName: t('emoteMaker.spineSkin'), labels: {} }] : [];
+        pkg.character.skins = defaultSkin ? [{ group: 'skin', value: defaultSkin }] : [];
+        pkg.scenes = scenes;
+        pkg.sceneLists = scenes.length ? [{ id: 'spine:animations', name: t('emoteMaker.segmentAnimations'), scenes }] : [];
+        Object.assign(pkg.counts, { animations: animations.length, scenes: scenes.length, sceneLists: Number(!!scenes.length),
+            skinGroups: Number(!!skins.length), activeSkins: Number(!!skins.length) });
+        Object.assign(pkg.capabilities, { spineRender: true, staticPngExport: true, animatedExport: !!animations.length,
+            characterSkinSelection: !!skins.length });
+    }
+
+    function chooseSpineResource(payload) {
+        return new Promise((resolve) => {
+            const dialog = document.createElement('div');
+            dialog.className = 'emote-confirm';
+            dialog.setAttribute('role', 'dialog');
+            dialog.setAttribute('aria-modal', 'true');
+            const card = document.createElement('div');
+            card.className = 'emote-confirm-card';
+            const text = document.createElement('p');
+            text.textContent = t('emoteMaker.spineChooseResource');
+            const select = document.createElement('select');
+            select.setAttribute('aria-label', text.textContent);
+            select.append(new Option(t('emoteMaker.spineChooseResource'), ''),
+                ...payload.candidates.map((item) => new Option(item.path, item.path)));
+            const actions = document.createElement('div');
+            actions.className = 'emote-confirm-actions';
+            const cancel = document.createElement('button');
+            cancel.className = 'emote-confirm-cancel';
+            cancel.textContent = t('emoteMaker.confirmCancel');
+            const ok = document.createElement('button');
+            ok.className = 'emote-confirm-ok';
+            ok.textContent = t('common.confirm');
+            ok.disabled = true;
+            const finish = (value) => { document.removeEventListener('keydown', onKey, true); dialog.remove(); resolve(value); };
+            const onKey = (event) => { if (event.key === 'Escape') { event.stopPropagation(); finish(null); } };
+            select.addEventListener('change', () => { ok.disabled = !select.value; });
+            ok.addEventListener('click', () => { if (select.value) finish(select.value); });
+            cancel.addEventListener('click', () => finish(null));
+            actions.append(cancel, ok); card.append(text, select, actions); dialog.append(card);
+            document.body.append(dialog); document.addEventListener('keydown', onKey, true); cancel.focus();
+        });
+    }
+
     async function activateNativeSpineRenderer() {
         const generation = ++spineRendererGeneration;
         disposeSpineRenderer();
@@ -766,35 +829,29 @@
                 loop: true,
                 renderOnLoad: false,
                 fitPadding: 1.05,
+                imageLayers: wardrobeSpineLayers,
+                matchTintPalette: true,
+                highlightedPart: colorPartHighlight,
             });
             if (generation !== spineRendererGeneration || !templatePackage) {
                 renderer.dispose();
                 return;
             }
             spineRenderer = renderer;
+            populateSpineMetadata(templatePackage, renderer);
             templatePackage.capabilities = {
                 ...(templatePackage.capabilities || {}),
                 spineRender: true,
-                // Current-frame PNG is verified separately from animated
-                // export.  Keep the broad legacy flag false so callers do not
-                // mistake this for full EmoteLab export parity (notably GIF).
+                // Static PNG and animated export have separate capability flags.
                 nativeExport: false,
                 staticPngExport: true,
-                animatedExport: Boolean(window.NekoEmoteGifEncoder?.toBlob),
-                sceneOutline: true,
-                sceneText: true,
-                sceneOverlay: 'canvas2d-compatible',
+                animatedExport: getImportedAnimations().length > 0 && Boolean(window.NekoEmoteGifEncoder?.toBlob),
             };
             syncNativeScene(getSelectedScene(), { autoplay: state.animationPlaying });
             const warnings = [
                 ...(Array.isArray(templatePackage.warnings) ? templatePackage.warnings : []),
                 ...(Array.isArray(renderer.status().warnings) ? renderer.status().warnings : []),
-            ].filter((warning) => {
-                if (!warning || String(warning).includes('已忽略')) return false;
-                if (templatePackage.character?.customTextureCache?.provided
-                    && String(warning).includes('外部贴图')) return false;
-                return true;
-            });
+            ].filter((warning) => warning && !String(warning).includes('已忽略'));
             setTemplateImportStatus(
                 warnings.length ? presentTemplateWarning(warnings[0]) : '',
                 warnings.length ? 'warning' : 'success',
@@ -820,7 +877,6 @@
     function selectImportedScene(scene) {
         if (!scene) return;
         state.selectedSceneId = scene.id;
-        state.selectedSceneListId = scene.source?.sceneList || '';
         state.animationId = scene.animation?.id || '';
         state.animationProgress = 0;
         state.animationPlaying = false;
@@ -836,48 +892,27 @@
         persistTemplateToLibrary();
     }
 
-    function cloneState() {
-        return JSON.parse(JSON.stringify({
-            inspectorTab: state.inspectorTab,
-            colors: state.colors,
-            secondaryColor: state.secondaryColor,
-            colorMode: state.colorMode,
-            adjustments: state.adjustments,
-            adjustOverwrite: state.adjustOverwrite,
-            animationId: state.animationId,
-            animationProgress: state.animationProgress,
-            animationSpeed: state.animationSpeed,
-            selectedSceneId: state.selectedSceneId,
-            selectedSceneListId: state.selectedSceneListId,
-            sceneListFilter: state.sceneListFilter,
-            templateSkins: state.templateSkins,
-            templateSliders: state.templateSliders,
-            templateSliderDefaults: state.templateSliderDefaults,
-            templateSlots: state.templateSlots,
-            templateSlotDefaults: state.templateSlotDefaults,
-            templateSlotGroup: state.templateSlotGroup
-        }));
-    }
-
     function restoreState(snapshot) {
         const hadPreview = Boolean(groupPreview);
         groupPreview = null;
-        Object.assign(state, JSON.parse(JSON.stringify(snapshot)));
+        Object.assign(state, structuredClone(snapshot));
+        forgetStageFrames();
         renderAll();
+        persistTemplateSession();
+        persistTemplateToLibrary();
+        void stateStageSession?.refresh();
         if (hadPreview) {
             const scene = getSelectedScene();
             if (scene) syncNativeScene(scene, { autoplay: false });
         }
     }
 
-    function recordChange(mutator) {
+    function recordChange(field, value) {
         const hadPreview = Boolean(groupPreview);
         groupPreview = null;
-        const before = cloneState();
-        mutator();
-        history.push(before);
-        future.length = 0;
-        if (history.length > 40) history.shift();
+        const before = structuredClone(state[field]);
+        state[field] = value;
+        rememberHistory(before, structuredClone(value), (next) => restoreState({ [field]: next }));
         renderAll();
         if (hadPreview) {
             const scene = getSelectedScene();
@@ -885,18 +920,52 @@
         }
     }
 
-    function undo() {
-        if (!history.length) return;
-        future.push(cloneState());
-        restoreState(history.pop());
+    function rememberHistory(before, after, apply) {
+        if (JSON.stringify(before) === JSON.stringify(after)) return;
+        history.push({ before, after, apply });
+        future.length = 0;
+        if (history.length > 40) history.shift();
         updateHistoryButtons();
     }
 
+    async function replayHistory(from, to, value) {
+        if (!from.length || historyBusy || wardrobeFileBusy || wardrobeGestureActive || packBusy || groupExportBusy
+                || (capturingFrames && !stageQueueRunning) || stateStageSession?.isEditing?.()) return;
+        const entry = from.at(-1);
+        const editableAreas = [$('.emote-maker-page'), stateStageSession?.element, $('#wardrobe-dialog')]
+            .filter((element) => element && !element.inert);
+        try {
+            const apply = () => from.at(-1) === entry ? entry.apply(entry[value]) : undefined;
+            const pending = stageQueueRunning
+                ? queueStageCapture(Symbol(), STAGE_CAPTURE_INTERACTIVE + 1, 'history', apply)
+                : apply();
+            if (pending) {
+                historyBusy = true;
+                for (const area of editableAreas) area.inert = true;
+                updateHistoryButtons();
+                await pending;
+            }
+            if (from.at(-1) === entry) {
+                from.pop();
+                to.push(entry);
+            }
+        } catch (_) {
+            showToast(t('emoteMaker.wardrobeSpriteSaveFailed'));
+        } finally {
+            if (historyBusy) {
+                historyBusy = false;
+                for (const area of editableAreas) area.inert = false;
+            }
+            updateHistoryButtons();
+        }
+    }
+
+    function undo() {
+        void replayHistory(history, future, 'before');
+    }
+
     function redo() {
-        if (!future.length) return;
-        history.push(cloneState());
-        restoreState(future.pop());
-        updateHistoryButtons();
+        void replayHistory(future, history, 'after');
     }
 
 
@@ -924,7 +993,9 @@
             }, { render: false });
             spineRenderer.setTransform(getNativeTransform(), { render: false });
             const transparent = state.exportTransparent !== false;
-            spineRenderer.setBackground(transparent ? [0, 0, 0, 0] : [0.96, 0.98, 1, 1], { render: false });
+            const layered = templatePackage?.source?.builtIn === true;
+            spineRenderer.setBackground(transparent || layered ? [0, 0, 0, 0] : [0.96, 0.98, 1, 1], { render: false });
+            canvasFrame.classList.toggle('wardrobe-solid-background', layered && !transparent);
             if (render) spineRenderer.render();
             if (render) renderNativeOverlays();
             return true;
@@ -939,6 +1010,7 @@
         const card = document.createElement('div');
         card.className = 'asset-card template-lib-card';
         card.dataset.templateKey = entry.key;
+        if (entry.builtIn) card.dataset.templateBuiltIn = 'true';
         const isCurrent = entry.key === currentTemplateKey();
         if (isCurrent) card.classList.add('is-selected');
 
@@ -975,13 +1047,15 @@
         // 双击改名就永远落不到卡片上（当场踩过）。视觉用 aria-disabled 走同一套样式，
         // 行为在 click 处理器里挡。
         open.setAttribute('aria-label', `${label.textContent}${isCurrent ? ` · ${t('emoteMaker.templateInUse')}` : ''}`);
-        open.disabled = packBusy;
+        const removing = pendingTemplateRemovals.has(entry.key);
+        open.disabled = packBusy || removing;
         if (isCurrent) open.setAttribute('aria-disabled', 'true');
 
         const removeButton = document.createElement('button');
         removeButton.type = 'button';
         removeButton.className = 'template-lib-remove';
         removeButton.dataset.templateKey = entry.key;
+        removeButton.disabled = packBusy || removing;
         removeButton.setAttribute('aria-label', `${t('emoteMaker.removeTemplate')} · ${label.textContent}`);
         removeButton.textContent = '×';
         removeButton.addEventListener('click', (event) => {
@@ -992,7 +1066,7 @@
         // 双击（整张卡都行，当前使用中的那条打开按钮是灰的也要能改名）= 就地改名；
         // 点在移除上不算。双击要先取消那个"单击切换"的定时器。
         card.addEventListener('dblclick', (event) => {
-            if (event.target.closest('.template-lib-remove')) return;
+            if (entry.builtIn || event.target.closest('.template-lib-remove') || pendingTemplateRemovals.has(entry.key)) return;
             event.preventDefault();
             clearTimeout(openTimer);
             beginTemplateRename(entry.key, card);
@@ -1001,13 +1075,13 @@
         // 完整名字给 title：一行装不下时鼠标悬停还能看全
         open.title = label.textContent;
         card.append(open);
-        if (isCurrent) {
+        if (isCurrent || entry.builtIn) {
             const badge = document.createElement('span');
             badge.className = 'template-lib-badge';
-            badge.textContent = t('emoteMaker.templateInUse');
+            badge.textContent = t(isCurrent ? 'emoteMaker.templateInUse' : 'emoteMaker.builtinTemplate');
             card.append(badge);
         }
-        card.append(removeButton);
+        if (!entry.builtIn) card.append(removeButton);
         return card;
     }
 
@@ -1065,8 +1139,10 @@
         if (!assetSectionTitle || !assetGrid) return;
         assetGrid.classList.add('is-template-library');
         assetSectionTitle.textContent = t('emoteMaker.templateLibrary');
-        const entries = templateLibraryModule && templateLibraryState
-            ? [...templateLibraryState.entries] : [];
+        const entries = [
+            ...[...builtinTemplates.keys()].map(findTemplateLibraryEntry),
+            ...(templateLibraryState?.entries || []).filter((entry) => !entry.key.startsWith('builtin:')),
+        ];
         const query = String(state.assetQuery || '').trim().toLocaleLowerCase();
         const shown = query
             ? entries.filter((entry) => `${entry.displayName || ''} ${entry.packageName || ''}`
@@ -1139,19 +1215,12 @@
             templateSkinControls.replaceChildren();
             return;
         }
-        templateSkinControls.hidden = false;
         const groups = Array.isArray(templatePackage.catalogs?.skinGroups)
             ? templatePackage.catalogs.skinGroups
             : [];
         const selections = getTemplateSkinSelections();
         const runtimeOptions = getTemplateSkinOptions();
-        const search = document.createElement('input');
-        search.className = 'template-compat-search';
-        search.type = 'search';
-        search.placeholder = t('emoteMaker.searchParts');
-        search.setAttribute('aria-label', t('emoteMaker.searchParts'));
-        const rows = [];
-        const children = [search];
+        const children = [];
         groups.forEach((group) => {
             const groupId = String(group?.id || group?.displayName || '');
             if (!groupId) return;
@@ -1163,7 +1232,6 @@
             const row = document.createElement('label');
             row.className = 'template-compat-row';
             row.title = getCatalogLabel(group) || groupId;
-            row.dataset.searchText = `${getCatalogLabel(group) || ''} ${groupId}`.toLocaleLowerCase();
             const name = document.createElement('span');
             name.textContent = getCatalogLabel(group) || groupId;
             const select = document.createElement('select');
@@ -1183,18 +1251,11 @@
                 if (!value) return;
                 const next = selections.filter((item) => normalizeTemplateToken(item.group) !== normalizeTemplateToken(groupId));
                 next.push({ group: groupId, value });
-                recordChange(() => { state.templateSkins = next; });
+                recordChange('templateSkins', next);
                 applyNativeCharacterState();
             });
             row.append(name, select);
-            rows.push(row);
             children.push(row);
-        });
-        search.addEventListener('input', () => {
-            const query = search.value.trim().toLocaleLowerCase();
-            rows.forEach((row) => {
-                row.hidden = Boolean(query) && !row.dataset.searchText.includes(query);
-            });
         });
         if (!hasSpineRenderer()) {
             const note = document.createElement('p');
@@ -1202,11 +1263,2002 @@
             note.textContent = t('emoteMaker.templateMetadataOnly');
             children.push(note);
         }
+        templateSkinControls.hidden = !children.length;
         templateSkinControls.replaceChildren(...children);
     }
 
+    function filterTemplateAttachments() {
+        const query = templateAttachmentSearch.value.trim().toLocaleLowerCase();
+        let hasMatch = false;
+        for (const row of templateAttachmentControls.children) {
+            row.hidden = !row.dataset.searchText.includes(query);
+            hasMatch ||= !row.hidden;
+        }
+        templateAttachmentEmpty.hidden = !query || templateAttachmentSearch.hidden || hasMatch;
+    }
+
     function renderPartGroups() {
+        const wardrobeActions = $('#wardrobe-entry-actions');
+        if (wardrobeActions) wardrobeActions.hidden = templatePackage?.source?.builtIn !== true || !hasSpineRenderer();
+        syncWardrobePlacements();
         renderTemplateSkinControls();
+        if (!templateAttachmentControls) return;
+        const parts = (templatePackage?.catalogs?.slotGroups || []).filter((part) => part.kind !== 'tint');
+        const styles = getTemplateSlotStyles();
+        const rows = parts.map((part) => {
+            const style = styles.find((item) => item.name === part.id);
+            const row = document.createElement('label');
+            row.className = 'template-compat-row';
+            const title = document.createElement('span');
+            title.textContent = getCatalogLabel(part);
+            const searchTerms = [title.textContent, part.id];
+            const select = document.createElement('select');
+            select.dataset.templateAttachmentSlot = part.id;
+            select.disabled = !hasSpineRenderer();
+            select.add(new Option(t('emoteMaker.partFollowAnimation'), 'auto'));
+            if (part.kind === 'toggle') {
+                select.add(new Option(t('common.on'), 'show'));
+                select.add(new Option(t('common.off'), 'hide'));
+            } else {
+                for (const attachment of part.attachments) {
+                    const label = getCatalogLabel({ id: attachment, labels: part.attachmentLabels?.[attachment] });
+                    select.add(new Option(label, `attachment:${attachment}`));
+                    searchTerms.push(label, attachment);
+                }
+            }
+            const value = style?.attachmentMode === 'replace' ? `attachment:${style.attachment}` : style?.attachmentMode;
+            select.value = [...select.options].some((option) => option.value === value) ? value : 'auto';
+            select.addEventListener('change', () => {
+                const next = getTemplateSlotStyles();
+                const target = next.find((item) => item.name === part.id);
+                if (!target) return;
+                const replacement = select.value.startsWith('attachment:');
+                target.attachmentMode = replacement ? 'replace' : select.value;
+                target.attachment = replacement ? select.value.slice('attachment:'.length) : null;
+                recordChange('templateSlots', next);
+                persistTemplateSession();
+                persistTemplateToLibrary();
+            });
+            row.dataset.searchText = searchTerms.join('\n').toLocaleLowerCase();
+            row.append(title, select);
+            return row;
+        });
+        templateAttachmentSearch.hidden = !rows.length;
+        if (!rows.length) templateAttachmentSearch.value = '';
+        templateAttachmentControls.hidden = !rows.length;
+        templateAttachmentControls.replaceChildren(...rows);
+        filterTemplateAttachments();
+    }
+
+    function wardrobePoint(event, surface, bounded = true) {
+        const box = surface.getBoundingClientRect();
+        const x = (event.clientX - box.left) / box.width;
+        const y = (event.clientY - box.top) / box.height;
+        const clamp = (value) => Math.max(0, Math.min(1, value));
+        return bounded ? { x: clamp(x), y: clamp(y) } : { x, y };
+    }
+
+    function bindWardrobeCropBoxes(layer, { canEdit, limit, replace = false, onChange, onCommit }) {
+        const boxes = [];
+        const roundBounds = (bounds) => bounds.map((value) => Number(value.toFixed(4)));
+        const edges = { nw: [0, 0], n: [50, 0], ne: [100, 0], e: [100, 50],
+            se: [100, 100], s: [50, 100], sw: [0, 100], w: [0, 50] };
+        let selected = null;
+        let drag = null;
+        const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+
+        function select(box) {
+            selected?.element.classList.remove('is-selected');
+            selected = box;
+            selected?.element.classList.add('is-selected');
+        }
+
+        function position(box, bounds) {
+            box.bounds = bounds;
+            const [left, top, right, bottom] = bounds;
+            Object.assign(box.element.style, {
+                left: `${left * 100}%`, top: `${top * 100}%`,
+                width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`,
+            });
+        }
+
+        function create(point) {
+            const element = document.createElement('div');
+            element.className = 'wardrobe-crop-box is-drawing';
+            element.tabIndex = 0;
+            element.setAttribute('role', 'group');
+            element.dataset.i18nAria = 'emoteMaker.wardrobeCropBox';
+            element.setAttribute('aria-label', t(element.dataset.i18nAria));
+            for (const [edge, [x, y]] of Object.entries(edges)) {
+                const handle = document.createElement('span');
+                handle.className = 'wardrobe-crop-handle';
+                handle.dataset.edge = edge;
+                handle.style.left = `${x}%`;
+                handle.style.top = `${y}%`;
+                element.append(handle);
+            }
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'wardrobe-crop-remove';
+            remove.textContent = '×';
+            remove.dataset.i18nAria = remove.dataset.i18nTitle = 'emoteMaker.wardrobeCropDelete';
+            remove.title = t(remove.dataset.i18nTitle);
+            remove.setAttribute('aria-label', remove.title);
+            element.append(remove);
+            const box = { element, remove };
+            remove.addEventListener('click', () => { if (canEdit()) removeBox(box); });
+            position(box, [point.x, point.y, point.x, point.y]);
+            layer.append(element);
+            return box;
+        }
+
+        function move([left, top, right, bottom], dx, dy) {
+            dx = clamp(dx, -left, 1 - right);
+            dy = clamp(dy, -top, 1 - bottom);
+            return [left + dx, top + dy, right + dx, bottom + dy];
+        }
+
+        function updateDrag(event) {
+            const { box, start, original, edge } = drag;
+            if (!original) {
+                const point = wardrobePoint(event, layer);
+                position(box, [Math.min(start.x, point.x), Math.min(start.y, point.y),
+                    Math.max(start.x, point.x), Math.max(start.y, point.y)]);
+                return;
+            }
+            // A handle extends past the box border. Clamp the resulting box,
+            // rather than the pointer, so even an off-center grab can reach the image edge.
+            const point = wardrobePoint(event, layer, false);
+            const dx = point.x - start.x;
+            const dy = point.y - start.y;
+            if (!edge) {
+                position(box, move(original, dx, dy));
+                return;
+            }
+            let [left, top, right, bottom] = original;
+            const minX = Math.min(right - left, Math.max(0.005, 5 / layer.clientWidth));
+            const minY = Math.min(bottom - top, Math.max(0.005, 5 / layer.clientHeight));
+            if (edge.includes('w')) left = clamp(left + dx, 0, right - minX);
+            if (edge.includes('e')) right = clamp(right + dx, left + minX, 1);
+            if (edge.includes('n')) top = clamp(top + dy, 0, bottom - minY);
+            if (edge.includes('s')) bottom = clamp(bottom + dy, top + minY, 1);
+            position(box, [left, top, right, bottom]);
+        }
+
+        function removeBox(box) {
+            const index = boxes.indexOf(box);
+            if (index < 0 || drag) return;
+            const keepFocus = box.element.contains(document.activeElement);
+            boxes.splice(index, 1)[0].element.remove();
+            const next = selected === box ? boxes[Math.min(index, boxes.length - 1)] || null : selected;
+            select(next);
+            if (keepFocus) (next?.element || layer).focus({ preventScroll: true });
+            onChange(true);
+        }
+
+        function stopDrag() {
+            const finished = drag;
+            drag = null;
+            finished.events.abort();
+            if (layer.hasPointerCapture(finished.pointerId)) layer.releasePointerCapture(finished.pointerId);
+            return finished;
+        }
+
+        function cancel() {
+            if (!drag) return;
+            const { box, original, previous } = stopDrag();
+            if (original) position(box, original);
+            else box.element.remove();
+            select(previous);
+        }
+
+        function clear() {
+            cancel();
+            select(null);
+            for (const box of boxes.splice(0)) box.element.remove();
+        }
+
+        function finishDrag(event) {
+            if (event) updateDrag(event);
+            const { box, original, previous } = stopDrag();
+            const [left, top, right, bottom] = box.bounds;
+            let changed = Boolean(original?.some((value, index) => value !== box.bounds[index]));
+            if (!original) {
+                if (right - left >= 0.005 && bottom - top >= 0.005
+                        && (right - left) * layer.clientWidth >= 5 && (bottom - top) * layer.clientHeight >= 5) {
+                    if (replace) for (const old of boxes.splice(0)) old.element.remove();
+                    boxes.push(box);
+                    box.element.classList.remove('is-drawing');
+                    changed = true;
+                    box.element.focus({ preventScroll: true });
+                } else {
+                    box.element.remove();
+                    select(previous);
+                }
+            }
+            onChange(changed);
+            if (changed && onCommit) onCommit(roundBounds(box.bounds));
+        }
+
+        function continueDrag(event) {
+            if (drag?.pointerId !== event.pointerId) return;
+            if (!(event.buttons & 1)) {
+                // The button may have been released while the pointer was outside the window.
+                finishDrag();
+                return;
+            }
+            if (!layer.hasPointerCapture(event.pointerId)) layer.setPointerCapture(event.pointerId);
+            updateDrag(event);
+        }
+
+        function cancelDrag() {
+            cancel();
+            onChange();
+        }
+
+        layer.addEventListener('pointerdown', (event) => {
+            if (!canEdit() || drag || event.button !== 0 || event.target.closest('.wardrobe-crop-remove')) return;
+            const existing = boxes.find(({ element }) => element === event.target.closest('.wardrobe-crop-box'));
+            if (!existing && !replace && boxes.length >= limit()) return;
+            const start = wardrobePoint(event, layer, !existing);
+            const box = existing || create(start);
+            const events = new AbortController();
+            drag = { box, start, previous: selected, original: existing?.bounds, pointerId: event.pointerId,
+                edge: event.target.closest('.wardrobe-crop-handle')?.dataset.edge, events };
+            select(box);
+            // Keep tracking the gesture if the host releases capture while the pointer is still down.
+            const tracking = { capture: true, signal: events.signal };
+            window.addEventListener('pointermove', continueDrag, tracking);
+            window.addEventListener('pointerup', (event) => {
+                if (drag?.pointerId === event.pointerId && event.button === 0) finishDrag(event);
+            }, tracking);
+            window.addEventListener('pointercancel', (event) => {
+                if (drag?.pointerId === event.pointerId) cancelDrag();
+            }, tracking);
+            window.addEventListener('blur', cancelDrag, { signal: events.signal });
+            layer.setPointerCapture(event.pointerId);
+            event.preventDefault();
+            (existing ? box.element : layer).focus({ preventScroll: true });
+            onChange();
+        });
+        layer.addEventListener('focusin', (event) => {
+            const box = boxes.find(({ element }) => element === event.target);
+            if (box && !drag) {
+                select(box);
+                onChange();
+            }
+        });
+        layer.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && drag) {
+                event.preventDefault();
+                cancelDrag();
+                return;
+            }
+            if (!canEdit() || drag || !selected) return;
+            const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+            if (direction) {
+                event.preventDefault();
+                const step = event.shiftKey ? 10 : 1;
+                position(selected, move(selected.bounds, direction[0] * step / layer.clientWidth,
+                    direction[1] * step / layer.clientHeight));
+                onChange(true);
+            } else if (event.key === 'Delete' || event.key === 'Backspace') {
+                event.preventDefault();
+                removeBox(selected);
+            }
+        });
+
+        return {
+            clear, cancel,
+            setDisabled(disabled) {
+                layer.setAttribute('aria-disabled', String(disabled));
+                for (const box of boxes) box.remove.disabled = disabled;
+            },
+            get editing() { return Boolean(drag); },
+            get count() { return boxes.length; },
+            get selection() { return !drag && selected ? selected.bounds : null; },
+            serialize() {
+                return boxes.length ? JSON.stringify(boxes.map(({ bounds }) => roundBounds(bounds))) : '';
+            },
+        };
+    }
+
+    function bindWardrobeSourceCrops({ reference, onChange, onCommit }) {
+        const dialog = $('#wardrobe-dialog');
+        const panel = $('#wardrobe-source-pane');
+        const empty = $('#wardrobe-source-empty');
+        const viewport = $('#wardrobe-annotation-viewport');
+        const surface = $('#wardrobe-annotation-surface');
+        const layer = $('#wardrobe-annotation-crops');
+        const hint = $('#wardrobe-annotation-hint');
+        const count = $('#wardrobe-annotation-count');
+        const clear = $('#wardrobe-annotation-clear');
+        const zoomIn = $('#wardrobe-annotation-zoom-in');
+        const zoomOut = $('#wardrobe-annotation-zoom-out');
+        const fit = $('#wardrobe-annotation-fit');
+        const scaleLabel = $('#wardrobe-annotation-scale');
+        const pan = $('#wardrobe-annotation-pan');
+        const minimap = $('#wardrobe-minimap');
+        const minimapSurface = $('#wardrobe-minimap-image');
+        const minimapImage = minimapSurface.querySelector('img');
+        const minimapWindow = $('#wardrobe-minimap-window');
+        const maxZoom = 8;
+        let limit = 3;
+        let image = null;
+        let loading = null;
+        let sourceKey = null;
+        let loadFailed = false;
+        let imageUrl = '';
+        let disabled = false;
+        let zoom = 1;
+        let panMode = false;
+        let panDrag = null;
+        let minimapDrag = null;
+        const crops = bindWardrobeCropBoxes(layer, {
+            canEdit: () => Boolean(image && !disabled && !panMode && !panDrag),
+            limit: () => limit,
+            onChange,
+            onCommit: ([x1, y1, x2, y2]) => {
+                if (!image) return;
+                const { naturalWidth: width, naturalHeight: height } = image;
+                const left = Math.min(Math.round(x1 * width), width - 1);
+                const top = Math.min(Math.round(y1 * height), height - 1);
+                const w = Math.max(1, Math.round(x2 * width) - left);
+                const h = Math.max(1, Math.round(y2 * height) - top);
+                onCommit(w, h);
+            },
+        });
+
+        function render() {
+            layer.hidden = !image;
+            crops.setDisabled(disabled || panMode);
+            empty.hidden = Boolean(sourceKey);
+            hint.hidden = !loadFailed;
+            if (loadFailed) {
+                const key = sourceKey.size > 8 * 1024 * 1024 ? 'wardrobeInvalidImage' : 'wardrobeMarkImageFailed';
+                hint.textContent = t(`emoteMaker.${key}`);
+            }
+            const counter = `${crops.count}/${limit}`;
+            if (count.value !== counter) count.value = counter;
+            clear.disabled = disabled || crops.editing || !crops.count;
+            zoomIn.disabled = !image || zoom >= maxZoom;
+            zoomOut.disabled = fit.disabled = !image || zoom <= 1;
+            pan.disabled = !image;
+            scaleLabel.value = `${Math.round(zoom * 100)}%`;
+            minimap.hidden = !image || panel.hidden;
+            if (!minimap.hidden) renderMinimap();
+        }
+
+        function updateMinimapWindow() {
+            if (!image || minimap.hidden) return;
+            const photo = surface.getBoundingClientRect();
+            if (!photo.width || !photo.height) return;
+            const view = viewport.getBoundingClientRect();
+            const clamp = (value) => Math.max(0, Math.min(1, value));
+            const left = clamp((view.left + viewport.clientLeft - photo.left) / photo.width);
+            const top = clamp((view.top + viewport.clientTop - photo.top) / photo.height);
+            const right = clamp((view.left + viewport.clientLeft + viewport.clientWidth - photo.left) / photo.width);
+            const bottom = clamp((view.top + viewport.clientTop + viewport.clientHeight - photo.top) / photo.height);
+            Object.assign(minimapWindow.style, {
+                left: `${left * 100}%`, top: `${top * 100}%`,
+                width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`,
+            });
+        }
+
+        function renderMinimap() {
+            if (minimap.hidden || !image) return;
+            const padding = Number.parseFloat(getComputedStyle(minimap).paddingLeft) * 2;
+            const scale = Math.min((minimap.clientWidth - padding) / image.naturalWidth,
+                (minimap.clientHeight - padding) / image.naturalHeight);
+            minimapSurface.style.width = `${Math.max(1, Math.floor(image.naturalWidth * scale))}px`;
+            minimapSurface.style.height = `${Math.max(1, Math.floor(image.naturalHeight * scale))}px`;
+            updateMinimapWindow();
+        }
+
+        function centerOnMinimap(event) {
+            const location = wardrobePoint(event, minimapSurface);
+            const photo = surface.getBoundingClientRect();
+            const view = viewport.getBoundingClientRect();
+            viewport.scrollLeft += photo.left + location.x * photo.width - view.left - viewport.clientLeft - viewport.clientWidth / 2;
+            viewport.scrollTop += photo.top + location.y * photo.height - view.top - viewport.clientTop - viewport.clientHeight / 2;
+            updateMinimapWindow();
+        }
+
+        function renderView() {
+            if (!image || panel.hidden || !dialog.open) return;
+            const padding = Number.parseFloat(getComputedStyle(surface.parentElement).paddingLeft) * 2;
+            const fitScale = Math.min((viewport.offsetWidth - padding) / image.naturalWidth,
+                (viewport.offsetHeight - padding) / image.naturalHeight);
+            const width = Math.max(1, Math.floor(image.naturalWidth * fitScale * zoom));
+            const height = Math.max(1, Math.floor(image.naturalHeight * fitScale * zoom));
+            surface.style.width = `${width}px`;
+            surface.style.height = `${height}px`;
+            render();
+        }
+
+        function changeZoom(value, anchor) {
+            if (!image || crops.editing || panDrag) return;
+            const next = Math.max(1, Math.min(maxZoom, value));
+            if (next === zoom) return;
+            const view = viewport.getBoundingClientRect();
+            const cursor = anchor || { clientX: view.left + view.width / 2, clientY: view.top + view.height / 2 };
+            const location = wardrobePoint(cursor, surface);
+            zoom = next;
+            renderView();
+            const box = surface.getBoundingClientRect();
+            viewport.scrollLeft += box.left + location.x * box.width - cursor.clientX;
+            viewport.scrollTop += box.top + location.y * box.height - cursor.clientY;
+            updateMinimapWindow();
+        }
+
+        async function loadImage() {
+            if (!dialog.open || panel.hidden || !sourceKey || image || loading || loadFailed) return;
+            const file = sourceKey;
+            if (file.size > 8 * 1024 * 1024) {
+                loadFailed = true;
+                render();
+                return;
+            }
+            const source = new Image();
+            const url = URL.createObjectURL(file);
+            loading = source;
+            source.src = url;
+            try {
+                await source.decode();
+                if (loading !== source) return;
+                source.alt = '';
+                source.draggable = false;
+                image = source;
+                imageUrl = url;
+                minimapImage.src = url;
+                loading = null;
+                surface.prepend(source);
+                surface.hidden = false;
+                renderView();
+            } catch (_) {
+                if (loading === source) {
+                    loadFailed = true;
+                    render();
+                }
+            } finally {
+                if (imageUrl !== url) URL.revokeObjectURL(url);
+            }
+        }
+
+        clear.addEventListener('click', () => { crops.clear(); onChange(true); });
+        dialog.addEventListener('close', () => {
+            if (!image) {
+                loading = null;
+                loadFailed = false;
+            }
+            crops.cancel();
+            panDrag = null;
+            minimapDrag = null;
+        });
+        zoomIn.addEventListener('click', () => changeZoom(zoom * 1.25));
+        zoomOut.addEventListener('click', () => changeZoom(zoom / 1.25));
+        fit.addEventListener('click', () => changeZoom(1));
+        viewport.addEventListener('wheel', (event) => {
+            if (!image || !event.deltaY) return;
+            event.preventDefault();
+            changeZoom(zoom * (event.deltaY < 0 ? 1.25 : 0.8), event);
+        }, { passive: false });
+        pan.addEventListener('click', () => {
+            panMode = !panMode;
+            pan.setAttribute('aria-pressed', String(panMode));
+            viewport.classList.toggle('is-panning', panMode);
+            render();
+        });
+        viewport.addEventListener('pointerdown', (event) => {
+            if (!image || panDrag || crops.editing || (event.button !== 1 && !(panMode && event.button === 0))) return;
+            event.preventDefault();
+            panDrag = {
+                pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+                left: viewport.scrollLeft, top: viewport.scrollTop,
+            };
+            viewport.setPointerCapture(event.pointerId);
+        });
+        viewport.addEventListener('pointermove', (event) => {
+            if (panDrag?.pointerId !== event.pointerId) return;
+            viewport.scrollLeft = panDrag.left + panDrag.x - event.clientX;
+            viewport.scrollTop = panDrag.top + panDrag.y - event.clientY;
+        });
+        viewport.addEventListener('lostpointercapture', (event) => {
+            if (panDrag?.pointerId === event.pointerId) panDrag = null;
+        });
+        viewport.addEventListener('scroll', updateMinimapWindow, { passive: true });
+        minimapSurface.addEventListener('pointerdown', (event) => {
+            if (!image || event.button !== 0 || crops.editing || minimapDrag !== null) return;
+            minimapDrag = event.pointerId;
+            minimapSurface.setPointerCapture(event.pointerId);
+            centerOnMinimap(event);
+        });
+        minimapSurface.addEventListener('pointermove', (event) => {
+            if (minimapDrag === event.pointerId) centerOnMinimap(event);
+        });
+        minimapSurface.addEventListener('lostpointercapture', (event) => {
+            if (minimapDrag === event.pointerId) minimapDrag = null;
+        });
+        minimapSurface.addEventListener('keydown', (event) => {
+            const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+            if (!direction || crops.editing) return;
+            event.preventDefault();
+            viewport.scrollLeft += direction[0] * viewport.clientWidth / 10;
+            viewport.scrollTop += direction[1] * viewport.clientHeight / 10;
+        });
+        new ResizeObserver(renderView).observe(viewport);
+        new ResizeObserver(renderMinimap).observe(minimap);
+
+        function reset() {
+            image?.remove();
+            minimapImage.removeAttribute('src');
+            if (imageUrl) URL.revokeObjectURL(imageUrl);
+            imageUrl = '';
+            image = loading = sourceKey = null;
+            loadFailed = false;
+            zoom = 1;
+            viewport.scrollLeft = viewport.scrollTop = 0;
+            crops.clear();
+            surface.hidden = true;
+        }
+
+        return {
+            update(busy, regionLimit) {
+                const nextSource = reference.files[0] || null;
+                if (sourceKey !== nextSource) {
+                    reset();
+                    sourceKey = nextSource;
+                }
+                disabled = busy;
+                limit = regionLimit;
+                render();
+                void loadImage();
+            },
+            get count() { return crops.count; },
+            get editing() { return crops.editing; },
+            serialize: crops.serialize,
+        };
+    }
+
+    function bindWardrobeSpritePicker({ canEdit, onChange }) {
+        const viewport = $('#wardrobe-spritesheet-viewport');
+        const surface = $('#wardrobe-spritesheet-surface');
+        const layer = $('#wardrobe-spritesheet-picker');
+        let image = null;
+        const crops = bindWardrobeCropBoxes(layer, {
+            canEdit: () => Boolean(image && canEdit()),
+            replace: true,
+            onChange: update,
+        });
+
+        function render() {
+            if (!image || !viewport.clientWidth || !viewport.clientHeight) return;
+            const padding = Number.parseFloat(getComputedStyle(viewport).paddingLeft) * 2;
+            const scale = Math.min((viewport.clientWidth - padding) / image.naturalWidth,
+                (viewport.clientHeight - padding) / image.naturalHeight);
+            surface.style.width = `${Math.max(1, Math.floor(image.naturalWidth * scale))}px`;
+            surface.style.height = `${Math.max(1, Math.floor(image.naturalHeight * scale))}px`;
+        }
+
+        function update() {
+            crops.setDisabled(!canEdit());
+            onChange();
+        }
+
+        new ResizeObserver(render).observe(viewport);
+
+        return {
+            setImage(next) {
+                image?.remove();
+                image = next;
+                if (image) {
+                    image.alt = '';
+                    image.draggable = false;
+                    surface.prepend(image);
+                }
+                crops.clear();
+                render();
+                update();
+            },
+            clearSelection() { crops.clear(); update(); },
+            update,
+            cancel() { crops.cancel(); update(); },
+            get selected() { return Boolean(crops.selection); },
+            get editing() { return crops.editing; },
+            async crop() {
+                const selection = crops.selection;
+                if (!image || !selection) return null;
+                const [left, top, right, bottom] = selection.map((value, index) =>
+                    Math.round(value * (index % 2 ? image.naturalHeight : image.naturalWidth)));
+                const output = document.createElement('canvas');
+                output.width = Math.max(1, right - left);
+                output.height = Math.max(1, bottom - top);
+                const pixels = output.getContext('2d', { willReadFrequently: true });
+                pixels.drawImage(image, left, top, output.width, output.height, 0, 0, output.width, output.height);
+                const data = pixels.getImageData(0, 0, output.width, output.height).data;
+                let x1 = output.width, y1 = output.height, x2 = 0, y2 = 0;
+                for (let y = 0; y < output.height; y += 1) {
+                    for (let x = 0; x < output.width; x += 1) {
+                        if (data[(y * output.width + x) * 4 + 3] === 0) continue;
+                        x1 = Math.min(x1, x);
+                        y1 = Math.min(y1, y);
+                        x2 = Math.max(x2, x + 1);
+                        y2 = Math.max(y2, y + 1);
+                    }
+                }
+                if (x2 <= x1 || y2 <= y1) return null;
+                output.width = x2 - x1;
+                output.height = y2 - y1;
+                pixels.drawImage(image, left + x1, top + y1, output.width, output.height, 0, 0, output.width, output.height);
+                return new Promise((resolve) => output.toBlob(resolve, 'image/png'));
+            },
+        };
+    }
+
+    const WARDROBE_SPRITE_PREFIX = 'WardrobeSprites/';
+    const wardrobeSprites = new Map();
+    const wardrobeArtwork = $('#wardrobe-artwork');
+    const wardrobeArtworkBehind = $('#wardrobe-artwork-behind');
+    const wardrobeTransform = $('#wardrobe-transform');
+    const wardrobeSpriteMenu = $('#wardrobe-sprite-menu');
+    const wardrobeLayerUp = $('#wardrobe-layer-up');
+    const wardrobeLayerDown = $('#wardrobe-layer-down');
+    const wardrobeLayerSlot = $('#wardrobe-layer-slot');
+    let wardrobeSpritesLoaded = false;
+    let wardrobeTemplateKey = '';
+    let selectedWardrobeSprite = null;
+    let wardrobeFileBusy = false;
+    let wardrobeGestureActive = false;
+
+    function wardrobePlacementKey() {
+        return `neko.emote.wardrobeSprites.${wardrobeTemplateKey}`;
+    }
+
+    function wardrobePlacement({ id, x, y, size, basis, anchor, bindingMode, behind, aboveSlot }) {
+        return structuredClone({ id, x, y, size, basis, anchor, bindingMode, behind, aboveSlot });
+    }
+
+    function wardrobeSnapshot() {
+        return [...wardrobeSprites.values()].map(wardrobePlacement);
+    }
+
+    function persistWardrobePlacements() {
+        forgetStageFrames();
+        void stateStageSession?.refresh();
+        try {
+            localStorage.setItem(wardrobePlacementKey(), JSON.stringify(wardrobeSnapshot()));
+        } catch (_) {
+            showToast(t('emoteMaker.wardrobeSpriteSaveFailed'));
+        }
+    }
+
+    function restoreWardrobeSnapshot(placements) {
+        const order = [];
+        for (const placement of placements) {
+            const sprite = wardrobeSprites.get(placement.id);
+            if (!sprite) continue;
+            Object.assign(sprite, structuredClone(placement));
+            updateWardrobeSprite(sprite, false);
+            order.push(sprite);
+        }
+        setWardrobeOrder(order);
+        selectWardrobeSprite(selectedWardrobeSprite);
+        renderWardrobeArtwork();
+        if (!wardrobeSpriteMenu.hidden) {
+            const selected = wardrobeSprites.get(selectedWardrobeSprite);
+            if (selected) renderWardrobeBinding(selected);
+            updateWardrobeLayerActions();
+        }
+        persistWardrobePlacements();
+    }
+
+    function commitWardrobeChange(before) {
+        persistWardrobePlacements();
+        rememberHistory(before, wardrobeSnapshot(), restoreWardrobeSnapshot);
+    }
+
+    function wardrobeSpriteGeometry(sprite) {
+        const longest = Math.max(sprite.image.naturalWidth, sprite.image.naturalHeight);
+        return {
+            width: sprite.size * sprite.image.naturalWidth / longest,
+            height: sprite.size * sprite.image.naturalHeight / longest,
+        };
+    }
+
+    function wardrobeImageReady(image) {
+        // Dimensions can arrive before the PNG data is complete. Uploading it then caches an empty WebGL texture.
+        return Boolean(image?.complete && image.naturalWidth && image.naturalHeight);
+    }
+
+    function multiplyWardrobeMatrix([a, b, c, d, x, y], [e, f, g, h, u, v]) {
+        return [a * e + c * f, b * e + d * f, a * g + c * h, b * g + d * h,
+            a * u + c * v + x, b * u + d * v + y];
+    }
+
+    function inverseWardrobeMatrix([a, b, c, d, x, y]) {
+        const determinant = a * d - b * c;
+        if (Math.abs(determinant) < 1e-12) return null;
+        return [d / determinant, -b / determinant, -c / determinant, a / determinant,
+            (c * y - d * x) / determinant, (b * x - a * y) / determinant];
+    }
+
+    function rotateWardrobePose(pose, angle, aspect) {
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const basis = multiplyWardrobeMatrix([cos, sin * aspect, -sin / aspect, cos, 0, 0],
+            [...pose.slice(0, 4), 0, 0]);
+        return [...basis.slice(0, 4), pose[4], pose[5]];
+    }
+
+    function activeWardrobeBone(name) {
+        if (!spineRenderer) return null;
+        const alternates = templatePackage?.source?.wardrobeBindings?.boneAlternates;
+        const pair = alternates?.find(({ bone, alternateBone }) => name === bone || name === alternateBone);
+        if (!pair) return null;
+        const { bone, slot, alternateBone, alternateSlot } = pair;
+        const ownSlot = name === bone ? slot : alternateSlot;
+        const otherSlot = name === bone ? alternateSlot : slot;
+        const swap = !spineRenderer.partIsVisible(ownSlot) && spineRenderer.partIsVisible(otherSlot);
+        return {
+            name: swap ? (name === bone ? alternateBone : bone) : name,
+            slot: swap ? otherSlot : ownSlot,
+            slots: [slot, alternateSlot],
+        };
+    }
+
+    function wardrobeBoneTransform(name) {
+        if (!name || !spineRenderer) return null;
+        const active = activeWardrobeBone(name);
+        return (active && spineRenderer.boneCanvasTransform(active.name, name)) || spineRenderer.boneCanvasTransform(name);
+    }
+
+    function wardrobeSpriteLayerSlot(sprite) {
+        if (!sprite.aboveSlot || !sprite.anchor) return sprite.aboveSlot;
+        const active = activeWardrobeBone(sprite.anchor.name);
+        return active?.slots.includes(sprite.aboveSlot)
+            && !spineRenderer.partIsVisible(sprite.aboveSlot) && spineRenderer.partIsVisible(active.slot)
+            ? active.slot : sprite.aboveSlot;
+    }
+
+    function wardrobeSpritePose(sprite) {
+        if (sprite.dragPose) return sprite.dragPose;
+        const bone = wardrobeBoneTransform(sprite.anchor?.name);
+        if (bone) return multiplyWardrobeMatrix(bone, sprite.anchor.matrix);
+        return [...(sprite.basis || [1, 0, 0, 1]), sprite.x, sprite.y];
+    }
+
+    function setWardrobeBinding(sprite, name, pose, bone = wardrobeBoneTransform(name)) {
+        const inverse = bone && inverseWardrobeMatrix(bone);
+        sprite.basis = pose.slice(0, 4);
+        [sprite.x, sprite.y] = pose.slice(4);
+        sprite.anchor = inverse ? { name, matrix: multiplyWardrobeMatrix(inverse, pose) } : null;
+    }
+
+    function wardrobeBindingCandidates(sprite, [, , c, d, x, y]) {
+        if (!hasSpineRenderer()) return [];
+        // A hat may sit above the figure while its brim touches the head.
+        const halfHeight = wardrobeSpriteGeometry(sprite).height / 2;
+        let hits = spineRenderer.attachmentsAtCanvasPoint(x, y);
+        if (!hits.length) hits = spineRenderer.attachmentsAtCanvasPoint(x + c * halfHeight, y + d * halfHeight);
+        const preferredBones = templatePackage?.source?.wardrobeBindings?.preferredBoneBySlot;
+        return [...new Set(hits.flatMap(({ bone, slot }) => {
+            const preferred = preferredBones?.[slot];
+            return typeof preferred === 'string' ? [preferred, bone] : [bone];
+        }))];
+    }
+
+    function updateWardrobeSprite(sprite, repaint = true) {
+        if (!wardrobeImageReady(sprite?.image)) return;
+        const [a, b, c, d, x, y] = wardrobeSpritePose(sprite);
+        const { clientWidth, clientHeight } = wardrobePlacements;
+        const aspect = clientWidth / (clientHeight || 1) || 1;
+        sprite.button.style.left = `${x * 100}%`;
+        sprite.button.style.top = `${y * 100}%`;
+        const width = `${wardrobeSpriteGeometry(sprite).width * 100}%`;
+        if (sprite.button.style.width !== width) sprite.button.style.width = width;
+        sprite.button.style.transform = `translate(-50%, -50%) matrix(${a}, ${b / aspect}, ${c * aspect}, ${d}, 0, 0)`;
+        sprite.button.hidden = Boolean(sprite.anchor && spineRenderer?.skeleton?.visible === false);
+        if (sprite.id === selectedWardrobeSprite) {
+            updateWardrobeTransform(sprite, [a, b, c, d, x, y], clientWidth, clientHeight);
+        }
+        if (repaint) renderWardrobeArtwork();
+    }
+
+    function updateWardrobeTransform(sprite, [a, b, c, d, x, y], canvasWidth, canvasHeight) {
+        const visible = !wardrobePlacements.hidden && !sprite.button.hidden;
+        wardrobeTransform.hidden = !visible;
+        if (!visible) {
+            wardrobeSpriteMenu.hidden = true;
+            return;
+        }
+        if (!canvasWidth || !canvasHeight) return;
+        const { width, height } = wardrobeSpriteGeometry(sprite);
+        const place = (element, px, py) => {
+            element.style.left = `${px * 100}%`;
+            element.style.top = `${py * 100}%`;
+        };
+        const frame = wardrobeTransform.firstElementChild;
+        const remove = $('#wardrobe-sprite-remove');
+        remove.disabled = Boolean(sprite.removing);
+        Object.assign(frame.style, {
+            left: `${x * 100}%`, top: `${y * 100}%`, width: `${width * 100}%`, height: `${height * 100}%`,
+            transform: sprite.button.style.transform,
+        });
+        for (const corner of wardrobeTransform.querySelectorAll('.wardrobe-transform-scale')) {
+            const dx = Number(corner.dataset.x) * width / 2;
+            const dy = Number(corner.dataset.y) * height / 2;
+            const vx = a * dx + c * dy;
+            const vy = b * dx + d * dy;
+            place(corner, x + vx, y + vy);
+            corner.style.cursor = `${['ew', 'nwse', 'ns', 'nesw'][
+                (Math.round(Math.atan2(vy * canvasHeight, vx * canvasWidth) / (Math.PI / 4)) + 4) % 4]}-resize`;
+        }
+        const topX = -c * height / 2;
+        const topY = -d * height / 2;
+        const topLength = Math.hypot(topX * canvasWidth, topY * canvasHeight) || 1;
+        const placeAction = (element, px, py) => place(element,
+            Math.max(12 / canvasWidth, Math.min(1 - 12 / canvasWidth, px)),
+            Math.max(12 / canvasHeight, Math.min(1 - 12 / canvasHeight, py)));
+        placeAction(wardrobeTransform.querySelector('.wardrobe-transform-rotate'),
+            x + topX * (1 + 24 / topLength), y + topY * (1 + 24 / topLength));
+        const sideX = a * width / 2;
+        const sideY = b * width / 2;
+        const sideLength = Math.hypot(sideX * canvasWidth, sideY * canvasHeight) || 1;
+        placeAction(remove, x + topX + sideX * (1 + 17 / sideLength),
+            y + topY + sideY * (1 + 17 / sideLength));
+    }
+
+    function renderWardrobeBinding(sprite) {
+        const select = $('#wardrobe-sprite-bone');
+        const mode = sprite.bindingMode || 'auto';
+        const label = (name) => {
+            const key = templatePackage?.source?.wardrobeBindings?.boneLabels?.[name];
+            return typeof key === 'string' ? `${t(`emoteMaker.${key}`)} · ${name}` : name;
+        };
+        const names = spineRenderer?.boneNames() || [];
+        const auto = t('emoteMaker.wardrobeSpriteAutoBinding');
+        select.replaceChildren(
+            new Option(mode === 'auto' && sprite.anchor ? `${auto} · ${label(sprite.anchor.name)}` : auto, 'auto'),
+            new Option(t('emoteMaker.wardrobeSpriteFreeBinding'), 'free'),
+        );
+        const candidates = (sprite.bindingCandidates || []).filter((name) => names.includes(name));
+        const remaining = names.filter((name) => !candidates.includes(name));
+        for (const [groupLabel, groupNames] of [['wardrobeSpriteNearbyBones', candidates], ['wardrobeSpriteAllBones', remaining]]) {
+            if (!groupNames.length) continue;
+            const group = document.createElement('optgroup');
+            group.label = t(`emoteMaker.${groupLabel}`);
+            group.append(...groupNames.map((name) => new Option(label(name), `bone:${name}`)));
+            select.append(group);
+        }
+        const value = mode === 'manual' && sprite.anchor ? `bone:${sprite.anchor.name}` : mode;
+        select.value = Array.from(select.options).some((option) => option.value === value) ? value : 'auto';
+    }
+
+    function selectWardrobeSprite(id) {
+        if (selectedWardrobeSprite !== id) wardrobeSpriteMenu.hidden = true;
+        selectedWardrobeSprite = id;
+        for (const sprite of wardrobeSprites.values()) {
+            sprite.button.setAttribute('aria-pressed', String(sprite.id === id));
+        }
+        const selected = wardrobeSprites.get(id);
+        if (wardrobeImageReady(selected?.image)) updateWardrobeSprite(selected);
+        else wardrobeTransform.hidden = true;
+    }
+
+    function mountWardrobeSprite(placement, image) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'wardrobe-placement';
+        button.setAttribute('aria-label', t('emoteMaker.wardrobeSpriteMove'));
+        button.setAttribute('aria-pressed', 'false');
+        image.alt = '';
+        image.draggable = false;
+        button.append(image);
+        const sprite = { ...placement, image, button };
+        wardrobeSprites.set(sprite.id, sprite);
+        wardrobePlacements.insertBefore(button, wardrobeTransform);
+        updateWardrobeSprite(sprite);
+        let drag = null;
+        const clamp = (value) => Math.max(0, Math.min(1, value));
+        button.addEventListener('focus', () => selectWardrobeSprite(sprite.id));
+        button.addEventListener('pointerdown', (event) => {
+            if (wardrobeFileBusy || wardrobeGestureActive || sprite.removing || event.button !== 0) return;
+            selectWardrobeSprite(sprite.id);
+            wardrobeGestureActive = true;
+            updateHistoryButtons();
+            drag = { id: event.pointerId, x: event.clientX, y: event.clientY, pose: wardrobeSpritePose(sprite) };
+            button.setPointerCapture(event.pointerId);
+        });
+        button.addEventListener('pointermove', (event) => {
+            if (drag?.id !== event.pointerId) return;
+            const box = wardrobePlacements.getBoundingClientRect();
+            if (!sprite.dragPose && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 3) return;
+            sprite.dragPose = [...drag.pose];
+            sprite.dragPose[4] = clamp(drag.pose[4] + (event.clientX - drag.x) / box.width);
+            sprite.dragPose[5] = clamp(drag.pose[5] + (event.clientY - drag.y) / box.height);
+            updateWardrobeSprite(sprite);
+        });
+        button.addEventListener('pointerup', (event) => {
+            if (drag?.id !== event.pointerId) return;
+            drag = null;
+            wardrobeGestureActive = false;
+            updateHistoryButtons();
+            if (!sprite.dragPose) return;
+            const before = wardrobeSnapshot();
+            const pose = sprite.dragPose;
+            sprite.dragPose = null;
+            sprite.bindingCandidates = wardrobeBindingCandidates(sprite, pose);
+            const name = sprite.bindingMode === 'manual' ? sprite.anchor?.name
+                : sprite.bindingMode === 'free' ? null : sprite.bindingCandidates[0];
+            setWardrobeBinding(sprite, name, pose);
+            updateWardrobeSprite(sprite);
+            commitWardrobeChange(before);
+        });
+        button.addEventListener('lostpointercapture', (event) => {
+            if (drag?.id !== event.pointerId) return;
+            drag = null;
+            wardrobeGestureActive = false;
+            updateHistoryButtons();
+            sprite.dragPose = null;
+            updateWardrobeSprite(sprite);
+        });
+        button.addEventListener('keydown', (event) => {
+            if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                event.preventDefault();
+                const box = button.getBoundingClientRect();
+                openWardrobeSpriteMenu(sprite, box.right, box.top);
+                return;
+            }
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+                event.preventDefault();
+                void removeWardrobeSprite(sprite);
+                return;
+            }
+            const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+            if (!direction || wardrobeGestureActive || wardrobeFileBusy) return;
+            event.preventDefault();
+            const before = wardrobeSnapshot();
+            const pose = wardrobeSpritePose(sprite);
+            pose[4] = clamp(pose[4] + direction[0] * 0.01);
+            pose[5] = clamp(pose[5] + direction[1] * 0.01);
+            setWardrobeBinding(sprite, sprite.anchor?.name, pose);
+            updateWardrobeSprite(sprite);
+            commitWardrobeChange(before);
+        });
+        button.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            openWardrobeSpriteMenu(sprite, event.clientX, event.clientY);
+        });
+        return sprite;
+    }
+
+    function syncWardrobePlacements() {
+        if (!wardrobePlacements) return;
+        const visible = templatePackage?.source?.builtIn === true && hasSpineRenderer();
+        wardrobePlacements.hidden = !visible;
+        selectWardrobeSprite(selectedWardrobeSprite);
+        renderWardrobeArtwork();
+        if (!visible || wardrobeSpritesLoaded) return;
+        const key = currentTemplateKey();
+        if (!key) return;
+        wardrobeTemplateKey = key;
+        wardrobeSpritesLoaded = true;
+        let saved;
+        try {
+            saved = JSON.parse(localStorage.getItem(wardrobePlacementKey()) || '[]');
+        } catch (_) {
+            return;
+        }
+        if (!Array.isArray(saved)) return;
+        for (const sprite of saved) {
+            if (!sprite || !/^sprite-[0-9a-f]{16}$/.test(sprite.id)
+                    || ![sprite.x, sprite.y, sprite.size].every(Number.isFinite)
+                    || sprite.size < .05 || sprite.size > 1.5 || wardrobeSprites.has(sprite.id)) continue;
+            const validMatrix = (value, length) => Array.isArray(value) && value.length === length && value.every(Number.isFinite);
+            if (!validMatrix(sprite.basis, 4)) delete sprite.basis;
+            if (typeof sprite.anchor?.name !== 'string' || !validMatrix(sprite.anchor.matrix, 6)) delete sprite.anchor;
+            if (!['auto', 'free', 'manual'].includes(sprite.bindingMode)) delete sprite.bindingMode;
+            sprite.behind = sprite.behind === true;
+            if (typeof sprite.aboveSlot !== 'string') delete sprite.aboveSlot;
+            const path = `${WARDROBE_SPRITE_PREFIX}${sprite.id}.png`;
+            const image = new Image();
+            mountWardrobeSprite(sprite, image);
+            image.addEventListener('load', () => {
+                const current = wardrobeSprites.get(sprite.id);
+                if (current?.image !== image) return;
+                updateWardrobeSprite(current);
+                forgetStageFrames();
+            }, { once: true });
+            image.addEventListener('error', () => {
+                const current = wardrobeSprites.get(sprite.id);
+                if (current?.image !== image) return;
+                current.button.remove();
+                wardrobeSprites.delete(sprite.id);
+                if (selectedWardrobeSprite === sprite.id) selectWardrobeSprite(null);
+                renderWardrobeArtwork();
+            }, { once: true });
+            image.src = templateTextureUrl(key, path);
+        }
+    }
+
+    async function addWardrobePlacement(blob) {
+        const key = currentTemplateKey();
+        if (!key || templatePackage?.source?.builtIn !== true || wardrobeFileBusy || wardrobeGestureActive || historyBusy) {
+            throw new Error('sprite_save_failed');
+        }
+        wardrobeTemplateKey = key;
+        const id = 'sprite-' + Array.from(crypto.getRandomValues(new Uint8Array(8)),
+            (byte) => byte.toString(16).padStart(2, '0')).join('');
+        const placement = { id, x: 0.5, y: 0.5, size: 0.3 };
+        const index = wardrobeSprites.size;
+        const apply = (present) => setWardrobePresence(key, placement, index, blob, present);
+        wardrobeFileBusy = true;
+        updateHistoryButtons();
+        try {
+            await apply(true);
+            if (currentTemplateKey() === key) {
+                rememberHistory(false, true, apply);
+                if (index === 0) {
+                    pendingWardrobePlacementTip = key;
+                    if (!$('#wardrobe-dialog')?.open) showWardrobePlacementTip();
+                }
+            }
+        } catch (_) {
+            throw new Error('sprite_save_failed');
+        } finally {
+            wardrobeFileBusy = false;
+            updateHistoryButtons();
+        }
+    }
+
+    function openWardrobeSpriteMenu(sprite, clientX, clientY) {
+        selectWardrobeSprite(sprite.id);
+        renderWardrobeBinding(sprite);
+        const groups = templatePackage?.catalogs?.slotGroups || [];
+        wardrobeLayerSlot.replaceChildren(
+            new Option(t('emoteMaker.wardrobeLayerFront'), 'front'),
+            ...spineRenderer.drawOrderNames().reverse().map((slot) => {
+                const name = getCatalogLabel(groups.find((group) => group.id === slot)) || slot;
+                return new Option(interpolate(t('emoteMaker.wardrobeLayerAbove'), { name }), `slot:${slot}`);
+            }),
+            new Option(t('emoteMaker.wardrobeLayerBack'), 'back'),
+        );
+        updateWardrobeLayerActions();
+        const viewport = canvasStage.getBoundingClientRect();
+        wardrobeSpriteMenu.hidden = false;
+        const maxX = canvasStage.clientWidth - wardrobeSpriteMenu.offsetWidth - 4;
+        const maxY = canvasStage.clientHeight - wardrobeSpriteMenu.offsetHeight - 4;
+        wardrobeSpriteMenu.style.left = `${Math.max(4, Math.min(maxX, clientX - viewport.left - canvasStage.clientLeft))}px`;
+        wardrobeSpriteMenu.style.top = `${Math.max(4, Math.min(maxY, clientY - viewport.top - canvasStage.clientTop))}px`;
+        $('#wardrobe-sprite-bone').focus({ preventScroll: true });
+    }
+
+    function wardrobeLayers() {
+        const sprites = [...wardrobeSprites.values()];
+        const slots = spineRenderer.drawOrderNames();
+        const layered = sprites.filter((sprite) => !sprite.behind)
+            .map((sprite) => ({ sprite, slot: wardrobeSpriteLayerSlot(sprite) }));
+        return [
+            ...sprites.filter((sprite) => sprite.behind),
+            ...slots.flatMap((slot) => [slot, ...layered.filter((item) => item.slot === slot).map((item) => item.sprite)]),
+            ...layered.filter((item) => !slots.includes(item.slot)).map((item) => item.sprite),
+        ];
+    }
+
+    function updateWardrobeLayerActions() {
+        const order = wardrobeLayers();
+        const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+        const index = order.indexOf(sprite);
+        const unavailable = index < 0 || sprite.removing;
+        wardrobeLayerUp.disabled = unavailable || index === order.length - 1;
+        wardrobeLayerDown.disabled = unavailable || index === 0;
+        wardrobeLayerSlot.disabled = unavailable;
+        if (sprite) {
+            const slot = wardrobeSpriteLayerSlot(sprite);
+            wardrobeLayerSlot.value = order.includes(slot) ? `slot:${slot}` : sprite.behind ? 'back' : 'front';
+        }
+    }
+
+    function applyWardrobeLayerOrder(order, sprite, position) {
+        const before = wardrobeSnapshot();
+        setWardrobeOrder(order.filter((item) => typeof item !== 'string'));
+        sprite.behind = position === 'back';
+        sprite.aboveSlot = position.startsWith('slot:') ? position.slice(5) : undefined;
+        renderWardrobeArtwork();
+        commitWardrobeChange(before);
+        updateWardrobeLayerActions();
+    }
+
+    function setWardrobeOrder(sprites) {
+        wardrobeSprites.clear();
+        for (const sprite of sprites) {
+            wardrobeSprites.set(sprite.id, sprite);
+            wardrobePlacements.insertBefore(sprite.button, wardrobeTransform);
+        }
+    }
+
+    function moveWardrobeLayer(step) {
+        const order = wardrobeLayers();
+        const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+        const index = order.indexOf(sprite);
+        const adjacent = order[index + step];
+        if (!sprite || sprite.removing || wardrobeFileBusy || wardrobeGestureActive || adjacent === undefined) return;
+        const slot = wardrobeSpriteLayerSlot(sprite);
+        let position = slot ? `slot:${slot}` : sprite.behind ? 'back' : 'front';
+        [order[index], order[index + step]] = [adjacent, sprite];
+        if (typeof adjacent === 'string') {
+            const slotBehind = order.slice(0, index + step).findLast((item) => typeof item === 'string');
+            position = slotBehind ? `slot:${slotBehind}` : 'back';
+        } else {
+            const adjacentSlot = wardrobeSpriteLayerSlot(adjacent);
+            position = adjacentSlot ? `slot:${adjacentSlot}` : adjacent.behind ? 'back' : 'front';
+        }
+        applyWardrobeLayerOrder(order, sprite, position);
+        const action = step > 0 ? wardrobeLayerUp : wardrobeLayerDown;
+        if (action.disabled) (step > 0 ? wardrobeLayerDown : wardrobeLayerUp).focus({ preventScroll: true });
+    }
+
+    async function setWardrobePresence(key, placement, index, blob, present) {
+        const { id } = placement;
+        const path = `${WARDROBE_SPRITE_PREFIX}${id}.png`;
+        let image;
+        let url;
+        try {
+            if (present) {
+                image = new Image();
+                url = URL.createObjectURL(blob);
+                image.src = url;
+                await image.decode();
+            }
+            await writeTemplateTextures(key, [[path, blob]], { remove: !present });
+        } catch (error) {
+            if (url) URL.revokeObjectURL(url);
+            throw error;
+        }
+        if (present) {
+            const order = [...wardrobeSprites.values()];
+            const sprite = mountWardrobeSprite(structuredClone(placement), image);
+            sprite.blob = blob;
+            order.splice(index, 0, sprite);
+            setWardrobeOrder(order);
+            selectWardrobeSprite(id);
+        } else {
+            const sprite = wardrobeSprites.get(id);
+            if (sprite) {
+                sprite.button.remove();
+                if (sprite.image.src.startsWith('blob:')) URL.revokeObjectURL(sprite.image.src);
+                wardrobeSprites.delete(id);
+                if (selectedWardrobeSprite === id) selectWardrobeSprite(null);
+            }
+        }
+        renderWardrobeArtwork();
+        persistWardrobePlacements();
+    }
+
+    async function removeWardrobeSprite(sprite) {
+        const key = currentTemplateKey();
+        if (!key || wardrobeFileBusy || wardrobeGestureActive || historyBusy || sprite.removing) return;
+        const remove = $('#wardrobe-sprite-remove');
+        wardrobeFileBusy = true;
+        sprite.removing = true;
+        remove.disabled = true;
+        updateHistoryButtons();
+        try {
+            const path = `${WARDROBE_SPRITE_PREFIX}${sprite.id}.png`;
+            const blob = sprite.blob || await readTemplateTexture(key, path);
+            if (!blob) throw new Error('sprite_save_failed');
+            const placement = wardrobePlacement(sprite);
+            const index = [...wardrobeSprites.keys()].indexOf(sprite.id);
+            const apply = (present) => setWardrobePresence(key, placement, index, blob, present);
+            await apply(false);
+            if (currentTemplateKey() === key) rememberHistory(true, false, apply);
+        } catch (_) {
+            showToast(t('emoteMaker.wardrobeSpriteSaveFailed'));
+        } finally {
+            wardrobeFileBusy = false;
+            sprite.removing = false;
+            remove.disabled = Boolean(wardrobeSprites.get(selectedWardrobeSprite)?.removing);
+            if (!wardrobeSpriteMenu.hidden) updateWardrobeLayerActions();
+            updateHistoryButtons();
+        }
+    }
+
+    function bindWardrobeTransform() {
+        let gesture = null;
+        wardrobeTransform.addEventListener('pointerdown', (event) => {
+            const handle = event.target.closest('.wardrobe-transform-scale, .wardrobe-transform-rotate');
+            const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+            if (!handle || !sprite || sprite.removing || wardrobeGestureActive || wardrobeFileBusy || event.button !== 0) return;
+            const pose = wardrobeSpritePose(sprite);
+            const box = wardrobePlacements.getBoundingClientRect();
+            const bone = wardrobeBoneTransform(sprite.anchor?.name);
+            if (!box.width || !box.height || (sprite.anchor && !bone)) return;
+            event.preventDefault();
+            wardrobeGestureActive = true;
+            updateHistoryButtons();
+            wardrobeSpriteMenu.hidden = true;
+            const center = [box.left + box.width * pose[4], box.top + box.height * pose[5]];
+            const dx = event.clientX - center[0];
+            const dy = event.clientY - center[1];
+            gesture = { sprite, pose, bone, handle, center, size: sprite.size, distance: Math.max(1, Math.hypot(dx, dy)),
+                angle: Math.atan2(dy, dx), aspect: box.width / box.height, pointerId: event.pointerId,
+                before: wardrobeSnapshot(), x: event.clientX, y: event.clientY, moved: false };
+            sprite.dragPose = pose;
+            handle.setPointerCapture(event.pointerId);
+        });
+        function transform(event) {
+            if (gesture?.pointerId !== event.pointerId) return;
+            if (!gesture.moved && Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) < 2) return;
+            gesture.moved = true;
+            const { sprite, pose, handle, center, size, distance, angle, aspect } = gesture;
+            const dx = event.clientX - center[0];
+            const dy = event.clientY - center[1];
+            if (handle.classList.contains('wardrobe-transform-scale')) {
+                sprite.size = Math.max(0.05, Math.min(1.5, size * Math.hypot(dx, dy) / distance));
+            } else {
+                sprite.dragPose = rotateWardrobePose(pose, Math.atan2(dy, dx) - angle, aspect);
+            }
+            updateWardrobeSprite(sprite);
+        }
+        wardrobeTransform.addEventListener('pointermove', transform);
+        wardrobeTransform.addEventListener('pointerup', (event) => {
+            if (gesture?.pointerId !== event.pointerId) return;
+            transform(event);
+            const { sprite, handle, bone, before, moved } = gesture;
+            gesture = null;
+            wardrobeGestureActive = false;
+            if (moved && handle.classList.contains('wardrobe-transform-rotate')) {
+                setWardrobeBinding(sprite, sprite.anchor?.name, sprite.dragPose, bone);
+            }
+            sprite.dragPose = null;
+            updateWardrobeSprite(sprite);
+            if (moved) commitWardrobeChange(before);
+            updateHistoryButtons();
+        });
+        wardrobeTransform.addEventListener('lostpointercapture', (event) => {
+            if (gesture?.pointerId !== event.pointerId) return;
+            const { sprite, size } = gesture;
+            gesture = null;
+            wardrobeGestureActive = false;
+            sprite.dragPose = null;
+            sprite.size = size;
+            updateWardrobeSprite(sprite);
+            updateHistoryButtons();
+        });
+        wardrobeTransform.addEventListener('click', (event) => {
+            if (!event.target.closest('#wardrobe-sprite-remove')) return;
+            const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+            if (sprite) void removeWardrobeSprite(sprite);
+        });
+        wardrobeTransform.addEventListener('keydown', (event) => {
+            const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+            if (!sprite || sprite.removing || wardrobeGestureActive || wardrobeFileBusy) return;
+            const step = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[event.key];
+            if (!step) return;
+            const before = wardrobeSnapshot();
+            const pose = wardrobeSpritePose(sprite);
+            if (event.target.matches('.wardrobe-transform-scale')) {
+                sprite.size = Math.max(0.05, Math.min(1.5, sprite.size + 0.02 * step));
+            } else if (event.target.matches('.wardrobe-transform-rotate')) {
+                const angle = Math.PI / 36 * step;
+                const aspect = wardrobePlacements.clientWidth / (wardrobePlacements.clientHeight || 1) || 1;
+                setWardrobeBinding(sprite, sprite.anchor?.name, rotateWardrobePose(pose, angle, aspect));
+            } else return;
+            event.preventDefault();
+            updateWardrobeSprite(sprite);
+            commitWardrobeChange(before);
+        });
+    }
+
+    function bindWardrobePlacements() {
+        const bone = $('#wardrobe-sprite-bone');
+        bindWardrobeTransform();
+        wardrobeLayerUp.addEventListener('click', () => moveWardrobeLayer(1));
+        wardrobeLayerDown.addEventListener('click', () => moveWardrobeLayer(-1));
+        wardrobeLayerSlot.addEventListener('change', () => {
+            const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+            if (!sprite || sprite.removing || wardrobeGestureActive || wardrobeFileBusy) return;
+            const position = wardrobeLayerSlot.value;
+            const order = wardrobeLayers().filter((item) => item !== sprite);
+            const index = position === 'front' ? order.length : position === 'back' ? 0 : order.indexOf(position.slice(5)) + 1;
+            order.splice(index, 0, sprite);
+            applyWardrobeLayerOrder(order, sprite, position);
+        });
+        if (wardrobePlacements) {
+            new ResizeObserver(() => {
+                if (wardrobePlacements.hidden || capturingFrames) return;
+                for (const sprite of wardrobeSprites.values()) updateWardrobeSprite(sprite, false);
+            }).observe(wardrobePlacements);
+        }
+        bone?.addEventListener('change', () => {
+            const sprite = wardrobeSprites.get(selectedWardrobeSprite);
+            if (!sprite || sprite.removing || wardrobeGestureActive || wardrobeFileBusy) return;
+            const before = wardrobeSnapshot();
+            const pose = wardrobeSpritePose(sprite);
+            const value = bone.value;
+            sprite.bindingMode = value.startsWith('bone:') ? 'manual' : value;
+            sprite.bindingCandidates = wardrobeBindingCandidates(sprite, pose);
+            const name = sprite.bindingMode === 'manual' ? value.slice(5)
+                : value === 'auto' ? sprite.bindingCandidates[0] : null;
+            setWardrobeBinding(sprite, name, pose);
+            wardrobeSpriteMenu.hidden = true;
+            sprite.button.focus({ preventScroll: true });
+            updateWardrobeSprite(sprite);
+            commitWardrobeChange(before);
+        });
+        document.addEventListener('pointerdown', (event) => {
+            if (wardrobeSpriteMenu.contains(event.target)) return;
+            wardrobeSpriteMenu.hidden = true;
+            if (event.button === 0 && canvasFrame?.contains(event.target)
+                    && !event.target.closest('.wardrobe-placement, .wardrobe-transform')) selectWardrobeSprite(null);
+        });
+        wardrobeSpriteMenu.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            wardrobeSpriteMenu.hidden = true;
+            wardrobeSprites.get(selectedWardrobeSprite)?.button.focus({ preventScroll: true });
+        });
+    }
+
+    function bindTimedTip(tip, { duration = 6000, returnFocus, onHide } = {}) {
+        const message = tip.querySelector('p');
+        const progress = tip.querySelector('.emote-timed-tip-progress');
+        const close = tip.querySelector('.emote-timed-tip-close');
+        const transition = 180;
+        let animation = null;
+        let progressAnimation = null;
+
+        function hide() {
+            animation?.cancel();
+            progressAnimation?.cancel();
+            animation = progressAnimation = null;
+            tip.hidden = true;
+            if (tip.hasAttribute('popover')) {
+                tip.hidePopover?.();
+                tip.removeAttribute('popover');
+                for (const property of ['top', 'left', 'width']) tip.style.removeProperty(property);
+            }
+            close.disabled = false;
+            onHide?.();
+        }
+
+        function animate(frames, length) {
+            const current = tip.animate(frames, { duration: length, fill: 'both' });
+            animation = current;
+            current.addEventListener('finish', () => { if (animation === current) hide(); });
+        }
+
+        close.addEventListener('click', () => {
+            if (tip.hidden || close.disabled) return;
+            const { transform, opacity } = getComputedStyle(tip);
+            const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const bounds = tip.getBoundingClientRect();
+            animation?.cancel();
+            progressAnimation?.pause();
+            if (document.activeElement === close) returnFocus?.()?.focus({ preventScroll: true });
+            close.disabled = true;
+
+            let frames = [{ transform, opacity }, { transform, opacity: 0 }];
+            if (!reducedMotion && typeof tip.showPopover === 'function') {
+                // The top layer lets the tip fall past the edge of its container.
+                tip.setAttribute('popover', 'manual');
+                Object.assign(tip.style, {
+                    top: `${bounds.top}px`, left: `${bounds.left}px`, width: `${bounds.width}px`,
+                });
+                tip.showPopover();
+                const cornerLift = bounds.width * Math.sin(10 * Math.PI / 180) / 2;
+                const distance = Math.ceil(window.innerHeight - bounds.top + cornerLift) + 12;
+                frames = [
+                    { transform: 'none', opacity, easing: 'cubic-bezier(.16, 1, .3, 1)' },
+                    { transform: 'translate(5px, -15px) rotate(-4deg) scale(1.03)', opacity: 1, offset: 0.22,
+                        easing: 'cubic-bezier(.55, .06, .83, .48)' },
+                    { transform: `translate(19px, ${distance}px) rotate(10deg) scale(.96)`, opacity: 1 },
+                ];
+            }
+            animate(frames, frames.length === 3 ? 540 : 120);
+        });
+
+        return {
+            hide,
+            show(key) {
+                animation?.cancel();
+                progressAnimation?.cancel();
+                message.dataset.i18n = key;
+                message.textContent = t(key);
+                close.title = t('emoteMaker.wardrobeClose');
+                close.setAttribute('aria-label', close.title);
+                tip.hidden = false;
+                const offset = matchMedia('(prefers-reduced-motion: reduce)').matches
+                    ? 'none' : 'translateX(calc(-100% - 12px))';
+                animate([
+                    { transform: offset, opacity: 0 },
+                    { transform: 'none', opacity: 1, offset: transition / duration },
+                    { transform: 'none', opacity: 1, offset: 1 - transition / duration },
+                    { transform: offset, opacity: 0 },
+                ], duration);
+                progressAnimation = progress.animate([
+                    { transform: 'scaleX(0)' }, { transform: 'scaleX(1)' },
+                ], { duration: duration - transition, fill: 'forwards' });
+            },
+        };
+    }
+
+    const shownPageTips = new Set();
+    const activePageTips = new Map();
+    let pendingWardrobePlacementTip = '';
+
+    function showPageTip(key, { once = true, returnFocus } = {}) {
+        if (once && shownPageTips.has(key)) return;
+        const host = $('#emote-page-tips');
+        if (!host) return;
+        activePageTips.get(key)?.hide();
+        const tip = $('#emote-page-tip-template').content.firstElementChild.cloneNode(true);
+        const controller = bindTimedTip(tip, {
+            duration: 10000,
+            returnFocus,
+            onHide: () => {
+                tip.remove();
+                activePageTips.delete(key);
+            },
+        });
+        if (once) shownPageTips.add(key);
+        activePageTips.set(key, controller);
+        host.append(tip);
+        controller.show(key);
+    }
+
+    function showWardrobePlacementTip() {
+        const key = pendingWardrobePlacementTip;
+        pendingWardrobePlacementTip = '';
+        if (key && key === currentTemplateKey() && wardrobeSprites.size) {
+            showPageTip('emoteMaker.wardrobePlacementTip', {
+                once: false,
+                returnFocus: () => wardrobeSprites.get(selectedWardrobeSprite)?.button,
+            });
+        }
+    }
+
+    function bindPackScrollTip() {
+        const panel = $('#inspector-panel-export');
+        const section = panel?.querySelector('.pack-section');
+        if (!section) return;
+        const key = 'emoteMaker.packDragTip';
+        const positions = new WeakMap();
+        const onScroll = (event) => {
+            const target = event.target;
+            const scroller = target === document ? document.scrollingElement : target;
+            if (!scroller?.contains?.(panel)) return;
+            const previous = positions.get(scroller) || 0;
+            positions.set(scroller, scroller.scrollTop);
+            if (!templatePackage || panel.hidden || scroller.scrollTop <= previous) return;
+            const content = section.getBoundingClientRect();
+            const visible = panel.getBoundingClientRect();
+            const height = Math.min(content.bottom, visible.bottom, window.innerHeight)
+                - Math.max(content.top, visible.top, 0);
+            if (height < Math.min(24, content.height) || !content.height) return;
+            showPageTip(key, { returnFocus: () => $('#inspector-tab-export') });
+            window.removeEventListener('scroll', onScroll, true);
+        };
+        window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    }
+
+    function bindWardrobeGeneration() {
+        const api = '/api/emote-maker/builtin/wardrobe';
+        const libraryApi = `${api}/spritesheets`;
+        const headers = { 'x-neko-emote-wardrobe': '1' };
+        const dialog = $('#wardrobe-dialog');
+        if (!dialog) return;
+        const reference = $('#wardrobe-reference');
+        const referenceOpen = $('#wardrobe-reference-open');
+        const promptField = $('#wardrobe-prompt-field');
+        const supplementalPrompt = $('#wardrobe-prompt');
+        const sourceView = $('#wardrobe-source-view');
+        const libraryView = $('#wardrobe-library-view');
+        const sourcePane = $('#wardrobe-source-pane');
+        const libraryPane = $('#wardrobe-library-pane');
+        const libraryImport = $('#wardrobe-library-import');
+        const libraryImage = $('#wardrobe-library-image');
+        const libraryStatus = $('#wardrobe-library-status');
+        const libraryEmpty = $('#wardrobe-library-empty');
+        const libraryGrid = $('#wardrobe-library-grid');
+        const libraryConfirm = $('#wardrobe-library-confirm');
+        const form = $('#wardrobe-form');
+        const views = { source: [sourceView, sourcePane], library: [libraryView, libraryPane] };
+        const sheetResult = $('#wardrobe-spritesheet-result');
+        const sheetStatus = $('#wardrobe-sheet-status');
+        const sheetLayoutWarning = $('#wardrobe-spritesheet-layout-warning');
+        const addSprite = $('#wardrobe-sprite-add');
+        const saveSheet = $('#wardrobe-spritesheet-save');
+        const sheetFile = $('#wardrobe-spritesheet-file');
+        const openSheet = $('#wardrobe-spritesheet-open');
+        const status = $('#wardrobe-status');
+        const model = $('#wardrobe-model');
+        const configLink = $('#wardrobe-config');
+        const submit = $('#wardrobe-submit');
+        const close = $('#wardrobe-close');
+        const paddingCooldown = 10000;
+        const suggestedCropEdge = 64;
+        const nextCropNotice = new Map();
+        let cropAspectLimit = null;
+        let configurationCode = null;
+        let regionLimit = 3;
+        let pending = '';
+        let activeView = 'source';
+        const paddingNotice = bindTimedTip($('#wardrobe-padding-notice'), {
+            returnFocus: () => views[activeView][0],
+        });
+        let currentSheet = null;
+        let libraryEntries = null;
+        let libraryRefresh = null;
+        let pendingRemoval = null;
+        const picker = bindWardrobeSpritePicker({
+            canEdit: () => !pending,
+            onChange: () => {
+                addSprite.disabled = Boolean(pending) || !picker.selected;
+                renderSubmit();
+            },
+        });
+        const annotations = bindWardrobeSourceCrops({
+            reference,
+            onCommit: (width, height) => {
+                const longest = Math.max(width, height);
+                if (cropAspectLimit && longest / Math.min(width, height) > cropAspectLimit) {
+                    showCropNotice('emoteMaker.wardrobeCropPadded');
+                } else if (longest < suggestedCropEdge) {
+                    showCropNotice('emoteMaker.wardrobeCropLowResolution');
+                }
+            },
+            onChange: (changed) => {
+                if (changed && configurationCode === '') status.textContent = '';
+                renderControls();
+            },
+        });
+
+        function clearSheet() {
+            if (currentSheet) URL.revokeObjectURL(currentSheet.url);
+            currentSheet = null;
+            sheetStatus.textContent = '';
+            sheetLayoutWarning.hidden = true;
+            picker.setImage(null);
+        }
+
+        function showCropNotice(key) {
+            const now = performance.now();
+            if (!dialog.open || now < (nextCropNotice.get(key) ?? 0)) return;
+            nextCropNotice.set(key, now + paddingCooldown);
+            paddingNotice.hide();
+            paddingNotice.show(key);
+        }
+
+        function renderSubmit() {
+            submit.disabled = Boolean(pending) || configurationCode !== '' || annotations.editing || picker.editing
+                || !reference.files.length || !annotations.count;
+        }
+
+        function renderControls() {
+            const busy = Boolean(pending);
+            reference.disabled = referenceOpen.disabled = busy;
+            configLink.hidden = !configurationCode;
+            for (const [view, [button, pane]] of Object.entries(views)) {
+                pane.hidden = view !== activeView;
+                button.setAttribute('aria-pressed', String(!pane.hidden));
+            }
+            annotations.update(busy, regionLimit);
+            promptField.hidden = annotations.count !== 1;
+            supplementalPrompt.disabled = busy || promptField.hidden;
+            if (!annotations.count) supplementalPrompt.value = '';
+            sheetResult.hidden = !currentSheet;
+            libraryPane.classList.toggle('has-preview', Boolean(currentSheet));
+            form.hidden = activeView === 'library';
+            libraryImport.disabled = busy;
+            libraryGrid.disabled = busy || Boolean(libraryRefresh);
+            saveSheet.disabled = busy;
+            saveSheet.hidden = !currentSheet || Boolean(currentSheet.id) || pending === 'saving-sheet';
+            openSheet.disabled = busy;
+            picker.update();
+            close.disabled = pending === 'saving' || pending === 'saving-sheet';
+        }
+
+        function reportError(code, target = status) {
+            const key = {
+                invalid_image: 'wardrobeInvalidImage',
+                invalid_annotations: 'wardrobeInvalidMarks',
+                invalid_spritesheet_regions: 'wardrobeInvalidMarks',
+                invalid_wardrobe_prompt: 'wardrobePromptInvalid',
+                invalid_spritesheet_result: 'wardrobeSpriteResultFailed',
+                invalid_spritesheet_file: 'wardrobeSpriteOpenFailed',
+                wardrobe_library_failed: 'wardrobeLibraryFailed',
+                wardrobe_library_missing: 'wardrobeLibraryFailed',
+                image_edit_unsupported: 'wardrobeSpriteUnsupported',
+                empty_sprite: 'wardrobeSpriteEmpty',
+                sprite_save_failed: 'wardrobeSpriteSaveFailed',
+                generation_busy: 'wardrobeBusy',
+                wardrobe_vision_unavailable: 'wardrobeVisionUnavailable',
+                wardrobe_vision_failed: 'wardrobeVisionFailed',
+                missing_api_key: 'wardrobeUnconfigured',
+                not_configured: 'wardrobeUnconfigured',
+                invalid_configuration: 'wardrobeUnconfigured',
+                provider_access_denied: 'wardrobeProviderAccessDenied',
+                provider_rate_limited: 'wardrobeProviderLimited',
+                provider_quota_exceeded: 'wardrobeProviderQuota',
+                provider_timeout: 'wardrobeProviderTimeout',
+                provider_unavailable: 'wardrobeProviderUnavailable',
+                provider_network_error: 'wardrobeProviderUnavailable',
+                provider_request_rejected: 'wardrobeProviderRejected',
+                provider_http_error: 'wardrobeProviderRejected',
+                provider_task_failed: 'wardrobeProviderRejected',
+                invalid_response: 'wardrobeProviderResponse',
+                invalid_image_data: 'wardrobeProviderResponse',
+                invalid_image_url: 'wardrobeProviderResponse',
+                response_too_large: 'wardrobeProviderResponse',
+                unsupported_content_encoding: 'wardrobeProviderResponse',
+                image_download_failed: 'wardrobeDownloadFailed',
+                local_connection_lost: 'wardrobeLocalConnectionLost',
+            }[code] || 'wardrobeFailed';
+            target.textContent = t(`emoteMaker.${key}`);
+        }
+
+        async function checkedFetch(url, options) {
+            let response;
+            try {
+                response = await fetch(url, { ...options, credentials: 'same-origin' });
+            } catch (_) {
+                throw new Error('local_connection_lost');
+            }
+            if (!response.ok) {
+                throw new Error((await response.json().catch(() => ({}))).code || 'request_failed');
+            }
+            return response;
+        }
+
+        function renderSheetLibrary() {
+            libraryEmpty.hidden = Boolean(libraryRefresh) || libraryEntries?.length !== 0;
+            const dateFormat = new Intl.DateTimeFormat(document.documentElement.lang || undefined, {
+                dateStyle: 'short', timeStyle: 'short',
+            });
+            const cards = (libraryEntries || []).map(({ id, savedAt }) => {
+                const date = new Date(savedAt);
+                const dateLabel = dateFormat.format(date);
+                const card = document.createElement('div');
+                card.className = 'wardrobe-library-card';
+                const preview = document.createElement('button');
+                preview.type = 'button';
+                preview.className = 'wardrobe-button wardrobe-library-preview';
+                preview.dataset.sheetOpen = id;
+                preview.setAttribute('aria-label', `${t('emoteMaker.wardrobeSpriteOpen')} · ${dateLabel}`);
+                preview.setAttribute('aria-pressed', String(currentSheet?.id === id));
+                const img = new Image();
+                img.alt = '';
+                img.loading = 'lazy';
+                img.src = `${libraryApi}/${id}?preview=true`;
+                preview.append(img);
+                const actions = document.createElement('div');
+                actions.className = 'wardrobe-library-card-actions';
+                const time = document.createElement('time');
+                time.dateTime = date.toISOString();
+                time.textContent = dateLabel;
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'wardrobe-button wardrobe-button-quiet';
+                remove.dataset.sheetRemove = id;
+                remove.textContent = t('emoteMaker.confirmDelete');
+                remove.setAttribute('aria-label', `${remove.textContent} · ${dateLabel}`);
+                actions.append(time, remove);
+                card.append(preview, actions);
+                return card;
+            });
+            libraryGrid.replaceChildren(...cards);
+        }
+
+        function refreshSheetLibrary() {
+            if (libraryRefresh) return libraryRefresh;
+            libraryEmpty.hidden = true;
+            libraryStatus.textContent = t('common.loading');
+            libraryGrid.disabled = true;
+            libraryPane.setAttribute('aria-busy', 'true');
+            libraryRefresh = checkedFetch(libraryApi)
+                .then((response) => response.json())
+                .then(({ entries }) => {
+                    libraryEntries = entries;
+                    libraryStatus.textContent = '';
+                })
+                .catch(() => { libraryStatus.textContent = t('emoteMaker.wardrobeLibraryFailed'); })
+                .finally(() => {
+                    libraryRefresh = null;
+                    libraryPane.removeAttribute('aria-busy');
+                    renderSheetLibrary();
+                    libraryGrid.disabled = Boolean(pending);
+                });
+            return libraryRefresh;
+        }
+
+        async function loadLibrarySheet(id) {
+            const response = await checkedFetch(`${libraryApi}/${id}`);
+            await showSheet(await response.blob(), response.headers.get('X-Wardrobe-Spritesheet-Layout') === 'check',
+                'invalid_spritesheet_file', id);
+            renderSheetLibrary();
+        }
+
+        libraryGrid.addEventListener('click', async (event) => {
+            if (pending) return;
+            const remove = event.target.closest('[data-sheet-remove]');
+            if (remove) {
+                pendingRemoval = remove.dataset.sheetRemove;
+                libraryConfirm.returnValue = '';
+                libraryConfirm.showModal();
+                return;
+            }
+            const id = event.target.closest('[data-sheet-open]')?.dataset.sheetOpen;
+            if (!id) return;
+            pending = 'opening-sheet';
+            libraryStatus.textContent = '';
+            renderControls();
+            try {
+                await loadLibrarySheet(id);
+            } catch (_) {
+                libraryStatus.textContent = t('emoteMaker.wardrobeLibraryFailed');
+            } finally {
+                pending = '';
+                renderControls();
+                if (dialog.open && activeView === 'library') libraryView.focus({ preventScroll: true });
+            }
+        });
+
+        libraryConfirm.addEventListener('close', async () => {
+            const id = pendingRemoval;
+            pendingRemoval = null;
+            if (!id || libraryConfirm.returnValue !== 'delete') return;
+            pending = 'removing-sheet';
+            libraryStatus.textContent = '';
+            renderControls();
+            try {
+                await checkedFetch(`${libraryApi}/${id}`, { method: 'DELETE', headers });
+                if (currentSheet?.id === id) clearSheet();
+                await libraryRefresh;
+                libraryEntries = libraryEntries?.filter((entry) => entry.id !== id) || [];
+                await refreshSheetLibrary();
+            } catch (_) {
+                libraryStatus.textContent = t('emoteMaker.wardrobeLibraryFailed');
+            } finally {
+                pending = '';
+                renderControls();
+                if (dialog.open && activeView === 'library') libraryView.focus({ preventScroll: true });
+            }
+        });
+
+        async function saveLibrarySheet(blob, layoutWarning = false) {
+            const body = new FormData();
+            body.append('sheet', blob, 'accessory');
+            body.append('layout_warning', String(layoutWarning));
+            const { id } = await (await checkedFetch(libraryApi, { method: 'POST', headers, body })).json();
+            if (!id) throw new Error('wardrobe_library_failed');
+            return id;
+        }
+
+        libraryImport.addEventListener('click', () => libraryImage.click());
+        libraryImage.addEventListener('change', async () => {
+            const file = libraryImage.files[0];
+            libraryImage.value = '';
+            if (!file || pending) return;
+            pending = 'importing-image';
+            libraryStatus.textContent = t('common.loading');
+            renderControls();
+            try {
+                if (!file.size || file.size > 32 * 1024 * 1024) throw new Error('invalid_spritesheet_file');
+                const id = await saveLibrarySheet(file);
+                await libraryRefresh;
+                await refreshSheetLibrary();
+                await loadLibrarySheet(id);
+                sheetStatus.textContent = t('emoteMaker.wardrobeLibrarySaved');
+            } catch (error) {
+                await libraryRefresh;
+                const key = error.message === 'invalid_spritesheet_file'
+                    ? 'wardrobeLibraryInvalidImage' : 'wardrobeLibraryFailed';
+                libraryStatus.textContent = t(`emoteMaker.${key}`);
+            } finally {
+                pending = '';
+                renderControls();
+                if (dialog.open && activeView === 'library') libraryImport.focus({ preventScroll: true });
+            }
+        });
+
+        async function storeCurrentSheet() {
+            const sheet = currentSheet;
+            try {
+                sheet.id = await saveLibrarySheet(sheet.blob, sheet.layoutWarning);
+                sheetStatus.textContent = t('emoteMaker.wardrobeLibrarySaved');
+            } catch (_) {
+                sheetStatus.textContent = t('emoteMaker.wardrobeLibrarySaveFailed');
+            }
+            await libraryRefresh;
+            await refreshSheetLibrary();
+        }
+
+        saveSheet.addEventListener('click', async () => {
+            if (pending || !currentSheet || currentSheet.id) return;
+            pending = 'saving-sheet';
+            sheetStatus.textContent = '';
+            renderControls();
+            try {
+                await storeCurrentSheet();
+            } finally {
+                pending = '';
+                renderControls();
+                if (dialog.open && activeView === 'library') {
+                    (currentSheet?.id ? libraryView : saveSheet).focus({ preventScroll: true });
+                }
+            }
+        });
+
+        async function refreshStatus() {
+            if (pending) return;
+            configurationCode = null;
+            pending = 'loading';
+            status.textContent = '';
+            model.textContent = '';
+            configLink.hidden = true;
+            renderControls();
+            try {
+                const data = await (await checkedFetch(api)).json();
+                configurationCode = data.spritesheetConfigurationCode || '';
+                cropAspectLimit = data.spritesheetCropAspectLimit ?? null;
+                regionLimit = data.spritesheetRegionLimit || regionLimit;
+                if (data.model) model.textContent = `${t('emoteMaker.wardrobeModel')} · ${data.model}`;
+                if (configurationCode) reportError(configurationCode);
+            } catch (error) {
+                reportError(error.message);
+            } finally {
+                pending = '';
+                renderControls();
+            }
+        }
+
+        $('#wardrobe-open').addEventListener('click', () => {
+            activeView = 'source';
+            renderControls();
+            dialog.showModal();
+            void refreshStatus();
+        });
+        $('#wardrobe-library-open').addEventListener('click', () => {
+            selectView('library');
+            dialog.showModal();
+            libraryView.focus({ preventScroll: true });
+        });
+        window.addEventListener('focus', () => {
+            if (dialog.open && activeView !== 'library' && configurationCode) void refreshStatus();
+        });
+        window.addEventListener('localechange', () => {
+            if (!dialog.open) return;
+            renderControls();
+            if (activeView === 'library') renderSheetLibrary();
+        });
+
+        function selectView(view) {
+            activeView = view;
+            renderControls();
+            if (view === 'library') void refreshSheetLibrary();
+            else if (configurationCode === null) void refreshStatus();
+        }
+
+        for (const [view, [button]] of Object.entries(views)) {
+            button.addEventListener('click', () => selectView(view));
+        }
+        reference.addEventListener('change', () => {
+            if (configurationCode === '') status.textContent = '';
+            selectView('source');
+        });
+        referenceOpen.addEventListener('click', () => reference.click());
+        close.addEventListener('click', () => dialog.close());
+        dialog.addEventListener('close', () => {
+            picker.cancel();
+            paddingNotice.hide();
+            showWardrobePlacementTip();
+        });
+        dialog.addEventListener('cancel', (event) => {
+            if (close.disabled) event.preventDefault();
+        });
+
+        async function generateSheet(file) {
+            const body = new FormData();
+            body.append('reference', file);
+            body.append('annotation', annotations.serialize());
+            const details = supplementalPrompt.value.trim();
+            if (annotations.count === 1 && details) body.append('supplemental_prompt', details);
+            const response = await checkedFetch(`${api}/generate-spritesheet`, { method: 'POST', headers, body });
+            await showSheet(await response.blob(), response.headers.get('X-Wardrobe-Spritesheet-Layout') === 'check',
+                'invalid_spritesheet_result');
+            pending = 'saving-sheet';
+            renderControls();
+            await storeCurrentSheet();
+        }
+
+        async function showSheet(blob, layoutWarning, errorCode, id = null) {
+            const url = URL.createObjectURL(blob);
+            const image = new Image();
+            image.src = url;
+            try {
+                await image.decode();
+            } catch (_) {
+                URL.revokeObjectURL(url);
+                throw new Error(errorCode);
+            }
+            clearSheet();
+            currentSheet = { url, blob, layoutWarning, id };
+            sheetLayoutWarning.hidden = !layoutWarning;
+            picker.setImage(image);
+            activeView = 'library';
+            status.textContent = '';
+        }
+
+        openSheet.addEventListener('click', () => sheetFile.click());
+        sheetFile.addEventListener('change', async () => {
+            const file = sheetFile.files[0];
+            sheetFile.value = '';
+            if (!file || pending) return;
+            pending = 'opening-sheet';
+            renderControls();
+            try {
+                if (file.size < 24 || file.size > 32 * 1024 * 1024) throw new Error('invalid_spritesheet_file');
+                const header = new DataView(await file.slice(0, 24).arrayBuffer());
+                const width = header.getUint32(16);
+                const height = header.getUint32(20);
+                if (header.getUint32(0) !== 0x89504e47 || header.getUint32(4) !== 0x0d0a1a0a
+                        || header.getUint32(8) !== 13 || header.getUint32(12) !== 0x49484452
+                        || !width || !height || Math.max(width, height) > 2048) {
+                    throw new Error('invalid_spritesheet_file');
+                }
+                await showSheet(file, false, 'invalid_spritesheet_file');
+                void refreshSheetLibrary();
+            } catch (_) {
+                reportError('invalid_spritesheet_file');
+            } finally {
+                pending = '';
+                renderControls();
+                if (dialog.open && activeView === 'library') libraryView.focus({ preventScroll: true });
+            }
+        });
+
+        $('#wardrobe-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            if (submit.disabled) return;
+            const image = reference.files[0];
+            if (image?.size > 8 * 1024 * 1024) {
+                reportError('invalid_image');
+                renderControls();
+                return;
+            }
+            pending = 'generating';
+            status.textContent = t('emoteMaker.wardrobeWorking');
+            renderControls();
+            try {
+                await generateSheet(image);
+            } catch (error) {
+                reportError(error.message);
+            } finally {
+                pending = '';
+                renderControls();
+                if (dialog.open && activeView === 'library') libraryView.focus({ preventScroll: true });
+            }
+        });
+
+        addSprite.addEventListener('click', async () => {
+            if (pending || !picker.selected) return;
+            pending = 'saving';
+            sheetStatus.textContent = t('emoteMaker.wardrobeSaving');
+            renderControls();
+            try {
+                const blob = await picker.crop();
+                if (!blob) throw new Error('empty_sprite');
+                await addWardrobePlacement(blob);
+                picker.clearSelection();
+                sheetStatus.textContent = t('emoteMaker.wardrobeSpriteAdded');
+            } catch (error) {
+                reportError(error.message, sheetStatus);
+            } finally {
+                pending = '';
+                renderControls();
+            }
+        });
     }
 
     function renderLibraryControls() {
@@ -1234,169 +3286,14 @@
             panel.classList.toggle('is-active', active);
             panel.hidden = !active;
         });
-    }
-
-    // 模板滑块区："有哪些行"没变就不重建（重建会把面板滚动夹回去）
-    let templateSliderRowsSignature = '';
-
-    function templateSliderRowSignature(entries) {
-        // 只描述"有哪些行、哪行可用"：数值不在里面，数值变了走就地更新，不重建 DOM。
-        // 预览还没起来时必须单独记成 wait。记成 on 的话，骨骼就绪、滑杆其实能驱动之后
-        // 签名不变，就地更新会跳过，整列会一直停在导入时的禁用状态。
-        const ready = hasSpineRenderer() && typeof spineRenderer.sliderMapping === 'function';
-        return entries.map((entry) => {
-            const name = String(entry?.id || '');
-            if (!ready) return `${name}:wait`;
-            const supported = spineRenderer.sliderMapping(name)?.supported === true;
-            return `${name}:${supported ? 'on' : 'off'}`;
-        }).join('|');
-    }
-
-    function updateTemplateSliderValues() {
-        const valueMap = new Map(getTemplateSliderValues().map((item) => [String(item.name), Number(item.value)]));
-        templateSliderControls.querySelectorAll('input[data-template-slider-name]').forEach((input) => {
-            const name = input.dataset.templateSliderName;
-            const raw = valueMap.has(name) ? valueMap.get(name) : templateSliderBaseline(name);
-            const next = clampTemplateSlider(raw);
-            if (next == null || Number(input.value) === next) return;
-            input.value = String(next);
-            const output = input.parentElement?.querySelector('output');
-            if (output) output.textContent = next.toFixed(2);
-        });
-    }
-
-    function renderTemplateSliderControls() {
-        if (!templateSliderControls) return;
-        if (!templatePackage) {
-            templateSliderControls.hidden = true;
-            templateSliderControls.replaceChildren();
-            templateSliderRowsSignature = '';
-            return;
-        }
-        templateSliderControls.hidden = false;
-        const entries = Array.isArray(templatePackage.catalogs?.sliders)
-            ? templatePackage.catalogs.sliders
-            : [];
-        const signature = templateSliderRowSignature(entries);
-        if (signature && signature === templateSliderRowsSignature) {
-            updateTemplateSliderValues();
-            return;
-        }
-        templateSliderRowsSignature = signature;
-        const values = getTemplateSliderValues();
-        const valueMap = new Map(values.map((item) => [String(item.name), Number(item.value)]));
-        const heading = document.createElement('div');
-        heading.className = 'template-compat-heading';
-        heading.textContent = t('emoteMaker.adjustTab');
-        const children = [heading];
-        entries.forEach((entry) => {
-            const name = String(entry?.id || '');
-            if (!name) return;
-            const row = document.createElement('label');
-            row.className = 'template-compat-row template-slider-row';
-            row.title = getCatalogLabel(entry) || name;
-            const label = document.createElement('span');
-            label.textContent = getCatalogLabel(entry) || name;
-            const output = document.createElement('output');
-            output.className = 'template-slider-value';
-            const input = document.createElement('input');
-            input.type = 'range';
-            input.min = '0';
-            input.max = '2';
-            input.step = '0.01';
-            const nativeDefault = hasSpineRenderer()
-                && typeof spineRenderer.sliderDefaultValue === 'function'
-                ? Number(spineRenderer.sliderDefaultValue(name))
-                : NaN;
-            const current = Number.isFinite(valueMap.get(name))
-                ? valueMap.get(name)
-                : (Number.isFinite(nativeDefault) ? nativeDefault : 1);
-            input.value = String(Math.max(0, Math.min(2, current)));
-            output.textContent = Number(input.value).toFixed(2);
-            const mapping = hasSpineRenderer() && typeof spineRenderer.sliderMapping === 'function'
-                ? spineRenderer.sliderMapping(name)
-                : null;
-            const supported = !mapping || mapping.supported !== false;
-            input.disabled = !hasSpineRenderer() || !supported;
-            input.dataset.templateSliderName = name;
-            if (!supported) {
-                row.classList.add('is-unsupported');
-                row.title = `${getCatalogLabel(entry) || name} · ${t('emoteMaker.templateMetadataOnly')}`;
-            }
-            input.addEventListener('input', () => {
-                output.textContent = Number(input.value).toFixed(2);
-                const hadPreview = Boolean(groupPreview);
-                groupPreview = null;
-                const next = getTemplateSliderValues().filter((item) => String(item.name) !== name);
-                next.push({ name, value: Number(input.value) });
-                state.templateSliders = next;
-                if (hadPreview) {
-                    const scene = getSelectedScene();
-                    if (scene) syncNativeScene(scene, { autoplay: state.animationPlaying });
-                } else {
-                    applyNativeCharacterState();
-                }
-                syncAdjustmentReadouts();
-            });
-            input.addEventListener('change', () => {
-                const snapshot = getTemplateSliderValues();
-                recordChange(() => { state.templateSliders = snapshot; });
-            });
-            row.append(label, output, input);
-            children.push(row);
-        });
-        if (hasSpineRenderer() && typeof spineRenderer.sliderStatus === 'function') {
-            const status = spineRenderer.sliderStatus();
-            const unsupportedCatalog = entries.some((entry) => {
-                if (typeof spineRenderer.sliderMapping !== 'function') return false;
-                return spineRenderer.sliderMapping(String(entry?.id || '')).supported === false;
-            });
-            if ((status.configured.length && status.applied.length < status.configured.length) || unsupportedCatalog) {
-                const note = document.createElement('p');
-                note.className = 'template-compat-note';
-                note.textContent = t('emoteMaker.templateMetadataOnly');
-                children.push(note);
-            }
-        }
-        templateSliderControls.replaceChildren(...children);
-    }
-
-    // 读数 + "有没有东西可复位"。拖动滑杆时每帧都要走这里，所以绝不能顺手动 DOM 结构：
-    // 重建滑块区会让滚动容器内容瞬间变矮，scrollTop 被夹小 —— 就是"一拖就跳回顶部"。
-    function clampTemplateSlider(value) {
-        const number = Number(value);
-        if (!Number.isFinite(number)) return null;
-        return Math.max(0, Math.min(2, number));
-    }
-
-    /** 这一列的出厂值：角色文件里写的那份。没写过的，用骨骼约束的 setup，再没有就是 1。 */
-    function templateSliderBaseline(name) {
-        const saved = (state.templateSliderDefaults || []).find((item) => String(item?.name || '') === name);
-        const savedValue = clampTemplateSlider(saved?.value);
-        if (savedValue != null) return savedValue;
-        const native = hasSpineRenderer() && typeof spineRenderer.sliderDefaultValue === 'function'
-            ? clampTemplateSlider(spineRenderer.sliderDefaultValue(name))
-            : null;
-        return native == null ? 1 : native;
-    }
-
-    function templateSliderValuesDiffer() {
-        const current = new Map(
-            getTemplateSliderValues().map((item) => [String(item.name), Number(item.value)]),
-        );
-        for (const [name, value] of current) {
-            if (!name) continue;
-            if (Math.abs(value - templateSliderBaseline(name)) > 0.001) return true;
-        }
-        return false;
+        updateColorBackToTop();
     }
 
     function adjustmentValuesDiffer() {
         return Math.round(state.adjustments.x) !== 0
             || Math.round(state.adjustments.y) !== 0
             || Math.round(state.adjustments.rotation) !== 0
-            || Math.round(state.adjustments.scale) !== 100
-            || templateSliderValuesDiffer();
+            || Math.round(state.adjustments.scale) !== 100;
     }
 
     function syncAdjustmentReadouts() {
@@ -1431,11 +3328,11 @@
         document.querySelectorAll('.range-row input').forEach((input) => {
             input.disabled = inert;
         });
-        renderTemplateSliderControls();
     }
 
     function renderColorMode() {
         renderTemplateSlotControls();
+        renderChangedPartColors();
         applyNativeVisualState();
     }
 
@@ -1993,8 +3890,12 @@
         // 只挂一次：挂在每次重绘里再配 once，第一次收起就会把监听器消耗掉，
         // 之后再收起就再不存状态了
         section.addEventListener('toggle', () => {
+            const expanded = section.open && state.groupPanelOpen === false;
             state.groupPanelOpen = section.open;
             persistLayout();
+            if (expanded && !section.hidden && state.inspectorTab === 'export') {
+                showPageTip('emoteMaker.batchExportTip', { returnFocus: () => section.querySelector('summary') });
+            }
         });
     }
 
@@ -2093,7 +3994,7 @@
         const section = $('#group-section');
         if (section) {
             section.hidden = !templatePackage;
-            if (templatePackage) section.open = state.groupPanelOpen !== false;
+            if (templatePackage) section.open = state.groupPanelOpen;
         }
         const help = $('#new-group-help');
         // 说明交给跟着光标的气泡，不用原生 title（要等半秒）、也不弹底部 toast
@@ -2134,7 +4035,7 @@
         try {
             frames = await captureGifFrames({
                 scene,
-                maxFrames: format === 'png' ? 1 : PACK_MAX_FRAMES,
+                maxFrames: format === 'png' ? 1 : GROUP_EXPORT_MAX_FRAMES,
                 fps,
                 maxDimension: edge,
             });
@@ -2505,7 +4406,7 @@
             const empty = document.createElement('div');
             empty.className = 'empty-template-state';
             empty.setAttribute('role', 'status');
-            empty.textContent = t('emoteMaker.selectTemplateFolder');
+            empty.textContent = t('emoteMaker.selectTemplateArchive');
             replaceAnimationList(empty);
             updateAnimationControls();
             return;
@@ -2560,9 +4461,8 @@
                 state.animationId = animation.id;
                 state.animationProgress = 0;
                 state.animationPlaying = false;
-                // Selecting a card is also the play gesture, matching the
-                // EmoteLab workflow. Stop the previous loop before switching
-                // tracks so an old RAF cannot overwrite the new selection.
+                // Selecting a card starts playback. Stop the previous loop
+                // so an old RAF cannot overwrite the new selection.
                 stopAnimationLoops();
                 startSelectedAnimationPlayback();
                 updateAnimationCardSelection();
@@ -2685,9 +4585,8 @@
 
     /**
      * Start the editor-owned playback loop after an animation has been
-     * selected.  EmoteLab starts an animation as soon as an item is chosen;
-     * keeping that behaviour here also prevents a stale RAF/Spine track from
-     * leaving the preview frozen on the previous animation.
+     * selected, preventing a stale RAF/Spine track from leaving the preview
+     * frozen on the previous animation.
      */
     function startSelectedAnimationPlayback() {
         if (templatePackage) {
@@ -2714,19 +4613,449 @@
 
 
 
-    function renderTemplateSlotControls() {
+    const RECENT_COLORS_KEY = 'neko.emote.recentColors';
+    const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+    const PART_TINT_FIELDS = ['tintColor', 'tintBlackColor'];
+    let hoveredColorPart = '';
+    let colorHighlightStart = 0;
+    let colorHighlightFrame = 0;
+    let colorHighlightVisible = false;
+    let visibleColorPartsKey = '';
+    let colorDraft = null;
+    let colorPopover = null;
+
+    function colorPartHighlight() {
+        return (!capturingFrames && state.inspectorTab === 'colors' && colorHighlightVisible) ? hoveredColorPart : null;
+    }
+
+    function setColorPartHighlight(name = '') {
+        if (name === hoveredColorPart) return;
+        hoveredColorPart = name;
+        colorHighlightStart = performance.now();
+        cancelAnimationFrame(colorHighlightFrame);
+        const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const tick = (now) => {
+            const visible = Boolean(hoveredColorPart) && (reducedMotion || (now - colorHighlightStart) % 720 < 360);
+            if (visible !== colorHighlightVisible || now === colorHighlightStart) {
+                colorHighlightVisible = visible;
+                if (!capturingFrames && !state.animationPlaying && hasSpineRenderer()) spineRenderer.render();
+            }
+            if (hoveredColorPart && !reducedMotion) colorHighlightFrame = requestAnimationFrame(tick);
+        };
+        tick(colorHighlightStart);
+    }
+
+    function recentColors() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(RECENT_COLORS_KEY) || '[]');
+            return Array.isArray(saved) ? saved.filter((color) => typeof color === 'string' && HEX_COLOR.test(color)).slice(0, 12) : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function makePartColorPicker(current, draft, onPreview, onChoose) {
+        const picker = document.createElement('div');
+        picker.className = 'part-color-picker';
+
+        const surface = document.createElement('div');
+        surface.className = 'part-color-surface';
+        surface.tabIndex = 0;
+        surface.setAttribute('aria-label', t('emoteMaker.colorSurface'));
+        const marker = document.createElement('span');
+        surface.append(marker);
+        const hue = document.createElement('input');
+        hue.className = 'part-color-hue';
+        hue.type = 'range';
+        hue.max = '359';
+        hue.setAttribute('aria-label', t('emoteMaker.colorHue'));
+        const hex = document.createElement('input');
+        hex.className = 'part-color-hex';
+        hex.type = 'text';
+        hex.maxLength = 7;
+        hex.spellcheck = false;
+        hex.setAttribute('aria-label', t('emoteMaker.colorHex'));
+        const apply = document.createElement('button');
+        apply.type = 'button';
+        apply.textContent = t('common.confirm');
+        const controls = document.createElement('div');
+        controls.className = 'part-color-value';
+        controls.append(hex, apply);
+        const recents = document.createElement('div');
+        recents.className = 'part-color-recents';
+        const recentLabel = document.createElement('span');
+        recentLabel.textContent = t('emoteMaker.colorRecent');
+        const chips = document.createElement('div');
+        recents.append(recentLabel, chips);
+
+        let saturation = 0;
+        let brightness = 1;
+        function paint() {
+            surface.style.setProperty('--part-hue', hue.value);
+            marker.style.left = `${saturation * 100}%`;
+            marker.style.top = `${(1 - brightness) * 100}%`;
+            apply.disabled = !HEX_COLOR.test(hex.value);
+        }
+        function fromHex(color) {
+            const { r, g, b } = hexToColor(color);
+            const max = Math.max(r, g, b);
+            const range = max - Math.min(r, g, b);
+            const sector = max === r ? (g - b) / range : max === g ? 2 + (b - r) / range : 4 + (r - g) / range;
+            hue.value = range ? String(Math.min(359, Math.round((sector + 6) % 6 * 60))) : '0';
+            brightness = max;
+            saturation = max ? range / max : 0;
+            hex.value = color.toUpperCase();
+            paint();
+        }
+        function fromSurface() {
+            const angle = Number(hue.value) / 60;
+            const chroma = brightness * saturation;
+            const side = chroma * (1 - Math.abs(angle % 2 - 1));
+            const [r, g, b] = [[chroma, side, 0], [side, chroma, 0], [0, chroma, side],
+                [0, side, chroma], [side, 0, chroma], [chroma, 0, side]][Math.floor(angle)];
+            const floor = brightness - chroma;
+            hex.value = colorToHex({ r: r + floor, g: g + floor, b: b + floor }).toUpperCase();
+            paint();
+            onPreview(hex.value);
+        }
+        function updateRecents() {
+            chips.replaceChildren(...recentColors().map((color) => {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.style.backgroundColor = color;
+                chip.title = color.toUpperCase();
+                chip.setAttribute('aria-label', chip.title);
+                chip.addEventListener('click', () => { fromHex(color); commit(); });
+                return chip;
+            }));
+            recents.hidden = !chips.childElementCount;
+        }
+        function commit() {
+            if (!HEX_COLOR.test(hex.value)) return;
+            const color = hex.value.toLowerCase();
+            try {
+                localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify([color, ...recentColors().filter((item) => item !== color)].slice(0, 12)));
+            } catch (_) { /* Color can still be applied when storage is unavailable. */ }
+            updateRecents();
+            onChoose(color);
+        }
+        const clamp = (value) => Math.max(0, Math.min(1, value));
+        const selectPoint = (event) => {
+            const box = surface.getBoundingClientRect();
+            saturation = clamp((event.clientX - box.left) / box.width);
+            brightness = clamp(1 - (event.clientY - box.top) / box.height);
+            fromSurface();
+        };
+        surface.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0) return;
+            surface.setPointerCapture(event.pointerId);
+            selectPoint(event);
+        });
+        surface.addEventListener('pointermove', (event) => {
+            if (surface.hasPointerCapture(event.pointerId)) selectPoint(event);
+        });
+        surface.addEventListener('keydown', (event) => {
+            const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowDown: [0, -1], ArrowUp: [0, 1] }[event.key];
+            if (!step) return;
+            event.preventDefault();
+            saturation = clamp(saturation + step[0] * .02);
+            brightness = clamp(brightness + step[1] * .02);
+            fromSurface();
+        });
+        hue.addEventListener('input', fromSurface);
+        hex.addEventListener('input', () => {
+            if (HEX_COLOR.test(hex.value)) {
+                fromHex(hex.value);
+                onPreview(hex.value);
+            } else paint();
+        });
+        hex.addEventListener('keydown', (event) => { if (event.key === 'Enter') commit(); });
+        apply.addEventListener('click', commit);
+        fromHex(draft || current);
+        updateRecents();
+        picker.append(surface, hue, controls, recents);
+        return picker;
+    }
+
+    function commitPartColors(slots) {
+        const before = structuredClone(state.templateSlots);
+        state.templateSlots = slots;
+        rememberHistory(before, structuredClone(slots), (next) => restoreState({ templateSlots: next }));
+        forgetStageFrames();
+        applyNativeCharacterState({ render: true });
+        updateHistoryButtons();
+        persistTemplateSession();
+        persistTemplateToLibrary();
+        renderChangedPartColors();
+    }
+
+    function slotColorLabel(field) {
+        return t(field === 'tintBlackColor' ? 'emoteMaker.tintBlack' : 'emoteMaker.partColor');
+    }
+
+    function slotColorHex(slot, field) {
+        return colorToHex(slot[field], field === 'tintBlackColor' ? '#000000' : '#ffffff').toUpperCase();
+    }
+
+    function makeSlotColorPicker(slot, field) {
+        const dark = field === 'tintBlackColor';
+        const fallback = dark ? { r: 0, g: 0, b: 0, a: 1 } : { r: 1, g: 1, b: 1, a: 1 };
+        const isDraft = () => colorDraft?.name === slot.name && colorDraft.field === field;
+        const picker = makePartColorPicker(slotColorHex(slot, field),
+            isDraft() ? colorToHex(colorDraft.value) : null, (color) => {
+                if (!picker.isConnected || (!color && !isDraft())) return;
+                colorDraft = color ? { name: slot.name, field, value: hexToTemplateColor(color, fallback) } : null;
+                if (colorPopover?.scope === 'controls') colorPopover.trigger.style.setProperty('--part-color-preview', color);
+                applyNativeCharacterState({ render: true });
+            }, (color) => {
+                colorDraft = null;
+                const next = getTemplateSlotStyles();
+                const target = next.find((item) => item.name === slot.name);
+                if (!target) return;
+                if (target[field] && colorToHex(target[field]) === color) {
+                    applyNativeCharacterState({ render: true });
+                    positionColorPopover();
+                    return;
+                }
+                target[field] = hexToTemplateColor(color, fallback);
+                commitPartColors(next);
+                renderTemplateSlotControls(true);
+            });
+        picker.dataset.colorField = field;
+        return picker;
+    }
+
+    function positionColorPopover() {
+        if (!colorPopover) return;
+        const { editor, trigger, field, scope } = colorPopover;
+        const anchor = trigger.getBoundingClientRect();
+        const gap = 8;
+        if (!field) editor.style.width = `${Math.min(anchor.width, window.innerWidth - 2 * gap)}px`;
+        let left = anchor.left;
+        let top = anchor.top;
+        if (scope === 'changed') {
+            const leftOfSwatch = anchor.left - editor.offsetWidth - gap;
+            left = leftOfSwatch >= gap ? leftOfSwatch : anchor.right + gap;
+        } else {
+            editor.style.maxHeight = '';
+            const above = anchor.top - 2 * gap;
+            const below = window.innerHeight - anchor.bottom - 2 * gap;
+            const naturalHeight = editor.offsetHeight;
+            const openBelow = naturalHeight <= below || below >= above;
+            const available = openBelow ? below : above;
+            if (naturalHeight > available) editor.style.maxHeight = `${Math.max(0, available)}px`;
+            top = openBelow ? anchor.bottom + gap : anchor.top - editor.offsetHeight - gap;
+        }
+        const width = editor.offsetWidth;
+        const height = editor.offsetHeight;
+        editor.style.left = `${Math.max(gap, Math.min(left, window.innerWidth - width - gap))}px`;
+        editor.style.top = `${Math.max(gap, Math.min(top, window.innerHeight - height - gap))}px`;
+    }
+
+    function closeColorPopover(restoreFocus = false) {
+        if (!colorPopover) return;
+        const { editor, trigger, events, name, field } = colorPopover;
+        colorPopover = null;
+        events.abort();
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.style.removeProperty('--part-color-preview');
+        editor.hidePopover();
+        editor.remove();
+        if (!field) setColorPartHighlight();
+        if (field && colorDraft?.name === name && colorDraft.field === field) {
+            colorDraft = null;
+            applyNativeCharacterState({ render: true });
+        }
+        if (restoreFocus) trigger.focus({ preventScroll: true });
+    }
+
+    function toggleColorPopover(trigger, create) {
+        if (colorPopover?.trigger === trigger) {
+            closeColorPopover(true);
+            return;
+        }
+        closeColorPopover();
+        const { editor, ...settings } = create();
+        editor.classList.add('color-popover');
+        editor.popover = 'manual';
+        editor.setAttribute('role', 'dialog');
+        editor.setAttribute('aria-label', trigger.getAttribute('aria-label') || trigger.textContent);
+        trigger.setAttribute('aria-expanded', 'true');
+        trigger.closest('.inspector-tab-panel').append(editor);
+        const events = new AbortController();
+        const { signal } = events;
+        colorPopover = { editor, trigger, events, ...settings, template: templatePackage };
+        document.addEventListener('pointerdown', (event) => {
+            if (!editor.contains(event.target) && !colorPopover?.trigger.contains(event.target)) closeColorPopover();
+        }, { capture: true, signal });
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            closeColorPopover(true);
+        }, { signal });
+        window.addEventListener('resize', positionColorPopover, { signal });
+        window.addEventListener('scroll', positionColorPopover, { capture: true, signal });
+        editor.showPopover();
+        positionColorPopover();
+        const focus = editor.querySelector('.part-color-hex, [aria-pressed="true"]');
+        focus?.focus({ preventScroll: true });
+        if (!settings.field && focus) editor.scrollTop = Math.max(0, focus.offsetTop - 8);
+    }
+
+    function anchorColorPopover(trigger) {
+        colorPopover.trigger = trigger;
+        trigger.setAttribute('aria-expanded', 'true');
+        colorPopover.editor.setAttribute('aria-label', trigger.getAttribute('aria-label') || trigger.textContent);
+        positionColorPopover();
+    }
+
+    function toggleSlotColorPopover(trigger, slot, field, scope) {
+        toggleColorPopover(trigger, () => {
+            const editor = makeSlotColorPicker(slot, field);
+            if (scope === 'changed') editor.classList.add('changed-part-color-editor');
+            return { editor, name: slot.name, field, scope };
+        });
+    }
+
+    function updateColorBackToTop() {
+        const offset = colorPanel.scrollTop;
+        const range = colorPanel.scrollHeight - colorPanel.clientHeight;
+        colorBackToTop.hidden = state.inspectorTab !== 'colors' || changedPartColors.hidden
+            || offset <= 0 || offset < Math.min(80, range * 0.75);
+    }
+
+    function renderChangedPartColors() {
+        if (!changedPartColors || !changedPartColorList) return;
+        if (colorPopover && (colorPopover.template !== templatePackage || state.inspectorTab !== 'colors')) {
+            closeColorPopover();
+        }
+        const defaults = new Map(state.templateSlotDefaults.map((slot) => [slot.name, slot]));
+        const catalog = new Map((templatePackage?.catalogs?.slotGroups || []).map((item) => [item.id, item]));
+        const rows = [];
+        let activeTrigger = null;
+        for (const slot of getTemplateSlotStyles()) {
+            const original = defaults.get(slot.name);
+            if (!original) continue;
+            const fields = PART_TINT_FIELDS.filter((field) => {
+                const current = slot[field];
+                const baseline = original[field];
+                return current && baseline
+                    ? ['r', 'g', 'b', 'a'].some((channel) => current[channel] !== baseline[channel])
+                    : Boolean(current) !== Boolean(baseline);
+            });
+            if (!fields.length) continue;
+            const row = document.createElement('li');
+            row.dataset.changedColorPart = slot.name;
+            row.addEventListener('pointerenter', () => setColorPartHighlight(slot.name));
+            row.addEventListener('pointerleave', () => setColorPartHighlight());
+            const label = document.createElement('span');
+            label.textContent = getCatalogLabel(catalog.get(slot.name)) || slot.name;
+            row.append(label);
+            for (const field of fields) {
+                if (!slot[field]) continue;
+                const swatch = document.createElement('button');
+                swatch.type = 'button';
+                swatch.className = 'part-color-swatch';
+                swatch.dataset.colorField = field;
+                const color = colorToHex(slot[field]).toUpperCase();
+                swatch.style.backgroundColor = color;
+                const fieldLabel = slotColorLabel(field);
+                swatch.title = `${fieldLabel} ${color}`;
+                swatch.setAttribute('aria-label', `${label.textContent} · ${swatch.title}`);
+                const open = colorPopover?.scope === 'changed' && colorPopover.name === slot.name && colorPopover.field === field;
+                swatch.setAttribute('aria-expanded', String(open));
+                swatch.setAttribute('aria-haspopup', 'dialog');
+                swatch.addEventListener('click', () => toggleSlotColorPopover(swatch, slot, field, 'changed'));
+                if (open) activeTrigger = swatch;
+                row.append(swatch);
+            }
+            const reset = document.createElement('button');
+            reset.type = 'button';
+            reset.className = 'text-button';
+            reset.textContent = t('emoteMaker.reset');
+            reset.setAttribute('aria-label', `${reset.textContent} · ${label.textContent}`);
+            reset.addEventListener('click', () => {
+                const index = Array.from(changedPartColorList.children).indexOf(row);
+                const next = getTemplateSlotStyles();
+                const target = next.find((item) => item.name === slot.name);
+                if (!target) return;
+                for (const field of PART_TINT_FIELDS) target[field] = original[field] ? { ...original[field] } : null;
+                if (colorDraft?.name === slot.name) colorDraft = null;
+                commitPartColors(next);
+                renderTemplateSlotControls(true);
+                const nextRow = changedPartColorList.children[Math.min(index, changedPartColorList.children.length - 1)];
+                (nextRow?.querySelector('.text-button') || templateSlotControls?.querySelector('.part-color-menu'))?.focus({ preventScroll: true });
+            });
+            row.append(reset);
+            rows.push(row);
+        }
+        changedPartColorList.replaceChildren(...rows);
+        changedPartColors.hidden = !rows.length;
+        updateColorBackToTop();
+        if (activeTrigger) anchorColorPopover(activeTrigger);
+        else if (colorPopover?.scope === 'changed') closeColorPopover();
+    }
+
+    function renderPartColorOptions(partList, slots, selectedName, labelFor) {
+        const focused = partList.contains(document.activeElement) ? document.activeElement.dataset.colorPart : '';
+        const scrollTop = partList.scrollTop;
+        const options = slots.map((item) => {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.dataset.colorPart = item.name;
+            option.textContent = labelFor(item);
+            option.setAttribute('aria-pressed', String(item.name === selectedName));
+            option.addEventListener('pointerenter', () => setColorPartHighlight(item.name));
+            option.addEventListener('pointerleave', () => setColorPartHighlight());
+            option.addEventListener('focus', () => setColorPartHighlight(item.name));
+            option.addEventListener('blur', () => setColorPartHighlight());
+            option.addEventListener('click', () => {
+                state.templateSlotGroup = item.name;
+                renderTemplateSlotControls();
+                templateSlotControls.querySelector('.part-color-menu')?.focus({ preventScroll: true });
+            });
+            return option;
+        });
+        partList.replaceChildren(...options);
+        partList.scrollTop = scrollTop;
+        if (focused) (options.find((option) => option.dataset.colorPart === focused)
+            || options.find((option) => option.getAttribute('aria-pressed') === 'true'))?.focus({ preventScroll: true });
+    }
+
+    function makePartColorTrigger(label) {
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'part-color-trigger';
+        trigger.textContent = label;
+        trigger.setAttribute('aria-haspopup', 'dialog');
+        trigger.setAttribute('aria-expanded', 'false');
+        return trigger;
+    }
+
+    function renderTemplateSlotControls(preserveOpen = false) {
         if (!templateSlotControls) return;
+        if (!preserveOpen && colorPopover?.scope === 'controls') closeColorPopover();
+        const active = colorPopover?.scope === 'controls' ? colorPopover : null;
+        if (!preserveOpen || !changedPartColorList?.querySelector('li:hover')) setColorPartHighlight();
         if (!templatePackage) {
+            if (active) closeColorPopover();
             templateSlotControls.hidden = true;
             templateSlotControls.replaceChildren();
             return;
         }
-        const slots = getTemplateSlotStyles().filter((item) => item?.name);
+        const visible = new Set(hasSpineRenderer() ? spineRenderer.visiblePartNames() : []);
+        visibleColorPartsKey = [...visible].join('\n');
+        if (colorDraft && colorPopover?.scope !== 'changed' && (!preserveOpen || !visible.has(colorDraft.name))) {
+            colorDraft = null;
+            applyNativeCharacterState({ render: true });
+        }
+        const slots = getTemplateSlotStyles().filter((item) => visible.has(item.name));
         templateSlotControls.hidden = false;
         if (!slots.length) {
+            if (active) closeColorPopover();
             const note = document.createElement('p');
             note.className = 'template-compat-note';
-            note.textContent = t('emoteMaker.templateMetadataOnly');
+            note.textContent = t(hasSpineRenderer() ? 'emoteMaker.colorNoVisibleParts' : 'emoteMaker.templateMetadataOnly');
             templateSlotControls.replaceChildren(note);
             return;
         }
@@ -2734,7 +5063,6 @@
         let selectedName = String(state.templateSlotGroup || '');
         if (!slots.some((item) => String(item.name) === selectedName)) {
             selectedName = String(slots[0].name);
-            state.templateSlotGroup = selectedName;
         }
         const selected = slots.find((item) => String(item.name) === selectedName) || slots[0];
         const catalogEntries = Array.isArray(templatePackage.catalogs?.slotGroups)
@@ -2743,70 +5071,47 @@
         const catalogMap = new Map(catalogEntries.map((item) => [String(item?.id || ''), item]));
         const labelFor = (item) => getCatalogLabel(catalogMap.get(String(item?.name || ''))) || String(item?.name || '');
 
-        const heading = document.createElement('div');
-        heading.className = 'template-compat-heading';
-        heading.textContent = t('emoteMaker.colorsTab');
-
-        const selectRow = document.createElement('label');
-        selectRow.className = 'template-compat-row';
-        const selectLabel = document.createElement('span');
-        selectLabel.textContent = t('emoteMaker.slotGroup');
-        const select = document.createElement('select');
-        select.setAttribute('aria-label', t('emoteMaker.slotGroup'));
-        for (const item of slots) {
-            const option = new Option(labelFor(item), String(item.name));
-            option.title = String(item.name);
-            option.selected = String(item.name) === selectedName;
-            select.appendChild(option);
-        }
-        select.addEventListener('change', () => {
-            state.templateSlotGroup = select.value;
-            renderColorMode();
-        });
-        selectRow.append(selectLabel, select);
-
-        const children = [heading, selectRow];
-        const makeColorRow = (labelText, field, fallback) => {
-            const row = document.createElement('label');
-            row.className = 'template-compat-row';
-            const label = document.createElement('span');
-            label.textContent = labelText;
-            const input = document.createElement('input');
-            input.type = 'color';
-            input.value = colorToHex(selected[field], colorToHex(fallback));
-            input.disabled = !hasSpineRenderer();
-            let beforeState = null;
-            input.addEventListener('input', () => {
-                if (!beforeState) beforeState = cloneState();
-                const next = getTemplateSlotStyles();
-                const target = next.find((item) => String(item.name) === String(selected.name));
-                if (!target) return;
-                target[field] = hexToTemplateColor(input.value, fallback);
-                state.templateSlots = next;
-                applyNativeCharacterState({ render: true });
-            });
-            input.addEventListener('change', () => {
-                if (beforeState) {
-                    history.push(beforeState);
-                    future.length = 0;
-                    if (history.length > 40) history.shift();
-                }
-                renderAll();
-            });
-            row.append(label, input);
-            return row;
+        const partMenu = makePartColorTrigger(labelFor(selected));
+        partMenu.classList.add('part-color-menu');
+        partMenu.setAttribute('aria-label', `${t('emoteMaker.slotGroup')} · ${labelFor(selected)}`);
+        partMenu.addEventListener('pointerenter', () => setColorPartHighlight(selectedName));
+        partMenu.addEventListener('pointerleave', () => setColorPartHighlight());
+        partMenu.addEventListener('click', () => toggleColorPopover(partMenu, () => {
+            const editor = document.createElement('div');
+            editor.className = 'part-color-options';
+            renderPartColorOptions(editor, slots, selectedName, labelFor);
+            return { editor, scope: 'controls' };
+        }));
+        const children = [partMenu];
+        let activeTrigger = active && !active.field ? partMenu : null;
+        const makeColorRow = (field) => {
+            const color = slotColorHex(selected, field);
+            const trigger = makePartColorTrigger(slotColorLabel(field));
+            trigger.dataset.colorField = field;
+            const swatch = document.createElement('span');
+            swatch.className = 'part-color-swatch';
+            swatch.style.backgroundColor = `var(--part-color-preview, ${color})`;
+            const value = document.createElement('code');
+            value.textContent = color;
+            trigger.append(swatch, value);
+            trigger.addEventListener('click', () => toggleSlotColorPopover(trigger, selected, field, 'controls'));
+            if (active?.name === selectedName && active.field === field) {
+                if (colorDraft) trigger.style.setProperty('--part-color-preview', colorToHex(colorDraft.value));
+                activeTrigger = trigger;
+            }
+            return trigger;
         };
-        children.push(
-            makeColorRow(t('emoteMaker.defaultColor'), 'tintColor', { r: 1, g: 1, b: 1, a: 1 }),
-            makeColorRow(t('emoteMaker.tintBlack'), 'tintBlackColor', { r: 0, g: 0, b: 0, a: 1 }),
-        );
-        if (!hasSpineRenderer()) {
-            const note = document.createElement('p');
-            note.className = 'template-compat-note';
-            note.textContent = t('emoteMaker.templateMetadataOnly');
-            children.push(note);
+        children.push(makeColorRow('tintColor'));
+        if (spineRenderer?.partHasDarkTint(selected.name)) {
+            children.push(makeColorRow('tintBlackColor'));
         }
         templateSlotControls.replaceChildren(...children);
+        if (activeTrigger) {
+            if (!active.field) renderPartColorOptions(active.editor, slots, selectedName, labelFor);
+            anchorColorPopover(activeTrigger);
+        } else if (active) {
+            closeColorPopover();
+        }
     }
 
 
@@ -2816,8 +5121,9 @@
     function updateHistoryButtons() {
         const undoButton = $('#undo-btn');
         const redoButton = $('#redo-btn');
-        if (undoButton) undoButton.disabled = history.length === 0;
-        if (redoButton) redoButton.disabled = future.length === 0;
+        const blocked = historyBusy || wardrobeFileBusy || wardrobeGestureActive;
+        if (undoButton) undoButton.disabled = blocked || history.length === 0;
+        if (redoButton) redoButton.disabled = blocked || future.length === 0;
     }
 
 
@@ -2830,27 +5136,6 @@
 
 
 
-
-    function finiteNumber(value, fallback = 0) {
-        const number = Number(value);
-        return Number.isFinite(number) ? number : fallback;
-    }
-
-    function sceneVector(value, fallback = [0, 0, 0]) {
-        if (Array.isArray(value)) {
-            return fallback.map((item, index) => finiteNumber(value[index], item));
-        }
-        if (value && typeof value === 'object') {
-            return fallback.map((item, index) => finiteNumber(value[['x', 'y', 'z'][index]], item));
-        }
-        return [...fallback];
-    }
-
-    function sceneColorCss(value, fallback = { r: 1, g: 1, b: 1, a: 1 }) {
-        const color = value && typeof value === 'object' ? value : fallback;
-        const channel = (key, defaultValue) => Math.max(0, Math.min(1, finiteNumber(color[key], defaultValue)));
-        return `rgba(${Math.round(channel('r', fallback.r) * 255)}, ${Math.round(channel('g', fallback.g) * 255)}, ${Math.round(channel('b', fallback.b) * 255)}, ${channel('a', fallback.a)})`;
-    }
 
     function syncOverlayCanvasSize(target, source = spineCanvas) {
         if (!target || !source) return null;
@@ -2869,282 +5154,73 @@
         return { context, ...size };
     }
 
-    function sceneTextProjection(text, scene, width, height) {
-        const camera = scene?.camera || {};
-        const style = text?.transformData || {};
-        const local = sceneVector(style.localPosition, [0, 0, 0]);
-        const orthographicSize = Math.max(0.001, finiteNumber(camera.orthographicSize, 5));
-        // EmoteLab stores text positions in the SceneTextRoot's local space.
-        // That root is camera-centred, so the vertical orthographic span is
-        // exactly 2 * orthographicSize.  Keeping this conversion in one place
-        // also makes the overlay and animated export use identical geometry.
-        const pixelsPerUnit = height / (orthographicSize * 2);
-        return {
-            x: width / 2 + local[0] * pixelsPerUnit,
-            y: height / 2 - local[1] * pixelsPerUnit,
-            z: local[2],
-            pixelsPerUnit,
-        };
-    }
-
-    function normalizedTextContent(value, style = {}) {
-        if (sceneTextCompat?.normalizeTextContent) {
-            return sceneTextCompat.normalizeTextContent(value, {
-                richText: style.richText,
-                parseCtrlCharacters: style.parseCtrlCharacters,
-            });
-        }
-        return String(value ?? '')
-            .replace(/<br\s*\/?\s*>/gi, '\n')
-            .replace(/<[^>]+>/g, '');
-    }
-
-    function textFont(style, pixelSize) {
-        if (sceneTextCompat?.fontCss) return sceneTextCompat.fontCss(style, pixelSize);
-        const rawStyle = String(style?.fontStyle || '').toLocaleLowerCase();
-        const italic = rawStyle.includes('italic') ? 'italic ' : '';
-        const bold = rawStyle.includes('bold') || rawStyle.includes('heavy') ? '700 ' : '';
-        const requested = String(style?.fontName || '').replace(/["']/g, '').trim();
-        const family = requested
-            ? `"${requested}", Arial, "Microsoft YaHei", sans-serif`
-            : 'Arial, "Microsoft YaHei", sans-serif';
-        return `${italic}${bold}${Math.max(1, pixelSize)}px ${family}`;
-    }
-
-    function textAlignValue(value) {
-        if (sceneTextCompat?.alignmentToken) return sceneTextCompat.alignmentToken(value);
-        const token = String(value || '').toLocaleLowerCase();
-        if (token.includes('left') || token.includes('start')) return 'left';
-        if (token.includes('right') || token.includes('end')) return 'right';
-        return 'center';
-    }
-
-    function textBaselineValue(value) {
-        if (sceneTextCompat?.baselineToken) return sceneTextCompat.baselineToken(value);
-        const token = String(value || '').toLocaleLowerCase();
-        if (token.includes('top')) return 'top';
-        if (token.includes('bottom')) return 'bottom';
-        if (token.includes('cap')) return 'hanging';
-        return 'middle';
-    }
-
-    function drawTextLineWithSpacing(context, line, x, y, align, characterSpacing, wordSpacing, draw) {
-        const chars = [...String(line ?? '')];
-        if (!chars.length) return;
-        const spacing = Math.max(-context.measureText(chars[0]).width, finiteNumber(characterSpacing, 0));
-        const extraWordSpacing = finiteNumber(wordSpacing, 0);
-        if (Math.abs(spacing) < 0.001 && Math.abs(extraWordSpacing) < 0.001) {
-            context.textAlign = align;
-            draw(line, x, y);
-            return;
-        }
-        let totalWidth = 0;
-        const widths = chars.map((char) => context.measureText(char).width);
-        chars.forEach((char, index) => {
-            totalWidth += widths[index];
-            if (index < chars.length - 1) {
-                totalWidth += spacing;
-                if (/\s/.test(char)) totalWidth += extraWordSpacing;
-            }
-        });
-        let cursor = x;
-        if (align === 'center') cursor -= totalWidth / 2;
-        else if (align === 'right') cursor -= totalWidth;
-        context.textAlign = 'left';
-        chars.forEach((char, index) => {
-            draw(char, cursor, y);
-            cursor += widths[index];
-            if (index < chars.length - 1) {
-                cursor += spacing;
-                if (/\s/.test(char)) cursor += extraWordSpacing;
-            }
-        });
-    }
-
-    function drawSceneTextLayer(target, scene, side) {
-        const layer = clearOverlayCanvas(target);
-        if (!layer || !scene) return;
-        const texts = (Array.isArray(scene.texts) ? scene.texts : [])
-            .map((item, index) => ({ item, index }))
-            .filter(({ item }) => {
-                const normalizedSide = sceneTextCompat?.normalizeSide
-                    ? sceneTextCompat.normalizeSide(item?.side)
-                    : (String(item?.side || '').toLocaleLowerCase() === 'behind' ? 'Behind' : 'Front');
-                return normalizedSide === side;
-            })
-            .filter(({ item }) => item?.transformData?.visible !== false)
-            .sort((left, right) => finiteNumber(left.item?.transformData?.sortingOrder, 0)
-                - finiteNumber(right.item?.transformData?.sortingOrder, 0) || left.index - right.index)
-            .map(({ item }) => item);
-        if (!texts.length) return;
-        const { context, width, height } = layer;
-        const editorTransform = getNativeTransform();
-        const globalScale = Math.max(0.01, finiteNumber(editorTransform.scale, 1));
-        const globalRotation = finiteNumber(editorTransform.rotation, 0) * Math.PI / 180;
+    function drawWardrobeArtwork(context, canvasWidth, canvasHeight, sprites) {
         context.save();
-        context.translate(width / 2 + finiteNumber(editorTransform.x, 0) * height / 1000, height / 2 + finiteNumber(editorTransform.y, 0) * height / 1000);
-        context.rotate(globalRotation);
-        context.scale(globalScale, globalScale);
-        context.translate(-width / 2, -height / 2);
-        for (const item of texts) {
-            const style = item.style || {};
-            const material = item.material || {};
-            const transform = item.transformData || {};
-            const projected = sceneTextProjection(item, scene, width, height);
-            const text = normalizedTextContent(style.text ?? item.text ?? '', style);
-            if (!text) continue;
-            // TextMeshPro's fontSize is a UI point size rather than a Spine
-            // world-unit length. Keep it legible at both the 6-unit and
-            // 14.4-unit YUI camera presets; very small viewports still get a
-            // proportional floor through the same scale factor.
-            const textUnitScale = Math.max(1, projected.pixelsPerUnit * 0.01);
-            const fontSize = Math.max(8, Math.min(512, finiteNumber(style.fontSize, 36) * textUnitScale));
-            const rotation = -finiteNumber(transform.rotationZ, 0) * Math.PI / 180;
-            context.save();
-            context.translate(projected.x, projected.y);
-            context.rotate(rotation);
-            context.font = textFont(style, fontSize);
-            context.textAlign = textAlignValue(style.horizontalAlignment);
-            context.textBaseline = textBaselineValue(style.verticalAlignment);
-            const textWidth = Math.max(0, finiteNumber(
-                style.textWidth ?? style.rectWidth ?? style.maxWidth,
-                0,
-            ) * textUnitScale);
-            const lines = sceneTextCompat?.wrapLines
-                ? sceneTextCompat.wrapLines(
-                    text,
-                    (value) => context.measureText(value).width,
-                    textWidth,
-                    {
-                        enableWordWrapping: style.enableWordWrapping === true,
-                        overflowMode: style.overflowMode,
-                    },
-                )
-                : text.split(/\r?\n/);
-            const lineHeight = Math.max(fontSize, fontSize + finiteNumber(style.lineSpacing, 0) * textUnitScale);
-            const paragraphSpacing = Math.max(0, finiteNumber(style.paragraphSpacing, 0) * textUnitScale);
-            const paragraphBreaks = lines.slice(1).reduce(
-                (count, line, index) => count + (lines[index] === '' || line === '' ? 1 : 0),
-                0,
-            );
-            const blockHeight = lineHeight * lines.length + paragraphSpacing * paragraphBreaks;
-            const align = context.textAlign;
-            const baseline = context.textBaseline;
-            const startY = baseline === 'middle'
-                ? -blockHeight / 2 + lineHeight / 2
-                : baseline === 'bottom' ? -blockHeight : 0;
-            const drawX = 0;
-            const face = sceneColorCss(material.faceColor);
-            const outline = sceneColorCss(material.outlineColor, { r: 0, g: 0, b: 0, a: 1 });
-            const underlay = sceneColorCss(material.underlayColor, { r: 0, g: 0, b: 0, a: 0 });
-            const characterSpacing = finiteNumber(style.characterSpacing, 0) * textUnitScale;
-            const wordSpacing = finiteNumber(style.wordSpacing, 0) * textUnitScale;
-            const outlineWidth = material.outlineEnabled
-                ? Math.max(0, Math.min(48, finiteNumber(material.outlineWidth, 0) * textUnitScale))
-                : 0;
-            const underlayEnabled = Boolean(material.underlayEnabled);
-            const underlayX = finiteNumber(material.underlayOffsetX, 0) * textUnitScale;
-            const underlayY = -finiteNumber(material.underlayOffsetY, 0) * textUnitScale;
-            lines.forEach((line, lineIndex) => {
-                let paragraphOffset = 0;
-                for (let prior = 1; prior <= lineIndex; prior += 1) {
-                    if (lines[prior - 1] === '' || lines[prior] === '') paragraphOffset += paragraphSpacing;
-                }
-                const y = startY + lineIndex * lineHeight + paragraphOffset;
-                if (underlayEnabled) {
-                    context.fillStyle = underlay;
-                    drawTextLineWithSpacing(
-                        context,
-                        line,
-                        drawX + underlayX,
-                        y + underlayY,
-                        align,
-                        characterSpacing,
-                        wordSpacing,
-                        (part, partX, partY) => context.fillText(part, partX, partY),
-                    );
-                }
-                if (outlineWidth > 0) {
-                    context.lineJoin = 'round';
-                    context.lineWidth = outlineWidth;
-                    context.strokeStyle = outline;
-                    drawTextLineWithSpacing(
-                        context,
-                        line,
-                        drawX,
-                        y,
-                        align,
-                        characterSpacing,
-                        wordSpacing,
-                        (part, partX, partY) => context.strokeText(part, partX, partY),
-                    );
-                }
-                context.fillStyle = face;
-                drawTextLineWithSpacing(
-                    context,
-                    line,
-                    drawX,
-                    y,
-                    align,
-                    characterSpacing,
-                    wordSpacing,
-                    (part, partX, partY) => context.fillText(part, partX, partY),
-                );
-            });
-            context.restore();
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
+        for (const sprite of sprites) {
+            if (!wardrobeImageReady(sprite.image) || (sprite.anchor && spineRenderer.skeleton.visible === false)) continue;
+            const { width, height } = wardrobeSpriteGeometry(sprite);
+            const [a, b, c, d, x, y] = wardrobeSpritePose(sprite);
+            context.setTransform(a * canvasWidth, b * canvasHeight, c * canvasWidth, d * canvasHeight,
+                x * canvasWidth, y * canvasHeight);
+            context.drawImage(sprite.image, -width / 2, -height / 2, width, height);
         }
         context.restore();
     }
 
-    function renderNativeOutline() {
-        const layer = clearOverlayCanvas(outlineCanvas);
-        const scene = getSelectedScene();
-        const outline = scene?.model?.outline;
-        if (!layer || !spineCanvas || !outline?.enabled || scene?.model?.visible === false) return;
-        const editorScale = Math.max(0.01, finiteNumber(getNativeTransform()?.scale, 1));
-        const outlineWidth = Math.max(0, Math.min(48, finiteNumber(outline.width, 8) || 8));
-        const radius = sceneTextCompat?.outlinePixelRadius
-            ? Math.max(1, sceneTextCompat.outlinePixelRadius(
-                outlineWidth || 8,
-                scene?.camera?.orthographicSize,
-                layer.height,
-                editorScale,
-            ))
-            : Math.max(1, Math.min(48, outlineWidth || 8));
-        const context = layer.context;
-        const { width, height } = layer;
-        const steps = Math.max(16, Math.min(256, Math.ceil(radius * 2)));
-        context.save();
-        context.globalCompositeOperation = 'source-over';
-        for (let index = 0; index < steps; index += 1) {
-            const angle = (Math.PI * 2 * index) / steps;
-            context.drawImage(spineCanvas, Math.cos(angle) * radius, Math.sin(angle) * radius, width, height);
+    function wardrobeSpineLayers() {
+        if (wardrobePlacements.hidden || !hasSpineRenderer()) return [];
+        const slots = new Set(spineRenderer.drawOrderNames());
+        return [...wardrobeSprites.values()]
+            .flatMap((sprite) => {
+                const aboveSlot = wardrobeSpriteLayerSlot(sprite);
+                if (!slots.has(aboveSlot) || !wardrobeImageReady(sprite.image)) return [];
+                const { width, height } = wardrobeSpriteGeometry(sprite);
+                const [a, b, c, d, x, y] = wardrobeSpritePose(sprite);
+                const corners = [[-width, -height], [-width, height], [width, height], [width, -height]]
+                    .map(([u, v]) => [x + (a * u + c * v) / 2, y + (b * u + d * v) / 2]);
+                return [{ image: sprite.image, aboveSlot, corners }];
+            });
+    }
+
+    function wardrobeOverlaySprites(behind) {
+        const slots = new Set(spineRenderer.drawOrderNames());
+        return [...wardrobeSprites.values()].filter((sprite) => !slots.has(wardrobeSpriteLayerSlot(sprite)) && Boolean(sprite.behind) === behind);
+    }
+
+    function renderWardrobeArtwork({ refreshSpine = true } = {}) {
+        if (!wardrobeArtwork || capturingFrames) return;
+        const visible = !wardrobePlacements.hidden && hasSpineRenderer();
+        if (refreshSpine && visible) {
+            spineRenderer.render();
         }
-        // The shifted silhouettes are now a mask. Tint only the mask, leaving
-        // the original Spine canvas above it to preserve interior pixels.
-        context.globalCompositeOperation = 'source-in';
-        context.fillStyle = sceneColorCss(outline.color);
-        context.fillRect(0, 0, width, height);
-        context.restore();
+        for (const [target, behind] of [[wardrobeArtworkBehind, true], [wardrobeArtwork, false]]) {
+            const layerSprites = visible ? wardrobeOverlaySprites(behind) : [];
+            target.hidden = !layerSprites.length;
+            if (target.hidden) continue;
+            const layer = clearOverlayCanvas(target);
+            if (layer) drawWardrobeArtwork(layer.context, layer.width, layer.height, layerSprites);
+        }
     }
 
     function renderNativeOverlays() {
-        if (!templatePackage || !hasSpineRenderer()) {
-            clearOverlayCanvas(outlineCanvas);
-            clearOverlayCanvas(textBehindCanvas);
-            clearOverlayCanvas(textFrontCanvas);
+        if (!hasSpineRenderer()) {
+            renderWardrobeArtwork({ refreshSpine: false });
             return;
         }
-        try {
-            renderNativeOutline();
-            const scene = getSelectedScene();
-            drawSceneTextLayer(textBehindCanvas, scene, 'Behind');
-            drawSceneTextLayer(textFrontCanvas, scene, 'Front');
-        } catch (_) {
-            clearOverlayCanvas(outlineCanvas);
-            clearOverlayCanvas(textBehindCanvas);
-            clearOverlayCanvas(textFrontCanvas);
+        if (!capturingFrames && wardrobePlacements && !wardrobePlacements.hidden) {
+            for (const sprite of wardrobeSprites.values()) {
+                if (sprite.anchor) updateWardrobeSprite(sprite, false);
+            }
+            renderWardrobeArtwork({ refreshSpine: false });
         }
+        refreshVisibleColorParts();
+    }
+
+    function refreshVisibleColorParts() {
+        if (!capturingFrames && state.inspectorTab === 'colors' && hasSpineRenderer()
+                && spineRenderer.visiblePartNames().join('\n') !== visibleColorPartsKey) renderTemplateSlotControls(true);
     }
 
     function nativeCompositeCanvas() {
@@ -3157,9 +5233,10 @@
             context.fillStyle = '#f5f9fc';
             context.fillRect(0, 0, output.width, output.height);
         }
-        [outlineCanvas, textBehindCanvas, spineCanvas, textFrontCanvas].forEach((source) => {
-            if (source && !source.hidden) context.drawImage(source, 0, 0, output.width, output.height);
-        });
+        const visible = !wardrobePlacements.hidden;
+        if (visible) drawWardrobeArtwork(context, output.width, output.height, wardrobeOverlaySprites(true));
+        if (!spineCanvas.hidden) context.drawImage(spineCanvas, 0, 0, output.width, output.height);
+        if (visible) drawWardrobeArtwork(context, output.width, output.height, wardrobeOverlaySprites(false));
         return output;
     }
 
@@ -3168,6 +5245,7 @@
         if (templatePackage && hasSpineRenderer()) {
             setCanvasMode(true);
             try {
+                applyNativeCharacterState({ render: false });
                 applyNativeVisualState();
                 spineRenderer.render();
                 renderNativeOverlays();
@@ -3209,10 +5287,32 @@
     }
 
     function applyZoom() {
-        const zoom = Math.max(0.75, Math.min(1.18, state.zoom));
+        const { zoom, previewPan } = state;
+        const { clientWidth, clientHeight } = canvasStage;
+        const { offsetLeft, offsetTop, offsetWidth, offsetHeight } = canvasFrame;
+        const clampPan = (pan, viewport, offset, size) => {
+            if (zoom <= 1 || size * zoom <= viewport) return 0;
+            const center = offset + size / 2;
+            const half = size * zoom / 2;
+            return Math.max(Math.min(0, viewport - center - half), Math.min(Math.max(0, half - center), pan));
+        };
+        previewPan.x = clampPan(previewPan.x, clientWidth, offsetLeft, offsetWidth);
+        previewPan.y = clampPan(previewPan.y, clientHeight, offsetTop, offsetHeight);
+        canvasStage.classList.toggle('is-zoomed', zoom > 1);
+        canvasFrame.style.transform = `translate(${previewPan.x}px, ${previewPan.y}px) scale(${zoom})`;
+        zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+    }
+
+    function setPreviewZoom(value, point) {
+        const zoom = Math.max(PREVIEW_ZOOM_MIN, Math.min(PREVIEW_ZOOM_MAX, value));
+        if (point) {
+            const bounds = canvasFrame.getBoundingClientRect();
+            const shift = 1 - zoom / state.zoom;
+            state.previewPan.x += (point.clientX - (bounds.left + bounds.width / 2)) * shift;
+            state.previewPan.y += (point.clientY - (bounds.top + bounds.height / 2)) * shift;
+        }
         state.zoom = zoom;
-        if (canvasFrame) canvasFrame.style.transform = `scale(${zoom})`;
-        if (zoomValue) zoomValue.textContent = `${Math.round(zoom * 100)}%`;
+        applyZoom();
     }
 
     // ── 长按拖到形象包 ────────────────────────────────────────────────────────
@@ -3383,13 +5483,11 @@
             if (upEvent.type === 'pointercancel') return;
             const target = packDropTargetAt(upEvent.clientX, upEvent.clientY);
             if (!target) return;
-            console.log('[drag-drop] payload:', JSON.stringify(payload),
-                'target:', target ? target.kind + ':' + target.stateKey : 'null');
             if (payload.kind === 'image') {
                 suppressClickUntil = Date.now() + 500;
-                stateStageSession.assignImage(target.stateKey, payload.imageId)
-                    .then(() => console.log('[drag] assignImage OK'))
-                    .catch((err) => console.error('[drag] assignImage FAILED:', err.message || err));
+                void stateStageSession.assignImage(target.stateKey, payload.imageId).catch(() => {
+                    console.error('[emote-maker] Image assignment failed');
+                });
                 return;
             }
             const scene = resolveSceneForPayload(payload);
@@ -3478,9 +5576,7 @@
         return {
             sceneId: state.selectedSceneId || '',
             skins: (state.templateSkins || []).map((item) => ({ ...item })),
-            sliders: (state.templateSliders || []).map((item) => ({ ...item })),
             slots: (state.templateSlots || []).map((item) => ({ ...item })),
-            texts: [],
             transform: {
                 x: Number(state.adjustments?.x) || 0,
                 y: Number(state.adjustments?.y) || 0,
@@ -3512,11 +5608,12 @@
     const STAGE_PREVIEW_FPS = 10;
     const stageFramesBySource = new Map();   // `${源}|${档位}` -> frame[]
     const stageThumbs = new Map();           // sceneId -> dataURL
-    // 用户图片：id -> { name, dataUrl }。字节随副本走（StageImages/ 合并进贴图管线），
+    // 用户图片：id -> { name, dataUrl, extension }。字节随副本走（StageImages/ 合并进贴图管线），
     // 内存里只留 dataURL 供预览与帧绘制；导出/清库跟模板副本同生共死。
     const stageUserImages = new Map();
-    let stageUserImagesRestored = false;
-    // 原始文件名随 localStorage 走：副本管线只收 .png 字节，id 又是时间戳
+    let stageImageTemplateKey = '';
+    let stageImagesReady = null;
+    // 原始文件名随 localStorage 走：副本用内部 id 保存图片
     // （CJK 文件名进 id 会被洗成横杠），名字必须单独记。单键 { id: name }。
     const STAGE_IMAGE_NAMES_KEY = 'neko-emote-maker-stage-image-names';
 
@@ -3546,6 +5643,7 @@
         } catch (_) { /* 同上 */ }
     }
     const stagePending = new Map();          // 队列键 -> Promise（同一份不重复排）
+    let stageFramesRevision = 0;
     /**
      * 所有采集排队串行跑。bakePackJobs 会暂停渲染器、改 state.selectedSceneId、
      * 结束时还原——并发调用不但抢主线程，还会互相踩场景（缩略图全变成同一条动画）。
@@ -3571,7 +5669,9 @@
         stageQueue.push({ key, priority, kind, task, resolve: settle.resolve, reject: settle.reject });
         stagePending.set(key, promise);
         // 队列自己消化异常（失败就不缓存，下次重试），这里只负责让 promise 被处理过
-        promise.catch(() => []).then(() => stagePending.delete(key));
+        promise.catch(() => []).then(() => {
+            if (stagePending.get(key) === promise) stagePending.delete(key);
+        });
         drainStageQueue();
         return promise;
     }
@@ -3606,6 +5706,7 @@
     }
 
     function forgetStageFrames() {
+        stageFramesRevision += 1;
         stageFramesBySource.clear();
         stageThumbs.clear();
         stagePending.clear();
@@ -3647,92 +5748,138 @@
         return new Blob([bytes], { type: mime });
     }
 
-    async function persistStageImages(entries) {
-        if (!entries.length) return;
-        const form = new FormData();
-        entries.forEach(([id, image]) => {
-            const blob = dataUrlToBlob(image.dataUrl);
-            form.append('textures', blob, `${id}.png`);
-            form.append('texture_paths', `${STAGE_IMAGE_PREFIX}${id}.png`);
-        });
+    function syncStageImageTemplate() {
         const key = currentTemplateKey();
-        if (!key) return;
-        const response = await fetch(
-            `/api/emote-maker/library/textures?key=${encodeURIComponent(key)}`,
-            { method: 'POST', body: form, credentials: 'same-origin' },
-        );
-        if (!response.ok) throw new Error('stage-image-persist-failed');
+        if (key !== stageImageTemplateKey) {
+            stageImageTemplateKey = key;
+            stageImagesReady = null;
+            stageUserImages.clear();
+            forgetStageFrames();
+            pushStageUserImages();
+        }
+        return key;
+    }
+
+    async function persistStageImages(entries, key) {
+        if (!key || !entries.length) return;
+        await writeTemplateTextures(key, entries.map(([id, image]) => [
+            `${STAGE_IMAGE_PREFIX}${id}.${image.extension}`, dataUrlToBlob(image.dataUrl),
+        ]));
+    }
+
+    async function removeStageImage(id) {
+        const key = currentTemplateKey();
+        const image = key === stageImageTemplateKey ? stageUserImages.get(id) : null;
+        if (!image) return;
+        const path = `${STAGE_IMAGE_PREFIX}${id}.${image.extension}`;
+        try {
+            await stageImagesReady;
+            await writeTemplateTextures(key, [[path]], { remove: true });
+        } catch (_) {
+            if (currentTemplateKey() === key) showToast(t('emoteMaker.stageImageDeleteFailed'));
+            return;
+        }
+        forgetStageImageName(id);
+        if (currentTemplateKey() !== key || stageImageTemplateKey !== key) return;
+        stageUserImages.delete(id);
+        forgetStageFrames();
+        pushStageUserImages();
+    }
+
+    function readStageImage(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    async function fetchStageGifFrames(blob, edge) {
+        const form = new FormData();
+        form.append('file', blob, 'animation.gif');
+        const response = await fetch(`/api/emote-maker/library/stage-image-frames?edge=${edge}`, {
+            method: 'POST', body: form, credentials: 'same-origin', headers: { 'x-neko-stage-image': '1' },
+        });
+        if (!response.ok) throw new Error('invalid_stage_gif');
+        return response;
     }
 
     async function importStageImages(files) {
+        const key = syncStageImageTemplate();
+        if (!key) return;
         const images = Array.from(files || []).filter(
-            (file) => /\.png$/i.test(file.name || ''),
+            (file) => /\.(png|gif)$/i.test(file.name || ''),
         );
         if (!images.length) {
-            showToast(t('emoteMaker.stageImagesPngOnly'));
+            showToast(t('emoteMaker.stageImagesSupportedFormats'));
             return;
         }
         const persisted = [];
+        let invalidGif = false;
         for (const file of images) {
-            const dataUrl = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(String(reader.result || ''));
-                reader.onerror = () => reject(reader.error);
-                reader.readAsDataURL(file);
-            });
-            const id = stageImageId(file.name);
-            stageUserImages.set(id, { name: file.name, dataUrl });
-            rememberStageImageName(id, file.name);
-            persisted.push([id, stageUserImages.get(id)]);
-        }
-        try {
-            await persistStageImages(persisted);
-        } catch (_) {
-            showToast(t('emoteMaker.stageImagesSaveFailed'));
-        }
-        pushStageUserImages();
-        if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
-        showToast(interpolate(t('emoteMaker.stageImagesImported'), { count: images.length }));
-    }
-
-    async function restoreStageImages() {
-        if (stageUserImagesRestored || !currentTemplateKey()) return;
-        stageUserImagesRestored = true;
-        try {
-            const listResponse = await fetch('/api/emote-maker/library/textures'
-                + `?key=${encodeURIComponent(currentTemplateKey())}`,
-            { credentials: 'same-origin' });
-            const list = await listResponse.json();
-            const paths = (list.paths || []).filter(
-                (path) => String(path).indexOf(STAGE_IMAGE_PREFIX) === 0);
-            for (const path of paths) {
-                const id = path.slice(STAGE_IMAGE_PREFIX.length).replace(/\.png$/i, '');
-                const response = await fetch('/api/emote-maker/library/texture'
-                    + `?key=${encodeURIComponent(currentTemplateKey())}&path=${encodeURIComponent(path)}`,
-                { credentials: 'same-origin' });
-                if (!response.ok) continue;
-                const blob = await response.blob();
-                const dataUrl = await new Promise((resolve) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(String(reader.result || ''));
-                    reader.onerror = () => resolve('');
-                    reader.readAsDataURL(blob);
-                });
-                const names = loadStageImageNames();
-                if (dataUrl) stageUserImages.set(
-                    id, { name: names[id] || id, dataUrl });
-            }
-            if (paths.length) {
-                pushStageUserImages();
-                // 恢复晚于抽屉渲染完成：不主动刷一次，绑图格子会一直停在
-                // "跟随默认"，直到用户点了别的什么才被连带重绘
-                if (stateStageSession?.refreshUserImages) {
-                    stateStageSession.refreshUserImages();
+            const extension = file.name.toLowerCase().endsWith('.gif') ? 'gif' : 'png';
+            if (extension === 'gif') {
+                try {
+                    if (file.size > 32 * 1024 * 1024) throw new Error('invalid_stage_gif');
+                    const response = await fetchStageGifFrames(file, 1);
+                    await response.arrayBuffer();
+                } catch (_) {
+                    invalidGif = true;
+                    continue;
                 }
             }
-        } catch (_) {
-            stageUserImagesRestored = false;   // 拉取失败下次再试
+            const dataUrl = await readStageImage(file.slice(0, file.size, `image/${extension}`));
+            if (currentTemplateKey() !== key) return;
+            const id = stageImageId(file.name);
+            persisted.push([id, { name: file.name, dataUrl, extension }]);
         }
+        if (currentTemplateKey() !== key) return;
+        let saved = true;
+        try {
+            await persistStageImages(persisted, key);
+        } catch (_) {
+            saved = false;
+        }
+        if (currentTemplateKey() !== key) return;
+        for (const [id, image] of persisted) {
+            stageUserImages.set(id, image);
+            rememberStageImageName(id, image.name);
+        }
+        pushStageUserImages();
+        if (!saved) showToast(t('emoteMaker.stageImagesSaveFailed'));
+        else if (invalidGif) showToast(t('emoteMaker.stageImagesInvalidGif'));
+        else showToast(interpolate(t('emoteMaker.stageImagesImported'), { count: persisted.length }));
+    }
+
+    function restoreStageImages() {
+        const key = syncStageImageTemplate();
+        if (!key) return Promise.resolve();
+        if (stageImagesReady) return stageImagesReady;
+        const restore = (async () => {
+            await pendingTemplateWrites.get(key)?.catch(() => {});
+            const listResponse = await fetch(`${TEMPLATE_LIBRARY_API}/textures?key=${encodeURIComponent(key)}`,
+                { credentials: 'same-origin' });
+            if (listResponse.status === 404) return;
+            if (!listResponse.ok) throw new Error('stage-image-restore-failed');
+            const list = await listResponse.json();
+            const paths = (list.paths || []).filter(
+                (path) => String(path).startsWith(STAGE_IMAGE_PREFIX) && /\.(png|gif)$/i.test(path));
+            const names = loadStageImageNames();
+            for (const path of paths) {
+                const id = path.slice(STAGE_IMAGE_PREFIX.length, -4);
+                const extension = path.slice(-3).toLowerCase();
+                const blob = await readTemplateTexture(key, path);
+                if (!blob) continue;
+                const dataUrl = await readStageImage(blob);
+                if (currentTemplateKey() !== key || stageImagesReady !== restore) return;
+                if (dataUrl) stageUserImages.set(
+                    id, { name: names[id] || id, dataUrl, extension });
+            }
+            if (paths.length && currentTemplateKey() === key && stageImagesReady === restore) pushStageUserImages();
+        })().catch(() => { if (stageImagesReady === restore) stageImagesReady = null; });
+        stageImagesReady = restore;
+        return restore;
     }
 
     /** 把内存清单推给舞台模块（冻结对象的方法照常可调）。 */
@@ -3742,6 +5889,7 @@
         stageModule.setUserImages([...stageUserImages.entries()].map(([id, image]) => ({
             id, label: image.name, thumb: image.dataUrl,
         })));
+        stateStageSession?.refreshUserImages();
     }
 
     /** 用户图片 → 单帧（按导出边长画到画布中央，透明背景）。 */
@@ -3766,7 +5914,94 @@
         });
     }
 
+    async function framesFromStageImage(image, edge) {
+        if (image.extension !== 'gif') return frameFromStageImage(image, edge);
+        try {
+            const response = await fetchStageGifFrames(dataUrlToBlob(image.dataUrl), edge);
+            const [cell, columns, delays] = JSON.parse(response.headers.get('X-Stage-Image-Frames'));
+            const atlas = await createImageBitmap(await response.blob());
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = cell;
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                return delays.map((delayMs, index) => {
+                    ctx.clearRect(0, 0, cell, cell);
+                    ctx.drawImage(atlas, index % columns * cell, Math.floor(index / columns) * cell,
+                        cell, cell, 0, 0, cell, cell);
+                    return { width: cell, height: cell, data: ctx.getImageData(0, 0, cell, cell).data, delayMs };
+                });
+            } finally {
+                atlas.close();
+            }
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function stageImageFrameDelay(frame) {
+        return Number(frame.delayMs) || 1000 / STAGE_PREVIEW_FPS;
+    }
+
+    function stageImageTimelineDuration(frames) {
+        return frames.reduce((total, frame) => total + stageImageFrameDelay(frame), 0);
+    }
+
+    function trimStageImageTimeline(frames, start, duration) {
+        const total = stageImageTimelineDuration(frames);
+        const from = Math.min(Math.max(0, start * 1000), Math.max(0, total - 10));
+        const to = duration > 0 ? Math.min(total, from + duration * 1000) : total;
+        let elapsed = 0;
+        const trimmed = [];
+        for (const frame of frames) {
+            const end = elapsed + stageImageFrameDelay(frame);
+            const delayMs = Math.min(to, end) - Math.max(from, elapsed);
+            if (delayMs > 0) trimmed.push({ ...frame, delayMs });
+            if (end >= to) break;
+            elapsed = end;
+        }
+        return trimmed;
+    }
+
+    function sampleStageImageTimeline(frames, fps, maxFrames) {
+        if (!frames.length) return [];
+        const duration = stageImageTimelineDuration(frames);
+        const count = Math.max(1, Math.min(maxFrames, Math.ceil(duration * fps / 1000)));
+        const delayMs = duration / count;
+        let source = 0;
+        let end = stageImageFrameDelay(frames[source]);
+        return Array.from({ length: count }, (_, index) => {
+            const at = index * delayMs;
+            while (source + 1 < frames.length && at >= end) {
+                source += 1;
+                end += stageImageFrameDelay(frames[source]);
+            }
+            return { ...frames[source], delayMs };
+        });
+    }
+
+    function resizeStageImageFrames(frames, edge, resized) {
+        const source = document.createElement('canvas');
+        const target = document.createElement('canvas');
+        target.width = target.height = edge;
+        const output = target.getContext('2d', { willReadFrequently: true });
+        return frames.map((frame) => {
+            if (frame.width === edge && frame.height === edge) return frame;
+            let data = resized.get(frame.data);
+            if (!data) {
+                source.width = frame.width;
+                source.height = frame.height;
+                source.getContext('2d').putImageData(new ImageData(frame.data, frame.width, frame.height), 0, 0);
+                output.clearRect(0, 0, edge, edge);
+                output.drawImage(source, 0, 0, edge, edge);
+                data = output.getImageData(0, 0, edge, edge).data;
+                resized.set(frame.data, data);
+            }
+            return { ...frame, width: edge, height: edge, data };
+        });
+    }
+
     function captureStageSource(sourceKey, quality, priorityOverride, windowOverride) {
+        const revision = stageFramesRevision;
         const budget = STAGE_QUALITY[quality] || STAGE_QUALITY.full;
         const priority = Number(priorityOverride) > 0
             ? Number(priorityOverride)
@@ -3775,28 +6010,26 @@
         const startAt = Math.max(0, Number(windowOverride && windowOverride.startAt) || 0);
         const captureKey = startAt > 0
             ? `${sourceKey}|${quality}@${startAt}` : `${sourceKey}|${quality}`;
-        return queueStageCapture(captureKey,
+        return queueStageCapture(`${revision}|${captureKey}`,
             priority,
             priority >= STAGE_CAPTURE_INTERACTIVE ? 'frames' : 'thumb',
             async () => {
-                // 用户图片：单帧源，不过 Spine 采集管线。images: 是轮播
-                // 列表（按序每张一帧）；image: 是旧的单图键，照旧认。
+                if (revision !== stageFramesRevision) return [];
                 const captureKey = String(sourceKey || '');
-                if (captureKey.indexOf('images:') === 0) {
+                if (captureKey.startsWith('images:') || captureKey.startsWith('image:')) {
+                    const sources = captureKey.slice(captureKey.indexOf(':') + 1).split('|')
+                        .map((id) => stageUserImages.get(id)).filter(Boolean);
                     const frames = [];
-                    for (const id of captureKey.slice('images:'.length).split('|')) {
-                        if (!id) continue;
-                        const image = stageUserImages.get(id);
-                        if (!image) continue;
-                        const one = await frameFromStageImage(image, budget.edge);
-                        if (one.length) frames.push(one[0]);
+                    for (const image of sources) {
+                        const decoded = await framesFromStageImage(image, budget.edge);
+                        frames.push(...decoded);
+                    }
+                    if (revision !== stageFramesRevision) return [];
+                    if (frames.some((frame) => frame.delayMs)) {
+                        return sampleStageImageTimeline(frames, quality === 'full' ? 30 : budget.fps,
+                            quality === 'full' ? PACK_MAX_FRAMES : budget.maxFrames);
                     }
                     return frames;
-                }
-                if (captureKey.indexOf('image:') === 0) {
-                    const image = stageUserImages.get(captureKey.slice('image:'.length));
-                    if (!image) return [];
-                    return frameFromStageImage(image, budget.edge);
                 }
                 const resolved = await resolveStageSource(sourceKey);
                 if (!resolved) return [];
@@ -3812,7 +6045,7 @@
                             : undefined }],
                     { fps: budget.fps, edge: budget.edge },
                 );
-                return baked[0] ? baked[0].frames : [];
+                return revision === stageFramesRevision && baked[0] ? baked[0].frames : [];
             });
     }
 
@@ -3912,19 +6145,7 @@
                 label: scene.name || scene.animation?.id || scene.id,
             })),
             onImportImages: () => { void restoreStageImages().then(() => stageImageInput?.click()); },
-            onRemoveImage: (imageId) => {
-                stageUserImages.delete(imageId);
-                forgetStageImageName(imageId);
-                pushStageUserImages();
-                if (stateStageSession?.refreshUserImages) stateStageSession.refreshUserImages();
-                // 副本上的文件也真删：不然每次打开表演台 restore 又拉回来
-                const key = currentTemplateKey();
-                if (!key) return;
-                const form = new FormData();
-                form.append('texture_paths', `${STAGE_IMAGE_PREFIX}${imageId}.png`);
-                fetch(`/api/emote-maker/library/textures/remove?key=${encodeURIComponent(key)}`,
-                    { method: 'POST', body: form, credentials: 'same-origin' });
-            },
+            onRemoveImage: removeStageImage,
             onChange: (next) => {
                 state.nodeGraph = next;
                 state.packMode = 'graph';
@@ -3934,6 +6155,14 @@
                     persistNodeGraph();
                     persistLayout();
                 }, 250);
+            },
+            onCommit: (before, after) => {
+                if (JSON.stringify(before) === JSON.stringify(after)) return;
+                state.nodeGraph = after;
+                persistNodeGraph();
+                persistTemplateSession();
+                persistTemplateToLibrary();
+                rememberHistory(before, after, restoreStageGraph);
             },
             onClose: () => {
                 if (stateStageSession) stateStageSession.dispose();
@@ -3947,11 +6176,20 @@
         renderPackPanel();
     }
 
+    function restoreStageGraph(graph) {
+        forgetStageFrames();
+        state.nodeGraph = structuredClone(graph);
+        stateStageSession?.setGraph(state.nodeGraph);
+        persistNodeGraph();
+        persistTemplateSession();
+        persistTemplateToLibrary();
+        renderPackPanel();
+    }
+
     // 把图算出来的 look 写进 state，让现有的场景套用与 overlay 渲染原样画出来。
     function applyLookToState(look) {
         state.selectedSceneId = look.sceneId || state.selectedSceneId;
         state.templateSkins = look.skins.map((item) => ({ ...item }));
-        state.templateSliders = look.sliders.map((item) => ({ ...item }));
         state.templateSlots = look.slots.map((item) => ({ ...item }));
         state.adjustments = {
             x: look.transform.x,
@@ -3968,12 +6206,13 @@
     // ── 上次打开的模板：只记元数据，不记素材字节 ─────────────────────────────
     // 浏览器不会把上一次选过的文件留给下一次，而"缓存这个包"与 assetPolicy
     // (local-import-and-render-only) 冲突，所以这里只存到足以一键重开+恢复编辑
-    // 状态的程度：指纹、名字、导入方式、选中的场景、皮肤/滑杆/色组、调整与映射。
+    // 状态的程度：指纹、名字、导入方式、选中的场景、皮肤、色组、调整与映射。
     const LAST_TEMPLATE_KEY = 'neko-emote-maker-last-template';
     let lastTemplate = null;
 
     function templateFingerprint(pkg) {
         if (!pkg) return '';
+        if (pkg.source?.kind === 'spine') return pkg.id || '';
         const counts = pkg.counts || {};
         return [
             pkg.source?.packageName || '',
@@ -4000,8 +6239,6 @@
             packSceneIds: { ...(state.packSceneIds || {}) },
             character: {
                 skins: pick(state.templateSkins),
-                sliders: pick(state.templateSliders),
-                sliderDefaults: pick(state.templateSliderDefaults),
                 slots: pick(state.templateSlots),
             },
             adjustments: { ...state.adjustments },
@@ -4068,11 +6305,12 @@
     function rememberLoadedTemplate() {
         const key = currentTemplateKey();
         if (!key || !templateAssetStore) return '';
+        const previous = loadedTemplates.get(key)?.store;
         loadedTemplates.set(key, {
             pkg: templatePackage,
             store: templateAssetStore,
-            textureFiles: Array.isArray(textureCacheFiles) ? [...textureCacheFiles] : [],
         });
+        if (previous && previous !== templateAssetStore && !holdsTemplateStore(previous)) releaseAssetStore(previous);
         return key;
     }
 
@@ -4113,7 +6351,9 @@
                 // 来源名：这次导入带来了就用这次的（目录改名后再导一次，名字跟着走），
                 // 没带来（切回/重绘触发的保存）沿用库里那份。alias 只有双击改名才写，
                 // 这里永远沿用，别把用户改的名冲掉
-                sourceName: sourceName || (existing && existing.sourceName) || '',
+                sourceName: templatePackage.source?.builtIn
+                    ? templatePackage.model.displayName
+                    : sourceName || (existing && existing.sourceName) || '',
                 alias: (existing && existing.alias) || '',
                 thumb: thumb || (existing && existing.thumb) || '',
                 addedAt: existing && existing.addedAt,
@@ -4145,12 +6385,42 @@
     }
 
     // ── 导入即拷副本 ──────────────────────────────────────────────────────────
-    // 导入成功后把整份 zip（连附带贴图）拷进应用数据目录，重开直接从副本恢复。
+    // 导入成功后把 Spine ZIP 拷进应用数据目录，重开直接从副本恢复。
     // 副本即唯一事实：原件更新/删除/挪走都与这里无关，想更新就再导一次（同键原地覆盖）。
     // 后端没有这套接口时一切照旧：存副本失败提示一句，重开退回"请重新定位"。
     const TEMPLATE_LIBRARY_API = '/api/emote-maker/library';
+    const builtinTemplates = new Map();
+    const pendingTemplateWrites = new Map();
+    const pendingTemplateRemovals = new Set();
     let templateArchiveBytes = new Map();
     let templateArchiveTotalBytes = 0;
+    let archiveSizeRequest = 0;
+
+    function findTemplateLibraryEntry(key) {
+        const saved = templateLibraryModule?.find(templateLibraryState, key);
+        const pkg = builtinTemplates.get(key);
+        if (!pkg) return saved;
+        const entry = templateLibraryModule.makeEntry({ pkg, sourceName: pkg.model.displayName });
+        return {
+            ...entry, ...saved, builtIn: true,
+            packageName: entry.packageName, displayName: entry.displayName, sourceName: entry.sourceName,
+        };
+    }
+
+    async function loadBuiltinTemplates() {
+        if (!templateLibraryModule) return;
+        try {
+            const response = await fetch('/api/emote-maker/builtins', { credentials: 'same-origin' });
+            const payload = await response.json();
+            if (!response.ok || !payload.success || !Array.isArray(payload.packages)) return;
+            for (const pkg of payload.packages) {
+                if (pkg?.source?.builtIn === true) builtinTemplates.set(pkg.id, pkg);
+            }
+            renderTemplateLibraryGrid();
+        } catch (_) {
+            // A library request failure leaves ordinary local imports available.
+        }
+    }
 
     function formatTemplateBytes(bytes) {
         return templateLibraryModule && typeof templateLibraryModule.formatBytes === 'function'
@@ -4158,10 +6428,11 @@
     }
 
     async function refreshTemplateArchiveSizes() {
+        const request = ++archiveSizeRequest;
         try {
             const response = await fetch(TEMPLATE_LIBRARY_API, { credentials: 'same-origin' });
             const payload = await response.json();
-            if (!response.ok || !payload.success || !Array.isArray(payload.entries)) return;
+            if (request !== archiveSizeRequest || !response.ok || !payload.success || !Array.isArray(payload.entries)) return;
             const next = new Map(payload.entries.map((entry) => [
                 String(entry.key), Number(entry.bytes) || 0,
             ]));
@@ -4178,52 +6449,51 @@
         }
     }
 
-    function archiveTextureForm(textureFiles) {
+    function templateTextureUrl(key, path) {
+        return `${TEMPLATE_LIBRARY_API}/texture?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`;
+    }
+
+    async function readTemplateTexture(key, path) {
+        const response = await fetch(templateTextureUrl(key, path), { credentials: 'same-origin' });
+        return response.ok ? response.blob() : null;
+    }
+
+    async function writeTemplateLibrary(key, resource, form) {
+        // 重新导入同一模板会重写副本。附带图片的增删也要排队，避免被这次重写覆盖。
+        const previous = pendingTemplateWrites.get(key);
+        const write = (async () => {
+            await previous?.catch(() => {});
+            const response = await fetch(`${TEMPLATE_LIBRARY_API}/${resource}?key=${encodeURIComponent(key)}`,
+                { method: 'POST', body: form, credentials: 'same-origin' },
+            );
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || !payload.success) throw new Error(payload.error || 'template-library-write-failed');
+        })();
+        pendingTemplateWrites.set(key, write);
+        try {
+            await write;
+        } finally {
+            if (pendingTemplateWrites.get(key) === write) pendingTemplateWrites.delete(key);
+        }
+    }
+
+    function writeTemplateTextures(key, entries, { remove = false } = {}) {
         const form = new FormData();
-        (textureFiles || []).forEach((texture) => {
-            form.append('textures', texture, texture.name || 'texture.png');
-            form.append('texture_paths', texture.webkitRelativePath || texture.name || '');
-        });
-        return form;
+        for (const [path, blob] of entries) {
+            form.append('texture_paths', path);
+            if (!remove) form.append('textures', blob, path.split('/').pop());
+        }
+        return writeTemplateLibrary(key, remove ? 'textures/remove' : 'textures', form);
     }
 
-    /** 把刚导入的模板拷一份到应用数据目录。失败要说话：用户以为下次还能免定位。 */
-    async function persistTemplateArchive(key, file, textureFiles) {
-        const form = archiveTextureForm(textureFiles);
-        // 文件名必须原样带过去：副本要靠它恢复出同一个库身份
+    /** 把刚导入的模板拷一份到应用数据目录。 */
+    async function persistTemplateArchive(key, file) {
+        const form = new FormData();
         form.append('file', file, file.name || 'template.zip');
-        const response = await fetch(
-            `${TEMPLATE_LIBRARY_API}/archive?key=${encodeURIComponent(key)}`,
-            { method: 'POST', body: form, credentials: 'same-origin' },
-        );
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload.success) throw new Error(payload.error || 'archive-failed');
-        await refreshTemplateArchiveSizes();
-    }
-
-    /** 导入之后才补的贴图单独合并进副本：不然重开一次就丢，正是副本要消掉的痛点。 */
-
-
-    async function fetchArchiveTextureFiles(key) {
-        const listResponse = await fetch(
-            `${TEMPLATE_LIBRARY_API}/textures?key=${encodeURIComponent(key)}`,
-            { credentials: 'same-origin' },
-        );
-        const listPayload = await listResponse.json().catch(() => null);
-        if (!listResponse.ok || !listPayload?.success) return [];
-        const paths = Array.isArray(listPayload.paths) ? listPayload.paths : [];
-        return Promise.all(paths.map(async (path) => {
-            const response = await fetch(`${TEMPLATE_LIBRARY_API}/texture`
-                + `?key=${encodeURIComponent(key)}&path=${encodeURIComponent(path)}`,
-            { credentials: 'same-origin' });
-            if (!response.ok) throw new Error(`texture-missing:${path}`);
-            const blob = await response.blob();
-            const file = new File([blob], String(path).split('/').pop() || 'texture.png',
-                { type: 'image/png' });
-            // 覆盖层按相对路径精确匹配；构造出来的 File 自带 webkitRelativePath 是空串
-            Object.defineProperty(file, 'webkitRelativePath', { value: String(path) });
-            return file;
-        }));
+        form.append('model_path', templatePackage?.model?.skeleton?.path || '');
+        form.append('atlas_path', templatePackage?.model?.atlas?.path || '');
+        await writeTemplateLibrary(key, 'archive', form);
+        if (!pendingTemplateRemovals.has(key)) await refreshTemplateArchiveSizes();
     }
 
     /**
@@ -4233,75 +6503,63 @@
      */
     async function tryRestoreTemplateFromArchive(key) {
         if (!key || !templateLibraryModule) return false;
-        const entry = templateLibraryModule.find(templateLibraryState, key);
+        const entry = findTemplateLibraryEntry(key);
+        const builtinPackage = builtinTemplates.get(key);
         try {
-            const [archiveResponse, textureFiles] = await Promise.all([
-                fetch(`${TEMPLATE_LIBRARY_API}/archive?key=${encodeURIComponent(key)}`,
-                    { credentials: 'same-origin' }),
-                fetchArchiveTextureFiles(key).catch(() => []),
-            ]);
+            const archiveResponse = await fetch(`${TEMPLATE_LIBRARY_API}/archive?key=${encodeURIComponent(key)}`,
+                { credentials: 'same-origin' });
             if (!archiveResponse.ok) return false;
             const blob = await archiveResponse.blob();
-            // 副本记着当初的文件名，必须原样还给 File：库键的第一段就是它
-            // （adapter 拿上传文件名当 packageName），起个新名字等于把同一个模板
-            // 分裂成两个库身份，旧条目的会话与组就全丢了。
+            // 副本使用应用生成的文件名；卡片显示名由库条目恢复。
             const rawName = archiveResponse.headers.get('X-Archive-Filename') || '';
             const fileName = rawName ? decodeURIComponent(rawName) : 'template.zip';
             const file = new File([blob], fileName, { type: 'application/zip' });
             return await importTemplateFile(file, {
-                displayName: templateLibraryModule.entryLabel(entry) || '',
-                textureFiles,
+                displayName: builtinPackage ? '' : templateLibraryModule.entryLabel(entry) || '',
                 kind: entry?.importKind === 'directory' ? 'directory' : 'file',
                 fromArchive: true,
+                restoreKey: key,
+                builtinPackage,
             });
         } catch (_) {
             return false;
         }
     }
 
-    /** 删副本，返回真实释放的字节数。失败返回 0：库条目照删，磁盘上那份留着也无害。 */
+    /** 等待导入写入落定，再确认本地副本已删除。 */
     async function deleteTemplateArchive(key) {
-        if (!key) return 0;
-        try {
-            const response = await fetch(
-                `${TEMPLATE_LIBRARY_API}?key=${encodeURIComponent(key)}`,
-                { method: 'DELETE', credentials: 'same-origin' },
-            );
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.success) return 0;
-            await refreshTemplateArchiveSizes();
-            return Number(payload.freedBytes) || 0;
-        } catch (_) {
-            return 0;
-        }
+        await pendingTemplateWrites.get(key)?.catch(() => {});
+        const response = await fetch(
+            `${TEMPLATE_LIBRARY_API}?key=${encodeURIComponent(key)}`,
+            { method: 'DELETE', credentials: 'same-origin' },
+        );
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.success) throw new Error(payload.error || 'archive-delete-failed');
     }
 
     /**
      * 从内存注册表把某个模板装回来：不读盘、不请求后端、不重新解析场景。
-     * 会话恢复复用 applyTemplateSession —— 它按"指纹对不对得上"决定要不要套皮肤/滑杆，
+     * 会话恢复复用 applyTemplateSession —— 它按"指纹对不对得上"决定要不要恢复外观，
      * 那套校验（只接受仍然存在的槽位名等）不该在库里再写第二份。
      */
     function applyTemplateFromRegistry(key) {
         const held = loadedTemplates.get(key);
-        const entry = templateLibraryModule
-            ? templateLibraryModule.find(templateLibraryState, key) : null;
+        const entry = findTemplateLibraryEntry(key);
         if (!held || !entry) return false;
         persistTemplateToLibrary();
         spineRendererGeneration += 1;
         disposeSpineRenderer();
         templatePackage = held.pkg;
         templateAssetStore = held.store;
-        textureCacheFiles = [...held.textureFiles];
         lastImportKind = entry.importKind === 'file' ? 'file' : 'directory';
         lastTemplate = {
             ...entry.session,
             fingerprint: templateFingerprint(held.pkg),
         };
+        state.templateSlotDefaults = (held.pkg.character?.slots || []).map((item) => ({ ...item }));
+        state.templateSlots = state.templateSlotDefaults.map((item) => ({ ...item }));
+        state.templateSlotGroup = state.templateSlots[0]?.name || '';
         applyTemplateSession(held.pkg);
-        if (!Array.isArray(lastTemplate?.character?.sliderDefaults)) {
-            const source = Array.isArray(held.pkg.character?.sliders) ? held.pkg.character.sliders : [];
-            state.templateSliderDefaults = source.map((item) => ({ ...item }));
-        }
         if (!state.groupId) {
             const first = allGroups()[0];
             if (first) selectGroup(first.id);
@@ -4309,15 +6567,6 @@
         if (entry.session.packName) state.packName = entry.session.packName;
         state.packFormat = entry.session.packFormat === 'layered' ? 'layered' : 'flat';
         state.packPriority = entry.session.packPriority === 'emotion' ? 'emotion' : 'talking';
-        const restored = Object.keys(entry.session.packSceneIds || {}).length
-            ? entry.session.packSceneIds : state.packSceneIds;
-        state.packSceneIds = { ...(restored || {}) };
-        if (entry.session.nodeGraph) {
-            state.nodeGraph = window.NekoEmoteNodeGraph
-                ? window.NekoEmoteNodeGraph.normalizeGraph(entry.session.nodeGraph)
-                : entry.session.nodeGraph;
-            persistNodeGraph();
-        }
         const firstScene = getImportedScenes()[0];
         if (firstScene && !getImportedScenes().some((scene) => scene.id === state.selectedSceneId)) {
             state.selectedSceneId = firstScene.id;
@@ -4338,13 +6587,13 @@
      * 不会多出第二条。
      */
     async function switchTemplate(key) {
-        if (!templateLibraryModule || !key || packBusy) return;
+        if (!templateLibraryModule || !key || packBusy || pendingTemplateRemovals.has(key)) return;
         if (key === currentTemplateKey()) return;
+        if (!findTemplateLibraryEntry(key)) return;
         if (applyTemplateFromRegistry(key)) {
             showToast(t('emoteMaker.templateSwitched'));
             return;
         }
-        const entry = templateLibraryModule.find(templateLibraryState, key);
         persistTemplateToLibrary();
         // 内存里没有（重启过）就先试本地副本：有副本就不该再让用户去认一遍路径。
         // 旧条目第一次没有副本，走完重新定位导入后副本自然就有了。
@@ -4352,7 +6601,13 @@
             showToast(t('emoteMaker.templateSwitched'));
             return;
         }
-        chooseTemplateDirectory();
+        if (builtinTemplates.has(key)) {
+            reportImportFailure(new Error('builtin-template-load-failed'));
+            return;
+        }
+        if (!pendingTemplateRemovals.has(key) && templateLibraryModule.find(templateLibraryState, key)) {
+            chooseTemplateArchive();
+        }
     }
 
     /** 页内确认框：window.confirm 的默认样式和这一页毫不相干，插值也归这里管。 */
@@ -4393,12 +6648,24 @@
     }
 
     async function removeTemplate(key) {
-        if (!templateLibraryModule || !key) return;
+        if (!templateLibraryModule || !key || key.startsWith('builtin:') || pendingTemplateRemovals.has(key)) return;
         // 删的是用户攒的模板 + 它的本地副本，得先问一句；名字用卡片上那个
         const entry = templateLibraryModule.find(templateLibraryState, key);
         const label = templateLibraryModule.entryLabel(entry) || key;
         if (!(await confirmModal(interpolate(t('emoteMaker.removeTemplateConfirm'), { name: label })))) {
             return;
+        }
+        if (pendingTemplateRemovals.has(key) || !templateLibraryModule.find(templateLibraryState, key)) return;
+        pendingTemplateRemovals.add(key);
+        renderTemplateLibraryGrid();
+        try {
+            await deleteTemplateArchive(key);
+        } catch (_) {
+            showToast(t('emoteMaker.archiveDeleteFailed'));
+            return;
+        } finally {
+            pendingTemplateRemovals.delete(key);
+            renderTemplateLibraryGrid();
         }
         const held = loadedTemplates.get(key);
         const isCurrent = key === currentTemplateKey();
@@ -4406,44 +6673,43 @@
         // 移除的是当前正用着的那个时，store 归页面自己收尾，不能留着读不到的字节
         if (held && !isCurrent && !holdsTemplateStore(held.store)) releaseAssetStore(held.store);
         templateLibraryState = templateLibraryModule.remove(templateLibraryState, key);
+        const clearSession = isCurrent || lastTemplate?.fingerprint === key;
+        if (clearSession) lastTemplate = null;
         try {
             templateLibraryModule.save(localStorage, templateLibraryState);
+            if (clearSession) localStorage.removeItem(LAST_TEMPLATE_KEY);
         } catch (_) { /* 存不下就只丢这一次的记忆 */ }
-        // 库条目删了，磁盘上的副本跟着删（确认框里已经说过会删）
-        void deleteTemplateArchive(key);
         if (isCurrent) {
             spineRendererGeneration += 1;
             disposeSpineRenderer();
             releaseTemplateAssetStore();
             templatePackage = null;
-            textureCacheFiles = [];
-            lastTemplate = null;
         }
         renderAll();
+        void refreshTemplateArchiveSizes();
     }
 
-    function applyTemplateSession(manifest) {
+    function applyTemplateSession(manifest, savedGraph = lastTemplate?.nodeGraph) {
         if (!lastTemplate || !manifest) return false;
         if (lastTemplate.fingerprint !== templateFingerprint(manifest)) {
-            // 不是同一个包就什么都不恢复。把上一个包的皮肤/滑杆套到新包上，
+            // 不是同一个包就什么都不恢复。把上一个包的外观套到新包上，
             // 会得到一个"看起来能开但全是错的东西"，比不恢复更糟。
             return false;
         }
         const scenes = getImportedScenes();
         const ids = new Set(scenes.map((scene) => scene.id));
+        const aliases = manifest.source?.sceneAliases || {};
+        const resolveSceneId = (id) => Object.hasOwn(aliases, id) ? aliases[id] : id;
         const character = lastTemplate.character || {};
         if (Array.isArray(character.skins)) state.templateSkins = character.skins.map((item) => ({ ...item }));
-        if (Array.isArray(character.sliders)) state.templateSliders = character.sliders.map((item) => ({ ...item }));
-        if (Array.isArray(character.sliderDefaults)) {
-            state.templateSliderDefaults = character.sliderDefaults.map((item) => ({ ...item }));
-        }
         if (Array.isArray(character.slots) && character.slots.length) {
             // 只接受新包里仍然存在的槽位名，避免把过期色组写回去。
             const known = new Set((manifest.character?.slots || []).map((slot) => String(slot?.name || '')));
             const kept = character.slots.filter((slot) => known.has(String(slot?.name || '')));
             if (kept.length) {
-                state.templateSlots = kept.map((slot) => ({ ...slot }));
-                state.templateSlotDefaults = kept.map((slot) => ({ ...slot }));
+                const savedNames = new Set(kept.map((slot) => slot.name));
+                const added = state.templateSlotDefaults.filter((slot) => !savedNames.has(slot.name));
+                state.templateSlots = [...kept, ...added].map((slot) => ({ ...slot }));
                 state.templateSlotGroup = kept[0]?.name || '';
             }
         }
@@ -4453,10 +6719,10 @@
         if (typeof lastTemplate.adjustOverwrite === 'boolean') state.adjustOverwrite = lastTemplate.adjustOverwrite;
         if (lastTemplate.colorMode) state.colorMode = lastTemplate.colorMode;
         if (lastTemplate.secondaryColor) state.secondaryColor = lastTemplate.secondaryColor;
-        const scene = scenes.find((item) => item.id === lastTemplate.sceneId);
+        const selectedSceneId = resolveSceneId(lastTemplate.sceneId);
+        const scene = scenes.find((item) => item.id === selectedSceneId);
         if (scene) {
             state.selectedSceneId = scene.id;
-            state.selectedSceneListId = scene.source?.sceneList || '';
             state.animationId = scene.animation?.id || state.animationId;
         }
         if (lastTemplate.sceneListFilter && manifest.sceneLists?.some((list) => (
@@ -4468,12 +6734,15 @@
         // 场景数变了），就把它从组里剔掉，而不是留着一条烘不出来的引用。
         if (groupLibrary && Array.isArray(lastTemplate.groups)) {
             const groups = groupLibrary.groupsFrom(lastTemplate.groups);
-            const shots = groupLibrary.shotsFrom(lastTemplate.shots);
+            const shots = groupLibrary.shotsFrom(lastTemplate.shots).map((shot) => ({
+                ...shot, sourceSceneId: resolveSceneId(shot.sourceSceneId),
+            }));
             const shotIds = new Set(shots.map((shot) => shot.id));
             state.shots = shots;
             state.groups = groups.map((group) => ({
                 ...group,
-                items: (group.items || []).filter((item) => (
+                items: group.items.map((item) => item.kind === 'scene'
+                    ? { ...item, ref: resolveSceneId(item.ref) } : item).filter((item) => (
                     item.kind === 'scene' ? ids.has(item.ref) : shotIds.has(item.ref)
                 )),
             }));
@@ -4482,10 +6751,22 @@
             state.groupId = lastTemplate.groupId || '';
         }
         const pack = {};
-        Object.entries(lastTemplate.packSceneIds || {}).forEach(([key, id]) => {
+        Object.entries(lastTemplate.packSceneIds || {}).forEach(([key, sceneId]) => {
+            const id = resolveSceneId(sceneId);
             if (ids.has(id)) pack[key] = id;
         });
         state.packSceneIds = pack;
+        const graphModel = window.NekoEmoteNodeGraph;
+        if (savedGraph && graphModel) {
+            const graph = graphModel.normalizeGraph(savedGraph);
+            state.nodeGraph = {
+                ...graph,
+                nodes: graph.nodes.map((node) => node.type === 'source.scene'
+                    ? { ...node, params: { ...node.params, sceneId: resolveSceneId(node.params.sceneId) } }
+                    : node),
+            };
+            persistNodeGraph();
+        }
         return true;
     }
 
@@ -4500,9 +6781,6 @@
         right: Object.freeze([220, 560]),
         dock: Object.freeze([180, 620]),
     });
-    // 窗口很矮时按比例算出的上限可能已经小于 180；再往下还留 标题+40px 控件 的
-    // 硬底线，配合 .workspace-panel 的面内滚动保证控件永远够得着。
-    const DOCK_HARD_MIN = 96;
     const layout = { left: 300, right: 360, dock: 0 };
 
     // 静态像素上限在窄窗口下会把面板拖出屏幕外（实测 1120px 窗口把两侧拖到
@@ -4544,14 +6822,15 @@
         const style = getComputedStyle(workspace);
         const rows = gridTracks(workspace, 'gridTemplateRows');
         const gap = parsePx(style.rowGap, 0);
-        const canvasMin = parsePx(style.getPropertyValue('--canvas-min'), 300);
         const heading = rows.length > 0 ? rows[0] : 0;
         const handle = rows.length > 2 ? rows[2] : 12;
-        // clientHeight 是含 padding 的，必须把上下内边距扣掉，否则每个窗口都会
-        // 稳定多出 ~36px 把播放控件顶出可视区（实测各宽度一律溢出 32px）。
-        const padY = parsePx(style.paddingTop, 0) + parsePx(style.paddingBottom, 0);
-        const shareable = workspace.clientHeight - padY - canvasMin - heading - handle - gap * 3;
-        return Math.max(DOCK_HARD_MIN, Math.min(bounds[1], Math.floor(shareable)));
+        const contentHeight = parsePx(style.height, 0) - parsePx(style.paddingTop, 0) - parsePx(style.paddingBottom, 0)
+            - parsePx(style.borderTopWidth, 0) - parsePx(style.borderBottomWidth, 0);
+        const canvasShare = parsePx(style.getPropertyValue('--canvas-min-share'), 35) / 100;
+        const canvasMin = Math.min(parsePx(style.getPropertyValue('--canvas-min'), 300), contentHeight * canvasShare);
+        const dockMin = parsePx(style.getPropertyValue('--dock-min'), 110);
+        const shareable = contentHeight - canvasMin - heading - handle - gap * 3;
+        return Math.max(dockMin, Math.min(bounds[1], Math.floor(shareable)));
     }
 
     function clampLayout(which, value) {
@@ -4570,9 +6849,9 @@
         layout.right = clampLayout('right', layout.right);
         layout.left = clampLayout('left', layout.left);
         layout.right = clampLayout('right', layout.right);
-        if (layout.dock) layout.dock = clampLayout('dock', layout.dock);
         grid.style.setProperty('--col-left', `${layout.left}px`);
         grid.style.setProperty('--col-right', `${layout.right}px`);
+        if (layout.dock) layout.dock = clampLayout('dock', layout.dock);
         // dock 允许 0 表示"未固定"，此时交给内容自适应。
         const workspace = document.querySelector('.workspace-panel');
         if (workspace) {
@@ -4613,7 +6892,7 @@
                 right: layout.right,
                 dock: layout.dock,
                 packMode: state.packMode,
-                groupPanelOpen: state.groupPanelOpen !== false,
+                groupPanelOpen: state.groupPanelOpen,
             }));
         } catch (_) {
             // 存不下只影响下次打开时的布局记忆。
@@ -4844,7 +7123,6 @@
     // 基础和进阶都先编译成节点图，因此这里只有一条采集流程；两种输出格式
     // （平铺 GIF / 分层 PNG 雪碧图）只在最后的装配阶段分叉。
     function packFrameBudget(seconds, fps) {
-        const packModule = window.NekoEmotePngtuberLayered;
         const limit = PACK_MAX_FRAMES;
         const requested = Number(seconds);
         if (!Number.isFinite(requested) || requested <= 0) return limit;
@@ -4854,14 +7132,14 @@
     async function bakePackJobs(jobs, preview = {}) {
         const previewFps = Number(preview.fps) || 0;
         const previewEdge = Number(preview.edge) || 0;
-        const encoder = window.NekoEmoteGifEncoder;
-        const packModule = window.NekoEmotePngtuberPack;
         // 预览用的 job 会自带 fps/edge（表演台只要看得清，不需要导出级精度）；
         // 导出路径不传，仍取全局值。
         const edge = Math.min(previewEdge || state.exportResolution || PACK_MAX_EDGE, PACK_MAX_EDGE);
         const fps = previewFps || state.exportFps || GIF_EXPORT_FPS;
         const sceneList = getImportedScenes();
         const results = [];
+        const imageFrames = new Map();
+        const resizedImageFrames = new WeakMap();
         let missingImages = 0;
         const previousSceneId = state.selectedSceneId;
         const previousAnimationId = state.animationId;
@@ -4883,28 +7161,41 @@
                         continue;
                     }
                     if (!previewFps) setPackStatus(`${t('emoteMaker.packBakingProgress')} ${index + 1}/${jobs.length}`);
-                    const singles = [];
+                    const decoded = [];
                     for (const image of sources) {
-                        const one = await frameFromStageImage(image, edge);
-                        if (one.length) singles.push(one[0]);
+                        if (!imageFrames.has(image)) imageFrames.set(image, await framesFromStageImage(image, edge));
+                        decoded.push(...imageFrames.get(image));
                     }
-                    if (!singles.length) continue;
+                    if (!decoded.length) {
+                        if (!previewFps) missingImages += 1;
+                        continue;
+                    }
                     // 平铺包的说话位只定格第一张：与场景侧的 still 规则同源
                     // （运行时换 src 重载多帧 GIF 的空窗问题），分层不受限。
                     const still = job.stateKey === 'talking_image' && state.packFormat !== 'layered';
-                    const shown = still ? singles.slice(0, 1) : singles;
-                    const total = still ? 1
-                        : Math.max(shown.length, Number(job.frames) || shown.length);
-                    const base = Math.floor(total / shown.length);
-                    const extra = total % shown.length;
-                    const frames = [];
-                    shown.forEach((frame, imageIndex) => {
-                        const count = base + (imageIndex < extra ? 1 : 0);
-                        for (let repeat = 0; repeat < count; repeat += 1) frames.push(frame);
-                    });
+                    let frames = [];
+                    let imageFps = fps;
+                    if (decoded.some((frame) => frame.delayMs)) {
+                        const timeline = trimStageImageTimeline(decoded, job.imageStartAt || 0, job.imageSeconds || 0);
+                        frames = still ? timeline.slice(0, 1) : timeline;
+                        if (!still && (state.packFormat === 'layered' || frames.length > PACK_MAX_FRAMES)) {
+                            frames = sampleStageImageTimeline(timeline, fps, PACK_MAX_FRAMES);
+                            imageFps = 1000 / frames[0].delayMs;
+                        }
+                        frames = resizeStageImageFrames(frames, edge, resizedImageFrames);
+                    } else if (still) {
+                        frames = decoded.slice(0, 1);
+                    } else {
+                        const total = Math.max(decoded.length, Number(job.frames) || decoded.length);
+                        const base = Math.floor(total / decoded.length);
+                        const extra = total % decoded.length;
+                        decoded.forEach((frame, imageIndex) => {
+                            const count = base + (imageIndex < extra ? 1 : 0);
+                            for (let repeat = 0; repeat < count; repeat += 1) frames.push(frame);
+                        });
+                    }
                     results.push({
-                        stateKey: job.stateKey, frames, edge, fps,
-                        look: { sceneId: '', skins: [], sliders: [], slots: [], texts: [] },
+                        stateKey: job.stateKey, frames, edge, fps: imageFps,
                         scale: job.scale || 1, rotation: job.rotation || 0,
                     });
                     continue;
@@ -4926,8 +7217,8 @@
                     stateKey: job.stateKey,
                     frames,
                     edge,
-                    fps,
-                    look: job.look,
+                    // The frame budget can thin the samples without shortening the clip.
+                    fps: 1000 / frames[0].delayMs,
                     // 每个状态自己的大小/角度：只有分层模式会把它写进 manifest
                     scale: job.scale,
                     rotation: job.rotation,
@@ -4954,6 +7245,7 @@
                 height: item.edge,
                 colors: GIF_EXPORT_COLORS,
                 transparent: true,
+                loop: item.stateKey !== 'click_image',
                 loopCount: 0,
             }),
         }));
@@ -5009,7 +7301,6 @@
         const fallbackBytes = await sheet.canvasToPngBytes(
             sheet.firstFrameCanvas(idleJob.frames[0]),
         );
-        const flat = flatStates([{ ...idleJob, frames: idleJob.frames.slice(0, 1) }]);
         const assembled = packModule.buildPackageFiles({
             displayName,
             description: `${t('emoteMaker.title')} · ${displayName}`,
@@ -5093,17 +7384,15 @@
                 ? output.imageIds
                 : (output.imageId ? [output.imageId] : []);
             if (imageIds.length) {
-                // 图片状态：静态源，时间轴控总停留时长；多图 = 按序轮播，
-                // 总帧数均摊到每张图（保底每张至少一帧）。平铺包的说话位照旧
-                // 只烘一帧：运行时按口型节奏换 src，多帧 GIF 每换一次就整条
-                // 重载，首帧解码前的空窗就是"有一帧空白"。
+                // PNG 轮播沿用固定停留，GIF 则按源帧时长裁切选中的区间。
                 const still = output.stateKey === 'talking_image' && state.packFormat !== 'layered';
                 const hold = Math.max(0.05, Number(output.seconds) || 0.05);
                 return {
                     stateKey: output.stateKey,
                     imageIds,
                     frames: still ? 1 : Math.max(imageIds.length, Math.ceil(hold * fps)),
-                    timeWindow: { from: 0, to: hold },
+                    imageStartAt: output.startAt,
+                    imageSeconds: output.seconds,
                     scale: output.scale,
                     rotation: output.rotation,
                 };
@@ -5201,16 +7490,10 @@
                 ? t('emoteMaker.templateNoRuntime')
                 : t('emoteMaker.exportCurrent');
         }
-        const titleSubtitle = document.querySelector('.title-brand p');
-        if (titleSubtitle) {
-            titleSubtitle.textContent = templatePackage
-                ? (hasSpineRenderer() ? '' : t('emoteMaker.templateMetadataOnly'))
-                : t('emoteMaker.emptyLibraryHint');
-        }
         if (templateCanvasStatus) {
             const statusText = templatePackage
                 ? t('emoteMaker.templateCapabilityWarning')
-                : t('emoteMaker.emptyLibraryHint');
+                : t('emoteMaker.selectTemplateHint');
             if (templateCanvasStatusText) {
                 templateCanvasStatusText.textContent = statusText;
             } else {
@@ -5237,7 +7520,7 @@
         // Keep implementation/provider terminology out of the normal editor
         // surface. Detailed diagnostics remain available in the package data
         // and developer tools, while users get one neutral notice.
-        const technicalPattern = /(emotelab|sharedmodelkey|\bcharacter\b|\bspine\b|atlas(?:\.txt)?|scenelist|scenes\s*数组|slider|skin|slotgroup|角色数据|当前模型.*不一致|模型.*不一致)/i;
+        const technicalPattern = /(\bcharacter\b|\bspine\b|atlas(?:\.txt)?|scenelist|scenes\s*数组|slider|skin|slotgroup|角色数据|当前模型.*不一致|模型.*不一致)/i;
         return technicalPattern.test(text)
             ? t('emoteMaker.templateCompatibilityWarning')
             : text;
@@ -5296,13 +7579,8 @@
     function captureCurrentEditorFrame(maxDimension) {
         const edge = Math.max(1, Number(maxDimension) || state.exportResolution || GIF_EXPORT_WIDTH);
         if (hasSpineRenderer()) {
-            // Spine itself is WebGL, while EmoteLab's outline/text layers are
-            // 2D overlays.  Capture the same composite canvas used by the
-            // static PNG path so animated export does not silently drop them.
-            renderNativeOverlays();
-            const composite = typeof nativeCompositeCanvas === 'function'
-                ? nativeCompositeCanvas()
-                : null;
+            // Use the same composition as PNG export to include placed accessories.
+            const composite = nativeCompositeCanvas();
             if (composite) return captureCanvasFrame(composite, edge);
             if (typeof spineRenderer.captureFrame === 'function') {
                 return spineRenderer.captureFrame({ maxDimension: edge, render: false });
@@ -5358,14 +7636,26 @@
 
         try {
             capturingFrames = true;
+            if (colorDraft) applyNativeCharacterState({ render: false });
             if (scene) {
                 state.selectedSceneId = scene.id;
                 state.animationId = animationId;
                 state.animationProgress = 0;
-                // 套用场景会连带设置相机、皮肤、滑杆、色组和描边/文字层；套不上就
-                // 明确失败，免得把当前画面当成那个状态烘出来。
+                // 场景加载失败时停止导出，避免把当前画面写进另一个状态。
                 if (!syncNativeScene(scene, { autoplay: false })) {
                     throw new Error('scene_unavailable');
+                }
+            }
+            let loopOffset = 0;
+            if (frameCount > 1 && windowFrom === 0 && windowTo === duration
+                    && hasSpineRenderer() && spineRenderer.hasPhysicsConstraints()) {
+                // Preview carries physics across the seam. Skip the reset pose and sample a settled loop.
+                spineRenderer.selectAnimation(animationId, { loop: true, render: false });
+                const cycles = Math.min(2, Math.max(1, Math.floor(8 / duration)));
+                loopOffset = cycles * duration + 1e-7;
+                for (let warmupTime = 2; warmupTime < loopOffset; warmupTime += 2) {
+                    spineRenderer.setTime(warmupTime, { render: false });
+                    await yieldToBrowser();
                 }
             }
             for (let index = 0; index < frameCount; index += 1) {
@@ -5375,7 +7665,7 @@
                 const progress = (at / duration) * 100;
                 state.animationProgress = progress;
                 if (templatePackage && hasSpineRenderer()) {
-                    spineRenderer.setTime(at, { render: false });
+                    spineRenderer.setTime(loopOffset + at, { render: false });
                     spineRenderer.render();
                 } else {
                     // The legacy canvas renderer is asynchronous because it
@@ -5392,6 +7682,7 @@
         } finally {
             captureLook = null;
             capturingFrames = false;
+            if (colorDraft) applyNativeCharacterState({ render: false });
             state.animationProgress = previousProgress;
             if (templatePackage && hasSpineRenderer()) {
                 spineRenderer.setTime(previousTime, { render: false });
@@ -5436,9 +7727,11 @@
         const compacted = [];
         for (let index = 0; index < frames.length; index += step) {
             const frame = frames[index];
+            const delayMs = frames.slice(index, index + step)
+                .reduce((total, item) => total + (Number(item.delayMs) || 10), 0);
             compacted.push({
                 ...frame,
-                delayMs: Math.max(10, (Number(frame.delayMs) || 10) * step),
+                delayMs,
             });
         }
         return compacted;
@@ -5646,7 +7939,17 @@
     async function downloadPng() {
         // 同步快照：nativeCompositeCanvas 把 WebGL 画布的当下像素拷进新的 2D canvas，
         // 因此编码期间动画继续跑也不会改变导出的那一帧。
+        const highlighted = hasSpineRenderer() && colorPartHighlight();
+        const draft = colorDraft;
+        if (draft) {
+            colorDraft = null;
+            applyNativeCharacterState({ render: false });
+        }
+        if ((highlighted || draft) && hasSpineRenderer()) spineRenderer.render({ highlight: false });
         const outputCanvas = hasSpineRenderer() ? (nativeCompositeCanvas() || spineCanvas) : canvas;
+        colorDraft = draft;
+        if (draft) applyNativeCharacterState({ render: true });
+        else if (highlighted) spineRenderer.render();
         if (!outputCanvas) return;
         if (!hasSpineRenderer()) {
             showToast(t('emoteMaker.noTemplates'));
@@ -5706,15 +8009,14 @@
     // 尺寸和帧数独立于表情导出的预算：桌面头像用不到 1024（PNGTuber 画布上限就是
     // 1024），而 8 个状态的帧数直接决定包体积。
     const PACK_MAX_EDGE = 512;
-    // 帧数上限跟着 60fps 走，否则 60fps 下只有 1/3 秒的循环。
-    const PACK_MAX_FRAMES = 60;
-    const PACK_TALKING_FRAMES = 1;
+    const PACK_MAX_FRAMES = 120; // Four seconds at 30 FPS.
+    const GROUP_EXPORT_MAX_FRAMES = 60;
     let packBusy = false;
     let stateStageSession = null;
     // 表演台的用户图片导入入口：input 常驻页面，表演台的"导入图片"按钮只负责叫它
     const stageImageInput = document.createElement('input');
     stageImageInput.type = 'file';
-    stageImageInput.accept = '.png,image/png';
+    stageImageInput.accept = '.png,.gif,image/png,image/gif';
     stageImageInput.multiple = true;
     stageImageInput.hidden = true;
     stageImageInput.addEventListener('change', () => {
@@ -5825,9 +8127,9 @@
         }
     }
 
-    function updateAdjustment(key, value) {
+    function updateAdjustment(key, value, restoring = false) {
         // 「覆盖默认值」关着时这些值不参与绘制，Alt+滚轮也不该偷偷改它们
-        if (!state.adjustOverwrite) return;
+        if (!state.adjustOverwrite && !restoring) return;
         const numericValue = Number(value);
         if (!Number.isFinite(numericValue)) return;
         const hadPreview = Boolean(groupPreview);
@@ -5842,9 +8144,53 @@
         void renderCanvas();
     }
 
+    function saveAdjustment() {
+        forgetStageFrames();
+        void stateStageSession?.refresh();
+        persistTemplateSession();
+        persistTemplateToLibrary();
+    }
+
+    function bindAdjustment(key) {
+        const input = $(`#adjust-${key}`);
+        if (!input) return;
+        let before;
+        let template;
+        input.addEventListener('input', () => {
+            if (!state.adjustOverwrite) return;
+            if (before === undefined || template !== templatePackage) {
+                before = state.adjustments[key];
+                template = templatePackage;
+            }
+            updateAdjustment(key, input.value);
+        });
+        const commit = () => {
+            if (before === undefined) return;
+            const previous = before;
+            before = undefined;
+            if (template !== templatePackage || previous === state.adjustments[key]) return;
+            rememberHistory(previous, state.adjustments[key], (value) => {
+                input.value = String(value);
+                updateAdjustment(key, value, true);
+                saveAdjustment();
+            });
+            saveAdjustment();
+        };
+        input.addEventListener('change', commit);
+        input.addEventListener('pointercancel', commit);
+        input.addEventListener('blur', commit);
+    }
+
     function setInspectorTab(tab) {
         state.inspectorTab = tab;
+        if (tab !== 'colors') closeColorPopover();
+        setColorPartHighlight();
+        if (colorDraft) {
+            colorDraft = null;
+            applyNativeCharacterState({ render: true });
+        }
         renderInspectorTabs();
+        if (tab === 'colors') renderTemplateSlotControls();
     }
 
 
@@ -5854,19 +8200,8 @@
 
 
 
-    function incompleteTemplateError() {
-        const error = new Error(t('emoteMaker.templateFolderIncomplete'));
-        error.code = 'template_incomplete';
-        return error;
-    }
-
-    function isIncompleteTemplateError(error) {
-        return error?.code === 'template_incomplete';
-    }
-
-
-    function chooseTemplateDirectory() {
-        templateDirectoryInput?.click();
+    function chooseTemplateArchive() {
+        templateFileInput?.click();
     }
 
 
@@ -5875,41 +8210,50 @@
      * 决定要不要退回下一条路，所以失败路径也必须返回 false 而不是静默。
      */
     async function importTemplateFile(file, {
-        displayName = '', textureFiles, kind = 'file', fromArchive = false, sourceName = '',
+        displayName = '', kind = 'file', fromArchive = false, restoreKey = '', sourceName = '', selection = {},
+        builtinPackage = null,
     } = {}) {
         if (!file) return false;
+        sourceName = sourceName || (fromArchive ? displayName : String(file.name || '').replace(/\.zip$/i, ''));
         lastImportKind = kind === 'directory' ? 'directory' : 'file';
-        const nextTextureFiles = normalizeTextureCacheFiles(
-            textureFiles === undefined ? textureCacheFiles : textureFiles,
-        );
-        if (templateDirectoryButton) templateDirectoryButton.disabled = true;
+        if (templateArchiveButton) templateArchiveButton.disabled = true;
         setTemplateImportStatus(t('emoteMaker.importingTemplate'));
         let nextAssetStore = null;
+        let nextRenderer = null;
+        let nextCanvas = null;
         let committed = false;
         try {
-            const formData = new FormData();
-            formData.append('file', file, file.name || 'template.zip');
-            const response = await fetch('/api/emote-maker/import/emotelab', {
-                method: 'POST',
-                body: formData,
-                credentials: 'same-origin'
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok || !payload.success || !payload.package) {
-                throw new Error(payload.error || t('emoteMaker.importFailed'));
-            }
-            if (!Array.isArray(payload.package.scenes) || !payload.package.scenes.length) {
-                throw incompleteTemplateError();
+            let payload;
+            if (builtinPackage) {
+                payload = { package: JSON.parse(JSON.stringify(builtinPackage)) };
+            } else {
+                const formData = new FormData();
+                formData.append('file', file, file.name || 'template.zip');
+                if (selection.model) formData.append('model_path', selection.model);
+                if (selection.atlas) formData.append('atlas_path', selection.atlas);
+                const response = await fetch('/api/emote-maker/import', {
+                    method: 'POST', body: formData, credentials: 'same-origin',
+                });
+                payload = await response.json().catch(() => ({}));
+                if (payload.code === 'selection_required') {
+                    const path = await chooseSpineResource(payload);
+                    if (!path) return false;
+                    return await importTemplateFile(file, { displayName, kind, fromArchive, restoreKey, sourceName,
+                        selection: { ...selection, [payload.role]: path } });
+                }
+                if (!response.ok || !payload.success || !payload.package) {
+                    const error = new Error(payload.error || t('emoteMaker.importFailed'));
+                    error.userMessage = payload.error;
+                    throw error;
+                }
             }
             const provider = window.NekoEmoteTemplateRegistry?.resolve(payload.package);
             if (!provider) {
                 throw new Error(t('emoteMaker.importFailed'));
             }
+            if (displayName) payload.package.model.displayName = displayName;
 
-            // Keep the selected ZIP local as an optional renderer asset store.
-            // The metadata path remains authoritative and still works when
-            // the optional decoder is unavailable; this bridge never writes
-            // the archive to disk or localStorage.
+            // Stage the selected ZIP locally before decoding the skeleton.
             const clientStoreApi = window.NekoEmoteClientZipStore;
             const ClientZipAssetStore = clientStoreApi?.ClientZipAssetStore;
             if (ClientZipAssetStore && typeof ClientZipAssetStore.fromFile === 'function') {
@@ -5918,28 +8262,36 @@
                     const missing = getTemplateAssetPaths(payload.package)
                         .filter((path) => !candidate.has(path));
                     if (!missing.length) {
-                        nextAssetStore = buildTemplateAssetStore(candidate, nextTextureFiles);
+                        nextAssetStore = candidate;
                     } else {
                         candidate.release();
                     }
                 } catch (_) {
-                    // Metadata-only import is intentionally not blocked by a
-                    // browser decoder failure. Native rendering will report
-                    // the missing local asset store when it is requested.
+                    // A missing candidate store is rejected before committing.
                 }
             }
 
             // Everything above is staged. Do not tear down the current
-            // renderer/package until the new manifest and optional asset
+            // renderer/package until the new manifest and asset
             // store have passed validation, so a bad import is recoverable.
+            if (!nextAssetStore) throw new Error(t('emoteMaker.spineZipRequired'));
+            nextCanvas = spineCanvas.cloneNode(false);
+            nextRenderer = await window.NekoEmoteSpineRenderer.create({
+                canvas: nextCanvas, manifest: payload.package, assetStore: nextAssetStore,
+                loop: true, renderOnLoad: false, fitPadding: 1.1, imageLayers: wardrobeSpineLayers,
+                matchTintPalette: true,
+                highlightedPart: colorPartHighlight,
+            });
+            const nextKey = templateLibraryModule?.entryKeyFor(payload.package);
+            if (pendingTemplateRemovals.has(nextKey) || (restoreKey && (pendingTemplateRemovals.has(restoreKey)
+                || !findTemplateLibraryEntry(restoreKey)))) {
+                throw new Error('template-removed-during-import');
+            }
+            populateSpineMetadata(payload.package, nextRenderer);
             const nextPackage = payload.package;
             const nextTemplateSkins = Array.isArray(nextPackage.character?.skins)
                 ? nextPackage.character.skins.map((item) => ({ ...item }))
                 : [];
-            const nextTemplateSliders = Array.isArray(nextPackage.character?.sliders)
-                ? nextPackage.character.sliders.map((item) => ({ ...item }))
-                : [];
-            const nextTemplateSliderDefaults = nextTemplateSliders.map((item) => ({ ...item }));
             const nextTemplateSlots = Array.isArray(nextPackage.character?.slots)
                 ? nextPackage.character.slots.map((item) => ({
                     ...item,
@@ -5962,43 +8314,25 @@
                 // 库里还留着这个模板的贴图，清了就得重新读盘才能切回去
                 releaseAssetStore(previousAssetStore);
             }
+            spineCanvas.replaceWith(nextCanvas);
+            spineCanvas = nextCanvas;
+            spineRenderer = nextRenderer;
+            nextRenderer = null;
             templatePackage = nextPackage;
             templateAssetStore = nextAssetStore;
-            textureCacheFiles = nextTextureFiles;
             committed = true;
-            if (nextAssetStore) {
-                templatePackage.capabilities = {
-                    ...(templatePackage.capabilities || {}),
-                    localAssets: true,
-                    assetTransport: 'client-memory'
-                };
-                if (textureCacheFiles.length) {
-                    templatePackage.character = {
-                        ...(templatePackage.character || {}),
-                        customTextureCache: {
-                            ...(templatePackage.character?.customTextureCache || {}),
-                            provided: true,
-                        },
-                    };
-                    templatePackage.model = {
-                        ...(templatePackage.model || {}),
-                        customTextureCache: {
-                            ...(templatePackage.model?.customTextureCache || {}),
-                            provided: true,
-                        },
-                    };
-                }
-            }
+            templatePackage.capabilities = {
+                ...(templatePackage.capabilities || {}),
+                localAssets: true,
+                assetTransport: 'client-memory',
+            };
             state.sceneListFilter = '';
             state.templateSkins = nextTemplateSkins;
-            state.templateSliders = nextTemplateSliders;
-            state.templateSliderDefaults = nextTemplateSliderDefaults;
             state.templateSlots = nextTemplateSlots;
             state.templateSlotDefaults = nextTemplateSlotDefaults;
             state.templateSlotGroup = nextTemplateSlots[0]?.name || '';
             if (firstScene) {
                 state.selectedSceneId = firstScene.id;
-                state.selectedSceneListId = firstScene.source?.sceneList || '';
                 state.animationId = firstScene.animation?.id || '';
             }
             // 组与取景属于某个模板：指纹对不上时 applyTemplateSession 会原样退回，
@@ -6009,10 +8343,22 @@
             state.sceneListFilter = '';
             // 多选集合里是上一个模板的动画 id，留着会把旧动作一起加进新模板的组
             setPickedAnimations([]);
-            applyTemplateSession(nextPackage);
-            // 会话里的滑杆是上次拖过的值。重置要回到角色文件里的那份，
-            // 所以出厂值以这次解开的包为准，不被会话覆盖。
-            state.templateSliderDefaults = nextTemplateSliderDefaults;
+            const saved = restoreKey && templateLibraryModule?.find(templateLibraryState, restoreKey);
+            const fingerprint = templateFingerprint(nextPackage);
+            const sameSession = lastTemplate?.fingerprint === fingerprint;
+            const savedGraph = saved?.session?.nodeGraph || (sameSession ? state.nodeGraph : null);
+            if (saved?.session && !sameSession) {
+                lastTemplate = { ...saved.session, fingerprint };
+            }
+            if (builtinPackage) {
+                state.nodeGraph = null;
+                if (saved?.session) {
+                    state.packName = saved.session.packName;
+                    state.packFormat = saved.session.packFormat;
+                    state.packPriority = saved.session.packPriority;
+                }
+            }
+            applyTemplateSession(nextPackage, savedGraph);
             if (!state.groupId) {
                 const first = allGroups()[0];
                 if (first) selectGroup(first.id);
@@ -6040,16 +8386,18 @@
             if (!fromArchive) {
                 const archiveKey = currentTemplateKey();
                 if (archiveKey) {
-                    void persistTemplateArchive(archiveKey, file, nextTextureFiles).catch(() => {
-                        showToast(t('emoteMaker.archiveSaveFailed'));
+                    void persistTemplateArchive(archiveKey, file).catch(() => {
+                        if (!pendingTemplateRemovals.has(archiveKey)) showToast(t('emoteMaker.archiveSaveFailed'));
                     });
                 }
             }
-            void activateNativeSpineRenderer();
+            syncNativeScene(getSelectedScene(), { autoplay: false });
+            renderAll();
             return true;
         } catch (error) {
             // A staged asset store belongs to the failed candidate only. The
             // active package/renderer remains untouched when validation fails.
+            if (nextRenderer) nextRenderer.dispose();
             if (!committed && nextAssetStore) releaseAssetStore(nextAssetStore);
             if (committed) {
                 // 成功不走嘴：激活渲染器的那条状态行随后会说话（或带着警告说）
@@ -6059,76 +8407,73 @@
             }
             return committed;
         } finally {
-            if (templateDirectoryButton) templateDirectoryButton.disabled = false;
+            if (templateArchiveButton) templateArchiveButton.disabled = false;
             if (templateFileInput) templateFileInput.value = '';
         }
     }
 
-    /** 目录导入的默认名＝文件夹名：来源是每个文件的 webkitRelativePath 第一段。 */
-    function folderNameFromFiles(files) {
-        for (const file of Array.from(files || [])) {
-            const relative = String(file?.webkitRelativePath || '');
-            const first = relative.split('/')[0];
-            if (first) return first;
-        }
-        return '';
-    }
-
-    async function importTemplateDirectory(files) {
-        const directoryApi = window.NekoEmoteTemplateDirectory;
-        if (!directoryApi || typeof directoryApi.pack !== 'function' || typeof directoryApi.toFile !== 'function') {
-            reportImportFailure(new Error(t('emoteMaker.importFailed')));
-            return;
-        }
-        if (templateDirectoryButton) templateDirectoryButton.disabled = true;
-        setTemplateImportStatus(t('emoteMaker.importingTemplate'));
-        try {
-            const selectedFiles = Array.from(files || []);
-            const packed = await directoryApi.pack(selectedFiles, {
-                filename: 'template-directory.zip',
-            });
-            if (packed.completeness && !packed.completeness.complete) {
-                throw incompleteTemplateError();
-            }
-            // A selected data root may also contain a large external texture
-            // cache. Keep those PNGs as the normal overlay instead of copying
-            // them into the temporary ZIP and exceeding the package limit.
-            const file = directoryApi.toFile(packed);
-            await importTemplateFile(file, {
-                textureFiles: packed.textureFiles || [],
-                kind: 'directory',
-                sourceName: folderNameFromFiles(selectedFiles),
-            });
-        } catch (error) {
-            reportImportFailure(error);
-        } finally {
-            if (templateDirectoryInput) templateDirectoryInput.value = '';
-            if (templateDirectoryButton) templateDirectoryButton.disabled = false;
-        }
-    }
-
     function resetView() {
-        state.zoom = 1;
         state.adjustments = { x: 0, y: 0, rotation: 0, scale: 100 };
         renderAdjustments();
-        applyZoom();
+        setPreviewZoom(1);
         void renderCanvas();
     }
 
     function bindViewportNavigation() {
         if (!canvasStage) return;
+        let drag = null;
+        canvasStage.addEventListener('pointerdown', (event) => {
+            const middleButton = event.button === 1;
+            if (middleButton) event.preventDefault();
+            if (drag || state.zoom <= 1 || event.target.closest('#wardrobe-sprite-menu')
+                    || (!middleButton && (event.button !== 0 || event.target.closest('button')))) return;
+            drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+            canvasStage.setPointerCapture(event.pointerId);
+            canvasStage.classList.add('is-panning');
+        });
+        canvasStage.addEventListener('pointermove', (event) => {
+            if (drag?.id !== event.pointerId) return;
+            state.previewPan.x += event.clientX - drag.x;
+            state.previewPan.y += event.clientY - drag.y;
+            drag.x = event.clientX;
+            drag.y = event.clientY;
+            applyZoom();
+        });
+        canvasStage.addEventListener('lostpointercapture', (event) => {
+            if (drag?.id !== event.pointerId) return;
+            drag = null;
+            canvasStage.classList.remove('is-panning');
+        });
+        const resize = new ResizeObserver(applyZoom);
+        resize.observe(canvasStage);
+        resize.observe(canvasFrame);
         canvasStage.addEventListener('wheel', (event) => {
+            if (!event.deltaY || event.target.closest('#wardrobe-sprite-menu')) return;
             event.preventDefault();
             if (event.altKey) {
                 updateAdjustment('rotation', state.adjustments.rotation + (event.deltaY > 0 ? 1 : -1));
                 return;
             }
-            state.zoom = Math.max(0.75, Math.min(1.18, state.zoom + (event.deltaY > 0 ? -0.04 : 0.04)));
-            applyZoom();
+            setPreviewZoom(state.zoom + (event.deltaY > 0 ? -0.125 : 0.125), event);
         }, { passive: false });
     }
 
     function bindEvents() {
+        bindWardrobeGeneration();
+        bindWardrobePlacements();
+        colorPanel.addEventListener('scroll', updateColorBackToTop, { passive: true });
+        colorBackToTop.addEventListener('click', () => {
+            colorPanel.scrollTop = 0;
+            (templateSlotControls.querySelector('.part-color-menu') || $('#inspector-tab-colors')).focus({ preventScroll: true });
+            updateColorBackToTop();
+        });
+        const colorResize = new ResizeObserver(updateColorBackToTop);
+        colorResize.observe(colorPanel);
+        colorResize.observe(colorPanel.querySelector('.color-section'));
+        templateAttachmentSearch.addEventListener('input', () => {
+            filterTemplateAttachments();
+            templateAttachmentControls.scrollTop = 0;
+        });
         document.querySelectorAll('.inspector-tab').forEach((button) => {
             button.addEventListener('click', () => setInspectorTab(button.dataset.inspectorTab || 'parts'));
         });
@@ -6174,6 +8519,7 @@
                 && !event.target.closest('#export-group-open-btn')) closeGroupPicker();
         }, true);
         window.addEventListener('keydown', (event) => {
+            if ($('#wardrobe-dialog')?.open) return;
             if (event.key !== 'Escape') return;
             hideGroupContextMenu();
             closeGroupPicker();
@@ -6193,36 +8539,34 @@
             if (state.groupPickerOpen) closeGroupPicker();
             else openGroupPicker();
         });
-        canvasImportButton?.addEventListener('click', () => chooseTemplateDirectory());
+        canvasImportButton?.addEventListener('click', () => chooseTemplateArchive());
         templateFileInput?.addEventListener('change', (event) => {
             const file = event.target.files?.[0];
             void importTemplateFile(file);
         });
-        templateDirectoryButton?.addEventListener('click', () => chooseTemplateDirectory());
-        templateDirectoryInput?.addEventListener('change', (event) => {
-            void importTemplateDirectory(event.target.files || []);
-        });
+        templateArchiveButton?.addEventListener('click', () => chooseTemplateArchive());
         $('#undo-btn')?.addEventListener('click', undo);
         $('#redo-btn')?.addEventListener('click', redo);
         // 曾经这里也绑列表分段：那时代码会把形象包的「基础/进阶」按钮一起选中，
         // 点它们顺手把 listMode 写回 'scenes'。列表只剩一种之后不再需要这个开关。
-        $('#export-format')?.addEventListener('change', (event) => {
-            state.exportFormat = event.target.value === 'gif' ? 'gif' : 'png';
-            persistExportSettings();
-            renderAll();
-        });
-        $('#export-resolution')?.addEventListener('change', (event) => {
-            const value = Number(event.target.value);
-            if (EXPORT_RESOLUTIONS.includes(value)) state.exportResolution = value;
-            persistExportSettings();
-            renderAll();
-        });
-        $('#export-fps')?.addEventListener('change', (event) => {
-            const value = Number(event.target.value);
-            if (EXPORT_FPS_VALUES.includes(value)) state.exportFps = value;
-            persistExportSettings();
-            renderAll();
-        });
+        const exportOptionChanges = [
+            ['#export-format', (value) => { state.exportFormat = value === 'gif' ? 'gif' : 'png'; }],
+            ['#export-resolution', (value) => {
+                const resolution = Number(value);
+                if (EXPORT_RESOLUTIONS.includes(resolution)) state.exportResolution = resolution;
+            }],
+            ['#export-fps', (value) => {
+                const fps = Number(value);
+                if (EXPORT_FPS_VALUES.includes(fps)) state.exportFps = fps;
+            }],
+        ];
+        for (const [selector, apply] of exportOptionChanges) {
+            $(selector)?.addEventListener('change', (event) => {
+                apply(event.target.value);
+                syncExportControls();
+                persistExportSettings();
+            });
+        }
         $('#export-png-btn')?.addEventListener('click', () => {
             if (state.exportFormat === 'gif') {
                 void downloadGif();
@@ -6281,56 +8625,21 @@
             persistExportSettings();
             syncExportControls();
         });
-        $('#fit-btn')?.addEventListener('click', () => {
-            state.zoom = 1;
-            applyZoom();
-        });
+        $('#fit-btn')?.addEventListener('click', () => setPreviewZoom(1));
         $('#reset-view-btn')?.addEventListener('click', resetView);
-        $('#zoom-in-btn')?.addEventListener('click', () => {
-            state.zoom = Math.min(1.18, state.zoom + 0.05);
-            applyZoom();
-        });
-        $('#zoom-out-btn')?.addEventListener('click', () => {
-            state.zoom = Math.max(0.75, state.zoom - 0.05);
-            applyZoom();
-        });
-        $('#reset-color-btn')?.addEventListener('click', () => {
-            if (templatePackage) {
-                const before = cloneState();
-                const defaults = Array.isArray(state.templateSlotDefaults)
-                    ? state.templateSlotDefaults
-                    : [];
-                const selectedName = String(state.templateSlotGroup || '');
-                const defaultSlot = defaults.find((item) => String(item?.name || '') === selectedName);
-                const next = getTemplateSlotStyles();
-                const target = next.find((item) => String(item?.name || '') === selectedName);
-                if (target && defaultSlot) {
-                    target.tintColor = defaultSlot.tintColor ? { ...defaultSlot.tintColor } : null;
-                    target.tintBlackColor = defaultSlot.tintBlackColor ? { ...defaultSlot.tintBlackColor } : null;
-                    state.templateSlots = next;
-                    history.push(before);
-                    future.length = 0;
-                    applyNativeCharacterState({ render: true });
-                    renderAll();
-                }
-            }
-        });
+        $('#zoom-in-btn')?.addEventListener('click', () => setPreviewZoom(state.zoom + 0.25));
+        $('#zoom-out-btn')?.addEventListener('click', () => setPreviewZoom(state.zoom - 0.25));
         $('#adjust-overwrite')?.addEventListener('change', (event) => {
             state.adjustOverwrite = Boolean(event.target.checked);
             renderAdjustments();
             void renderCanvas();
         });
-        ['x', 'y', 'rotation', 'scale'].forEach((key) => {
-            const input = $(`#adjust-${key}`);
-            input?.addEventListener('input', (event) => updateAdjustment(key, event.target.value));
-        });
+        ['x', 'y', 'rotation', 'scale'].forEach(bindAdjustment);
         $('#reset-adjustments-btn')?.addEventListener('click', () => {
-            recordChange(() => {
-                state.adjustments = { x: 0, y: 0, rotation: 0, scale: 100 };
-                state.templateSliders = (state.templateSliderDefaults || []).map((item) => ({ ...item }));
-            });
+            recordChange('adjustments', { x: 0, y: 0, rotation: 0, scale: 100 });
             applyNativeCharacterState({ render: true });
             applyNativeVisualState();
+            saveAdjustment();
         });
         $('#play-animation-btn')?.addEventListener('click', toggleAnimationPlayback);
         animationProgress?.addEventListener('input', (event) => {
@@ -6386,7 +8695,6 @@
             spineRendererGeneration += 1;
             disposeSpineRenderer();
             releaseTemplateAssetStore();
-            textureCacheFiles = [];
         }, { once: true });
     }
 
@@ -6400,11 +8708,13 @@
         loadLayout();
         loadTemplateSession();
         loadTemplateLibrary();
+        void loadBuiltinTemplates();
         // 副本占用是后端 stat 的真实数字，页面起来就去拉一份
         void refreshTemplateArchiveSizes();
         loadNodeGraph();
         setTemplateImportStatus(t('emoteMaker.templateImportHint'), 'muted');
         bindEvents();
+        bindPackScrollTip();
         setupResizing();
         applyLayout();
         renderAll();

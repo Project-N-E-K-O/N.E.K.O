@@ -1,11 +1,11 @@
 /*
- * Optional Spine runtime bridge for the EmoteLab adapter.
+ * Optional Spine runtime bridge for imported Spine models.
  *
  * The runtime is deliberately not loaded at page startup.  Metadata import
  * remains the default path; callers that have chosen to try native preview
  * may call window.NekoSpineRuntime.load() explicitly.  The pinned IIFE is the
  * official @esotericsoftware/spine-webgl 4.3.13 bundle (which includes the
- * matching spine-core runtime).  No EmoteLab model or texture is bundled here.
+ * matching spine-core runtime).  Model assets are supplied by the user.
  */
 (function (root) {
     'use strict';

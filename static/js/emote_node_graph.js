@@ -1,16 +1,10 @@
 /*
- * Node-graph model for the Emote maker's node editor.
+ * Node-graph model for the Emote maker's state editor.
  *
  * Deliberately free of DOM, canvas and Spine: this file only knows what a node is,
  * which sockets it exposes, how a graph is validated, and how a graph is folded into
  * concrete per-state bake parameters. Keeping it pure means the vocabulary — the part
  * most likely to be wrong — is unit-testable, and the editor UI stays a thin skin.
- *
- * A node is a processing step (Blender-style): it takes a `look`, changes one thing,
- * and hands it on. `look` is the full parameter set the Spine renderer already accepts
- * (scene, skins, sliders, slot tints, text overlays, transform), so every node here maps
- * onto something the existing bake pipeline can already draw — nothing in this vocabulary
- * is a knob that would silently do nothing.
  */
 (function (root, factory) {
     'use strict';
@@ -26,18 +20,23 @@
 
     const LOOK = 'look';
 
-    // Node vocabulary. `inputs`/`outputs` are sockets; params are described so the UI
-    // can build widgets without a second hardcoded list to drift out of sync.
+    // Keep retired modifiers readable so old saves retain their source-to-output links.
+    const legacyModifier = {
+        category: 'modify',
+        inputs: [{ id: LOOK, kind: LOOK }],
+        outputs: [{ id: LOOK, kind: LOOK }],
+        params: [],
+    };
     const TYPES = {
+        'mod.slider': legacyModifier,
+        'mod.text': legacyModifier,
         'source.default': {
-            titleKey: 'emoteMaker.nodeSourceDefault',
             category: 'source',
             inputs: [],
             outputs: [{ id: LOOK, kind: LOOK }],
             params: [],
         },
         'source.scene': {
-            titleKey: 'emoteMaker.nodeSourceScene',
             category: 'source',
             inputs: [],
             outputs: [{ id: LOOK, kind: LOOK }],
@@ -47,7 +46,6 @@
         // imageIds 指向表演台里导入的用户图片，不在场景清单里；imageId 保留单图
         // 时代的键，normalize 后永远同步为列表第一项，老图照常能读。
         'source.image': {
-            titleKey: 'emoteMaker.nodeSourceImage',
             category: 'source',
             inputs: [],
             outputs: [{ id: LOOK, kind: LOOK }],
@@ -57,24 +55,12 @@
             ],
         },
         'mod.skin': {
-            titleKey: 'emoteMaker.nodeModSkin',
             category: 'modify',
             inputs: [{ id: LOOK, kind: LOOK }],
             outputs: [{ id: LOOK, kind: LOOK }],
             params: [{ id: 'groups', widget: 'skins', default: [] }],
         },
-        'mod.slider': {
-            titleKey: 'emoteMaker.nodeModSlider',
-            category: 'modify',
-            inputs: [{ id: LOOK, kind: LOOK }],
-            outputs: [{ id: LOOK, kind: LOOK }],
-            params: [
-                { id: 'name', widget: 'sliderName', default: '' },
-                { id: 'value', widget: 'number', min: 0, max: 2, step: 0.01, default: 1 },
-            ],
-        },
         'mod.slotTint': {
-            titleKey: 'emoteMaker.nodeModSlotTint',
             category: 'modify',
             inputs: [{ id: LOOK, kind: LOOK }],
             outputs: [{ id: LOOK, kind: LOOK }],
@@ -84,20 +70,7 @@
                 { id: 'secondary', widget: 'color', default: '#000000' },
             ],
         },
-        'mod.text': {
-            titleKey: 'emoteMaker.nodeModText',
-            category: 'modify',
-            inputs: [{ id: LOOK, kind: LOOK }],
-            outputs: [{ id: LOOK, kind: LOOK }],
-            params: [
-                { id: 'content', widget: 'text', default: '' },
-                { id: 'side', widget: 'select', options: ['behind', 'front'], default: 'front' },
-                { id: 'size', widget: 'number', min: 4, max: 400, step: 1, default: 64 },
-                { id: 'color', widget: 'color', default: '#ffffff' },
-            ],
-        },
         'mod.transform': {
-            titleKey: 'emoteMaker.nodeModTransform',
             category: 'modify',
             inputs: [{ id: LOOK, kind: LOOK }],
             outputs: [{ id: LOOK, kind: LOOK }],
@@ -109,7 +82,6 @@
             ],
         },
         'output.state': {
-            titleKey: 'emoteMaker.nodeOutputState',
             category: 'output',
             inputs: [{ id: LOOK, kind: LOOK }],
             outputs: [],
@@ -126,11 +98,9 @@
         },
     };
 
-    const PALETTE = Object.keys(TYPES);
-
     /**
      * 往上游找一个指定类别的源头（通常是 source）。
-     * 只查直接上游是不够的：中间可以插皮肤/滑杆/变色节点，
+     * 只查直接上游是不够的：旧存档的来源和输出之间可能还有外观节点，
      * 而且插入顺序决定直接上游是谁，界面会因此说谎。
      */
     function findSource(graph, nodeId, category) {
@@ -215,8 +185,6 @@
                 return normalizeColor(value, spec.default);
             case 'checkbox':
                 return value === true;
-            case 'select':
-                return (spec.options || []).includes(value) ? value : spec.default;
             case 'text':
                 return String(value === undefined || value === null ? '' : value).slice(0, 120);
             case 'images':
@@ -232,7 +200,6 @@
                         .map((item) => ({ group: item.group, value: String(item.value == null ? '' : item.value) }))
                     : [];
             case 'scene':
-            case 'sliderName':
             case 'slotGroup':
             case 'state':
                 // 这些是指向包内资源的引用名。数字/对象硬转成字符串会造出一个"看起来
@@ -436,16 +403,14 @@
         return { order, cycle: false, visiting };
     }
 
-    function applyNode(node, look, context) {
+    function applyNode(node, look) {
         const params = node.params || {};
         const next = {
             sceneId: look.sceneId,
             imageId: look.imageId || '',
             imageIds: (look.imageIds || []).slice(),
             skins: look.skins.slice(),
-            sliders: look.sliders.slice(),
             slots: look.slots.map((slot) => ({ ...slot })),
-            texts: look.texts.slice(),
             transform: { ...look.transform },
         };
         switch (node.type) {
@@ -456,7 +421,7 @@
                 if (params.sceneId) next.sceneId = params.sceneId;
                 break;
             case 'source.image': {
-                // 图片是整格内容的替换：没有场景，也没有可继承的皮肤/滑杆。
+                // 图片是整格内容的替换，不继承场景的外观。
                 // 列表即轮播顺序；空列表但单值还在（旧图）也认。
                 const ids = Array.isArray(params.imageIds) && params.imageIds.length
                     ? params.imageIds
@@ -475,13 +440,6 @@
                     else next.skins.push({ ...group });
                 });
                 break;
-            case 'mod.slider':
-                if (params.name) {
-                    next.sliders = next.sliders.map((item) => (
-                        item.name === params.name ? { ...item, value: params.value } : { ...item }
-                    ));
-                }
-                break;
             case 'mod.slotTint': {
                 const tag = String(params.tag || '');
                 if (tag) {
@@ -497,16 +455,6 @@
                 }
                 break;
             }
-            case 'mod.text':
-                if (params.content) {
-                    next.texts = next.texts.concat([{
-                        content: params.content,
-                        side: params.side,
-                        size: params.size,
-                        color: params.color,
-                    }]);
-                }
-                break;
             case 'mod.transform':
                 next.transform = {
                     x: normalizeNumber(next.transform.x + params.x, -2000, 2000, 0),
@@ -534,15 +482,13 @@
 
     // Folds the graph into bake targets: one entry per output node, carrying the look that
     // reached it. Anything the existing bake pipeline already understands — nothing invented.
-    function evaluate(graph, defaults, context) {
+    function evaluate(graph, defaults) {
         const base = {
             sceneId: (defaults && defaults.sceneId) || '',
             imageId: '',
             imageIds: [],
             skins: ((defaults && defaults.skins) || []).map((item) => ({ ...item })),
-            sliders: ((defaults && defaults.sliders) || []).map((item) => ({ ...item })),
             slots: ((defaults && defaults.slots) || []).map((item) => ({ ...item })),
-            texts: ((defaults && defaults.texts) || []).map((item) => ({ ...item })),
             transform: {
                 x: 0, y: 0, scale: 1, mirror: false,
                 ...((defaults && defaults.transform) || {}),
@@ -564,7 +510,7 @@
             const inputLink = normalized.links.find((link) => link.to === node.id);
             const upstream = inputLink ? looks.get(inputLink.from) : null;
             const start = upstream || base;
-            const result = applyNode(node, start, context);
+            const result = applyNode(node, start);
             looks.set(id, result);
             if (definition.category === 'output') {
                 const sceneId = result.sceneId;
@@ -589,20 +535,6 @@
         return { outputs, warnings, cycle: false, nodes: normalized.nodes };
     }
 
-    function removeLink(graph, link) {
-        return {
-            ...graph,
-            links: graph.links.filter((existing) => !(
-                existing.from === link.from
-                && existing.to === link.to
-                && (existing.fromSocket || LOOK) === (link.fromSocket || LOOK)
-                && (existing.toSocket || LOOK) === (link.toSocket || LOOK)
-            )),
-        };
-    }
-
-    // 输入端口只挂一条连线：新连线来了要先把旧的摘掉（Blender 行为）。
-    // 注意不能复用 removeLink 并传 from:null —— 那样匹配条件永远不成立。
     function unlinkInput(graph, to, toSocket) {
         return {
             ...graph,
@@ -652,21 +584,16 @@
     return Object.freeze({
         LOOK,
         TYPES,
-        PALETTE,
         canConnect,
         findSource,
         planOutputs,
         defaultGraph,
         emptyGraph,
         evaluate,
-        evaluateOrder,
-        isValid,
         makeNode,
-        normalizeColor,
         normalizeGraph,
         normalizeParams,
         addLink,
-        removeLink,
         removeNode,
         typeOf,
     });

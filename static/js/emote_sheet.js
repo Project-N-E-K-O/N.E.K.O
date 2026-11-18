@@ -12,29 +12,7 @@
 }(typeof window !== 'undefined' ? window : globalThis, function () {
     'use strict';
 
-    const MAX_SHEET_EDGE = 4096;   // 与 layered 模块的上限保持一致，超了要分块
-
-    /**
-     * 按秒切出要烘进雪碧图的帧。
-     * 运行时在会动的状态下会把 `layerState.frame` 基准丢掉
-     * （frame = elapsed * speed * 4 % frames），所以起止**只能**靠只烘那几帧来实现。
-     * seconds <= 0 表示演到结尾。
-     */
-    function sliceFrames(frames, { startAt = 0, seconds = 0, fps = 12 } = {}) {
-        const list = Array.isArray(frames) ? frames : [];
-        if (!list.length) return { frames: [], skipped: 0, totalFrames: 0 };
-        const rate = Math.max(1, Math.round(Number(fps) || 12));
-        const from = Math.max(0, Math.min(list.length - 1, Math.round((Number(startAt) || 0) * rate)));
-        const wanted = Number(seconds) || 0;
-        const count = wanted > 0
-            ? Math.max(1, Math.min(list.length - from, Math.round(wanted * rate)))
-            : list.length - from;
-        return {
-            frames: list.slice(from, from + Math.max(1, count)),
-            skipped: from,
-            totalFrames: list.length,
-        };
-    }
+    const MAX_SHEET_EDGE = 4096;   // A wide sheet wraps to additional rows.
 
     // 格子尺寸取整批帧的最大值：按"第一帧"定的话，后面任何一帧更大都会溢到自己
     // 的邻居格里（运行时按同一网格取格，于是两个动作各缺一条）。
@@ -71,12 +49,9 @@
         list.forEach((frame, index) => {
             const data = frame && frame.data;
             if (!data) return;
-            const image = new ImageData(new Uint8ClampedArray(data), frame.width || width, frame.height || height);
-            const off = document.createElement('canvas');
-            off.width = image.width;
-            off.height = image.height;
-            off.getContext('2d').putImageData(image, 0, 0);
-            ctx.drawImage(off, (index % hframes) * width, Math.floor(index / hframes) * height);
+            const pixels = data instanceof Uint8ClampedArray ? data : new Uint8ClampedArray(data);
+            const image = new ImageData(pixels, frame.width || width, frame.height || height);
+            ctx.putImageData(image, (index % hframes) * width, Math.floor(index / hframes) * height);
         });
         return { canvas, hframes, vframes, frameWidth: width, frameHeight: height };
     }
@@ -111,7 +86,6 @@
 
     return Object.freeze({
         MAX_SHEET_EDGE,
-        sliceFrames,
         composeSheetCanvas,
         firstFrameCanvas,
         canvasToPngBytes,

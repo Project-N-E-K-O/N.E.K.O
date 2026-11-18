@@ -175,17 +175,6 @@
     // 触发条件、时长或过渡（normalizeConfig 只读 8 个 *_image + 布局字段），
     // 所以"这个状态演多久"只能靠烘多少帧来表达。
     // seconds === null/'' -> 演完整段动画；0 -> 单帧定格；>0 -> 按秒数换算帧数。
-    function framesForSeconds(seconds, fps, maxFrames) {
-        const rate = Math.max(1, Math.round(Number(fps) || 20));
-        const ceiling = Math.max(1, Math.round(Number(maxFrames) || 60));
-        if (seconds === null || seconds === undefined || seconds === '') return ceiling;
-        const requested = Number(seconds);
-        // 非数值和"没填"归同一类：演完整段。静默把一个节点冻成单帧，比多演几帧糟得多。
-        if (!Number.isFinite(requested)) return ceiling;
-        if (requested <= 0) return 1;
-        return Math.max(1, Math.min(ceiling, Math.round(requested * rate)));
-    }
-
     function toBytes(data, label) {
         if (data instanceof Uint8Array) return data;
         if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -326,7 +315,6 @@
         DEFAULT_PLACEMENT,
         normalizePlacement,
         resolveSceneForDrag,
-        framesForSeconds,
         packageFolderName,
         normalizeStatePriority,
         listSignature,

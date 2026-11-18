@@ -14,55 +14,19 @@ import json
 import zipfile
 
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 
 def _synthetic_template() -> bytes:
-    """和 tests/unit/test_emote_template_adapter.py 同一形状的元数据模板。
-
-    骨骼/贴图是假的，所以 Spine 运行时起不来 —— 这正是要的状态：模板已导入、
-    catalogs.sliders 有内容，但没有原生渲染器。
-    """
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as archive:
-        root = "wrapper/EmoteLab"
-        archive.writestr(f"{root}/SpineModels/Demo/model.meta.json",
-                         json.dumps({"DisplayName": "Demo", "SharedModelKey": "Demo"}))
-        archive.writestr(f"{root}/SpineModels/Demo/Demo.skel.bytes", b"4.3.23")
-        archive.writestr(f"{root}/SpineModels/Demo/Demo.atlas.txt", "Page.png\nsize: 2, 3\n")
-        archive.writestr(f"{root}/SpineModels/Demo/Page.png", b"not-a-png")
-        archive.writestr(f"{root}/SpineModels/Demo/DisplayInfo/Animations.csv",
-                         "AnimationName,DisplayName,en\nANIM/Demo,Demo,Demo\n")
-        archive.writestr(f"{root}/SpineModels/Demo/DisplayInfo/SkinGroups.csv",
-                         "GroupName,DisplayName,en\nHair,Hair,Hair\n")
-        archive.writestr(f"{root}/SpineModels/Demo/DisplayInfo/Sliders.csv",
-                         "SliderName,DisplayName,en\nCharacter/X,X,X\n")
-        archive.writestr(f"{root}/SpineModels/Demo/DisplayInfo/SlotGroups.csv",
-                         "GroupName,DisplayName,en\nBody,Body,Body\n")
-        archive.writestr(f"{root}/Characters/Demo/Demo.json", json.dumps({
-            "SharedModelKey": "Demo",
-            "ActiveSkins": {"Items": [{"Key": "Hair", "Value": "A"}]},
-            "SliderConstraints": [],
-            "SlotGroups": [],
-        }))
-        archive.writestr(f"{root}/SceneLists/Demo/Demo.json", json.dumps({
-            "sharedModelKey": "Demo",
-            "scenes": [{
-                "name": "One",
-                "animationName": "ANIM/Demo",
-                "cameraPosition": {"x": 1, "y": 2, "z": 3},
-                "model": {},
-                "texts": [],
-            }],
-        }))
-    return stream.getvalue()
+    from tests.emote_fixtures import spine_zip
+    return spine_zip()
 
 
 @pytest.fixture()
 def adjust_page(page: Page, running_server: str) -> Page:
     page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
     page.wait_for_function("() => Boolean(document.querySelector('#adjust-x'))", timeout=15000)
-    page.set_input_files("#emotelab-template-file", {
+    page.set_input_files("#template-archive-file", {
         "name": "demo.zip",
         "mimeType": "application/zip",
         "buffer": _synthetic_template(),
@@ -73,18 +37,13 @@ def adjust_page(page: Page, running_server: str) -> Page:
     return page
 
 
-def test_template_loaded_and_has_its_own_sliders(adjust_page: Page) -> None:
-    """前置：合成模板真的把滑块区填上了 —— 后面两条断言才有意义。"""
-    rows = adjust_page.evaluate(
-        "() => document.querySelectorAll('#template-slider-controls .template-slider-row').length")
-    assert rows >= 1, "模板滑块区没内容，后面的\"不重建\"断言会是空断言"
-
 
 def test_dragging_a_slider_does_not_rebuild_the_panel(adjust_page: Page) -> None:
     """拖动滑杆只许改读数：一个节点都不许被换掉（换掉就会把滚动位置夹回去）。"""
     outcome = adjust_page.evaluate(r"""() => {
-        const host = document.querySelector('#template-slider-controls');
-        const keepAlive = host.querySelector('.template-slider-row');
+        const host = document.querySelector('#template-skin-controls');
+        const keepAlive = host.querySelector('.template-compat-row');
+        if (!keepAlive) throw new Error('Expected a real native skin control');
         let rebuilds = 0;
         const observer = new MutationObserver((records) => {
             records.forEach((r) => { rebuilds += r.addedNodes.length + r.removedNodes.length; });
@@ -98,7 +57,7 @@ def test_dragging_a_slider_does_not_rebuild_the_panel(adjust_page: Page) -> None
         return {
             rebuilds,
             readout: document.querySelector('#adjust-x-value').textContent,
-            sameRow: keepAlive === host.querySelector('.template-slider-row'),
+            sameRow: keepAlive === host.querySelector('.template-compat-row'),
             inputValue: document.querySelector('#adjust-x').value,
         };
     }""")
@@ -122,41 +81,25 @@ def test_reset_is_only_offered_when_there_is_something_to_reset(adjust_page: Pag
         "已经全是默认值，重置还留着可点 —— 按下去什么都不动就是\"没作用\"的观感"
 
 
-def test_reset_puts_the_template_sliders_back(adjust_page: Page) -> None:
-    """下面那列模板滑杆也归这颗重置管。拖完再按，读数回到导入时的值，行本身不重建。"""
-    outcome = adjust_page.evaluate(r"""() => {
-        const host = document.querySelector('#template-slider-controls');
-        const row = host.querySelector('.template-slider-row');
-        const input = row.querySelector('input[type="range"]');
-        const output = row.querySelector('output');
-        let rebuilds = 0;
-        const observer = new MutationObserver((records) => {
-            records.forEach((record) => {
-                rebuilds += record.addedNodes.length + record.removedNodes.length;
-            });
-        });
-        observer.observe(host, { childList: true });
-        const before = output.textContent;
-        input.value = '1.5';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        const armed = document.querySelector('#reset-adjustments-btn').disabled === false;
-        document.querySelector('#reset-adjustments-btn').click();
-        observer.disconnect();
-        return {
-            before,
-            armed,
-            rebuilds,
-            readout: output.textContent,
-            value: input.value,
-            sameRow: row === host.querySelector('.template-slider-row'),
-        };
-    }""")
-    assert outcome["armed"] is True, outcome
-    assert outcome["readout"] == outcome["before"], outcome
-    assert float(outcome["value"]) == float(outcome["before"]), outcome
-    assert outcome["rebuilds"] == 0, outcome
-    assert outcome["sameRow"] is True, outcome
-    assert adjust_page.evaluate("() => document.querySelector('#reset-adjustments-btn').disabled") is True
+def test_a_range_drag_is_one_undo_step(adjust_page: Page) -> None:
+    slider = adjust_page.locator("#adjust-x")
+    slider.scroll_into_view_if_needed()
+    bounds = slider.bounding_box()
+    x = bounds["x"] + bounds["width"] / 2
+    y = bounds["y"] + bounds["height"] / 2
+    adjust_page.mouse.move(x, y)
+    adjust_page.mouse.down()
+    adjust_page.mouse.move(x + bounds["width"] / 4, y, steps=8)
+    adjust_page.mouse.up()
+    changed = slider.input_value()
+    assert changed != "0"
+    adjust_page.keyboard.press("Control+z")
+    expect(slider).to_have_value("0")
+    expect(adjust_page.locator("#undo-btn")).to_be_disabled()
+    adjust_page.keyboard.press("Control+Shift+z")
+    expect(slider).to_have_value(changed)
+    expect(adjust_page.locator("#adjust-x-value")).to_have_text(changed)
+
 
 
 def test_unchecking_overwrite_greys_out_the_inert_sliders(adjust_page: Page) -> None:

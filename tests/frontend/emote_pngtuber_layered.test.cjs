@@ -61,6 +61,12 @@ test('animation_speed is fps divided by the runtime 4x multiplier', () => {
     assert.equal(idle.animation_speed * layered.FRAME_SPEED_MULTIPLIER, 12);
 });
 
+test('preserves the fractional frame rate of a sampled loop', () => {
+    const built = layered.buildLayeredPackage({ states: [state({ fps: 8 / 3 })] });
+    const idle = built.metadata.layers[0].states[0];
+    assert.equal(idle.frames / (idle.animation_speed * layered.FRAME_SPEED_MULTIPLIER), 3);
+});
+
 test('sheet addressing describes a horizontal strip', () => {
     const built = layered.buildLayeredPackage({ states: twoStates() });
     const idle = built.metadata.layers[0].states[0];
@@ -264,4 +270,34 @@ test('声明的帧数多过格子数时按格子数夹住（否则尾部永远�
             sheetWidth: 1536, sheetHeight: 256, fps: 12, pngBytes: new Uint8Array([1]) }],
     });
     assert.equal(built.metadata.layers[0].states[0].frames, 6);
+});
+
+test('each state can carry its own scale and rotation', () => {
+    const states = [
+        { stateKey: 'idle_image', frames: 4, width: 64, height: 64, sheetWidth: 256, fps: 12,
+            pngBytes: new Uint8Array([1, 2, 3]) },
+        { stateKey: 'happy_image', frames: 2, width: 64, height: 64, sheetWidth: 128, fps: 12,
+            pngBytes: new Uint8Array([4, 5, 6]), scale: 1.4, rotation: 0.35, x: -20, y: 12 },
+    ];
+    const m = layered.buildLayeredPackage({ canvasWidth: 64, canvasHeight: 64, states }).metadata;
+    const happy = m.layers[1];
+    // layer 1 的"自己位置"是索引 1；索引 0 是占位
+    assert.equal(happy.states[0].visible, false, '别的状态的位置应为占位');
+    assert.equal(happy.states[0].scale, 1, '占位槽要显式中性，不能留空');
+    assert.equal(happy.states[0].rotation, 0);
+    assert.equal(happy.states[1].visible, true);
+    assert.equal(happy.rotation, 0.35, '层上的静态角度要写进去');
+    assert.deepEqual(happy.scale, [1.4, 1.4]);
+    assert.equal(happy.x, -20);
+    assert.equal(happy.y, 12);
+});
+
+test('non-finite scale and rotation do not poison the manifest', () => {
+    const m = layered.buildLayeredPackage({
+        canvasWidth: 64, canvasHeight: 64,
+        states: [{ stateKey: 'idle_image', frames: 1, width: 64, height: 64, sheetWidth: 64,
+            fps: 12, pngBytes: new Uint8Array([1]), scale: 'big', rotation: NaN }],
+    }).metadata;
+    assert.equal(m.layers[0].scale[0], 1);
+    assert.equal(m.layers[0].rotation, 0);
 });

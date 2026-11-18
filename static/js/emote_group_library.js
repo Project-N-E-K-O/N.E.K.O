@@ -80,7 +80,6 @@
         const transform = look?.transform && typeof look.transform === 'object' ? look.transform : {};
         return {
             skins: Array.isArray(look?.skins) ? look.skins.map((item) => ({ ...item })) : [],
-            sliders: Array.isArray(look?.sliders) ? look.sliders.map((item) => ({ ...item })) : [],
             slots: Array.isArray(look?.slots) ? look.slots.map((item) => ({ ...item })) : [],
             transform: {
                 x: Number(transform.x) || 0,

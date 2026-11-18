@@ -1,19 +1,4 @@
-/*
- * Minimal, manually-driven Spine renderer for EmoteLab packages.
- *
- * This module intentionally has no UI and does not persist or bundle model
- * assets.  Callers provide a canvas, the renderer-neutral manifest returned by
- * the EmoteLab adapter, and an ephemeral ClientZipAssetStore.  The renderer
- * loads the official Spine WebGL runtime lazily (when a loader is available),
- * creates a TextureAtlas/Skeleton/AnimationState, and exposes explicit
- * select/tick/render methods.  A caller owns the render loop and the asset
- * store, which makes this bridge easy to roll back while native preview is
- * being validated.
- *
- * The bundled runtime is 4.3.13.  Spine 4.3 model packages are accepted by
- * default, but a version mismatch is surfaced in `status().warnings`; callers
- * that need a hard gate can pass `allowVersionMismatch: false`.
- */
+/* Generic Spine ZIP renderer using the official 4.3 runtime. */
 (function (root, factory) {
     'use strict';
 
@@ -40,6 +25,55 @@
     ]);
     const DEFAULT_RUNTIME_VERSION = '4.3.13';
     const DEFAULT_BACKGROUND = Object.freeze([0, 0, 0, 0]);
+    const QUAD_TRIANGLES = [0, 1, 2, 2, 3, 0];
+    const LUMINANCE = [0.2126, 0.7152, 0.0722];
+
+    function triangleWeights(vertices, indices, x, y) {
+        const [a, b, c] = indices.map((index) => index * 2);
+        const dx1 = vertices[b] - vertices[a];
+        const dy1 = vertices[b + 1] - vertices[a + 1];
+        const dx2 = vertices[c] - vertices[a];
+        const dy2 = vertices[c + 1] - vertices[a + 1];
+        const det = dx1 * dy2 - dy1 * dx2;
+        if (Math.abs(det) < 1e-7) return null;
+        const dx = x - vertices[a];
+        const dy = y - vertices[a + 1];
+        const u = (dx * dy2 - dy * dx2) / det;
+        const v = (dy * dx1 - dx * dy1) / det;
+        const w = 1 - u - v;
+        return Math.min(u, v, w) >= -1e-6 ? [w, u, v] : null;
+    }
+
+    function meshBoneAt(attachment, indices, weights, bones) {
+        if (!attachment.bones) return null;
+        const contributions = new Map();
+        const factors = new Map(indices.map((index, i) => [index, weights[i]]));
+        const lastVertex = Math.max(...indices);
+        let boneIndex = 0;
+        let vertexIndex = 0;
+        for (let vertex = 0; vertex <= lastVertex; vertex += 1) {
+            const count = attachment.bones[boneIndex++];
+            const factor = factors.get(vertex);
+            if (factor > 0) {
+                for (let i = 0; i < count; i += 1) {
+                    const index = attachment.bones[boneIndex + i];
+                    const weight = attachment.vertices[vertexIndex + i * 3 + 2] * factor;
+                    contributions.set(index, (contributions.get(index) || 0) + weight);
+                }
+            }
+            boneIndex += count;
+            vertexIndex += count * 3;
+        }
+        let best = null;
+        let bestWeight = 0;
+        for (const [index, weight] of contributions) {
+            if (weight > bestWeight && bones[index]?.active) {
+                bestWeight = weight;
+                best = bones[index];
+            }
+        }
+        return best;
+    }
 
     class SpineRendererError extends Error {
         constructor(message, code = 'renderer_error', details = undefined) {
@@ -143,64 +177,15 @@
         return match ? `${match[1]}.${match[2]}` : '';
     }
 
-    function normalizeSkinToken(value) {
-        return String(value || '')
-            .trim()
-            .replace(/\[[^\]]*\]/g, '')
-            .replace(/[\s_\-]+/g, '')
-            .toLocaleLowerCase();
-    }
 
-    function skinDescriptor(name) {
-        const parts = String(name || '').split('/').filter(Boolean);
-        if (parts.length < 2) return { group: '', value: parts[0] || '' };
-        const value = parts[parts.length - 1];
-        const group = parts[parts.length - 2];
-        return {
-            group,
-            groupToken: normalizeSkinToken(group),
-            value,
-            valueToken: normalizeSkinToken(value),
-            path: parts.slice(0, -1).join('/'),
-        };
+
+    function getRuntime(options = {}) {
+        return options.runtime || root?.spine || null;
     }
 
     function finiteOr(value, fallback) {
         const number = Number(value);
         return Number.isFinite(number) ? number : fallback;
-    }
-
-    function rotateVectorByQuaternion(vector, quaternion) {
-        const [vx, vy, vz] = vector.map((value) => finiteOr(value, 0));
-        let [qx, qy, qz, qw] = Array.isArray(quaternion)
-            ? quaternion.slice(0, 4).map((value) => finiteOr(value, 0))
-            : [0, 0, 0, 1];
-        const length = Math.hypot(qx, qy, qz, qw);
-        if (length > 0.000001) {
-            qx /= length;
-            qy /= length;
-            qz /= length;
-            qw /= length;
-        } else {
-            qx = 0;
-            qy = 0;
-            qz = 0;
-            qw = 1;
-        }
-        // q * v * inverse(q), expanded without allocating runtime vectors.
-        const ix = qw * vx + qy * vz - qz * vy;
-        const iy = qw * vy + qz * vx - qx * vz;
-        const iz = qw * vz + qx * vy - qy * vx;
-        const iw = -qx * vx - qy * vy - qz * vz;
-        return [
-            ix * qw + iw * -qx + iy * -qz - iz * -qy,
-            iy * qw + iw * -qy + iz * -qx - ix * -qz,
-            iz * qw + iw * -qz + ix * -qy - iy * -qx,
-        ];
-    }
-
-    function getRuntime(options = {}) {
-        return options.runtime || root?.spine || null;
     }
 
     async function ensureRuntime(options = {}) {
@@ -326,7 +311,6 @@
             this._characterSkinSelections = [];
             this._characterSlotStyles = [];
             this._characterSliderValues = [];
-            this._sliderApplications = [];
             this._baseFit = null;
             this._referenceScale = 1;
             this._viewportBounds = null;
@@ -338,6 +322,8 @@
             this._editorRotationApplied = 0;
             this._colorMode = { mode: 'default', primary: null, secondary: null };
             this._background = [...DEFAULT_BACKGROUND];
+            this._layerTextures = new Map();
+            this._tintReferences = new WeakMap();
         }
 
         static async create(options = {}) {
@@ -365,7 +351,7 @@
             if (packageVersion && expectedVersion && !sameVersionFamily) {
                 const warning = `Spine 模型版本 ${packageVersion} 与运行时 ${expectedVersion} 不同`;
                 this.warnings.push(warning);
-                if (this.options.allowVersionMismatch === false) {
+                if (this.options.allowVersionMismatch !== true) {
                     throw new SpineRendererError(warning, 'runtime_version_mismatch', {
                         packageVersion,
                         runtimeVersion: expectedVersion,
@@ -398,6 +384,7 @@
                     this.context,
                     this.options.twoColorTint !== false,
                 );
+                if (this.options.matchTintPalette && this.renderer.twoColorTint) this._installPaletteShader();
                 this.assetManager = new this.runtime.AssetManager(this.context);
 
                 const atlasText = await openStoreAsset(this.assetStore, this._modelInfo.atlasPath, 'text');
@@ -410,6 +397,10 @@
                 const pageNames = manifestPages.length
                     ? manifestPages.map((page) => String(page?.name || '')).filter(Boolean)
                     : extractAtlasPageNames(atlasText);
+                if (this.manifest.source?.builtIn === true && manifestPages.length) {
+                    pageNames.push(...extractAtlasPageNames(atlasText)
+                        .filter((name) => /^generated-[A-Za-z0-9_]+--[A-Za-z0-9_]+\.png$/.test(name)));
+                }
                 const atlasRoot = dirname(this._modelInfo.atlasPath);
                 for (const page of manifestPages) {
                     const pageName = String(page?.name || '');
@@ -418,8 +409,7 @@
                     const bytes = await openStoreAsset(this.assetStore, pagePath, 'bytes');
                     this._registerRawPage(pageName, pagePath, atlasRoot, bytes);
                 }
-                // A manifest generated by an older adapter may omit pages. In
-                // that case derive names from atlas.txt and use basename lookup.
+                // Resolve pages added to built-ins and pages inferred for older manifests.
                 for (const pageName of pageNames) {
                     const expectedPath = joinPath(atlasRoot, pageName);
                     if (this._hasRawPage(expectedPath)) continue;
@@ -445,15 +435,20 @@
                     : skeletonBytes;
                 this.skeletonData = parser.readSkeletonData(parsedInput);
                 this.skeleton = new this.runtime.Skeleton(this.skeletonData);
+                this._bindNativeParts();
                 this._referenceScale = asPositiveNumber(this.skeletonData?.referenceScale, 1);
                 this._characterSkinSelections = this._readCharacterSkinSelections();
+                if (!this._characterSkinSelections.length && this.skeletonData.skins?.length) {
+                    const skin = this.skeletonData.defaultSkin || this.skeletonData.skins[0];
+                    this._characterSkinSelections = [{ group: 'skin', value: skin.name }];
+                }
                 this._characterSlotStyles = this._readCharacterSlotStyles();
                 this._characterSliderValues = this._readCharacterSliderValues();
                 this._applyCharacterSkins();
                 this.stateData = new this.runtime.AnimationStateData(this.skeletonData);
                 this.state = new this.runtime.AnimationState(this.stateData);
                 this.skeleton.updateWorldTransform(this.runtime.Physics?.update ?? 2);
-                this._viewportBounds = this._readViewportBounds();
+                this._viewportBounds = null;
                 this.loaded = true;
 
                 const availableAnimations = this.animationNames();
@@ -509,346 +504,261 @@
         }
 
         _readCharacterSkinSelections() {
-            return Array.isArray(this.manifest?.character?.skins)
-                ? this.manifest.character.skins
-                    .filter((item) => item && item.group != null && item.value != null)
-                    .map((item) => ({ group: String(item.group), value: String(item.value) }))
-                : [];
+            return Array.isArray(this.manifest?.character?.skins) ? this.manifest.character.skins : [];
         }
-
         _readCharacterSlotStyles() {
-            return Array.isArray(this.manifest?.character?.slots)
-                ? this.manifest.character.slots.map((item) => ({ ...item }))
-                : [];
+            return Array.isArray(this.manifest?.character?.slots) ? this.manifest.character.slots : [];
         }
-
-        _readCharacterSliderValues() {
-            return Array.isArray(this.manifest?.character?.sliders)
-                ? this.manifest.character.sliders
-                    .filter((item) => item && item.name != null)
-                    .map((item) => ({ name: String(item.name), value: finiteOr(item.value, 1) }))
-                : [];
-        }
-
-        _findCharacterSkin(selection, available) {
-            const value = String(selection?.value || '').trim();
-            if (!value) return null;
-            const groupToken = normalizeSkinToken(selection?.group);
-            const valueToken = normalizeSkinToken(value);
-            const candidates = available
-                .map((skin) => ({ skin, descriptor: skinDescriptor(skin?.name) }))
-                .filter((item) => item.descriptor.valueToken === valueToken);
-            if (!candidates.length) return null;
-            candidates.sort((left, right) => {
-                const leftGroup = left.descriptor.groupToken === groupToken ? 0 : 1;
-                const rightGroup = right.descriptor.groupToken === groupToken ? 0 : 1;
-                if (leftGroup !== rightGroup) return leftGroup - rightGroup;
-                const leftPath = normalizeSkinToken(left.descriptor.path).includes(groupToken) ? 0 : 1;
-                const rightPath = normalizeSkinToken(right.descriptor.path).includes(groupToken) ? 0 : 1;
-                if (leftPath !== rightPath) return leftPath - rightPath;
-                return String(left.skin?.name || '').length - String(right.skin?.name || '').length;
-            });
-            return candidates[0].skin || null;
-        }
-
-        _withRequiredSkinDefaults(selections, available) {
-            const effective = Array.isArray(selections)
-                ? selections.map((item) => ({ ...item }))
-                : [];
-            const selectedGroups = new Set(effective.map((item) => (
-                normalizeSkinToken(item?.group)
-            )).filter(Boolean));
-            const defaults = new Map();
-
-            // Paired-pigtail presets can store both pigtails explicitly while
-            // leaving BackHair/SideHair absent. Those omitted groups are
-            // intentional: EmoteLab shows the pigtails and front hair without
-            // synthesizing a second rear-hair layer. Keep the compatibility
-            // fallback for other models, but do not turn these groups back on
-            // for this explicit paired-pigtail shape.
-            const pairedPigtailsSelected = selectedGroups.has('pigtailleft')
-                && selectedGroups.has('pigtailright');
-            const suppressPairedPigtailRearHair = pairedPigtailsSelected
-                && !selectedGroups.has('backhair')
-                && !selectedGroups.has('sidehair');
-
-            // EmoteLab Character files persist the user's choices, but can
-            // omit groups that are still supplied by the model defaults.
-            // CoffeeBean-derived models do this for Required Hand/Leg and
-            // DefaultOn Ear and other model-authored groups: applying only
-            // ActiveSkins can leave required attachments empty. Recover the
-            // first model-authored option before combining skins, except for
-            // the intentional paired-pigtail rear-hair omission above.
-            for (const skin of available || []) {
-                const descriptor = skinDescriptor(skin?.name);
-                if (!/\[\s*(?:required|default\s*on)\s*\]/i.test(descriptor.group || '')) continue;
-                const group = String(descriptor.group || '').replace(/\[[^\]]*\]/g, '').trim();
-                const groupToken = normalizeSkinToken(group);
-                if (!groupToken || !descriptor.value || selectedGroups.has(groupToken)) continue;
-                if (suppressPairedPigtailRearHair
-                    && (groupToken === 'backhair' || groupToken === 'sidehair')) {
-                    continue;
+        _readCharacterSliderValues() { return []; }
+        _bindNativeParts() {
+            this._nativeParts = new Map();
+            for (const part of this.manifest?.catalogs?.slotGroups || []) {
+                const slot = this.skeleton.findSlot(part.id);
+                const hidden = part.hideSlots.map((name) => this.skeleton.findSlot(name));
+                if (!slot || hidden.some((item) => !item)
+                    || part.attachments.some((name) => !this.skeletonData.skins.some(
+                        (skin) => skin.getAttachment(slot.data.index, name)))) {
+                    throw new SpineRendererError(`模板部件引用无效：${part.id}`, 'invalid_part_binding');
                 }
-                if (!defaults.has(groupToken)) {
-                    defaults.set(groupToken, { group, value: descriptor.value });
-                }
+                this._nativeParts.set(part.id, { ...part, slot, hidden });
             }
-
-            effective.push(...defaults.values());
-            return effective;
         }
-
         _applyCharacterSkins(selections = this._characterSkinSelections) {
-            if (typeof this.runtime?.Skin !== 'function' || !this.skeletonData || !this.skeleton) return;
-            const available = Array.isArray(this.skeletonData?.skins) ? this.skeletonData.skins : [];
-            const characterSkins = this._withRequiredSkinDefaults(selections, available);
-            const combined = new this.runtime.Skin('neko-emotelab-active');
-            const defaultSkin = this.skeletonData?.findSkin?.('default');
-            if (defaultSkin) combined.addSkin(defaultSkin);
-
-            const missing = [];
-            for (const selection of characterSkins) {
-                const skin = this._findCharacterSkin(selection, available);
-                if (!skin) {
-                    missing.push(`${selection?.group || '?'}=${selection?.value || ''}`);
-                    continue;
-                }
-                combined.addSkin(skin);
+            if (!this.skeleton || !this.skeletonData) return;
+            const name = selections[0]?.value;
+            if (name == null) return;
+            const skin = this.skeletonData.findSkin?.(String(name));
+            if (!skin) throw new SpineRendererError('Spine skin not found: ' + name, 'skin_not_found');
+            this.skeleton.setSkin(skin);
+            this.skeleton.setupPoseSlots?.();
+            this._characterSkinCount = 1;
+        }
+        _restoreCharacterAttachments() {
+            for (const [pose, saved] of this._attachmentBaselines || []) {
+                pose.setAttachment(saved.attachment);
+                pose.deform.length = 0;
+                for (const value of saved.deform) pose.deform.push(value);
+                pose.sequenceIndex = saved.sequenceIndex;
             }
-
-            this.skeleton.setSkin(combined);
-            if (typeof this.skeleton.setupPoseSlots === 'function') this.skeleton.setupPoseSlots();
-            this.warnings = this.warnings.filter((warning) => !String(warning).startsWith('未找到 Character 皮肤：'));
-            if (missing.length) this.warnings.push(`未找到 Character 皮肤：${missing.slice(0, 5).join(', ')}`);
-            this._characterSkinCount = characterSkins.length - missing.length;
+            this._attachmentBaselines?.clear();
         }
 
         _applyCharacterSlotStyles() {
-            if (!this.skeleton?.slots || typeof this.skeleton.findSlot !== 'function') return;
-            const styles = Array.isArray(this._characterSlotStyles) ? this._characterSlotStyles : [];
-            // SlotGroups in EmoteLab are logical tags written in brackets in
-            // the Spine slot name (for example, `..._Color[HairBangLeft]`),
-            // rather than the complete slot path. Index normalized names so
-            // the package's tint defaults actually reach every tagged slot.
-            const styleMap = new Map(styles
-                .filter((style) => style?.name)
-                .map((style) => [normalizeSkinToken(style.name), style]));
-            for (const slot of this.skeleton.slots) {
-                const setupPose = slot.data?.setupPose || slot.data || {};
-                const colorPoses = this._slotColorPoses(slot);
-                const setupColor = setupPose.color || slot.data?.color;
-                const setupDarkColor = setupPose.darkColor || slot.data?.darkColor;
-                for (const pose of colorPoses) {
-                    if (setupColor && pose.color?.setFromColor) pose.color.setFromColor(setupColor);
-                    if (setupDarkColor && pose.darkColor?.setFromColor) {
-                        pose.darkColor.setFromColor(setupDarkColor);
-                    }
+            const changeAttachment = (slot, attachment) => {
+                const pose = slot.pose;
+                if (pose.attachment === attachment) return;
+                this._attachmentBaselines ||= new Map();
+                if (!this._attachmentBaselines.has(pose)) {
+                    this._attachmentBaselines.set(pose, {
+                        attachment: pose.attachment, deform: [...pose.deform], sequenceIndex: pose.sequenceIndex,
+                    });
                 }
-                const slotName = String(slot.data?.name || slot.name || '');
-                const tagNames = [...slotName.matchAll(/\[([^\]]+)\]/g)].map((match) => match[1]);
-                const style = [slotName, ...tagNames]
-                    .map((name) => styleMap.get(normalizeSkinToken(name)))
-                    .find(Boolean);
-                if (!style) continue;
-                const tint = style.tintColor;
-                for (const pose of colorPoses) {
-                    if (tint && pose.color?.set) {
-                        pose.color.set(
-                            finiteOr(tint.r, 0),
-                            finiteOr(tint.g, 0),
-                            finiteOr(tint.b, 0),
-                            finiteOr(tint.a, 1),
-                        );
-                    }
+                pose.setAttachment(attachment);
+            };
+            for (const style of this._characterSlotStyles || []) {
+                const part = this._nativeParts?.get(style.name);
+                if (!part) continue;
+                const { slot } = part;
+                if (part.kind === 'toggle' && style.attachmentMode === 'hide') {
+                    changeAttachment(slot, null);
+                } else if (part.kind === 'toggle' && style.attachmentMode === 'show') {
+                    const attachment = slot.pose.attachment || this.skeleton.getAttachment(slot.data.index, part.attachments[0]);
+                    if (attachment) changeAttachment(slot, attachment);
+                } else if (part.kind === 'choice' && style.attachmentMode === 'replace'
+                    && slot.pose.attachment && part.attachments.includes(style.attachment)) {
+                    const attachment = this.skeleton.getAttachment(slot.data.index, style.attachment);
+                    if (attachment) changeAttachment(slot, attachment);
                 }
-                const dark = style.tintBlackColor;
-                for (const pose of colorPoses) {
-                    if (dark && pose.darkColor?.set) {
-                        pose.darkColor.set(
-                            finiteOr(dark.r, 0),
-                            finiteOr(dark.g, 0),
-                            finiteOr(dark.b, 0),
-                            finiteOr(dark.a, 1),
-                        );
-                    }
+                for (const color of new Set(this._slotColorPoses(slot).map((pose) => pose.color))) {
+                    if (!color || !style.tintColor) continue;
+                    const tint = this._colorObject(style.tintColor);
+                    this._setSlotColor(color, { r: color.r * tint.r, g: color.g * tint.g, b: color.b * tint.b, a: color.a });
+                }
+                for (const color of new Set(this._slotColorPoses(slot).map((pose) => pose.darkColor))) {
+                    if (color && style.tintBlackColor) this._setSlotColor(color, this._colorObject(style.tintBlackColor));
+                }
+            }
+            for (const part of this._nativeParts?.values() || []) {
+                if (part.slot.pose.attachment) {
+                    for (const slot of part.hidden) changeAttachment(slot, null);
                 }
             }
             this._applyGlobalColorMode();
         }
 
-        _slotColorPoses(slot) {
-            const poses = [];
-            for (const candidate of [slot?.pose, slot?.appliedPose, slot]) {
-                if (!candidate || typeof candidate !== 'object') continue;
-                if (!candidate.color && !candidate.darkColor) continue;
-                if (!poses.includes(candidate)) poses.push(candidate);
+        _setSlotColor(color, value) {
+            this._slotColorBaselines ||= new Map();
+            if (!this._slotColorBaselines.has(color)) {
+                this._slotColorBaselines.set(color, { r: color.r, g: color.g, b: color.b, a: color.a });
             }
-            return poses;
+            color.set(value.r, value.g, value.b, value.a);
         }
 
-        _matchingSliderBones(name) {
-            const raw = String(name || '').split('/').pop() || '';
-            const match = raw.match(/^(.*)_(Length|Position|Distance|Height|Shear)$/i);
-            if (!match) return { base: raw, property: '', bones: [] };
-            const baseToken = normalizeSkinToken(match[1]);
-            // EmoteLab's Character slider ids are authored against the
-            // logical part name (for example, PigtailLeft), while the Spine
-            // skeleton can split that part into named chains such as
-            // PigtailA_Left1 and PigtailB_Left. Keep matching conservative,
-            // but include the explicit A/B chain variants when a side is
-            // present in the slider id.
-            const baseVariants = new Set([baseToken]);
-            const side = baseToken.match(/(left|right)$/);
-            if (side) {
-                const prefix = baseToken.slice(0, -side[1].length);
-                baseVariants.add(`${prefix}a${side[1]}`);
-                baseVariants.add(`${prefix}b${side[1]}`);
-            }
-            const bones = (this.skeleton?.data?.bones || this.skeletonData?.bones || [])
-                .map((boneData) => this.skeleton?.findBone?.(boneData.name))
-                .filter(Boolean)
-                .filter((bone) => {
-                    const token = normalizeSkinToken(bone.data?.name || bone.name);
-                    return Array.from(baseVariants).some((variant) => (
-                        token.startsWith(variant) || token.includes(variant)
-                    ));
-                });
-            return { base: match[1], property: match[2].toLowerCase(), bones };
+        partHasDarkTint(name) {
+            return Boolean(this._nativeParts?.get(name)?.slot.pose.darkColor);
         }
 
-        _sliderTargets(mapping) {
-            if (!mapping?.property) return [];
-            if (mapping.property === 'length') {
-                return mapping.bones.filter((bone) => Number(bone.data?.length ?? bone.length) > 0);
-            }
-            if (mapping.property === 'position') {
-                return mapping.bones.filter((bone) => {
-                    const boneName = String(bone.data?.name || bone.name || '');
-                    return /(?:1|origin)$/i.test(boneName);
-                });
-            }
-            if (mapping.property === 'shear') return mapping.bones;
-            // Distance/Height constraints need package-specific formulas; do
-            // not claim that a name-only heuristic applied them.
-            return [];
+        partIsVisible(name) {
+            const slot = this._nativeParts.get(name)?.slot;
+            if (!slot?.bone.active || this.skeleton?.visible === false) return false;
+            const { RegionAttachment, MeshAttachment } = this.runtime;
+            const { attachment, color } = slot.appliedPose;
+            return color.a > 0 && attachment?.color?.a > 0
+                && (attachment instanceof RegionAttachment || attachment instanceof MeshAttachment);
         }
 
-        _nativeSliderConstraint(name) {
-            const constraints = Array.isArray(this.skeleton?.constraints)
-                ? this.skeleton.constraints
-                : [];
-            const requestedName = String(name || '').trim();
-            if (!requestedName || !constraints.length) return null;
-            const requestedToken = normalizeSkinToken(requestedName);
-            const requestedBaseToken = normalizeSkinToken(requestedName.split('/').pop());
-            const candidates = constraints.filter((constraint) => {
-                const data = constraint?.data;
-                const animation = data?.animation;
-                const duration = Number(animation?.duration);
-                return Boolean(
-                    data?.name
-                    && animation
-                    && Number.isFinite(duration)
-                    && duration >= 0
-                    && constraint?.pose
-                    && constraint?.appliedPose,
-                );
-            });
-            const exact = candidates.find((constraint) => (
-                String(constraint.data.name) === requestedName
-                || normalizeSkinToken(constraint.data.name) === requestedToken
-            ));
-            const basenameMatches = exact ? [] : candidates.filter((constraint) => {
-                const constraintBase = String(constraint.data.name).split('/').pop();
-                return normalizeSkinToken(constraintBase) === requestedBaseToken;
-            });
-            const constraint = exact || (basenameMatches.length === 1 ? basenameMatches[0] : null);
-            if (!constraint) return null;
-            const animation = constraint.data.animation;
-            const targetBones = animation?.bones == null ? [] : Array.from(animation.bones);
+        visiblePartNames() {
+            return Array.from(this._nativeParts.keys()).filter((name) => this.partIsVisible(name));
+        }
+
+        _installPaletteShader() {
+            const original = this.renderer.batcherShader;
+            const source = original.getFragmentSource();
+            const insertion = 'gl_FragColor.a = texColor.a * v_light.a;';
+            if (!source.includes(insertion)) return;
+            // Use high precision for texel centers on large accessory textures when the GPU supports it.
+            const samplePrecision = this.gl.getShaderPrecisionFormat(this.gl.FRAGMENT_SHADER, this.gl.HIGH_FLOAT)?.precision
+                ? 'highp' : 'mediump';
+            const fragment = source.replace('void main () {', `
+                vec4 cubicWeights(float x) {
+                    float x2 = x * x;
+                    float x3 = x2 * x;
+                    return vec4(-0.5 * x + x2 - 0.5 * x3, 1.0 - 2.5 * x2 + 1.5 * x3,
+                        0.5 * x + 2.0 * x2 - 1.5 * x3, -0.5 * x2 + 0.5 * x3);
+                }
+
+                vec4 sampleAccessory(${samplePrecision} vec2 uv, ${samplePrecision} vec2 size) {
+                    ${samplePrecision} vec2 p = uv * size - 0.5;
+                    ${samplePrecision} vec2 center = floor(p) + 0.5;
+                    vec4 wx = cubicWeights(fract(p.x));
+                    vec4 wy = cubicWeights(fract(p.y));
+                    vec4 sampled = vec4(0.0);
+                    for (int y = 0; y < 4; y++) {
+                        for (int x = 0; x < 4; x++) {
+                            vec2 offset = vec2(float(x - 1), float(y - 1));
+                            sampled += texture2D(u_texture, (center + offset) / size) * wx[x] * wy[y];
+                        }
+                    }
+                    sampled.a = clamp(sampled.a, 0.0, 1.0);
+                    return vec4(clamp(sampled.rgb, vec3(0.0), vec3(sampled.a)), sampled.a);
+                }
+
+                void main () {
+                    if (v_dark.a > 2.5) {
+                        gl_FragColor = sampleAccessory(v_texCoords, v_dark.rg);
+                        return;
+                    }
+            `).replace(insertion, `
+                ${insertion}
+                bool pulse = abs(v_dark.a) > 1.0;
+                if (v_dark.a < 0.0) {
+                    float luminance = dot(texColor.rgb, vec3(${LUMINANCE.join(', ')})) / max(texColor.a, 0.0001);
+                    float base = fract(-v_dark.a);
+                    vec3 shadow = v_dark.rgb;
+                    vec3 highlight = vec3(v_light.a);
+                    vec3 shaded = luminance < base
+                        ? mix(shadow, v_light.rgb, luminance / base)
+                        : mix(v_light.rgb, highlight, clamp((luminance - base) / (1.0 - base), 0.0, 1.0));
+                    gl_FragColor.rgb = shaded * texColor.a;
+                } else if (pulse) {
+                    gl_FragColor.rgb = (texColor.a - texColor.rgb) * v_dark.rgb + texColor.rgb * v_light.rgb;
+                }
+                if (pulse) gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.36, 0.83, 1.0) * gl_FragColor.a, 0.56);
+                if (pulse || v_dark.a < 0.0) return;
+            `);
+            const shader = new this.runtime.Shader(this.context, original.getVertexShaderSource(), fragment);
+            original.dispose();
+            this.renderer.batcherShader = shader;
+            this._paletteTint = true;
+        }
+
+        _attachmentTintReference(pose) {
+            const sequence = pose.attachment?.sequence;
+            const region = sequence?.regions[sequence.resolveIndex(pose)];
+            if (!region) return 0.7;
+            if (this._tintReferences.has(region)) return this._tintReferences.get(region);
+            const texture = region.texture;
+            const image = texture?.getImage();
+            if (!image?.width || !image.height) return 0.7;
+            this._tintSample ||= this.canvas.ownerDocument.createElement('canvas');
+            const sample = this._tintSample;
+            sample.width = sample.height = 48;
+            const context = sample.getContext('2d', { willReadFrequently: true });
+            const { u, v, u2, v2 } = region;
+            context.drawImage(image, u * image.width, v * image.height, (u2 - u) * image.width, (v2 - v) * image.height,
+                0, 0, sample.width, sample.height);
+            const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+            const histogram = Array(256).fill(0);
+            let peak = 0;
+            for (let i = 0; i < pixels.length; i += 4) {
+                const alpha = pixels[i + 3] / 255;
+                if (alpha < 0.85) continue;
+                const luma = pixels[i] * LUMINANCE[0] + pixels[i + 1] * LUMINANCE[1] + pixels[i + 2] * LUMINANCE[2];
+                const bucket = Math.min(255, Math.round(luma / (texture.pma ? alpha : 1)));
+                histogram[bucket] += 1;
+                if (histogram[bucket] > histogram[peak]) peak = bucket;
+            }
+            const base = Math.max(0.004, Math.min(0.996, histogram[peak] ? peak / 255 : 0.7));
+            this._tintReferences.set(region, base);
+            return base;
+        }
+
+        _paletteVertexTransform(highlightedPart) {
+            if (!this._paletteTint) return {};
+            const restore = [];
+            const tints = new Map(this._characterSlotStyles.filter((style) => style.tintColor)
+                .map((style) => [style.name, style.tintColor]));
+            if (highlightedPart && !tints.has(highlightedPart)) tints.set(highlightedPart, null);
+            for (const [name, tintColor] of tints) {
+                const slot = this._nativeParts.get(name)?.slot;
+                const pose = slot?.appliedPose;
+                const attachment = pose?.attachment;
+                if (!attachment?.sequence || slot.data.blendMode === 1) continue;
+                const alpha = this.skeleton.color.a * pose.color.a * attachment.color.a;
+                if (alpha <= 0) continue;
+                const shadow = pose.darkColor;
+                const base = tintColor && this._attachmentTintReference(pose);
+                const tint = tintColor && this._colorObject(tintColor);
+                restore.push({ pose, shadow, base, tint, pulse: name === highlightedPart });
+                // The runtime's vertex callback receives colors after premultiplication.
+                // Tag this slot there so untinted slots keep the standard Spine shader path.
+                pose.darkColor = { r: -restore.length, g: shadow?.g || 0, b: shadow?.b || 0 };
+            }
+            if (!restore.length) return {};
             return {
-                constraint,
-                duration: Math.max(0, Number(animation.duration) || 0),
-                targetBones,
+                transform: (vertices, length, stride) => {
+                    for (let index = 0; index < length; index += stride) {
+                        const light = index + 2;
+                        const dark = index + 8;
+                        if (vertices[dark] >= 0) continue;
+                        const alpha = vertices[light + 3];
+                        const tag = Math.round(-vertices[dark] / alpha);
+                        const { shadow, base, tint, pulse } = restore[tag - 1];
+                        if (tint) {
+                            vertices[light] = tint.r * alpha;
+                            vertices[light + 1] = tint.g * alpha;
+                            vertices[light + 2] = tint.b * alpha;
+                        }
+                        vertices[dark] = (shadow?.r || 0) * alpha;
+                        vertices[dark + 3] = tint ? -(base + Number(pulse)) : 2;
+                    }
+                },
+                reset: () => {
+                    for (const { pose, shadow } of restore) pose.darkColor = shadow;
+                },
             };
         }
 
-        _setNativeSliderValue(nativeSlider, value) {
-            const constraint = nativeSlider?.constraint;
-            if (!constraint) return null;
-            // EmoteLab exposes Character sliders as a normalized 0..2 value.
-            // Spine stores that range along the Slider constraint's animation
-            // timeline.  The authored setup pose can be anywhere in the range;
-            // sliderDefaultValue() exposes that authored point to the UI.
-            const normalizedValue = Math.max(0, Math.min(2, finiteOr(value, 1)));
-            const time = normalizedValue * nativeSlider.duration / 2;
-            for (const pose of [constraint.pose, constraint.constrainedPose, constraint.appliedPose]) {
-                if (pose && typeof pose === 'object') pose.time = time;
-            }
-            return time;
+        _slotColorPoses(slot) {
+            return [...new Set([slot?.pose, slot?.appliedPose, slot])]
+                .filter((pose) => pose && (pose.color || pose.darkColor));
         }
 
-        _applyCharacterSliders() {
-            if (!this.skeleton || !Array.isArray(this._characterSliderValues)) return;
-            const applied = [];
-            const unsupported = [];
-            const heuristic = [];
-            for (const slider of this._characterSliderValues) {
-                const nativeSlider = this._nativeSliderConstraint(slider.name);
-                if (nativeSlider) {
-                    this._setNativeSliderValue(nativeSlider, slider.value);
-                    applied.push({
-                        name: slider.name,
-                        bones: nativeSlider.targetBones.length,
-                        mode: 'native',
-                    });
-                    continue;
-                }
-                const mapping = this._matchingSliderBones(slider.name);
-                const value = finiteOr(slider.value, 1);
-                const targets = this._sliderTargets(mapping);
-                if (!targets.length) {
-                    unsupported.push(slider.name);
-                    continue;
-                }
-                let changed = 0;
-                for (const bone of targets) {
-                    const pose = bone.pose;
-                    // In Spine 4.3, Bone#setupPose is a compatibility getter
-                    // with no local values. The authoritative transform is
-                    // BoneData#setupPose, so use it as the baseline every
-                    // time the animation state is reapplied.
-                    const setup = bone.data?.setupPose || bone.setupPose;
-                    if (!pose || !setup) continue;
-                    if (mapping.property === 'length') {
-                        pose.scaleX = finiteOr(setup.scaleX, 1) * value;
-                        changed += 1;
-                    } else if (mapping.property === 'position') {
-                        pose.x = finiteOr(setup.x, 0) * value;
-                        pose.y = finiteOr(setup.y, 0) * value;
-                        changed += 1;
-                    } else if (mapping.property === 'shear') {
-                        pose.shearY = finiteOr(setup.shearY, 0) + ((value - 1) * 45);
-                        changed += 1;
-                    }
-                }
-                if (changed) {
-                    applied.push({ name: slider.name, bones: changed, mode: 'heuristic' });
-                    heuristic.push(slider.name);
-                }
-                else if (!unsupported.includes(slider.name)) unsupported.push(slider.name);
+        _restoreSlotColors() {
+            for (const [color, value] of this._slotColorBaselines || []) {
+                color.set(value.r, value.g, value.b, value.a);
             }
-            this._sliderApplications = applied;
-            this.warnings = this.warnings.filter((warning) => (
-                !String(warning).startsWith('部分 Character 滑杆未映射：')
-                && !String(warning).startsWith('部分 Character 滑杆使用启发式映射：')
-            ));
-            if (heuristic.length) {
-                this.warnings.push(`部分 Character 滑杆使用启发式映射：${heuristic.slice(0, 3).join(', ')}`);
-            }
-            if (unsupported.length) {
-                this.warnings.push(`部分 Character 滑杆未映射：${unsupported.slice(0, 3).join(', ')}`);
-            }
+            this._slotColorBaselines = new Map();
         }
 
         _colorObject(value, fallback = { r: 1, g: 1, b: 1, a: 1 }) {
@@ -866,105 +776,49 @@
             if (mode.mode === 'default' || !this.skeleton?.slots) return;
             const primary = this._colorObject(mode.primary);
             const secondary = this._colorObject(mode.secondary, { r: 0, g: 0, b: 0, a: 1 });
+            const applied = new Set();
+            const tint = (color, value) => {
+                if (!color?.set || applied.has(color)) return;
+                applied.add(color);
+                this._setSlotColor(color, value);
+            };
             for (const slot of this.skeleton.slots) {
                 for (const pose of this._slotColorPoses(slot)) {
                     if (pose.color?.set) {
-                        pose.color.set(
-                            mode.mode === 'tint' ? primary.r : pose.color.r * primary.r,
-                            mode.mode === 'tint' ? primary.g : pose.color.g * primary.g,
-                            mode.mode === 'tint' ? primary.b : pose.color.b * primary.b,
-                            pose.color.a * primary.a,
-                        );
+                        tint(pose.color, {
+                            r: mode.mode === 'tint' ? primary.r : pose.color.r * primary.r,
+                            g: mode.mode === 'tint' ? primary.g : pose.color.g * primary.g,
+                            b: mode.mode === 'tint' ? primary.b : pose.color.b * primary.b,
+                            a: pose.color.a * primary.a,
+                        });
                     }
                     if (mode.mode === 'two-tone' && pose.darkColor?.set) {
-                        pose.darkColor.set(secondary.r, secondary.g, secondary.b, secondary.a);
+                        tint(pose.darkColor, secondary);
                     }
                 }
             }
         }
 
         skinOptions() {
-            const result = {};
-            for (const skin of this.skeletonData?.skins || []) {
-                const descriptor = skinDescriptor(skin?.name);
-                if (!descriptor.group || !descriptor.value || descriptor.value === 'default') continue;
-                const key = descriptor.groupToken || normalizeSkinToken(descriptor.group);
-                if (!result[key]) result[key] = { group: descriptor.group.replace(/\[[^\]]*\]/g, ''), options: [] };
-                if (!result[key].options.some((value) => normalizeSkinToken(value) === descriptor.valueToken)) {
-                    result[key].options.push(descriptor.value);
+            const options = (this.skeletonData?.skins || []).map((skin) => skin.name);
+            return options.length ? { skin: { group: 'skin', options } } : {};
+        }
+        setCharacterState(next = {}, options = {}) {
+            let changed = false;
+            if (Array.isArray(next.skins)) {
+                const selection = next.skins.map((item) => ({ ...item }));
+                if (JSON.stringify(selection) !== JSON.stringify(this._characterSkinSelections)) {
+                    this._characterSkinSelections = selection;
+                    this._restoreCharacterAttachments();
+                    this._applyCharacterSkins();
+                    changed = true;
                 }
             }
-            return result;
-        }
-
-        characterSkinSelections() {
-            return this._characterSkinSelections.map((item) => ({ ...item }));
-        }
-
-        sliderStatus() {
-            return Object.freeze({
-                applied: this._sliderApplications.map((item) => ({ ...item })),
-                configured: this._characterSliderValues.map((item) => ({ ...item })),
-            });
-        }
-
-        sliderMapping(name) {
-            const nativeSlider = this._nativeSliderConstraint(name);
-            if (nativeSlider) {
-                const raw = String(name || '').split('/').pop() || '';
-                const match = raw.match(/^(.*)_(Length|Position|Distance|Height|Shear)$/i);
-                return Object.freeze({
-                    base: match?.[1] || raw,
-                    property: match?.[2]?.toLowerCase() || '',
-                    bones: nativeSlider.targetBones.length,
-                    targets: nativeSlider.targetBones.length,
-                    supported: true,
-                mode: 'native',
-            });
-            }
-            const mapping = this._matchingSliderBones(name);
-            const targets = this._sliderTargets(mapping);
-            return Object.freeze({
-                base: mapping.base,
-                property: mapping.property,
-                bones: mapping.bones.length,
-                targets: targets.length,
-                supported: targets.length > 0,
-                mode: targets.length > 0 ? 'heuristic' : 'unsupported',
-            });
-        }
-
-        sliderDefaultValue(name) {
-            const nativeSlider = this._nativeSliderConstraint(name);
-            if (!nativeSlider || !(nativeSlider.duration > 0)) return null;
-            const setupTime = finiteOr(nativeSlider.constraint?.data?.setupPose?.time, NaN);
-            if (!Number.isFinite(setupTime)) return null;
-            return Math.max(0, Math.min(2, setupTime * 2 / nativeSlider.duration));
-        }
-
-        setCharacterState(next = {}, options = {}) {
-            this._assertLive();
-            if (Array.isArray(next.skins)) {
-                this._characterSkinSelections = next.skins.map((item) => ({
-                    group: String(item?.group || ''),
-                    value: String(item?.value || ''),
-                })).filter((item) => item.group && item.value);
-                this.manifest.character = { ...(this.manifest.character || {}), skins: this._characterSkinSelections };
-                this._applyCharacterSkins();
-            }
-            if (Array.isArray(next.sliders)) {
-                this._characterSliderValues = next.sliders.map((item) => ({
-                    name: String(item?.name || ''),
-                    value: finiteOr(item?.value, 1),
-                })).filter((item) => item.name);
-                this.manifest.character = { ...(this.manifest.character || {}), sliders: this._characterSliderValues };
-            }
-            if (Array.isArray(next.slots)) {
+            if (Array.isArray(next.slots) && JSON.stringify(next.slots) !== JSON.stringify(this._characterSlotStyles)) {
                 this._characterSlotStyles = next.slots.map((item) => ({ ...item }));
-                this.manifest.character = { ...(this.manifest.character || {}), slots: this._characterSlotStyles };
+                changed = true;
             }
-            if (next.colorMode) this._colorMode = { ...this._colorMode, ...next.colorMode };
-            this._applyPose(0);
+            if (changed) this._applyPose(0);
             if (options.render !== false) this.render();
             return this.status();
         }
@@ -976,71 +830,56 @@
             })) || [];
         }
 
-        selectAnimation(name, options = {}) {
-            this._assertLive();
-            if (!this.loaded || !this.state || !this.skeletonData) {
-                throw new SpineRendererError('Spine 模板尚未加载', 'not_loaded');
-            }
-            const animationName = String(name || '');
-            const animation = this.skeletonData.findAnimation(animationName);
-            if (!animation) {
-                throw new SpineRendererError(`找不到 Spine 动画：${animationName}`, 'animation_not_found');
-            }
-            this.state.clearTracks();
-            // EmoteLab treats every scene preview as an independent pose.
-            // AnimationState only writes properties keyed by the incoming
-            // animation, so attachments/bones keyed by the previous scene
-            // can otherwise remain on the skeleton (for example Alert-Bits
-            // stickers persisting after switching to Angry). Reset the
-            // authored setup pose before applying the new track. Spine 4.3's
-            // JavaScript runtime calls this method setupPose(); a few older
-            // compatible runtimes expose setToSetupPose() or only the two
-            // granular setupPoseBones()/setupPoseSlots() methods, so keep
-            // those fallbacks as well.
-            if (typeof this.skeleton.setupPose === 'function') {
-                this.skeleton.setupPose();
-            } else if (typeof this.skeleton.setToSetupPose === 'function') {
-                this.skeleton.setToSetupPose();
-            } else {
-                if (typeof this.skeleton.setupPoseBones === 'function') {
-                    this.skeleton.setupPoseBones();
-                } else {
-                    this.skeleton.setBonesToSetupPose?.();
-                }
-                if (typeof this.skeleton.setupPoseSlots === 'function') {
-                    this.skeleton.setupPoseSlots();
-                } else {
-                    this.skeleton.setSlotsToSetupPose?.();
-                }
-            }
-            const entry = this.state.setAnimation(0, animationName, options.loop === true);
-            const duration = Number(animation.duration) || 0;
-            entry.trackTime = Math.max(0, Number(options.time) || 0);
-            if (!entry.loop && duration > 0) entry.trackTime = Math.min(entry.trackTime, duration);
-            this.currentAnimation = animationName;
-            this.playing = options.autoplay === true;
-            this._applyPose(0);
-            if (options.render !== false) this.render();
-            return Object.freeze({
-                name: animationName,
-                duration,
-                loop: Boolean(entry.loop),
-                time: entry.trackTime,
-                playing: this.playing,
-            });
+        hasPhysicsConstraints() {
+            const PhysicsConstraint = this.runtime?.PhysicsConstraint;
+            return Boolean(PhysicsConstraint && this.skeleton?.constraints?.some(
+                (constraint) => constraint instanceof PhysicsConstraint,
+            ));
         }
 
+        selectAnimation(name, options = {}) {
+            this._assertLive();
+            const animation = this.skeletonData?.findAnimation(String(name));
+            if (!animation) throw new SpineRendererError('Spine animation not found: ' + name, 'animation_not_found');
+            this._restoreSlotColors();
+            this._restoreCharacterAttachments();
+            this.state.clearTracks();
+            this.skeleton.setupPose?.();
+            this._rootRotationBasis = null;
+            this._editorRotationApplied = 0;
+            this._applyCharacterSkins();
+            this.skeleton.time = 0;
+            const entry = this.state.setAnimation(0, String(name), options.loop !== false);
+            this.currentAnimation = String(name);
+            this.playing = options.autoplay === true;
+            this.state.apply(this.skeleton);
+            this._applyCharacterSlotStyles();
+            this.skeleton.updateWorldTransform(this.runtime.Physics?.reset ?? 1);
+            this._captureRootRotationBasis();
+            if (Number(options.time) > 0) this.setTime(Number(options.time), { render: false });
+            if (options.render !== false) this.render();
+            return { name: String(name), duration: Number(animation.duration) || 0, time: entry.trackTime, playing: this.playing };
+        }
         setTime(time, options = {}) {
             this._assertLive();
-            const entry = this.state?.getTrack?.(0);
+            let entry = this.state?.getTrack?.(0);
             if (!entry) throw new SpineRendererError('尚未选择 Spine 动画', 'animation_not_selected');
-            const duration = Number(entry.animation?.duration) || 0;
-            let nextTime = Math.max(0, Number(time) || 0);
-            if (!entry.loop && duration > 0) nextTime = Math.min(nextTime, duration);
-            entry.trackTime = nextTime;
-            this._applyPose(0);
+            let target = Math.max(0, Number(time) || 0);
+            if (!entry.loop) target = Math.min(target, Number(entry.animation?.duration) || 0);
+            if (target < entry.trackTime) {
+                this.selectAnimation(this.currentAnimation, { loop: entry.loop, autoplay: this.playing, render: false });
+                entry = this.state.getTrack(0);
+            }
+            const distance = target - entry.trackTime;
+            if (distance > 600) throw new SpineRendererError('动画跳转超过模拟预算', 'seek_limit');
+            let remaining = distance;
+            while (remaining > 1e-8) {
+                const step = Math.min(remaining, 1 / 60);
+                this._applyPose(step);
+                remaining -= step;
+            }
             if (options.render !== false) this.render();
-            return nextTime;
+            return target;
         }
 
         play(name, options = {}) {
@@ -1063,10 +902,14 @@
             if (!this.state || !this.skeleton) return;
             // 先把上一帧加上的编辑器旋转拿掉，动画混合才不会拿那个角度当起点。
             this._restoreRootRotationBasis();
-            if (deltaSeconds > 0) this.state.update(deltaSeconds);
+            this._restoreSlotColors();
+            this._restoreCharacterAttachments();
+            if (deltaSeconds > 0) {
+                this.skeleton.update(deltaSeconds);
+                this.state.update(deltaSeconds);
+            }
             this.state.apply(this.skeleton);
             this._applyCharacterSlotStyles();
-            this._applyCharacterSliders();
             this.skeleton.updateWorldTransform(this.runtime.Physics?.update ?? 2);
             this._captureRootRotationBasis();
         }
@@ -1105,7 +948,7 @@
             if (pose.rotation === next && this._editorRotationApplied === degrees) return;
             pose.rotation = next;
             this._editorRotationApplied = degrees;
-            this.skeleton.updateWorldTransform(this.runtime?.Physics?.update ?? 2);
+            this.skeleton.updateWorldTransform(this.runtime?.Physics?.pose ?? 3);
         }
 
         tick(deltaSeconds = 1 / 60, options = {}) {
@@ -1125,8 +968,7 @@
 
         _resizeCanvas() {
             // The canvas is responsive through CSS. Do not derive its
-            // intrinsic bitmap from clientWidth/clientHeight: the editor's
-            // three-column layout is rectangular, while an EmoteLab emote
+            // intrinsic bitmap from clientWidth/clientHeight: the editor canvas
             // and its PNG export are square. Resizing from CSS dimensions
             // would silently turn a 1024x1024 export into a wide thumbnail.
             const renderWidth = asPositiveNumber(
@@ -1163,195 +1005,7 @@
             return { width, height };
         }
 
-        _readViewportBounds() {
-            const slots = Array.isArray(this.skeleton?.slots) ? this.skeleton.slots : [];
-            const isViewportName = (value) => {
-                const name = String(value || '').trim().toLocaleLowerCase();
-                return name === 'viewport' || name.endsWith('/viewport') || name.includes('[viewport]');
-            };
-            const viewportSlot = slots.find((slot) => {
-                const name = String(slot?.data?.name || slot?.name || '').trim().toLocaleLowerCase();
-                return isViewportName(name);
-            });
-            const candidates = [];
-            const seen = new Set();
-            const addCandidate = (slot, attachment) => {
-                if (!slot || !attachment || typeof attachment.computeWorldVertices !== 'function') return;
-                if (seen.has(attachment)) return;
-                seen.add(attachment);
-                candidates.push({ slot, attachment });
-            };
-            const activeAttachment = viewportSlot?.pose?.attachment
-                || viewportSlot?.appliedPose?.attachment
-                || viewportSlot?.attachment
-                || viewportSlot?.getAttachment?.();
-            // Prefer the attachment currently posed on the named slot. This
-            // preserves the usual path while allowing an inactive skin's
-            // VIEWPORT placeholder to be found below when no active one is
-            // present.
-            addCandidate(viewportSlot, activeAttachment);
 
-            // EmoteLab's Unity loader scans every Skin.SkinEntry rather than
-            // only the active skin. Spine 4.3 JS stores those entries as an
-            // array indexed by slot, with a placeholder->attachment object;
-            // older runtimes expose SkinEntry-like records instead. Mirror
-            // both layouts so templates remain compatible when VIEWPORT is
-            // hidden behind a skin selection.
-            const skinSources = [
-                this.skeleton?.data?.skins,
-                this.skeletonData?.data?.skins,
-                this.skeletonData?.skins,
-            ];
-            const skins = [];
-            const seenSkinLists = new Set();
-            for (const source of skinSources) {
-                if (!Array.isArray(source) || seenSkinLists.has(source)) continue;
-                seenSkinLists.add(source);
-                skins.push(...source);
-            }
-            for (const skin of skins) {
-                const attachments = skin?.attachments;
-                if (Array.isArray(attachments)) {
-                    attachments.forEach((entry, slotIndex) => {
-                        if (!entry) return;
-                        const slot = slots[slotIndex];
-                        const entryAttachment = entry.attachment || entry.Attachment;
-                        const entryName = entry.name || entry.placeholder || entry.Name || entry.Placeholder;
-                        const entrySlotIndex = Number.isInteger(entry.slotIndex)
-                            ? entry.slotIndex
-                            : (Number.isInteger(entry.SlotIndex) ? entry.SlotIndex : slotIndex);
-                        if (entryAttachment && (entryName || Number.isFinite(entrySlotIndex))) {
-                            if (isViewportName(entryName)) {
-                                addCandidate(slots[entrySlotIndex], entryAttachment);
-                            }
-                            return;
-                        }
-                        const entries = typeof Map !== 'undefined' && entry instanceof Map
-                            ? entry.entries()
-                            : Object.entries(entry);
-                        for (const [name, attachment] of entries) {
-                            if (isViewportName(name)) addCandidate(slot, attachment);
-                        }
-                    });
-                } else if (attachments && typeof attachments === 'object') {
-                    for (const [slotKey, entry] of Object.entries(attachments)) {
-                        const numericSlotIndex = Number(slotKey);
-                        const slotIndex = Number.isInteger(numericSlotIndex) ? numericSlotIndex : -1;
-                        const slot = slotIndex >= 0 ? slots[slotIndex] : null;
-                        const entryAttachment = entry?.attachment || entry?.Attachment;
-                        const entryName = entry?.name || entry?.placeholder || entry?.Name || entry?.Placeholder;
-                        const entrySlotIndex = Number.isInteger(entry?.slotIndex)
-                            ? entry.slotIndex
-                            : (Number.isInteger(entry?.SlotIndex) ? entry.SlotIndex : slotIndex);
-                        if (entryAttachment && (entryName || Number.isFinite(entrySlotIndex))) {
-                            if (isViewportName(entryName)) {
-                                addCandidate(slots[entrySlotIndex], entryAttachment);
-                            }
-                            continue;
-                        }
-                        const entries = typeof Map !== 'undefined' && entry instanceof Map
-                            ? entry.entries()
-                            : Object.entries(entry || {});
-                        for (const [name, attachment] of entries) {
-                            if (isViewportName(name)) addCandidate(slot, attachment);
-                        }
-                    }
-                }
-                // Some Spine runtimes only expose getAttachment(). It is
-                // cheap to probe the known slot range and avoids depending on
-                // their internal Skin.attachments representation.
-                if (typeof skin?.getAttachment === 'function') {
-                    for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
-                        try {
-                            addCandidate(slots[slotIndex], skin.getAttachment(slotIndex, 'VIEWPORT'));
-                        } catch (_) {
-                            // A malformed/legacy skin should not prevent a
-                            // later skin or drawable-bounds fallback.
-                        }
-                    }
-                }
-            }
-
-            for (const { slot, attachment } of candidates) {
-                const count = Math.floor(Number(attachment.worldVerticesLength)
-                    || (Array.isArray(attachment.vertices) || ArrayBuffer.isView(attachment.vertices)
-                        ? attachment.vertices.length
-                        : 0));
-                if (count < 4 || count % 2 !== 0) continue;
-                const vertices = new Float32Array(count);
-                const computeWorldVertices = attachment.computeWorldVertices;
-                const invokeSpine43 = () => computeWorldVertices.call(
-                    attachment,
-                    this.skeleton,
-                    slot,
-                    0,
-                    count,
-                    vertices,
-                    0,
-                    2,
-                );
-                const invokeLegacy = () => computeWorldVertices.call(
-                    attachment,
-                    slot,
-                    0,
-                    count,
-                    vertices,
-                    0,
-                    2,
-                );
-                try {
-                    // Spine 4.3: (skeleton, slot, start, count, out,
-                    // offset, stride). A few older compatible runtimes omit
-                    // the first skeleton argument, so retain a guarded
-                    // fallback. Use declared arity when available; an older
-                    // six-argument implementation can otherwise accept the
-                    // extra argument and silently write invalid coordinates.
-                    if (computeWorldVertices.length > 0 && computeWorldVertices.length < 7) {
-                        invokeLegacy();
-                    } else {
-                        invokeSpine43();
-                    }
-                } catch (_) {
-                    try {
-                        vertices.fill(0);
-                        if (computeWorldVertices.length > 0 && computeWorldVertices.length < 7) {
-                            invokeSpine43();
-                        } else {
-                            invokeLegacy();
-                        }
-                    } catch (_) {
-                        continue;
-                    }
-                }
-                let minX = Infinity;
-                let minY = Infinity;
-                let maxX = -Infinity;
-                let maxY = -Infinity;
-                for (let index = 0; index < count; index += 2) {
-                    const x = Number(vertices[index]);
-                    const y = Number(vertices[index + 1]);
-                    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
-                }
-                if (!Number.isFinite(minX) || !Number.isFinite(minY)
-                    || !Number.isFinite(maxX) || !Number.isFinite(maxY)
-                    || maxX <= minX || maxY <= minY) continue;
-                return {
-                    minX,
-                    minY,
-                    maxX,
-                    maxY,
-                    width: maxX - minX,
-                    height: maxY - minY,
-                    centerX: (minX + maxX) / 2,
-                    centerY: (minY + maxY) / 2,
-                };
-            }
-            return null;
-        }
 
         _readDrawableBounds() {
             if (!this.skeleton || typeof this.skeleton.getBounds !== 'function') return null;
@@ -1385,46 +1039,12 @@
             };
         }
 
-        _usesEmoteLabCameraUnits() {
-            return this._referenceScale > 1
-                && Array.isArray(this.manifest?.scenes)
-                && this.manifest.scenes.some((scene) => scene?.camera);
-        }
+
 
         _fitSkeleton() {
             if (!this.skeleton || !this.renderer?.camera || typeof this.skeleton.getBounds !== 'function') return;
             const viewportWidth = asPositiveNumber(this.renderer.camera.viewportWidth, 1);
             const viewportHeight = asPositiveNumber(this.renderer.camera.viewportHeight, 1);
-            if (this._usesEmoteLabCameraUnits()) {
-                // EmoteLab's Unity scene is authored in model units while
-                // Spine keeps the authored coordinates at referenceScale
-                // (YUI uses 100). OrthoCamera.zoom is world-units per output
-                // pixel, so the scene's vertical span maps directly here.
-                this.skeleton.x = 0;
-                this.skeleton.y = 0;
-                this.skeleton.scaleX = 1;
-                this.skeleton.scaleY = 1;
-                this.skeleton.rotation = 0;
-                const bounds = this._viewportBounds || this._readDrawableBounds();
-                this._baseFit = {
-                    viewportWidth,
-                    viewportHeight,
-                    x: 0,
-                    y: 0,
-                    scaleX: 1,
-                    scaleY: 1,
-                    rotation: 0,
-                    zoom: 1,
-                    width: bounds?.width || 0,
-                    height: bounds?.height || 0,
-                    boundsSource: this._viewportBounds
-                        ? 'viewport-bounding-box'
-                        : (bounds ? 'skeleton-bounds' : 'none'),
-                    calibrated: true,
-                };
-                this._applySceneCamera();
-                return;
-            }
             if (this._baseFit
                 && this._baseFit.viewportWidth === viewportWidth
                 && this._baseFit.viewportHeight === viewportHeight) {
@@ -1470,101 +1090,25 @@
             this._applySceneCamera();
         }
 
-        _sceneCameraBaseline() {
-            const first = Array.isArray(this.manifest?.scenes) ? this.manifest.scenes[0] : null;
-            const camera = first?.camera || {};
-            return {
-                position: Array.isArray(camera.position) ? camera.position : [0, 0, 0],
-                orthographicSize: Math.max(0.001, finiteOr(camera.orthographicSize, 1)),
-            };
-        }
-
         _applySceneCamera() {
-            if (!this.renderer?.camera || !this._baseFit) return;
-            const scene = this._scene || this.manifest?.scenes?.[0] || null;
-            const camera = scene?.camera || {};
-            const baseline = this._sceneCameraBaseline();
-            const position = Array.isArray(camera.position) ? camera.position : baseline.position;
-            const orthographicSize = Math.max(0.001, finiteOr(camera.orthographicSize, baseline.orthographicSize));
-            if (this._baseFit.calibrated) {
-                const referenceScale = Math.max(0.0001, this._referenceScale);
-                const viewportHeight = asPositiveNumber(this.renderer.camera.viewportHeight, 1);
-                this.renderer.camera.zoom = (orthographicSize * 2 * referenceScale) / viewportHeight;
-                // Keep z on Spine's 2D view plane. Unity's z value selects a
-                // depth slice for these scenes; copying it would move the
-                // model outside the runtime's default near/far range.
-                const editorWorldUnit = this.renderer.camera.zoom * viewportHeight / 1000;
-                const editorTransform = this._sceneTransform || {};
-                const cameraX = finiteOr(position[0], 0) * referenceScale;
-                const cameraY = finiteOr(position[1], 0) * referenceScale;
-                const offsetX = finiteOr(editorTransform.x, 0) * editorWorldUnit;
-                const offsetY = finiteOr(editorTransform.y, 0) * editorWorldUnit;
-                if (this.renderer.camera.position?.set) {
-                    this.renderer.camera.position.set(cameraX - offsetX, cameraY + offsetY, 0);
-                } else if (this.renderer.camera.position) {
-                    this.renderer.camera.position.x = cameraX - offsetX;
-                    this.renderer.camera.position.y = cameraY + offsetY;
-                    this.renderer.camera.position.z = 0;
-                }
-                const rotation = Array.isArray(camera.rotation)
-                    ? camera.rotation
-                    : [0, 0, 0, 1];
-                const direction = rotateVectorByQuaternion([0, 0, -1], rotation);
-                const up = rotateVectorByQuaternion([0, 1, 0], rotation);
-                if (this.renderer.camera.direction?.set) this.renderer.camera.direction.set(...direction);
-                if (this.renderer.camera.up?.set) this.renderer.camera.up.set(...up);
-                const model = scene?.model || {};
-                const transform = this._sceneTransform || {};
-                const scale = Math.max(0.01, finiteOr(transform.scale, 1));
-                this.skeleton.x = 0;
-                this.skeleton.y = 0;
-                this.skeleton.scaleX = (model.mirrored ? -1 : 1) * scale;
-                this.skeleton.scaleY = scale;
-                this.skeleton.visible = model.visible !== false;
-                this._applyEditorRotation();
-                this.renderer.camera.update();
-                return;
-            }
-            const ratio = orthographicSize / baseline.orthographicSize;
-            this.renderer.camera.zoom = this._baseFit.zoom * ratio;
-            const modelUnitsPerSceneUnit = this._baseFit.height / Math.max(0.001, baseline.orthographicSize * 2);
-            const dx = (finiteOr(position[0], baseline.position[0]) - finiteOr(baseline.position[0], 0)) * modelUnitsPerSceneUnit;
-            const dy = (finiteOr(position[1], baseline.position[1]) - finiteOr(baseline.position[1], 0)) * modelUnitsPerSceneUnit;
-            if (this.renderer.camera.position?.set) {
-                this.renderer.camera.position.set(dx, dy, 0);
-            } else if (this.renderer.camera.position) {
-                this.renderer.camera.position.x = dx;
-                this.renderer.camera.position.y = dy;
-                this.renderer.camera.position.z = 0;
-            }
-            // SceneList stores Unity-style camera quaternions.  OrthoCamera
-            // exposes direction/up vectors rather than a rotation property,
-            // so apply the quaternion to its canonical -Z/+Y basis when the
-            // runtime provides mutable vectors.  Identity (the common YUI
-            // case) naturally restores the default orientation.
-            const rotation = Array.isArray(camera.rotation)
-                ? camera.rotation
-                : [0, 0, 0, 1];
-            const direction = rotateVectorByQuaternion([0, 0, -1], rotation);
-            const up = rotateVectorByQuaternion([0, 1, 0], rotation);
-            if (this.renderer.camera.direction?.set) {
-                this.renderer.camera.direction.set(...direction);
-            }
-            if (this.renderer.camera.up?.set) {
-                this.renderer.camera.up.set(...up);
-            }
-            const model = scene?.model || {};
+            if (!this._baseFit || !this.renderer?.camera) return;
+            const fit = this._baseFit;
             const transform = this._sceneTransform || {};
-            const uiUnit = Math.max(0.001, this._baseFit.height / 1000);
-            this.skeleton.x = this._baseFit.x + finiteOr(transform.x, 0) * uiUnit;
-            this.skeleton.y = this._baseFit.y + finiteOr(transform.y, 0) * uiUnit;
             const scale = Math.max(0.01, finiteOr(transform.scale, 1));
-            const mirror = model.mirrored ? -1 : 1;
+            const mirror = this._scene?.model?.mirrored ? -1 : 1;
+            const unit = fit.zoom * this.renderer.camera.viewportHeight / 1000;
+            this.skeleton.x = finiteOr(transform.x, 0) * unit;
+            this.skeleton.y = -finiteOr(transform.y, 0) * unit;
             this.skeleton.scaleX = mirror * scale;
             this.skeleton.scaleY = scale;
-            this.skeleton.visible = model.visible !== false;
+            this.skeleton.visible = this._scene?.model?.visible !== false;
+            this.renderer.camera.zoom = fit.zoom;
+            this.renderer.camera.position?.set?.(-fit.x * mirror * scale, -fit.y * scale, 0);
+            this.renderer.camera.direction?.set?.(0, 0, -1);
+            this.renderer.camera.up?.set?.(0, 1, 0);
             this._applyEditorRotation();
-            this.renderer.camera.update();
+            this.skeleton.updateWorldTransform(this.runtime.Physics?.pose ?? 3);
+            this.renderer.camera.update?.();
         }
 
         setScene(scene, options = {}) {
@@ -1572,6 +1116,140 @@
             this._scene = scene && typeof scene === 'object' ? scene : null;
             if (options.render !== false && this.loaded) this.render();
             return this._scene;
+        }
+
+        boneNames() {
+            return this.skeleton?.bones?.map((bone) => bone.data.name) || [];
+        }
+
+        drawOrderNames() {
+            return this.skeleton?.drawOrder?.appliedPose?.map((slot) => slot.data.name) || [];
+        }
+
+        _drawWithImageLayers(slots, layers, vertexTransform) {
+            const { GLTexture, RegionAttachment, Vector3 } = this.runtime;
+            const { width, height } = this.canvas;
+            const activeImages = new Set(layers.map((layer) => layer.image));
+            for (const [image, layer] of this._layerTextures) {
+                if (activeImages.has(image)) continue;
+                layer.texture.dispose();
+                this._layerTextures.delete(image);
+            }
+            if (!layers.length || !slots?.length) return false;
+
+            const layersBySlot = new Map();
+            for (const { image, aboveSlot, corners } of layers) {
+                let layer = this._layerTextures.get(image);
+                if (!layer) {
+                    const isPowerOfTwo = (value) => (value & (value - 1)) === 0;
+                    const mipmaps = typeof this.gl.texStorage2D === 'function'
+                        || (isPowerOfTwo(image.naturalWidth) && isPowerOfTwo(image.naturalHeight));
+                    const texture = new GLTexture(this.context, image, false, mipmaps);
+                    const uv = [0, 0, 0, 1, 1, 1, 1, 0];
+                    // A temporary region participates in the same Spine batch and draw order as the template.
+                    const attachment = new RegionAttachment('wardrobe-image', {
+                        resolveIndex: () => 0, getUVs: () => uv, regions: [{ texture }], offsets: [[]],
+                    });
+                    const points = Array.from({ length: 4 }, () => new Vector3());
+                    attachment.computeWorldVertices = (_slot, _offsets, output, start, stride) => {
+                        for (const point of points) {
+                            output[start] = point.x;
+                            output[start + 1] = point.y;
+                            start += stride;
+                        }
+                    };
+                    const slot = { bone: { active: true }, data: { blendMode: 0, index: -1 },
+                        appliedPose: { attachment, color: attachment.color, darkColor: null } };
+                    layer = { texture, points, slot };
+                    this._layerTextures.set(image, layer);
+                }
+                for (const [index, [x, y]] of corners.entries()) {
+                    const point = layer.points[index].set(x * width, y * height - 1, 0);
+                    this.renderer.camera.screenToWorld(point, width, height);
+                }
+                const [[left, top], [bottomX, bottomY], , [rightX, rightY]] = corners;
+                const magnified = Math.hypot((rightX - left) * width, (rightY - top) * height) > image.naturalWidth
+                    && Math.hypot((bottomX - left) * width, (bottomY - top) * height) > image.naturalHeight;
+                layer.slot.appliedPose.darkColor = this._paletteTint && magnified
+                    ? { r: image.naturalWidth, g: image.naturalHeight, b: -1 } : null;
+                const additions = layersBySlot.get(aboveSlot) || [];
+                additions.push(layer.slot);
+                layersBySlot.set(aboveSlot, additions);
+            }
+            const drawOrder = this.skeleton.drawOrder;
+            drawOrder.appliedPose = slots.flatMap((slot) => [slot, ...(layersBySlot.get(slot.data.name) || [])]);
+            try {
+                this.renderer.drawSkeleton(this.skeleton, -1, -1, (vertices, length, stride) => {
+                    vertexTransform?.(vertices, length, stride);
+                    if (!this._paletteTint) return;
+                    // A negative dark blue marks the accessory vertices; the shader uses RGB for other Spine dark colors.
+                    for (let dark = 8; dark < length; dark += stride) {
+                        if (vertices[dark + 2] !== -1 || vertices[dark + 3] !== 1) continue;
+                        vertices[dark + 3] = 3;
+                    }
+                });
+            } finally {
+                drawOrder.appliedPose = slots;
+            }
+            return true;
+        }
+
+        boneCanvasTransform(name, referenceName = name) {
+            const bone = this.skeleton?.findBone(name);
+            const pose = bone?.appliedPose;
+            const camera = this.renderer?.camera;
+            const Vector3 = this.runtime?.Vector3;
+            if (!bone?.active || !pose || !camera?.worldToScreen || !Vector3) return null;
+            const { width, height } = this.canvas;
+            const project = (x, y) => camera.worldToScreen(new Vector3(x, y, 0), width, height);
+            const origin = project(pose.worldX, pose.worldY);
+            // Keep the same fraction along the limb when a different bone takes over.
+            const referenceLength = referenceName === name ? 0 : this.skeleton.findBone(referenceName)?.data.length;
+            const along = referenceLength > 0 && bone.data.length > 0 ? bone.data.length / referenceLength : 1;
+            const x = project(pose.worldX + pose.a * along, pose.worldY + pose.c * along);
+            const y = project(pose.worldX + pose.b, pose.worldY + pose.d);
+            const matrix = [(x.x - origin.x) / width, (origin.y - x.y) / height,
+                (y.x - origin.x) / width, (origin.y - y.y) / height, origin.x / width, 1 - origin.y / height];
+            return matrix.every(Number.isFinite) ? matrix : null;
+        }
+
+        attachmentsAtCanvasPoint(x, y) {
+            const skeleton = this.skeleton;
+            const camera = this.renderer?.camera;
+            const { Vector3, MeshAttachment, RegionAttachment } = this.runtime || {};
+            if (!skeleton || skeleton.visible === false || !camera?.screenToWorld
+                    || !Vector3 || !MeshAttachment || !RegionAttachment) return [];
+            const { width, height } = this.canvas;
+            const point = camera.screenToWorld(new Vector3(x * width, y * height - 1, 0), width, height);
+            const slots = skeleton.drawOrder.appliedPose;
+            const hits = [];
+            for (let index = slots.length - 1; index >= 0; index -= 1) {
+                const slot = slots[index];
+                const pose = slot.appliedPose;
+                const attachment = pose.attachment;
+                if (!slot.bone.active || !attachment || pose.color.a === 0 || attachment.color?.a === 0) continue;
+                let vertices, triangles;
+                if (attachment instanceof MeshAttachment) {
+                    vertices = new Float32Array(attachment.worldVerticesLength);
+                    attachment.computeWorldVertices(skeleton, slot, 0, vertices.length, vertices, 0, 2);
+                    triangles = attachment.triangles;
+                } else if (attachment instanceof RegionAttachment) {
+                    vertices = new Float32Array(8);
+                    attachment.computeWorldVertices(slot, attachment.getOffsets(pose), vertices, 0, 2);
+                    triangles = QUAD_TRIANGLES;
+                } else {
+                    continue;
+                }
+                for (let i = 0; i < triangles.length; i += 3) {
+                    const indices = [triangles[i], triangles[i + 1], triangles[i + 2]];
+                    const weights = triangleWeights(vertices, indices, point.x, point.y);
+                    if (!weights) continue;
+                    const bone = meshBoneAt(attachment, indices, weights, skeleton.bones) || slot.bone;
+                    hits.push({ bone: bone.data.name, slot: slot.data.name });
+                    break;
+                }
+            }
+            return hits;
         }
 
         setTransform(transform = {}, options = {}) {
@@ -1614,20 +1292,26 @@
             if (options.fit !== false && this.options.autoFit !== false) this._fitSkeleton();
             this._applySceneCamera();
             clearColor(this.gl, options.background || this._background || this.options.background || DEFAULT_BACKGROUND);
+            const partial = Number.isFinite(options.startSlot) || Number.isFinite(options.endSlot);
+            const layers = partial ? [] : (this.options.imageLayers?.() || []);
+            const highlightedPart = options.highlight === false ? null : this.options.highlightedPart?.();
+            const palette = this.skeleton.visible !== false ? this._paletteVertexTransform(highlightedPart) : {};
             this.renderer.begin();
-            if (this.skeleton.visible !== false) {
-                // EmoteLab's WeightTransfer attachments are real custom
-                // clothing/accessory artwork (not disposable helpers). They
-                // must remain in the draw list; setupPose() on animation
-                // switches is what prevents a previous scene from leaving
-                // them at a stale/root-offset position.
-                this.renderer.drawSkeleton(
-                    this.skeleton,
-                    Number.isFinite(options.startSlot) ? options.startSlot : -1,
-                    Number.isFinite(options.endSlot) ? options.endSlot : -1,
-                );
+            try {
+                if (this.skeleton.visible !== false
+                    && !this._drawWithImageLayers(this.skeleton.drawOrder?.appliedPose, layers, palette.transform)) {
+
+                    this.renderer.drawSkeleton(
+                        this.skeleton,
+                        Number.isFinite(options.startSlot) ? options.startSlot : -1,
+                        Number.isFinite(options.endSlot) ? options.endSlot : -1,
+                        palette.transform,
+                    );
+                }
+            } finally {
+                palette.reset?.();
+                this.renderer.end();
             }
-            this.renderer.end();
             return Object.freeze({
                 width: viewport.width,
                 height: viewport.height,
@@ -1710,8 +1394,7 @@
                 warnings: Object.freeze([...this.warnings]),
                 animationCount: this.animationNames().length,
                 skinCount: this._characterSkinCount || 0,
-                sliderApplications: this._sliderApplications.length,
-                cameraMode: this._baseFit?.calibrated ? 'emotelab-reference-scale' : 'fit-to-skeleton',
+                cameraMode: 'fit-to-skeleton',
                 referenceScale: this._referenceScale,
                 sceneId: this._scene?.id || null,
                 sceneVisible: this.skeleton?.visible !== false,
@@ -1722,6 +1405,8 @@
         dispose() {
             if (this.disposed) return;
             this.playing = false;
+            for (const { texture } of this._layerTextures.values()) texture.dispose();
+            this._layerTextures.clear();
             try { this.assetManager?.dispose?.(); } catch (_) { /* best effort */ }
             try { this.renderer?.dispose?.(); } catch (_) { /* best effort */ }
             try { this.context?.dispose?.(); } catch (_) { /* best effort */ }
@@ -1738,7 +1423,6 @@
             this._referenceScale = 1;
             this._viewportBounds = null;
             this._scene = null;
-            this._sliderApplications = [];
             this.loaded = false;
             this.disposed = true;
         }

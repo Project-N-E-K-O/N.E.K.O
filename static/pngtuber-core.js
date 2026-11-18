@@ -11,6 +11,7 @@
     };
     const CLEAR_EMOTIONS = new Set(['neutral', 'idle', 'default', 'none', 'clear', '']);
     const DEFAULT_EMOTION_DURATION_MS = 5000;
+    const DEFAULT_CLICK_DURATION_MS = 600;
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
@@ -618,8 +619,8 @@
             }
             // 状态切换后的 900ms 满帧余温：切换过渡（贴图换装/弹跳）以 rAF 满帧渲染
             this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
-            this.drawLayeredState();
             this.restartLayeredAnimationLoop();
+            this.drawLayeredState();
             if ((options.source === 'hotkey' || options.source === 'alt-one-cycle-hotkey')
                 && previousIndex !== nextIndex
                 && this.isLayeredPlusModel()
@@ -1324,6 +1325,7 @@
                 ? Math.max(0, Math.floor(Number(layerState.frame) || 0))
                 : Math.max(0, Math.floor(Number(overrideFrame) || 0));
             const speed = Math.max(0, Number(layerState.animation_speed) || Number(layer.animation_speed) || 0);
+            const fps = speed * REMIX_FRAME_SPEED_MULTIPLIER;
             const canAnimate = this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')
                 && frames > 1
                 && speed > 0
@@ -1331,7 +1333,8 @@
                 && layerState.non_animated_sheet !== true;
             if (overrideFrame === null && canAnimate) {
                 const elapsedSeconds = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
-                frame = Math.floor(elapsedSeconds * speed * REMIX_FRAME_SPEED_MULTIPLIER) % frames;
+                const elapsedFrames = Math.floor(elapsedSeconds * fps);
+                frame = this.layeredTransientSlots?.at(-1)?.kind === 'click' ? elapsedFrames : elapsedFrames % frames;
             }
             frame = Math.min(frames - 1, frame);
             return {
@@ -1346,6 +1349,7 @@
                 hframes,
                 vframes,
                 animated: canAnimate,
+                durationMs: canAnimate ? frames * 1000 / fps : 0,
                 legacyOffsetX: legacyFullSheetX ? (imageWidth - frameWidth) / 2 : 0,
                 legacyOffsetY: legacyFullSheetY ? (imageHeight - frameHeight) / 2 : 0
             };
@@ -2584,12 +2588,26 @@
         }
 
         showClickImage() {
+            const restarting = this.layeredTransientSlots?.at(-1)?.kind === 'click';
             if (this.setLayeredTransientSlot('click')) {
+                if (restarting) {
+                    this.restartLayeredAnimationLoop();
+                    this.drawLayeredState();
+                }
                 this.applyTransform();
                 this.updateLockIconPosition();
-                return;
+                const stateName = this.state || 'idle';
+                let durationMs = 0;
+                for (const layer of this.layeredMetadata.layers || []) {
+                    const image = this.layeredImages.get(layer._imageIndex);
+                    if (!image || !this.shouldRenderLayer(layer, stateName)) continue;
+                    const layerState = this.layerStateForRender(layer, stateName);
+                    durationMs = Math.max(durationMs, this.stateFrameInfo(layer, layerState, image).durationMs);
+                }
+                return durationMs || DEFAULT_CLICK_DURATION_MS;
             }
             this.showTransientImage(this.config.click_image || this.config.talking_image || this.config.idle_image);
+            return null;
         }
 
         restoreStateImage() {
@@ -3610,11 +3628,16 @@
             event.preventDefault();
             event.stopPropagation();
             if (this.clickTimer) clearTimeout(this.clickTimer);
-            this.showClickImage();
+            const layeredDuration = this.showClickImage();
             this.clickTimer = setTimeout(() => {
                 this.clickTimer = null;
-                this.restoreStateImage();
-            }, 600);
+                if (layeredDuration === null) {
+                    this.restoreStateImage();
+                } else if (this.clearLayeredTransientSlot('click')) {
+                    this.applyTransform();
+                    this.updateLockIconPosition();
+                }
+            }, layeredDuration ?? DEFAULT_CLICK_DURATION_MS);
         }
 
         handleWheelZoom(event) {

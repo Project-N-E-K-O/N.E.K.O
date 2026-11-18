@@ -1,8 +1,7 @@
 /*
  * Renderer-neutral template registry.
  *
- * EmoteLab is one provider; future N.E.K.O. templates should implement the
- * same package contract instead of adding another set of raster-only globals.
+ * Package formats are registered separately from their rendering engines.
  * The registry does not load binary assets.  A renderer owns that decision.
  */
 (function (root) {
@@ -25,40 +24,12 @@
         return null;
     }
 
-    function capabilities(packageManifest) {
-        const provider = resolve(packageManifest);
-        return provider && typeof provider.capabilities === 'function'
-            ? provider.capabilities(packageManifest)
-            : {
-                metadata: false,
-                spineRender: false,
-                nativeExport: false,
-                staticPngExport: false,
-                animatedExport: false,
-                sceneOutline: true,
-                sceneText: true,
-                sceneOverlay: 'canvas2d-compatible',
-            };
-    }
-
     root.NekoEmoteTemplateRegistry = Object.freeze({
-        register,
-        resolve,
-        capabilities
+        resolve
     });
 
     register({
-        id: 'emotelab',
-        accept: (manifest) => manifest?.schemaVersion === 1 && manifest?.source?.kind === 'emotelab',
-        capabilities: (manifest) => manifest?.capabilities || {
-            metadata: true,
-            spineRender: false,
-            nativeExport: false,
-            staticPngExport: false,
-            animatedExport: false,
-            sceneOutline: true,
-            sceneText: true,
-            sceneOverlay: 'canvas2d-compatible',
-        }
+        id: 'spine',
+        accept: (manifest) => manifest?.schemaVersion === 2 && manifest?.source?.kind === 'spine',
     });
 }(window));

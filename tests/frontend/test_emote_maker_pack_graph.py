@@ -179,38 +179,6 @@ def test_switching_to_advanced_reveals_the_graph_panel(page: Page, running_serve
     ) or ""), "进阶/基础的选择应跨刷新保留"
 
 
-def test_idle_animates_and_talking_is_forced_to_one_frame(page: Page, running_server: str) -> None:
-    """回归过两次：待机被写成单帧（桌宠整个不动），以及说话被烘成整段
-    （口型交替会不停重载那张 GIF）。现在的语义是 seconds=0 = 演完整段，
-    单帧由装配处对说话位强制 —— 所以验这两条规则本身，而不是某行源码写法。
-    """
-    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
-    page.wait_for_timeout(300)
-    numbers = page.evaluate(
-        """() => {
-            const sheet = window.NekoEmoteSheet;
-            const frames = Array.from({ length: 60 }, (u, i) => ({
-                width: 2, height: 2, delayMs: 20, data: new Uint8ClampedArray(16).fill(i + 1),
-            }));
-            const whole = sheet.sliceFrames(frames, { startAt: 0, seconds: 0, fps: 12 });
-            const still = sheet.sliceFrames(frames, { startAt: 0.5, seconds: 1 / 12, fps: 12 });
-            return { whole: whole.frames.length, still: still.frames.length, skipped: still.skipped };
-        }"""
-    )
-    assert numbers["whole"] == 60, "seconds=0 必须是整段，否则待机就是静图"
-    assert numbers["still"] == 1 and numbers["skipped"] == 6, numbers
-    # 面板上不再有两个地方管同一件事：时长只剩胶片带一个入口
-    assert page.evaluate("() => document.querySelector('#pack-seconds') === null"),         "时长控件该并进表演台的胶片带，不该在面板上留第二个入口"
-    source = page.evaluate(
-        "async () => (await fetch('/static/js/emote_maker.js')).text()")
-    assert "const still = output.stateKey === 'talking_image'" in source, \
-        "说话位的单帧要在装配处强制，别靠秒数特例"
-    # 但只在平铺强制：分层包里说话是去占状态槽，画面全靠那一格的雪碧图自己演，
-    # 定格成一张就等于用户绑的说话动作没演。
-    assert "&& state.packFormat !== 'layered'" in source.split("const still =")[1].split("\n")[0], \
-        "分层包的说话位被当成平铺那样强制单帧了"
-
-
 def test_export_has_a_single_bake_path(page: Page, running_server: str) -> None:
     page.goto(f"{running_server}/emote_maker", wait_until="domcontentloaded")
     """结构保证：导出只认图。曾经存在过的 packAssignments / bakePngtuberStates /

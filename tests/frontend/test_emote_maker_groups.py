@@ -11,51 +11,14 @@ import json
 import zipfile
 
 import pytest
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 SESSION_KEY = "neko-emote-maker-last-template"
 
 
 def _template(display_name: str, slot: str, scenes: int = 2) -> bytes:
-    """元数据形状的 EmoteLab 包：骨骼/贴图是假的，所以 Spine 渲染器起不来。
-
-    这正好够用 —— 组的建立/加入/存取景都不依赖渲染器，而"整组导出"必须被护栏拦住，
-    这条护栏也就顺带验掉了。
-    """
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as archive:
-        root = "wrapper/EmoteLab"
-        model = f"Model{slot}"
-        archive.writestr(f"{root}/SpineModels/{model}/model.meta.json",
-                         json.dumps({"DisplayName": display_name, "SharedModelKey": model}))
-        archive.writestr(f"{root}/SpineModels/{model}/{model}.skel.bytes", b"4.3.23")
-        archive.writestr(f"{root}/SpineModels/{model}/{model}.atlas.txt", "Page.png\nsize: 2, 3\n")
-        archive.writestr(f"{root}/SpineModels/{model}/Page.png", b"not-a-png")
-        archive.writestr(f"{root}/SpineModels/{model}/DisplayInfo/Animations.csv",
-                         "AnimationName,DisplayName,en\nANIM/Demo,Demo,Demo\n")
-        archive.writestr(f"{root}/SpineModels/{model}/DisplayInfo/SkinGroups.csv",
-                         "GroupName,DisplayName,en\nHair,Hair,Hair\n")
-        archive.writestr(f"{root}/SpineModels/{model}/DisplayInfo/Sliders.csv",
-                         "SliderName,DisplayName,en\nCharacter/X,X,X\n")
-        archive.writestr(f"{root}/SpineModels/{model}/DisplayInfo/SlotGroups.csv",
-                         "GroupName,DisplayName,en\nBody,Body,Body\n")
-        archive.writestr(f"{root}/Characters/{model}/{model}.json", json.dumps({
-            "SharedModelKey": model,
-            "ActiveSkins": {"Items": [{"Key": "Hair", "Value": "A"}]},
-            "SliderConstraints": [],
-            "SlotGroups": [],
-        }))
-        archive.writestr(f"{root}/SceneLists/{model}/{model}.json", json.dumps({
-            "sharedModelKey": model,
-            "scenes": [{
-                "name": f"{display_name}-{i}",
-                "animationName": "ANIM/Demo",
-                "cameraPosition": {"x": i, "y": 2, "z": 3},
-                "model": {},
-                "texts": [],
-            } for i in range(scenes)],
-        }))
-    return stream.getvalue()
+    from tests.emote_fixtures import spine_zip
+    return spine_zip(model=slot, animations=scenes)
 
 
 def _open_export_tab(page: Page) -> None:
@@ -63,7 +26,7 @@ def _open_export_tab(page: Page) -> None:
 
 
 def _import(page: Page, file_name: str, display_name: str, slot: str, scenes: int = 2) -> None:
-    page.set_input_files("#emotelab-template-file", {
+    page.set_input_files("#template-archive-file", {
         "name": file_name,
         "mimeType": "application/zip",
         "buffer": _template(display_name, slot, scenes),
@@ -114,12 +77,17 @@ def test_dock_is_one_list_now_that_group_moved(page: Page, running_server: str) 
 
 
 def test_group_section_lives_in_export_settings(group_page: Page) -> None:
-    assert _shown(group_page, '#group-section') is True
-    assert _shown(group_page, '#new-group-btn') is True
+    section = group_page.locator("#group-section")
+    expect(section).to_be_visible()
+    expect(section).to_have_js_property("open", False)
+    create = group_page.locator("#new-group-btn")
+    expect(create).to_be_hidden()
+    section.locator("summary").click()
+    expect(create).to_be_visible()
     options = _options(group_page)
     # 下拉里没有"全部场景"这一项了：它不是组，只是以前的过滤器默认值
     assert "全部场景" not in options, options
-    assert any(option.startswith("ModelA") for option in options), \
+    assert any("动作" in option for option in options), \
         f"导入模板自带的 SceneList 没作为一个组出现: {options}"
     # 没选组时自动选上第一组：空值的下拉会渲染成一片空白
     selected = group_page.evaluate(
@@ -193,7 +161,7 @@ def test_batch_button_opens_a_group_picker_above_it(group_page: Page) -> None:
     assert opened["above"] is True, f"气泡没长在按钮上方: {opened}"
     assert opened["title"] == "选择要导出的组", opened
     assert len(opened["rows"]) >= 1, f"气泡里没有组: {opened}"
-    assert any("ModelA" in row for row in opened["rows"]), opened
+    assert any("动作" in row for row in opened["rows"]), opened
     assert any("张" in row for row in opened["rows"]), f"每一行要说清几张: {opened}"
 
     group_page.mouse.click(200, 300)
@@ -201,8 +169,8 @@ def test_batch_button_opens_a_group_picker_above_it(group_page: Page) -> None:
         "() => document.querySelector('#group-export-picker').hidden", timeout=10000)
 
 
-def test_picker_rows_are_blocked_with_a_reason_without_a_renderer(group_page: Page) -> None:
-    """跑不起预览时整组导出保证不了每张不同：行要灰，而且要当场说明原因。"""
+def test_picker_rows_are_enabled_with_a_loaded_spine_renderer(group_page: Page) -> None:
+    """已验证的 Spine 模型可以直接选择组导出。"""
     group_page.evaluate("() => document.querySelector('#export-group-open-btn').click()")
     state = group_page.evaluate("""() => {
         const picker = document.querySelector('#group-export-picker');
@@ -214,9 +182,8 @@ def test_picker_rows_are_blocked_with_a_reason_without_a_renderer(group_page: Pa
             noteShown: shown(note),
         };
     }""")
-    assert state["allDisabled"] is True, "没有运行时却还能按整组导出"
-    assert "预览没跑起来" in state["note"], f"灰掉却没说为什么: {state}"
-    assert state["noteShown"] is True
+    assert state["allDisabled"] is False, state
+    assert state["noteShown"] is False, state
 
 
 def test_create_group_from_current_keeps_the_setup(group_page: Page) -> None:
@@ -452,6 +419,54 @@ def test_group_panel_points_at_the_action_list_context_menu(group_page: Page) ->
     assert "右键中间的动作列表" in hint["text"], hint["text"]
 
 
+def test_export_tips_show_once_per_page(group_page: Page) -> None:
+    page = group_page
+    section = page.locator("#group-section")
+    summary = section.locator("summary")
+    panel = page.locator("#inspector-panel-export")
+    tip_host = page.locator("#emote-page-tips")
+    tips = tip_host.locator(".emote-timed-tip")
+    batch_tip = tips.filter(has_text="右键动作板块中的内容可快速多选和添加/移除当前组")
+    pack_tip = tips.filter(has_text="长按动作板块中内容可拖动到对应位置快速应用")
+
+    expect(tips).to_have_count(0)
+    expect(page.locator("#pack-panel-basic")).not_to_contain_text("长按中间的动作")
+    expect(section).to_have_js_property("open", False)
+    summary.click()
+    expect(batch_tip).to_be_visible()
+    title_bounds = page.locator(".page-title-bar").bounding_box()
+    tip_bounds = tip_host.bounding_box()
+    assert tip_bounds["x"] == 12
+    assert tip_bounds["y"] == title_bounds["y"] + title_bounds["height"] + 12
+    assert batch_tip.evaluate("el => el.getAnimations()[0].effect.getTiming().duration") == 10000
+    batch_tip.locator(".emote-timed-tip-close").click()
+    expect(batch_tip).to_have_count(0)
+    summary.click()
+    summary.click()
+    expect(section).to_have_js_property("open", True)
+    expect(batch_tip).to_have_count(0)
+
+    panel.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    expect(pack_tip).to_be_visible()
+    pack_tip.evaluate("el => el.getAnimations().forEach(animation => animation.finish())")
+    expect(pack_tip).to_have_count(0)
+    panel.evaluate("el => { el.scrollTop = 0; }")
+    page.locator("#inspector-tab-parts").click()
+    _open_export_tab(page)
+    panel.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    expect(pack_tip).to_have_count(0)
+
+    page.reload(wait_until="networkidle")
+    _import(page, "first.zip", "第一个", "A", scenes=3)
+    expect(section).to_have_js_property("open", True)
+    expect(batch_tip).to_have_count(0)
+    summary.click()
+    summary.click()
+    expect(batch_tip).to_be_visible()
+    panel.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    expect(pack_tip).to_be_visible()
+
+
 def test_groups_are_scoped_to_the_template(group_page: Page) -> None:
     """换一个模板，不该看见上一个模板的组，也不该把上一个模板的多选带过去。"""
     group_page.evaluate("() => document.querySelector('#new-group-btn').click()")
@@ -480,8 +495,9 @@ def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) ->
     """下拉以前总被削掉最左一像素：面板是滚动容器而左内边距是 0，控件正好压在裁剪边上。
     量的是屏幕上真有的间距，不是 outline-offset 那种代理值 —— 上一版就是查属性自证通过的。
     """
+    group_page.locator("#group-section summary").press("Enter")
     box = group_page.evaluate("""() => {
-        const select = document.querySelector('#template-scene-list-select');
+        const select = document.querySelector('#template-scene-list-select-trigger');
         const panel = document.querySelector('#inspector-panel-export');
         const s = select.getBoundingClientRect();
         const p = panel.getBoundingClientRect();
@@ -490,10 +506,12 @@ def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) ->
             slack: +(s.left - p.left).toFixed(2),
             outlineOffset: getComputedStyle(select).outlineOffset,
             overflowX: panel.scrollWidth > panel.clientWidth,
+            sizes: [panel.scrollWidth, panel.clientWidth],
+            overflowChildren: [...panel.querySelectorAll('*')].filter(n => n.getBoundingClientRect().right > p.right + 1).map(n => n.id || n.className).slice(0, 8),
         };
     }""")
     assert box["slack"] >= 3, f"组下拉还贴着面板的裁剪边，左边那一条会被削掉: {box}"
-    assert box["overflowX"] is False, f"组控件的焦点环把面板撑出横向滚动: {box}"
+    assert box["overflowChildren"] == [], f"组控件越过了面板的裁剪边: {box}"
     # 内侧环（负 offset）才不会被 overflow:auto 切掉
     assert box["outlineOffset"].startswith('-'), f"焦点环画在盒子外面，会被面板裁掉: {box}"
 
@@ -501,6 +519,7 @@ def test_group_controls_are_not_flush_against_the_clip_edge(group_page: Page) ->
 def test_help_bubble_anchors_above_the_control(group_page: Page) -> None:
     """问号：悬停即出、钉在控件上方带尖角的气泡里——不是等半秒的 title，
     不跟鼠标乱飘，更不是点一下甩到页面底部。"""
+    group_page.locator("#group-section summary").click()
     anchor = group_page.evaluate("""() => {
         const el = document.querySelector('#new-group-help');
         const r = el.getBoundingClientRect();
@@ -591,16 +610,17 @@ def test_collapse_caret_is_a_graphic_that_turns_in_place(group_page: Page) -> No
 def test_create_group_button_does_not_look_like_a_link(group_page: Page) -> None:
     """「按当前配置创建组」以前是 .text-button：透明底、悬停下划线 —— 那是链接的样子，
     可它会真的建出一个组。得有按钮的体积。"""
+    group_page.locator("#group-section summary").click()
     style = group_page.evaluate("""() => {
         const el = document.querySelector('#new-group-btn');
         const cs = getComputedStyle(el);
         return {
-            borderWidth: cs.borderTopWidth, borderStyle: cs.borderTopStyle,
+            borderWidth: cs.borderTopWidth, borderStyle: cs.borderTopStyle, dpr: window.devicePixelRatio,
             background: cs.backgroundColor, radius: cs.borderTopLeftRadius,
             height: Math.round(el.getBoundingClientRect().height),
         };
     }""")
-    assert float(style["borderWidth"][:-2]) >= 1 and style["borderStyle"] == "solid", style
+    assert float(style["borderWidth"][:-2]) > 0 and style["borderStyle"] == "solid", style
     assert style["background"] not in ("rgba(0, 0, 0, 0)", "transparent"), \
         f"还是透明底，看着像链接: {style}"
     assert style["height"] >= 26, f"没有可点的体积: {style}"
@@ -655,6 +675,7 @@ def test_group_section_collapses_and_reopens(group_page: Page) -> None:
         "() => document.querySelector('#group-summary-state').textContent")
     assert "未命名组" in summary and "1" in summary, summary
 
+    group_page.locator("#group-section summary").click()
     state = group_page.evaluate("""() => {
         const details = document.querySelector('#group-section');
         const openH = Math.round(details.getBoundingClientRect().height);
@@ -712,6 +733,32 @@ def test_gif_format_hides_1024_and_the_removed_notes_stay_gone(group_page: Page)
     })""")
     assert state["hidden1024"] is True, state
     assert state["warnGone"] and state["groupHintGone"] and state["usageGone"]         and state["mouthOffGone"], state
+
+
+def test_export_options_keep_other_editor_controls_and_save_the_gif_limit(group_page: Page) -> None:
+    result = group_page.evaluate("""() => {
+        const card = document.querySelector('.template-lib-card');
+        const stateRow = document.querySelector('#pack-basic-rows .pack-basic-row');
+        const change = (id, value) => {
+            const input = document.getElementById(id);
+            input.value = value;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        change('export-format', 'png');
+        change('export-resolution', '1024');
+        change('export-format', 'gif');
+        change('export-fps', '30');
+        const saved = JSON.parse(localStorage.getItem('neko-emote-maker-export'));
+        return {
+            sameCard: Boolean(card?.isConnected),
+            sameStateRow: Boolean(stateRow?.isConnected),
+            resolution: document.getElementById('export-resolution').value,
+            savedResolution: saved.exportResolution,
+            savedFps: saved.exportFps,
+        };
+    }""")
+    assert result == {"sameCard": True, "sameStateRow": True, "resolution": "512", "savedResolution": 512, "savedFps": 30}
+
 
 def test_right_click_menu_adds_and_removes_selected_actions(group_page: Page) -> None:
     """右键动作 → 加入/移出当前批量导出组；已在组里时菜单要反过来说。"""

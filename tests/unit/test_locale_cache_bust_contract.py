@@ -71,6 +71,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-19-emote-stage-rename",
         "2026-10-19-emote-copy-cleanup",
         "2026-10-18-emote-stage-image-missing",
+        "2026-11-18-emote-maker-main-merge",
+        "2026-11-14-emote-wardrobe-dismissible-padding",
         "2026-10-20-emote-copy-trim",
         "2026-11-15-nekoclaw-browser-custom-tts-merge",
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
@@ -587,7 +589,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "cc0c79742f9957e2e62b3b7908cb0fb7469d53feda7601a6ebb1b44047584aac"
+LOCALE_KEY_SIGNATURE = "17f5e5e71bb27a52a99bc183741b0056b83fcc164a33c4d9f73658dce6c4cd62"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
