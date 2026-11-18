@@ -12,6 +12,7 @@ from pathlib import Path
 import sqlite3
 import threading
 from uuid import uuid4
+import weakref
 
 from filelock import FileLock, Timeout
 
@@ -19,6 +20,26 @@ from filelock import FileLock, Timeout
 DATABASES = ('sources.sqlite3', 'state.sqlite3', 'originals.sqlite3', 'profiles.sqlite3', 'scheduler.sqlite3')
 _registry = {}
 _registry_lock = threading.RLock()
+# Every ChatSyncWriter, including one a newer writer replaced in _registry but a runtime still holds.
+_FORK_RESET_WRITERS = weakref.WeakSet()
+
+
+def _reset_file_locks_after_fork():
+    """Rebuild registered writers' cross-process locks in a fork child (Linux ``multiprocessing`` default).
+
+    Writers constructed before a fork stay in the child's registry. Since filelock 4 an
+    inherited FileLock raises on use, so each writer gets a fresh one. The
+    parent's on-disk lock state is unaffected: a lock it still holds keeps excluding the
+    child through the new descriptor. The child runs only the forking thread, so the
+    set is iterated without the guard. Spawn children (Windows, macOS) re-import
+    this module and never run the hook.
+    """
+    for writer in list(_FORK_RESET_WRITERS):
+        writer._reset_file_lock_after_fork()
+
+
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_reset_file_locks_after_fork)
 
 
 class WriterQuarantined(ValueError):
@@ -51,13 +72,21 @@ class ChatSyncWriter:
         self.path = Path(witness_path).resolve() if witness_path is not None else None
         self._local = threading.local()
         self._mutex = threading.RLock()
-        self._file_lock = FileLock(str(self.path) + '.lock', timeout=10) if self.path else None
+        self._file_lock = self._new_file_lock()
+        _FORK_RESET_WRITERS.add(self)
         self._initializing = False
         self._fresh = False
         self._fault = False
         self._trusted_heads = None
         with _registry_lock:
             _registry[self.directory] = self
+
+    def _new_file_lock(self):
+        return FileLock(str(self.path) + '.lock', timeout=10) if self.path else None
+
+    def _reset_file_lock_after_fork(self):
+        """Give a fork child its own FileLock; filelock 4 rejects instances inherited across fork."""
+        self._file_lock = self._new_file_lock()
 
     @contextmanager
     def locked(self):

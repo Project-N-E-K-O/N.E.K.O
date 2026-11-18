@@ -39,6 +39,7 @@ import stat
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -140,7 +141,9 @@ class _RecentFileLock:
         # deleted directories or colliding when two character folders merge.
         key = hashlib.sha256(os.fsencode(os.path.realpath(path))).hexdigest()
         user = str(os.getuid()) if hasattr(os, 'getuid') else 'user'
-        self._file = FileLock(os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock'), thread_local=False)
+        self._file_path = os.path.join(tempfile.gettempdir(), f'neko-recent-locks-{user}', key + '.lock')
+        self._file = self._new_file_lock()
+        _FORK_RESET_LOCKS.add(self)
         # (thread ident, thread name, monotonic acquire time) of the current owner, for stall reports.
         self._holder: tuple[int, str, float] | None = None
 
@@ -251,7 +254,16 @@ class _RecentFileLock:
     def __exit__(self, *args):
         self.release()
 
+    def _new_file_lock(self):
+        return FileLock(self._file_path, thread_local=False)
 
+    def _reset_file_lock_after_fork(self):
+        """Give a fork child its own FileLock; filelock 4 rejects instances inherited across fork."""
+        self._file = self._new_file_lock()
+
+
+# Every _RecentFileLock, including any a caller still references outside _LOCKS.
+_FORK_RESET_LOCKS: weakref.WeakSet = weakref.WeakSet()
 _LOCKS: dict[str, _RecentFileLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
@@ -262,6 +274,24 @@ _GENERATIONS: dict[str, int] = {}
 _CONTENT_VERSIONS: dict[str, int] = {}
 _CHANGE_LISTENERS: set = set()
 _NEXT_GENERATION = 1
+
+
+def _reset_file_locks_after_fork() -> None:
+    """Rebuild cached cross-process locks in a fork child (Linux ``multiprocessing`` default).
+
+    The launcher may populate this registry (cloudsave import at startup) before it
+    forks the servers. Since filelock 4 an inherited FileLock raises on use, so each
+    cached entry gets a fresh one. The parent's on-disk lock state is unaffected: a
+    lock it still holds keeps excluding the child through the new descriptor. The
+    child runs only the forking thread, so the set is iterated without the guard.
+    Spawn children (Windows, macOS) re-import this module and never run the hook.
+    """
+    for lock in list(_FORK_RESET_LOCKS):
+        lock._reset_file_lock_after_fork()
+
+
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_reset_file_locks_after_fork)
 
 
 def subscribe_recent_changes(callback):
