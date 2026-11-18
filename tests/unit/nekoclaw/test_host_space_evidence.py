@@ -399,9 +399,10 @@ def test_a_path_that_leads_out_of_the_directories_is_not_looked_at(tmp_path, wor
     assert counted == [(workdir / "src" / "app.py").as_posix()]
     assert [why for _path, why in others] == ["outside the working directory"] * 4
     # Nothing is told about a file a task agent would have to ask before it may read: it is not even looked for.
-    assert os.path.normpath(str(workdir / "src" / "app.py")) in looked
+    # (Looked for as it was written, which the file system reads as the same file.)
+    assert os.path.normpath(str(workdir / "src" / "app.py")) in [os.path.normpath(path) for path in looked]
     assert not [path for path in [*looked, *followed] if "secret" in path or "server" in path]
-    assert followed == [os.path.normpath(str(workdir / "src" / "app.py"))]
+    assert [os.path.normpath(path) for path in followed] == [os.path.normpath(str(workdir / "src" / "app.py"))]
 
 
 def test_a_path_whose_links_lead_out_of_the_directory_is_not_looked_for(workdir, monkeypatch):
@@ -3181,28 +3182,30 @@ async def test_a_pending_entry_that_was_filed_again_or_took_effect_meanwhile_is_
     assert _pending(root) == []
 
 
-def test_the_texts_of_an_entry_are_told_apart_by_their_dated_headings():
+def test_the_texts_of_an_entry_are_told_apart_by_the_marks_it_keeps_of_them_in_the_order_they_were_filed():
     from nekoclaw.host.space import _texts_of
 
-    body = (
-        "First text.\n\nStill the first.\n\n## 2027-01-16\n\nSecond text.\n\n## Notes\n\nNot a day: part of the second."
-        "\n\n## 2027-01-17\n\n...\n"
-    )
-
-    # A text that says nothing is none.
-    assert _texts_of(body) == [
-        "First text.\n\nStill the first.",
-        "Second text.\n\n## Notes\n\nNot a day: part of the second.",
-    ]
-    assert _texts_of("") == [] and _texts_of("\n\n## 2027-01-16\n\n") == []
-    # With the marks the entry keeps of its texts, a dated heading sets two texts apart only where one
-    # of those texts ends: a text may begin with such a heading, or have one inside it.
+    first = "First text.\n\nStill the first."
+    second = "Second text.\n\n## Notes\n\nNot a day: part of the second."
+    body = f"{first}\n\n## 2027-01-16\n\n{second}\n"
+    assert _texts_of(body, [_digest(first), _digest(second)]) == [first, second]
+    # A dated heading sets two texts apart only where the text that was filed next ends: a text may
+    # begin with such a heading, or have one inside it.
     first, second = "## 2027-01-10\n\nWhat was found that day.", "Before.\n\n## 2027-01-12\n\nAfter."
     body = f"{first}\n\n## 2027-01-16\n\n{second}\n"
     assert _texts_of(body, [_digest(first), _digest(second)]) == [first, second]
-    assert _texts_of(body) == ["What was found that day.", "Before.", "After."]
-    # A text the user rewrote in an editor has no mark: it is not taken apart, and nothing of it is lost.
-    assert _texts_of(body, [_digest("something else")]) == [body.strip()]
+    # Or begin as another text of the entry reads: that one comes later, so the heading is not the host's.
+    third = "Before."
+    body = f"{second}\n\n## 2027-01-16\n\n{third}\n"
+    assert _texts_of(body, [_digest(second), _digest(third)]) == [second, third]
+    # Not as they were filed, and so not told apart at all: one was rewritten in an editor, one is
+    # missing, they stand in another order, or one mark is of a text that is not there.
+    assert _texts_of(body, [_digest("something else"), _digest(third)]) is None
+    assert _texts_of(body, [_digest(second), _digest("something else")]) is None
+    assert _texts_of(body, [_digest(second)]) is None
+    assert _texts_of(body, [_digest(third), _digest(second)]) is None
+    assert _texts_of(body, [_digest(second), _digest(third), _digest("One more.")]) is None
+    assert _texts_of(body, []) is None and _texts_of("", []) is None
 
 
 async def test_a_pending_entry_with_more_than_one_text_goes_with_its_commission_text_by_text(space, root, workdir, clock):
@@ -3789,3 +3792,366 @@ async def test_a_text_that_begins_with_a_dated_heading_keeps_it_when_it_is_put_i
     assert reply == "added to export.md in project _daily"
     said = (_memory(root) / "export.md").read_text(encoding="utf-8")
     assert guess in said and _pending(root) == []
+
+
+# ---------------------------------------------------------------------------
+# Review round 13
+# ---------------------------------------------------------------------------
+
+
+def _rewritten(path: Path, first: str) -> None:
+    """Have the user put a sentence in front of what a pending entry says, in an editor: its first text has no mark then."""
+    opening, head, said = path.read_text(encoding="utf-8").split("---" + chr(10), 2)
+    path.write_text(f"{opening}---\n{head}---\n\n{first} {said.lstrip()}", encoding="utf-8", newline="\n")
+
+
+def _said(path: Path) -> str:
+    """Return what an entry says, without its front matter."""
+    return path.read_text(encoding="utf-8").split("---" + chr(10), 2)[2].strip()
+
+
+async def _two_guesses(
+    space: TaskAgentSpace, workdir: Path, clock: Clock, first: str, second: str, title: str = "Export"
+) -> None:
+    """File two guesses under one title, a day apart: the second is added to the pending entry of the first."""
+    await space.submit(_commission(workdir), _lesson(title, first))
+    clock.now += 86400
+    await space.submit(_commission(workdir), _lesson(title, second))
+
+
+def _long(word: str) -> str:
+    """A text more than half as long as a text may be."""
+    from utils.tokenize import count_tokens
+
+    text = (f"{word} " * 350).strip() + "."
+    assert 300 < count_tokens(text) < 600
+    return text
+
+
+async def test_the_texts_of_a_pending_entry_are_told_apart_in_the_order_they_were_filed(space, root, workdir, clock):
+    await space.touch_project("Budget app")
+    # The first has a line in it that reads like the day the host puts between two texts, and begins like
+    # the second.
+    first = "Before.\n\n## 1999-01-01\n\nAfter."
+    await _two_guesses(space, workdir, clock, first, "Before.")
+    source = _memory(root) / "export.md"
+    assert [held["texts"] for held in _pending(root)] == [[_digest(first), _digest("Before.")]]
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # Each is filed there as it was filed here: that the words before the line are a text of the entry as
+    # well does not make the line the host's.
+    (held,) = _pending(root, "Budget app")
+    assert held["texts"] == [_digest(first), _digest("Before.")]
+    assert held["content"].startswith(first + "\n\n## ") and held["content"].endswith("\n\nBefore.")
+    assert held["content"].count("## 1999-01-01") == 1 and not source.exists()
+
+
+async def test_a_pending_entry_the_user_rewrote_goes_with_its_commission_as_one_text(space, root, workdir, clock):
+    await space.touch_project("Budget app")
+    await _two_guesses(space, workdir, clock, "It writes a CSV file.", "It needs the output folder.")
+    source = _memory(root) / "export.md"
+    _rewritten(source, "Checked by me:")
+    said = _said(source)
+    assert "\n## " in said
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # The first text has no mark any more: where one ends and the next begins cannot be told, and no line
+    # is taken for the host's that may be the user's. All of it goes as one text, as it stands.
+    (held,) = _pending(root, "Budget app")
+    assert held["content"] == said and held["texts"] == [_digest(said)]
+    assert not source.exists()
+
+
+async def test_a_pending_entry_the_user_rewrote_that_is_too_long_for_one_text_stays_where_it_is(space, root, workdir, clock):
+    await space.touch_project("Budget app")
+    await _two_guesses(space, workdir, clock, _long("alpha"), _long("beta"))
+    source = _memory(root) / "export.md"
+    _rewritten(source, "Checked by me:")
+    before = source.read_text(encoding="utf-8")
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == []
+
+    # Its texts cannot be told apart, and together they are longer than a text may be: filed there the
+    # end would be cut off and lost with this file. It is left where it is, as it is.
+    assert source.read_text(encoding="utf-8") == before and _pending(root, "Budget app") == []
+
+
+async def test_a_pending_entry_whose_texts_are_as_they_were_filed_goes_text_by_text_however_long(space, root, workdir, clock):
+    await space.touch_project("Budget app")
+    first, second = _long("alpha"), _long("beta")
+    await _two_guesses(space, workdir, clock, first, second)
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # Nobody rewrote it: each text goes by itself and is as long as a text may be, though the two are not.
+    (held,) = _pending(root, "Budget app")
+    assert held["texts"] == [_digest(first), _digest(second)]
+    assert held["content"].startswith(first) and held["content"].endswith(second)
+    assert not (_memory(root) / "export.md").exists()
+
+
+async def test_a_pending_entry_with_a_text_too_long_to_file_stays_where_it_is(space, root, workdir, clock):
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir), _lesson("Export", "A guess."))
+    source = _memory(root) / "export.md"
+    # Written out at length in an editor: longer than any one text the host files.
+    _rewritten(source, ("gamma " * 900).strip() + ".")
+    before = source.read_text(encoding="utf-8")
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == []
+
+    # Filed there it would be cut, and the rest lost with the file: it is left where it is, as it is.
+    assert source.read_text(encoding="utf-8") == before and _pending(root, "Budget app") == []
+
+
+async def test_a_pending_entry_the_user_rewrote_is_put_into_an_entry_whole_or_not_at_all(space, root, workdir, clock):
+    await space.submit(_commission(workdir), _lesson("Export", "It writes a CSV file.", "verified"))
+    await _two_guesses(space, workdir, clock, "The columns may be fixed.", "The dates may be local.")
+    waiting = _memory(root) / "export-2.md"
+    _rewritten(waiting, "Checked by me:")
+    said = _said(waiting)
+
+    # Another commission files under that title: what waited goes into the entry, as one text.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Export", "It needs the output folder."))
+
+    assert reply == "added to export.md in project _daily"
+    assert said in (_memory(root) / "export.md").read_text(encoding="utf-8") and not waiting.exists()
+
+    # One that holds more than a text may be is left pending, as it is; the note itself is filed.
+    await space.submit(_commission(workdir, id="c4"), _lesson("Backups", "They run at night.", "verified"))
+    await space.submit(_commission(workdir, id="c4"), _lesson("Backups", "A guess."))
+    long = _memory(root) / "backups-2.md"
+    _rewritten(long, ("gamma " * 900).strip() + ".")
+    kept = long.read_text(encoding="utf-8")
+    reply = await space.submit(_commission(workdir, id="c3"), _lesson("Backups", "They take an hour."))
+    assert reply == "added to backups.md in project _daily"
+    assert long.read_text(encoding="utf-8") == kept and "gamma" not in (_memory(root) / "backups.md").read_text(encoding="utf-8")
+
+
+def _saved_before_it_is_read(space: TaskAgentSpace, monkeypatch: Any, path: Path, change: Any) -> None:
+    """Have the user save a pending entry from an editor after it was listed, and before it is read to be filed elsewhere."""
+    real = space._pending_as_read
+
+    def then_read(*args: Any) -> Any:
+        text = path.read_text(encoding="utf-8")
+        if change(text) != text:
+            path.write_text(change(text), encoding="utf-8", newline="\n")
+        return real(*args)
+
+    monkeypatch.setattr(space, "_pending_as_read", then_read)
+
+
+def _without_marks(text: str) -> str:
+    """An entry as the user has it once they took the line of marks out: theirs, whatever it says of its state."""
+    return "\n".join(line for line in text.split("\n") if not line.startswith("texts: "))
+
+
+async def test_a_pending_entry_goes_with_its_commission_under_the_title_it_has_when_it_is_read(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Old plan", "Export as CSV."))
+    await space.touch_project("Budget app")
+    # The user removed an entry called "Old plan" from that project: a note of that title is not kept there.
+    _removed(root, [{"marks": [_digest("Something else.")], "title": "Old plan", "at": "2027-01-15"}], "Budget app")
+    source = _memory(root) / "old-plan.md"
+    _saved_before_it_is_read(space, monkeypatch, source, lambda text: text.replace("name: Old plan", "name: New plan"))
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # Judged as what it says now, title and text of one reading: kept there under its new title, not
+    # turned down for the one it had and then removed as what the user made of it.
+    assert [(held["title"], held["content"]) for held in _pending(root, "Budget app")] == [("New plan", "Export as CSV.")]
+    assert not source.exists()
+
+
+async def test_a_pending_entry_the_user_took_over_before_it_is_read_does_not_go_with_its_commission(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
+    await space.touch_project("Budget app")
+    source = _memory(root) / "own-guess.md"
+    _saved_before_it_is_read(space, monkeypatch, source, _without_marks)
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == []
+
+    # It is the user's file by now: nothing of it is filed elsewhere, and it is not removed.
+    assert "A guess of c1." in source.read_text(encoding="utf-8")
+    assert not list(_memory(root, "Budget app").glob("*.md"))
+
+
+async def test_a_pending_entry_the_user_took_over_before_it_is_read_is_not_put_into_an_entry(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none."))
+    waiting = _memory(root) / "photo-dates-2.md"
+    _saved_before_it_is_read(space, monkeypatch, waiting, _without_marks)
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Scans have none either."))
+
+    assert reply == "added to photo-dates.md in project _daily"
+    assert "Videos may have none." not in (_memory(root) / "photo-dates.md").read_text(encoding="utf-8")
+    assert "Videos may have none." in waiting.read_text(encoding="utf-8")
+
+
+def test_a_path_that_steps_back_out_of_a_linked_folder_is_looked_for_where_it_leads(tmp_path, workdir):
+    if os.name == "nt":
+        pytest.skip("Windows takes the step back out of the path before it follows the link")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "sub").mkdir(parents=True)
+    try:
+        (workdir / "dir-link").symlink_to(elsewhere / "sub", target_is_directory=True)
+    except OSError:
+        pytest.skip("links cannot be made here")
+    named = "dir-link/../README.md"
+
+    # The working directory has a README.md, and that is not the file the path leads to: through the
+    # link, a step back is the folder above where the link leads.
+    assert evidence_of([named], [str(workdir)]) == ([], [(named, "outside the working directory")])
+    # Where task agents may read out there, it is the file that is there that counts.
+    assert evidence_of([named], [str(workdir)], outside=True) == ([], [(named, "not found")])
+    (elsewhere / "README.md").write_text("# Another\n", encoding="utf-8")
+    counted, _others = evidence_of([named], [str(workdir)], outside=True)
+    assert counted == [_where(elsewhere / "README.md")]
+
+
+async def test_a_text_taken_out_of_a_pending_entry_while_it_was_judged_uses_a_place_when_it_is_added_again(space, root, workdir, monkeypatch):
+    from nekoclaw.host.space import INFERRED, _Known, _Note
+
+    def note(title: str, content: str) -> Any:
+        return _Note(title=title, content=content, kind="lesson", source="c1", known=_Known(confidence=INFERRED, observer="c1"))
+
+    # A guess nobody signed (a summary of an archive leaves such), filed by a commission as it stands:
+    # nothing is put on file, and no place is used.
+    _pending_file(root, "Camera drive", "It is E: here.", [])
+    taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note("Camera drive", "It is E: here.")))
+    assert (taken.how, taken.charged) == ("held", False)
+
+    # Another one, whose text the user takes out at that very moment: it is added again, and what is put
+    # on file uses a place of the commission that put it there.
+    scanner = _pending_file(root, "Scanner", "It is on COM3.", [])
+    _taken_out_after_it_was_seen(space, monkeypatch, scanner, "It is on COM3.")
+    taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note("Scanner", "It is on COM3.")))
+    assert (taken.how, taken.charged) == ("held", True)
+    assert "Something else." in scanner.read_text(encoding="utf-8") and "It is on COM3." in scanner.read_text(encoding="utf-8")
+
+    # Not a second time for one of its own, which used its place when it began to wait.
+    printer = _pending_file(root, "Printer", "It is on LPT1.", ["c1"])
+    _taken_out_after_it_was_seen(space, monkeypatch, printer, "It is on LPT1.")
+    taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note("Printer", "It is on LPT1.")))
+    assert (taken.how, taken.charged) == ("held", False)
+    assert "It is on LPT1." in printer.read_text(encoding="utf-8")
+
+
+async def test_a_look_at_the_files_that_does_not_come_back_does_not_hold_up_tidying(space, root, workdir, monkeypatch):
+    import nekoclaw.host.space as space_module
+
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 0.05)
+    answered, under_way = threading.Event(), threading.Event()
+    looks: list[str] = []
+    real = space_module._gone
+
+    def unanswered(*args: Any) -> Any:
+        # A file on a share that does not answer.
+        looks.append(threading.current_thread().name)
+        under_way.set()
+        answered.wait(60)
+        return real(*args)
+
+    monkeypatch.setattr(space_module, "_gone", unanswered)
+    nothing = {"expired": 0, "restored": 0, "dropped": 0}
+    try:
+        # Nothing is known of the files, so nothing is changed; and whoever tidies up goes on.
+        assert await space.check_evidence() == nothing
+        assert await asyncio.to_thread(under_way.wait, 30)
+        # In a thread of its own, which the process does not wait for when it exits.
+        assert looks == ["nekoclaw-space-evidence"] and space._evidence_look is not None and not space._evidence_look.done()
+        # While that look is out, no other is started.
+        assert await space.check_evidence() == nothing and len(looks) == 1
+        assert "status" not in _head(_memory(root) / "entry-point.md")
+    finally:
+        answered.set()
+    # Once the share answers the look comes back. What it found is not used any more; the next one is.
+    await asyncio.wait_for(space._evidence_look, 30)
+    assert "status" not in _head(_memory(root) / "entry-point.md")
+    monkeypatch.setattr(space_module, "_gone", real)
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 30.0)
+    assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+
+
+async def test_a_look_that_was_given_up_on_does_not_move_on_past_the_entries_it_looked_at(space, root, workdir, monkeypatch):
+    import nekoclaw.host.space as space_module
+
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_ENTRIES_PER_UPKEEP", 1)
+    await _filed_with_a_file(space, workdir)
+    await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E: here.", "verified"))
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    # One entry a look, and the next look goes on after it. The first is "camera-drive", which rests on nothing.
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    answered = threading.Event()
+    real = space_module._gone
+
+    def unanswered(*args: Any) -> Any:
+        answered.wait(60)
+        return real(*args)
+
+    monkeypatch.setattr(space_module, "_gone", unanswered)
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 0.05)
+    try:
+        # The look at "entry-point" is given up on.
+        assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    finally:
+        answered.set()
+    await asyncio.wait_for(space._evidence_look, 30)
+    monkeypatch.setattr(space_module, "_gone", real)
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 30.0)
+
+    # The next look is at that entry again, not at the one after it.
+    assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+
+
+async def test_tidying_goes_on_when_no_thread_can_be_started_to_look_at_the_files(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+
+    def no_thread(work: Any, *, name: str) -> Any:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr("nekoclaw.host.detached.run_detached", no_thread)
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert space._evidence_look is None
+
+
+async def test_a_pending_entry_that_cannot_be_told_to_be_as_it_was_read_stays_where_it_was(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
+    await space.touch_project("Budget app")
+    source = _memory(root) / "own-guess.md"
+    signature = TaskAgentSpace._signature
+    # What the file is cannot be asked of the file system just now, though it can be read.
+    monkeypatch.setattr(
+        TaskAgentSpace, "_signature", staticmethod(lambda path: None if path == source else signature(path))
+    )
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # It went along. Whether it was saved since it was read cannot be told, so it is not removed here.
+    assert [held["content"] for held in _pending(root, "Budget app")] == ["A guess of c1."]
+    assert source.exists()
+
+
+async def test_a_pending_entry_is_put_into_an_entry_as_what_it_says_when_it_is_read(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "observed", ["README.md"]))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none."))
+    waiting = _memory(root) / "photo-dates-2.md"
+    assert _head(_memory(root) / "photo-dates.md")["confidence"] == "observed"
+    # The user checked the guess and says so in its file, as it is about to be put into the entry of its title.
+    _saved_before_it_is_read(
+        space, monkeypatch, waiting, lambda text: text.replace("confidence: inferred", "confidence: verified")
+    )
+
+    await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Scans have none either."))
+
+    # What it says of itself goes along as it was read with its text, not as it was listed before.
+    assert _head(_memory(root) / "photo-dates.md")["confidence"] == "verified" and not waiting.exists()

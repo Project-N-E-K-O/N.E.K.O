@@ -616,11 +616,12 @@ async def test_the_list_is_made_off_the_event_loop(hosts, tmp_path, monkeypatch)
     import threading
 
     root = _repository(tmp_path, {"AGENTS.md": "a"})
-    threads: list[str] = []
+    threads: list[tuple[str, bool]] = []
     real = repo_docs.listing
 
     def watched(workdir: Any, **how: Any) -> str:
-        threads.append(threading.current_thread().name)
+        thread = threading.current_thread()
+        threads.append((thread.name, thread.daemon))
         return real(workdir, **how)
 
     monkeypatch.setattr(repo_docs, "listing", watched)
@@ -630,7 +631,10 @@ async def test_the_list_is_made_off_the_event_loop(hosts, tmp_path, monkeypatch)
     receipt = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
 
-    assert threads and threading.current_thread().name not in threads
+    # In a thread of its own, which the host does not wait for when it exits: a look that never comes
+    # back (a share that does not answer) neither keeps the process alive nor takes a thread the rest of
+    # the host works in.
+    assert threads == [("nekoclaw-repo-documents", True)]
 
 
 async def test_a_folder_the_host_made_for_a_commission_is_in_no_repository(hosts, tmp_path):
@@ -804,13 +808,71 @@ async def test_a_look_for_the_list_that_does_not_come_back_does_not_keep_a_task_
 
         # It started without the list, and was not kept waiting for it.
         assert done.status == "done" and "Files written for agents" not in _opening(llm)
-        assert len(looks) == 1 and host.task_agents._document_scans == 1
+        # The look is under way in its thread, whenever that got to it.
+        await wait_until(lambda: len(looks) == 1, what="the first look being under way")
+        assert host.task_agents._document_scans == 1
         # No more than so many looks are out at a time: the next one after that is not started.
-        assert await listed(str(root)) == "" and len(looks) == 2
-        assert await listed(str(root)) == "" and len(looks) == 2
-        assert host.task_agents._document_scans == 2
+        assert await listed(str(root)) == "" and host.task_agents._document_scans == 2
+        await wait_until(lambda: len(looks) == 2, what="the second look being under way")
+        assert await listed(str(root)) == "" and host.task_agents._document_scans == 2
+        assert len(looks) == 2
     finally:
         answered.set()
-    # Once the folder answers, the looks come back and a new one is made.
+    # Once the folder answers, the looks come back and a new one is made, which is given the time it needs.
     await wait_until(lambda: host.task_agents._document_scans == 0, what="the looks coming back")
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENTS_SCAN_SECONDS", 30.0)
     assert (await listed(str(root))).endswith("- AGENTS.md (1 B)") and host.task_agents._document_scans == 0
+
+
+# ---------------------------------------------------------------------------
+# Review round 13
+# ---------------------------------------------------------------------------
+
+
+async def test_a_task_agent_starts_without_the_list_when_no_thread_can_be_started_to_look_for_it(hosts, tmp_path, monkeypatch):
+    root = _repository(tmp_path, {"AGENTS.md": "a"})
+
+    def no_thread(work: Any, *, name: str) -> Any:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr("nekoclaw.host.detached.run_detached", no_thread)
+    llm = ScriptedLLM([_report()])
+    host = _host(hosts, tmp_path, llm)
+    await host.space.touch_project("Budget app", workdir=str(root))
+
+    receipt = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    # The commission is not failed for it, and no look is counted as under way.
+    assert done.status == "done" and "Files written for agents" not in _opening(llm)
+    assert host.task_agents._document_scans == 0
+
+
+async def test_a_commission_that_goes_on_where_it_was_opened_is_not_kept_waiting_for_the_list(hosts, tmp_path, monkeypatch):
+    root = _repository(tmp_path, {"AGENTS.md": "a"})
+    looks: list[str] = []
+    real = repo_docs.listing
+
+    def counted(workdir: Any, **how: Any) -> str:
+        looks.append(str(workdir))
+        return real(workdir, **how)
+
+    monkeypatch.setattr(repo_docs, "listing", counted)
+    blocked = [call("report", {"status": "blocked", "summary": "need the password"}), finish("tool_calls")]
+    llm = ScriptedLLM([blocked, _report()])
+    host = _host(hosts, tmp_path, llm)
+    await host.space.touch_project("Budget app", workdir=str(root))
+    receipt = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "blocked")
+    await wait_until(lambda: receipt.commission_id not in host.task_agents.running, what="the session being released")
+    await host.task_agents.settle()
+    assert len(looks) == 1
+
+    assert await host.tell(receipt.commission_id, "the password is in the vault")
+    await wait_status(host, receipt.commission_id, "done")
+
+    # What the commission is was said when it was opened, with the list. Taken up again in the session
+    # that holds that, it is not said a second time: the list would go nowhere, and is not looked for.
+    assert len(looks) == 1
+    assert str(llm.requests[-1]).count("Files written for agents") == 1
+    assert llm.requests[-1][-1]["content"] == "the password is in the vault"

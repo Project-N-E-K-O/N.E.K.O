@@ -285,6 +285,13 @@ REPO_DOCUMENTS_SCANS_AT_ONCE = 4
 goes on in its thread until the folder answers; with so many out, a task
 agent starts without the list at once instead of taking another thread."""
 
+SPACE_EVIDENCE_LOOK_SECONDS = 30.0
+"""How long tidying waits for the look at the files the entries rest on. It
+reads a few hundred small files and asks whether some others exist, which
+takes well under a second on a disk; on a share that does not answer it
+never ends. Past this, nothing is known of those files and no entry is
+changed this time, and the rest of the tidying goes on."""
+
 REPO_DOCUMENT_PATH_MAX_TOKENS = 60
 """Cap on one path of that list as it is written out. A file may be called
 anything, and what it is called goes into a task agent's instructions. A

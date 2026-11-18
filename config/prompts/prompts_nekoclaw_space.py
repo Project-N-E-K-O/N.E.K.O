@@ -70,7 +70,9 @@ SPACE_WRITE_REFUSED = (
 # in. Rendered with str.format: count.
 SPACE_LESSONS_CAP_REACHED = (
     "not kept: this commission has added {count} notes already, or is adding them, which is the "
-    "most one commission may add. Put what matters into your report instead."
+    "most one commission may add. Put what matters into your report instead. (A pending note this "
+    "commission filed can still be confirmed: file it again as verified, with the same title and "
+    "the same text.)"
 )
 
 # What a task agent is told about a note that does not take effect yet: it is

@@ -3834,7 +3834,8 @@ async def test_a_commission_adds_so_many_notes_and_no_more(root, clock):
     assert replies[3] == "kept in the space of every project as third.md"
     refused = (
         "not kept: this commission has added 3 notes already, or is adding them, which is the most one commission may add. "
-        "Put what matters into your report instead."
+        "Put what matters into your report instead. (A pending note this commission filed can still be "
+        "confirmed: file it again as verified, with the same title and the same text.)"
     )
     assert replies[4] == replies[5] == refused
     assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["first", "second"]

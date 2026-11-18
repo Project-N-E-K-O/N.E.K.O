@@ -873,15 +873,18 @@ class TaskAgentManager:
         on a network share that does not answer would keep the commission
         from starting, at work by its status and with nothing done. Past
         that the task agent starts without the list. The look itself
-        cannot be stopped and holds its thread until the folder answers,
-        so no more than ``REPO_DOCUMENTS_SCANS_AT_ONCE`` are under way:
-        with that many out, the next task agent starts without the list
-        at once.
+        cannot be stopped. It is made in a thread of its own
+        (``run_detached``), which the host does not wait for when it
+        exits and which is none of the threads its other file work is
+        done in; and no more than ``REPO_DOCUMENTS_SCANS_AT_ONCE`` are
+        under way: with that many out, the next task agent starts
+        without the list at once.
         """
         from pathlib import Path
 
         from config.nekoclaw_settings import REPO_DOCUMENTS_SCAN_SECONDS, REPO_DOCUMENTS_SCANS_AT_ONCE
         from nekoclaw.host import repo_docs
+        from nekoclaw.host.detached import run_detached
         from nekoclaw.runtime.permissions import is_inside
 
         def look() -> str:
@@ -910,7 +913,13 @@ class TaskAgentManager:
                 )
 
         self._document_scans += 1
-        scan = asyncio.get_running_loop().run_in_executor(None, look)
+        try:
+            scan = run_detached(look, name="nekoclaw-repo-documents")
+        except RuntimeError:
+            # No thread could be started for it: nothing is under way.
+            self._document_scans -= 1
+            logger.warning("no thread could be started to list the files a repository keeps for agents")
+            return ""
         scan.add_done_callback(back)
         try:
             # Shielded: the look goes on in its thread whoever stops waiting
@@ -1153,18 +1162,7 @@ class TaskAgentManager:
             # commission, for one that has none there (never begun, removed
             # since, or in the other runtime), and for the first of these
             # when the session was at another commission since.
-            # With each of them, what the repository it works in keeps for
-            # agents: looked for once, where the session works.
-            documents = await self._repository_documents(workdir, session_path)
-
-            async def worded(*, cleared: bool, back: bool = False) -> str:
-                return await self._opening(commission, cleared=cleared, back=back, documents=documents)
-
-            onward = await worded(cleared=False)
-            anew = await worded(cleared=True) if commission.continues else onward
-            back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
-
-            def first_message(runtime_name: str) -> tuple[str, bool]:
+            def opens_in(runtime_name: str) -> bool:
                 # The commission is opened when it starts, and again when it
                 # is taken up where its opening message is not: it never
                 # reached the session (the start failed before the session
@@ -1176,8 +1174,26 @@ class TaskAgentManager:
                 # keeps this message, not the other one's, through a summary.
                 # Otherwise it goes on from what the session holds, with
                 # what it is told now.
+                return prompt is None or not opened or begun_in != runtime_name or not at_it
+
+            # With each of them, what the repository it works in keeps for
+            # agents: looked for once, where the session works. Not looked
+            # for when none of them will be said, which is known here for
+            # the built-in runtime only: dsh may yet not take the session
+            # up, and the commission is opened after all.
+            unsaid = runtime_name == RUNTIME_BUILTIN and not opens_in(RUNTIME_BUILTIN)
+            documents = "" if unsaid else await self._repository_documents(workdir, session_path)
+
+            async def worded(*, cleared: bool, back: bool = False) -> str:
+                return await self._opening(commission, cleared=cleared, back=back, documents=documents)
+
+            onward = await worded(cleared=False)
+            anew = await worded(cleared=True) if commission.continues else onward
+            back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
+
+            def first_message(runtime_name: str) -> tuple[str, bool]:
                 here = begun_in == runtime_name
-                opens = prompt is None or not opened or not here or not at_it
+                opens = opens_in(runtime_name)
                 # Which runtime it is decides the wording, as it decides
                 # whether it is said: a commission that follows another up
                 # in a session that began in dsh and is taken by the

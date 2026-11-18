@@ -679,7 +679,10 @@ def evidence_of(
         # Where it leads, when that is out of a base.
         beyond: list[str] = []
         for root, real_root in roots:
-            candidate = os.path.normpath(os.path.join(root, named))
+            # As it is written: where a directory in it is a link, a step
+            # back from there leads somewhere else than taking the two
+            # names out of the path would.
+            candidate = os.path.join(root, named)
             if not _lexically_inside(candidate, root) and not _lexically_inside(candidate, real_root):
                 beyond.append(candidate)
                 continue
@@ -697,7 +700,7 @@ def evidence_of(
         if found is None and outside:
             # The user lets task agents read out there unasked.
             if not roots and os.path.isabs(named):
-                beyond.append(os.path.normpath(named))
+                beyond.append(named)
             for candidate in beyond:
                 try:
                     if os.path.isfile(candidate):
@@ -845,29 +848,39 @@ def _outside_of(paths: Iterable[str], bases: Iterable[str]) -> list[str]:
 _ADDITION = re.compile(r"## \d{4}-\d{2}-\d{2}")
 
 
-def _texts_of(body: str, marks: Iterable[str] = ()) -> list[str]:
-    """Return the texts an entry was given, one after another, as its dated headings set them apart.
+def _texts_of(body: str, marks: Iterable[str]) -> list[str] | None:
+    """Return the texts an entry was given, one after another. None when it does not say them as they were filed.
 
     For an entry the host made whose texts are filed somewhere else one
-    by one. ``marks`` are the marks it keeps of the texts it was given
-    (``texts`` in its front matter). A dated heading is one the host
-    put there when what stands before it is such a text; a text may
-    begin with a heading like that, or have one inside it, and then the
-    line is part of what it says and stays in it. With no marks every
-    dated heading sets two texts apart. A part that says nothing (marks
-    of a sentence alone) is none.
+    by one. ``marks`` are the marks it keeps of the texts it was given,
+    in the order they were filed (``texts`` in its front matter). The
+    host puts a dated heading between two texts. Which heading is the
+    host's is told by what stands before it: since the last one, that
+    must be the very text that was filed next. A text may begin with a
+    heading like that, have one inside it, or begin like another text
+    of the entry; the line is part of what it says then, and stays.
+
+    None when the texts do not come out so, each with its mark and in
+    that order: the user rewrote something in an editor, and where one
+    text ends and the next begins cannot be told any more.
     """
-    known = set(marks)
+    expected = list(marks)
     texts: list[str] = []
     lines: list[str] = []
+
+    def next_text() -> bool:
+        return len(texts) < len(expected) and _digest("\n".join(lines)) == expected[len(texts)]
+
     for line in body.split("\n"):
-        if _ADDITION.fullmatch(line.strip()) and (not known or _digest("\n".join(lines)) in known):
-            texts.append("\n".join(lines))
+        if _ADDITION.fullmatch(line.strip()) and next_text():
+            texts.append("\n".join(lines).strip())
             lines = []
         else:
             lines.append(line)
-    texts.append("\n".join(lines))
-    return [text.strip() for text in texts if _normal(text)]
+    if not next_text():
+        return None
+    texts.append("\n".join(lines).strip())
+    return texts if len(texts) == len(expected) else None
 
 
 def _notes_of(text: str) -> dict[str, Any]:
@@ -1323,6 +1336,9 @@ class TaskAgentSpace:
         # How far the last look at what the entries rest on got, among
         # all their files; the next one goes on from there.
         self._evidence_looked_until = 0
+        # The look that is under way, or was given up on and has not come
+        # back (``check_evidence``).
+        self._evidence_look: asyncio.Future[Any] | None = None
 
     # -- plumbing ---------------------------------------------------------
 
@@ -2012,6 +2028,54 @@ class TaskAgentSpace:
         except OSError:
             logger.warning("a pending entry that is not kept any longer could not be removed", exc_info=True)
 
+    @staticmethod
+    def _whole_texts(document: _Document) -> list[str] | None:
+        """Return what a pending entry says as texts that can be filed elsewhere whole. None when it cannot be.
+
+        The texts it was given, one by one, where they can still be told
+        apart (``_texts_of``). Where they cannot (the user rewrote it in
+        an editor), all it says as one text: nothing is taken for a
+        heading of the host's that may be the user's own line. A text is
+        no longer than ``SPACE_ENTRY_CONTENT_MAX_TOKENS``; a longer one
+        would be cut off where it is filed, and the rest lost with the
+        file it came from. Then there is no way to file it whole.
+        """
+        from config.nekoclaw_settings import SPACE_ENTRY_CONTENT_MAX_TOKENS
+
+        def whole(text: str) -> bool:
+            return _cut(redact(text), SPACE_ENTRY_CONTENT_MAX_TOKENS) == _cut(redact(text), 1000 * SPACE_ENTRY_CONTENT_MAX_TOKENS)
+
+        texts = _texts_of(document.body, _listed(document, "texts"))
+        if texts is None:
+            said = document.body.strip()
+            texts = [said] if _normal(said) else []
+        return texts if all(whole(text) for text in texts) else None
+
+    def _pending_as_read(
+        self, path: Path, project: str | None
+    ) -> tuple[tuple[int, int] | None, _Document, Entry] | None:
+        """Read a pending entry that is to be filed elsewhere: what the file was, what it says, and what it is by that.
+
+        All three from this one reading. What was known of the entry
+        before (its title, who has seen it) was read earlier, and the
+        user may have saved it from an editor since: judged by a title
+        it no longer has, it could be turned down for that title and
+        removed as what it is now. None when it is not there, or says
+        by now that it is no pending entry.
+        """
+        before = self._signature(path)
+        text = self._read_text(path)
+        if text is None:
+            return None
+        document = _parse_document(text)
+        if _status_of(document) != ENTRY_PENDING:
+            return None
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            modified = self._clock()
+        return before, document, self._entry_of(document, path.stem, project, modified, with_content=False)
+
     def _discard_as_read(self, path: Path, before: tuple[int, int] | None) -> bool:
         """Remove a pending entry whose texts were taken somewhere else, unless it was saved since they were read.
 
@@ -2019,9 +2083,11 @@ class TaskAgentSpace:
         saved meanwhile is not in what was taken along, and would be gone
         with the file: so the file stays, a pending entry that says what
         they made it say. ``before`` is what the file was when it was
-        read (``_signature``). Returns whether it was removed.
+        read (``_signature``), None when that could not be asked of the
+        file system: then it cannot be told to be as it was read, and
+        stays as well. Returns whether it was removed.
         """
-        if self._signature(path) != before:
+        if before is None or self._signature(path) != before:
             logger.warning("a pending entry was saved while its texts were filed elsewhere; it is left where it is")
             return False
         self._discard(path)
@@ -2152,12 +2218,15 @@ class TaskAgentSpace:
         it does when the user saved it while its texts were added (in an
         editor, which no lock of the space holds off): what was read of
         it is in the other entry, and what they saved is still pending.
+        And one that holds a text longer than a text may be (written so
+        in an editor) is not put into the other entry at all: cut to
+        fit, the end of it would be lost with the file.
         """
         path = self._paths().memory_dir(project) / f"{pending.id}.md"
-        before = self._signature(path)
-        text = self._read_text(path)
-        if text is None:
+        read = self._pending_as_read(path, project)
+        if read is None:
             return into, False, None
+        before, said, pending = read
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
         carried = _Known(
@@ -2171,8 +2240,11 @@ class TaskAgentSpace:
         target: Entry = into
         added = False
         unlisted: OSError | None = None
-        said = _parse_document(text)
-        for part in _texts_of(said.body, _listed(said, "texts")):
+        parts = self._whole_texts(said)
+        if parts is None:
+            logger.warning("a pending entry holds a text longer than a text may be; it is not put into another entry")
+            return into, False, None
+        for part in parts:
             try:
                 target, how = self._file_entry(
                     project,
@@ -2315,7 +2387,7 @@ class TaskAgentSpace:
             # Raises OSError when the file it would wait in cannot be
             # written: there is nowhere for it to wait then, and it is
             # told so.
-            entry, _how = self._file_entry(
+            entry, how = self._file_entry(
                 project,
                 title=title,
                 content=content,
@@ -2333,7 +2405,13 @@ class TaskAgentSpace:
             # go, never the one just filed. One that was brought along was
             # filed some time ago, and goes like any other.
             self._crowd_out(directory, project, None if note.waited else entry.id)
-            return _Taken(entry, _HELD, confidence=known.confidence, charged=own is None)
+            # A text that waited when it was looked at, and was taken out
+            # of its file before this was written (the user, in an
+            # editor), was added again: that uses a place like any text
+            # put on file, unless the commission used one for it before.
+            return _Taken(
+                entry, _HELD, confidence=known.confidence, charged=own is None or (how == _ADDED and not paid)
+            )
         charged = not paid and not there
         if charged and not may_use_place:
             raise _NoPlace("the commission has no place left for a note that would be kept")
@@ -2696,8 +2774,10 @@ class TaskAgentSpace:
 
         Returns the entry, None for one that waits, and whether it is a
         new file. For one that waits, the name of the pending entry it is
-        in is added to ``waits`` when a list is given: whoever made
-        several can tell at the end which of them still wait. Raises
+        in is added to ``waits`` when a list is given. It waited when
+        this was filed: a later filing may have had it take effect, and
+        whoever made several tells which still wait by the entries that
+        were given back since. Raises
         ``SpaceError`` for one that cannot be kept, among
         them one the user removed (``NoteRemoved``); an entry whose index
         could not be given a line is returned like any other, as by
@@ -2944,17 +3024,22 @@ class TaskAgentSpace:
         no more wait there than may. One that cannot be kept there just
         now stays where it was, and so does one the user saved while it
         was taken along (what was read of it is there; what they saved
-        is here). Returns the ids of the entries in effect there that it
-        went into.
+        is here), and one that holds a text longer than a text may be
+        (written so in an editor: filed there it would be cut, and the
+        end of it lost with this file). Returns the ids of the entries
+        in effect there that it went into.
         """
-        before = self._signature(path)
-        text = self._read_text(path)
-        if text is None:
+        read = self._pending_as_read(path, entry.project)
+        if read is None:
             return []
+        before, said, entry = read
         went: list[str] = []
         seen_by, sources = list(entry.seen_by), list(entry.sources)
-        said = _parse_document(text)
-        for part in _texts_of(said.body, _listed(said, "texts")):
+        parts = self._whole_texts(said)
+        if parts is None:
+            logger.warning("a pending entry holds a text longer than a text may be; it stays where it is")
+            return []
+        for part in parts:
             note = _Note(
                 title=entry.title,
                 content=part,
@@ -3227,14 +3312,25 @@ class TaskAgentSpace:
 
         At most ``SPACE_EVIDENCE_ENTRIES_PER_UPKEEP`` entries are looked at
         in one call; the next call goes on after them.
+
+        The files may be on a share that does not answer, and a look at
+        one of those never comes back. It is made in a thread of its own
+        and waited for no longer than ``SPACE_EVIDENCE_LOOK_SECONDS``;
+        past that nothing is known and nothing is changed, and no other
+        look is started while that one is out.
         """
-        from config.nekoclaw_settings import SPACE_EVIDENCE_ENTRIES_PER_UPKEEP, SPACE_HELD_KEPT_SECONDS
+        from config.nekoclaw_settings import (
+            SPACE_EVIDENCE_ENTRIES_PER_UPKEEP,
+            SPACE_EVIDENCE_LOOK_SECONDS,
+            SPACE_HELD_KEPT_SECONDS,
+        )
+        from nekoclaw.host.detached import run_detached
 
         allowed = await self._outside_allowed()
         # A pending entry last filed before this day has waited long enough.
         oldest = _date(self._clock() - SPACE_HELD_KEPT_SECONDS)
 
-        def look() -> tuple[list[tuple[str | None, str, bool | None]], list[tuple[str | None, str]]]:
+        def look() -> tuple[list[tuple[str | None, str, bool | None]], list[tuple[str | None, str]], int | None]:
             paths = self._paths()
             scopes: list[str | None] = [None, *(project.name for project in self._active_projects())]
             files: list[tuple[str | None, Path]] = []
@@ -3248,7 +3344,7 @@ class TaskAgentSpace:
                 except (OSError, ValueError):
                     continue
             if not files:
-                return [], []
+                return [], [], None
             start = self._evidence_looked_until % len(files)
             # What is to become of an entry: True to expire, False to be in
             # effect again, None for its line alone to go.
@@ -3291,11 +3387,31 @@ class TaskAgentSpace:
                     # it says stays. But it says it expired, and an entry
                     # that expired is handed to no task agent.
                     due.append((scope, path.stem, None))
-            self._evidence_looked_until = (start + taken) % len(files)
-            return due, old
+            # How far it got: the next look goes on from there, once
+            # what this one found was used.
+            return due, old, (start + taken) % len(files)
 
-        due, old = await self._read(look)
         outcome = {"expired": 0, "restored": 0, "dropped": 0}
+        if self._evidence_look is not None and not self._evidence_look.done():
+            logger.warning("the last look at the files the entries rest on has not come back; none is started")
+            return outcome
+        try:
+            looking = run_detached(look, name="nekoclaw-space-evidence")
+        except RuntimeError:
+            logger.warning("no thread could be started to look at the files the entries rest on")
+            return outcome
+        self._evidence_look = looking
+        # Looked at here when nobody waits for it any more.
+        looking.add_done_callback(lambda done: done.cancelled() or done.exception())
+        try:
+            due, old, until = await asyncio.wait_for(asyncio.shield(looking), SPACE_EVIDENCE_LOOK_SECONDS)
+        except asyncio.TimeoutError:
+            # What it finds when it does come back is not used: the same
+            # entries are looked at again the next time.
+            logger.warning("looking at the files the entries rest on took too long; nothing is changed this time")
+            return outcome
+        if until is not None:
+            self._evidence_looked_until = until
         for scope, entry_id, expire in due:
             try:
                 if expire is None:
