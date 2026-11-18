@@ -849,8 +849,9 @@ class _StreamingMixin:
         #    appends between staging and this read (the user hasn't been appended
         #    yet), so a length change means an intervening AI turn (Codex P2); or
         #  - revoked: the screen consent it was staged under no longer holds.
-        #    Checked again after the last await before message assembly:
-        #    clearing the slot does not reach the copy this turn already holds.
+        #    Checked again before each attempt / reroll of this turn
+        #    (``_withhold_revoked_proactive_image``): clearing the slot does not
+        #    reach the copy this turn already holds.
         # A few lightweight callers/tests intentionally construct the client via
         # ``__new__`` and wire only the fields needed for one streaming turn.
         # Treat an absent staging slot exactly like an empty slot so the optional
@@ -867,11 +868,12 @@ class _StreamingMixin:
                 # Unreadable consent must not let the screenshot through.
                 return True
 
-        def _drop_revoked_proactive_image() -> None:
-            logger.info("Proactive screenshot dropped: screen consent revoked")
-            # Leave a screenshot staged by a newer round alone.
-            if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
-                self.set_proactive_screenshot(None)
+        # The screenshot's bytes as attached to this turn's message (the fit
+        # may re-encode it); None when it is not part of the message.
+        _proactive_attached_b64 = None
+        # Content parts of this turn's multimodal message, shared with the
+        # history entry (``content`` itself is reused for stream chunks below).
+        _user_message_parts = None
 
         if proactive_image:
             _expired = (
@@ -1010,17 +1012,24 @@ class _StreamingMixin:
                     if _queue is not None:
                         _queue[0:0] = plugin_images
 
-            async def _fit_ordered_images():
-                try:
-                    return await fit_images_to_turn_budget(
-                        _ordered_images,
-                        TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
-                    )
-                except BaseException:
-                    _restore_consumed_queues()
-                    raise
-
-            _attached_images, _budget_notice = await _fit_ordered_images()
+            try:
+                _attached_images, _budget_notice = await fit_images_to_turn_budget(
+                    _ordered_images,
+                    TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
+                )
+            except BaseException:
+                _restore_consumed_queues()
+                raise
+            # The screenshot leads the batch and the fit keeps order: sampling
+            # keeps the head, only the final trim drops it (oldest first). So it
+            # was attached exactly when nothing was trimmed, as the first image,
+            # possibly re-encoded.
+            if (
+                proactive_image
+                and _attached_images
+                and not (_budget_notice or {}).get("dropped")
+            ):
+                _proactive_attached_b64 = _attached_images[0]
             # Frame-bus labels correspond by index and remain valid only with unchanged counts: rung 0
             # normalization and recompression map images one-to-one; sampling/dropping change counts,
             # and outputs do not reveal their original indices. Fall back to unknown then: labeling
@@ -1070,22 +1079,6 @@ class _StreamingMixin:
                             "could not report the image trim to the user: %s",
                             _notice_error,
                         )
-            # Last consent check: no await from here to the request being built.
-            # The fit may have re-encoded the screenshot, so fit again without it
-            # rather than look for it in the result. The vision model stays
-            # switched (see above), and a trim notice already sent still counts
-            # the screenshot; both only on this rare race.
-            if proactive_image and _proactive_consent_revoked():
-                _drop_revoked_proactive_image()
-                proactive_image = None
-                _ordered_images = _ordered_images[1:]
-                _ordered_sources = _ordered_sources[1:]
-                _attached_images, _ = await _fit_ordered_images()
-                _attached_sources = (
-                    _ordered_sources
-                    if len(_attached_images) == len(_ordered_images)
-                    else [_FRAME_SOURCE_UNKNOWN] * len(_attached_images)
-                )
             for img_b64 in _attached_images:
                 content.append({
                     "type": "image_url",
@@ -1100,21 +1093,15 @@ class _StreamingMixin:
                 "text": _user_text_with_prefix,
             })
 
-            # Only the proactive screenshot was staged and it was dropped above.
-            user_message = HumanMessage(
-                content=content if _attached_images else _user_text_with_prefix
-            )
+            user_message = HumanMessage(content=content)
+            _user_message_parts = content
             # Report what was ATTACHED, not what was staged. The trim above
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
             _img_count = len(_attached_images)
-            # Directly test membership in the final attached batch. Previously checking whether anything
-            # was dropped approximated this only for dropping; the budget ladder now samples start/middle/end,
-            # which can also omit the queue head. Membership is the accurate test.
-            _proactive_attached = (
-                bool(proactive_image)
-                and proactive_image in _attached_images
-            )
+            # Sampling keeps the head, so only a trim can drop the screenshot; a byte
+            # membership test would miss a re-encoded one (see the fit above).
+            _proactive_attached = _proactive_attached_b64 is not None
             logger.info(
                 f"Sending multi-modal message with {_img_count} image(s)"
                 f"{' (incl. proactive screen)' if _proactive_attached else ''}"
@@ -1127,11 +1114,13 @@ class _StreamingMixin:
             # the entire queue again, which would consume arrivals during the model call (the race this PR fixes).
             # The plugin list was likewise atomically cleared when read above (no await allowed between
             # reading and clearing); do not repeat here.
-            # Clear the one-shot proactive screenshot here too.
-            self._proactive_image_to_inject = None
-            self._proactive_image_staged_at = 0.0
-            self._proactive_image_history_len = 0
-            self._proactive_image_consent_check = None
+            # Clear the one-shot proactive screenshot here too, unless a newer
+            # round staged another one during the awaits above.
+            if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                self._proactive_image_to_inject = None
+                self._proactive_image_staged_at = 0.0
+                self._proactive_image_history_len = 0
+                self._proactive_image_consent_check = None
         else:
             # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
@@ -1166,6 +1155,34 @@ class _StreamingMixin:
             # Store _attached_images: post-fit bytes, not original caller images.
             # Normalization re-encodes almost every turn; bus images must match what the model actually saw.
             _pending_bus_frames = (_attached_images, _attached_sources)
+
+        def _withhold_revoked_proactive_image() -> None:
+            """Take the proactive screenshot out of this turn once consent is gone.
+
+            Runs synchronously right before each attempt / reroll opens its
+            stream, so no await separates the check from that request. The
+            message already sits in history, so the image part is removed from
+            its content in place; the user's own images and the text stay.
+            Tool rounds inside one attempt are not re-checked: the first round
+            already carried the screenshot, and once sent it stays in history
+            like any other image of the conversation.
+            """
+            nonlocal _proactive_attached_b64, _pending_bus_frames
+            if _proactive_attached_b64 is None or not _proactive_consent_revoked():
+                return
+            logger.info("Proactive screenshot withheld: screen consent revoked")
+            # The screenshot is the first image of the message.
+            for index, part in enumerate(_user_message_parts):
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    del _user_message_parts[index]
+                    break
+            if _pending_bus_frames is not None:
+                _bus_images, _bus_sources = _pending_bus_frames
+                _pending_bus_frames = (_bus_images[1:], _bus_sources[1:])
+            _proactive_attached_b64 = None
+            # Leave a screenshot staged by a newer round alone.
+            if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                self.set_proactive_screenshot(None)
 
         # Callback for user input
         transcript_callback = input_transcript_callback or self.on_input_transcript
@@ -1395,6 +1412,7 @@ class _StreamingMixin:
                         # its user frames; ordinary text turns lack turn_id, so it is None there.
                         _focus_overrides["_tool_frames_turn_id"] = turn_id
                         cut_keeps_shown = True
+                        _withhold_revoked_proactive_image()
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history,
                             _tool_image_slots=_turn_tool_image_slots,

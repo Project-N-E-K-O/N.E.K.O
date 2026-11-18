@@ -8,8 +8,9 @@ let a revoked screenshot through:
    so turning consent off and on again before the commit staged a screenshot
    the round took under the revoked consent.
 2. Sending: ``stream_text`` copies the staged screenshot into a local before
-   awaiting the vision-model switch and the image fit. A revocation during
-   those awaits cleared the slot but not the copy.
+   awaiting the vision-model switch, the image fit, the transcript callback
+   and the retry backoff. A revocation during those awaits cleared the slot
+   but not the copy, which then went out with the message.
 
 The rule is the one the proactive round itself uses: consent holds only while
 the switch is on AND the revocation epoch is the one the round started under.
@@ -17,6 +18,8 @@ the switch is on AND the revocation epoch is the one the round started under.
 import asyncio
 import os
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -24,8 +27,18 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from main_logic.core import LLMSessionManager
 from main_logic.omni_offline_client import _streaming
-from utils.llm_client import AIMessage
+from utils.llm_client import AIMessage, HumanMessage
 
+from tests.unit.test_offline_provider_frame_publish import (
+    _PUBLISHER,
+    _SLEEP,
+    _Spy,
+    _connection_error,
+    _decode,
+    _make_client,
+    _png_b64,
+    _run_turn,
+)
 from tests.unit.test_proactive_vision_screenshot_staging import (
     _image_urls,
     _last_user_message,
@@ -106,6 +119,13 @@ def _stage_under(mgr, client) -> None:
     )
 
 
+def _assert_sent_without_screenshot(captured: list, user_attachment: bool) -> None:
+    msg = _last_user_message(captured)
+    expected = ["data:image/jpeg;base64,USER_FRAME_B64"] if user_attachment else []
+    assert _image_urls(msg.content) == expected
+    assert msg.content[-1] == {"type": "text", "text": "这是什么呀"}
+
+
 def test_revocation_before_the_reply_sends_text_only():
     mgr = _consent_mgr()
     c, captured = _make_offline_for_stream()
@@ -136,11 +156,7 @@ def test_revocation_during_model_switch_drops_only_the_proactive_screenshot(user
 
     asyncio.run(c.stream_text("这是什么呀"))
 
-    msg = _last_user_message(captured)
-    if user_attachment:
-        assert _image_urls(msg.content) == ["data:image/jpeg;base64,USER_FRAME_B64"]
-    else:
-        assert msg.content == "这是什么呀"
+    _assert_sent_without_screenshot(captured, user_attachment)
     assert c._proactive_image_to_inject is None
 
 
@@ -167,12 +183,8 @@ def test_revocation_during_image_fit_drops_only_the_proactive_screenshot(
 
     asyncio.run(c.stream_text("这是什么呀"))
 
-    msg = _last_user_message(captured)
-    if user_attachment:
-        assert _image_urls(msg.content) == ["data:image/jpeg;base64,USER_FRAME_B64"]
-    else:
-        assert msg.content == "这是什么呀"
-    assert "PROACTIVE_B64" in fitted[0]
+    _assert_sent_without_screenshot(captured, user_attachment)
+    assert fitted == [["PROACTIVE_B64"] + (["USER_FRAME_B64"] if user_attachment else [])]
     assert c._proactive_image_to_inject is None
 
 
@@ -200,6 +212,105 @@ def test_unreadable_consent_does_not_send_the_screenshot():
     assert _last_user_message(captured).content == "这是什么呀"
 
 
+def test_screenshot_staged_by_a_newer_round_during_the_fit_survives(monkeypatch):
+    c, _captured = _make_offline_for_stream()
+    c.set_proactive_screenshot("PROACTIVE_B64")
+    real_fit = _streaming.fit_images_to_turn_budget
+
+    async def newer_round_stages_while_fitting(images, budget):
+        c.set_proactive_screenshot("NEWER_B64")
+        return await real_fit(images, budget)
+
+    monkeypatch.setattr(_streaming, "fit_images_to_turn_budget", newer_round_stages_while_fitting)
+
+    asyncio.run(c.stream_text("这是什么呀"))
+
+    assert c._proactive_image_to_inject == "NEWER_B64"
+
+
+# ── 2b. after the message is in history: transcript callback, retry backoff ─
+
+def _is_red(b64: str) -> bool:
+    return _decode(b64).convert("RGB").getpixel((0, 0))[0] > 150
+
+
+def _snapshotting_client(mgr, *, error=None):
+    """Client whose stream records the image parts of each request as sent.
+
+    The message objects are shared with history, so a later in-place change
+    would otherwise rewrite what an earlier request appears to have carried.
+    """
+    client, _ = _make_client(error=error)
+    user_frame = _png_b64(300, 200, (200, 30, 30))
+    client._pending_images = [user_frame]
+    shot = _png_b64(300, 200, (30, 200, 30))
+    epoch = mgr._proactive_vision_revocation_epoch
+    client.set_proactive_screenshot(
+        shot,
+        consent_check=lambda: (
+            mgr._proactive_vision_enabled is not False
+            and mgr._proactive_vision_revocation_epoch == epoch
+        ),
+    )
+    requests: list[list[str]] = []
+
+    async def _fake_astream(messages, **_overrides):
+        requests.append([
+            part["image_url"]["url"].split(",", 1)[1]
+            for part in messages[-1].content
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ])
+        yield SimpleNamespace(content="")
+        raise error() if error is not None else RuntimeError("stop")
+
+    client._astream_visible_with_tools = _fake_astream
+    return client, shot, user_frame, requests
+
+
+def test_revocation_in_the_transcript_callback_withholds_the_screenshot():
+    mgr = _consent_mgr()
+    client, _shot, _user_frame, requests = _snapshotting_client(mgr)
+
+    async def revoke_in_callback(_text):
+        _revoke(mgr)
+        _regrant(mgr)
+
+    client.on_input_transcript = revoke_in_callback
+    spy = _Spy()
+    with patch(_PUBLISHER, spy):
+        _run_turn(client.stream_text("这是什么呀"))
+
+    assert len(requests) == 1 and len(requests[0]) == 1
+    assert _is_red(requests[0][0])  # only the user's frame went out
+    # The history entry no longer carries the screenshot either.
+    history_msg = next(
+        m for m in reversed(client._conversation_history) if isinstance(m, HumanMessage)
+    )
+    assert [p.get("type") for p in history_msg.content] == ["image_url", "text"]
+    # The frame bus sees what the model saw: the user's frame, labelled as such.
+    assert spy.sources == ["user"]
+    assert spy.images == requests[0]
+
+
+def test_screenshot_sent_on_the_first_attempt_is_withheld_from_retries_after_revocation():
+    mgr = _consent_mgr()
+    client, _shot, _user_frame, requests = _snapshotting_client(mgr, error=_connection_error)
+    sleeps: list = []
+
+    async def revoke_during_backoff(_delay):
+        sleeps.append(_delay)
+        if len(sleeps) == 1:
+            _revoke(mgr)
+
+    with patch(_SLEEP, revoke_during_backoff), patch(_PUBLISHER, _Spy()):
+        _run_turn(client.stream_text("这是什么呀"))
+
+    assert len(requests) == 3
+    # Consent held on the first attempt: screenshot (green) + user frame (red).
+    assert [_is_red(img) for img in requests[0]] == [False, True]
+    assert all(len(r) == 1 and _is_red(r[0]) for r in requests[1:])
+
+
 # ── 3. end to end: commit, then revoke and re-grant before the user replies ──
 
 @pytest.mark.asyncio
@@ -223,16 +334,13 @@ async def test_committed_screenshot_not_sent_after_revoke_and_regrant():
 
     await c.stream_text("这是什么呀")
 
-    assert _last_user_message(captured).content == "这是什么呀"
+    _assert_sent_without_screenshot(captured, user_attachment=False)
 
 
 # ── 4. the round's epoch reaches the staging point ───────────────────────────
 
 @pytest.mark.asyncio
 async def test_delivery_forwards_the_round_epoch_to_staging():
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-
     from main_logic.proactive_chat import delivery
 
     mgr = SimpleNamespace(
