@@ -78,6 +78,10 @@ class SessionWakes:
         self._drop_before: float | None = None
         # Whether that is noted next to the ledger too (``Ledger.note_stop_owed``).
         self._owed_noted = False
+        # One at a time, writing that note and removing it: the two are
+        # done in worker threads, and a removal that ran after a later
+        # stop's note would take that note with it.
+        self._owed_lock = asyncio.Lock()
         # How many stops of everything are under way (``hold``): nothing is
         # handed over meanwhile.
         self._holds = 0
@@ -137,23 +141,36 @@ class SessionWakes:
             raise
         if self._drop_before == now:
             self._drop_before = None
-            await self._forget_owed()
+            await self._forget_owed(now)
         return dropped
 
     async def _note_owed(self, before: float, reason: str) -> None:
         try:
-            await asyncio.to_thread(self._ledger.note_stop_owed, before, reason)
-            self._owed_noted = True
+            async with self._owed_lock:
+                await asyncio.to_thread(self._ledger.note_stop_owed, before, reason)
+                self._owed_noted = True
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - kept in mind here all the same
-            logger.warning("noting a stop that could not be written failed", exc_info=True)
+        except Exception:  # noqa: BLE001 - kept in mind here all the same, and noted with the next round
+            # Nothing on the disk says that everything was stopped: should
+            # the process end before the ledger or this note can be written,
+            # the next one hands over what the stop was to drop.
+            logger.error(
+                "a stop of everything could be written neither to the ledger nor next to it; "
+                "it holds for as long as this process lasts, and is written as soon as either can be",
+                exc_info=True,
+            )
 
-    async def _forget_owed(self) -> None:
-        if not self._owed_noted:
-            return
-        self._owed_noted = False
-        await asyncio.to_thread(self._ledger.clear_stop_owed)
+    async def _forget_owed(self, before: float) -> None:
+        """Remove the note of a stop that is on record by now: the one up to ``before``, and no later one's."""
+        async with self._owed_lock:
+            if not self._owed_noted or self._drop_before is not None:
+                # Nothing is noted; or a later stop came while this one was
+                # made up for, and is still to be: its note stays, and
+                # whoever makes up for it removes it.
+                return
+            self._owed_noted = False
+            await asyncio.to_thread(self._ledger.clear_stop_owed, before)
 
     async def flush(self) -> float | None:
         """Hand over everything that is due now, once. Returns when to look again, or None when nothing is pending."""
@@ -173,10 +190,17 @@ class SessionWakes:
             # write: a later stop that could not drop either is made up
             # for before this round reads anything.
             before = self._drop_before
+            if not self._owed_noted:
+                # Not noted next to the ledger either (neither could be
+                # written when the stop came, the disk being full, say).
+                # Tried again with every round, ahead of the ledger: a
+                # process that ends before the ledger can be written then
+                # still leaves word of the stop to the next one.
+                await self._note_owed(before, STOPPED_REASON)
             await self._ledger.wakes_void_all(STOPPED_REASON, before=before)
             if self._drop_before == before:
                 self._drop_before = None
-                await self._forget_owed()
+                await self._forget_owed(before)
         now = self._clock()
         generation = self._generation
         # All that is due, a page after the other: with the first page

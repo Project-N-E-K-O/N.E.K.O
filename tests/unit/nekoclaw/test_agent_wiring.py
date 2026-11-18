@@ -637,6 +637,31 @@ async def test_stopping_everything_right_after_a_restart_hands_nothing_over_whil
     assert [item for item in await host.ledger.select() if item.source == "session"] == []
 
 
+async def test_a_stop_that_is_cancelled_while_the_host_is_made_ready_lets_go_of_what_it_held(
+    wiring, tmp_path, monkeypatch
+):
+    await _left_by_an_earlier_process(tmp_path)
+    reached = asyncio.Event()
+
+    async def never_ready() -> Any:
+        reached.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(wiring.mount_module, "ready_host", never_ready)
+    stopping = asyncio.ensure_future(wiring.mount_module.stop_everything())
+    await asyncio.wait_for(reached.wait(), 5.0)
+    host = wiring.host_mount.peek_host()
+    assert host.wakes._holds == 1
+
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    # Given up, and not left held: held, nothing would be handed to a session for as long
+    # as the process lasts.
+    assert host.wakes._holds == 0
+
+
 async def test_stopping_everything_without_a_record_builds_nothing(wiring, tmp_path):
     assert await wiring.mount_module.stop_everything() == 0
 

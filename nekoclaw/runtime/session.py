@@ -268,6 +268,14 @@ class TranscriptStorage(JsonlSessionStorage):
         entry_id = payload.get("id") if isinstance(payload, dict) else None
         return entry_id if isinstance(entry_id, str) else None
 
+    def sync(self) -> None:
+        """Have what the file holds written to the disk."""
+        with self._locked(exclusive=True):
+            # Opened for writing: where a file is flushed through its handle,
+            # one that only reads cannot be.
+            with self.path.open("ab") as file:
+                os.fsync(file.fileno())
+
 
 class SessionRecorder:
     """Appends entries to the JSONL transcript in order, off the event loop.
@@ -303,11 +311,15 @@ class SessionRecorder:
 
         A fragment at the end is removed. The entry counts as saved when it is
         the last complete line: its write reached the file whole and only a
-        later step (syncing it to disk) failed.
+        later step (syncing it to disk) failed. That step is made up for
+        here, before the entry is said to be saved: whoever is told so
+        (``link``'s ``saved``) takes it to be on the disk.
         """
         self._storage.drop_torn_tail()
         saved = self._storage.last_entry_id() == entry.id
-        # Cleared only now: had either step failed, the next attempt must look
+        if saved:
+            self._storage.sync()
+        # Cleared only now: had any step failed, the next attempt must look
         # again instead of writing the entry a second time unseen.
         self._check_tail = False
         return saved
@@ -1288,8 +1300,12 @@ class TaskAgentSession(SessionInbox):
         return self.harness.has_queued_messages()
 
     def has_pending_user_steer(self) -> bool:
+        # Not what another session wrote, or the host says of a time that has
+        # come: that waits its turn in the queue, and ends no wait as the
+        # user's own words do.
         return any(
-            isinstance(message, UserMessage) for message in self.harness.queued_messages.steering
+            isinstance(message, UserMessage) and not any(message is other for other in self._not_human)
+            for message in self.harness.queued_messages.steering
         )
 
     async def wait_for_input(self, timeout_seconds: float) -> bool:

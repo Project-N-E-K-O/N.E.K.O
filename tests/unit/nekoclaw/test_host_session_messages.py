@@ -541,7 +541,7 @@ async def test_a_task_agent_that_set_a_wake_rests_and_is_woken_with_its_note(hos
     results = [item for item in await host.ledger.outbox_pending() if item.kind == "task_result"]
     assert [item.payload["status"] for item in results] == ["completed"]
     # What woke it went along with the work it was started with, and is on record as taken with that.
-    await wait_until(lambda: _none_on_their_way(host), what="what woke it being on record as taken")
+    await wait_until(lambda: _all_taken(host), what="what woke it being on record as taken")
 
 
 async def test_a_resting_commission_holds_no_place_and_not_its_session(hosts, tmp_path, monkeypatch):
@@ -744,7 +744,7 @@ async def test_a_note_to_a_session_with_nothing_under_way_has_a_commission_filed
     reports = [item.payload for item in await host.ledger.outbox_pending() if item.kind == "task_result"]
     assert [report["task_id"] for report in reports] == [built.id, asked.id]
     # The note is on record as taken: the message that opened the commission brought it.
-    await wait_until(lambda: _none_on_their_way(host), what="the note being on record as taken")
+    await wait_until(lambda: _all_taken(host), what="the note being on record as taken")
 
 
 async def _filed_for_notes(host: Any) -> list[Any]:
@@ -829,7 +829,7 @@ async def test_a_note_wakes_the_commission_that_rests_in_the_session(hosts, tmp_
     assert "    The deployment is through." in said[-1] and "A wake you set is due" not in said[-1]
     [delivered] = await _delivered(host)
     assert delivered.delivered_to == watching.commission_id
-    await wait_until(lambda: _none_on_their_way(host), what="the note being on record as taken")
+    await wait_until(lambda: _all_taken(host), what="the note being on record as taken")
 
 
 async def _delivered(host: Any) -> list[Any]:
@@ -2538,7 +2538,7 @@ async def test_what_an_earlier_request_puts_out_does_not_show_that_a_note_was_ta
     release.set()
     await wait_status(host, building.id, "done")
     # The runtime said that the second text it was given is in the conversation.
-    await wait_until(lambda: _none_on_their_way(host), what="the note being on record as taken")
+    await wait_until(lambda: _all_taken(host), what="the note being on record as taken")
     assert session.handed == {} and await _taken_at(host, wake.id) is not None
     assert "    Skip the docs folder." in _said(llm.requests[1])[1]
     # And what is taken is not put back, whoever asks.
@@ -2705,7 +2705,7 @@ async def test_a_text_the_runtime_refuses_brings_back_what_it_was_to_hand_over(h
     release.set()
     await wait_status(host, building.id, "done")
     assert "    Skip the docs folder." in _said(llm.requests[1])[1]
-    await wait_until(lambda: _none_on_their_way(host), what="the note being on record as taken")
+    await wait_until(lambda: _all_taken(host), what="the note being on record as taken")
 
 
 async def test_that_a_session_took_a_note_is_put_on_record_with_the_end_of_its_turn_at_the_latest(
@@ -2745,7 +2745,13 @@ async def test_that_a_session_took_a_note_is_put_on_record_with_the_end_of_its_t
     # not passed over as a note that was never taken, to wait until its time is up.
     await wait_until(notified, what="the sender being told that the note was answered")
     assert failed and host.task_agents._unconfirmed == set()
-    assert await _on_their_way(host) == []
+    # On record as taken, and not put back to wait as one its session never took.
+    handed = await host.ledger.run(
+        lambda conn: conn.execute(
+            "SELECT status, taken_at FROM wake_requests WHERE message_id = ? AND reason = 'message'", (note.id,)
+        ).fetchone()
+    )
+    assert handed["status"] == "fired" and handed["taken_at"] is not None
     monkeypatch.setattr(host.ledger, "wakes_taken", wakes_taken)
 
 
@@ -2754,8 +2760,22 @@ async def test_that_a_session_took_a_note_is_put_on_record_with_the_end_of_its_t
 # ---------------------------------------------------------------------------
 
 
-async def _none_on_their_way(host: Any) -> bool:
-    return await _on_their_way(host) == []
+async def _all_taken(host: Any) -> bool:
+    """Whether what was handed over is on record as taken: none of it is on its way, and none went back to wait.
+
+    (Nothing being on its way does not say so: a request that was put
+    back to wait is not on its way either.)
+    """
+    rows = await host.ledger.run(
+        lambda conn: [
+            (row["status"], row["taken_at"])
+            for row in conn.execute(
+                "SELECT status, taken_at FROM wake_requests "
+                "WHERE reason != 'notice_expiry' AND status IN ('fired', 'pending')"
+            )
+        ]
+    )
+    return bool(rows) and all(status == "fired" and taken is not None for status, taken in rows)
 
 
 async def test_a_stop_of_everything_drops_what_is_on_its_way_too_and_the_next_process_leaves_it_dropped(ledger):
@@ -2906,13 +2926,18 @@ async def test_closing_does_not_wait_for_what_a_round_does_as_it_is_cut_off(ledg
 
     wakes = SessionWakes(ledger, Agents())
     wakes.kick()
-    await under_way.wait()
-    started = asyncio.get_running_loop().time()
-
-    await wakes.close()
-
-    assert asyncio.get_running_loop().time() - started < 2.0
-    released.set()
+    closing: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(under_way.wait(), 5.0)
+        # In a task of its own, and waited for a while only: a close that waited for the
+        # round would wait for what is let go of below, and the test would hang on it.
+        closing = asyncio.ensure_future(wakes.close())
+        done, _still = await asyncio.wait({closing}, timeout=2.0)
+        assert done, "closing waited for what the round does as it is cut off"
+    finally:
+        released.set()
+        if closing is not None:
+            await asyncio.wait_for(closing, 5.0)
 
 
 async def test_what_was_kept_for_a_commission_that_is_stopped_goes_back_to_wait(hosts, tmp_path):
@@ -3283,7 +3308,7 @@ async def test_what_the_senders_are_owed_for_a_turn_is_told_once_the_ledger_can_
             raise OSError("the disk is full")
         return await turn_over(commission_id, **more)
 
-    # The ledger cannot be written as the turn the note began ends, nor as its session closes.
+    # The ledger cannot be written as the turn the note began ends, nor when that is first tried again.
     monkeypatch.setattr(host.ledger, "turn_over", the_disk_is_full_for_a_while)
     host.wakes.kick()
     await wait_until(lambda: _filed_for_notes(host), what="a commission being filed for the note")
@@ -3325,46 +3350,6 @@ async def test_a_row_of_a_query_is_made_from_one_look_at_its_commission(hosts, t
     assert row.startswith("- as it stands at the second look (in progress) [resting, goes on at ")
 
 
-async def test_what_a_turn_owes_is_told_of_the_notes_of_that_turn_and_not_of_one_taken_since(hosts, tmp_path):
-    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
-    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
-    await _let_go(host)
-    await host.wakes.close()
-    sender = await _at_work(host.ledger, title="sender")
-    await host.ledger.transition(sender.id, "waiting_user")
-    values = {
-        "lanlan_name": "Lan",
-        "title": "notes",
-        "dispatch_text": "one",
-        "source": "session",
-        "route": "task_agent",
-        "session_id": built.session_id,
-    }
-    first, _refusal, _wait = await _note(host.ledger, sender, built.session_id, "one", notify_when_done=True, limits=LOOSE)
-    [handing] = await host.ledger.wakes_pending(session_id=built.session_id)
-    commission = await host.ledger.create_for_wakes([handing.id], **values)
-    # The first turn: it took the first note, and the ledger could not be written
-    # for that, nor as the turn ended.
-    ended_at = host.ledger._clock()
-    host.task_agents._turns_owed.append((commission.id, "the first turn's last words", "working", ended_at, [handing.id]))
-    await asyncio.sleep(0.02)
-    # Since then it took a second note, whose turn is still under way.
-    second, _refusal, _wait = await _note(host.ledger, sender, built.session_id, "two", notify_when_done=True, limits=LOOSE)
-    [later] = await host.ledger.wakes_pending(session_id=built.session_id)
-    await host.ledger.wakes_fire([later.id], into=commission.id)
-    await host.ledger.wakes_taken([later.id])
-
-    assert await host.task_agents._tell_turns_owed() is True
-
-    # The sender of the first is told what that turn ended on; the second waits for its own.
-    assert (await host.ledger.message_get(first.id)).notified_at is not None
-    assert (await host.ledger.message_get(second.id)).notified_at is None
-    told = await host.ledger.run(
-        lambda conn: [row["body"] for row in conn.execute("SELECT body FROM messages WHERE kind = 'done'")]
-    )
-    assert told == ["the first turn's last words"] and host.task_agents._turns_owed == []
-
-
 async def test_what_goes_back_to_wait_is_not_kept_to_be_said_to_the_commission_it_was_kept_for(hosts, tmp_path):
     from nekoclaw.host.task_agents import _Handed
 
@@ -3386,5 +3371,642 @@ async def test_what_goes_back_to_wait_is_not_kept_to_be_said_to_the_commission_i
     assert host.task_agents._carried[building.id] == ["and mind the tests"]
     assert building.id not in host.task_agents._resume
     host.task_agents._carried.pop(building.id)
+    release.set()
+    await wait_status(host, building.id, "done")
+
+
+# ---------------------------------------------------------------------------
+# Review round 5: each turn tells of its own notes; what cannot be read or written is tried again
+# ---------------------------------------------------------------------------
+
+
+async def _two_notes_in_one_commission(host: Any) -> tuple[Any, Any, Any, Any, Any]:
+    """A commission filed for a note, with a second one handed to it since; both from a sender that asked to hear back."""
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    await _let_go(host)
+    await host.wakes.close()
+    sender = await _at_work(host.ledger, title="sender")
+    await host.ledger.transition(sender.id, "waiting_user")
+    values = {
+        "lanlan_name": "Lan",
+        "title": "notes",
+        "dispatch_text": "one",
+        "source": "session",
+        "route": "task_agent",
+        "session_id": built.session_id,
+    }
+    first, _refusal, _wait = await _note(host.ledger, sender, built.session_id, "one", notify_when_done=True, limits=LOOSE)
+    [handing] = await host.ledger.wakes_pending(session_id=built.session_id)
+    commission = await host.ledger.create_for_wakes([handing.id], **values)
+    second, _refusal, _wait = await _note(host.ledger, sender, built.session_id, "two", notify_when_done=True, limits=LOOSE)
+    [later] = await host.ledger.wakes_pending(session_id=built.session_id)
+    await host.ledger.wakes_fire([later.id], into=commission.id)
+    return commission, first, handing, second, later
+
+
+async def _told(host: Any) -> list[str]:
+    return await host.ledger.run(
+        lambda conn: [row["body"] for row in conn.execute("SELECT body FROM messages WHERE kind = 'done' ORDER BY id")]
+    )
+
+
+async def test_what_a_turn_owes_is_told_of_the_notes_of_that_turn_and_not_of_one_taken_since(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, first, handing, second, later = await _two_notes_in_one_commission(host)
+    # The first turn took the first note, and the ledger could be written neither for
+    # that nor as the turn ended. Since then the session took a second note, whose turn
+    # is still under way; and that it took the first is on record by now, as of a later
+    # moment than the second (written when the ledger could be written again).
+    host.task_agents._turns_owed.append((commission.id, "the first turn's last words", "working", [handing.id], []))
+    await host.ledger.wakes_taken([later.id])
+    await asyncio.sleep(0.02)
+    await host.ledger.wakes_taken([handing.id])
+
+    assert await host.task_agents._tell_turns_owed() is True
+
+    # The sender of the first is told what that turn ended on; the second waits for its own.
+    assert (await host.ledger.message_get(first.id)).notified_at is not None
+    assert (await host.ledger.message_get(second.id)).notified_at is None
+    assert await _told(host) == ["the first turn's last words"] and host.task_agents._turns_owed == []
+
+
+async def test_a_turn_tells_of_its_own_notes_and_leaves_an_earlier_turn_its_own(hosts, tmp_path):
+    from nekoclaw.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, first, handing, second, later = await _two_notes_in_one_commission(host)
+    await host.ledger.wakes_taken([handing.id, later.id])
+    # The end of the first turn could not be written, and is still to be told.
+    host.task_agents._turns_owed.append((commission.id, "the first turn's last words", "working", [handing.id], []))
+    # The second turn ends meanwhile, and the ledger can be written again.
+    session = _Session(commission.id)
+    session.took = [later.id]
+
+    await host.task_agents._turn_over(session, "the second turn's last words")
+
+    # It tells of the note it took, and not of the first turn's with its own words.
+    assert await _told(host) == ["the second turn's last words"] and session.took == []
+    assert (await host.ledger.message_get(first.id)).notified_at is None
+    assert await host.task_agents._tell_turns_owed() is True
+    assert await _told(host) == ["the second turn's last words", "the first turn's last words"]
+
+
+async def test_a_turn_that_took_no_note_asks_nothing_of_the_ledger(hosts, tmp_path, monkeypatch):
+    from nekoclaw.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, _first, handing, _second, _later = await _two_notes_in_one_commission(host)
+    await host.ledger.wakes_taken([handing.id])
+
+    async def not_asked(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the ledger was asked")
+
+    monkeypatch.setattr(host.ledger, "turn_over", not_asked)
+    monkeypatch.setattr(host.ledger, "get", not_asked)
+
+    # A note the commission has on record, and that this session did not take in this turn.
+    await host.task_agents._turn_over(_Session(commission.id), "the last words")
+
+    assert host.task_agents._turns_owed == []
+
+
+@pytest.mark.parametrize("said", ["", "word " * 4000])
+async def test_a_turn_whose_commission_cannot_be_read_is_told_of_as_it_last_stood(hosts, tmp_path, monkeypatch, said):
+    import dataclasses
+
+    from config.nekoclaw_settings import SESSION_NOTICE_TEXT_MAX_TOKENS
+    from nekoclaw.host.task_agents import _Session
+    from utils.tokenize import truncate_to_tokens
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, first, handing, _second, _later = await _two_notes_in_one_commission(host)
+    await host.ledger.wakes_taken([handing.id])
+    session = _Session(commission.id)
+    session.took = [handing.id]
+    # As the ledger last told of it: done, with what it reported.
+    session.stands = dataclasses.replace(commission, status="done", result_summary="the report's summary")
+    turn_over = host.ledger.turn_over
+
+    async def unreadable(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("the disk is busy")
+
+    # (Not tried again by itself while this looks at what was kept.)
+    monkeypatch.setattr("config.nekoclaw_settings.OUTBOX_RETRY_BASE_SECONDS", 3600.0)
+    monkeypatch.setattr(host.ledger, "get", unreadable)
+    monkeypatch.setattr(host.ledger, "turn_over", unreadable)
+
+    await host.task_agents._turn_over(session, said)
+
+    # Kept with what the turn came to, cut to what a notice may be: not empty, not the whole
+    # of what was said, and not what the commission is at by the time it can be written.
+    [(owed_of, text, state, took, _taken)] = host.task_agents._turns_owed
+    assert (owed_of, state, took) == (commission.id, "done", [handing.id])
+    assert text == ("the report's summary" if not said else truncate_to_tokens(said.strip(), SESSION_NOTICE_TEXT_MAX_TOKENS))
+    assert text and len(text) < 4000
+    monkeypatch.setattr(host.ledger, "turn_over", turn_over)
+    assert await host.task_agents._tell_turns_owed() is True
+    assert await _told(host) == [text] and (await host.ledger.message_get(first.id)).notified_at is not None
+
+
+async def test_the_ledger_tells_only_of_the_notes_it_is_asked_about(ledger):
+    sender = await _at_work(ledger, title="sender")
+    target = await _at_work(ledger, title="target")
+    notes = []
+    for body in ("one", "two"):
+        note, _refusal, _wait = await _note(ledger, sender, target.session_id, body, notify_when_done=True, limits=LOOSE)
+        notes.append(note)
+    one, two = await ledger.wakes_pending(session_id=target.session_id)
+    await ledger.wakes_fire([one.id, two.id], into=target.id)
+    await ledger.wakes_taken([one.id, two.id])
+
+    # None of them, then the one, then the other: each told once.
+    assert await ledger.turn_over(target.id, word=lambda note: "nothing", only=[]) == 0
+    assert await ledger.turn_over(target.id, word=lambda note: f"of #{note.id}", only=[two.id]) == 1
+    assert [(await ledger.message_get(note.id)).notified_at is not None for note in notes] == [False, True]
+    assert await ledger.turn_over(target.id, word=lambda note: f"of #{note.id}", only=[one.id, two.id]) == 1
+    assert await ledger.turn_over(target.id, word=lambda note: "again") == 0
+
+
+async def test_what_a_commission_that_is_over_never_took_is_looked_up_again_when_the_ledger_could_not_be_read(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.OUTBOX_RETRY_BASE_SECONDS", 0.02)
+    host, _llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
+    await host.wakes.close()
+    await _note(host.ledger, writer, building.session_id, "Skip the docs folder.")
+    [wake] = await host.ledger.wakes_pending(session_id=building.session_id)
+    await host.ledger.wakes_fire([wake.id], into=building.id)
+    on_their_way = host.ledger.wakes_on_their_way
+    failed: list[int] = []
+
+    async def unreadable_once(commission_id: str) -> list[int]:
+        if not failed:
+            failed.append(1)
+            raise OSError("the disk is busy")
+        return await on_their_way(commission_id)
+
+    monkeypatch.setattr(host.ledger, "wakes_on_their_way", unreadable_once)
+
+    await host.task_agents._return_untaken(building.id)
+
+    # Kept, and looked up again: no session closes to give it back, and nothing else looks for it.
+    assert host.task_agents._ended_unlooked == {building.id}
+    await wait_until(lambda: _is(_pending_ids(host, building.session_id), [wake.id]), what="the note waiting again")
+    assert host.task_agents._ended_unlooked == set()
+    release.set()
+    await wait_status(host, building.id, "done")
+
+
+async def _pending_ids(host: Any, session_id: str) -> list[int]:
+    return [item.id for item in await host.ledger.wakes_pending(session_id=session_id)]
+
+
+async def test_what_a_wake_request_brought_is_not_kept_with_what_a_failed_start_keeps(hosts, tmp_path):
+    from nekoclaw.host.task_agents import _Handed
+
+    host, _llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
+    await host.wakes.close()
+    await _note(host.ledger, writer, building.session_id, "Skip the docs folder.")
+    [wake] = await host.ledger.wakes_pending(session_id=building.session_id)
+    await host.ledger.wakes_fire([wake.id], into=building.id)
+    session = host.task_agents._sessions[building.id]
+    # As a start that fails leaves it: what the user said, and what a wake request brought.
+    session.carried = ["and mind the tests", _Handed("the framed note", [wake.id])]
+
+    host.task_agents._keep_unsent(session)
+
+    # The user's words are kept for when the commission is taken up again; the note is not
+    # (said then, it would be said twice): it waits again, for whatever its session is at next.
+    assert host.task_agents._carried.pop(building.id) == ["and mind the tests"]
+    await wait_until(lambda: _is(_pending_ids(host, building.session_id), [wake.id]), what="the note waiting again")
+    release.set()
+    await wait_status(host, building.id, "done")
+
+
+async def test_a_refusal_that_cannot_be_put_on_record_is_acted_on_all_the_same(hosts, tmp_path, monkeypatch):
+    host, _llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
+    await host.wakes.close()
+    await _note(host.ledger, writer, building.session_id, "Skip the docs folder.")
+    [wake] = await host.ledger.wakes_pending(session_id=building.session_id)
+    await host.ledger.wakes_fire([wake.id], into=building.id)
+    session = host.task_agents._sessions[building.id]
+    await host.task_agents.settle()
+    # As when the note was steered into the session.
+    sent = session.sent
+    session.sent += 1
+    session.handed[session.sent] = [wake.id]
+    append_event = host.ledger.append_event
+
+    async def the_disk_is_full(commission_id: str, kind: str, payload: Any) -> Any:
+        if kind in ("error", "usage"):
+            raise OSError("the disk is full")
+        return await append_event(commission_id, kind, payload)
+
+    monkeypatch.setattr(host.ledger, "append_event", the_disk_is_full)
+    refusal = {"type": "error", "session_id": session.session_id, "command": "steer", "message": "refused"}
+
+    await host.task_agents._handle(refusal)
+
+    # Not on record, and acted on: the text is not counted, and what it brought waits again.
+    assert session.sent == sent and session.handed == {}
+    assert await _pending_ids(host, building.session_id) == [wake.id]
+    # Any other event that cannot be written is the event pump's to report, as before.
+    with pytest.raises(OSError):
+        await host.task_agents._handle({"type": "usage", "session_id": session.session_id})
+    monkeypatch.setattr(host.ledger, "append_event", append_event)
+    session.refused_until = 0.0
+    release.set()
+    await wait_status(host, building.id, "done")
+
+
+@pytest.mark.parametrize("failures, outcome", [(1, "resting"), (9, "done")])
+async def test_a_ledger_that_cannot_be_read_as_a_run_ends_is_asked_again_before_the_commission_ends(
+    hosts, tmp_path, monkeypatch, failures, outcome
+):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    monkeypatch.setattr("config.nekoclaw_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()]])
+    host = _host(hosts, tmp_path, llm)
+    pending = host.ledger.wakes_pending
+    failed: list[int] = []
+
+    async def unreadable_for_a_while(**asked: Any) -> Any:
+        if "commission_id" in asked and len(failed) < failures:
+            failed.append(1)
+            raise OSError("the disk is busy")
+        return await pending(**asked)
+
+    monkeypatch.setattr(host.ledger, "wakes_pending", unreadable_for_a_while)
+    close = host.task_agents._close_session
+    stood: list[tuple[str, bool]] = []
+
+    async def closing(session: Any) -> None:
+        # How its commission stands as the session is closed, as it is kept with the session
+        # for where the ledger cannot be read.
+        stood.append((session.stands.status, session.stands.resting))
+        await close(session)
+
+    monkeypatch.setattr(host.task_agents, "_close_session", closing)
+    receipt = await _dispatch(host, "deploy the site")
+
+    if outcome == "resting":
+        # One failure does not end it: asked again, it is found to wait for the time it set.
+        await wait_until(lambda: _resting(host, receipt.commission_id), what="the commission coming to rest")
+        assert len(failed) == 1
+        assert len(await pending(commission_id=receipt.commission_id)) == 1
+        assert stood == [("working", True)]
+    else:
+        # Asked in vain as often as it is asked: it ends as a run without a report does.
+        await wait_status(host, receipt.commission_id, "done")
+        assert len(failed) == 3
+        await wait_until(lambda: stood == [("done", False)], what="its session being closed")
+
+
+async def test_being_told_once_more_what_it_is_does_not_make_a_wake_the_users_words(hosts, tmp_path, monkeypatch):
+    from nekoclaw.runtime.core import InProcessRuntime
+
+    sent: list[tuple[str, bool]] = []
+    prompt = InProcessRuntime.prompt
+
+    async def prompting(self: Any, session_id: str, text: str, **options: Any) -> None:
+        sent.append((text, options.get("human", True)))
+        await prompt(self, session_id, text, **options)
+
+    monkeypatch.setattr(InProcessRuntime, "prompt", prompting)
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    llm = ScriptedLLM([_wake("is it through"), [say("Waiting."), finish()], _report("ready", "through")])
+    host = _host(hosts, tmp_path, llm)
+    watching = await _dispatch(host, "watch the deployment")
+    await wait_until(lambda: _resting(host, watching.commission_id), what="the commission coming to rest")
+    await _let_go(host)
+
+    async def at_another_since(session_id: str) -> str:
+        # As when its session took the message that opens another commission while this one rested.
+        return "another commission"
+
+    monkeypatch.setattr(host.ledger, "opened_last", at_another_since)
+    await _bring_forward(host, watching.commission_id)
+    await wait_status(host, watching.commission_id, "done")
+
+    first, woken = sent
+    assert first[1] is True and "What the user said: watch the deployment" in first[0]
+    # Told once more what it is, along with the time that has come: nobody spoke now.
+    assert "A wake you set is due" in woken[0] and "watch the deployment" in woken[0]
+    assert woken[1] is False
+
+
+async def test_a_commission_that_ended_between_the_looks_is_among_those_that_ended_once(hosts, tmp_path, monkeypatch):
+    import dataclasses
+
+    from config.prompts.prompts_nekoclaw_brain import QUERY_TEXTS
+    from nekoclaw.host.ledger import ACTIVE_STATUSES
+
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()]])
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: _resting(host, receipt.commission_id), what="the commission coming to rest")
+    select, view = host.ledger.select, host.ledger.waiting_view
+
+    def ended(commission: Any) -> Any:
+        return dataclasses.replace(commission, status="done", resting_since=None, result_summary="deployed")
+
+    async def ended_after_the_first_list(*args: Any, **asked: Any) -> list[Any]:
+        found = await select(*args, **asked)
+        if asked.get("statuses") == ACTIVE_STATUSES or "updated_since" not in asked:
+            return found
+        # Read a moment later, the second list has it already.
+        return [ended(await host.ledger.get(receipt.commission_id)), *found]
+
+    async def ended_by_now(commission_id: str) -> Any:
+        seen, own, notes = await view(commission_id)
+        return ended(seen), [], notes
+
+    monkeypatch.setattr(host.ledger, "select", ended_after_the_first_list)
+    monkeypatch.setattr(host.ledger, "waiting_view", ended_by_now)
+    answer = await host.query("", lanlan_name="Lan", lang="en")
+
+    # One row, among those that ended, and she counts as told of it.
+    words_of = QUERY_TEXTS["en"]
+    rows = [line for line in answer.text.splitlines() if line.startswith("- ")]
+    assert len(rows) == 1 and "deployed" in rows[0] and "resting" not in rows[0]
+    assert words_of["recent"] in answer.text and words_of["active"] not in answer.text
+    assert [item.id for item in answer.commissions] == [receipt.commission_id]
+    assert host.brain._status_answered_at.get("Lan") is not None
+
+
+async def test_the_note_of_a_later_stop_is_not_removed_with_an_earlier_one(ledger):
+    from nekoclaw.host.wakes import SessionWakes
+
+    await _at_work(ledger, title="any")
+    noted = ledger.path.with_name(ledger.path.name + ".stop-owed")
+    wakes = SessionWakes(ledger, object())
+    ledger.note_stop_owed(2000.0, "everything was stopped")
+    wakes._owed_noted = True
+
+    # The stop up to 1000 is on record by now; a later one, which could not be written
+    # either, has noted itself since.
+    ledger.clear_stop_owed(1000.0)
+    assert noted.is_file()
+    # Nor while a later stop is still to be made up for.
+    wakes._drop_before = 2000.0
+    await wakes._forget_owed(2000.0)
+    assert noted.is_file() and wakes._owed_noted
+    wakes._drop_before = None
+    await wakes._forget_owed(2000.0)
+    assert not noted.exists() and not wakes._owed_noted
+
+
+async def test_noting_a_stop_waits_for_the_note_of_an_earlier_one_to_be_removed(ledger, monkeypatch):
+    import threading
+
+    from nekoclaw.host.wakes import SessionWakes
+
+    await _at_work(ledger, title="any")
+    noted = ledger.path.with_name(ledger.path.name + ".stop-owed")
+    wakes = SessionWakes(ledger, object())
+    ledger.note_stop_owed(1000.0, "everything was stopped")
+    wakes._owed_noted = True
+    clear, removing, let_go = ledger.clear_stop_owed, threading.Event(), threading.Event()
+
+    def slow(before: float | None = None) -> None:
+        removing.set()
+        let_go.wait(5.0)
+        clear(before)
+
+    monkeypatch.setattr(ledger, "clear_stop_owed", slow)
+    forgetting = asyncio.ensure_future(wakes._forget_owed(1000.0))
+    try:
+        assert await asyncio.to_thread(removing.wait, 5.0)
+        # A later stop cannot be written either, and notes itself while the first note is being removed.
+        noting = asyncio.ensure_future(wakes._note_owed(2000.0, "everything was stopped"))
+        await asyncio.sleep(0.05)
+        assert not noting.done()
+    finally:
+        let_go.set()
+    await asyncio.wait_for(asyncio.gather(forgetting, noting), 5.0)
+
+    # Written after the removal, and not removed by it.
+    assert json.loads(noted.read_text(encoding="utf-8"))["before"] == 2000.0 and wakes._owed_noted
+
+
+async def test_a_stop_that_could_be_noted_nowhere_is_noted_as_soon_as_it_can_be(ledger, monkeypatch):
+    from nekoclaw.host.wakes import SessionWakes
+
+    sender = await _at_work(ledger, title="sender")
+    target = await _at_work(ledger, title="target")
+    before, _refusal, _wait = await _note(ledger, sender, target.session_id, "before the stop")
+    noted = ledger.path.with_name(ledger.path.name + ".stop-owed")
+    wakes = SessionWakes(ledger, object())
+    note_stop_owed = ledger.note_stop_owed
+
+    async def the_disk_is_full(reason: str, *, before: float | None = None) -> int:
+        raise OSError("the disk is full")
+
+    def nor_next_to_it(before: float, reason: str) -> None:
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(ledger, "wakes_void_all", the_disk_is_full)
+    monkeypatch.setattr(ledger, "note_stop_owed", nor_next_to_it)
+    with pytest.raises(OSError):
+        await wakes.stop_all()
+    await wakes.close()
+    assert not noted.exists() and not wakes._owed_noted
+
+    # The next round: the ledger still cannot be written, the note next to it can.
+    monkeypatch.setattr(ledger, "note_stop_owed", note_stop_owed)
+    with pytest.raises(OSError):
+        await wakes.flush()
+    assert noted.is_file() and wakes._owed_noted
+
+    # So a process that ends here leaves word of the stop to the next one.
+    later = Ledger(ledger.path, clock=ledger.clock)
+    try:
+        assert (await later.message_get(before.id)).status == "void" and not noted.exists()
+    finally:
+        await later.close()
+
+
+async def test_a_ledger_of_a_build_that_did_not_tell_taken_from_handed_over_is_brought_up_in_one_step(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "nekoclaw" / "ledger.db"
+    first = Ledger(path, clock=Clock())
+    sender = await _at_work(first, title="sender")
+    target = await _at_work(first, title="target")
+    await _note(first, sender, target.session_id, "handed over by the earlier build")
+    [wake] = await first.wakes_pending(session_id=target.session_id)
+    await first.wakes_fire([wake.id], into=target.id)
+    await first.close()
+    # As that build left it: no such column.
+    conn = sqlite3.connect(str(path))
+    conn.execute("ALTER TABLE wake_requests DROP COLUMN taken_at")
+    conn.commit()
+    conn.close()
+    statements: list[str] = []
+    connect = sqlite3.connect
+
+    def traced(*args: Any, **kwargs: Any) -> Any:
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    later = Ledger(path, clock=Clock())
+    try:
+        sqlite3.connect = traced  # type: ignore[assignment]
+        try:
+            await later.open()
+        finally:
+            sqlite3.connect = connect  # type: ignore[assignment]
+        # The column and what goes into it for the rows that are there, in one transaction:
+        # a process that ends in between leaves neither, and the next one does both.
+        added = next(index for index, text in enumerate(statements) if "ADD COLUMN taken_at" in text)
+        filled = next(index for index, text in enumerate(statements) if "SET taken_at = fired_at" in text)
+        assert statements[added - 1].startswith("BEGIN") and statements[filled + 1] == "COMMIT"
+        # What that build had handed over stays handed over, and is not handed over anew.
+        assert await later.wakes_pending(session_id=target.session_id) == []
+        assert await _taken_at_in(later, wake.id) is not None
+    finally:
+        await later.close()
+
+
+async def _taken_at_in(ledger: Ledger, wake_id: int) -> Any:
+    return await ledger.run(
+        lambda conn: conn.execute("SELECT taken_at FROM wake_requests WHERE id = ?", (wake_id,)).fetchone()["taken_at"]
+    )
+
+
+@pytest.mark.parametrize("meanwhile, outcome", [("being removed", "held"), ("removed", "dropped")])
+async def test_no_commission_is_filed_in_a_session_whose_record_is_removed_while_its_notes_wait(
+    hosts, tmp_path, monkeypatch, meanwhile, outcome
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    await _let_go(host)
+    await host.wakes.close()
+    sender = await _at_work(host.ledger, title="sender")
+    note, _refusal, _wait = await _note(host.ledger, sender, built.session_id, "Rebuild with the new logo.")
+    [wake] = await host.ledger.wakes_pending(session_id=built.session_id)
+    may_start = host.task_agents._may_start
+
+    async def tidied_up_meanwhile(key: str) -> Any:
+        # Nothing holds the session while this waits: what was said in it, being old, is removed.
+        assert host.task_agents.hold_files(built.session_id) is True
+        if meanwhile == "removed":
+            await host.ledger.mark_session_cleared(built.session_id)
+            host.task_agents.release_files(built.session_id)
+        return await may_start(key)
+
+    monkeypatch.setattr(host.task_agents, "_may_start", tidied_up_meanwhile)
+
+    handed = await host.task_agents.hand_over(built.session_id, None, [wake])
+
+    # Nothing is filed to work on the note without the conversation it was written to.
+    assert handed.outcome == outcome and await _filed_for_notes(host) == []
+    if meanwhile == "removed":
+        assert await _status_of(host, note.id) == "void"
+    else:
+        # It waits, and is looked at again once the removing is over.
+        assert await _pending_ids(host, built.session_id) == [wake.id]
+        host.task_agents.release_files(built.session_id)
+
+
+async def test_a_hand_over_whose_text_cannot_be_made_and_that_cannot_be_taken_back_is_taken_back_later(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.OUTBOX_RETRY_BASE_SECONDS", 0.02)
+    host, _llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
+    await host.wakes.close()
+    await _note(host.ledger, writer, building.session_id, "Skip the docs folder.")
+    [wake] = await host.ledger.wakes_pending(session_id=building.session_id)
+    unfire = host.ledger.wakes_unfire
+    failed: list[int] = []
+
+    async def the_record_cannot_be_read(*args: Any, **kwargs: Any) -> str:
+        raise OSError("the disk is busy")
+
+    async def nor_written_at_first(wake_ids: Any, **more: Any) -> None:
+        if not failed:
+            failed.append(1)
+            raise OSError("the disk is busy")
+        await unfire(wake_ids, **more)
+
+    monkeypatch.setattr(host.task_agents, "_wake_text", the_record_cannot_be_read)
+    monkeypatch.setattr(host.ledger, "wakes_unfire", nor_written_at_first)
+
+    with pytest.raises(OSError):
+        await host.task_agents.hand_over(building.session_id, None, [wake])
+
+    # On record as handed over, with nothing sent: kept, and taken back once the ledger can be written.
+    assert failed and host.task_agents._unreturned == {wake.id}
+    await wait_until(lambda: _is(_pending_ids(host, building.session_id), [wake.id]), what="the note waiting again")
+    assert host.task_agents._unreturned == set() and await _on_their_way(host) == []
+    release.set()
+    await wait_status(host, building.id, "done")
+
+
+async def test_a_refusal_when_it_was_asked_again_sets_the_next_time_to_ask(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    agents = host.task_agents
+    now = host.ledger._clock()
+
+    agents._note_quota(False)
+    assert agents._quota_out and agents._quota_asked_again_at > now
+    # Known to be used up, and refused where a request is counted: the time to ask again stays.
+    agents._quota_asked_again_at = 5.0
+    agents._note_quota(False)
+    assert agents._quota_asked_again_at == 5.0
+    # Asked again because that time had come, and refused once more: asked a day on, and
+    # not on every occasion until then.
+    agents._note_quota(False, asked_again=True)
+    assert agents._quota_asked_again_at > now
+
+
+async def test_a_commission_that_is_taken_up_again_no_longer_rests(ledger):
+    commission = await _at_work(ledger, title="resting")
+    await _due_now(ledger, commission)
+    assert await ledger.rest(commission.id) is not None
+    assert (await ledger.get(commission.id)).resting
+
+    # Woken: it waits for a place, and is at work again.
+    await ledger.transition(commission.id, "queued", reason="taken up again")
+    await ledger.transition(commission.id, "working")
+
+    # At work, and not said to rest (a query would say so, and a host started anew would leave it be).
+    assert not (await ledger.get(commission.id)).resting
+
+
+async def test_a_sender_whose_commission_is_over_is_written_nothing(ledger):
+    sender = await _at_work(ledger, title="sender")
+    target = await _at_work(ledger, title="target")
+    note, _refusal, _wait = await _note(ledger, sender, target.session_id, "one", notify_when_done=True)
+    [wake] = await ledger.wakes_pending(session_id=target.session_id)
+    await ledger.wakes_fire([wake.id], into=target.id)
+    await ledger.wakes_taken([wake.id])
+    await ledger.transition(sender.id, "done")
+
+    # The note counts as answered; nobody is at work in the sender's session to be told.
+    assert await ledger.turn_over(target.id, word=lambda note: "over") == 0
+    assert (await ledger.message_get(note.id)).notified_at is not None
+    written = await ledger.run(lambda conn: conn.execute("SELECT COUNT(*) AS n FROM messages WHERE kind = 'done'").fetchone()["n"])
+    assert written == 0 and await ledger.wakes_pending(session_id=sender.session_id) == []
+
+
+async def test_a_note_is_kept_back_from_a_commission_that_waits_for_the_user_before_its_session_shows_it(hosts, tmp_path):
+    host, _llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
+    await host.wakes.close()
+    await _note(host.ledger, writer, building.session_id, "Skip the docs folder.")
+    [wake] = await host.ledger.wakes_pending(session_id=building.session_id)
+    session = host.task_agents._sessions[building.id]
+    # As in the moment its question is on record and its session is not yet marked as waiting.
+    await host.ledger.transition(building.id, "waiting_user", pending_question=json.dumps({"question": "Which one?"}))
+    assert not session.awaiting_prompt and session.question is None
+
+    handed = await host.task_agents.hand_over(building.session_id, None, [wake])
+
+    # Not in between its question and the answer.
+    assert handed.outcome == "held" and session.handed == {}
+    assert await _pending_ids(host, building.session_id) == [wake.id]
+    await host.ledger.transition(building.id, "working")
     release.set()
     await wait_status(host, building.id, "done")

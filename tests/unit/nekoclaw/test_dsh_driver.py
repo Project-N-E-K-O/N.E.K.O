@@ -1780,3 +1780,109 @@ async def test_a_window_a_sessions_model_endpoint_states_is_told_to_the_host_onc
         ("s1", 4_000, None),
     ]
     assert "maximum context length is 32768" in told[0]["reason"]
+
+
+async def _until(check: Any, what: str, timeout: float = 10.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not check():
+        assert asyncio.get_running_loop().time() < deadline, f"{what} did not happen within {timeout}s"
+        await asyncio.sleep(0.02)
+
+
+async def test_a_call_of_a_run_that_is_over_is_handed_nothing_of_the_next(tmp_path: Path, dsh) -> None:
+    host, _calls = _host()
+    driver = dsh(host)
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    await runtime.prompt("s1", "!sleep 30")
+    await _until(lambda: len(driver.record("session/prompt")) == 1, "the first run being with dsh")
+    await runtime.abort("s1")
+    # A call of that run which dsh has not called off: it goes on waiting for what arrives.
+    stale = asyncio.ensure_future(runtime._take_input(session, 30.0))
+    try:
+        await asyncio.sleep(0)
+        ended = await driver.events.wait_ended("s1")
+        assert ended["reason"] == "aborted" and not stale.done()
+
+        position = len(driver.events.events)
+        await runtime.prompt("s1", "!sleep 0.3\n!say went on")
+        # What arrives now starts the next run: the call of the one that is over is handed nothing.
+        assert await asyncio.wait_for(stale, 5.0) == []
+        await _until(lambda: len(driver.record("session/prompt")) == 2, "the second run being with dsh")
+        await runtime.steer("s1", "a note for the run under way")
+        ended = await driver.events.wait_ended("s1", start=position)
+    finally:
+        stale.cancel()
+
+    # So it goes to dsh as a turn of its own, and is told of as taken once dsh has that.
+    prompts = driver.record("session/prompt")
+    assert len(prompts) == 3 and "went on" in json.dumps(prompts[1])
+    assert "a note for the run under way" in json.dumps(prompts[2])
+    assert ended["reason"] == "completed" and ended["inputs"] == 3
+    assert [event["inputs"] for event in driver.events.events[position:] if event["type"] == "taken"] == [2, 3]
+
+
+async def test_what_a_call_was_handed_is_queued_again_when_its_answer_does_not_reach_dsh(tmp_path: Path, dsh) -> None:
+    from nekoclaw.dsh.host_tools import UNDELIVERED
+
+    host, _calls = _host()
+    driver = dsh(host)
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    await runtime.prompt("s1", "!sleep 1\n!say went on")
+    await _until(lambda: len(driver.record("session/prompt")) == 1, "the turn being with dsh")
+    await runtime.steer("s1", "a note that arrives during the turn")
+    # A call of the turn takes it, as whoever serves the call has it carried out...
+    undo: list[Any] = []
+    marked = UNDELIVERED.set(undo)
+    try:
+        assert await runtime._take_input(session, 1.0) == ["a note that arrives during the turn"]
+    finally:
+        UNDELIVERED.reset(marked)
+    assert session.queue == [] and session.awaited == [2] and len(undo) == 1
+    # ...and dsh hangs up on that one call before it has the answer, its turn going on.
+    undo[0]()
+    assert session.awaited == [] and [str(text) for text in session.queue] == ["a note that arrives during the turn"]
+    ended = await driver.events.wait_ended("s1")
+
+    # Not lost with the answer, and not told of as taken by the end of that turn: it goes to
+    # dsh as a turn of its own.
+    prompts = driver.record("session/prompt")
+    assert len(prompts) == 2 and "a note that arrives during the turn" in json.dumps(prompts[1])
+    assert ended["reason"] == "completed" and ended["inputs"] == 2
+    taken = [(index, event["inputs"]) for index, event in enumerate(driver.events.events) if event["type"] == "taken"]
+    assert [number for _index, number in taken] == [1, 2]
+    said = [index for index, event in enumerate(driver.events.events) if event["type"] == "text"]
+    assert said and said[0] < taken[1][0]
+
+
+async def test_what_a_call_was_handed_in_a_run_that_is_over_is_not_queued_again(tmp_path: Path, dsh) -> None:
+    from nekoclaw.dsh.host_tools import UNDELIVERED
+
+    host, _calls = _host()
+    driver = dsh(host)
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+
+    await runtime.prompt("s1", "!sleep 0.3\n!say went on")
+    await _until(lambda: len(driver.record("session/prompt")) == 1, "the turn being with dsh")
+    await runtime.steer("s1", "a note that arrives during the turn")
+    undo: list[Any] = []
+    marked = UNDELIVERED.set(undo)
+    try:
+        await runtime._take_input(session, 1.0)
+    finally:
+        UNDELIVERED.reset(marked)
+    ended = await driver.events.wait_ended("s1")
+    assert ended["reason"] == "completed" and ended["inputs"] == 2
+
+    # Seen too late: that turn's end has dealt with it, and it is not sent a second time.
+    undo[0]()
+
+    assert session.queue == [] and session.run is None
+    assert len(driver.record("session/prompt")) == 1

@@ -556,3 +556,71 @@ async def test_stopping_the_listener_drops_every_token_and_it_can_be_started_aga
             f"{listener.model_url}/chat/completions", headers={"Authorization": f"Bearer {process_token}"}, json={}
         )
     assert tools.status_code == 401 and model.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "how, undone",
+    [
+        ("takes the answer", []),
+        ("hangs up while the call is carried out", ["given back"]),
+        ("hangs up as the answer is ready", ["given back"]),
+        ("is gone when the answer is written", ["given back"]),
+    ],
+)
+async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
+    endpoint, monkeypatch: pytest.MonkeyPatch, how: str, undone: list[str]
+) -> None:
+    from nekoclaw.dsh.endpoint import TOOLS_PATH
+    from nekoclaw.dsh.host_tools import UNDELIVERED
+
+    listener, _calls = endpoint
+    token = listener.issue("s1")
+    done: list[str] = []
+    handed, answered = asyncio.Event(), asyncio.Event()
+
+    async def handle(session_id: str, payload: Any, **options: Any) -> Any:
+        # As a ``wait_agent`` that hands dsh the texts that arrived.
+        steps = UNDELIVERED.get()
+        assert steps is not None
+        steps.append(lambda: done.append("given back"))
+        handed.set()
+        if how == "hangs up while the call is carried out":
+            await asyncio.Event().wait()
+        return {"jsonrpc": "2.0", "id": 1, "result": {"content": []}}
+
+    monkeypatch.setattr(listener._tools, "handle", handle)
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "wait_agent"}}).encode()
+    request: list[dict[str, Any]] = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive() -> dict[str, Any]:
+        if request:
+            return request.pop(0)
+        if how in ("takes the answer", "is gone when the answer is written"):
+            await asyncio.Event().wait()
+        await handed.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if how == "is gone when the answer is written":
+            raise ConnectionError("the connection is closed")
+        if message["type"] == "http.response.body":
+            answered.set()
+
+    scope = {
+        "type": "http",
+        "path": TOOLS_PATH,
+        "method": "POST",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+    }
+    serving = asyncio.ensure_future(listener._asgi(scope, receive, send))
+    await asyncio.wait({serving}, timeout=5.0)
+    assert serving.done()
+    if how == "is gone when the answer is written":
+        assert isinstance(serving.exception(), ConnectionError)
+    else:
+        assert serving.exception() is None
+        assert answered.is_set() == (how != "hangs up while the call is carried out")
+
+    # The step that undoes it is not the call's own to see (it runs in a task of its own).
+    assert UNDELIVERED.get() is None
+    assert done == undone

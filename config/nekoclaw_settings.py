@@ -383,6 +383,13 @@ WAKE_FAILED_RETRY_MAX_SECONDS = 3600.0
 """The longest pause between two tries to hand over something that failed
 for a reason of the host's own (it doubles from ``OUTBOX_RETRY_BASE_SECONDS``)."""
 
+REST_LOOK_RETRY_DELAYS: tuple[float, ...] = (0.2, 1.0)
+"""The pauses before the ledger is asked again, after it could not be read,
+whether a commission whose run ended has asked to be woken. Only once these
+are used up does the commission end as one that asked for nothing: ended on
+the first failure, a time it had set would be dropped with it. Short, since
+the events of every other session wait meanwhile."""
+
 # ---------------------------------------------------------------------------
 # Task agent space (design section 12.1; ``nekoclaw/host/space.py``)
 #

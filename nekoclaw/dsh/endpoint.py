@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from nekoclaw.dsh.forward import ModelForwarder, respond_json
-from nekoclaw.dsh.host_tools import HostTools
+from nekoclaw.dsh.host_tools import UNDELIVERED, HostTools
 
 logger = logging.getLogger(__name__)
 
@@ -270,29 +270,50 @@ class LocalEndpoint:
         # What the session is offered as of the look at the token, nothing
         # awaited in between: a session closed and opened again under the
         # same id before the call is carried out is not this one.
-        work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
-        gone = asyncio.ensure_future(_wait_disconnect(receive))
+        # What the work hands dsh that must not be lost with an answer that
+        # never gets there (the texts a ``wait_agent`` takes): undone below
+        # unless the answer was sent to a dsh that was still listening.
+        undo: list[Callable[[], None]] = []
+        marked = UNDELIVERED.set(undo)
         try:
-            await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
-            if not work.done():
-                # dsh gave this call up: its turn was stopped, or the call took
-                # longer than dsh waits. The work is stopped with it.
-                work.cancel()
-                await asyncio.gather(work, return_exceptions=True)
-                return
-            try:
-                answer = work.result()
-            except asyncio.CancelledError:
-                return
+            work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
         finally:
-            gone.cancel()
-            if not work.done():
-                work.cancel()
-        if answer is None:
-            await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
-            await send({"type": "http.response.body", "body": b""})
-        else:
-            await respond_json(send, 200, answer)
+            UNDELIVERED.reset(marked)
+        gone = asyncio.ensure_future(_wait_disconnect(receive))
+        delivered = False
+        try:
+            try:
+                await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+                if not work.done():
+                    # dsh gave this call up: its turn was stopped, or the call took
+                    # longer than dsh waits. The work is stopped with it.
+                    work.cancel()
+                    await asyncio.gather(work, return_exceptions=True)
+                    return
+                try:
+                    answer = work.result()
+                except asyncio.CancelledError:
+                    return
+                # Looked at before the answer is written: a dsh that hung up
+                # as the work finished gets none.
+                listening = not gone.done()
+            finally:
+                gone.cancel()
+                if not work.done():
+                    work.cancel()
+            if answer is None:
+                await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
+                await send({"type": "http.response.body", "body": b""})
+            else:
+                await respond_json(send, 200, answer)
+            delivered = listening
+        finally:
+            if not delivered:
+                for step in undo:
+                    try:
+                        step()
+                    except Exception:  # noqa: BLE001 - the other steps are still taken
+                        logger.exception("undoing what a call that dsh gave up had handed it failed")
 
 
 async def _close_listener(server: Any, task: "asyncio.Task[Any] | None") -> None:

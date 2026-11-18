@@ -439,28 +439,30 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
 
     host = peek_host()
     held = None
-    if host is None:
-        # Nothing has used the host in this process, yet an earlier process
-        # may have left a deferred result under way. That is stopped too,
-        # whether or not NekoClaw is on by now.
-        if not await ledger_exists():
-            return 0
-        try:
-            # Held before it is made ready: making it ready starts what an
-            # earlier process left to be handed to sessions, and a note
-            # handed over then would start a turn this stop comes too late
-            # for.
-            from nekoclaw.host import mount
-
-            held = mount.get_host()
-            held.wakes.hold()
-            host = await ready_host()
-        except Exception as e:
-            logger.warning("[Agent] opening the ledger to stop what is under way failed: %s", e)
-            if held is not None:
-                held.wakes.release()
-            return 0
+    # Whatever ends this, a cancel while the host is made ready included:
+    # what was held is let go again, once. Left held, nothing would be
+    # handed to a session for as long as the process lasts.
     try:
+        if host is None:
+            # Nothing has used the host in this process, yet an earlier process
+            # may have left a deferred result under way. That is stopped too,
+            # whether or not NekoClaw is on by now.
+            if not await ledger_exists():
+                return 0
+            try:
+                # Held before it is made ready: making it ready starts what an
+                # earlier process left to be handed to sessions, and a note
+                # handed over then would start a turn this stop comes too late
+                # for.
+                from nekoclaw.host import mount
+
+                built = mount.get_host()
+                built.wakes.hold()
+                held = built
+                host = await ready_host()
+            except Exception as e:
+                logger.warning("[Agent] opening the ledger to stop what is under way failed: %s", e)
+                return 0
         return await _stop_everything(host, reason)
     finally:
         if held is not None:

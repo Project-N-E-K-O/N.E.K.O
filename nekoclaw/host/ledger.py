@@ -710,11 +710,21 @@ class Ledger:
         # Likewise the wake requests of a build that did not yet tell handed over from taken.
         wakes = {row["name"] for row in conn.execute("PRAGMA table_info(wake_requests)")}
         if wakes and "taken_at" not in wakes:
-            conn.execute("ALTER TABLE wake_requests ADD COLUMN taken_at REAL")
-            # What that build had handed over it took for taken: it stays
-            # so, and is not handed over a second time as something that
-            # was on its way.
-            conn.execute("UPDATE wake_requests SET taken_at = fired_at WHERE status = 'fired'")
+            # Both or neither: with the column there and its rows not
+            # filled in (the process ended in between), the next start
+            # would find nothing to do, and take what that build had handed
+            # over for something that was on its way.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("ALTER TABLE wake_requests ADD COLUMN taken_at REAL")
+                # What that build had handed over it took for taken: it stays
+                # so, and is not handed over a second time as something that
+                # was on its way.
+                conn.execute("UPDATE wake_requests SET taken_at = fired_at WHERE status = 'fired'")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            conn.execute("COMMIT")
 
     def _give_sessions(self, conn: sqlite3.Connection) -> None:
         """Give every task agent commission of an earlier build the session it had.
@@ -860,10 +870,20 @@ class Ledger:
             json.dumps({"before": float(before), "reason": str(reason)}), encoding="utf-8"
         )
 
-    def clear_stop_owed(self) -> None:
-        """Forget that note: the stop is on record in the ledger. Blocking."""
-        if self.path is not None:
-            self._forget_stop_owed(self.path)
+    def clear_stop_owed(self, before: float | None = None) -> None:
+        """Forget that note: the stop is on record in the ledger. Blocking.
+
+        With ``before`` (the stop that was made up for), only a note of
+        that stop or an earlier one: what a later stop noted meanwhile is
+        that stop's to forget.
+        """
+        if self.path is None:
+            return
+        if before is not None:
+            noted = self._stop_owed(self.path)
+            if noted is not None and noted[0] > float(before):
+                return
+        self._forget_stop_owed(self.path)
 
     def _forget_stop_owed(self, path: Path) -> None:
         try:
@@ -1761,7 +1781,7 @@ class Ledger:
         word: Callable[[Message], str],
         state: str = "",
         taken: Iterable[int] = (),
-        until: float | None = None,
+        only: Iterable[int] | None = None,
     ) -> int:
         """Tell the senders who asked for it that the turn their notes began in a commission is over.
 
@@ -1777,22 +1797,26 @@ class Ledger:
         else. ``taken`` are wake requests the session is known to have
         taken that could not be put on record as such when it took them:
         they are, here, before the notes are looked at, so that a note
-        the turn did answer is told of. ``until`` is for a turn that ended
-        a while ago and is told of only now (the ledger could not be
-        written then): the notes its session had taken by then, and none
-        it took since, which belong to a later turn; ``taken`` are put on
-        record as of that time. Returns how many were written. No model
+        the turn did answer is told of. ``only`` are the wake requests
+        whose notes the turn took, where the caller knows them: none
+        but those is told of. A turn whose end could not be written when
+        it came is then told of later with its own notes alone, and
+        takes none of a turn that came after it; nor does a later turn,
+        written first, take its. Returns how many were written. No model
         is called for any of it.
         """
 
         confirmed = [int(item) for item in taken]
+        among = None if only is None else sorted({int(item) for item in only})
 
         def work(conn: sqlite3.Connection) -> int:
             now = self._clock()
             if confirmed:
-                self._taken(conn, confirmed, now if until is None else float(until))
-            by_then = "" if until is None else " AND wake_requests.taken_at <= ?"
-            asked = [commission_id] if until is None else [commission_id, float(until)]
+                self._taken(conn, confirmed, now)
+            if among is not None and not among:
+                return 0
+            of_these = "" if among is None else f" AND wake_requests.id IN ({', '.join('?' for _ in among)})"
+            asked = [commission_id, *(among or ())]
             # Those its session took. A note that was handed over and is
             # still on its way (steered in after the run's last request,
             # say) was not answered by this turn: it is told of when the
@@ -1802,7 +1826,7 @@ class Ledger:
                 "AND notified_at IS NULL AND kind = 'note' AND EXISTS ("
                 "SELECT 1 FROM wake_requests WHERE wake_requests.message_id = messages.id "
                 "AND wake_requests.reason = 'message' AND wake_requests.status = 'fired' "
-                f"AND wake_requests.taken_at IS NOT NULL{by_then}) ORDER BY id",
+                f"AND wake_requests.taken_at IS NOT NULL{of_these}) ORDER BY id",
                 asked,
             ).fetchall()
             written = 0

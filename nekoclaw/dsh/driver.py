@@ -86,7 +86,7 @@ from nekoclaw.dsh import profile
 from nekoclaw.dsh.acp import AcpClosed, AcpConnection, AcpError
 from nekoclaw.dsh.endpoint import LocalEndpoint
 from nekoclaw.dsh.forward import ModelForwarder, unsupported_reason
-from nekoclaw.dsh.host_tools import HostTools
+from nekoclaw.dsh.host_tools import UNDELIVERED, HostTools
 from nekoclaw.dsh.profile import SESSION_FILE, DshLaunch, DshUnavailable, Shape
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime.host import HostBridge, NoHost
@@ -169,6 +169,9 @@ class _Session:
     # The numbers of the texts a call of the turn under way was handed
     # (``_take_input``), until that turn is over.
     awaited: list[int] = field(default_factory=list)
+    # Counts the runs that are over. A call dsh makes belongs to the run
+    # under way as it is made, and is handed nothing once that run is over.
+    runs: int = 0
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
     # Whether it is offered the subagent tool, which its first message then tells of.
@@ -1095,12 +1098,20 @@ class DshRuntime:
 
     async def _take_input(self, session: _Session, seconds: float) -> list[str]:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""
+        # The run the call belongs to: the one under way as it is made.
+        of_run = session.runs if session.run is not None else None
         if not session.queue:
             session.arrived.clear()
             try:
                 await asyncio.wait_for(session.arrived.wait(), max(0.0, seconds))
             except asyncio.TimeoutError:
                 return []
+        if of_run is None or session.runs != of_run or session.run is None or session.aborting:
+            # Its run is over, or is being stopped, and dsh has not called
+            # the call off yet. What is queued by now starts the next run,
+            # or is that run's: handed to this call, it would go nowhere,
+            # and the end of that run's turn would tell of it as taken.
+            return []
         texts, session.queue = session.queue, []
         numbers = _numbers_of(texts)
         session.taken = max([session.taken, *numbers])
@@ -1109,7 +1120,26 @@ class DshRuntime:
         # meanwhile): they are told of as taken when the turn the call
         # belongs to ends as a turn does that was not cut short.
         session.awaited.extend(numbers)
+        undo = UNDELIVERED.get()
+        if undo is not None:
+            # And where the answer is seen not to reach dsh (it hung up on
+            # this one call, and its turn goes on): they are queued again,
+            # ahead of what came since, and are not told of as taken.
+            undo.append(lambda: self._give_back(session, texts, of_run))
         return texts
+
+    def _give_back(self, session: _Session, texts: list[str], of_run: int) -> None:
+        """Queue again the texts a call was handed whose answer did not reach dsh."""
+        if self._sessions.get(session.id) is not session or session.closing is not None:
+            return
+        if session.runs != of_run or session.run is None or session.aborting:
+            # The run is over, or is being stopped: what it was handed is
+            # dealt with as its end deals with it.
+            return
+        numbers = set(_numbers_of(texts))
+        session.awaited = [number for number in session.awaited if number not in numbers]
+        session.queue = [*texts, *session.queue]
+        session.arrived.set()
 
     def _say_taken(self, session: _Session, numbers: list[int]) -> None:
         """Say of the texts with these numbers that dsh has them in its conversation; one ``taken`` each."""
@@ -1171,6 +1201,9 @@ class DshRuntime:
                     break
         finally:
             session.run = None
+            # Over: a call of it that is still waiting is not taken for
+            # one of the run that starts next.
+            session.runs += 1
         if session.closing is not None or self._sessions.get(session.id) is not session:
             return
         session.tool_calls.clear()

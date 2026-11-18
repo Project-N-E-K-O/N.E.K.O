@@ -48,6 +48,7 @@ Transport as in the host's gateway: HTTP POST with JSON answers,
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import sys
@@ -72,6 +73,14 @@ WAIT_TOOL = "wait_agent"
 # for the first; an empty list when none came. What it returns counts as
 # handed to the session.
 TakeInput = Callable[[float], Awaitable[list[str]]]
+
+# What to undo when the answer to the request under way does not reach dsh:
+# set by whoever serves the request (``LocalEndpoint``), added to by a call
+# that hands dsh something it must not lose (``wait_agent``'s texts). Calls
+# run in tasks of their own, which see the same list.
+UNDELIVERED: contextvars.ContextVar[list[Callable[[], None]] | None] = contextvars.ContextVar(
+    "nekoclaw_dsh_undelivered", default=None
+)
 
 
 class _Cancelled:

@@ -1120,8 +1120,15 @@ class TaskBrain:
         # asks and what it waits for are read together, so that a row does
         # not say "waiting for you" of one that was answered and rests.
         looked = [await self._waiting_words(item, lang, now) for item in active]
-        active = [seen for seen, _said in looked]
-        waiting = {seen.id: said for seen, said in looked}
+        # Sorted by how each stands as of that look. One that ended since
+        # the lists were read is among those that ended, once (the second
+        # list may have it already), and counts there as one she was told of.
+        ended = [seen for seen, _said in looked if seen.status not in ACTIVE_STATUSES]
+        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES]
+        waiting = {seen.id: said for seen, said in looked if seen.status in ACTIVE_STATUSES}
+        if ended:
+            again = {item.id for item in ended}
+            recent = [*ended, *(item for item in recent if item.id not in again)]
 
         def line(commission: Commission) -> str:
             head = f"- {commission.title} ({status_word(commission.status, lang)})"
