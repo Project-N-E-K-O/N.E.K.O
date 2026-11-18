@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 
@@ -202,6 +203,44 @@ async def test_query_memory_maps_other_errors_to_upstream_error(
 
     assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
     assert exc_info.value.details == {"upstream_status": 422}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_whole_call_shares_one_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each request alone fits the timeout; together they must not."""
+    httpx_module = load_httpx()
+    real_client = httpx_module.AsyncClient
+    paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        await asyncio.sleep(0.3)
+        if request.url.path.startswith("/query_memory/"):
+            return httpx.Response(200, json={"results": [_hit("Likes green tea")]})
+        return httpx.Response(200, json={"effective_language": "en"})
+
+    def _client(**kwargs):
+        kwargs.pop("proxy", None)
+        kwargs.pop("trust_env", None)
+        return real_client(transport=httpx_module.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx_module, "AsyncClient", _client)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=0.5
+        )
+    elapsed = loop.time() - started
+
+    assert exc_info.value.code == "MEMORY_QUERY_TIMEOUT"
+    assert exc_info.value.status_code == 504
+    assert paths == ["/query_memory/Neko", "/prompt-locale/Neko"]
+    assert elapsed < 0.55
 
 
 @pytest.mark.plugin_unit

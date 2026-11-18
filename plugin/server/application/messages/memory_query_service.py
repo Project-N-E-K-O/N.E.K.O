@@ -145,26 +145,31 @@ class MemoryQueryService:
                 "query": normalized_query,
                 "budget_ms": _recall_budget_ms(normalized_timeout),
             }
-            async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None, trust_env=False) as client:
-                response = await client.post(
-                    _build_memory_query_url(lanlan_name=normalized_lanlan_name),
-                    json=body,
+            # One deadline for the whole call. The recall, the locale lookup
+            # and the render each have their own wait; without a shared cap
+            # their sum can outlive the caller's timeout, and the work keeps
+            # running after the plugin has already given up on it.
+            async with asyncio.timeout(normalized_timeout):
+                async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None, trust_env=False) as client:
+                    response = await client.post(
+                        _build_memory_query_url(lanlan_name=normalized_lanlan_name),
+                        json=body,
+                    )
+                    response.raise_for_status()
+                    results = _extract_results(response.json())
+                    if not results:
+                        return {"result": ""}
+                    locale_response = await client.get(
+                        _build_prompt_locale_url(lanlan_name=normalized_lanlan_name),
+                    )
+                    locale_response.raise_for_status()
+                    locale_payload = locale_response.json()
+                lang = (
+                    locale_payload.get("effective_language")
+                    if isinstance(locale_payload, Mapping)
+                    else None
                 )
-                response.raise_for_status()
-                results = _extract_results(response.json())
-                if not results:
-                    return {"result": ""}
-                locale_response = await client.get(
-                    _build_prompt_locale_url(lanlan_name=normalized_lanlan_name),
-                )
-                locale_response.raise_for_status()
-                locale_payload = locale_response.json()
-            lang = (
-                locale_payload.get("effective_language")
-                if isinstance(locale_payload, Mapping)
-                else None
-            )
-            text = await asyncio.to_thread(_render_results, results, lang)
+                text = await asyncio.to_thread(_render_results, results, lang)
             return {"result": text}
         except ServerDomainError as exc:
             logger.warning(
@@ -175,7 +180,9 @@ class MemoryQueryService:
                 exc.details,
             )
             raise
-        except httpx.TimeoutException as exc:
+        # TimeoutError (from the overall deadline) subclasses OSError, so it
+        # must be caught here, before the generic OSError branch below.
+        except (httpx.TimeoutException, TimeoutError) as exc:
             logger.warning(
                 "query_memory timeout: lanlan_name={}, query_len={}, timeout={}",
                 normalized_lanlan_name,
