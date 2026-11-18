@@ -1237,9 +1237,28 @@ async def test_a_record_that_has_the_mark_of_nothing_is_read_without_it(space, r
     _said_instead(_memory(root) / "notes.md", "Something.", "Something." + chr(10) + chr(10) + "..." + chr(10))
 
     assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["notes"]
-    # Nor is a note that comes to nothing refused as one the user removed.
-    reply = await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Dots", "...", "verified"))
-    assert reply == "kept in project Budget app as dots.md"
+
+
+@pytest.mark.parametrize("content", ["...", "***", "…", "「」", "( )", " ", ""])
+async def test_a_note_that_says_nothing_is_not_kept_and_does_not_wait(space, root, workdir, events, content):
+    reply = await space.submit(_commission(workdir), _lesson("Dots", content, "verified"))
+    guess = await space.submit(_commission(workdir), _lesson("More dots", content, "inferred"))
+
+    # Marks of a sentence and nothing between them: every such text would be the same text as every other.
+    assert reply == guess == "not kept: an entry needs a title and a text"
+    assert not _memory(root).exists() and _notes(root) == {"held": [], "removed": []}
+    assert [row[2]["reason"] for row in events.rows] == ["refused", "refused"]
+    # It used no place of its commission.
+    assert space._added_by == {} and space._adding == {}
+
+
+async def test_an_entry_is_not_made_in_the_console_of_a_text_that_says_nothing(space, root):
+    with pytest.raises(SpaceError):
+        await space.file_entry(DEFAULT_PROJECT, title="Dots", content="...")
+    assert not _memory(root).exists()
+    # One that says something in marks of its own is a text.
+    entry, created = await space.file_entry(DEFAULT_PROJECT, title="Operators", content=">= <=")
+    assert created and entry.content == ">= <="
 
 
 async def test_what_was_removed_is_remembered_where_it_was(space, root, workdir):
@@ -1642,17 +1661,27 @@ async def test_an_entry_that_cannot_be_looked_at_while_it_was_coming_back_keeps_
 
 
 def test_a_file_is_gone_for_good_only_when_the_file_system_says_there_is_none(tmp_path, monkeypatch):
-    from nekoclaw.host.space import _gone_for_good
+    from nekoclaw.host.space import _drive_away, _gone_for_good
 
     there = tmp_path / "a.md"
     there.write_text("a", encoding="utf-8")
     assert not _gone_for_good(there) and _gone_for_good(tmp_path / "none.md")
+    assert not _drive_away(there) and not _drive_away("relative/a.md")
 
     def refused(path: Any, *args: Any, **kwargs: Any) -> Any:
         raise PermissionError(13, "not allowed")
 
     monkeypatch.setattr(os, "stat", refused)
     assert not _gone_for_good(tmp_path / "none.md")
+    monkeypatch.undo()
+
+    def unplugged(path: Any, *args: Any, **kwargs: Any) -> Any:
+        raise FileNotFoundError(2, "no such drive")
+
+    # A drive that is unplugged, a share that is down: not found either, and not known to be gone.
+    monkeypatch.setattr(os, "stat", unplugged)
+    monkeypatch.setattr(os.path, "exists", lambda path: False)
+    assert _drive_away(there) and not _gone_for_good(there)
 
 
 async def test_an_expired_entry_that_kept_a_line_loses_it_though_its_files_cannot_be_looked_at(space, root, workdir, monkeypatch):

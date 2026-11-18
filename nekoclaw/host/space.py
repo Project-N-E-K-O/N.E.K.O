@@ -530,7 +530,7 @@ def _digest(content: str) -> str:
 # The mark of a text that says nothing once it is compared (empty, or marks of
 # a sentence only). An entry can come to keep it: emptied in the console, or
 # given a text that is nothing but such marks.
-_NO_TEXT = hashlib.sha256(b"").hexdigest()[:12]
+_NO_TEXT = _digest("")
 
 
 def _confidence(value: Any) -> str:
@@ -741,12 +741,20 @@ def _stands(path: str) -> bool | None:
     try:
         return stat.S_ISREG(os.stat(path).st_mode)
     except (FileNotFoundError, NotADirectoryError):
-        anchor = Path(path).anchor
-        if anchor and not os.path.exists(anchor):
-            return None
-        return False
+        return None if _drive_away(path) else False
     except (OSError, ValueError):
         return None
+
+
+def _drive_away(path: Any) -> bool:
+    """Whether the drive or the share a path begins with is not there at this moment.
+
+    Where drives have letters, a file on one that is unplugged, or on a
+    share that is down, is not found, like one that was deleted. The
+    two are told apart by whether the drive itself is there.
+    """
+    anchor = Path(path).anchor
+    return bool(anchor) and not os.path.exists(anchor)
 
 
 def _standing(paths: Iterable[Any]) -> list[str]:
@@ -842,14 +850,15 @@ def _removed_note(removed: tuple[set[str], set[str]], mark: Any, title: Any) -> 
 def _gone_for_good(path: Path) -> bool:
     """Whether a file is not there any more, as far as that is known for certain.
 
-    Only when the file system says there is no such file. One that
-    cannot be looked at just now (a share that is down, a directory that
-    may not be read) may be there all the same.
+    Only when the file system says there is no such file, on a drive
+    that is there. One that cannot be looked at just now (a drive that
+    is unplugged, a share that is down, a directory that may not be
+    read) may be there all the same.
     """
     try:
         os.stat(path)
     except FileNotFoundError:
-        return True
+        return not _drive_away(path)
     except (OSError, ValueError):
         return False
     return False
@@ -1576,7 +1585,9 @@ class TaskAgentSpace:
         self._revive(project)
         title = _cut(_one_line(redact(title)), SPACE_ENTRY_TITLE_MAX_TOKENS)
         content = _cut(redact(content), SPACE_ENTRY_CONTENT_MAX_TOKENS)
-        if not title or not content:
+        # A text that is nothing but the marks of a sentence says nothing,
+        # and is told from no other such text: all of them have one mark.
+        if not title or not _normal(content):
             raise SpaceError("an entry needs a title and a text")
         description = _cut(_one_line(redact(description)) or _one_line(content), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS)
         directory = paths.memory_dir(project)
@@ -1898,7 +1909,8 @@ class TaskAgentSpace:
         self._revive(project)
         # As they are kept, so that what is compared is what is kept.
         title, content = self._kept_words(note.title, note.content)
-        if not title or not content:
+        # Before it is judged: one that says nothing does not wait either.
+        if not title or not _normal(content):
             raise SpaceError("an entry needs a title and a text")
         mark, name = _digest(content), _normal(title)
         notes_path = paths.notes_file(project)
