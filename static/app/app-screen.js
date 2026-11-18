@@ -2113,16 +2113,14 @@
             if (screenSharingStartAttempt === attempt) {
                 screenSharingStartAttempt = null;
             }
-            releaseReusedStreamUnderPrivacy(attempt);
+            releaseReusedStreamIfUnheld(attempt);
         }
     }
 
-    // 隐私模式在手动启动进行中打开时不动那次启动复用的主动视觉流
-    // （stopVisionAfterPrivacyEnabled 会跳过）。启动最终没跑起来（失败或被
-    // 取消）时，这条流没人再用，在这里补释放，不用等 idle 检查。
-    // Same when a Proactive Chat / Screen Share switch went off during the
-    // start: release unless proactive vision still holds the stream.
-    function releaseReusedStreamUnderPrivacy(attempt) {
+    // 手动启动进行中打开隐私模式、或关掉「主动搭话」/「屏幕分享」时，不动那次
+    // 启动复用的主动视觉流（释放会被跳过）。启动最终没跑起来（失败或被取消）
+    // 时，若主动视觉也不再需要这条流，在这里补释放，不用等 idle 检查。
+    function releaseReusedStreamIfUnheld(attempt) {
         if (isProactiveVisionHoldingStream()) return;
         if (manualScreenShareRunning || isScreenSharingStartPending()
             || sourceSwitchRestart !== null) return;

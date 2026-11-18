@@ -1338,6 +1338,7 @@ const S = {
   selectedScreenSourceId: __SOURCE_ID__
 };
 let proactiveVisionFrameInFlight = false;
+let proactiveVisionFrameRetryAfterInFlight = false;
 let visionEnabled = true;
 const isProactiveVisionEnabledNow = () => visionEnabled;
 // The speech gate and consent follow the same flag here; the switch rules

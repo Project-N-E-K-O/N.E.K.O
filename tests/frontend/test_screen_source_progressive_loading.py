@@ -41,6 +41,10 @@ def _install_screen_source_harness(
             });
             window.__storedValues = storedValues;
             window.appState = { selectedScreenSourceId: null };
+            // app-proactive.js is not loaded here; its keep-the-stream rule
+            // follows the appState flag these tests set.
+            window.holdsProactiveVisionStream = () => window.appState.proactiveVisionEnabled !== false;
+            window.canProactiveVisionRunDuringSpeech = () => window.appState.proactiveVisionEnabled !== false;
             window.appConst = {
                 SCREEN_SOURCE_THUMBNAIL_TIMEOUT: options.thumbnailTimeoutMs,
             };

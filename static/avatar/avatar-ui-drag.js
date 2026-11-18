@@ -378,7 +378,8 @@ window.createChatModeToggle = function(options) {
             }
             // Proactive vision needs both switches; the stream was released when
             // one went off and later captures never prompt, so acquire it on this click.
-            if ((globalVarName === 'proactiveChatEnabled' || globalVarName === 'proactiveVisionChatEnabled')
+            // (The main Proactive Chat switch lives in avatar-ui-popup.js.)
+            if (globalVarName === 'proactiveVisionChatEnabled'
                 && typeof window.acquireProactiveVisionAfterUserEnable === 'function') {
                 window.acquireProactiveVisionAfterUserEnable();
             }

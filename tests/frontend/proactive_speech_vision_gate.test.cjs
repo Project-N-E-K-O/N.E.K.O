@@ -844,7 +844,7 @@ test('the voice nudge asks for vision only while the speech gate allows it', () 
 test('both switch click handlers re-acquire the stream after turning on', () => {
     const drag = read('static/avatar/avatar-ui-drag.js');
     const popup = read('static/avatar/avatar-ui-popup.js');
-    assert.match(drag, /globalVarName === 'proactiveChatEnabled' \|\| globalVarName === 'proactiveVisionChatEnabled'\)[\s\S]{0,120}window\.acquireProactiveVisionAfterUserEnable\(\)/);
+    assert.match(drag, /if \(globalVarName === 'proactiveVisionChatEnabled'\s*&& typeof window\.acquireProactiveVisionAfterUserEnable === 'function'\) \{\s*window\.acquireProactiveVisionAfterUserEnable\(\)/);
     const chatToggle = statementAt(popup, "else if (toggle.id === 'proactive-chat') {");
     assert.match(chatToggle, /if \(isChecked && typeof window\.acquireProactiveVisionAfterUserEnable === 'function'\)/);
 });
@@ -939,6 +939,13 @@ test('a frame captured before an off -> on toggle is dropped and the new heartbe
     await inFlight;
     assert.equal(h.frames(), 0, 'the frame from before the toggle is not sent');
     assert.ok(h.heartbeat(), 'dropping it does not stop the restarted heartbeat');
+
+    // The fresh frame asked for at re-enable was blocked by the capture in
+    // flight; it is captured right after, not one interval later.
+    for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    release({ dataUrl: 'data:image/jpeg;base64,NEW' });
+    for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.frames(), 1, 'the fresh frame follows the dropped one at once');
 });
 
 test('the voice nudge re-checks vision after the async header fetch, before every send', () => {
@@ -950,8 +957,8 @@ test('the voice nudge re-checks vision after the async header fetch, before ever
 });
 
 test('a failed manual start releases the reused stream once proactive vision no longer holds it', () => {
-    const fn = statementAt(screenSource, 'function releaseReusedStreamUnderPrivacy(attempt) {');
-    assert.match(fn, /^function releaseReusedStreamUnderPrivacy\(attempt\) \{\s*(\/\/[^\n]*\n\s*)*if \(isProactiveVisionHoldingStream\(\)\) return;/);
+    const fn = statementAt(screenSource, 'function releaseReusedStreamIfUnheld(attempt) {');
+    assert.match(fn, /^function releaseReusedStreamIfUnheld\(attempt\) \{\s*(\/\/[^\n]*\n\s*)*if \(isProactiveVisionHoldingStream\(\)\) return;/);
 });
 
 test('tutorial suppression still releases the stream while a manual share is starting', () => {
@@ -989,4 +996,29 @@ test('a second click while the first acquisition is pending does not open anothe
     h.window.acquireProactiveVisionAfterUserEnable(); // after it settled, a click may acquire again
     for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
     assert.equal(acquires, 2);
+});
+
+test('accepting the "watch the screen with me" prompt acquires the stream after saving', async () => {
+    const source = read('static/app/app-context-prompt.js');
+    const apply = statementAt(source, 'function _apply(context) {');
+    for (const context of ['play', 'work']) {
+        const calls = [];
+        await runBlock(`${apply}\n_apply(${JSON.stringify(context)});`, {
+            _setFlag: (key, value) => { calls.push(`set:${key}=${value}`); },
+            _persistAndReschedule: () => { calls.push('save'); },
+            acquireProactiveVisionAfterUserEnable: () => { calls.push('acquire'); },
+        });
+        const acquireAt = calls.indexOf('acquire');
+        if (context === 'play') {
+            assert.ok(acquireAt > calls.indexOf('save'), `acquire after save: ${calls}`);
+        } else {
+            assert.equal(acquireAt, -1, 'turning Screen Share off does not acquire');
+        }
+    }
+});
+
+test('text-chat vision modes use the shared keep-the-stream rule', () => {
+    const proactive = read('static/app/app-proactive.js');
+    assert.equal((proactive.match(/if \(holdsProactiveVisionStream\(\)\) \{\s*(availableModes\.push\('vision'\)|latestModes\.push\('vision', 'window'\))/g) || []).length, 2);
+    assert.doesNotMatch(proactive, /S\.proactiveVisionChatEnabled && S\.proactiveChatEnabled && isProactiveVisionEnabledNow\(\)/);
 });

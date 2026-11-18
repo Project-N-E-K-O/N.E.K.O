@@ -1353,7 +1353,7 @@
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
             // 同时触发 vision 和 window 模式
-            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
+            if (holdsProactiveVisionStream()) {
                 availableModes.push('vision');
                 availableModes.push('window');
             }
@@ -1485,7 +1485,7 @@
 
                 // await 期间用户可能切换模式，重新过滤可用模式
                 var latestModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
+                if (holdsProactiveVisionStream()) {
                     latestModes.push('vision', 'window');
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
@@ -2035,6 +2035,10 @@
     // ======================== proactive vision during speech ========================
 
     var proactiveVisionFrameInFlight = false;
+    // Set when a fresh frame was asked for while one was still being captured
+    // (e.g. a quick off -> on toggle, which also voids that frame): send the
+    // fresh one as soon as the capture in flight finishes.
+    var proactiveVisionFrameRetryAfterInFlight = false;
 
     /**
      * 发送单帧屏幕数据（统一使用 acquireOrReuseCachedStream → captureFrameFromStream → 后端兜底）
@@ -2215,6 +2219,12 @@
             console.error('sendOneProactiveVisionFrame 失败:', e);
         } finally {
             proactiveVisionFrameInFlight = false;
+            if (proactiveVisionFrameRetryAfterInFlight) {
+                proactiveVisionFrameRetryAfterInFlight = false;
+                if (S.proactiveVisionFrameTimer) {
+                    sendOneProactiveVisionFrame();
+                }
+            }
         }
     }
     mod.sendOneProactiveVisionFrame = sendOneProactiveVisionFrame;
@@ -2311,7 +2321,11 @@
             // after one full interval, so a voice nudge in that gap cannot
             // describe a frame cached before the switch was turned off.
             if (S.proactiveVisionFrameTimer) {
-                sendOneProactiveVisionFrame();
+                if (proactiveVisionFrameInFlight) {
+                    proactiveVisionFrameRetryAfterInFlight = true;
+                } else {
+                    sendOneProactiveVisionFrame();
+                }
             }
         }
     }
