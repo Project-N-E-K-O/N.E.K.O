@@ -1051,6 +1051,24 @@ class Ledger:
 
         return await self.run(work)
 
+    async def mark_session_cleared(self, session_id: str) -> None:
+        """Put on record that what was said in a session is gone, being old.
+
+        With the session, which is ``cleared``, and with each commission
+        of it, which gets a ``session_cleaned`` event that names the
+        session: written together, or not at all.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE sessions SET status = 'cleared' WHERE id = ?", (session_id,))
+            rows = conn.execute(
+                "SELECT id FROM commissions WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+            ).fetchall()
+            for row in rows:
+                self._event(conn, row["id"], "session_cleaned", {"session_id": session_id})
+
+        await self.run(work)
+
     # -- events -----------------------------------------------------------
 
     def _event(self, conn: sqlite3.Connection, commission_id: str, kind: str, payload: dict[str, Any]) -> int:

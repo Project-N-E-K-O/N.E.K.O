@@ -1389,12 +1389,21 @@ class TaskAgentManager:
             return
         commission = await self._ledger.get(commission_id)
         waits = commission is not None and commission.status == "waiting_user"
+        kept = await self._ledger.get_session(session_id)
         if self._held_by.get(session_id) != commission_id:
             # Let go meanwhile, by another look at the same hold, and maybe
             # taken by the next commission: its status is that one's to say.
             return
+        # What was said in it was removed, being old, and no runtime had it
+        # open since (a commission that gets to work in it writes that it
+        # is at work): the commission that held it failed, or was stopped,
+        # before that. Nothing is in it still, which ``cleared`` says, and
+        # which stands. (Held, it cannot be cleared between this look and
+        # what is written below.)
+        empty = kept is not None and kept.status == "cleared" and not waits
         try:
-            await self._ledger.update_session(session_id, status="waiting" if waits else "closed")
+            if not empty:
+                await self._ledger.update_session(session_id, status="waiting" if waits else "closed")
         except Exception:  # noqa: BLE001 - the status is for showing; the hold is what counts
             logger.warning("noting where a session stands failed", exc_info=True)
         # Looked at again: it may have been taken up, or let go, meanwhile.

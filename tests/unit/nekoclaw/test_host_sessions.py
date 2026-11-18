@@ -1309,6 +1309,43 @@ async def test_a_commission_waiting_for_a_place_to_be_taken_up_again_is_not_queu
     assert len(scripts["sort the photos"].requests) == 1 and agents.running == []
 
 
+async def test_a_session_that_was_cleared_stays_cleared_until_a_commission_gets_to_work_in_it(hosts, tmp_path):
+    llm = ScriptedLLM([_report(), _report("ready", "by year too")])
+    host = _host(hosts, tmp_path, llm)
+    first = await _dispatch(host, "sort the photos")
+    done = await wait_status(host, first.commission_id, "done")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+    session_id = done.session_id
+    assert (await host.ledger.get_session(session_id)).status == "closed"
+    # What was said in it was removed since, being old.
+    await host.ledger.mark_session_cleared(session_id)
+    assert (await host.ledger.get_session(session_id)).status == "cleared"
+    assert (await _events(host, done.id, "session_cleaned"))[-1].payload == {"session_id": session_id}
+
+    # A commission that follows up fails before a runtime has the session open.
+    configured = host.task_agents._model_config
+
+    async def no_model() -> None:
+        return None
+
+    host.task_agents._model_config = no_model
+    second = await _follow_up(host, done, "sort them by year as well")
+    await wait_status(host, second.id, "failed")
+    await _let_go(host)
+    host.task_agents._model_config = configured
+    # Nothing is in the session still. Written down as closed, it would read as one with a
+    # conversation that is there to be removed.
+    assert (await host.ledger.get_session(session_id)).status == "cleared"
+
+    # One that gets to work in it leaves it closed: there is a conversation in it again.
+    third = await _follow_up(host, done, "sort them by year after all")
+    await wait_status(host, third.id, "done")
+    await _released(host, third.id)
+    await _let_go(host)
+    assert (await host.ledger.get_session(session_id)).status == "closed"
+
+
 async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_its_commissions_were(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
     receipt = await _dispatch(host, "sort the photos")

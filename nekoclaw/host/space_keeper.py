@@ -1156,7 +1156,8 @@ class SpaceKeeper:
             # opens the session while its files are still being removed.
             outcome = await to_thread_through_cancellation(self._clean, Path(directory), current.id)
             if outcome == _REMOVED:
-                await asyncio.shield(self._note_cleared(current.id))
+                # With the session, and with each commission of it.
+                await asyncio.shield(self._ledger.mark_session_cleared(current.id))
             return outcome
         except (OSError, ValueError):
             logger.warning("an old session could not be looked at", exc_info=True)
@@ -1164,19 +1165,6 @@ class SpaceKeeper:
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)
-
-    async def _note_cleared(self, session_id: str) -> None:
-        """Put on record that what was said in a session is gone: with the session, and with each commission of it."""
-
-        def work(conn: sqlite3.Connection) -> None:
-            conn.execute("UPDATE sessions SET status = 'cleared' WHERE id = ?", (session_id,))
-            rows = conn.execute(
-                "SELECT id FROM commissions WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
-            ).fetchall()
-            for row in rows:
-                self._ledger._event(conn, row["id"], "session_cleaned", {"session_id": session_id})
-
-        await self._ledger.run(work)
 
     @staticmethod
     def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:
