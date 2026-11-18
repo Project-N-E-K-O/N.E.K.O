@@ -34,7 +34,6 @@ from main_logic.proactive_delivery import (
 )
 
 from ._shared import (
-    AIMessage,
     asyncio,
     HumanMessage,
     logger,
@@ -78,6 +77,14 @@ _IMAGE_KIND_PLUGIN = "plugin"              # plugin frames and callback media
 _IMAGE_KIND_UNKNOWN = "unknown"
 # Captured automatically from the screen or camera rather than chosen by the user.
 _AUTO_CAPTURED_IMAGE_KINDS = frozenset({_IMAGE_KIND_LIVE, _IMAGE_KIND_AUTO_SCREENSHOT})
+
+
+def _is_auto_captured_history_image(kind: str, prefit_kinds) -> bool:
+    """Captured automatically, or unknown in a turn that held an automatic capture (fail closed)."""
+    return kind in _AUTO_CAPTURED_IMAGE_KINDS or (
+        kind == _IMAGE_KIND_UNKNOWN
+        and any(k in _AUTO_CAPTURED_IMAGE_KINDS for k in prefit_kinds)
+    )
 
 
 def _history_image_kinds(ordered_kinds: list, attached_count: int) -> tuple[list, list]:
@@ -593,7 +600,9 @@ class _MediaMixin:
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
 
-    def _strip_history_images(self, should_strip, *, answered_only: bool = False) -> int:
+    def _strip_history_images(
+        self, should_strip, *, skip_in_flight: bool = False, only=None,
+    ) -> int:
         """Drop the pixels of history images for which ``should_strip(kind, prefit_kinds)`` holds.
 
         A receipt replaces them, like ``_evict_old_images``. Messages without
@@ -605,16 +614,16 @@ class _MediaMixin:
         that message by identity.
         """
         stripped = 0
-        history = self._conversation_history
-        # answered_only: skip user turns no reply has followed yet (one may
-        # still be on its way to the provider, e.g. awaiting its transcript
-        # callback).
-        last_reply = max(
-            (i for i, m in enumerate(history) if isinstance(m, AIMessage)),
-            default=-1,
-        ) if answered_only else len(history)
-        for position, msg in enumerate(history):
-            if not isinstance(msg, HumanMessage) or position > last_reply:
+        # skip_in_flight: leave the user messages whose stream_text call is
+        # still running (registered on append, released when the call
+        # returns): their request may not have reached the provider yet.
+        in_flight = (
+            {id(m) for m in (getattr(self, "_in_flight_user_messages", None) or {}).values()}
+            if skip_in_flight
+            else set()
+        )
+        for msg in self._conversation_history if only is None else (only,):
+            if not isinstance(msg, HumanMessage) or id(msg) in in_flight:
                 continue
             count = image_count(msg.content)
             metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
@@ -635,7 +644,7 @@ class _MediaMixin:
             stripped += count - len(keep)
         return stripped
 
-    def _strip_answered_live_frames(self, *, answered_only: bool = False) -> None:
+    def _strip_answered_live_frames(self, *, skip_in_flight: bool = False) -> None:
         """Live share frames serve the turn they rode; the next turn keeps only a receipt.
 
         A turn whose mapping the budget ladder lost is stripped whole when it
@@ -645,7 +654,7 @@ class _MediaMixin:
         stripped = self._strip_history_images(
             lambda kind, prefit: kind == _IMAGE_KIND_LIVE
             or (kind == _IMAGE_KIND_UNKNOWN and _IMAGE_KIND_LIVE in prefit),
-            answered_only=answered_only,
+            skip_in_flight=skip_in_flight,
         )
         if stripped:
             logger.info("🖼️ Stripped %d live frame(s) from history after their turn", stripped)
@@ -664,18 +673,21 @@ class _MediaMixin:
             getattr(self, "_auto_capture_discard_epoch", 0) + 1
         )
         self.set_proactive_screenshot(None)
-        stripped = self._strip_history_images(
-            lambda kind, prefit: kind in _AUTO_CAPTURED_IMAGE_KINDS
-            or (
-                kind == _IMAGE_KIND_UNKNOWN
-                and any(k in _AUTO_CAPTURED_IMAGE_KINDS for k in prefit)
-            )
-        )
+        stripped = self._strip_history_images(_is_auto_captured_history_image)
         if stripped:
             logger.info(
                 "🖼️ Stripped %d automatically captured image(s) from history after consent revocation",
                 stripped,
             )
+
+    def _strip_auto_captures_missed_by_revocation(self, message) -> None:
+        """A turn assembled across a revocation strips its own automatic captures.
+
+        Only this message: the staged screenshot, other turns and the epoch
+        belong to the revocation itself, and consent may have been granted
+        again since.
+        """
+        self._strip_history_images(_is_auto_captured_history_image, only=message)
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         keep_turns = max(0, keep_turns)

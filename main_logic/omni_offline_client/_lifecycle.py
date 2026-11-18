@@ -161,6 +161,11 @@ def _tracked_reply_call(method):
         try:
             return await method(self, *args, **kwargs)
         finally:
+            # The user message this call put in history is no longer heading
+            # to the provider (see _strip_answered_live_frames).
+            in_flight = getattr(self, "_in_flight_user_messages", None)
+            if in_flight:
+                in_flight.pop(asyncio.current_task(), None)
             self._reply_calls_in_flight = max(0, self._reply_calls_in_flight - 1)
             if not self._reply_calls_in_flight:
                 self._notify_idle()
@@ -890,9 +895,9 @@ class _LifecycleMixin:
         # Same rule as stream_text: live frames of earlier turns keep receipts
         # only. Only once this reply may start: a declined callback must not
         # touch a turn that is still replying. Edited in place, so the request
-        # view built above sees it too. A user turn not yet answered (still
-        # heading to the provider) keeps its frames.
-        self._strip_answered_live_frames(answered_only=True)
+        # view built above sees it too. A user turn whose stream_text is still
+        # running (e.g. parked on its transcript callback) keeps its frames.
+        self._strip_answered_live_frames(skip_in_flight=True)
 
         # Retry policy mirrors stream_text: max_retries=3, delays [1,2] seconds.
         # Proactive semantics differ: users await no reply, so **silently swallow** exhausted retries,

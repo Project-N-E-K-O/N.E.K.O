@@ -294,8 +294,7 @@ async def test_revocation_mid_turn_strips_the_unsent_proactive_screenshot_synchr
         await asyncio.wait_for(turn_a, timeout=5)
     finally:
         resume.set()
-        if not turn_a.done():
-            turn_a.cancel()
+        await _settle(turn_a)
     urls = _urls(client.requests[-1])
     # Turn A's own request: only the user's photo.
     assert urls == [kept_url]
@@ -303,6 +302,18 @@ async def test_revocation_mid_turn_strips_the_unsent_proactive_screenshot_synchr
     # revocation must not publish the stripped screenshot.
     published_images, published_sources = client._publish_provider_frames.call_args.args[:2]
     assert len(published_images) == 1 and list(published_sources) == ["user"]
+
+
+async def _settle(task):
+    """Cancel a turn still running after a failed assertion, and wait for it."""
+    import asyncio
+
+    if not task.done():
+        task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=5)
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 async def _until_parked(parked, task):
@@ -349,10 +360,134 @@ async def test_proactive_reply_keeps_live_frames_of_a_turn_still_heading_to_the_
         await asyncio.wait_for(turn, timeout=5)
     finally:
         resume.set()
-        if not turn.done():
-            turn.cancel()
+        await _settle(turn)
     # The user turn's own request still carries its live frame.
     assert [_dominant_channel(u) for u in _urls(client.requests[-1])] == ["red"]
+
+
+@pytest.mark.asyncio
+async def test_two_proactive_replies_keep_live_frames_of_a_parked_user_turn():
+    """The first proactive reply writes an AIMessage; the second must still not strip the turn."""
+    import asyncio
+
+    client = _client()
+    parked = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def transcript_callback(_text):
+        parked.set()
+        await resume.wait()
+
+    client.script = [
+        [_text("proactive one"), _text("", "stop")],
+        [_text("proactive two"), _text("", "stop")],
+        [_text("user reply"), _text("", "stop")],
+    ]
+    turn = asyncio.create_task(client.stream_text(
+        "what is on screen?", turn_images=(_png_b64(40, 40, (200, 10, 10)),),
+        turn_source="screen", turn_source_count=1,
+        input_transcript_callback=transcript_callback,
+    ))
+    try:
+        await _until_parked(parked, turn)
+        await client.prompt_ephemeral("callback one")
+        await client.prompt_ephemeral("callback two")
+        resume.set()
+        await asyncio.wait_for(turn, timeout=5)
+    finally:
+        resume.set()
+        await _settle(turn)
+    assert [_dominant_channel(u) for u in _urls(client.requests[-1])] == ["red"]
+    assert client._in_flight_user_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_without_an_ai_message_still_loses_its_live_frames():
+    """A tool-only ending leaves no AIMessage; the finished turn is not 'in flight'."""
+    from utils.llm_client import AIMessage
+
+    client = _client()
+    await _turn(
+        client, "look", turn_images=(_png_b64(40, 40),), turn_source="screen", turn_source_count=1,
+    )
+    client._conversation_history[:] = [
+        m for m in client._conversation_history if not isinstance(m, AIMessage)
+    ]
+    client.script = [[_text("proactive"), _text("", "stop")]]
+    assert await client.prompt_ephemeral("callback") is True
+    assert _urls(client.requests[-1]) == []
+
+
+@pytest.mark.asyncio
+async def test_missed_revocation_recheck_leaves_a_screenshot_staged_after_regrant(monkeypatch):
+    """The per-turn recheck strips only its own turn; it is not a second revocation."""
+    import asyncio
+
+    from main_logic.omni_offline_client import _streaming as offline_streaming
+
+    real_fit = offline_streaming.fit_images_to_turn_budget
+    fitting = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def paused_fit(images, budget):
+        fitting.set()
+        await resume.wait()
+        return await real_fit(images, budget)
+
+    monkeypatch.setattr(offline_streaming, "fit_images_to_turn_budget", paused_fit)
+    client = _client()
+    client.set_proactive_screenshot(_png_b64(40, 40, (1, 2, 3)))
+    client._pending_images = [_png_b64(41, 41, (4, 5, 6))]
+    client.script = [[_text("ok"), _text("", "stop")]]
+    turn = asyncio.create_task(client.stream_text("reply with my photo"))
+    try:
+        await asyncio.wait_for(fitting.wait(), timeout=5)
+        client.discard_auto_captured_history_images()
+        epoch = client._auto_capture_discard_epoch
+        # From here on only the recheck could touch the staged slot (consent
+        # may have been granted again and a new screenshot staged).
+        staged_calls = []
+        monkeypatch.setattr(client, "set_proactive_screenshot", lambda image: staged_calls.append(image))
+        resume.set()
+        await asyncio.wait_for(turn, timeout=5)
+    finally:
+        resume.set()
+        await _settle(turn)
+    assert staged_calls == []
+    assert client._auto_capture_discard_epoch == epoch
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    assert message.metadata["image_kinds"] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_bus_publishes_one_user_copy_when_screenshot_and_photo_bytes_match():
+    import asyncio
+
+    client = _client()
+    same = _png_b64(41, 41, (4, 5, 6))
+    client.set_proactive_screenshot(same)
+    client._pending_images = [same]
+    parked = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def transcript_callback(_text):
+        parked.set()
+        await resume.wait()
+
+    client.script = [[_text("ok"), _text("", "stop")]]
+    turn = asyncio.create_task(
+        client.stream_text("same picture", input_transcript_callback=transcript_callback)
+    )
+    try:
+        await _until_parked(parked, turn)
+        client.discard_auto_captured_history_images()
+        resume.set()
+        await asyncio.wait_for(turn, timeout=5)
+    finally:
+        resume.set()
+        await _settle(turn)
+    published_images, published_sources = client._publish_provider_frames.call_args.args[:2]
+    assert len(published_images) == 1 and list(published_sources) == ["user"]
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 from dataclasses import replace
 from typing import Sequence
 
@@ -1139,10 +1140,16 @@ class _StreamingMixin:
         # so a frame of a share that has since ended is not resent every turn.
         self._strip_answered_live_frames()
         self._conversation_history.append(user_message)
+        # Heading to the provider until this call returns (released by
+        # _tracked_reply_call); a proactive reply meanwhile leaves its frames.
+        in_flight_messages = getattr(self, "_in_flight_user_messages", None)
+        if in_flight_messages is None:
+            in_flight_messages = self._in_flight_user_messages = {}
+        in_flight_messages[asyncio.current_task()] = user_message
         if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
             # Consent was revoked while this turn was being assembled: its
             # proactive screenshot must not go out (no await since append).
-            self.discard_auto_captured_history_images()
+            self._strip_auto_captures_missed_by_revocation(user_message)
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history
@@ -1436,7 +1443,10 @@ class _StreamingMixin:
                                 # revocation since the snapshot (e.g. while the
                                 # transcript callback ran) stripped them from the
                                 # request, so plugins must not get them either.
-                                _carried = {
+                                # Counted, not a set: identical bytes may be both a
+                                # stripped screenshot and a kept attachment. Other
+                                # labels claim a carried copy before the screenshot.
+                                _carried = collections.Counter(
                                     part.get("image_url", {}).get("url")
                                     for part in (
                                         user_message.content
@@ -1444,11 +1454,17 @@ class _StreamingMixin:
                                         else ()
                                     )
                                     if isinstance(part, dict) and part.get("type") == "image_url"
-                                }
-                                _kept = [
-                                    index for index, image in enumerate(_bus_images)
-                                    if f"data:image/jpeg;base64,{image}" in _carried
-                                ]
+                                )
+                                _kept = []
+                                for _screen_pass in (False, True):
+                                    for index, image in enumerate(_bus_images):
+                                        if (_bus_sources[index] == _FRAME_SOURCE_SCREEN) != _screen_pass:
+                                            continue
+                                        url = f"data:image/jpeg;base64,{image}"
+                                        if _carried[url] > 0:
+                                            _carried[url] -= 1
+                                            _kept.append(index)
+                                _kept.sort()
                                 if len(_kept) != len(_bus_images):
                                     _bus_images = [_bus_images[i] for i in _kept]
                                     _bus_sources = [_bus_sources[i] for i in _kept]
