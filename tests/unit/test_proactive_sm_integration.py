@@ -428,6 +428,7 @@ async def test_voice_nudge_waits_for_callback_inject_lock():
         language="en",
         user_turn_active=mgr._independent_asr_user_turn_active,
         session_owned=sess.prompt_ephemeral.await_args.kwargs["session_owned"],
+        vision_allowed=sess.prompt_ephemeral.await_args.kwargs["vision_allowed"],
     )
     assert sess.prompt_ephemeral.await_args.kwargs["session_owned"]() is True
 
@@ -454,6 +455,7 @@ async def test_voice_nudge_request_locale_is_forwarded_without_mutating_manager_
         language="zh-TW",
         user_turn_active=mgr._independent_asr_user_turn_active,
         session_owned=sess.prompt_ephemeral.await_args.kwargs["session_owned"],
+        vision_allowed=sess.prompt_ephemeral.await_args.kwargs["vision_allowed"],
     )
     assert sess.prompt_ephemeral.await_args.kwargs["session_owned"]() is True
     assert mgr.user_language == "en"

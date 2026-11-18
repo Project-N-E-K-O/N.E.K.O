@@ -1505,6 +1505,29 @@ class _TransportMixin:
         ):
             self._raw_visual_delivery_blocked = False
 
+    def discard_cached_visual_context(self) -> None:
+        """Forget the cached frame so no later proactive turn can deliver it.
+
+        Called when the user revokes screen consent. The generation bump
+        fences any in-flight ``prompt_ephemeral`` snapshot: a late visual
+        rejection can no longer re-arm the discarded frame.
+        """
+
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        # Frames still validating when consent was revoked carry an earlier
+        # ingress time; this floor makes stage_multimodal_frame drop them.
+        self._latest_image_captured_at = time.monotonic()
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not self._supports_native_image:
+            # A completed Step annotation describes the discarded frame.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+
     def stage_multimodal_frame(
         self,
         image_b64: str,

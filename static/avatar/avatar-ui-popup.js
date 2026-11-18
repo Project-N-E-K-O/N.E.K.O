@@ -3045,7 +3045,9 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 if (typeof window.resetProactiveChatBackoff === 'function') {
                     window.resetProactiveChatBackoff();
                 }
-                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
+                if (typeof window.isRecording !== 'undefined' && window.isRecording
+                    && typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                    && window.canProactiveVisionRunDuringSpeech() === true) {
                     if (typeof window.startProactiveVisionDuringSpeech === 'function') {
                         window.startProactiveVisionDuringSpeech();
                     }

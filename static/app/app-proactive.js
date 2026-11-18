@@ -127,6 +127,15 @@
 
     mod.isProactiveVisionEnabledNow = isProactiveVisionEnabledNow;
 
+    // Whether the speech-time vision heartbeat may look at the screen right now.
+    // Every heartbeat start entry, the per-tick re-check and every "keep the
+    // screen stream during a call" decision use this one function; change the
+    // rule here only. Today it follows privacy mode alone (unchanged behavior).
+    function canProactiveVisionRunDuringSpeech() {
+        return isProactiveVisionEnabledNow();
+    }
+    mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
+
     // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
     // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
     var proactiveVisionRevocationSeq = 0;
@@ -590,7 +599,7 @@
             }
             // 接班：如果当前正在录音，启动 vision-during-speech
             try {
-                if (S.isRecording) startProactiveVisionDuringSpeech();
+                if (S.isRecording && canProactiveVisionRunDuringSpeech()) startProactiveVisionDuringSpeech();
             } catch (e) {
                 console.warn('[Proactive] 接班时启动 vision-during-speech 失败:', e);
             }
@@ -1992,7 +2001,7 @@
         if (proactiveVisionFrameInFlight) return;
         proactiveVisionFrameInFlight = true;
         try {
-            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+            if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -2111,7 +2120,7 @@
             // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
             // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
             var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
-            var visionDisabled = !isProactiveVisionEnabledNow();
+            var visionDisabled = !canProactiveVisionRunDuringSpeech();
             if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
                 if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
@@ -2167,13 +2176,13 @@
         }
 
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
-        if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
+        if (!canProactiveVisionRunDuringSpeech() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
         if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()
+            if (!canProactiveVisionRunDuringSpeech() || !S.isRecording || isGoodbyeActive()
                 || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
                 return;
@@ -2563,8 +2572,8 @@
         // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
         var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
-        // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording && !privacyBlocksVision && !suppressionBlocksVision) {
+        // In a call whose heartbeat may still see the screen the stream may be in use: keep it.
+        if (S.isRecording && canProactiveVisionRunDuringSpeech() && !suppressionBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
@@ -2604,7 +2613,7 @@
         // 可静默重建的桌面源/后端截图可以恢复；浏览器 getDisplayMedia
         // 不能由教程解锁事件重新授权，后端不可用时需用户手势重新获取。
         try {
-            if (S.isRecording) {
+            if (S.isRecording && canProactiveVisionRunDuringSpeech()) {
                 startProactiveVisionDuringSpeech();
             }
         } catch (e) {
@@ -2688,6 +2697,7 @@
     window.stopProactiveChatSchedule = stopProactiveChatSchedule;
     window.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;
     window.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
+    window.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;

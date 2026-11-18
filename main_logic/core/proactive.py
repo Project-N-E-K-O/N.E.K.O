@@ -104,6 +104,29 @@ class ProactiveMixin:
                 getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
             )
         self._proactive_vision_enabled = enabled
+        if not enabled:
+            # Independent ASR keeps its own live-frame cache for the next
+            # user turn; frames captured before the revocation must not ride it.
+            if hasattr(self, "_latest_independent_visual_frame"):
+                self._latest_independent_visual_frame = None
+            if hasattr(self, "_prerecord_visual_frames"):
+                self._prerecord_visual_frames = []
+            # A frame cached before the revocation must not reach a later
+            # proactive turn of this session.
+            discard = getattr(
+                getattr(self, "session", None),
+                "discard_cached_visual_context",
+                None,
+            )
+            if callable(discard):
+                try:
+                    discard()
+                except Exception:
+                    logger.warning(
+                        "[%s] failed to discard cached visual context after consent revocation",
+                        getattr(self, "lanlan_name", ""),
+                        exc_info=True,
+                    )
 
     def _proactive_round_owned(self, round_id: str | None) -> bool:
         """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
@@ -190,6 +213,7 @@ class ProactiveMixin:
         self,
         *,
         language: str | None = None,
+        allow_vision: bool = True,
     ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
@@ -199,6 +223,10 @@ class ProactiveMixin:
 
         ``language`` is a request-local rendering override. It intentionally
         does not update the manager's durable or fallback language state.
+
+        ``allow_vision`` is False when the request did not enable the screen
+        source; the cached frame then stays out of this turn. Live consent is
+        re-checked inside ``prompt_ephemeral`` on every visual step.
 
         Returns True if the text turn was sent, False if skipped.
         """
@@ -231,6 +259,10 @@ class ProactiveMixin:
                 language=_lang,
                 user_turn_active=self._independent_asr_user_turn_active,
                 session_owned=lambda: self.is_active and self.session is session,
+                vision_allowed=lambda: (
+                    allow_vision
+                    and getattr(self, "_proactive_vision_enabled", None) is not False
+                ),
             )
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)

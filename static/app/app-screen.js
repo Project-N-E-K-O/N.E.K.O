@@ -812,6 +812,19 @@
         // 再做会产生回环/重复 IPC。
     });
 
+    // Speech-time vision may see the screen only when app-proactive's
+    // canProactiveVisionRunDuringSpeech says so; treat a missing gate as "no".
+    function canSpeechVisionSeeScreen() {
+        return typeof window.canProactiveVisionRunDuringSpeech === 'function'
+            && window.canProactiveVisionRunDuringSpeech() === true;
+    }
+
+    // Whether proactive vision (speech heartbeat or text-chat screenshots) still needs the stream.
+    function isProactiveVisionHoldingStream() {
+        if (S.isRecording && canSpeechVisionSeeScreen()) return true;
+        return !!(S.proactiveVisionEnabled && S.proactiveVisionChatEnabled && S.proactiveChatEnabled);
+    }
+
     // ======================== scheduleScreenCaptureIdleCheck ========================
     function scheduleScreenCaptureIdleCheck() {
         // 清除现有定时器
@@ -837,9 +850,7 @@
                     // 不得据设置值保留流。
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-                        S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-                    );
+                    var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
                     var isManualScreenShare = screenButton() && screenButton().classList.contains('active');
                     if (proactiveVisionActive && !isManualScreenShare) {
                         console.log('[屏幕流闲置] 主动视觉活跃中，跳过释放并续约定时器');
@@ -2766,9 +2777,7 @@
         // 不得据设置真值保留流，否则停止分享后屏幕流被无限期扣住）。
         var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
             && window.isNekoHomeTutorialProactiveSuppressed() === true;
-        var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-            S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-        );
+        var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
 
         // 条件释放流
         if (forceRelease || !proactiveVisionActive) {
@@ -2811,7 +2820,7 @@
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
-            if (S.proactiveVisionEnabled && S.isRecording) {
+            if (S.isRecording && canSpeechVisionSeeScreen()) {
                 if (window.startProactiveVisionDuringSpeech) {
                     window.startProactiveVisionDuringSpeech();
                 }

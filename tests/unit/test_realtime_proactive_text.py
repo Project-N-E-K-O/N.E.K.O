@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2003,4 +2004,293 @@ async def test_standard_stepfun_defers_prompt_until_annotation_is_ready():
     assert client._proactive_image_consumed is False
     client.inject_text_and_request_response.assert_not_awaited()
     assert _sent_events(client) == []
+    await client.close()
+
+
+# ── Screen consent / enabled-modes gate (vision_allowed) ──────────────────────
+
+
+@pytest.mark.unit
+async def test_vision_not_allowed_sends_text_only_and_keeps_frame_out():
+    """A nudge whose request did not enable the screen must not carry the frame."""
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    delivered = await _prompt_and_complete(
+        client, language="zh", vision_allowed=lambda: False,
+    )
+
+    events = _sent_events(client)
+    input_texts = _input_texts(events)
+    assert delivered is True
+    assert not any(
+        event.get("type") == "input_image_buffer.append" for event in events
+    )
+    assert any("主动搭话触发" in text for text in input_texts)
+    assert not any("屏幕主动搭话触发" in text for text in input_texts)
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_vision_allowed_callable_error_fails_closed():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    def broken() -> bool:
+        raise RuntimeError("consent unreadable")
+
+    delivered = await _prompt_and_complete(
+        client, language="zh", vision_allowed=broken,
+    )
+
+    assert delivered is True
+    assert not any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_vision_not_allowed_skips_completed_stepfun_annotation():
+    client = _make_client(api_type="step", model="step-realtime")
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._image_recognized_this_turn = True
+    client._image_description = "画面里有一只猫。"
+
+    delivered = await _prompt_and_complete(
+        client, "start a conversation", vision_allowed=lambda: False,
+    )
+
+    assert delivered is True
+    assert _input_texts(_sent_events(client)) == ["start a conversation"]
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_vision_not_allowed_does_not_defer_for_pending_stepfun_analysis():
+    """Without vision there is no annotation to wait for."""
+    client = _make_client(api_type="step", model="step-realtime")
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._image_being_analyzed = True
+    client._image_recognized_this_turn = False
+
+    delivered = await _prompt_and_complete(
+        client, "start a conversation", vision_allowed=lambda: False,
+    )
+
+    assert delivered is True
+    assert _input_texts(_sent_events(client)) == ["start a conversation"]
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_vision_not_allowed_sends_no_image():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    client.on_response_done = AsyncMock()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    task = asyncio.create_task(
+        client.prompt_ephemeral("text only", vision_allowed=lambda: False)
+    )
+    for _ in range(20):
+        if client._gemini_session.send_client_content.await_count:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("Gemini proactive turn was not sent")
+    await client._process_gemini_response(
+        _gemini_lifecycle_response(turn_complete=True)
+    )
+
+    assert await task is True
+    client._gemini_session.send_realtime_input.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_description_mode_vision_not_allowed_sends_no_cue_image():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    client.stream_image = AsyncMock()
+
+    delivered = await _prompt_and_complete(
+        client, "text only", vision_allowed=lambda: False,
+    )
+
+    assert delivered is True
+    client.stream_image.assert_not_awaited()
+    assert _input_texts(_sent_events(client)) == ["text only"]
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_consent_revoked_during_sid_rotation_skips_the_visual_turn():
+    """The frame must not go out once consent is gone, even mid-turn."""
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    assert client._has_server_vad, "fixture must take the SID-rotation path"
+    consent = {"granted": True}
+
+    async def revoke_during_rotation():
+        consent["granted"] = False
+
+    client.on_sid_rotate = revoke_during_rotation
+
+    delivered = await client.prompt_ephemeral(
+        "describe what you notice",
+        vision_allowed=lambda: consent["granted"],
+    )
+
+    assert delivered is False
+    assert not any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("api_type", "model"),
+    [
+        ("free", "free-model"),
+        ("qwen", "qwen-omni-realtime"),
+        ("gemini", "gemini-live"),
+        ("step", "step-realtime"),
+    ],
+)
+async def test_discard_cached_visual_context_forgets_frame(api_type, model):
+    client = _make_client(api_type=api_type, model=model)
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._latest_image_captured_at = 123.0
+    client._latest_image_source = "screen"
+    client._latest_image_request_id = "req-1"
+    client._proactive_image_consumed = False
+    client._image_recognized_this_turn = True
+    client._image_description = "画面里有一只猫。"
+    generation = client._latest_image_generation
+
+    before = time.monotonic()
+    client.discard_cached_visual_context()
+
+    assert client._latest_image_b64 is None
+    assert client._latest_image_captured_at >= before
+    assert client._latest_image_source == "unknown"
+    assert client._latest_image_request_id is None
+    assert client._proactive_image_consumed is True
+    assert client._latest_image_generation == generation + 1
+    if not client._supports_native_image:
+        assert client._image_recognized_this_turn is False
+        assert client._image_description == responses_module._IMAGE_ANALYSIS_PENDING_DESCRIPTION
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_discarded_frame_is_not_delivered_by_next_nudge():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    client.discard_cached_visual_context()
+    delivered = await _prompt_and_complete(client, language="zh")
+
+    assert delivered is True
+    assert not any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_frame_captured_before_revocation_cannot_restage_after_it():
+    """A frame still validating at revocation time arrives with an older ingress time."""
+    client = _make_client()
+    captured_before_revoke = time.monotonic()
+
+    client.discard_cached_visual_context()
+    late = client.stage_multimodal_frame(
+        DUMMY_IMAGE_B64, source="screen", captured_at=captured_before_revoke,
+    )
+    fresh = client.stage_multimodal_frame(
+        DUMMY_IMAGE_B64, source="screen", captured_at=time.monotonic() + 1.0,
+    )
+
+    assert late.accepted is False
+    assert late.rejection_reason == "stale_frame"
+    assert fresh.accepted is True
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_revocation_during_external_analysis_drops_the_description():
+    """Description mode waits seconds for analysis; a revocation then must win."""
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    client._visual_delivery_mode = VisualDeliveryMode.EXTERNAL_DESCRIPTION
+    consent = {"granted": True}
+
+    async def analyze_then_revoke(_image_b64, **_kwargs):
+        consent["granted"] = False
+        return SimpleNamespace(
+            accepted=True,
+            mode=VisualDeliveryMode.EXTERNAL_DESCRIPTION.value,
+            description="屏幕上是游戏菜单",
+        )
+
+    client.stream_image = analyze_then_revoke
+
+    delivered = await client.prompt_ephemeral(
+        "describe what you notice",
+        vision_allowed=lambda: consent["granted"],
+    )
+
+    assert delivered is False
+    texts = _input_texts(_sent_events(client))
+    assert not any("屏幕上是游戏菜单" in text for text in texts)
+    assert not any("describe what you notice" in text for text in texts)
+    assert not any(
+        event.get("type") == "response.create" for event in _sent_events(client)
+    )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_revocation_during_native_image_send_skips_the_text_turn():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    consent = {"granted": True}
+    real_stream_image = client.stream_image
+
+    async def send_then_revoke(image_b64, **kwargs):
+        result = await real_stream_image(image_b64, **kwargs)
+        consent["granted"] = False
+        return result
+
+    client.stream_image = send_then_revoke
+
+    delivered = await client.prompt_ephemeral(
+        "describe what you notice",
+        vision_allowed=lambda: consent["granted"],
+    )
+
+    events = _sent_events(client)
+    assert delivered is False
+    assert any(event.get("type") == "input_image_buffer.append" for event in events)
+    assert not any("describe what you notice" in text for text in _input_texts(events))
+    assert not any(event.get("type") == "response.create" for event in events)
+    # The frame already reached provider context: do not offer it again.
+    assert client._proactive_image_consumed is True
     await client.close()

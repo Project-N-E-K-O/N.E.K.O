@@ -2254,6 +2254,7 @@ class _ResponseMixin:
         language: str = "zh",
         user_turn_active: Optional[Callable[[], bool]] = None,
         session_owned: Optional[Callable[[], bool]] = None,
+        vision_allowed: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Inject a text turn and explicitly request proactive speech.
 
@@ -2265,6 +2266,10 @@ class _ResponseMixin:
         Pending native visual context is sent immediately before the text turn.
         Standard StepFun remains the only non-native realtime provider: when a
         VISION_MODEL description is available, it is injected as text first.
+
+        ``vision_allowed`` lets the caller withhold that visual context (screen
+        source not enabled, or consent revoked). It is read again right before
+        the frame is sent; an error reading it counts as not allowed.
         """
         # ── Guard checks ──────────────────────────────────────────────
         if self._fatal_error_occurred:
@@ -2384,8 +2389,18 @@ class _ResponseMixin:
         # attempt until the matching description exists, or we would select a
         # screen-aware prompt without injecting any visual context and then
         # incorrectly mark the frame consumed.
+        def _vision_permitted() -> bool:
+            if vision_allowed is None:
+                return True
+            try:
+                return bool(vision_allowed())
+            except Exception:
+                return False
+
+        vision_permitted = _vision_permitted()
         has_pending_frame = (
-            self._latest_image_b64 is not None
+            vision_permitted
+            and self._latest_image_b64 is not None
             and not self._proactive_image_consumed
         )
         if (
@@ -2408,10 +2423,13 @@ class _ResponseMixin:
             getattr(self, "_raw_visual_delivery_blocked", False)
             and not external_visual_delivery
         )
-        has_vision = self._image_recognized_this_turn or (
-            (self._supports_native_image or external_visual_delivery)
-            and has_pending_frame
-            and not raw_delivery_fenced
+        has_vision = vision_permitted and (
+            self._image_recognized_this_turn
+            or (
+                (self._supports_native_image or external_visual_delivery)
+                and has_pending_frame
+                and not raw_delivery_fenced
+            )
         )
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
@@ -2478,6 +2496,14 @@ class _ResponseMixin:
                 )
                 return False
             external_visual_delivery = current_external_visual_delivery
+
+        # Consent may be revoked while SID rotation yields. The prompt was
+        # chosen with vision, so skip the turn instead of sending the frame.
+        if has_vision and not _vision_permitted():
+            logger.info(
+                "prompt_ephemeral: skipped — visual context no longer allowed"
+            )
+            return False
 
         if (
             has_vision
@@ -2683,6 +2709,24 @@ class _ResponseMixin:
                     "content": [{"type": "input_text", "text": self._image_description}],
                 },
             },)
+
+        # Consent may also be revoked while the image is staged or analyzed
+        # (external analysis can take seconds). Do not send the screen-aware
+        # turn; account for a raw frame already in provider context exactly
+        # like the activity race below.
+        if has_vision and not _vision_permitted():
+            if (
+                snapshot_image_b64
+                and self._supports_native_image
+                and (not external_visual_delivery or _raw_frame_sent)
+            ):
+                _mark_snapshot_consumed_if_current()
+            else:
+                _remove_visual_rejection_handler()
+            logger.info(
+                "prompt_ephemeral: skipped — visual context revoked during visual inject"
+            )
+            return False
 
         # Re-check activity after any image await. A user or AI turn that won
         # during the visual send must preempt this proactive response.create.

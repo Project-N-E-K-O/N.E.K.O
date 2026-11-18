@@ -522,6 +522,14 @@ class _MediaMixin:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
 
+    def discard_cached_visual_context(self) -> None:
+        """Forget the staged proactive screenshot after screen consent is revoked.
+
+        Same session API as the realtime client. Images the user attached to
+        their own next message (``_pending_images``) are left alone.
+        """
+        self.set_proactive_screenshot(None)
+
     def set_proactive_screenshot(self, image_b64: str | None) -> None:
         """Stage (or clear) the proactive-vision screenshot for the user's next reply.
 
