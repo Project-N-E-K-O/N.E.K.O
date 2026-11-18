@@ -32,6 +32,24 @@ pytestmark = pytest.mark.skipif(
 _JOIN_TIMEOUT = 30
 
 
+class _UnprintableError(Exception):
+    def __str__(self):
+        raise ValueError('no message')
+
+
+def _raise(exc):
+    def reset():
+        raise exc
+    return reset
+
+
+# (exception raised by one object's rebuild, summary the hook must record)
+_REBUILD_FAILURES = [
+    pytest.param(RuntimeError('rebuild broke'), ('RuntimeError', 'rebuild broke'), id='plain'),
+    pytest.param(_UnprintableError(), ('_UnprintableError', '<unprintable exception>'), id='unprintable'),
+]
+
+
 @pytest.fixture(autouse=True)
 def _isolated_caches(monkeypatch):
     """Keep this module's locks and writers out of the process-wide caches."""
@@ -125,20 +143,21 @@ def test_recent_file_lock_outside_cache_works_after_fork(tmp_path, monkeypatch):
         pass
 
 
-def _recent_child_uses_lock_object_after_one_failure(lock):
-    if [name for name, _ in recent_file._FORK_RESET_FAILURES] != ['ZeroDivisionError']:
+def _recent_child_uses_lock_object_after_one_failure(lock, expected):
+    if recent_file._FORK_RESET_FAILURES != [expected]:
         raise SystemExit(10)
     _recent_child_uses_lock_object(lock)
 
 
-def test_recent_file_one_failed_rebuild_does_not_skip_the_rest(tmp_path, monkeypatch):
+@pytest.mark.parametrize(('failure', 'expected'), _REBUILD_FAILURES)
+def test_recent_file_one_failed_rebuild_does_not_skip_the_rest(tmp_path, monkeypatch, failure, expected):
     broken = recent_file.recent_file_lock(tmp_path / 'Broken' / 'recent.json')
     lock = recent_file.recent_file_lock(tmp_path / 'Role' / 'recent.json')
-    monkeypatch.setattr(broken, '_reset_after_fork', lambda: 1 / 0)
+    monkeypatch.setattr(broken, '_reset_after_fork', _raise(failure))
     # Ordered so the failing entry comes first; a WeakSet's order is arbitrary.
     monkeypatch.setattr(recent_file, '_FORK_RESET_LOCKS', [broken, lock])
 
-    assert _run_in_fork_child(_recent_child_uses_lock_object_after_one_failure, lock) == 0
+    assert _run_in_fork_child(_recent_child_uses_lock_object_after_one_failure, lock, expected) == 0
 
 
 def _recent_child_gate_is_fresh(lock):
@@ -250,20 +269,21 @@ def test_chat_sync_writer_replaced_in_registry_works_after_fork(tmp_path):
         pass
 
 
-def _writer_child_uses_writer_object_after_one_failure(writer):
-    if [name for name, _ in chat_sync_writer._FORK_RESET_FAILURES] != ['ZeroDivisionError']:
+def _writer_child_uses_writer_object_after_one_failure(writer, expected):
+    if chat_sync_writer._FORK_RESET_FAILURES != [expected]:
         raise SystemExit(10)
     _writer_child_uses_writer_object(writer)
 
 
-def test_chat_sync_writer_one_failed_rebuild_does_not_skip_the_rest(tmp_path, monkeypatch):
+@pytest.mark.parametrize(('failure', 'expected'), _REBUILD_FAILURES)
+def test_chat_sync_writer_one_failed_rebuild_does_not_skip_the_rest(tmp_path, monkeypatch, failure, expected):
     _, broken = _new_writer(tmp_path / 'broken')
     _, writer = _new_writer(tmp_path)
-    monkeypatch.setattr(broken, '_reset_after_fork', lambda: 1 / 0)
+    monkeypatch.setattr(broken, '_reset_after_fork', _raise(failure))
     # Ordered so the failing entry comes first; a WeakSet's order is arbitrary.
     monkeypatch.setattr(chat_sync_writer, '_FORK_RESET_WRITERS', [broken, writer])
 
-    assert _run_in_fork_child(_writer_child_uses_writer_object_after_one_failure, writer) == 0
+    assert _run_in_fork_child(_writer_child_uses_writer_object_after_one_failure, writer, expected) == 0
 
 
 def test_chat_sync_writer_fork_child_respects_parent_hold(tmp_path):

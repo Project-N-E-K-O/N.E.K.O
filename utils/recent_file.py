@@ -312,7 +312,11 @@ def _reset_file_locks_after_fork() -> None:
             # and the child's start. A lock left unrebuilt still fails loudly on use
             # (filelock raises "inherited across fork"); the cause is kept for inspection.
             # A summary, not the exception: its traceback would keep the object and this frame alive.
-            _FORK_RESET_FAILURES.append((type(exc).__name__, str(exc)))
+            try:
+                message = str(exc)
+            except Exception:  # A failing __str__ must not stop the remaining rebuilds.
+                message = '<unprintable exception>'
+            _FORK_RESET_FAILURES.append((type(exc).__name__, message))
 
 
 if hasattr(os, 'register_at_fork'):
