@@ -106,26 +106,90 @@ _OVERFLOW_PATTERNS = re.compile(
             r"request too large",
             r"reduce the length of the (?:messages|prompt|input)",
             r"input token count .* exceeds",
+            # llama.cpp's server ("exceed_context_size_error") and LM Studio.
+            r"exceed_context_size",
+            r"available context size",
+            r"context length of only",
         ]
     ),
     re.IGNORECASE,
 )
+
+# Where a provider states its window when it refuses a request as too long.
+_STATED_WINDOW_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # OpenAI, DeepSeek, vLLM, OpenRouter: "maximum context length is 32768 tokens".
+        r"maximum context length (?:is|of) ([\d,]+)",
+        # llama.cpp's server names it in the error object: 'n_ctx': 8192.
+        r"['\"]n_ctx['\"]\s*:\s*([\d,]+)",
+        # LM Studio: "loaded with context length of only 4096 tokens".
+        r"context length of only ([\d,]+)",
+        # Anthropic: "prompt is too long: 210000 tokens > 200000 maximum".
+        r">\s*([\d,]+) maximum",
+        # DashScope: "Range of input length should be [1, 30720]".
+        r"range of input length should be \[\s*\d+\s*,\s*([\d,]+)\s*\]",
+        # Gemini: "exceeds the maximum number of tokens allowed (1048576)".
+        r"maximum number of tokens allowed \(([\d,]+)\)",
+    )
+)
+_STATED_WINDOW_RANGE = (1_024, 10_000_000)
 
 
 class ContextOverflowError(Exception):
     """The provider refused the request because the input exceeds its window."""
 
 
+class RequestRefusedError(Exception):
+    """The provider refused the request outright, in words that say nothing recognized about its length.
+
+    With a status a request that is too long is refused with
+    (``OVERFLOW_STATUSES``), and before any output. Whether it was too long
+    is for the session to judge, which knows how long it was.
+    """
+
+
 class ModelRequestError(Exception):
     """A one-shot model request (see ``complete``) failed."""
+
+
+# The statuses a provider refuses a request that is too long with.
+OVERFLOW_STATUSES = (400, 413, 422)
 
 
 def is_context_overflow(error: BaseException) -> bool:
     """Recognize a provider's "input too long" rejection from its message."""
     status = getattr(error, "status_code", None)
-    if status is not None and status not in (400, 413, 422):
+    if status is not None and status not in OVERFLOW_STATUSES:
         return False
-    return bool(_OVERFLOW_PATTERNS.search(str(error)))
+    return says_context_overflow(str(error))
+
+
+def says_context_overflow(said: str) -> bool:
+    """Whether what a provider answered a refused request with says that its input was too long."""
+    return bool(_OVERFLOW_PATTERNS.search(said))
+
+
+def window_from_overflow(said: str) -> int | None:
+    """Return the context window a provider stated when it refused a request as too long, if it stated one.
+
+    Read from the wordings the common providers use; a refusal in other
+    words, or one that names no number, teaches nothing. Only asked of what
+    ``is_context_overflow`` recognized. A number that cannot be a window is
+    not taken for one.
+    """
+    low, high = _STATED_WINDOW_RANGE
+    for pattern in _STATED_WINDOW_PATTERNS:
+        found = pattern.search(said)
+        if found is None:
+            continue
+        try:
+            stated = int(found.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if low <= stated <= high:
+            return stated
+    return None
 
 
 # What a provider says when a request carries a picture its model cannot take.
@@ -847,9 +911,12 @@ class LLMClientProvider:
         tools: list[AgentTool],
         signal: CancellationToken | None = None,
         session_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # ``max_tokens``: the output to ask for, when that is less than the
+        # model is configured for (a session in a small window).
         del session_id
-        return self._stream(model, system, messages, tools, signal, None)
+        return self._stream(model, system, messages, tools, signal, max_tokens)
 
     async def complete(
         self,
@@ -875,6 +942,8 @@ class LLMClientProvider:
                     final = event.message
                 elif isinstance(event, AssistantErrorEvent):
                     raise ModelRequestError(event.error.error_message or event.reason)
+        # (A request refused outright raises from the stream itself, as one
+        # that is too long does: ``RequestRefusedError``, ``ContextOverflowError``.)
         if final is None:
             raise ModelRequestError("the model returned no response")
         return final
@@ -976,6 +1045,9 @@ class LLMClientProvider:
         except Exception as exc:  # noqa: BLE001 - reported to the loop as a failed response
             if not builder.emitted_output and is_context_overflow(exc):
                 raise ContextOverflowError(str(exc)) from exc
+            if not builder.emitted_output and getattr(exc, "status_code", None) in OVERFLOW_STATUSES:
+                # Told as it would be reported, for whoever does report it.
+                raise RequestRefusedError(f"{type(exc).__name__}: {exc}") from exc
             logger.warning("model request failed: %s", exc)
             yield builder.fail("error", f"{type(exc).__name__}: {exc}")
         finally:

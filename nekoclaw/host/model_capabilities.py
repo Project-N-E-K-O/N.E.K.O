@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Whether the model task agents use can see pictures.
+"""What is known about the model task agents use: whether it sees pictures, and how large its window is.
 
 The keyboard-and-mouse tools work from screenshots, so they are only offered
 to a task agent whose model can see them. Nothing in the configuration says
@@ -36,6 +36,20 @@ is decided:
   tools on whatever a provider answered, ``{"images": false}`` keeps them
   off for good (it has no ``noted_at``, so it never lapses).
 
+The context window a session is managed for is kept in the same entries:
+
+* ``context_window``: what the user set for the model. Without it the
+  setting ``TASK_AGENT_CONTEXT_WINDOW`` counts.
+* ``learned_window``: what the model's provider said its window is, when it
+  refused a request as too long (the runtime reads the number out of the
+  refusal and reports it in a ``model_capability`` event). Believed for
+  ``MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS``.
+
+A session is managed for the smaller of the two (``context_window``), so a
+model with a small window is not sent requests it must refuse. Nothing else
+tells a model's window: the configuration has no field for it, and no table
+of models is kept here.
+
 Stored in ``<data root>/nekoclaw/model_capabilities.json``. It is read once,
 on first use, and never at startup. A file that cannot be read counts as
 empty: the worst that follows is one refused request, which is how it would
@@ -46,6 +60,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -55,6 +70,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _FILE_VERSION = 1
+# What an entry says about a model's window; kept when the rest of it is replaced.
+_WINDOW_FIELDS = (
+    "context_window",
+    "learned_window",
+    "window_noted_at",
+    "compact_at",
+    "window_reminded",
+    "window_reminded_at",
+)
 
 
 # What a scheme is made of: a letter, then letters, digits, "+", "-" and ".".
@@ -89,6 +113,9 @@ class ModelCapabilityStore:
         self._path_source = path
         self._models: dict[str, dict[str, Any]] | None = None
         self._lock = asyncio.Lock()
+        # The models whose smaller window the user is being told of this
+        # moment (``claim_window_reminder``).
+        self._reminding: set[str] = set()
 
     def _path(self) -> Path:
         source = self._path_source
@@ -177,8 +204,6 @@ class ModelCapabilityStore:
         stays as it is: the user knows the model, and one refusal may have
         had another cause.
         """
-        from utils.asyncio_executor import to_thread_through_cancellation
-
         models = await self._loaded()
         key = model_key(base_url, model)
         async with self._lock:
@@ -187,15 +212,261 @@ class ModelCapabilityStore:
                 # Known already, or set by hand (only a hand writes true).
                 return False
             models[key] = {
+                # What is known of its window is another matter and stays.
+                **{name: value for name, value in (entry or {}).items() if name in _WINDOW_FIELDS},
                 "images": False,
                 "source": "refused",
                 "noted_at": int(time.time()),
                 "reason": " ".join(str(reason or "").split())[:300],
             }
-            try:
-                await to_thread_through_cancellation(self._write, {name: dict(value) for name, value in models.items()})
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - kept in memory; written with the next change
-                logger.warning("the model capability file could not be written", exc_info=True)
+            await self._save(models)
+        return True
+
+    async def _save(self, models: dict[str, dict[str, Any]]) -> None:
+        """Write the file; called with the lock held. What cannot be written stays in memory."""
+        from utils.asyncio_executor import to_thread_through_cancellation
+
+        try:
+            await to_thread_through_cancellation(self._write, {name: dict(value) for name, value in models.items()})
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - kept in memory; written with the next change
+            logger.warning("the model capability file could not be written", exc_info=True)
+
+    # -- the context window -------------------------------------------------
+
+    @staticmethod
+    def _tokens(value: Any) -> int | None:
+        """Return a window read from an entry, or None when it is not a usable number."""
+        from config.nekoclaw_settings import TASK_AGENT_CONTEXT_WINDOW_MIN
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value <= 0:
+            return None
+        return max(TASK_AGENT_CONTEXT_WINDOW_MIN, int(value))
+
+    def _learned(self, entry: dict[str, Any] | None) -> int | None:
+        """Return the window a provider stated for a model, while that is believed."""
+        from config.nekoclaw_settings import MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS
+
+        if entry is None:
+            return None
+        learned = self._tokens(entry.get("learned_window"))
+        noted_at = entry.get("window_noted_at")
+        if learned is None or isinstance(noted_at, bool) or not isinstance(noted_at, (int, float)):
+            return None
+        if time.time() >= noted_at + MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS:
+            return None
+        return learned
+
+    async def context_window(self, base_url: Any, model: Any) -> int:
+        """Return the window a session with this model is managed for, in tokens.
+
+        What the user set for the model, else what is written down for it
+        (``TASK_AGENT_KNOWN_CONTEXT_WINDOWS``), else the setting; and no
+        more than the model's provider said it takes, when that is known.
+        """
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        wanted = self._tokens((entry or {}).get("context_window")) or self._default_window(model)
+        learned = self._learned(entry)
+        return wanted if learned is None else min(wanted, learned)
+
+    @staticmethod
+    def _default_window(model: Any) -> int:
+        """Return the window a model is managed for when the user set none: its own if written down, else the setting."""
+        from config.nekoclaw_settings import TASK_AGENT_CONTEXT_WINDOW, TASK_AGENT_KNOWN_CONTEXT_WINDOWS
+
+        known = TASK_AGENT_KNOWN_CONTEXT_WINDOWS.get(str(model or "").strip())
+        return int(known) if known else TASK_AGENT_CONTEXT_WINDOW
+
+    async def compact_at(self, base_url: Any, model: Any, window: int | None = None) -> int:
+        """Return the length of a conversation with this model from which it is summed up, in tokens.
+
+        What the user set for the model, when that lies inside the window
+        its sessions are managed for. Else the same part of that window as
+        the presets are of each other (``TASK_AGENT_COMPACT_AT_TOKENS`` of
+        ``TASK_AGENT_CONTEXT_WINDOW``): a window that turned out smaller
+        than the one the user's number was meant for is summed up in
+        proportion, not at a point beyond its end.
+
+        ``window`` is the window a session is in fact started with, when
+        that is not what ``context_window`` says (the model's configuration
+        names one): the point is of that window.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_COMPACT_AT_TOKENS, TASK_AGENT_CONTEXT_WINDOW
+
+        if window is None:
+            window = await self.context_window(base_url, model)
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        wanted = self._point((entry or {}).get("compact_at"))
+        if wanted is not None and wanted < window:
+            return wanted
+        return max(1_000, round(window * TASK_AGENT_COMPACT_AT_TOKENS / TASK_AGENT_CONTEXT_WINDOW))
+
+    @staticmethod
+    def _point(value: Any) -> int | None:
+        """Return a length read from an entry, or None when it is not a usable number."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value < 1_000:
+            return None
+        return int(value)
+
+    async def set_compact_at(self, base_url: Any, model: Any, tokens: int | None) -> int:
+        """Set the length from which conversations with this model are summed up; None goes back to the preset.
+
+        Returns what is used from now on (``compact_at``). Sessions that
+        are open keep what they were started with.
+        """
+        if tokens is not None and self._point(tokens) is None:
+            raise ValueError("the length a conversation is summed up from is a number of tokens, 1000 at the least")
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            if tokens is None:
+                entry.pop("compact_at", None)
+            else:
+                entry["compact_at"] = self._point(tokens)
+            if entry:
+                models[key] = entry
+            else:
+                models.pop(key, None)
+            await self._save(models)
+        return await self.compact_at(base_url, model)
+
+    async def claim_window_reminder(self, base_url: Any, model: Any) -> int | None:
+        """Return the window the user is to be told of for this model, to whoever asks first. Once.
+
+        A model whose window was learned to be smaller than its sessions
+        were managed for is managed for the smaller one from then on, by
+        itself. The user is told so once for each model, to set the model's
+        context length themselves: what was learned lapses, and may be
+        further from the truth than what they know. None when nothing was
+        learned, when they were told already, or when someone is telling
+        them this moment.
+
+        Whoever gets the window tells the user and then says so
+        (``confirm_window_reminder``), or gives it back
+        (``unclaim_window_reminder``). That the user was told is written
+        down only then: a process that ends in between tells them once
+        more the next time, and never not at all. Setting the window
+        (``set_context_window``) clears the record: a model that turns out
+        smaller again after that is told of again. It also takes back what
+        was handed out here and not yet confirmed: that is of a window the
+        user has looked at since, and is not put on record.
+        """
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = models.get(key) or {}
+            learned = self._learned(entry)
+            if learned is None or entry.get("window_reminded_at") is not None or key in self._reminding:
+                return None
+            self._reminding.add(key)
+        return learned
+
+    async def confirm_window_reminder(self, base_url: Any, model: Any, window: int) -> None:
+        """Put on record that the user was told of a model's window (``claim_window_reminder``), and of which."""
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            if key not in self._reminding:
+                # The user set the model's window while they were being
+                # told: what they were told of is done with.
+                return
+            self._reminding.discard(key)
+            entry = dict(models.get(key) or {})
+            entry["window_reminded"] = int(window)
+            entry["window_reminded_at"] = int(time.time())
+            models[key] = entry
+            await self._save(models)
+
+    def unclaim_window_reminder(self, base_url: Any, model: Any) -> None:
+        """Give back what ``claim_window_reminder`` handed out: the user was not told after all."""
+        self._reminding.discard(model_key(base_url, model))
+
+    async def describe_window(self, base_url: Any, model: Any) -> dict[str, Any]:
+        """Return what decides a model's window, for showing it.
+
+        ``window`` (what is used), ``default`` (what it is when the user set
+        none: the model's own if that is written down, else the setting),
+        ``set`` (what the user set, or None), and ``learned`` with ``learned_at`` and
+        ``lapses_at`` when a provider stated one that is still believed.
+        ``compact_at`` (the length a conversation is summed up from) and
+        ``compact_at_set`` (what the user set for it, or None). ``reminded``
+        and ``reminded_at`` when the user was told that the model's window
+        is smaller than was assumed: the window they were told of.
+        """
+        from config.nekoclaw_settings import MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS
+
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        described: dict[str, Any] = {
+            "window": await self.context_window(base_url, model),
+            "default": self._default_window(model),
+            "set": self._tokens((entry or {}).get("context_window")),
+            "compact_at": await self.compact_at(base_url, model),
+            "compact_at_set": self._point((entry or {}).get("compact_at")),
+        }
+        if entry is not None and entry.get("window_reminded_at") is not None:
+            described["reminded"] = entry.get("window_reminded")
+            described["reminded_at"] = int(entry["window_reminded_at"])
+        learned = self._learned(entry)
+        if learned is not None and entry is not None:
+            described["learned"] = learned
+            described["learned_at"] = int(entry["window_noted_at"])
+            described["lapses_at"] = int(entry["window_noted_at"]) + MODEL_CONTEXT_WINDOW_REMEMBERED_SECONDS
+        return described
+
+    async def set_context_window(self, base_url: Any, model: Any, tokens: int | None) -> int:
+        """Set the window sessions with this model are managed for; None goes back to the setting.
+
+        Returns what is used from now on (``context_window``). Sessions
+        that are open keep the window they were started with.
+        """
+        if tokens is not None and self._tokens(tokens) is None:
+            raise ValueError("a context window is a positive number of tokens")
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            if tokens is None:
+                entry.pop("context_window", None)
+            else:
+                entry["context_window"] = self._tokens(tokens)
+            # The user has looked at it: what they were told is done with,
+            # and so is what they are being told this moment.
+            entry.pop("window_reminded", None)
+            entry.pop("window_reminded_at", None)
+            self._reminding.discard(key)
+            if entry:
+                models[key] = entry
+            else:
+                models.pop(key, None)
+            await self._save(models)
+        return await self.context_window(base_url, model)
+
+    async def note_context_window(self, base_url: Any, model: Any, tokens: Any) -> bool:
+        """Write down the window a model's provider stated when it refused a request as too long.
+
+        Returns whether that changed what is known. A smaller number
+        replaces a larger one that is still believed, never the other way
+        round: a provider states its limit, and the one that bites is the
+        smallest it stated.
+        """
+        stated = self._tokens(tokens)
+        if stated is None:
+            return False
+        models = await self._loaded()
+        key = model_key(base_url, model)
+        async with self._lock:
+            entry = dict(models.get(key) or {})
+            known = self._learned(entry)
+            if known is not None and known <= stated:
+                return False
+            entry["learned_window"] = stated
+            entry["window_noted_at"] = int(time.time())
+            models[key] = entry
+            await self._save(models)
         return True

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Literal
@@ -75,13 +75,55 @@ SUMMARY_FALLBACK = (
 # ---------------------------------------------------------------------------
 
 
+# The part of the window a conversation may fill before it is cut down and
+# summed up, unless the session is told another (``compact_ratio``): 170,000
+# of the preset 200,000 tokens.
+COMPACT_RATIO = 0.85
+
+
+def compact_ratio(window: int, compact_at: int | None) -> float:
+    """Return the part of a window a conversation may fill, given the length it is to be summed up from."""
+    if not compact_at or compact_at <= 0 or window <= 0:
+        return COMPACT_RATIO
+    # As early as it was set: a conversation is summed up from 1,000 tokens
+    # on at the earliest whatever this says (``ContextPolicy.threshold``).
+    return min(1.0, compact_at / window)
+
+
+def headroom_of(window: int) -> int:
+    """Return what is kept free of a window besides the output: a tenth of it, 65,536 tokens at the most.
+
+    The conversation is measured before every request, so this is not room
+    for what a turn adds; it is for what the measuring is off by. (An
+    eighth, until the preset window became 200,000 summed up from 170,000:
+    with an eighth kept free, and the output, that point would lie in it.)
+    """
+    return min(65_536, window // 10)
+
+
+# The largest part of the window a request's output may take: one in this many.
+OUTPUT_WINDOW_SHARE = 4
+
+
+def output_allowance(window: int, configured: int) -> int:
+    """Return how many tokens of output a request asks for in a window of ``window`` tokens.
+
+    What the model is configured for, and a quarter of the window at the
+    most. A provider counts the output a request asks for against the
+    window together with what it sends; in a window near the configured
+    output there would be no room left for the conversation, and a request
+    would be refused as too long however much of it was summed up.
+    """
+    return max(256, min(configured, window // OUTPUT_WINDOW_SHARE))
+
+
 @dataclass(frozen=True, slots=True)
 class ContextPolicy:
     """Token budgets of one session, derived from the model's window."""
 
     window: int
     max_output: int
-    threshold_ratio: float = 0.8
+    threshold_ratio: float = COMPACT_RATIO
     retain_ratio: float = 0.16
     headroom_tokens: int | None = None
     result_inline_tokens: int = 12_500
@@ -96,12 +138,12 @@ class ContextPolicy:
     def headroom(self) -> int:
         if self.headroom_tokens is not None:
             return self.headroom_tokens
-        return min(65_536, self.window // 8)
+        return headroom_of(self.window)
 
     @property
     def threshold(self) -> int:
         """Conversation size above which pruning and summarizing start."""
-        by_ratio = int(self.window * self.threshold_ratio)
+        by_ratio = round(self.window * self.threshold_ratio)
         by_reserve = self.window - self.max_output - self.headroom
         return max(1_000, min(by_ratio, by_reserve))
 
@@ -521,13 +563,19 @@ def choose_cut(rows: Sequence[Row], sizes: Sequence[int], retain_tokens: int) ->
     return cut
 
 
-def select_user_rows(region: Sequence[Row], sizes: Sequence[int], budget: int) -> set[str]:
-    """Pick the most recent user messages of ``region`` that fit ``budget`` tokens."""
-    kept: set[str] = set()
+def select_user_rows(
+    region: Sequence[Row], sizes: Sequence[int], budget: int, pinned: Collection[str] = ()
+) -> set[str]:
+    """Pick the most recent user messages of ``region`` that fit ``budget`` tokens.
+
+    A row named in ``pinned`` is kept whatever its size and on top of the
+    budget: what the user said since keeps the room it had.
+    """
+    kept: set[str] = {row.entry_id for row in region if row.entry_id in pinned}
     used = 0
     for index in range(len(region) - 1, -1, -1):
         row = region[index]
-        if row.kind != "human":
+        if row.kind != "human" or row.entry_id in kept:
             continue
         if used + sizes[index] > budget:
             break
@@ -626,11 +674,16 @@ class ContextManager:
         *,
         force: bool = False,
         on_compaction: Callable[[Compaction], None] | None = None,
+        pinned: Collection[str] = (),
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
         ``force`` is the overflow path: prune everything and summarize even if
         the estimate says the conversation fits. Returns the summaries made.
+
+        ``pinned`` names rows (by entry id) that a summary leaves as they
+        are, word for word: the text that opened the commission the session
+        is working on.
 
         ``on_compaction`` is how the caller persists them. It is called for each
         summary as soon as that summary has replaced the older messages, with
@@ -665,7 +718,7 @@ class ContextManager:
         for attempt in range(2):
             tokens_before = await self.measure(transcript.messages)
             compaction = await self._compact(
-                transcript.rows(), tokens_before, tight=force or attempt > 0
+                transcript.rows(), tokens_before, tight=force or attempt > 0, pinned=pinned
             )
             if compaction is None:
                 break
@@ -681,7 +734,7 @@ class ContextManager:
         return done
 
     async def _compact(
-        self, rows: list[Row], tokens_before: int, *, tight: bool
+        self, rows: list[Row], tokens_before: int, *, tight: bool, pinned: Collection[str] = ()
     ) -> Compaction | None:
         policy = self.policy
         sizes = [estimate_tokens(row.message, policy.image_tokens) for row in rows]
@@ -696,7 +749,7 @@ class ContextManager:
         retain = policy.retain_tokens // 4 if tight else policy.retain_tokens
         cut = choose_cut(rows, sizes, retain)
         region = rows[:cut]
-        kept_ids = select_user_rows(region, sizes[:cut], policy.user_keep // (2 if tight else 1))
+        kept_ids = select_user_rows(region, sizes[:cut], policy.user_keep // (2 if tight else 1), pinned)
         replaced = [row for row in region if row.entry_id not in kept_ids]
         if not any(row.kind in ("assistant", "tool", "notice") for row in replaced):
             # Nothing but earlier summaries or oversized user text: no gain.

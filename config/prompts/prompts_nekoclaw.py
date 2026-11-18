@@ -361,6 +361,12 @@ def runtime_context_notice(
 # Ours: shown in place of an image that the image-retention policy dropped.
 IMAGE_OMITTED_PLACEHOLDER = "[Earlier image omitted to save context.]"
 
+# Ours: what a call of a tool is answered with when the session was opened with
+# the tool and it is not on offer right now. Rendered with str.replace.
+TOOL_UNAVAILABLE = (
+    "<<NAME>> is not available right now. Go on without it, or report that the task needs it."
+)
+
 # Ours: appended as a user message when the model's reply hit the output limit.
 OUTPUT_CUT_OFF_NUDGE = (
     "Your previous response was cut off by the output limit. Continue from where it stopped. If "

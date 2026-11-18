@@ -341,6 +341,10 @@ class TaskBrain:
     def _is_enabled(self) -> bool:
         if self._closed:
             return False
+        return self._switched_on()
+
+    def _switched_on(self) -> bool:
+        """Whether NekoClaw is switched on, whatever this brain itself is doing (``_is_enabled``)."""
         if self._enabled is None:
             return True
         try:
@@ -387,7 +391,22 @@ class TaskBrain:
             plugins=[] if plugins_forbidden else await self._without_denied_mcp(await self._registry.plugins()),
             active=active,
             answerable=answerable,
+            recent=await self._recently_over(lanlan_name),
             task_agent_available=await self._task_agent_available(),
+        )
+
+    async def _recently_over(self, lanlan_name: str) -> list[Commission]:
+        """Return her commissions a task agent worked on that are over and not long so, newest first.
+
+        What a sentence that adds something can go on with (``decision.read_follow_up``):
+        done, failed or stopped within ``FOLLOW_UP_RECENT_SECONDS``, her own
+        (not one a task agent started for itself), and worked on in a session.
+        """
+        from config.nekoclaw_settings import FOLLOW_UP_RECENT_SECONDS, FOLLOW_UP_ROWS
+
+        # Newest by when they ended, which is when they last changed.
+        return await self._ledger.ended_lately(
+            lanlan_name, since=self._ledger._clock() - FOLLOW_UP_RECENT_SECONDS, limit=FOLLOW_UP_ROWS
         )
 
     async def _denied_mcp(self) -> McpDenial:
@@ -522,9 +541,11 @@ class TaskBrain:
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
-        by_id = {commission.id: commission for commission in (*request.active, *request.answerable)}
+        by_id = {commission.id: commission for commission in (*request.active, *request.answerable, *request.recent)}
         targets = [by_id[target] for target in triage.targets if target in by_id]
         calls = triage.model_calls
+        # The commission this sentence goes on with, when it is one that is over.
+        earlier = targets[0] if triage.kind == "continue" and targets else None
 
         if triage.kind == "nothing_active":
             return Receipt(kind="nothing_active", model_calls=calls)
@@ -547,6 +568,33 @@ class TaskBrain:
             if delivered:
                 return Receipt(kind="told", commissions=targets[:1], model_calls=calls)
             # It could not be passed on; treat the sentence as work of its own.
+        if earlier is not None and earlier.status == "failed":
+            # A commission that failed is taken up again as it is, where its
+            # session stands, with what the sentence adds: as when it is
+            # told so directly. One that was done or stopped stays over and
+            # is followed up by a commission of its own (below).
+            #
+            # Not when NekoClaw was switched off, or everything stopped,
+            # while this round was looking: it is over, a stop does not end
+            # it, and taking it up would start work after the stop.
+            if not self._is_enabled():
+                return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+            if generation != self._dispatch_generation:
+                return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
+            # Looked at once more where taking it up waits (for its review
+            # to be written down, for its session to be set up): a stop may
+            # come during that as well, and so may the switch. What is said
+            # of it then is said below, where both are read again.
+            # The switch, not ``_is_enabled``: that says no as well once
+            # this brain is closed, which a host that shuts down does
+            # before it ends its task agents. A start caught by that is
+            # ended there, as failed because the host shut down, and can
+            # be taken up again; called off here, it would be stopped.
+            if await self.tell(
+                earlier.id, text, still_wanted=lambda: self._switched_on() and generation == self._dispatch_generation
+            ):
+                return Receipt(kind="told", commissions=[earlier], model_calls=calls)
+            earlier = None
         if triage.kind in ("stop", "answer", "duplicate"):
             # What it referred to is no longer there.
             return Receipt(kind="nothing_active", model_calls=calls)
@@ -559,6 +607,14 @@ class TaskBrain:
         if generation != self._dispatch_generation:
             return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
 
+        follows: dict[str, Any] = {}
+        if earlier is not None:
+            # Where it goes on when a task agent takes it: in the session of
+            # the commission it follows up, with what was said there, in the
+            # same working directory, under the same project. That one
+            # stays as it ended. Written down in the second round, which
+            # chooses for this sentence as for any other.
+            follows = {"session_id": earlier.session_id, "continues": earlier.id, "project": earlier.project}
         commission, created = await self._ledger.create(
             unless=lambda active: find_duplicate(text, user_text, active),
             lanlan_name=lanlan_name,
@@ -572,13 +628,32 @@ class TaskBrain:
         if not created:
             return Receipt(kind="duplicate", commissions=[commission], model_calls=calls)
         request.active = [item for item in request.active if item.id != commission.id]
-        self._spawn(self._second_round(commission, request, triage), commission_id=commission.id)
+        self._spawn(self._second_round(commission, request, triage, follows=follows), commission_id=commission.id)
         return Receipt(kind="accepted", commissions=[commission], model_calls=calls)
 
-    async def _second_round(self, commission: Commission, request: DecisionRequest, triage: Triage) -> None:
+    async def _second_round(
+        self,
+        commission: Commission,
+        request: DecisionRequest,
+        triage: Triage,
+        *,
+        follows: dict[str, Any] | None = None,
+    ) -> None:
+        """Choose who does a commission, and hand it over.
+
+        ``follows`` is where the commission goes on when it adds to one a
+        task agent did (the session, the commission, the project). It is
+        chosen for like any other: a plugin that is picked does it, and
+        what the sentence states for good is kept. Only handed to a task
+        agent does it become part of that session; done by a plugin, or by
+        nothing, it has no part in it, and holds nothing of it.
+        """
         try:
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
+            goes_on = bool(follows) and selection.route == "task_agent" and self._task_agents is not None
+            if goes_on:
+                commission = await self._ledger.update(commission.id, **(follows or {})) or commission
             await self._ledger.append_event(
                 commission.id,
                 "decision",
@@ -588,6 +663,8 @@ class TaskBrain:
                     "entry_id": selection.entry_id,
                     "reason": selection.reason,
                     "model_calls": triage.model_calls + selection.model_calls,
+                    # Which commission it goes on with, in that one's session.
+                    **({"continues": commission.continues} if goes_on else {}),
                 },
             )
             if selection.preference:
@@ -946,11 +1023,16 @@ class TaskBrain:
             )
         return moved.commission
 
-    async def tell(self, commission_id: str, text: str) -> bool:
-        """Pass a sentence on to a commission. Only a task agent can take one."""
+    async def tell(self, commission_id: str, text: str, *, still_wanted: Callable[[], bool] | None = None) -> bool:
+        """Pass a sentence on to a commission. Only a task agent can take one.
+
+        ``still_wanted`` is asked before a commission that is over is taken
+        up again with it, after whatever that had to wait for, up to where
+        it is given its work.
+        """
         if self._task_agents is None:
             return False
-        return await self._task_agents.tell(commission_id, text)
+        return await self._task_agents.tell(commission_id, text, still_wanted=still_wanted)
 
     async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
         """Give the user's answer to a commission that waits for one."""

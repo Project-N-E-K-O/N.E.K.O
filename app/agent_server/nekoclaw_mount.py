@@ -284,7 +284,10 @@ async def send_report(item: Any) -> bool:
         "success": True,
         "delivery_mode": payload.get("delivery_mode") or "proactive",
         # For her only: neither a chat bubble nor a HUD toast shows it.
-        "visibility": [],
+        # Unless the row says it is for the HUD: what NekoClaw tells the
+        # user of its own settings is shown to the user as it is written,
+        # and goes into no model's context (its delivery mode is silent).
+        "visibility": ["hud"] if "hud" in (payload.get("visibility") or ()) else [],
         "priority": _NOTICE_PRIORITY,
         "coalesce_key": f"nekoclaw:{item.kind}:{task_id or item.id}",
         "metadata": {"nekoclaw_kind": item.kind, "nekoclaw_reason": reason},

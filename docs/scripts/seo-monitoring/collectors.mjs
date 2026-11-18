@@ -317,6 +317,41 @@ async function collectGscPropertyDay(analyticsUrl, range, { accessToken, fetchIm
   }
 }
 
+async function collectTrackedHomepageQueries(analyticsUrl, range, { page, queries }, options) {
+  try {
+    // RE2's \s is ASCII-only. Use the same whitespace class for both sides.
+    const whitespace = /[\x09-\x0D\p{Z}]/gu
+    const gap = `${whitespace.source}*`
+    const normalize = query => query.toLowerCase().replace(whitespace, '')
+    const queryPatterns = queries.map(query => [...normalize(query)]
+      .map(character => character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join(gap))
+    const { rows } = await collectGscRows(analyticsUrl, {
+      ...range,
+      dimensions: ['query'],
+      type: 'web',
+      dataState: 'final',
+      dimensionFilterGroups: [{
+        filters: [
+          { dimension: 'page', operator: 'equals', expression: page },
+          { dimension: 'query', operator: 'includingRegex', expression: `(?i)^${gap}(?:${queryPatterns.join('|')})${gap}$` },
+        ],
+      }],
+    }, options)
+    return {
+      status: 'ok',
+      window: range,
+      page,
+      rows: queries.map(query => {
+        const matches = rows.filter(row => normalize(queryKey(row)) === normalize(query))
+        return { query, metrics: matches.length ? aggregateGscRows(matches) : null }
+      }),
+    }
+  } catch (error) {
+    return { status: 'unavailable', window: range, page, reason: error.message }
+  }
+}
+
 function sitemapUrlTotals(contents) {
   if (!Array.isArray(contents) || contents.length === 0) {
     return { submittedUrls: null, indexedUrls: null, coverageRate: null }
@@ -343,6 +378,7 @@ export async function collectGsc({
   siteUrl,
   sitemapUrl,
   categoryQueryRegex,
+  trackedHomepageQueries,
   lowCtrThreshold = 0.03,
   lowCtrMinImpressions = 10,
 }, window, {
@@ -356,11 +392,14 @@ export async function collectGsc({
   const requestOptions = { accessToken, fetchImpl, rowLimit }
   const resolved = await resolveLatestFinalGscWindow(analyticsUrl, window.gsc.discovery, requestOptions)
   const gscWindow = resolved.windows
-  const [latest, recent7, previous7, latestPropertyDay] = await Promise.all([
+  const [latest, recent7, previous7, latestPropertyDay, homepageQueries] = await Promise.all([
     collectGscRange(analyticsUrl, gscWindow.latest, requestOptions),
     collectGscRange(analyticsUrl, gscWindow.recent7, requestOptions),
     collectGscRange(analyticsUrl, gscWindow.previous7, requestOptions),
     collectGscPropertyDay(analyticsUrl, gscWindow.recent7, requestOptions),
+    trackedHomepageQueries
+      ? collectTrackedHomepageQueries(analyticsUrl, gscWindow.recent7, trackedHomepageQueries, requestOptions)
+      : null,
   ])
 
   const categoryPattern = new RegExp(categoryQueryRegex, 'iu')
@@ -408,6 +447,7 @@ export async function collectGsc({
     latestPropertyDay,
     recent7: recentSummary,
     previous7: previousSummary,
+    ...(homepageQueries ? { trackedHomepageQueries: homepageQueries } : {}),
     trend7: gscTrend(recentSummary, previousSummary),
     desktopPetCategory: aggregateGscRows(categoryRows),
     topDesktopPetQueries: categoryRows

@@ -130,6 +130,10 @@ class Dsh:
         """The sessions it holds, as the driver tells them: one it did not open is not among them."""
         return self.inner.core.session_ids
 
+    def resumed(self, session_id: str) -> bool:
+        """Whether dsh took up the session it had, as the driver tells it."""
+        return session_id in self.session_ids and not self._behaviour.get("log_gone", False)
+
     async def shutdown(self) -> None:
         self.shut_down = True
         await self.inner.shutdown()
@@ -364,7 +368,7 @@ async def test_a_commission_that_began_in_a_dsh_that_was_removed_starts_over_in_
         {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": "dsh is no longer installed"}
     ]
     # Nothing of what was said is there: it is told the commission again, then what the user said.
-    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
 
 
 async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_in_runtime_knowing_what_it_is(
@@ -381,7 +385,29 @@ async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_
     done = await wait_status(host, commission_id, "done")
 
     assert done.runtime == RUNTIME_BUILTIN
-    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
+
+
+@pytest.mark.parametrize("log_gone", [True, False])
+async def test_a_commission_whose_session_dsh_cannot_take_up_is_told_what_it_is_once_more(hosts, tmp_path, log_gone):
+    llm = ScriptedLLM([_report("failed", "the folder is missing"), _report("ready", "found it")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    commission_id = await _dispatch(host, "sort the photos")
+    await wait_status(host, commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    # The note that ties the session to one of dsh's is there. What dsh kept of that one is
+    # not (dsh was installed anew, say): asked to take it up, dsh begins another.
+    host.fake.behaviour["log_gone"] = log_gone
+
+    assert await host.tell(commission_id, "it is on drive D")
+    done = await wait_status(host, commission_id, "done")
+
+    assert done.runtime == RUNTIME_DSH
+    # In a session in which nothing was said, the user's words alone would say nothing of
+    # what the commission is; where dsh did take it up, that is there to be read.
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D") is log_gone
+    if not log_gone:
+        assert _last_user_message(llm.requests[-1]) == "it is on drive D"
 
 
 async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is(hosts, tmp_path):
@@ -397,7 +423,43 @@ async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is
     done = await wait_status(host, commission_id, "done")
 
     assert done.runtime == RUNTIME_DSH
-    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
+
+
+async def test_a_commission_that_follows_one_up_whose_session_is_in_the_other_runtime_is_told_what_came_of_it(
+    hosts, tmp_path
+):
+    from config.prompts import prompts_nekoclaw_brain as brain_texts
+
+    llm = ScriptedLLM([_report("ready", "sorted 12 photos into D:/Photos/by-month"), _report("ready", "renamed")])
+    host = _host(hosts, tmp_path, llm, Installation())
+    first = await _dispatch(host, "sort the photos")
+    assert (await wait_status(host, first, "done")).runtime == RUNTIME_DSH
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents._held_by == {}, what="the session being let go")
+
+    # What was said is in dsh, and dsh is gone: the built-in runtime takes the session.
+    await host.uninstall_dsh()
+    second = await _dispatch(host, "also rename the photos by date")
+    done = await wait_status(host, second, "done")
+    assert (done.session_id, done.continues, done.runtime) == (first, first, RUNTIME_BUILTIN)
+
+    # Nothing of the earlier commission is "above" in this runtime: it is told what came of it.
+    opening = _last_user_message(llm.requests[-1])
+    assert opening.startswith(f"Commission {second}\nalso rename the photos by date\n")
+    assert (
+        brain_texts.TASK_AGENT_COMMISSION_CONTINUES_CLEARED.format(
+            title="sort the photos", result="sorted 12 photos into D:/Photos/by-month"
+        )
+        in opening
+    )
+    assert brain_texts.TASK_AGENT_COMMISSION_CONTINUES.format(title="sort the photos") not in opening
+
+
+def _told_anew(request: Any, commission_id: str, dispatched: str, said: str) -> bool:
+    """Whether a request ends with the commission told again, then what the user said."""
+    message = _last_user_message(request)
+    return message.startswith(f"Commission {commission_id}\n{dispatched}\n") and message.endswith(f"\n\n{said}")
 
 
 def _last_user_message(messages: list[dict[str, Any]]) -> str:
@@ -782,7 +844,7 @@ async def test_the_session_of_an_old_commission_that_ran_in_dsh_is_cleaned_in_ds
     assert (session_dir / DSH_SESSION_NAME).is_file()
 
     # As the tidying does it for a commission that ended long enough ago.
-    assert await host.space_keeper._clean_one(done, time.time() + 60) == "removed"
+    assert await host.space_keeper._clean_one(done.session_id, time.time() + 60) == "removed"
 
     assert installation.forgotten == [session_dir] and not (session_dir / TRANSCRIPT_NAME).exists()
     # Its working directory is never removed.
