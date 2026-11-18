@@ -1149,6 +1149,14 @@ class SpaceKeeper:
                 return _NOTHING
             if await self._ledger.select(session_id=session_id, statuses=ACTIVE_STATUSES, limit=1):
                 return _NOTHING
+            # What was copied from it goes with it, and first: a session
+            # made from this one (``fork_session``) holds what was said
+            # here, is of no use once this one starts over from nothing,
+            # and reads what this one kept of long tool output where it
+            # is. While a copy is in use this session stays as it is, and
+            # is looked at again next round.
+            if not await self._clean_copies(current.id):
+                return _NOT_REMOVED
             directory = await asyncio.to_thread(self._session_dir_of, current)
             # A thread cannot be stopped. Cancelled (the host shutting down),
             # this still waits for the removing to finish before the hold
@@ -1158,13 +1166,6 @@ class SpaceKeeper:
             if outcome == _REMOVED:
                 # With the session, and with each commission of it.
                 await asyncio.shield(self._ledger.mark_session_cleared(current.id))
-            if outcome != _NOT_REMOVED:
-                # What was copied from it goes with it: a session made from
-                # this one (``fork_session``) holds what was said here, and
-                # is of no use once this one starts over from nothing.
-                for copy in await self._ledger.forks_of(current.id):
-                    if copy.status != "cleared":
-                        await self._clean_one(copy.id, float("inf"))
             return outcome
         except (OSError, ValueError):
             logger.warning("an old session could not be looked at", exc_info=True)
@@ -1172,6 +1173,18 @@ class SpaceKeeper:
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)
+
+    async def _clean_copies(self, session_id: str) -> bool:
+        """Remove what was said in the sessions copied from a session. False while one of them is in use."""
+        for copy in await self._ledger.forks_of(session_id):
+            if copy.status == "cleared":
+                continue
+            if await self._clean_one(copy.id, float("inf")) == _NOT_REMOVED:
+                return False
+            if await self._ledger.select(session_id=copy.id, statuses=ACTIVE_STATUSES, limit=1):
+                # A commission is on its way into it: left as it was.
+                return False
+        return True
 
     async def clear_session(self, session_id: str) -> bool:
         """Remove what was said in a session now, however lately it was in use. Returns whether nothing of it is left.
@@ -1184,7 +1197,12 @@ class SpaceKeeper:
         """
         if self._session_dir_of is None:
             return False
-        return await self._clean_one(session_id, float("inf")) != _NOT_REMOVED
+        outcome = await self._clean_one(session_id, float("inf"))
+        if outcome != _NOTHING:
+            return outcome == _REMOVED
+        # Nothing was removed: there was nothing, or a commission is on
+        # its way into the session and it was left alone.
+        return not await self._ledger.select(session_id=session_id, statuses=ACTIVE_STATUSES, limit=1)
 
     @staticmethod
     def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:

@@ -54,6 +54,7 @@ from nekoclaw.runtime.context import (
     ContextManager,
     ContextPolicy,
     RowKind,
+    SummaryCutShort,
     Transcript,
     compact_ratio,
     estimate_tokens,
@@ -927,6 +928,12 @@ class TaskAgentSession(SessionInbox):
                 )
                 yield AssistantErrorEvent(reason="aborted", error=stopped)
                 return
+        # Looked at again: the host may have been waited for (the user was
+        # asked), and the run stopped meanwhile. A run that was stopped is
+        # told nothing more, and its conversation is not summed up, which
+        # would be a request as long as all of it after the stop. The
+        # request below finds the stop itself.
+        if signal is None or not signal.is_cancelled():
             self._inject_runtime_context()
             failed_before, self._last_request_failed = self._last_request_failed, False
             long = failed_before and await self._size() > TASK_AGENT_UNSURE_REFUSAL_TOKENS
@@ -1106,7 +1113,7 @@ class TaskAgentSession(SessionInbox):
             self._record(message)
         return bool(verdict.get("stop"))
 
-    async def _fit(self, *, force: bool, tight: bool | None = None) -> None:
+    async def _fit(self, *, force: bool, tight: bool | None = None, or_drop: bool = True) -> None:
         # Each summary is saved the moment it is applied, not after fit()
         # returns: an abort during a later summary ends fit() with the earlier
         # one already in the conversation, and later entries refer to its id.
@@ -1117,6 +1124,7 @@ class TaskAgentSession(SessionInbox):
             on_compaction=self._persist_compaction,
             # The commission under way stays as it was handed over.
             pinned=self._pinned(),
+            or_drop=or_drop,
         )
 
     def _pinned(self) -> tuple[str, ...]:
@@ -1153,23 +1161,8 @@ class TaskAgentSession(SessionInbox):
         )
         self._compactions += 1
         self._tokens_before_compaction = compaction.tokens_before
-        usage = compaction.usage
-        if usage is not None and (usage.input + usage.cache_read + usage.cache_write or usage.output):
-            # The request that wrote the summary is one the session made:
-            # counted with what it used, apart from those of its runs.
-            self._emit(
-                protocol.UsageEvent(
-                    session_id=self.session_id,
-                    input=usage.input,
-                    output=usage.output,
-                    cache_read=usage.cache_read,
-                    cache_write=usage.cache_write,
-                    reasoning=usage.reasoning,
-                    total_tokens=usage.total_tokens,
-                    context_window=self._window,
-                    summary=True,
-                )
-            )
+        # (What the request that wrote it used was told when it came back:
+        # ``_summarize``.)
         # What follows a summary is done before the next request, not here:
         # this is called while the conversation is still being fitted.
         self._compaction_due = True
@@ -1270,7 +1263,30 @@ class TaskAgentSession(SessionInbox):
                 # itself: looked at here like any other failure.)
                 raise asyncio.CancelledError from None
             raise
+        self._tell_summary_usage(reply.usage)
+        if reply.stop_reason == "length":
+            # Ended at its limit: the last sections are missing, or cut off.
+            raise SummaryCutShort(reply.text)
         return reply.text, reply.usage
+
+    def _tell_summary_usage(self, usage: Usage | None) -> None:
+        """Tell what a request that sums the conversation up used, whether or not its summary is taken."""
+        if usage is not None and (usage.input + usage.cache_read + usage.cache_write or usage.output):
+            # The request that wrote the summary is one the session made:
+            # counted with what it used, apart from those of its runs.
+            self._emit(
+                protocol.UsageEvent(
+                    session_id=self.session_id,
+                    input=usage.input,
+                    output=usage.output,
+                    cache_read=usage.cache_read,
+                    cache_write=usage.cache_write,
+                    reasoning=usage.reasoning,
+                    total_tokens=usage.total_tokens,
+                    context_window=self._window,
+                    summary=True,
+                )
+            )
 
     def _inject_runtime_context(self) -> None:
         """Append the time, running jobs and open todos as a message when due."""
@@ -1427,6 +1443,9 @@ class TaskAgentSession(SessionInbox):
     def steer(self, text: str) -> None:
         if self._closing:
             raise SessionError("the session is closed")
+        if self._compacting:
+            # Not a run that would take it: it would be counted as taken and never read.
+            raise SessionError("the conversation is being summed up; nothing can be added to it now")
         self._inputs += 1
         if self.running:
             self.harness.steer_message(UserMessage(content=text))
@@ -1436,6 +1455,8 @@ class TaskAgentSession(SessionInbox):
     def follow_up(self, text: str) -> None:
         if self._closing:
             raise SessionError("the session is closed")
+        if self._compacting:
+            raise SessionError("the conversation is being summed up; nothing can be added to it now")
         self._inputs += 1
         if self.running:
             self.harness.follow_up_message(UserMessage(content=text))
@@ -1490,6 +1511,12 @@ class TaskAgentSession(SessionInbox):
                 task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(task), CLOSE_GRACE_SECONDS)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if not task.cancelled() or (current is not None and current.cancelling()):
+                    raise
+                # The summing up was stopped before it took a step: it is
+                # over, and the rest of the closing goes on.
             except asyncio.TimeoutError:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -1525,15 +1552,34 @@ class TaskAgentSession(SessionInbox):
             raise SessionError("a run is in progress")
         self._abort_requested = False
         self._compacting = True
-        self._run_task = asyncio.ensure_future(self._compact())
+        task = asyncio.ensure_future(self._compact())
+        self._run_task = task
+        task.add_done_callback(self._compact_never_ran)
+
+    def _compact_never_ran(self, task: "asyncio.Task[None]") -> None:
+        """End a summing up that was stopped before it took its first step.
+
+        A task that is cancelled before it has run never enters its own
+        code: nothing in ``_compact`` gets to say that it is over. Left
+        like that, the session would count as at work for good.
+        """
+        if self._run_task is not task:
+            # It ran, and ended itself.
+            return
+        self._compacting = False
+        self._run_task = None
+        if not self._closing:
+            self._emit(protocol.EndedEvent(session_id=self.session_id, reason="aborted", inputs=self._inputs))
 
     async def _compact(self) -> None:
         reason: protocol.EndReason = "completed"
         error: str | None = None
         try:
             # As much is kept word for word as a summary before a request
-            # keeps: this is not the conversation that was refused as too long.
-            await self._fit(force=True, tight=False)
+            # keeps: this is not the conversation that was refused as too
+            # long. Nor does anything have to go: without a whole summary
+            # the conversation stays as it is.
+            await self._fit(force=True, tight=False, or_drop=False)
             if self._compaction_due:
                 await self._after_compaction()
             await self._recorder.flush()
@@ -1555,7 +1601,29 @@ class TaskAgentSession(SessionInbox):
     # Runs
     # ------------------------------------------------------------------
 
+    def _drop_usage_notices(self) -> None:
+        """Take what the host said about usage in earlier runs out of the conversation.
+
+        That no more may be used, and that what there is has to be handed
+        over, was said for the run it was said in. The host is asked
+        again before the first request of every run, and says it again
+        if it still holds. Left in, it would have the next commission of
+        the session, or this one after the user allowed more, hand over
+        at once. Only in memory, like other cuts: the saved transcript
+        keeps it, and a session opened from it does this again.
+        """
+        rows = self.transcript.rows()
+        kept = [
+            row
+            for row in rows
+            if not (isinstance(row.message, CustomMessage) and row.message.custom_type == "notice:usage")
+        ]
+        if len(kept) != len(rows):
+            self.transcript.rewrite(kept)
+            self.context.invalidate()
+
     def _begin_run(self, message: AgentMessage, goal_round: GoalRound | None = None) -> None:
+        self._drop_usage_notices()
         self._abort_requested = False
         self._run_task = asyncio.ensure_future(self._run(message, goal_round))
 

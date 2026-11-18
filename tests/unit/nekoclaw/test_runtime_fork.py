@@ -23,6 +23,7 @@ every model request.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ import pytest
 
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime import protocol
+from nekoclaw.runtime.context import SUMMARY_CUT_SHORT_NOTE
 from nekoclaw.runtime.core import InProcessRuntime
 from nekoclaw.runtime.fork import FORK_NAMESPACE, REASON_FORKED, ForkError, fork_record, whole_prefix
 from nekoclaw.runtime.host import HostCallbacks
@@ -45,8 +47,8 @@ from nekoclaw.runtime.loop.session import MessageEntry, SessionState
 from nekoclaw.runtime.loop.session.jsonl import entries_from_json_lines
 from nekoclaw.runtime.model import LLMClientProvider
 from nekoclaw.runtime.protocol import ModelConfig
-from nekoclaw.runtime.session import TRANSCRIPT_FILE, TaskAgentSession
-from nekoclaw.runtime.snapshot import SYSTEM_FILE, read_snapshot
+from nekoclaw.runtime.session import TRANSCRIPT_FILE, SessionError, TaskAgentSession
+from nekoclaw.runtime.snapshot import SYSTEM_FILE, read_snapshot, write_snapshot
 from tests.unit.nekoclaw.fakes import Recorder, ScriptedLLM, allow_all, call, finish, make_spec, open_session, say, usage
 
 
@@ -480,10 +482,12 @@ async def test_summing_up_is_refused_while_a_run_is_under_way_and_stops_at_once_
         llm.add(hold, say("## Current Work\n- never arrives"), finish())
         mark = len(recorder.events)
         await runtime.compact("s1")
-        for _attempt in range(200):
+        for _attempt in range(500):
             if llm.requests and llm.requests[-1][-1].get("content") == texts.COMPACTION_INSTRUCTION:
                 break
             await asyncio.sleep(0.01)
+        # The request that sums it up is under way: it is that one the stop cuts short.
+        assert llm.requests[-1][-1].get("content") == texts.COMPACTION_INSTRUCTION
         await runtime.abort("s1")
         stopped = await asyncio.wait_for(recorder.wait_ended("s1", start=mark), 5)
         assert stopped["reason"] == "aborted"
@@ -574,15 +578,47 @@ async def test_a_request_waits_for_as_long_as_the_host_takes_to_answer_and_a_sto
         answer.set_result({})
         assert (await events.wait_ended())["text"] == "Went on."
 
-        # A run that is stopped while it waits ends as stopped, and sends nothing.
+        # A run that is stopped while it waits ends as stopped, and sends nothing. Nor is the session
+        # told the time, or its conversation looked at for summing up (a request as long as all of
+        # it), after the stop: both are due here, and both come after the wait.
         answer = asyncio.get_running_loop().create_future()
         waiting.clear()
+        fitted: list[dict[str, Any]] = []
+        fit = session._fit
+
+        async def watched(**kwargs: Any) -> None:
+            fitted.append(kwargs)
+            await fit(**kwargs)
+
+        session._fit = watched
+
+        def told_the_time() -> int:
+            return sum(
+                1 for message in session.harness.message_list
+                if getattr(message, "custom_type", None) == "notice:runtime_context"
+            )
+
         mark = len(events.events)
         session.prompt("More work.")
         await asyncio.wait_for(waiting.wait(), 5)
+        # (The run was told the time when it began. It is due again, as when a job ended meanwhile.)
+        before, session._context_due = told_the_time(), True
         session.abort()
         assert (await asyncio.wait_for(events.wait_ended(start=mark), 5))["reason"] == "aborted"
         assert len(llm.requests) == 1
+        assert fitted == [] and told_the_time() == before
+        # One that is not stopped while it waits is told the time and fitted as before.
+        answer.set_result({})
+        answer = asyncio.get_running_loop().create_future()
+        waiting.clear()
+        llm.add(say("And on."), finish())
+        mark = len(events.events)
+        session.prompt("Still more.")
+        await asyncio.wait_for(waiting.wait(), 5)
+        before, session._context_due = told_the_time(), True
+        answer.set_result({})
+        assert (await events.wait_ended(start=mark))["text"] == "And on."
+        assert fitted == [{"force": False}] and told_the_time() == before + 1
     finally:
         if not answer.done():
             answer.set_result({})
@@ -643,3 +679,252 @@ async def test_a_copy_that_ends_before_a_summary_holds_the_conversation_as_it_wa
             assert _system_of(asked.requests[0]) == read_snapshot(source_dir).system
         finally:
             await copy.close()
+
+
+# ---------------------------------------------------------------------------
+# What the first round of review found
+# ---------------------------------------------------------------------------
+
+
+async def test_without_a_whole_summary_a_conversation_told_to_sum_itself_up_stays_as_it_is(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+        length = len(session.harness.message_list)
+        record = (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+
+        async def fails() -> None:
+            raise RuntimeError("the provider is away")
+
+        # The request fails; it comes back empty; it ends at its length limit.
+        for answer in ([fails], [finish()], [say("## Primary Request and Intent\n- the four st"), usage(2_400, 900), finish("length")]):
+            llm.add(*answer)
+            mark, told = len(events.events), len(events.of("usage"))
+            session.compact()
+            ended = await events.wait_ended(start=mark)
+            assert ended["reason"] == "completed" and not ended.get("error")
+            # Nothing was summed up, and nothing was dropped for it.
+            assert not events.of("compacted")
+            assert len(session.harness.message_list) == length
+            assert (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8") == record
+            # What a request that came back used is told all the same.
+            assert [(event["summary"], event["input"], event["output"]) for event in events.of("usage")[told:]] == (
+                [(True, 2_400, 900)] if answer[-1] is not fails and len(answer) == 3 else []
+            )
+        assert any(getattr(message, "text", "").startswith("Finished step 0.") for message in session.harness.message_list)
+    finally:
+        await session.close()
+
+
+async def test_a_summary_cut_short_says_so_where_the_conversation_has_to_get_shorter(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+        llm.add(say("## Critical Context\n- never touch the vault\n\n## Next Step\n- go on with st"), usage(2_400, 900), finish("length"))
+
+        # As after a request that was refused as too long: the older part goes either way.
+        await session._fit(force=True)
+
+        said = "\n".join(getattr(message, "text", "") for message in session.harness.message_list)
+        assert "never touch the vault" in said and SUMMARY_CUT_SHORT_NOTE in said
+        assert said.index("go on with st") < said.index(SUMMARY_CUT_SHORT_NOTE)
+        assert [event["summary"] for event in events.of("usage")][-1] is True
+        assert session._compactions == 1
+    finally:
+        await session.close()
+
+
+def test_what_limits_the_work_comes_before_the_long_quotes_in_a_summary() -> None:
+    # A summary that reaches its length limit loses its end: that is to be the quotes, not the constraints.
+    text = texts.COMPACTION_INSTRUCTION
+    assert text.index("## Critical Context") < text.index("## Next Step") < text.index("Rules:")
+    assert text.index("## Current Work") < text.index("## Critical Context")
+
+
+async def test_a_summing_up_that_is_stopped_before_it_took_a_step_is_over_all_the_same(tmp_path: Path) -> None:
+    llm = ScriptedLLM()
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm)
+    await _seed(session, events, llm)
+    requests = len(llm.requests)
+
+    # Told to sum up and to stop in one go: the task has not run when it is cancelled.
+    mark = len(events.events)
+    session.compact()
+    assert session.abort() is True
+    ended = await asyncio.wait_for(events.wait_ended(start=mark), 5)
+    assert ended["reason"] == "aborted" and not session.running and len(llm.requests) == requests
+    # The session takes work again.
+    llm.add(say("Still here."), finish())
+    assert (await _ask(session, events, "And now?"))["text"] == "Still here."
+
+    # Told to sum up and closed, the summing up cancelled before it took a step: the closing is
+    # carried through (what was said is written out, the model's client closed), and says so.
+    mark = len(events.events)
+    session.compact()
+    session._run_task.cancel()
+    await asyncio.wait_for(session.close(), 5)
+    reasons = [event["reason"] for event in events.events[mark:] if event["type"] == "ended"]
+    assert reasons == ["closed"] and len(llm.requests) == requests + 1
+
+
+async def test_nothing_is_added_to_a_conversation_while_it_is_summed_up(tmp_path: Path) -> None:
+    release = asyncio.Event()
+
+    async def hold() -> None:
+        await release.wait()
+
+    llm = ScriptedLLM()
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm)
+    try:
+        await _seed(session, events, llm)
+        inputs = session._inputs
+        llm.add(hold, say("## Current Work\n- the four steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        for _attempt in range(200):
+            if llm.requests[-1][-1].get("content") == texts.COMPACTION_INSTRUCTION:
+                break
+            await asyncio.sleep(0.01)
+        assert llm.requests[-1][-1].get("content") == texts.COMPACTION_INSTRUCTION
+
+        for add in (session.steer, session.follow_up):
+            with pytest.raises(SessionError, match="is being summed up"):
+                add("one more thing")
+        # Not counted as taken: the end of the summing up says how many inputs the session took.
+        release.set()
+        ended = await events.wait_ended(start=mark)
+        assert ended["reason"] == "completed" and ended["inputs"] == inputs == session._inputs
+    finally:
+        release.set()
+        await session.close()
+
+
+async def test_what_the_host_said_about_usage_holds_for_the_run_it_was_said_in(tmp_path: Path) -> None:
+    answers: list[Any] = [{"notice": "No more may be used. Hand over what you have."}]
+
+    async def budget(session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        del session_id, payload
+        return answers.pop(0) if answers else None
+
+    llm = ScriptedLLM([[say("Handing over: half is done."), finish()], [say("Going on."), finish()]])
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, llm, HostCallbacks(budget=budget))
+    try:
+        await _ask(session, events, "Sort the photos.", opening=True)
+        assert _said(llm.requests[0])[-1] == "user: No more may be used. Hand over what you have."
+
+        # The next run, of this commission (the user allowed more) or of another: the host is asked
+        # anew, has nothing to say, and what it said before is not in front of the model any more.
+        await _ask(session, events, "Go on then.")
+        told = _said(llm.requests[1])
+        assert not any("No more may be used" in line for line in told)
+        assert told[-1] == "user: Go on then." and "assistant: Handing over: half is done." in told
+    finally:
+        await session.close()
+    # The record keeps it; a session opened from it leaves it out the same way.
+    assert "No more may be used" in (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+    llm = ScriptedLLM([[say("Here again."), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    try:
+        await _ask(session, events, "And again.")
+        assert not any("No more may be used" in line for line in _said(llm.requests[0]))
+    finally:
+        await session.close()
+
+
+async def test_a_session_is_not_started_while_its_record_is_being_copied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from nekoclaw.runtime import fork as fork_module
+
+    recorder = Recorder()
+    llm = ScriptedLLM([[say("Done."), finish()]])
+    runtime = _runtime({"s1": llm, "copy": ScriptedLLM([[say("From the copy."), finish()]])}, recorder)
+    spec = make_spec(tmp_path)
+    go, entered = threading.Event(), threading.Event()
+    real = fork_module.fork_record
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert go.wait(10)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fork_module, "fork_record", slow)
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do it.")
+        await recorder.wait_ended("s1")
+        copy = make_spec(tmp_path, "copy")
+        copying = asyncio.ensure_future(
+            runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        )
+        await asyncio.to_thread(entered.wait, 10)
+
+        # While the copy is being written: not started from nothing, or from half of it.
+        mark = len(recorder.events)
+        await runtime.start(copy)
+        refused = await recorder.wait_for(lambda event: event.get("type") == "error", start=mark)
+        assert (refused["session_id"], refused["command"]) == ("copy", "start") and "being copied" in refused["message"]
+
+        # Whoever waits for the copy is cancelled: the thread still writes, and the id stays taken until it is through.
+        copying.cancel()
+        await asyncio.gather(copying, return_exceptions=True)
+        assert "copy" in runtime.core._forking
+        go.set()
+        for _attempt in range(200):
+            if "copy" not in runtime.core._forking:
+                break
+            await asyncio.sleep(0.01)
+        assert "copy" not in runtime.core._forking
+        # Written whole, it is started like any.
+        mark = len(recorder.events)
+        await runtime.start(copy)
+        started = await recorder.wait_for(lambda event: event.get("type") == "started", start=mark)
+        assert started["resumed"] is True
+    finally:
+        go.set()
+        await runtime.shutdown()
+
+
+async def test_a_copy_is_made_whole_or_not_at_all_and_does_not_pass_a_stale_snapshot_for_a_fresh_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.runtime import fork as fork_module
+
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+        llm.add(say("## Current Work\n- the four steps are done"), finish())
+        session.compact()
+        await events.wait_ended(start=len(events.events))
+    finally:
+        await session.close()
+    source = Path(spec.session_dir)
+    assert read_snapshot(source).compactions == 1
+
+    # The snapshot cannot be written: nothing of the copy is left, and it can be made again.
+    def unwritable(*args: Any, **kwargs: Any) -> None:
+        raise OSError("the disk is full")
+
+    target = tmp_path / "sessions" / "copy"
+    with monkeypatch.context() as patched:
+        patched.setattr(fork_module, "write_snapshot", unwritable)
+        with pytest.raises(ForkError, match="snapshot of the copy could not be written"):
+            fork_record(source, target)
+    assert not (target / TRANSCRIPT_FILE).exists()
+    assert fork_record(source, target).entries > 0 and read_snapshot(target).compactions == 1
+
+    # The other's snapshot is behind its record (summed up, and stopped before what every request
+    # begins with was put together anew): the copy's is behind as well, so that it does the same on opening.
+    behind = dataclasses.replace(read_snapshot(source), compactions=0)
+    write_snapshot(source, behind)
+    stale = tmp_path / "sessions" / "stale"
+    fork_record(source, stale)
+    assert read_snapshot(stale).compactions == 0
+    assert sum(1 for entry in _entries(stale) if entry.type == "compaction") == 1

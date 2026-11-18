@@ -190,6 +190,7 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
         if target_path.stat().st_size > 0:
             raise ForkError("the session to be made has a record already")
     except FileNotFoundError:
+        # As it should be: nothing is there yet.
         pass
     try:
         entries = _OthersTranscript(source_path).read_whole()
@@ -202,6 +203,8 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
         path = path_to_entry(entries, leaf)
     except ValueError as exc:
         raise ForkError(f"the record of the session cannot be read: {exc}") from exc
+    # How often the other session was summed up, as its record has it.
+    summed_up_there = sum(1 for entry in path if entry.type == "compaction")
     if upto is not None:
         end = next((index for index, entry in enumerate(path) if entry.id == upto), None)
         if end is None:
@@ -224,14 +227,26 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
     if snapshot is not None:
         # As the other session begins its requests, so does this one. How
         # often the copy was summed up is counted anew: one that ends
-        # before the other's last summary holds fewer.
+        # before the other's last summary holds fewer. Not when the
+        # snapshot is behind the other's record (summed up, and stopped
+        # before what every request begins with was put together anew):
+        # the other session does that when it is opened, and so has the
+        # copy to, which it does on finding the count not to be its own.
         compactions = sum(1 for entry in path if entry.type == "compaction")
+        if snapshot.compactions is not None and snapshot.compactions != summed_up_there:
+            compactions = snapshot.compactions if snapshot.compactions != compactions else -1
         try:
             write_snapshot(
                 target_dir,
                 dataclasses.replace(snapshot, reason=REASON_FORKED, made_at=time.time(), compactions=compactions),
             )
-        except OSError:
-            # Opened without one, it puts its own together.
-            logger.warning("the system snapshot of a copied session could not be written", exc_info=True)
+        except OSError as exc:
+            # Both or neither: opened without the snapshot, the copy would
+            # put its own together and no longer begin its requests as
+            # the other does. Taken back, the same copy can be made again.
+            try:
+                target_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("the record of a copy that failed could not be removed", exc_info=True)
+            raise ForkError(f"the system snapshot of the copy could not be written: {exc}") from exc
     return ForkResult(upto=last, entries=len(path))

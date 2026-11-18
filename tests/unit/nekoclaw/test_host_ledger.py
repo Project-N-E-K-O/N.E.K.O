@@ -1378,3 +1378,55 @@ async def test_a_session_left_as_being_summed_up_by_an_earlier_process_is_closed
         assert (await second.get_session(session.id)).status == "closed"
     finally:
         await second.close()
+
+
+async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_and_keeps_its_rows(tmp_path):
+    import sqlite3
+
+    from nekoclaw.host.ledger import _ADDED_SESSION_COLUMNS, _USAGE_COLUMNS
+
+    path = tmp_path / "ledger.db"
+    first = Ledger(path)
+    session = await first.create_session(lanlan_name="Lan", name="photos", kind="project", project="photos")
+    commission = await _file(first, title="sort the photos")
+    await first.update(commission.id, session_id=session.id)
+    await first.close()
+    # As the build before left it: sessions as rows of their own, and nothing of what requests use,
+    # of where a copy was made, or of how much a commission may use.
+    conn = sqlite3.connect(path)
+    try:
+        for name, _kind in _ADDED_SESSION_COLUMNS:
+            conn.execute(f"ALTER TABLE sessions DROP COLUMN {name}")
+        for name in (*_USAGE_COLUMNS, "usage_allowed"):
+            conn.execute(f"ALTER TABLE commissions DROP COLUMN {name}")
+        conn.execute("PRAGMA user_version=3")
+        conn.commit()
+        assert "requests" not in {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    finally:
+        conn.close()
+
+    second = Ledger(path)
+    try:
+        kept = await second.get_session(session.id)
+        assert (kept.name, kept.kind, kept.project, kept.status) == ("photos", "project", "photos", "closed")
+        assert (kept.requests, kept.tokens, kept.context_tokens, kept.forked_at) == (0, 0, 0, None)
+        old = await second.get(commission.id)
+        assert (old.session_id, old.requests, old.tokens, old.usage_allowed) == (session.id, 0, 0, None)
+        # And is written like one that was made now.
+        await second.add_usage(session_id=session.id, commission_id=commission.id, tokens_in=100, tokens_out=20, context_tokens=120)
+        assert ((await second.get_session(session.id)).tokens, (await second.get(commission.id)).tokens) == (120, 120)
+        assert (await second.allow_usage(commission.id, 1_000)).allowed == 1_120
+        copy = await second.create_session(
+            lanlan_name="Lan", name="photos/fork", kind="fork", project="photos", forked_from=session.id, forked_at="e7"
+        )
+        assert [(item.id, item.forked_at) for item in await second.forks_of(session.id)] == [(copy.id, "e7")]
+        assert await second.begin_compacting(session.id) is True
+        await second.end_compacting(session.id, compacted=True)
+        assert (await second.get_session(session.id)).compacted_at is not None
+    finally:
+        await second.close()
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+    finally:
+        conn.close()

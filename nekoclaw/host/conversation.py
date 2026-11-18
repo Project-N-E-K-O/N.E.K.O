@@ -37,6 +37,7 @@ This module imports nothing of the host: it is fed before the host is built.
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from collections.abc import Callable
@@ -100,18 +101,24 @@ class RecentConversation:
         if role is None or not isinstance(content, str):
             return False
         at = event.get("ts")
-        if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or at in (float("inf"), float("-inf")):
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
             at = None
         return self.note(
             str(event.get("lanlan_name") or ""), role, content, at=at, event_id=str(event.get("event_id") or "")
         )
 
     def recent(self, lanlan_name: str) -> list[Turn]:
-        """Return the messages kept for a character that are not old, the oldest first."""
+        """Return the messages kept for a character that are not old, the oldest first.
+
+        By when each was said: one that was told of late stands where it
+        was said, so that the newest, which an excerpt keeps first, are
+        the ones said last. Told of in the order they were said, they
+        stay in it.
+        """
         from config.nekoclaw_settings import TASK_AGENT_EXCERPT_MAX_AGE_SECONDS
 
         since = self._clock() - TASK_AGENT_EXCERPT_MAX_AGE_SECONDS
-        return [turn for turn in self._turns.get(lanlan_name, ()) if turn.at >= since]
+        return sorted((turn for turn in self._turns.get(lanlan_name, ()) if turn.at >= since), key=lambda turn: turn.at)
 
     def forget(self, lanlan_name: str | None = None) -> None:
         """Drop what is kept for a character, or for all of them."""

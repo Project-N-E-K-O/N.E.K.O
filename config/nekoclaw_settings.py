@@ -316,13 +316,15 @@ TASK_AGENT_FORK_SECONDS = 60.0
 (``TaskAgentManager.fork_session``): a record is a file of a few megabytes at
 the most, and the time is mostly a runtime process coming up."""
 
-TASK_AGENT_FORK_WITHHELD_TOOLS = ("write", "edit", "bash", "pwsh", "subagent")
+TASK_AGENT_FORK_WITHHELD_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call")
 """The tools a session that is a copy of another is opened without. It has
 the working directory of the session it was copied from, which may be at
 work there: one working directory is written by one session at a time. A
-copy reads, searches and answers. The tools stay in what the model is told
-of (as in the session they were copied from, so a provider's cache of that
-is used) and answer that they are not available."""
+copy reads, searches and answers. ``capability_call`` is among them: what
+it reaches (plugin entries, the keyboard and mouse, the browser) can write
+as well, and the gateway refuses a copy's calls besides. The tools stay in
+what the model is told of (as in the session they were copied from, so a
+provider's cache of that is used) and answer that they are not available."""
 
 # -- summing up a session nothing is at work in -------------------------------
 
@@ -348,9 +350,10 @@ TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS = 6 * 3600.0
 """Least time between two times the same session is summed up while idle."""
 
 TASK_AGENT_IDLE_COMPACTS_PER_DAY = 6
-"""Most sessions the host sums up while idle within 24 hours, all sessions
-together: each is one model request of up to the length of a whole
-conversation."""
+"""Most times within 24 hours the host tells an idle session to sum itself
+up, all sessions together: each is one model request of up to the length
+of a whole conversation. Counted when the session is told to, whatever
+becomes of the summary; those on their way to it count as well."""
 
 TASK_AGENT_IDLE_COMPACT_SECONDS = 300.0
 """How long one such summing up may take, the session being opened for it

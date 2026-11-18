@@ -68,6 +68,18 @@ SUMMARY_FALLBACK = (
     "(The earlier part of this conversation could not be summarized and was dropped. Rely on "
     "the messages that remain and on the current state of the files.)"
 )
+SUMMARY_CUT_SHORT_NOTE = (
+    "(This summary reached its length limit and ends early: what would have followed is missing. "
+    "Where it matters, check the files and ask rather than assume.)"
+)
+
+
+class SummaryCutShort(RuntimeError):
+    """The model's summary ended at its length limit; ``text`` is what there is of it."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__("the summary was cut short at its length limit")
+        self.text = text
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +688,7 @@ class ContextManager:
         tight: bool | None = None,
         on_compaction: Callable[[Compaction], None] | None = None,
         pinned: Collection[str] = (),
+        or_drop: bool = True,
     ) -> list[Compaction]:
         """Bring the conversation under the threshold; rewrites ``transcript`` in place.
 
@@ -691,6 +704,14 @@ class ContextManager:
         ``pinned`` names rows (by entry id) that a summary leaves as they
         are, word for word: the text that opened the commission the session
         is working on.
+
+        ``or_drop`` says what becomes of the older part when no whole
+        summary of it can be had (the request failed, came back empty, or
+        ended at its length limit). True: the conversation has to get
+        shorter, so the part is replaced all the same, by a note that it
+        was dropped, or by the summary as far as it got with a note that
+        it ends early. False, for a conversation with nothing wrong with
+        its length: it is left as it is, and no summary is returned.
 
         ``on_compaction`` is how the caller persists them. It is called for each
         summary as soon as that summary has replaced the older messages, with
@@ -729,6 +750,7 @@ class ContextManager:
                 tokens_before,
                 tight=(force if tight is None else tight) or attempt > 0,
                 pinned=pinned,
+                or_drop=or_drop,
             )
             if compaction is None:
                 break
@@ -744,7 +766,7 @@ class ContextManager:
         return done
 
     async def _compact(
-        self, rows: list[Row], tokens_before: int, *, tight: bool, pinned: Collection[str] = ()
+        self, rows: list[Row], tokens_before: int, *, tight: bool, pinned: Collection[str] = (), or_drop: bool = True
     ) -> Compaction | None:
         policy = self.policy
         sizes = [estimate_tokens(row.message, policy.image_tokens) for row in rows]
@@ -765,7 +787,10 @@ class ContextManager:
             # Nothing but earlier summaries or oversized user text: no gain.
             return None
 
-        summary, usage = await self._summarize_region(replaced)
+        summary, usage = await self._summarize_region(replaced, or_drop=or_drop)
+        if summary is None:
+            # No summary to be had, and nothing that has to go: left as it is.
+            return None
         stored = frame_summary(summary)
         summary_row = Row(self.new_entry_id(), "summary", summary_message(stored))
         replaced_ids = {row.entry_id for row in replaced}
@@ -787,8 +812,12 @@ class ContextManager:
             usage=usage,
         )
 
-    async def _summarize_region(self, region: Sequence[Row]) -> tuple[str, Usage | None]:
-        """Ask the model for a checkpoint of ``region``; never raises."""
+    async def _summarize_region(self, region: Sequence[Row], *, or_drop: bool = True) -> tuple[str | None, Usage | None]:
+        """Ask the model for a checkpoint of ``region``; never raises.
+
+        Without a whole summary: what stands in for it when ``or_drop``,
+        else None (see ``fit``).
+        """
         policy = self.policy
         # The request must fit the window itself: shrink tool results first,
         # then drop the oldest messages of the part being condensed.
@@ -798,11 +827,22 @@ class ContextManager:
             summary, usage = await self.summarize(prepared, policy.summary_cap)
         except asyncio.CancelledError:
             raise
+        except SummaryCutShort as cut:
+            # What it holds of limits on what may be done can be the part
+            # that is missing: not taken for a whole summary.
+            if not or_drop or not cut.text.strip():
+                logger.warning("context summary was cut short at its length limit")
+                return (SUMMARY_FALLBACK if or_drop else None), None
+            logger.warning("context summary was cut short at its length limit; kept as far as it got")
+            return f"{cut.text.rstrip()}\n\n{SUMMARY_CUT_SHORT_NOTE}", None
         except Exception as exc:  # noqa: BLE001 - a failed summary must not fail the run
+            if not or_drop:
+                logger.warning("context summary failed; the conversation is left as it is: %s", exc)
+                return None, None
             logger.warning("context summary failed, dropping the older span instead: %s", exc)
             return SUMMARY_FALLBACK, None
         if not summary.strip():
-            return SUMMARY_FALLBACK, usage
+            return (SUMMARY_FALLBACK if or_drop else None), usage
         return summary, usage
 
 

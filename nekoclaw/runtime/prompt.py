@@ -26,11 +26,14 @@ The order is from what every session is told alike to what only this one
 is. The working directory is a session's own (each has one, unless a
 project names a directory), and the language is that of the commission the
 session was opened for; everything in front of them is the same for two
-sessions that are offered the same tools by the same host. A provider keeps
-the head of a request it has seen and charges less for reading it again:
-with what differs at the end, the request of a session that was just opened
-shares its head with those of the sessions before it, up to there. (With
-the environment second, as it was, they shared the identity paragraphs.)
+sessions that are offered the same tools and given the same instructions
+by the host (the same character, the same project and its rules: where
+those differ, the head ends there). A provider may keep the head of a
+request it has seen and charge less for reading it again, which is up to
+the provider: with what differs at the end, the request of a session that
+was just opened shares its head with those of the sessions before it, up
+to there. (With the environment second, as it was, they shared the
+identity paragraphs.)
 """
 
 from __future__ import annotations

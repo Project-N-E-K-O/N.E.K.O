@@ -392,11 +392,15 @@ def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
     messages for each character, ``nekoclaw/host/conversation.py``); a
     synchronous append, like the hops above. Nothing said is logged.
     """
-    if not nekoclaw_on():
-        return False
     try:
         from nekoclaw.host.conversation import recent_conversation
 
+        if not nekoclaw_on():
+            # Nothing is kept while it is off, and what was kept before it
+            # was switched off goes with the first message that comes by:
+            # switched on again, a commission is handed nothing from then.
+            recent_conversation().forget()
+            return False
         return bool(recent_conversation().note_event(event))
     except Exception:
         logger.debug("[NekoClaw] keeping a message for task agents failed")

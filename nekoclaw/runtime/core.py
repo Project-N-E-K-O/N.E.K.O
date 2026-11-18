@@ -200,6 +200,9 @@ class RuntimeCore:
             self._reject(session_id, "fork", f'session "{session_id}" already exists')
             return
         self._forking.add(session_id)
+        # The copying itself, once it began: it goes on in its thread
+        # whatever becomes of whoever waits for it here.
+        copying: asyncio.Future[Any] | None = None
         try:
             for under_way in (self._starting.get(source_id), self._closing.get(source_id)):
                 if under_way is not None:
@@ -207,9 +210,10 @@ class RuntimeCore:
             source = self._sessions.get(source_id)
             if source is not None:
                 await source.flush()
-            result = await asyncio.to_thread(
-                fork_record, Path(command.source_dir), Path(command.session_dir), upto=command.upto
+            copying = asyncio.ensure_future(
+                asyncio.to_thread(fork_record, Path(command.source_dir), Path(command.session_dir), upto=command.upto)
             )
+            result = await asyncio.shield(copying)
         except ForkError as exc:
             self._reject(session_id, "fork", str(exc))
         except Exception as exc:  # noqa: BLE001 - reported to the host, never raised into the pump
@@ -224,7 +228,18 @@ class RuntimeCore:
                 )
             )
         finally:
-            self._forking.discard(session_id)
+            if copying is not None and not copying.done():
+                # Whoever waited was cancelled, and the thread still
+                # writes: the session is not to be copied or started
+                # again before it is through.
+                def written(done: "asyncio.Future[Any]") -> None:
+                    self._forking.discard(session_id)
+                    if not done.cancelled():
+                        done.exception()
+
+                copying.add_done_callback(written)
+            else:
+                self._forking.discard(session_id)
 
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         session_id = spec.session_id
@@ -234,6 +249,11 @@ class RuntimeCore:
             return
         if session_id in self._sessions or session_id in self._starting:
             self._reject(session_id, "start", f'session "{session_id}" already exists')
+            return
+        if session_id in self._forking:
+            # Its record is being written: opened now, it would begin with
+            # nothing, or with half of it.
+            self._reject(session_id, "start", f'session "{session_id}" is being copied; start it once that is done')
             return
         opening: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._starting[session_id] = opening
