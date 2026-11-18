@@ -1,0 +1,71 @@
+/* This independent page uses only its own scope and the shared theme colors. */
+:root { color-scheme: light dark; --library-bg: #f5f6fa; --library-surface: #fff; --library-text: #242638; --library-muted: #64677a; --library-border: #dfe2eb; --library-accent: #6455bc; --library-accent-ink: #fff; --library-danger: #b33549; --library-notice-bg: #edeafa; --library-notice-text: #453879; }
+/* The shared dark theme changes surfaces; keep controls and notices readable with it. */
+html.dark, [data-theme="dark"] { --library-bg: #171923; --library-surface: #222531; --library-text: #ececf4; --library-muted: #b6b9ca; --library-border: #3c4053; --library-accent: #b5a7ff; --library-accent-ink: #201c36; --library-danger: #ff9cae; --library-notice-bg: #302943; --library-notice-text: #e3dcff; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--library-bg); color: var(--library-text); font-family: system-ui, sans-serif; line-height: 1.55; }
+button, input, textarea { font: inherit; }
+button, .library-download { min-height: 44px; max-width: 100%; padding: .5rem .85rem; border: 1px solid var(--library-border); border-radius: .55rem; background: var(--library-surface); color: var(--library-text); cursor: pointer; text-decoration: none; }
+button:hover, .library-download:hover { border-color: var(--library-accent); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+button.primary { background: var(--library-accent); border-color: var(--library-accent); color: var(--library-accent-ink); }
+button.danger { color: var(--library-danger); }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid var(--library-accent); outline-offset: 3px; }
+input:not([type="checkbox"]), textarea { min-width: 0; padding: .65rem .8rem; border: 1px solid var(--library-border); border-radius: .5rem; background: var(--library-surface); color: var(--library-text); }
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: .35rem; font-size: 2rem; letter-spacing: -.04em; }
+h2 { font-size: 1.2rem; margin-bottom: .5rem; }
+h3 { font-size: 1rem; margin-bottom: .5rem; }
+.library-shell { max-width: 1400px; margin: auto; padding: 2.5rem; }
+.library-header, .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.library-header { margin-bottom: 1.5rem; }
+.library-header p, .section-heading p { color: var(--library-muted); margin-bottom: 0; }
+.library-kicker { font-size: .75rem; font-weight: 700; letter-spacing: .12em; color: var(--library-accent) !important; }
+.library-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .5rem; }
+.library-layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.library-sidebar, .library-panel, .library-empty { border: 1px solid var(--library-border); border-radius: .85rem; background: var(--library-surface); padding: 1.25rem; }
+.library-sidebar { position: sticky; top: 1rem; }
+/* Give the title and full translated action their own rows instead of squeezing both labels. */
+.library-sidebar .section-heading { flex-direction: column; align-items: stretch; gap: .75rem; }
+.library-sidebar .section-heading h2 { margin-bottom: 0; }
+.library-sidebar .section-heading button { width: 100%; }
+.library-list { display: grid; gap: .5rem; margin-top: 1rem; }
+.library-list button { text-align: left; overflow-wrap: anywhere; }
+.library-list button[aria-current="true"] { border-color: var(--library-accent); box-shadow: inset 3px 0 var(--library-accent); }
+.library-panel { margin-top: 1.25rem; }
+.library-empty { padding: 3rem; }
+.library-note, .library-row-meta { font-size: .85rem; color: var(--library-muted); }
+.library-feedback { padding: .8rem 1rem; border-radius: .5rem; background: var(--library-notice-bg); color: var(--library-notice-text); }
+.library-feedback[data-tone="error"], #library-dialog-error { color: var(--library-danger); }
+.library-row { padding: 1rem 0; border-bottom: 1px solid var(--library-border); overflow-wrap: anywhere; }
+.library-row:last-child { border-bottom: 0; padding-bottom: 0; }
+/* Long source names may wrap independently; keep their checkbox and actions usable. */
+.library-row .section-heading { align-items: center; flex-wrap: wrap; gap: .5rem 1rem; }
+.library-row-title { display: flex; align-items: baseline; gap: .6rem; min-width: 0; flex: 1 1 16rem; font-weight: 600; margin-bottom: .25rem; }
+.library-row-title span { min-width: 0; overflow-wrap: anywhere; }
+.library-row input[type="checkbox"] { flex: none; margin: 0; accent-color: var(--library-accent); }
+.library-row .library-actions { flex-shrink: 0; max-width: 100%; }
+.library-row-meta { margin: .25rem 0 0; }
+.library-search { display: flex; gap: .6rem; margin: 1rem 0 .5rem; }
+.library-search input { flex: 1; }
+.library-result { margin-top: 1rem; border-left: 3px solid var(--library-accent); padding-left: 1rem; }
+.library-result h4 { margin: 0 0 .25rem; }
+.library-result .library-excerpt { margin: .5rem 0 .75rem; line-height: 1.7; }
+.library-excerpt, .library-source { white-space: pre-wrap; overflow-wrap: anywhere; }
+.library-source { font: .9rem/1.7 system-ui, sans-serif; max-height: 52vh; overflow: auto; background: var(--library-bg); padding: 1rem; border-radius: .5rem; }
+dialog { width: min(780px, calc(100% - 2rem)); max-height: calc(100% - 2rem); overflow: auto; padding: 1.5rem; border: 1px solid var(--library-border); border-radius: .85rem; background: var(--library-surface); color: var(--library-text); }
+dialog::backdrop { background: #17192388; }
+#library-dialog-input { width: 100%; margin: .35rem 0 1rem; }
+#library-dialog-content label { display: block; margin: .7rem 0; }
+#library-dialog-content input:not([type="checkbox"]) { display: block; width: 100%; margin-top: .3rem; }
+/* Public metadata remains readable without exposing editable revision/hash fields. */
+#library-dialog-content textarea { display: block; width: 100%; resize: vertical; margin-top: .3rem; }
+.library-share-information { overflow-wrap: anywhere; margin-top: 1rem; }
+/* Private source names and digests must remain readable in narrow review dialogs. */
+.library-package-scope { overflow-wrap: anywhere; margin-top: 1rem; }
+#library-dialog-description { color: var(--library-muted); white-space: pre-wrap; }
+#library-dialog-form > .library-actions { margin-top: 1.25rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+[hidden] { display: none !important; }
+/* A zero grid minimum lets long translations share the available mobile width. */
+@media (max-width: 800px) { .library-shell { padding: 1rem; } .library-layout { grid-template-columns: minmax(0, 1fr); } .library-sidebar { position: static; } .library-list { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); } .library-header, .section-heading { flex-wrap: wrap; } .library-row .library-actions { justify-content: flex-start; } .library-empty { padding: 2rem; } }

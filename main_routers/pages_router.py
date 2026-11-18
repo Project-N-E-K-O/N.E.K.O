@@ -310,6 +310,15 @@ async def get_theater(request: Request):
     })
 
 
+@router.get("/knowledge-library", response_class=HTMLResponse)
+async def get_knowledge_library(request: Request):
+    """Render the built-in personal library without touching chat startup."""
+    return get_templates().TemplateResponse(request, "templates/knowledge_library.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get("/live2d_parameter_editor", response_class=HTMLResponse)
 async def live2d_parameter_editor(request: Request):
     """Live2D parameter editor page."""

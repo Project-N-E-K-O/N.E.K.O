@@ -121,7 +121,8 @@ async def _run_persona_refine_for_character(character: str) -> None:
     if not candidates_by_entity:
         return
 
-    engine = MemoryRefineEngine(runtime._config_manager)
+    # Construction borrows the encoder; any cold singleton wait belongs off-loop.
+    engine = await asyncio.to_thread(MemoryRefineEngine, runtime._config_manager)
 
     async def _apply(cluster, actions, cluster_hash):
         # Members within a cluster share the same entity (enforced by the engine); read from the first non-empty member
@@ -257,7 +258,7 @@ async def _run_reflection_refine_for_character(
     if not candidates_by_entity:
         return 0
 
-    engine = MemoryRefineEngine(runtime._config_manager)
+    engine = await asyncio.to_thread(MemoryRefineEngine, runtime._config_manager)
 
     async def _apply(cluster, actions, cluster_hash):
         ent = next(
@@ -444,7 +445,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
     if not buckets:
         return False
 
-    lite = ScopedLiteRefineEngine(runtime._config_manager)
+    lite = await asyncio.to_thread(ScopedLiteRefineEngine, runtime._config_manager)
 
     async def _apply(bucket, cluster, actions, cluster_hash):
         # Return the number of actions successfully applied: the engine uses this to treat "all non-empty actions were rejected"

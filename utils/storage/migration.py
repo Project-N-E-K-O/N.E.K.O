@@ -89,6 +89,9 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # The database is derived but moves with the rest: migration runs with
     # every server stopped, exactly like memory's SQLite files.
     "knowledge",
+    # Personal originals, immutable artifacts, manifests and durable jobs move
+    # together. This is separate from the existing public knowledge domain.
+    "knowledge_library",
     # NekoClaw: what it keeps as plain files, each on its own (the ledger of
     # commissions with its write-ahead log, the permission settings, what
     # was learned about plugins and models, the browser settings). Not the

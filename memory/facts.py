@@ -5292,7 +5292,9 @@ class FactStore:
         if new_facts:
             try:
                 from memory.recall import MemoryRecallReranker
-                reranker = MemoryRecallReranker()
+                # Encoder construction may be single-flighted by another
+                # thread; resolving it must not stall the shared event loop.
+                reranker = await asyncio.to_thread(MemoryRecallReranker)
                 query_texts = [
                     f.get('text', '') for f in new_facts if f.get('text')
                 ]

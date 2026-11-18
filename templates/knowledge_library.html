@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="knowledgeLibrary.title">知识库</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
+    <script src="/static/theme-manager.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <link rel="stylesheet" href="/static/css/knowledge_library.css?v={{ static_asset_version }}">
+    <script src="/static/js/knowledge_library.js?v={{ static_asset_version }}" defer></script>
+</head>
+<body>
+    <!-- The controller enables static buttons only after localization and event binding. -->
+    <main class="library-shell" id="knowledge-library-app">
+        <header class="library-header">
+            <div><p class="library-kicker">N.E.K.O.</p><h1 data-i18n="knowledgeLibrary.title">知识库</h1><p data-i18n="knowledgeLibrary.subtitle">保存资料、查找原文、制作可分享的成品包。</p></div>
+            <div class="library-actions"><button disabled data-library-startup type="button" data-action="refresh" data-i18n="knowledgeLibrary.refresh">刷新</button><button disabled data-library-startup type="button" data-action="install" data-i18n="knowledgeLibrary.install">离线安装</button></div>
+        </header>
+        <p id="library-feedback" class="library-feedback" role="status" aria-live="polite" hidden></p>
+        <div class="library-layout">
+            <aside class="library-sidebar" aria-labelledby="libraries-heading">
+                <div class="section-heading"><h2 id="libraries-heading" data-i18n="knowledgeLibrary.myLibraries">我的资料库</h2><button disabled data-library-startup type="button" data-action="create" class="primary" data-i18n="knowledgeLibrary.create">新建</button></div>
+                <div id="library-list" class="library-list"></div>
+            </aside>
+            <div class="library-workspace">
+                <section id="library-empty" class="library-empty"><h2 data-i18n="knowledgeLibrary.welcome">从一份资料开始</h2><p data-i18n="knowledgeLibrary.emptyLibraries">新建资料库后导入文档，或安装一个已制作好的知识包。</p></section>
+                <section id="library-detail" hidden>
+                    <header class="section-heading"><div><p id="library-kind" class="library-kicker"></p><h2 id="library-name"></h2></div><div class="library-actions"><button disabled data-library-startup type="button" data-action="rename" data-i18n="knowledgeLibrary.rename">重命名</button><button disabled data-library-startup type="button" data-action="delete-library" class="danger" data-i18n="knowledgeLibrary.delete">删除</button></div></header>
+                    <section class="library-panel" aria-labelledby="documents-heading">
+                        <div class="section-heading"><div><h3 id="documents-heading" data-i18n="knowledgeLibrary.documents">资料</h3><p data-i18n="knowledgeLibrary.inputHint">支持 TXT、Markdown、DOCX 和文字型 PDF。先预览，再确认入库。</p></div><button disabled data-library-startup type="button" class="primary" data-action="upload" data-i18n="knowledgeLibrary.import">导入资料</button></div>
+                        <div id="library-documents" class="library-documents"></div>
+                    </section>
+                    <section class="library-panel" aria-labelledby="search-heading">
+                        <h3 id="search-heading" data-i18n="knowledgeLibrary.search">检索资料</h3>
+                        <form id="library-search" class="library-search"><label class="visually-hidden" for="library-query" data-i18n="knowledgeLibrary.query">搜索内容</label><input id="library-query" name="query" required maxlength="500" data-i18n-placeholder="knowledgeLibrary.query" placeholder="搜索内容"><button disabled data-library-startup type="submit" class="primary" data-i18n="knowledgeLibrary.search">检索资料</button></form>
+                        <p id="library-semantic" class="library-note" role="status"></p><div id="library-results"></div>
+                    </section>
+                    <section class="library-panel" aria-labelledby="packages-heading">
+                        <div class="section-heading"><div><h3 id="packages-heading" data-i18n="knowledgeLibrary.packages">成品知识包</h3><p data-i18n="knowledgeLibrary.buildHint">勾选资料，冻结当前版本并构建包含向量的成品。</p></div><button disabled data-library-startup type="button" data-action="build" data-i18n="knowledgeLibrary.build">构建成品</button></div>
+                        <div id="library-packages"></div>
+                    </section>
+                </section>
+                <section class="library-panel" aria-labelledby="market-heading"><div class="section-heading"><div><h2 id="market-heading" data-i18n="knowledgeLibrary.market">知识市场</h2><p id="library-market-status" role="status"></p></div><div class="library-actions"><button disabled data-library-startup type="button" data-action="market-login" data-i18n="knowledgeLibrary.marketLogin">登录市场</button><button disabled data-library-startup type="button" data-action="market-browse" data-i18n="knowledgeLibrary.marketBrowse">浏览知识包</button><button disabled data-library-startup type="button" data-action="market-install" data-i18n="knowledgeLibrary.marketInstall">从市场安装</button></div></div><p class="library-note" data-i18n="knowledgeLibrary.marketHint">只分享明确选定的成品。市场审核与本地安装是独立步骤。</p></section>
+                <section class="library-panel" aria-labelledby="tasks-heading"><div class="section-heading"><h2 id="tasks-heading" data-i18n="knowledgeLibrary.tasks">处理任务</h2><span class="library-note" data-i18n="knowledgeLibrary.taskHint">状态由服务端记录；关闭页面不会取消任务。</span></div><div id="library-jobs" aria-live="polite"></div></section>
+            </div>
+        </div>
+        <input id="library-upload" type="file" accept=".txt,.md,.markdown,.pdf,.docx" hidden>
+        <input id="library-install" type="file" accept=".zip,.neko-knowledge-pack.zip" hidden>
+    </main>
+    <!-- One native dialog provides focus containment without browser prompt/alert calls. -->
+    <dialog id="library-dialog" aria-labelledby="library-dialog-title">
+        <form id="library-dialog-form"><h2 id="library-dialog-title"></h2><p id="library-dialog-description"></p><label id="library-dialog-label" for="library-dialog-input" data-i18n="knowledgeLibrary.name">名称</label><input id="library-dialog-input" name="name" maxlength="120"><div id="library-dialog-content"></div><p id="library-dialog-error" role="alert" hidden></p><div class="library-actions"><button disabled data-library-startup type="button" data-action="close-dialog" data-i18n="knowledgeLibrary.cancel">取消</button><button disabled data-library-startup type="submit" id="library-dialog-submit" class="primary" data-i18n="knowledgeLibrary.confirm">确认</button></div></form>
+    </dialog>
+</body>
+</html>

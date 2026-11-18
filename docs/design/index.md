@@ -41,6 +41,7 @@ These documents preserve design intent and implementation context. They are grou
 
 ## Product-flow and interaction records
 
+- [Personal document library and ready-to-use knowledge package sharing](./personal-knowledge-base-and-pack-sharing) — Chinese-only implementation plan and module verification record. Covers local document management, package building, market publication and installation; dialogue integration is out of scope.
 - [Seven-day floating avatar guide](./avatar-floating-7day-complete-guide-dev)
 - [Floating avatar panel functions](./avatar-floating-panel-functions)
 - [Post-tutorial low-disruption chat branches](./avatar-floating-post-theater-chat-branches)
