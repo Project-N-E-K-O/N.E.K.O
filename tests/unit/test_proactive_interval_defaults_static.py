@@ -119,7 +119,7 @@ def _popup_defaults(source: str) -> dict:
     )
     assert helper, "popup interval default helper block not found"
     toggles = re.search(
-        r"^(\s*)const settingsToggles = \[\n.*?^\1\];", source,
+        r"^([ \t]*)const settingsToggles = \[\n.*?^\1\];", source,
         re.MULTILINE | re.DOTALL,
     )
     assert toggles, "settingsToggles declaration not found"
