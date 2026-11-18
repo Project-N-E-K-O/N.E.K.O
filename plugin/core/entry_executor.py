@@ -88,7 +88,10 @@ class EntryExecutor:
             self._logger.warning(
                 f"Plugin entry output_schema could not be prepared: entry={event_id}, error_type={type(exc).__name__}"
             )
-        self._output_checks[event_id] = (meta, check)
+        # A call that started before a re-registration still checks against
+        # its own meta, but must not overwrite the current entry's cache.
+        if self._metadata.get(event_id) is meta:
+            self._output_checks[event_id] = (meta, check)
         return check
 
     def _prune_output_checks(self) -> None:

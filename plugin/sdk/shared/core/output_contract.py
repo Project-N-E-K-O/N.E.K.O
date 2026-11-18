@@ -29,7 +29,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, get_args
 from urllib.parse import unquote
 
 from .finish import normalize_structured_data
@@ -159,7 +159,7 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
                 errors = exc.errors(include_url=False, include_input=False, include_context=False)
                 # Paths are walked along the copy the validator received.
                 return [
-                    OutputIssue(path=_loc_path(error.get("loc", ()), declared, probe), type=str(error.get("type") or "invalid"))
+                    OutputIssue(path=_loc_path(error.get("loc", ()), declared, probe), type=_error_type(error.get("type")))
                     for error in errors[:MAX_REPORTED_ISSUES + 1]
                 ]
             except Exception as path_exc:  # noqa: BLE001 - reporting must not turn into a call failure
@@ -169,6 +169,27 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         return []
 
     return check
+
+
+def _builtin_error_types() -> frozenset[str]:
+    try:
+        from pydantic_core.core_schema import ErrorType
+    except ImportError:  # pragma: no cover - pydantic_core ships with pydantic
+        return frozenset()
+    return frozenset(item for item in get_args(ErrorType) if isinstance(item, str))
+
+
+_BUILTIN_ERROR_TYPES = _builtin_error_types()
+_CUSTOM_ERROR_TYPE = "custom_error"
+
+
+def _error_type(raw: object) -> str:
+    """Pydantic's own error types only; a custom validator's type is free text.
+
+    ``PydanticCustomError`` lets a validator choose any type string, which may
+    be built from the data, so it is replaced by a fixed code.
+    """
+    return raw if isinstance(raw, str) and raw in _BUILTIN_ERROR_TYPES else _CUSTOM_ERROR_TYPE
 
 
 def _revalidates(model: type, value: object) -> bool:
@@ -275,7 +296,7 @@ class _JsonSchemaCheck:
                 token = token.replace("~1", "/").replace("~0", "~")
                 if isinstance(node, Mapping) and token in node:
                     node = node[token]
-                elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
+                elif isinstance(node, list) and _ARRAY_INDEX.fullmatch(token) and int(token) < len(node):
                     node = node[int(token)]
                 else:
                     return _UNRESOLVED
@@ -328,12 +349,13 @@ class _JsonSchemaCheck:
             return
 
         if "$ref" in schema:
-            if depth >= _MAX_REF_DEPTH:
-                # Not a verdict on the data: the checker gives up.
-                raise _CheckAborted("ref_depth")
             target = self._resolve(schema["$ref"])
-            # An unresolvable (e.g. external) reference is not ours to judge.
+            # An unresolvable (e.g. external) reference is not ours to judge;
+            # the hop budget only counts references actually followed.
             if target is not _UNRESOLVED:
+                if depth >= _MAX_REF_DEPTH:
+                    # Not a verdict on the data: the checker gives up.
+                    raise _CheckAborted("ref_depth")
                 self._check(target, value, path, issues, depth + 1, limit=limit)  # $ref hop
 
         expected = schema.get("type")
@@ -494,6 +516,8 @@ def _json_default(value: object) -> object:
 
 
 _UNRESOLVED = object()
+# RFC 6901 array index: "0" or no leading zero, ASCII digits only.
+_ARRAY_INDEX = re.compile(r"0|[1-9][0-9]*")
 
 
 class _Enough(Exception):

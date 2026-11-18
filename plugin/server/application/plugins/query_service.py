@@ -340,10 +340,34 @@ _LISTED_ENTRY_HANDLED_FIELDS = frozenset({
 })
 
 
+def _require_string_keys(value: object, *, context: str) -> None:
+    """Raise when any nested mapping has a non-string key (not JSON-encodable)."""
+    stack: list[object] = [value]
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, Mapping):
+            for key, item in node.items():
+                if not isinstance(key, str):
+                    raise ServerDomainError(
+                        code="INVALID_DATA_SHAPE",
+                        message=f"{context} contains non-string key",
+                        status_code=500,
+                        details={"key_type": type(key).__name__},
+                    )
+                stack.append(item)
+        elif isinstance(node, (list, tuple)):
+            stack.extend(node)
+
+
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
     for name, value in unhandled_entry_contract_fields(source, _LISTED_ENTRY_HANDLED_FIELDS).items():
         if isinstance(value, Mapping):
             try:
+                _require_string_keys(value, context=f"{context}.{name}")
                 value = _normalize_mapping(value, context=f"{context}.{name}")
             except ServerDomainError:
                 # A malformed opt-in field (e.g. non-string schema keys) drops

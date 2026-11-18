@@ -724,6 +724,8 @@ def test_ref_chains_shorter_than_the_budget_resolve():
     defs = {f"d{i}": {"$ref": f"#/$defs/d{i + 1}"} for i in range(20)}
     defs["d20"] = {"type": "integer"}
     assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, 1) == []
+    # The end of the chain is really reached: a string is rejected there.
+    assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, "x") == [("$", "type")]
 
 
 def test_runaway_combinators_give_up_as_a_checker_failure():
@@ -757,6 +759,21 @@ async def test_path_rendering_never_reads_attributes(caplog):
     runtime = _executor({"entry": entry}, {"entry": meta})
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
         assert await runtime.invoke("plugin_entry", "entry", {}) is returned
+
+
+def test_loc_path_never_touches_attributes():
+    from plugin.sdk.shared.core.output_contract import _loc_path
+
+    reads: list[str] = []
+
+    class Opaque:
+        def __getattr__(self, name):
+            reads.append(name)
+            raise RuntimeError("attribute access")
+
+    path = _loc_path(("inner", "n", 0), frozenset({"inner", "n"}), {"inner": Opaque()})
+    assert path == "$.inner.n.*"
+    assert reads == []
 
 
 async def test_contract_is_the_one_resolved_when_the_call_started():
@@ -839,3 +856,71 @@ async def test_cache_drops_gone_entries_on_a_cache_hit_too():
     del metadata["a"]
     await runtime.invoke("plugin_entry", "b", {})  # cache hit
     assert set(runtime._output_checks) == {"b"}
+
+
+# ---------------------------------------------------------------------------
+# Review round 4
+# ---------------------------------------------------------------------------
+
+
+def test_custom_error_types_are_replaced_by_a_fixed_code():
+    from pydantic import field_validator
+    from pydantic_core import PydanticCustomError
+
+    class Custom(BaseModel):
+        n: int
+
+        @field_validator("n")
+        @classmethod
+        def leak(cls, value):
+            raise PydanticCustomError(f"bad_{value}_{SECRET}", "nope")
+
+    check = build_output_check(SimpleNamespace(output_schema=Custom.model_json_schema(), output_model=Custom))
+    issues = [(i.path, i.type) for i in check({"n": 7})]
+    assert issues == [("$.n", "custom_error")]
+    assert output_contract.is_violation(check({"n": 7}))
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "expected"),
+    [
+        ({"$ref": "#/x/00", "x": [False]}, 1, []),
+        ({"$ref": "#/x/0", "x": [False]}, 1, [("$", "false")]),
+    ],
+)
+def test_review_round_four_pointer_cases(schema, value, expected):
+    assert _issues(schema, value) == expected
+
+
+def test_unresolvable_ref_at_the_end_of_a_long_chain_still_checks_its_siblings():
+    defs: dict[str, object] = {f"d{i}": {"$ref": f"#/$defs/d{i + 1}"} for i in range(31)}
+    defs["d31"] = {"$ref": "https://example.com/external.json", "type": "integer"}
+    assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, "x") == [("$", "type")]
+
+
+async def test_an_old_call_does_not_overwrite_the_current_entry_cache():
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def slow():
+        await release.wait()
+        return {"count": 1}
+
+    async def fast():
+        return "ok"
+
+    old_meta = EventMeta(event_type="plugin_entry", id="entry", output_schema=EXPLICIT)
+    metadata = {"entry": old_meta}
+    entries = {"entry": slow}
+    runtime = _executor(entries, metadata)
+    call = asyncio.create_task(runtime.invoke("plugin_entry", "entry", {}))
+    await asyncio.sleep(0)
+    new_meta = EventMeta(event_type="plugin_entry", id="entry", output_schema={"type": "string"})
+    metadata["entry"] = new_meta
+    entries["entry"] = fast
+    await runtime.invoke("plugin_entry", "entry", {})
+    assert runtime._output_checks["entry"][0] is new_meta
+    release.set()
+    await call
+    assert runtime._output_checks["entry"][0] is new_meta

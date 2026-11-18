@@ -191,7 +191,7 @@ async def search(self, query: str):
   对显式 schema，只有下面列出的支持关键字才会被强制校验；用其他关键字写的约束不会被检查，strict 模式下也一样。
 - 每次不符合都会记一条告警，不限频。高频调用的入口如果返回结构一直不对，会刷满插件日志，请修正返回值或契约。
 
-从返回注解推导出的模型，由模型自己做校验。显式 schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`。其他关键字会被忽略、不参与校验。引用不到的 `$ref`（不存在的指针、外部 URL）同样忽略、不参与校验。
+从返回注解推导出的模型，由模型自己做校验。显式 schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（仅配合数组形式的 `items`）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`。其他关键字会被忽略、不参与校验。引用不到的 `$ref`（不存在的指针、外部 URL）同样忽略、不参与校验。
 
 插件的入口列表里会带上 `output_schema`（和 `strict_output`）。任务 Agent 的能力网关暂不对外发布它，任务 Agent 的模型看不到。
 
