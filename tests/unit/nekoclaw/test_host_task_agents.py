@@ -3043,6 +3043,8 @@ async def test_a_run_that_ends_lets_go_of_the_browser_and_of_what_was_allowed_on
         # Its work was refused: none of it was taken, so it did not start.
         ({"kind": "error", "command": "prompt", "message": "the session is busy"},
          "start", "the session is busy", "the session is busy"),
+        # Refused without a word: the host's own fallback is for the record only.
+        ({"kind": "error", "command": "prompt"}, "start", "", "the runtime rejected the command"),
     ],
 )
 async def test_how_a_run_failed_is_said_in_her_language_and_kept_as_it_was(hosts, tmp_path, event, said, detail, reason):
@@ -3062,7 +3064,8 @@ async def test_how_a_run_failed_is_said_in_her_language_and_kept_as_it_was(hosts
     (report,) = await outbox(host, "task_result")
     assert report.payload["summary"] == expected == failed.result_summary
     # Nothing of the English record reaches her when the error named nothing.
-    assert "the run failed" not in report.payload["summary"]
+    if not detail:
+        assert reason not in report.payload["summary"]
 
 
 async def test_work_refused_after_some_was_taken_is_said_to_have_stopped_partway(hosts, tmp_path):

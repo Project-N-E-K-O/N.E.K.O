@@ -1896,7 +1896,10 @@ class TaskAgentManager:
 
     async def _on_error(self, session: _Session, event: dict[str, Any]) -> None:
         command = event.get("command")
-        message = str(event.get("message") or "the runtime rejected the command")
+        # What the runtime said, if it said anything: only that is passed on to
+        # her as the error. The fallback is for the record.
+        stated = str(event.get("message") or "")
+        message = stated or "the runtime rejected the command"
         commission_id = session.commission_id
         if command in ("prompt", "steer", "follow_up") and session.sent > 0:
             # Refused, so the session never took it.
@@ -1932,7 +1935,7 @@ class TaskAgentManager:
                     {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": message},
                 )
                 return
-            await self._fail(commission_id, f"the task agent could not be started: {message}", said="start", detail=message)
+            await self._fail(commission_id, f"the task agent could not be started: {message}", said="start", detail=stated)
             self._keep_unsent(session)
             await self._release(commission_id)
         elif command == "prompt":
@@ -1940,7 +1943,7 @@ class TaskAgentManager:
             # Refused, so it is not in the transcript: what the user said
             # with it is kept, as when the start itself fails.
             # Counted back above: none taken means the work did not start.
-            await self._fail(commission_id, message, said="run" if session.sent else "start", detail=message)
+            await self._fail(commission_id, message, said="run" if session.sent else "start", detail=stated)
             self._keep_unsent(session)
             await self._close_session(session)
         elif command == "close":
