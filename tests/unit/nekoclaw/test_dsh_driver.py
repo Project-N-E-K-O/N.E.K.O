@@ -202,8 +202,10 @@ async def test_text_added_during_a_turn_is_the_next_turn_and_the_run_ends_once(t
     # dsh takes no text in the middle of a turn: both wait for it to end and go in together.
     assert [row["text"] for row in driver.record("session/prompt")] == ["!sleep 0.4\n!say one", "two\n\nthree"]
     assert ended["reason"] == "completed" and ended["inputs"] == 3
-    # Each text is told of as taken when it goes to dsh: the first with its own turn, the other two with the next.
-    assert [event["inputs"] for event in driver.events.of("taken")] == [1, 2, 3]
+    # Each text is told of as taken once dsh has it: the first after its own turn, the other two after the next.
+    kinds = [(event["type"], event.get("inputs")) for event in driver.events.events if event["type"] in ("taken", "text")]
+    assert [kind for kind in kinds if kind[0] == "taken"] == [("taken", 1), ("taken", 2), ("taken", 3)]
+    assert kinds.index(("taken", 1)) > 0 and kinds[-2:] == [("taken", 2), ("taken", 3)]
     assert len(driver.events.of("ended")) == 1
     assert _texts(driver.events) == "one\n\necho: two\n\nthree"
     assert ended["text"] == "echo: two\n\nthree"
@@ -282,6 +284,8 @@ async def test_a_turn_that_fails_ends_the_run_with_the_reason(tmp_path: Path, ds
     ended = await driver.run("s1", "!say before\n!fail the model gave up")
     assert ended["reason"] == "error" and "the model gave up" in ended["error"]
     assert ended["inputs"] == 1 and ended["text"] == ""
+    # dsh did not take it: it is not told of as taken, and may have to be sent again.
+    assert driver.events.of("taken") == []
 
 
 async def test_close_stops_a_running_turn_and_announces_closed(tmp_path: Path, dsh) -> None:

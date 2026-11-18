@@ -733,7 +733,7 @@ async def test_a_note_to_a_session_with_nothing_under_way_has_a_commission_filed
     opening = _said(scripts["Where did the build go?"].requests[0])[-1]
     assert opening.startswith(f"Commission {filed.id}\nNobody dispatched this one.")
     assert f'A note from another task agent session, "{sender.name}" (it works for Mia, not for the companion' in opening
-    assert f'call message_session with to="{sender.id}"' in opening
+    assert f'call message_session with to="{sender.id[:8]}"' in opening
     nonce = re.search(r"marked ([0-9a-f]{16})", opening).group(1)
     marker = words.FRAME_MARKER.format(nonce=nonce)
     assert f"\n{marker}\n    Where did the build go?\n    I need the folder.\n{marker}" in opening
@@ -2693,3 +2693,44 @@ async def test_a_text_the_runtime_refuses_brings_back_what_it_was_to_hand_over(h
     await wait_status(host, building.id, "done")
     assert "    Skip the docs folder." in _said(llm.requests[1])[1]
     assert await _on_their_way(host) == []
+
+
+async def test_that_a_session_took_a_note_is_put_on_record_with_the_end_of_its_turn_at_the_latest(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.OUTBOX_RETRY_BASE_SECONDS", 3600.0)
+    scripts = {
+        _k("build the site"): ScriptedLLM([_report("ready", "built")]),
+        "Rebuild with the new logo": ScriptedLLM([_report("ready", "rebuilt with the new logo")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    await _let_go(host)
+    sender = await _at_work(host.ledger, title="sender")
+    await host.ledger.transition(sender.id, "waiting_user")
+    note, _refusal, _wait = await _note(
+        host.ledger, sender, built.session_id, "Rebuild with the new logo.", notify_when_done=True
+    )
+    wakes_taken = host.ledger.wakes_taken
+    failed: list[int] = []
+
+    async def the_disk_is_full(ids: Any) -> None:
+        failed.append(1)
+        raise OSError("the disk is full")
+
+    # The ledger cannot be written when the session says it has the note.
+    monkeypatch.setattr(host.ledger, "wakes_taken", the_disk_is_full)
+    host.wakes.kick()
+    await wait_until(lambda: _filed_for_notes(host), what="a commission being filed for the note")
+    [filed] = await _filed_for_notes(host)
+    assert (await wait_status(host, filed.id, "done")).result_summary == "rebuilt with the new logo"
+
+    async def notified() -> bool:
+        return (await host.ledger.message_get(note.id)).notified_at is not None
+
+    # It took the note all the same, and its sender is told so when the turn is over:
+    # not passed over as a note that was never taken, to wait until its time is up.
+    await wait_until(notified, what="the sender being told that the note was answered")
+    assert failed and host.task_agents._unconfirmed == set()
+    assert await _on_their_way(host) == []
+    monkeypatch.setattr(host.ledger, "wakes_taken", wakes_taken)

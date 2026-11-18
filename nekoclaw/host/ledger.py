@@ -1684,7 +1684,9 @@ class Ledger:
 
         return await self.run(work)
 
-    async def turn_over(self, commission_id: str, *, word: Callable[[Message], str], state: str = "") -> int:
+    async def turn_over(
+        self, commission_id: str, *, word: Callable[[Message], str], state: str = "", taken: Iterable[int] = ()
+    ) -> int:
         """Tell the senders who asked for it that the turn their notes began in a commission is over.
 
         For every note that was handed to the commission, whose sender
@@ -1696,12 +1698,23 @@ class Ledger:
         for one note; ``state`` says how the commission stood when the
         turn ended, and is kept with the request (its ``note``), since by
         the time it is handed over the commission may be at something
-        else. Returns how many were written. No model is called for any
-        of it.
+        else. ``taken`` are wake requests the session is known to have
+        taken that could not be put on record as such when it took them:
+        they are, here, before the notes are looked at, so that a note
+        the turn did answer is told of. Returns how many were written.
+        No model is called for any of it.
         """
+
+        confirmed = [int(item) for item in taken]
 
         def work(conn: sqlite3.Connection) -> int:
             now = self._clock()
+            if confirmed:
+                conn.execute(
+                    f"UPDATE wake_requests SET taken_at = ? WHERE id IN ({', '.join('?' for _ in confirmed)}) "
+                    "AND status = 'fired' AND taken_at IS NULL",
+                    [now, *confirmed],
+                )
             # Those its session took. A note that was handed over and is
             # still on its way (steered in after the run's last request,
             # say) was not answered by this turn: it is told of when the

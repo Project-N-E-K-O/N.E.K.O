@@ -551,6 +551,9 @@ class TaskAgentManager:
         # written for yet, and the task that tries again.
         self._unreturned: set[int] = set()
         self._returning: asyncio.Task[Any] | None = None
+        # Likewise those to be put on record as taken: their session has
+        # them, and the ledger could not be written when it said so.
+        self._unconfirmed: set[int] = set()
         # The last count against the quota was refused. Cleared by the next
         # one that is not, which has what waits for the quota tried again.
         self._quota_out = False
@@ -2216,11 +2219,28 @@ class TaskAgentManager:
         from nekoclaw.host.outbox import retry_delay
 
         failures = 1
-        while self._unreturned and not self._closed:
+        while (self._unreturned or self._unconfirmed) and not self._closed:
             await asyncio.sleep(retry_delay(failures))
-            if await self._return_unreturned():
+            written = await self._return_unreturned()
+            written = await self._confirm_taken() and written
+            if written:
                 return
             failures += 1
+
+    async def _confirm_taken(self) -> bool:
+        """Write what is kept to be put on record as taken; returns whether nothing is left to write."""
+        ids = sorted(self._unconfirmed)
+        if not ids:
+            return True
+        try:
+            await self._ledger.wakes_taken(ids)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - kept, and tried again
+            logger.warning("putting on record that a session took what it was handed failed; it is tried again", exc_info=True)
+            return False
+        self._unconfirmed.difference_update(ids)
+        return True
 
     async def _on_taken(self, session: _Session, event: dict[str, Any]) -> None:
         """Note that a text sent to a session is in its conversation: what it brought is handed over for good."""
@@ -2230,12 +2250,15 @@ class TaskAgentManager:
         wakes = session.handed.pop(number, None)
         if not wakes:
             return
-        try:
-            await self._ledger.wakes_taken(wakes)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - at worst it is handed over once more by the next process
-            logger.warning("putting on record that a session took what it was handed failed", exc_info=True)
+        # Kept until the ledger has it. Where it cannot be written this
+        # moment it is tried again, and the end of the turn writes it with
+        # what it tells the senders (``_turn_over``): a note the session
+        # took is then not passed over as one it did not. (What is still
+        # kept when the host ends is handed over once more by the next
+        # process, at worst.)
+        self._unconfirmed.update(wakes)
+        if not await self._confirm_taken() and (self._returning is None or self._returning.done()):
+            self._returning = self._spawn(self._return_later())
 
     async def _unfire(self, wake_ids: list[int]) -> None:
         """Make wake requests pending again that were not handed on after all; what a stop dropped meanwhile stays dropped.
@@ -2269,7 +2292,10 @@ class TaskAgentManager:
                 text = (commission.result_summary or "").strip()
             text = truncate_to_tokens(text, SESSION_NOTICE_TEXT_MAX_TOKENS)
             state = "resting" if commission is not None and commission.resting else commission.status if commission else "over"
-            written = await self._ledger.turn_over(commission_id, word=lambda _note: text, state=state)
+            # With what its session took and the ledger does not have yet.
+            taken = sorted(self._unconfirmed)
+            written = await self._ledger.turn_over(commission_id, word=lambda _note: text, state=state, taken=taken)
+            self._unconfirmed.difference_update(taken)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - the sender is told it waited in vain when its time is up
@@ -3738,7 +3764,10 @@ class TaskAgentManager:
         intro = (words.SESSION_NOTE_FRAME if answerable else words.SESSION_NOTE_FRAME_NO_ANSWER).format(
             name=sender.name if sender is not None else note.from_session,
             whose=await self._whose(sender, lanlan_name),
-            address=note.from_session,
+            # As ``list_sessions`` shows it. Should a session be called
+            # just that, both are meant, and the task agent is told to
+            # name the one by its whole id (``_session_named``).
+            address=note.from_session[:8],
             nonce=nonce,
         )
         return words.frame(intro, note.body, nonce)

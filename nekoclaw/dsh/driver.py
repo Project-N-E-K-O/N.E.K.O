@@ -1077,14 +1077,16 @@ class DshRuntime:
             except asyncio.TimeoutError:
                 return []
         texts, session.queue = session.queue, []
-        self._take(session, len(texts))
+        first = session.taken + 1
+        session.taken += len(texts)
+        # They are the result of a call dsh made and waits for: it has them.
+        self._say_taken(session, first, len(texts))
         return texts
 
-    def _take(self, session: _Session, count: int) -> None:
-        """Count texts as taken and say so, one ``taken`` each: they are on their way into dsh's conversation."""
-        for _text in range(count):
-            session.taken += 1
-            self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=session.taken))
+    def _say_taken(self, session: _Session, first: int, count: int) -> None:
+        """Say of ``count`` texts, numbered from ``first``, that dsh has them in its conversation; one ``taken`` each."""
+        for number in range(first, first + count):
+            self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=number))
 
     async def _run(self, session: _Session) -> None:
         """Send what is queued, turn after turn, until nothing is left; then announce the end."""
@@ -1100,7 +1102,8 @@ class DshRuntime:
         try:
             while session.queue and not session.aborting and session.closing is None:
                 texts, session.queue = session.queue, []
-                self._take(session, len(texts))
+                first_taken = session.taken + 1
+                session.taken += len(texts)
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:
@@ -1116,6 +1119,11 @@ class DshRuntime:
                 except AcpError as exc:
                     reason, error = "error", exc.detail
                     break
+                # dsh took them: said only now, and not when they were sent.
+                # A process that went before it had them, or a request it
+                # refused, leaves them untold, so that whoever sent them
+                # knows they may have to be sent again.
+                self._say_taken(session, first_taken, len(texts))
                 if first:
                     # dsh took it, so it is in the session's record. Until
                     # then the next message carries it (again, at worst):
