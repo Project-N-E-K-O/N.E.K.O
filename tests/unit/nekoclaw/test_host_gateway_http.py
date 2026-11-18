@@ -503,7 +503,10 @@ async def test_task_agent_calls_a_plugin_entry_through_the_gateway(server, hosts
     server.add_plugin(plugin("lamp", "Controls the desk lamp", [entry("switch", "Turn the lamp on or off")]))
     llm = ScriptedLLM(
         [
-            [call("plugin__weather__today", {"city": "Lyon"}), finish("tool_calls")],
+            [
+                call("capability_call", {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}),
+                finish("tool_calls"),
+            ],
             [call("report", {"status": "ready", "summary": "Lyon is sunny; pack light"}, "c2"), finish("tool_calls")],
         ]
     )
@@ -517,11 +520,19 @@ async def test_task_agent_calls_a_plugin_entry_through_the_gateway(server, hosts
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.route == "task_agent"
     assert host.gateway.started
-    # Offered next to the built-in tools, by the names the gateway gave them.
+    # The gateway's two tools are offered next to the built-in ones, and no entry by
+    # its own name: the tools of a session are the same whatever was picked for a commission.
     offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
-    assert {"plugin__weather__today", "plugin__lamp__switch", "read", "report"} <= set(offered)
-    assert "capability_search" not in offered
-    assert "plugin__ or mcp__" in llm.requests[0][0]["content"]
+    assert {"capability_search", "capability_call", "read", "report"} <= set(offered)
+    assert not any(name.startswith(("plugin__", "mcp__")) for name in offered)
+    assert "capability_call" in llm.requests[0][0]["content"]
+    # What was picked for the commission is told in the message that opens it:
+    # each entry with its name, what it does and its arguments.
+    opening = llm.requests[0][-1]["content"]
+    picked = [json.loads(line) for line in opening.splitlines() if line.startswith("{")]
+    assert {item["name"] for item in picked} == {"plugin__weather__today", "plugin__lamp__switch"}
+    assert all(set(item) == {"name", "description", "inputSchema"} for item in picked)
+    assert "Call one with capability_call" in opening
     # The call reached the plugin as a normal run under this commission.
     (request,) = server.run_requests
     assert (request["task_id"], request["plugin_id"], request["entry_id"]) == (receipt.commission_id, "weather", "today")
@@ -545,7 +556,14 @@ async def test_stopping_the_commission_cancels_the_run_its_task_agent_started(se
         return plugin_finish({"reply": "never"})
 
     _weather(server, slow)
-    llm = ScriptedLLM([[call("plugin__weather__today", {"city": "Lyon"}), finish("tool_calls")]])
+    llm = ScriptedLLM(
+        [
+            [
+                call("capability_call", {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}),
+                finish("tool_calls"),
+            ]
+        ]
+    )
     host = _task_agent_host(hosts, tmp_path, server, llm)
     receipt = await host.dispatch("check the weather in Lyon and write packing advice", lanlan_name="Lan", lang="en")
     await asyncio.wait_for(started.wait(), 15)
@@ -572,7 +590,7 @@ async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_
     )
     llm = ScriptedLLM(
         [
-            [call("mcp__notes__search", {}), finish("tool_calls")],
+            [call("capability_call", {"name": "mcp__notes__search"}), finish("tool_calls")],
             [call("report", {"status": "ready", "summary": "found 3 notes"}, "c2"), finish("tool_calls")],
         ]
     )

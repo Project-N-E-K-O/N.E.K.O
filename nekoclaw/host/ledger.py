@@ -532,7 +532,7 @@ class Ledger:
                             "last_active_at": row["updated_at"],
                         },
                     )
-                conn.execute("UPDATE commissions SET session_id = ? WHERE id = ?", (row["id"], row["id"]))
+                self._set_session(conn, row["id"], row["id"])
         except BaseException:
             conn.execute("ROLLBACK")
             raise
@@ -796,8 +796,15 @@ class Ledger:
         self._event(conn, commission_id, "status", {"from": current.status, "to": status, "reason": reason})
         session_id = changes.get("session_id", current.session_id)
         if session_id:
-            # A session is as old as the last change of any commission in it.
-            conn.execute("UPDATE sessions SET last_active_at = ? WHERE id = ?", (now, session_id))
+            # A session is as old as the last change of any commission in it,
+            # and at work, or waiting for the user, when a commission in it
+            # is. (That it is closed, no runtime having it open any more, is
+            # written by whoever closed it.)
+            stands = {"working": "running", "waiting_user": "waiting"}.get(status)
+            conn.execute(
+                "UPDATE sessions SET last_active_at = ?, status = COALESCE(?, status) WHERE id = ?",
+                (now, stands, session_id),
+            )
         if current.status == "waiting_user":
             # No longer waiting: a question of it not yet delivered is out of
             # date (answered, stopped or failed) and must not reach her now.
@@ -942,6 +949,73 @@ class Ledger:
 
         return await self.run(work)
 
+    @staticmethod
+    def _set_session(conn: sqlite3.Connection, commission_id: str, session_id: str) -> None:
+        """Write which session a commission is worked on in; nothing else of the commission changes."""
+        conn.execute("UPDATE commissions SET session_id = ? WHERE id = ?", (session_id, commission_id))
+
+    async def give_session(
+        self, commission_id: str, *, kind: str, name: Any, parent_id: str | None = None
+    ) -> tuple[Commission, Session]:
+        """Give a commission the session it is worked on in, and return both.
+
+        One that has a session keeps it. Otherwise, for ``kind``
+        ``"project"``, it gets the session of its project for its
+        character (``project_session``), and for the other kinds a session
+        of its own. A session that is made here takes the commission's id
+        as its own, as every session did when a commission and its session
+        were one, so its directory is named as it always was. All in one
+        transaction: asked twice at the same time, a commission gets one
+        session, and two commissions of a project the same one.
+        """
+        if kind not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind {kind!r}")
+
+        def work(conn: sqlite3.Connection) -> tuple[Commission, Session]:
+            commission = _commission(
+                conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+            )
+            if commission is None:
+                raise ValueError(f"unknown commission {commission_id!r}")
+            session = None
+            if commission.session_id:
+                session = _session(
+                    conn.execute("SELECT * FROM sessions WHERE id = ?", (commission.session_id,)).fetchone()
+                )
+            if session is None and kind == "project" and commission.project:
+                session = _session(
+                    conn.execute(
+                        "SELECT * FROM sessions WHERE lanlan_name = ? AND project = ? AND kind = 'project' "
+                        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                        (commission.lanlan_name, commission.project),
+                    ).fetchone()
+                )
+            if session is None:
+                # One of that id is there already when the commission lost
+                # its session id without losing its session.
+                session = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (commission_id,)).fetchone())
+            if session is None:
+                session = self._insert_session(
+                    conn,
+                    {
+                        "id": commission_id,
+                        "name": name,
+                        "lanlan_name": commission.lanlan_name,
+                        "kind": kind,
+                        "project": commission.project,
+                        "parent_id": parent_id,
+                    },
+                )
+            if commission.session_id != session.id:
+                self._set_session(conn, commission_id, session.id)
+                commission = _commission(
+                    conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+                )
+                assert commission is not None
+            return commission, session
+
+        return await self.run(work)
+
     async def update_session(self, session_id: str, **values: Any) -> Session | None:
         """Write columns of a session; ``active=True`` also notes that it was in use just now."""
         touched = bool(values.pop("active", False))
@@ -993,6 +1067,15 @@ class Ledger:
                 self._event(conn, commission_id, kind, payload)
 
         await self.run(work)
+
+    async def has_event(self, commission_id: str, kind: str) -> bool:
+        """Return whether a commission has an event of a kind."""
+        return await self.run(
+            lambda conn: conn.execute(
+                "SELECT 1 FROM events WHERE commission_id = ? AND type = ? LIMIT 1", (commission_id, kind)
+            ).fetchone()
+            is not None
+        )
 
     async def events(self, commission_id: str, *, after: int = 0, limit: int = 500) -> list[LedgerEvent]:
         def work(conn: sqlite3.Connection) -> list[LedgerEvent]:

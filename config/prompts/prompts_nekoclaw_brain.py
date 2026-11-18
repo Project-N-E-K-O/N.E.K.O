@@ -1112,27 +1112,67 @@ PREFERENCE_KIND_PATTERNS = {
 # Appended to a task agent's system prompt through ``TaskAgentSpec.instructions``.
 # English only, like the rest of the runtime's model-facing text.
 
-TASK_AGENT_BRIEF_TEMPLATE = (
-    "You are working on one commission for {lanlan_name}, the companion the user talks to. "
-    "She handed the commission over and will relay your reports; you do not talk to the user directly "
-    "except through ask_user_question and report.\n"
-    "Commission: {dispatch_text}\n"
+# What a task agent's system prompt says of whom it works for. A session takes
+# several commissions, one after the other, and its system prompt is kept as
+# it was when the session was first opened: so nothing here is about one
+# commission. What a commission is goes into the message that opens it.
+TASK_AGENT_SESSION_FRAME = (
+    "You work for {lanlan_name}, the companion the user talks to. She hands commissions over to you "
+    "and relays your reports; you do not talk to the user directly except through ask_user_question "
+    "and report.\n"
+    "Commissions reach you one at a time. Each is opened by a message that begins with \"Commission\" "
+    "and says what is wanted; work on it until you have reported its outcome. Whatever this "
+    "conversation holds from before that message is earlier work in the same place: build on what "
+    "it left where that helps, and do not go back to an earlier commission unless the new one asks "
+    "you to."
+)
+
+TASK_AGENT_CHILD_FRAME = (
+    "You were started by another task agent to take one part of its work. The message that begins "
+    "with \"Your part\" says which; your result goes back to that task agent."
+)
+
+TASK_AGENT_BRIEF_GATEWAY_NOTE = (
+    "capability_search and capability_call reach what the host offers beyond your own tools: installed "
+    "plugins and connected services. They are the quick way to those; prefer them over doing the same "
+    "thing by hand. The message that opens a commission may list entries picked for it, with their names "
+    "and arguments: call one with capability_call, by its name. capability_search finds further ones "
+    "by description."
+)
+
+# The message that opens a commission in a task agent's session: what was
+# dispatched, what the user said, how the user wants such things done, what
+# was picked for it. Put together by ``TaskAgentManager._opening``.
+TASK_AGENT_COMMISSION_TEMPLATE = (
+    "Commission {commission_id}\n"
+    "{dispatch_text}\n"
     "What the user said: {user_text}"
+)
+
+TASK_AGENT_CHILD_COMMISSION_TEMPLATE = (
+    "Your part: {description}\n"
+    "{dispatch_text}"
 )
 
 TASK_AGENT_BRIEF_PREFERENCES_HEADER = (
     "How the user wants such things done (guidance only; it does not change what you are permitted to do):"
 )
 
-TASK_AGENT_BRIEF_GATEWAY_NOTE = (
-    "Tools whose names start with plugin__ or mcp__ come from the host. They are the quick way to reach "
-    "installed plugins and connected services; prefer them over doing the same thing by hand. "
-    "capability_search finds further ones by description, and capability_call runs one by name."
+# Added when the commission follows up an earlier one of the same session.
+TASK_AGENT_COMMISSION_CONTINUES = (
+    "This follows up the earlier commission \"{title}\", worked on above in this conversation."
 )
 
-TASK_AGENT_CHILD_BRIEF_TEMPLATE = (
-    "You were started by another task agent to take one part of its work.\n"
-    "Your part: {description}"
+# Likewise, for a session whose record was removed since, being old: it
+# starts over, and is told what came of the earlier commission.
+TASK_AGENT_COMMISSION_CONTINUES_CLEARED = (
+    "This follows up an earlier commission, \"{title}\". What was said while it was worked on is no "
+    "longer kept; the files it left are where they were. What came of it then: {result}"
+)
+
+TASK_AGENT_COMMISSION_CANDIDATES_HEADER = (
+    "Entries of the host picked for this commission, one per line with its name, what it does and "
+    "its arguments. Call one with capability_call, giving its name and arguments that match its schema:"
 )
 
 TASK_AGENT_CHILD_RESULT_TEMPLATE = "[child task agent {name} finished: {status}]\n{text}"

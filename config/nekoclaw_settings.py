@@ -173,7 +173,19 @@ the model still takes less, one request is refused, the conversation is
 summed up, and the window is written down anew."""
 
 TASK_AGENT_BRIEF_MAX_TOKENS = 1200
-"""Cap on the host's instructions appended to a task agent's system prompt."""
+"""Cap on what the host says of one commission in the message that opens it
+(what was dispatched, what the user said, how the user wants such things
+done), and likewise on its own part of a task agent's system prompt. What
+the task agent space adds to the system prompt and the entries picked for a
+commission have caps of their own (``SPACE_BRIEF_MAX_TOKENS``,
+``GATEWAY_TOOL_LIST_MAX_TOKENS``)."""
+
+TASK_AGENT_SESSION_NAME_MAX_TOKENS = 16
+"""Cap on the name a session is given from the title of its first commission."""
+
+TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS = 300
+"""Cap on what a commission is told of the outcome of the one it follows up,
+when the session's record of that one was removed since."""
 
 TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS = 400
 """Cap on the result summary stored for a commission."""

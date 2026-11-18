@@ -364,7 +364,7 @@ async def test_a_commission_that_began_in_a_dsh_that_was_removed_starts_over_in_
         {"wanted": RUNTIME_DSH, "runtime": RUNTIME_BUILTIN, "reason": "dsh is no longer installed"}
     ]
     # Nothing of what was said is there: it is told the commission again, then what the user said.
-    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
 
 
 async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_in_runtime_knowing_what_it_is(
@@ -381,7 +381,7 @@ async def test_a_commission_dsh_will_not_take_up_again_starts_over_in_the_built_
     done = await wait_status(host, commission_id, "done")
 
     assert done.runtime == RUNTIME_BUILTIN
-    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
 
 
 async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is(hosts, tmp_path):
@@ -397,7 +397,13 @@ async def test_a_commission_whose_session_is_gone_starts_over_knowing_what_it_is
     done = await wait_status(host, commission_id, "done")
 
     assert done.runtime == RUNTIME_DSH
-    assert _last_user_message(llm.requests[-1]) == "sort the photos\n\nit is on drive D"
+    assert _told_anew(llm.requests[-1], commission_id, "sort the photos", "it is on drive D")
+
+
+def _told_anew(request: Any, commission_id: str, dispatched: str, said: str) -> bool:
+    """Whether a request ends with the commission told again, then what the user said."""
+    message = _last_user_message(request)
+    return message.startswith(f"Commission {commission_id}\n{dispatched}\n") and message.endswith(f"\n\n{said}")
 
 
 def _last_user_message(messages: list[dict[str, Any]]) -> str:
