@@ -170,6 +170,7 @@ def test_parent_initialization_then_real_fork_rebinds_both_logger_apis(isolated_
 @pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "mkfifo"), reason="requires POSIX fork")
 def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(isolated_log_dir, tmp_path):
     """A child must not flush a file buffer whose lock a parent thread held at fork."""
+    import fcntl
     import select
     import signal
     import threading
@@ -184,16 +185,21 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
     # raw write while BufferedWriter's internal lock is held.
     fifo = tmp_path / "parent-sink.fifo"
     os.mkfifo(fifo)
-    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
     original_stream, original_max_bytes = handler.stream, handler.maxBytes
-    handler.maxBytes = 0  # A FIFO cannot report a rollover position.
-    handler.stream = open(fifo, "w", encoding="utf-8")
-    writer = threading.Thread(target=lambda: handler.stream.write("x" * (1 << 20)), daemon=True)
-    writer.start()
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    writer = child = None
     try:
+        handler.maxBytes = 0  # A FIFO cannot report a rollover position.
+        handler.stream = open(fifo, "w", encoding="utf-8")
+        # Exceed the pipe capacity (1 MiB on 64 KiB-page kernels) so the write stays parked.
+        payload = 1 << 20
+        if hasattr(fcntl, "F_GETPIPE_SZ"):
+            payload = max(payload, 2 * fcntl.fcntl(reader, fcntl.F_GETPIPE_SZ))
+        writer = threading.Thread(target=lambda: handler.stream.write("x" * payload), daemon=True)
+        writer.start()
         assert select.select([reader], [], [], 10)[0], "parent writer never reached the raw write"
-        pid = os.fork()
-        if pid == 0:
+        child = os.fork()
+        if child == 0:
             try:
                 inherited = handler.stream
                 _setup_plugin_logger("demo", Path(__file__).resolve().parents[3])
@@ -206,20 +212,23 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
                 os._exit(1)
         deadline = time.monotonic() + 20
         while True:
-            done, status = os.waitpid(pid, os.WNOHANG)
+            done, status = os.waitpid(child, os.WNOHANG)
             if done:
+                child = None
                 break
             if time.monotonic() > deadline:
-                os.kill(pid, signal.SIGKILL)
-                os.waitpid(pid, 0)
                 pytest.fail("child blocked flushing a file stream inherited over fork")
             time.sleep(0.05)
         assert os.waitstatus_to_exitcode(status) == 0
     finally:
-        while writer.is_alive():
+        if child is not None:  # Timed out or interrupted: never leave the child behind.
+            os.kill(child, signal.SIGKILL)
+            os.waitpid(child, 0)
+        while writer is not None and writer.is_alive():
             if select.select([reader], [], [], 0.1)[0]:
                 os.read(reader, 1 << 16)
-        handler.stream.close()
+        if handler.stream is not original_stream:
+            handler.stream.close()
         handler.stream, handler.maxBytes = original_stream, original_max_bytes
         os.close(reader)
     assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-marker") == 1
