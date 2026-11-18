@@ -478,8 +478,8 @@ def test_a_path_whose_links_lead_out_of_the_directory_is_not_looked_for(workdir,
 
 
 def test_no_directory_to_look_in_means_no_evidence(workdir):
-    assert evidence_of(["src/app.py"], []) == ([], [("src/app.py", "outside the working directory")])
-    assert evidence_of(["src/app.py"], [""]) == ([], [("src/app.py", "outside the working directory")])
+    assert evidence_of(["src/app.py"], []) == ([], [("src/app.py", "no working directory to read it against")])
+    assert evidence_of(["src/app.py"], [""]) == ([], [("src/app.py", "no working directory to read it against")])
     assert evidence_of(None, [str(workdir)]) == ([], [])
     assert evidence_of("src/app.py", [str(workdir)]) == ([], [])
 
@@ -3428,8 +3428,12 @@ def test_what_counts_outside_the_working_directory(workdir, outside, tmp_path):
     counted, others = evidence_of(named, [str(workdir)])
     assert counted == [(workdir / "src" / "app.py").as_posix()]
     assert [why for _path, why in others] == ["outside the working directory"] * 4
-    # With no working directory at all, a full path is still a file that may be read.
-    assert evidence_of([str(outside), "camera.ini"], [], outside=True) == ([_where(outside)], [("camera.ini", "not found")])
+    # With no working directory at all, a full path is still a file that may be read; one that is not
+    # whole has nothing to be read against, and is not said to be missing.
+    assert evidence_of([str(outside), "camera.ini"], [], outside=True) == (
+        [_where(outside)],
+        [("camera.ini", "no working directory to read it against")],
+    )
     assert evidence_of([str(outside)], []) == ([], [(str(outside), "outside the working directory")])
 
 
@@ -5810,12 +5814,20 @@ async def test_a_lesson_handed_over_with_nothing_said_of_how_it_is_known_waits_a
     assert [(held["id"], held["confidence"]) for held in _pending(root)] == [("entry-point", "inferred")]
 
 
-async def test_a_file_named_by_a_commission_that_works_in_no_directory_is_said_to_lie_outside(space, root):
-    reply = await space.submit(_commission(None), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+async def test_a_file_named_by_a_commission_that_works_in_no_directory_is_told_to_have_nothing_to_be_read_against(
+    open_space, setting, root
+):
+    for number, allowed in enumerate((False, True)):
+        # Whether or not files outside may be read unasked: that gives a path that is not whole nothing to start from.
+        setting.allowed = allowed
+        reply = await open_space.submit(
+            _commission(None, id=f"c{number}"),
+            _lesson(f"Entry point {number}", f"The app starts in app.py, {number}.", "observed", ["src/app.py"]),
+        )
 
-    # No disk is at fault: there is no directory the path could be read against.
-    assert reply.startswith("not in effect yet") and "outside the working directory" in reply
-    assert "not looked at" not in reply
+        # No disk is at fault, and it was not looked for and missed.
+        assert reply.startswith("not in effect yet") and "src/app.py (no working directory to read it against)" in reply
+        assert "not looked at" not in reply and "not found" not in reply
 
 
 async def test_a_file_that_is_gone_once_the_turn_of_the_write_has_come_is_told_by_its_name(space, root, workdir, monkeypatch):
@@ -5964,3 +5976,146 @@ async def test_a_note_judged_with_a_file_of_which_nothing_is_told_as_its_pending
     assert len(told) >= 3 and reply.startswith("not in effect yet")
     assert _in_effect(root) == [] and "entry-point.md" not in _index(root)
     assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [app])]
+
+
+# ---------------------------------------------------------------------------
+# Review round 21
+# ---------------------------------------------------------------------------
+
+
+def _removed_after_the_first(monkeypatch: Any, path: Path) -> list[int]:
+    """Have ``path`` removed right after the files a pending entry rests on were asked about for the first time.
+
+    Returns the list that counts how often they were asked about (``_recorded``).
+    """
+    from nekoclaw.host import space as module
+
+    real = module._recorded
+    asked: list[int] = []
+
+    def then_removed(*args: Any) -> Any:
+        found = real(*args)
+        if not asked:
+            path.unlink()
+        asked.append(1)
+        return found
+
+    monkeypatch.setattr(module, "_recorded", then_removed)
+    return asked
+
+
+async def test_a_note_checked_by_hand_takes_effect_where_it_waits_though_a_file_it_rested_on_is_gone_by_then(
+    space, root, workdir, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    asked = _removed_after_the_first(monkeypatch, workdir / "src" / "app.py")
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "verified"))
+
+    # It does not stand on the file: judged once, in effect, and the file that is gone is off its record.
+    assert asked == [1] and reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
+
+
+async def test_a_note_checked_by_hand_goes_into_the_entry_of_its_title_though_a_file_it_rested_on_is_gone_by_then(
+    space, root, workdir, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+    asked = _removed_after_the_first(monkeypatch, workdir / "src" / "app.py")
+
+    reply = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "verified"))
+
+    # Judged once (asked about as it was judged, and as it went into the entry), and not given the file that is gone.
+    assert asked == [1, 1] and reply.startswith("added to photo-dates.md") and _pending(root) == []
+    assert "Videos may have none." in entry.read_text(encoding="utf-8") and _rests_on(entry)[0] == ()
+
+
+def _told_only_later(monkeypatch: Any, path: str) -> None:
+    """Have the disk say nothing of ``path`` the first time it is asked about, and answer from then on."""
+    from nekoclaw.host import space as module
+
+    real = module._stood
+    asked: list[int] = []
+
+    def silent_at_first(paths: Any) -> Any:
+        paths = list(paths)
+        if path not in paths:
+            return real(paths)
+        asked.append(1)
+        return {item: None for item in paths} if len(asked) == 1 else real(paths)
+
+    monkeypatch.setattr(module, "_stood", silent_at_first)
+
+
+async def test_a_file_found_gone_as_a_pending_entry_takes_effect_is_not_put_back_by_what_was_known_before(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    (workdir / "src" / "app.py").unlink()
+    # Nothing is told of it as the note is judged, so it is on record still; as the entry is written it is found gone.
+    _told_only_later(monkeypatch, app)
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "verified"))
+
+    assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    # Or the next look would find it resting on a file that is gone, and nothing else, and have it expire.
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
+
+
+async def test_a_file_found_gone_as_a_pending_entry_goes_into_an_entry_is_not_given_to_that_entry(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+    assert _rests_on(entry)[0] == ()
+    (workdir / "src" / "app.py").unlink()
+    _told_only_later(monkeypatch, app)
+
+    reply = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "verified"))
+
+    assert reply.startswith("added to photo-dates.md") and _pending(root) == []
+    # The entry rested on nothing, and is not made to rest on a file that is gone.
+    assert _rests_on(entry)[0] == ()
+
+
+async def test_a_pending_entry_that_took_effect_and_has_a_directory_in_its_place_right_after_gets_no_line(
+    space, root, workdir, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none."))
+    waiting = _memory(root) / "video-dates.md"
+    editing = space._edit_text
+
+    def then_replaced(path: Path, change: Any) -> bool:
+        changed = editing(path, change)
+        if path == waiting and changed:
+            # Something else by that name, right after it was written.
+            waiting.unlink()
+            waiting.mkdir()
+        return changed
+
+    monkeypatch.setattr(space, "_edit_text", then_replaced)
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Video dates", "Use the EXIF date.", "verified"))
+
+    # There, and no file: no line for it, which no look would take out again.
+    assert reply is not None and waiting.is_dir()
+    assert "video-dates.md" not in _index(root)
+
+
+async def test_a_note_a_second_commission_files_takes_effect_where_it_waits_though_a_file_it_rested_on_is_gone_by_then(
+    space, root, workdir, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    asked = _removed_after_the_first(monkeypatch, workdir / "src" / "app.py")
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    # Seen by two: it does not stand on the file. Judged once, in effect, and the file that is gone is off its record.
+    assert asked == [1] and reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
