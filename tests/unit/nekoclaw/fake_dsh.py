@@ -268,6 +268,7 @@ def asked(session_id: str, call_id: str) -> str:
 def run_prompt(config: Config, session_id: str, session: dict[str, Any], text: str) -> dict[str, Any]:
     cancel: threading.Event = session["cancel"]
     cancel.clear()
+    fails_stopped = False
     steps = [line[1:].strip() for line in text.splitlines() if line.startswith("!")]
     if not steps:
         update(session_id, {"sessionUpdate": "agent_message_chunk", "messageId": uuid.uuid4().hex, "content": {"type": "text", "text": f"echo: {text}"}})
@@ -349,8 +350,14 @@ def run_prompt(config: Config, session_id: str, session: dict[str, Any], text: s
                 pass
         elif verb == "fail":
             raise RpcError(-32603, "Internal error", f"turn failed: {rest}")
+        elif verb == "stopped-fails":
+            # From here on a stop is answered with an error, and not by
+            # saying that the turn was cancelled.
+            fails_stopped = True
         elif verb == "crash":
             os._exit(3)
+    if fails_stopped and cancel.is_set():
+        raise RpcError(-32603, "Internal error", "turn failed: stopped")
     return {"stopReason": "cancelled" if cancel.is_set() or session["closed"] else "end_turn"}
 
 

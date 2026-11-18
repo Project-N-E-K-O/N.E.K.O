@@ -1842,10 +1842,12 @@ async def test_a_call_of_a_run_that_is_over_is_handed_nothing_of_the_next(tmp_pa
     assert [event["inputs"] for event in driver.events.events[position:] if event["type"] == "taken"] == [2, 3]
 
 
-async def _handed_to_a_call(tmp_path: Path, dsh: Any, then: str = "!say went on") -> tuple[Any, Any, Path, list[Any]]:
+async def _handed_to_a_call(
+    tmp_path: Path, dsh: Any, then: str = "!say went on", before: str = ""
+) -> tuple[Any, Any, Path, list[Any]]:
     """A session whose turn is held open, and a note that a call of that turn was handed; with whom to tell how its answer fared.
 
-    ``then`` is what the turn does once it is let go.
+    ``then`` is what the turn does once it is let go, ``before`` what it does first.
     """
     from nekoclaw.dsh.host_tools import ON_ANSWERED
 
@@ -1856,7 +1858,7 @@ async def _handed_to_a_call(tmp_path: Path, dsh: Any, then: str = "!say went on"
     session = runtime._sessions["s1"]
     go = tmp_path / "go"
 
-    await runtime.prompt("s1", f"!until {go}\n{then}")
+    await runtime.prompt("s1", f"{before}!until {go}\n{then}")
     await _until(lambda: len(driver.record("session/prompt")) == 1, "the turn being with dsh")
     await runtime.steer("s1", "a note that arrives during the turn")
     # A call of the turn takes it, as whoever serves the call has it carried out.
@@ -1955,7 +1957,7 @@ async def test_a_text_whose_answer_got_to_dsh_is_told_of_as_taken_with_the_end_o
     ended = await driver.events.wait_ended("s1")
 
     # In dsh's conversation with the answer: told of as the turn ends, and not sent again.
-    assert ended["reason"] == "completed" and ended["inputs"] == 2
+    assert ended["reason"] == "completed" and ended["inputs"] == 2 and ended["open_inputs"] == []
     assert _taken(driver) == [1, 2] and len(driver.record("session/prompt")) == 1
 
 
@@ -1970,8 +1972,9 @@ async def test_a_text_whose_answer_is_heard_of_after_its_turn_ended_is_dealt_wit
     go.write_text("", encoding="utf-8")
     ended = await driver.events.wait_ended("s1")
 
-    # Whether dsh has it is not known as the turn ends: it is not told of as taken.
-    assert ended["reason"] == "completed" and _taken(driver) == [1]
+    # Whether dsh has it is not known as the turn ends: it is not told of as taken, and the
+    # end of the run names it as still open.
+    assert ended["reason"] == "completed" and _taken(driver) == [1] and ended["open_inputs"] == [2]
     assert session.run is None and len(session.unsettled) == 1
     mark = len(driver.events.events)
     # Heard of only now, with the run over and the session still open.
@@ -2056,6 +2059,7 @@ async def test_a_text_whose_answer_is_heard_of_after_its_turn_failed_is_dealt_wi
     go.write_text("", encoding="utf-8")
     ended = await driver.events.wait_ended("s1")
     assert ended["reason"] == "error" and _taken(driver) == [] and len(session.unsettled) == 1
+    assert ended["open_inputs"] == [2]
     mark = len(driver.events.events)
     # Heard of only now, with the run over and the session still open.
     told[0](reached)
@@ -2121,6 +2125,9 @@ async def test_what_a_run_that_was_stopped_as_it_ended_left_open_is_not_queued_a
     await driver.runtime.abort("s1")
     ended = await driver.events.wait_ended("s1")
     assert ended["reason"] == "aborted" and len(session.unsettled) == 1
+    # (Named as open by the end of the run though it was stopped: it may still be said to
+    # have got there.)
+    assert ended["open_inputs"] == [2]
     # Heard of only now, with the session not being stopped any more.
     told[0](reached)
 
@@ -2134,8 +2141,9 @@ async def test_what_a_run_that_was_stopped_as_it_ended_left_open_is_not_queued_a
     )
 
 
+@pytest.mark.parametrize("during", [False, True])
 async def test_what_a_run_that_ended_left_open_is_queued_again_though_a_later_run_was_stopped(
-    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch, during: bool
 ) -> None:
     from config import nekoclaw_settings
 
@@ -2149,17 +2157,141 @@ async def test_what_a_run_that_ended_left_open_is_queued_again_though_a_later_ru
     await driver.runtime.prompt("s1", f"!until {tmp_path / 'never'}")
     await _until(lambda: len(driver.record("session/prompt")) == 2, "the next turn being with dsh")
     await driver.runtime.abort("s1")
+    if during:
+        # It went nowhere, which is heard of while the stop is still under way: kept until
+        # the stop is through, and not lost with what the run being stopped was handed.
+        told[0](False)
+        assert session.aborting and session.queue == [] and len(session.kept_back) == 1
     stopped = await driver.events.wait_ended("s1", start=mark)
-    assert stopped["reason"] == "aborted" and len(session.unsettled) == 1
-    mark = len(driver.events.events)
+    assert stopped["reason"] == "aborted"
+    if not during:
+        # Or it is heard of once the stop is through.
+        assert len(session.unsettled) == 1
+        told[0](False)
 
-    # It went nowhere. The run it was of was not the one that was stopped: its text is queued
-    # again, and goes to dsh as a turn of its own.
-    told[0](False)
+    # The run it was of was not the one that was stopped: its text is queued again, and goes
+    # to dsh as a turn of its own.
+    await _until(lambda: len(driver.record("session/prompt")) == 3, "the text going to dsh again")
+    await driver.events.wait_for(
+        lambda event: event["type"] == "ended" and event["reason"] == "completed", start=mark
+    )
+    assert "a note that arrives during the turn" in json.dumps(driver.record("session/prompt")[2])
+    assert not session.kept_back and not session.unsettled
+
+
+@pytest.mark.parametrize("known", [False, True])
+async def test_what_a_turn_that_failed_as_it_was_being_stopped_was_handed_goes_with_the_stop(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch, known: bool
+) -> None:
+    from config import nekoclaw_settings
+
+    monkeypatch.setattr(nekoclaw_settings, "DSH_ANSWER_SETTLE_SECONDS", 0.05)
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh, before="!stopped-fails\n")
+    try:
+        if known:
+            # The answer got to dsh.
+            told[0](True)
+        # Then the run is stopped, which dsh answers with an error, and not by saying that
+        # the turn was cancelled.
+        await driver.runtime.abort("s1")
+        ended = await driver.events.wait_ended("s1")
+    finally:
+        go.write_text("", encoding="utf-8")
+
+    # A stop all the same: what the turn's calls were handed is not told of as taken on the
+    # strength of an answer that dsh may have dropped with the turn, and none of it is open.
+    assert ended["reason"] == "error" and ended["open_inputs"] == []
+    assert _taken(driver) == [] and not session.unsettled and session.awaited == []
+    # Nor is an answer of it that is still on its way taken for one of the next run.
+    mark = len(driver.events.events)
+    await driver.runtime.prompt("s1", "!say hello")
     again = await driver.events.wait_ended("s1", start=mark)
+    assert again["reason"] == "completed" and again["open_inputs"] == [] and _taken(driver) == [3]
+
+
+async def _left_open_by_a_run_that_goes_on(
+    tmp_path: Path, dsh: Any, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, Any, Path, list[Any]]:
+    """A run in its second turn, the answer of a call of its first turn still on its way; with whom to tell how it fared."""
+    from config import nekoclaw_settings
+
+    monkeypatch.setattr(nekoclaw_settings, "DSH_ANSWER_SETTLE_SECONDS", 0.05)
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh)
+    on = tmp_path / "on"
+    # More is said meanwhile: the run goes on with a second turn once the first is over.
+    await driver.runtime.steer("s1", f"!until {on}\n!say more")
+    go.write_text("", encoding="utf-8")
+    await _until(lambda: len(driver.record("session/prompt")) == 2, "the second turn being with dsh")
+    assert len(session.unsettled) == 1 and _taken(driver) == [1]
+    return driver, session, on, told
+
+
+async def test_a_text_whose_answer_is_heard_of_while_its_run_goes_on_is_told_of_as_any_other(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver, session, on, told = await _left_open_by_a_run_that_goes_on(tmp_path, dsh, monkeypatch)
+    try:
+        # It got there. The run is still under way: its end is yet to be announced, and is
+        # what tells of the text; said to be of a run that is over, there would be no such run.
+        told[0](True)
+        said = [(event["inputs"], event["late"], event.get("run")) for event in driver.events.of("taken")]
+        assert said == [(1, False, None), (2, False, None)]
+    finally:
+        on.write_text("", encoding="utf-8")
+    ended = await driver.events.wait_ended("s1")
+
+    assert ended["reason"] == "completed" and ended["inputs"] == 3
+    assert _taken(driver) == [1, 2, 3] and not session.unsettled
+
+
+async def test_what_the_run_being_stopped_left_open_itself_is_not_kept_until_the_stop_is_through(
+    tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver, session, on, told = await _left_open_by_a_run_that_goes_on(tmp_path, dsh, monkeypatch)
+    try:
+        await driver.runtime.abort("s1")
+        # It went nowhere, which is heard of while the stop is under way. It is of the run
+        # that is being stopped: it goes with the stop.
+        told[0](False)
+        assert session.kept_back == []
+        ended = await driver.events.wait_ended("s1")
+    finally:
+        on.write_text("", encoding="utf-8")
+
+    assert ended["reason"] == "aborted" and session.queue == [] and session.run is None
+    assert len(driver.record("session/prompt")) == 2 and 2 not in _taken(driver)
+
+
+@pytest.mark.parametrize("reached", [False, True])
+async def test_a_text_whose_answer_was_heard_of_before_its_turn_failed_is_dealt_with_as_it_fared(
+    tmp_path: Path, dsh, reached: bool
+) -> None:
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh, then="!fail the model gave out")
+    try:
+        told[0](reached)
+    finally:
+        go.write_text("", encoding="utf-8")
+    ended = await driver.events.wait_ended("s1")
+    assert ended["reason"] == "error" and not session.unsettled
+    if reached:
+        # In dsh's conversation, though its turn failed after that: told of as taken before
+        # the end of the run is, once, and not sent again.
+        events = driver.events.events
+        said = [(index, event["inputs"], event["late"]) for index, event in enumerate(events) if event["type"] == "taken"]
+        assert [item[1:] for item in said] == [(2, False)] and said[0][0] < events.index(ended)
+        assert session.run is None and len(driver.record("session/prompt")) == 1
+        # Nor is it told of once more with the end of the next run.
+        mark = len(events)
+        await driver.runtime.prompt("s1", "!say hello")
+        await driver.events.wait_ended("s1", start=mark)
+        assert _taken(driver) == [2, 3]
+        return
+    # It went nowhere: queued again as that was heard of, and sent as a turn of its own once
+    # the run that failed is over.
+    await driver.events.wait_for(lambda event: event["type"] == "ended" and event["reason"] == "completed")
     prompts = driver.record("session/prompt")
-    assert len(prompts) == 3 and "a note that arrives during the turn" in json.dumps(prompts[2])
-    assert again["reason"] == "completed"
+    assert len(prompts) == 2 and "a note that arrives during the turn" in json.dumps(prompts[1])
+    assert _taken(driver) == [2]
 
 
 async def test_what_two_calls_were_handed_is_queued_again_in_the_order_it_was_given(tmp_path: Path, dsh) -> None:

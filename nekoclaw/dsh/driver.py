@@ -143,8 +143,28 @@ class _Given(str):
         return made
 
 
+def _as_given(texts: list[str]) -> list[str]:
+    """Return texts that are queued again with those that wait, in the order they were given.
+
+    Whichever of several answers is heard of first: what is queued again
+    was given before what waits, and what one call was handed before
+    what the next was.
+    """
+    return sorted(texts, key=lambda text: text.number)
+
+
 def _numbers_of(texts: list[str]) -> list[int]:
     return [text.number for text in texts if isinstance(text, _Given)]
+
+
+@dataclass(slots=True)
+class _LeftOpen:
+    """An answer a turn stopped waiting for: the numbers of the texts it carried, and what becomes of them."""
+
+    numbers: list[int]
+    # Whether they are queued again where the answer went nowhere: not
+    # those of a run that was stopped.
+    again: bool = True
 
 
 @dataclass(slots=True)
@@ -172,11 +192,13 @@ class _Session:
     # Of those, the ones whose answer is still on its way to dsh: whether
     # it got there (set by whoever serves the call), and their numbers.
     answering: list[tuple[asyncio.Future[bool], list[int]]] = field(default_factory=list)
-    # Those a turn stopped waiting for (``_leave_open``): not told of as
-    # taken, and dealt with when it is known after all. Each with whether
-    # its texts are queued again where it went nowhere: not those of a run
-    # that was stopped.
-    unsettled: dict[asyncio.Future[bool], bool] = field(default_factory=dict)
+    # Those a turn stopped waiting for (``_answers_known``): not told of as
+    # taken, and dealt with when it is known after all.
+    unsettled: dict[asyncio.Future[bool], _LeftOpen] = field(default_factory=dict)
+    # Texts an earlier run's call was handed, whose answer was heard to
+    # have gone nowhere while the run under way was being stopped: queued
+    # again once the stop is through (``_give_back``).
+    kept_back: list[str] = field(default_factory=list)
     # Counts the runs that are over. A call dsh makes belongs to the run
     # under way as it is made, and is handed nothing once that run is over.
     runs: int = 0
@@ -1159,18 +1181,22 @@ class DshRuntime:
         """
         if not outcome.done():
             outcome.set_result(delivered)
-        late = outcome in session.unsettled
-        again = session.unsettled.pop(outcome, True)
+        left = session.unsettled.pop(outcome, None)
+        late = left is not None
         if not delivered:
             # (Whatever becomes of the texts next, queued again or left to
             # a stop that is under way, they are not told of as taken: the
             # end of the turn looks at how each answer fared.)
-            if again:
+            if left is None or left.again:
                 self._give_back(session, texts, of_run, late=late)
         elif late and self._sessions.get(session.id) is session and session.closing is None:
-            # (Said as of a run that is over, and of which one: what is
-            # told of them is what that run came to.)
-            self._say_taken(session, _numbers_of(texts), late=of_run)
+            # Said as of a run that is over, and of which one: what is
+            # told of them is what that run came to. Where the run went on
+            # after the turn of the call and is still under way, its end
+            # is yet to be announced, and tells of them as of any text it
+            # took.
+            over = session.runs != of_run
+            self._say_taken(session, _numbers_of(texts), late=of_run if over else None)
 
     async def _answers_settled(self, session: _Session) -> None:
         """Wait, a bounded while, until it is known of every answer that carried texts whether it reached dsh.
@@ -1185,22 +1211,27 @@ class DshRuntime:
         open_ones = [outcome for outcome, _numbers in session.answering if not outcome.done()]
         if open_ones:
             await asyncio.wait(open_ones, timeout=DSH_ANSWER_SETTLE_SECONDS)
-        # Each text by the answer that carried it last: one whose answer
-        # went nowhere was queued again, and a later call of the turn may
-        # have been handed it and got it there. Not told of: one not
-        # known to have got there, or known not to have (a stop that came
-        # during the wait kept it from being queued again; it is not in
-        # dsh's conversation for that).
+        self._answers_known(session)
+
+    def _answers_known(self, session: _Session) -> None:
+        """Leave of what a turn's calls were handed (``awaited``) the texts dsh is known to have; stop waiting for the rest.
+
+        Each text by the answer that carried it last: one whose answer
+        went nowhere was queued again, and a later call of the turn may
+        have been handed it and got it there. Left out: one not known to
+        have got there, or known not to have (a stop that came meanwhile
+        kept it from being queued again; it is not in dsh's conversation
+        for that). An answer not known of yet is dealt with when it is
+        (``_answered``).
+        """
         got_there: dict[int, bool] = {}
         for outcome, numbers in session.answering:
             for number in numbers:
                 got_there[number] = outcome.done() and outcome.result()
         session.awaited = [number for number in session.awaited if got_there.get(number, True)]
-        self._leave_open(session)
-
-    def _leave_open(self, session: _Session) -> None:
-        """Stop waiting for the answers of a turn's calls: one not known of yet is dealt with when it is (``_answered``)."""
-        session.unsettled.update((outcome, True) for outcome, _numbers in session.answering if not outcome.done())
+        session.unsettled.update(
+            (outcome, _LeftOpen(numbers)) for outcome, numbers in session.answering if not outcome.done()
+        )
         session.answering = []
 
     def _give_back(self, session: _Session, texts: list[str], of_run: int, *, late: bool = False) -> None:
@@ -1212,11 +1243,19 @@ class DshRuntime:
         """
         if self._sessions.get(session.id) is not session or session.closing is not None:
             return
-        if session.aborting or self._shutdowns:
-            # Being stopped, or the runtime is shutting down: what it was
-            # handed is dealt with as the stop deals with it, and no turn
-            # is begun behind the back of a shutdown. (Whoever sent it and
-            # never heard that it was taken has it handed over again.)
+        if self._shutdowns:
+            # The runtime is shutting down: no turn is begun behind its
+            # back. (Whoever sent it and never heard that it was taken has
+            # it handed over again.)
+            return
+        if session.aborting:
+            # Being stopped: what the run under way was handed is dealt
+            # with as the stop deals with it. What an earlier run was
+            # handed, heard of only now, is not this run's to lose: it
+            # waits until the stop is through, and is queued again then
+            # (``_run``), as it would have been a moment later.
+            if late and of_run != session.runs:
+                session.kept_back.extend(texts)
             return
         if not late and (session.runs != of_run or session.run is None):
             # The run is over: what it was handed is dealt with as its end
@@ -1224,10 +1263,7 @@ class DshRuntime:
             return
         numbers = set(_numbers_of(texts))
         session.awaited = [number for number in session.awaited if number not in numbers]
-        # In the order they were given, whichever of several answers is
-        # heard of first: what is queued again was given before what
-        # waits, and what one call was handed before what the next was.
-        session.queue = sorted([*texts, *session.queue], key=lambda text: text.number)
+        session.queue = _as_given([*texts, *session.queue])
         session.arrived.set()
         if session.run is None:
             session.aborting = False
@@ -1278,12 +1314,21 @@ class DshRuntime:
                     return
                 except AcpError as exc:
                     reason, error = "error", exc.detail
-                    # Cut short: what its calls were handed is not told of
-                    # as taken with it. An answer of theirs that is still
-                    # on its way is not waited for at the end of a later
-                    # turn, and is dealt with when it is known.
+                    if not session.aborting:
+                        # Cut short by an error, and not by a stop: what
+                        # its calls were handed and dsh is known to have
+                        # (the answer got there) is in its conversation,
+                        # and is told of as taken. An answer still on its
+                        # way is not waited for, here or at the end of a
+                        # later turn, and is dealt with when it is known.
+                        self._answers_known(session)
+                        self._say_taken(session, session.awaited)
+                    # (Asked to stop before dsh answered, with an error as
+                    # it happens: what the turn's calls were handed goes
+                    # with the stop, as where dsh says that the turn was
+                    # cancelled, below.)
                     session.awaited = []
-                    self._leave_open(session)
+                    session.answering = []
                     break
                 # dsh took them: said only now, and not when they were sent.
                 # A process that went before it had them, or a request it
@@ -1322,6 +1367,9 @@ class DshRuntime:
         if session.aborting and reason == "completed":
             # Stopped between two turns, or before the first one was sent.
             reason = "aborted"
+        # What this run leaves open. Of those texts it may still be said
+        # that the run took them, and of no others: its end names them.
+        left = [session.unsettled[outcome] for outcome in session.unsettled.keys() - earlier]
         if reason == "aborted":
             # What was queued when it was stopped is dropped with it. Nor
             # is what its calls were handed queued again, whenever it is
@@ -1329,8 +1377,8 @@ class DshRuntime:
             # not being stopped any more by then, and the text would
             # begin the turn the stop was to prevent.
             session.queue.clear()
-            for outcome in session.unsettled.keys() - earlier:
-                session.unsettled[outcome] = False
+            for item in left:
+                item.again = False
         session.aborting = False
         self._emit(
             session,
@@ -1343,8 +1391,14 @@ class DshRuntime:
                 inputs=session.taken,
                 # (Counted on as the run ended, above.)
                 run=session.runs - 1,
+                open_inputs=sorted({number for item in left for number in item.numbers}),
             ),
         )
+        if session.kept_back:
+            # An earlier run's, heard of while this one was being stopped:
+            # queued again now that the stop is through, in the order given.
+            back, session.kept_back = session.kept_back, []
+            session.queue = _as_given([*back, *session.queue])
         if session.queue:
             # Arrived while the end was being announced: an idle session is started by it.
             session.run = asyncio.ensure_future(self._run(session))

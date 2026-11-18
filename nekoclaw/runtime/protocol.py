@@ -422,6 +422,12 @@ class EndedEvent(_SessionEvent):
     # A number for this run among the session's runs, where the runtime
     # counts them: what a ``taken`` event that comes late names (its ``run``).
     run: int | None = None
+    # Of the texts this run was handed, those of which it is not known, as
+    # the run ends, whether they got into the conversation. A ``taken`` that
+    # comes late and names this run is of one of them, and of no other: a
+    # runtime that may say so late lists the text here. (One that knows of
+    # every text as its run ends, like the built-in one, lists none.)
+    open_inputs: list[int] = Field(default_factory=list)
     # Background jobs of the session not yet gone when the run finished.
     jobs: int = 0
     # Those of them that tell the session when they finish, which starts its

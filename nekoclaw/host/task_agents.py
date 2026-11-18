@@ -291,14 +291,14 @@ class _Session:
     serial: int = 0
     numbered: dict[int, int] = field(default_factory=dict)
     # How runs ended that may still be said to have taken a text: which
-    # run (where the runtime numbers them), up to which text it was
-    # accounted for, and what its senders were told of it (its words, and
-    # how the commission stood). For a text that is said to be taken only
-    # after its run ended (``_on_taken``): its senders are told the same,
-    # and not what a later run made of the commission. Kept for as long
-    # as a text within its reach is neither taken nor given up
-    # (``_ends_kept``), and no longer.
-    ends: list[tuple[int | None, int, str, str]] = field(default_factory=list)
+    # run (where the runtime numbers them), which texts it left open as it
+    # ended (``EndedEvent.open_inputs``), and what its senders were told
+    # of it (its words, and how the commission stood). For a text that is
+    # said to be taken only after its run ended (``_on_taken``): its
+    # senders are told the same, and not what a later run made of the
+    # commission. Kept for as long as one of those texts is neither taken
+    # nor given up (``_ends_kept``), and no longer.
+    ends: list[tuple[int | None, frozenset[int], str, str]] = field(default_factory=list)
     # The end of a run (the event) that is being acted on: from where it is
     # taken up until its senders are told. For where whoever handles the
     # events is stopped in between, as the host shuts down
@@ -345,24 +345,16 @@ def _number(value: Any) -> int | None:
 
 
 def _ends_kept(session: _Session) -> None:
-    """Let go of how those runs ended that no text can be said to have been taken by any more.
+    """Let go of how those runs ended of which no text can be said to have been taken by them any more.
 
-    Over the limit the earliest go, but for the first run each open
-    text was within reach of: that is the run whose call was handed the
-    text, which the runs after it cannot be told from here. A text that
-    stays open for long (its answer is on its way and never arrives)
-    would otherwise push out the one run that may still be said to have
-    taken it.
+    A run is kept for the texts it named as open when it ended, while one
+    of them is still open here (sent, and neither said to be taken nor
+    given up): however many runs come and go meanwhile, none of which is
+    kept for a text it did not name.
     """
-    kept = [item for item in session.ends if any(number <= item[1] for number in session.handed)]
-    over = len(kept) - _ENDS_KEPT_MAX
-    if over > 0:
-        firsts = {
-            next((index for index, item in enumerate(kept) if item[1] >= number), None) for number in session.handed
-        }
-        gone = set([index for index in range(len(kept)) if index not in firsts][:over])
-        kept = [item for index, item in enumerate(kept) if index not in gone]
-    session.ends = kept
+    session.ends = [item for item in session.ends if any(number in session.handed for number in item[1])][
+        -_ENDS_KEPT_MAX:
+    ]
 
 
 def _ended_as(session: _Session, event: dict[str, Any], number: int) -> tuple[str, str] | None:
@@ -370,14 +362,13 @@ def _ended_as(session: _Session, event: dict[str, Any], number: int) -> tuple[st
 
     Which run that was, the runtime says (``run``): the text may have
     gone to an earlier run first, whose answer never got there. One that
-    does not say is taken for the first that was accounted for as far as
-    this text.
+    does not say is taken for the first that left this text open.
     """
     run = _number(event.get("run"))
     if run is not None:
         ended = next((item for item in session.ends if item[0] == run), None)
     else:
-        ended = next((item for item in session.ends if item[1] >= number), None)
+        ended = next((item for item in session.ends if number in item[1]), None)
     return (ended[2], ended[3]) if ended is not None else None
 
 
@@ -2262,10 +2253,11 @@ class TaskAgentManager:
 
             async def told() -> None:
                 self._end_kept(session, event)
-                await self._turn_over(session, said, upto)
-                # Told of, or kept to be told: not in hand any more, for
-                # shutting down to tell of once again.
+                # Not in hand any more from here on, for shutting down to
+                # keep a second time: what is told next is kept where it
+                # is cut off (``_turn_over``).
                 session.ending = None
+                await self._turn_over(session, said, upto)
 
             try:
                 await self._act_on_end(session, event)
@@ -2295,16 +2287,16 @@ class TaskAgentManager:
         """Keep what the senders of a run's notes are told of it, for a text that is said to be taken after it.
 
         With how the commission stands as the run is over, and not as a
-        later run leaves it. For as long as a text within its reach is
-        still open (sent, and neither said to be taken nor given up),
-        however many runs come and go before that text is heard of; with
-        none open it is let go at once. (An end that names no number is
-        the session's, and keeps nothing.)
+        later run leaves it. Of a run that names texts it leaves open
+        (``open_inputs``): only of those can it be said later that the
+        run took them. Kept for as long as one of them is still open
+        here, however many runs come and go before it is heard of
+        (``_ends_kept``); a run that names none keeps nothing.
         """
-        upto = _number(event.get("inputs"))
-        if upto is not None:
-            said = str(event.get("text") or "")
-            session.ends.append((_number(event.get("run")), upto, *self._told(said, session.stands)))
+        named = event.get("open_inputs")
+        left = frozenset(number for number in (named if isinstance(named, list) else ()) if _number(number) is not None)
+        said = str(event.get("text") or "")
+        session.ends.append((_number(event.get("run")), left, *self._told(said, session.stands)))
         _ends_kept(session)
 
     async def _act_on_end(self, session: _Session, event: dict[str, Any]) -> None:
@@ -2739,9 +2731,8 @@ class TaskAgentManager:
         # kept when the host ends is handed over once more by the next
         # process, at worst.)
         self._unconfirmed.update(wakes)
-        if not await self._confirm_taken() and (self._returning is None or self._returning.done()):
-            self._returning = self._spawn(self._return_later())
-        if event.get("late") is True:
+        ended = _ended_as(session, event, number) if event.get("late") is True else None
+        if ended is not None:
             # The run that took it has ended, and told its senders nothing
             # of it: it was not known to be taken then. They are told now,
             # with what that run came to. Left to the end of the next run,
@@ -2750,9 +2741,14 @@ class TaskAgentManager:
             # Of this text alone: what the session took of other texts
             # meanwhile is of the run that took it, and is told as that
             # run ends.
-            ended = _ended_as(session, event, number)
-            if ended is not None:
-                await self._turn_over(session, ended[0], number, as_told=ended, only=number)
+            # And before the ledger is asked for anything else (that the
+            # text was taken is written with what is told): stopped there
+            # as the host shuts down, it is kept as owed with that run's
+            # words, and not left with the session for whatever its last
+            # end is told with.
+            await self._turn_over(session, ended[0], number, as_told=ended, only=number)
+        elif not await self._confirm_taken() and (self._returning is None or self._returning.done()):
+            self._returning = self._spawn(self._return_later())
         _ends_kept(session)
 
     async def _unfire(self, wake_ids: list[int]) -> None:

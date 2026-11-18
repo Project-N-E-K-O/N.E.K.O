@@ -5658,7 +5658,9 @@ async def test_a_note_said_to_be_taken_after_its_run_ended_is_answered_with_what
     # the second is not: whether the answer that carried it reached the session is still open.
     session.sent, session.handed = 2, {1: [handing.id], 2: [later.id]}
     await agents._on_taken(session, {"type": "taken", "inputs": 1})
-    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 2, "text": "Both are in."})
+    await agents._on_ended(
+        session, {"type": "ended", "reason": "completed", "inputs": 2, "open_inputs": [2], "text": "Both are in."}
+    )
     assert await _told(host) == ["Both are in."]
     assert (await host.ledger.message_get(second.id)).notified_at is None
 
@@ -5939,7 +5941,7 @@ async def test_a_note_said_to_be_taken_late_is_answered_as_the_run_that_took_it_
     # open as it ended. It had not: the text went to run 8, of which the same was open as it ended.
     for run, said in ((7, "Nothing of it here."), (8, "Rebuilt as the note asked.")):
         await agents._on_ended(
-            session, {"type": "ended", "reason": "completed", "inputs": 2, "run": run, "text": said}
+            session, {"type": "ended", "reason": "completed", "inputs": 2, "run": run, "open_inputs": [2], "text": said}
         )
     assert await _told(host) == ["Nothing of it here."]
     # The commission stands otherwise by the time it is heard of.
@@ -6046,7 +6048,9 @@ async def test_a_note_said_to_be_taken_late_is_told_of_alone(hosts, tmp_path):
     # The second and the third text each brought a note. Run 7 was handed both, and whether
     # either got there was open as it ended.
     session.sent, session.handed = 3, {2: [handing.id], 3: [later.id]}
-    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 3, "run": 7, "text": "Of run 7."})
+    await agents._on_ended(
+        session, {"type": "ended", "reason": "completed", "inputs": 3, "run": 7, "open_inputs": [2, 3], "text": "Of run 7."}
+    )
     assert await _told(host) == []
     # The second had not got there: it went to run 8, which has it, and goes on.
     await agents._on_taken(session, {"type": "taken", "inputs": 2})
@@ -6062,8 +6066,40 @@ async def test_a_note_said_to_be_taken_late_is_told_of_alone(hosts, tmp_path):
     assert (await host.ledger.message_get(first.id)).notified_at is not None
 
 
-@pytest.mark.parametrize("after", [12, 80])
-async def test_how_a_run_ended_is_kept_for_as_long_as_a_text_of_it_is_open(hosts, tmp_path, after):
+def test_no_more_ends_of_runs_are_kept_than_so_many():
+    from nekoclaw.host.task_agents import _ENDS_KEPT_MAX, _Session, _ends_kept
+
+    session = _Session("commission")
+    session.handed = {number: [number] for number in range(1, 101)}
+    session.ends = [(run, frozenset({run}), f"Of run {run}.", "working") for run in range(1, 101)]
+
+    _ends_kept(session)
+
+    # A backstop, should that many texts ever be open at once: the earliest go.
+    assert [item[0] for item in session.ends] == [*range(101 - _ENDS_KEPT_MAX, 101)]
+    # And one whose texts are all accounted for goes at once.
+    del session.handed[100]
+    _ends_kept(session)
+    assert [item[0] for item in session.ends] == [*range(101 - _ENDS_KEPT_MAX, 100)]
+
+
+def test_a_text_said_to_be_taken_late_is_of_the_run_it_names_or_of_the_first_that_left_it_open():
+    from nekoclaw.host.task_agents import _ended_as, _Session
+
+    session = _Session("commission")
+    session.ends = [
+        (4, frozenset({2}), "Of run 4.", "working"),
+        (5, frozenset({2, 3}), "Of run 5.", "done"),
+    ]
+
+    assert _ended_as(session, {"type": "taken", "inputs": 2, "late": True, "run": 5}, 2) == ("Of run 5.", "done")
+    assert _ended_as(session, {"type": "taken", "inputs": 2, "late": True, "run": 6}, 2) is None
+    # A runtime that does not number its runs: the first that left the text open.
+    assert _ended_as(session, {"type": "taken", "inputs": 3, "late": True}, 3) == ("Of run 5.", "done")
+    assert _ended_as(session, {"type": "taken", "inputs": 4, "late": True}, 4) is None
+
+
+async def test_how_a_run_ended_is_kept_for_as_long_as_a_text_it_left_open_is_open(hosts, tmp_path):
     from nekoclaw.host.task_agents import _Session
 
     host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
@@ -6071,22 +6107,24 @@ async def test_how_a_run_ended_is_kept_for_as_long_as_a_text_of_it_is_open(hosts
     agents = host.task_agents
     session = _Session(commission.id)
     session.sent, session.handed = 2, {2: [later.id]}
-    # Run 1 was handed the text, and whether it got there was open as it ended. A dozen runs
-    # come and go before that is heard of; or more of them than are kept.
-    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 2, "run": 1, "text": "Of the run that took it."})
-    for run in range(2, 2 + after):
+    # Run 1 was handed the text, and whether it got there was open as it ended. It had not:
+    # the text went to run 2, of which the same was open as it ended. Many more runs come and
+    # go before that is heard of (more than are ever kept), none of which leaves a text open.
+    for run, said in ((1, "Of run 1."), (2, "Of the run that took it.")):
+        await agents._on_ended(
+            session, {"type": "ended", "reason": "completed", "inputs": 2, "run": run, "open_inputs": [2], "text": said}
+        )
+    for run in range(3, 83):
         await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 2, "run": run, "text": f"Of run {run}."})
-    # (Over the limit it is the runs after the first that are let go, the earliest of them.)
-    assert [item[0] for item in session.ends] == ([1, *range(2 + after - 63, 2 + after)] if after > 63 else [*range(1, 2 + after)])
+    # Kept are the runs that may still be said to have taken it, and none of the others,
+    # though the text was within the reach of each.
+    assert [item[0] for item in session.ends] == [1, 2]
 
-    await agents._on_taken(session, {"type": "taken", "inputs": 2, "late": True, "run": 1})
+    await agents._on_taken(session, {"type": "taken", "inputs": 2, "late": True, "run": 2})
 
-    # Still there to be told, however many runs later; and let go once no text is open.
+    # Still there to be told, however many runs later; and let go once the text is not open.
     assert await _told(host) == ["Of the run that took it."] and session.ends == []
     assert (await host.ledger.message_get(second.id)).notified_at is not None
-    # A run with no text open as it ends keeps nothing.
-    await agents._on_ended(session, {"type": "ended", "reason": "completed", "inputs": 2, "run": 14, "text": "Later."})
-    assert session.ends == []
 
 
 async def test_what_is_left_as_the_host_shuts_down_is_taken_as_it_would_have_been_acted_on(hosts, tmp_path):
@@ -6100,7 +6138,7 @@ async def test_what_is_left_as_the_host_shuts_down_is_taken_as_it_would_have_bee
     # other; the third brought nothing.
     session.sent, session.handed, session.numbered = 3, {1: [handing.id], 2: [later.id]}, {5: 1, 6: 2, 7: 3}
     # Run 7 ended with the second text open, as the runtime counts it: the first of those it took.
-    session.ends = [(7, 1, "Of run 7.", "working")]
+    session.ends = [(7, frozenset({1}), "Of run 7.", "working")]
     agents._sessions[commission.id] = session
     agents._held_by["left-behind"] = commission.id
     try:
@@ -6147,7 +6185,15 @@ async def test_the_end_of_a_run_that_shutting_down_gets_to_is_kept_for_a_text_ta
     # Two texts were sent, each with a note. The first was taken; whether the second got there
     # was open as run 7 ended.
     session.sent, session.handed, session.took = 2, {2: [later.id]}, {1: [handing.id]}
-    run_7 = {"type": "ended", "session_id": "left-behind", "reason": "completed", "inputs": 2, "run": 7, "text": "Of run 7."}
+    run_7 = {
+        "type": "ended",
+        "session_id": "left-behind",
+        "reason": "completed",
+        "inputs": 2,
+        "run": 7,
+        "open_inputs": [2],
+        "text": "Of run 7.",
+    }
     agents._sessions[commission.id] = session
     agents._held_by["left-behind"] = commission.id
     try:
@@ -6183,3 +6229,107 @@ async def test_the_end_of_a_run_that_shutting_down_gets_to_is_kept_for_a_text_ta
     assert await _told(host) == ["Of run 7.", "Of run 7."]
     assert (await host.ledger.message_get(first.id)).notified_at is not None
     assert (await host.ledger.message_get(second.id)).notified_at is not None
+
+
+async def test_a_note_said_to_be_taken_late_as_the_host_shuts_down_is_owed_as_its_run_was_told_of(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, _first, _handing, second, later = await _two_notes_in_one_commission(host)
+    agents = host.task_agents
+    session = _Session(commission.id, session_id="late")
+    # Run 7 was handed the second text, and whether it got there was open as it ended.
+    session.sent, session.handed = 2, {2: [later.id]}
+    session.ends = [(7, frozenset({2}), "Of run 7.", "working")]
+    agents._sessions[commission.id] = session
+    agents._held_by["late"] = commission.id
+    under_way = asyncio.Event()
+
+    async def never(*_args: Any, **_more: Any) -> Any:
+        under_way.set()
+        await asyncio.Event().wait()
+
+    try:
+        with monkeypatch.context() as patched:
+            # It got there after all. The ledger does not answer whoever handles the events,
+            # which is stopped at it as the host shuts down.
+            patched.setattr(host.ledger, "wakes_taken", never)
+            patched.setattr(host.ledger, "turn_over", never)
+            handling = asyncio.ensure_future(
+                agents._handle({"type": "taken", "session_id": "late", "inputs": 2, "late": True, "run": 7})
+            )
+            await asyncio.wait_for(under_way.wait(), 5.0)
+            agents._closed = True
+            handling.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handling
+        agents._owe_what_is_left()
+    finally:
+        agents._closed = False
+        agents._sessions.pop(commission.id, None)
+        agents._held_by.pop("late", None)
+
+    # Owed as run 7 was told of, once: not with nothing said and how the session stands as
+    # the host shuts down, which is what a text left with the session comes to.
+    assert [(words_told, state, took) for _of, words_told, state, took, _taken in agents._turns_owed] == [
+        ("Of run 7.", "working", [later.id])
+    ]
+    await agents._settle_owed()
+    assert await _told(host) == ["Of run 7."]
+    assert (await host.ledger.message_get(second.id)).notified_at is not None
+
+
+async def test_the_end_of_a_run_whose_senders_were_being_told_as_the_host_shut_down_is_kept_once(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host.task_agents import _Session
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, _first, handing, _second, later = await _two_notes_in_one_commission(host)
+    await host.ledger.wakes_taken([handing.id])
+    agents = host.task_agents
+    session = _Session(commission.id, session_id="cut-off")
+    # Run 7 took the first text; whether the second got there is open as it ends.
+    session.sent, session.took, session.handed = 2, {1: [handing.id]}, {2: [later.id]}
+    agents._sessions[commission.id] = session
+    agents._held_by["cut-off"] = commission.id
+    ended = {
+        "type": "ended",
+        "session_id": "cut-off",
+        "reason": "completed",
+        "inputs": 2,
+        "run": 7,
+        "open_inputs": [2],
+        "text": "Of run 7.",
+    }
+    under_way = asyncio.Event()
+
+    async def never(*_args: Any, **_more: Any) -> Any:
+        under_way.set()
+        await asyncio.Event().wait()
+
+    try:
+        with monkeypatch.context() as patched:
+            # The senders are being told, and the ledger does not answer: whoever handles
+            # the events is stopped there as the host shuts down.
+            patched.setattr(host.ledger, "turn_over", never)
+            handling = asyncio.ensure_future(agents._handle(ended))
+            await asyncio.wait_for(under_way.wait(), 5.0)
+            agents._closed = True
+            handling.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handling
+        agents._owe_what_is_left()
+    finally:
+        agents._closed = False
+        agents._sessions.pop(commission.id, None)
+        agents._held_by.pop("cut-off", None)
+
+    # Owed once, with the words of that run; and how the run ended is kept once, for the
+    # text it left open: it was out of hand by the time the senders were being told.
+    assert [(words_told, took) for _of, words_told, _state, took, _taken in agents._turns_owed] == [
+        ("Of run 7.", [handing.id])
+    ]
+    assert session.ending is None and [item[0] for item in session.ends] == [7]
