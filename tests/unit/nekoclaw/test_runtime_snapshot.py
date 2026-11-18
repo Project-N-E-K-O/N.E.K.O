@@ -34,7 +34,6 @@ from nekoclaw.runtime.protocol import ModelConfig
 from nekoclaw.runtime.snapshot import (
     REASON_COMPACTED,
     REASON_OPENED,
-    REASON_TOOLS_ADDED,
     SYSTEM_FILE,
     SystemSnapshot,
     ToolDefinition,
@@ -231,29 +230,44 @@ async def test_a_session_with_nothing_said_yet_is_put_together_from_what_there_i
     assert _saved(spec)["reason"] == REASON_OPENED and "Fresh instructions." in _saved(spec)["system"]
 
 
-async def test_a_tool_that_can_be_used_now_and_is_missing_from_the_snapshot_has_it_put_together_anew(
+async def test_a_tool_that_came_since_the_snapshot_is_told_of_only_after_the_conversation_was_summed_up(
     tmp_path: Path,
 ) -> None:
     session, events = await open_session(
-        make_spec(tmp_path, instructions="First.", disabled_tools=["todo_write"]), ScriptedLLM([[say("ok"), finish()]])
+        make_spec(tmp_path, model=_small_model(), instructions="First.", disabled_tools=["todo_write"]),
+        ScriptedLLM([[say("ok"), finish()]]),
     )
     await _ask(session, events, "First commission.")
     await session.close()
-    assert "todo_write" not in [tool["name"] for tool in _saved(make_spec(tmp_path))["tools"]]
+    before = _saved(make_spec(tmp_path))
+    assert "todo_write" not in [tool["name"] for tool in before["tools"]]
 
-    spec = make_spec(tmp_path, instructions="Second.")
+    spec = make_spec(tmp_path, model=_small_model(), instructions="Second.")
     llm = ScriptedLLM([[say("ok"), finish()]])
     session, events = await open_session(spec, llm)
     try:
-        # Without this the session could never call the tool.
-        assert "todo_write" in events.of("started")[0]["tools"]
+        # The head of the requests is what it was: the session goes on without the tool.
+        assert events.of("started")[0]["tools"] == [tool["name"] for tool in before["tools"]]
         await _ask(session, events, "Second commission.")
-        assert "todo_write" in _tool_names(llm.overrides[0])
-        assert "Second." in _system_of(llm.requests[0]) and "First." not in _system_of(llm.requests[0])
+        assert "todo_write" not in _tool_names(llm.overrides[0])
+        assert "First." in _system_of(llm.requests[0]) and "Second." not in _system_of(llm.requests[0])
+        assert _saved(spec) == before
+
+        # Summed up, it is told of what there is now, and the tool is carried out when called.
+        await _seed(session, events, llm)
+        await _sum_up(session, events, llm)
+        assert "todo_write" in _tool_names(llm.overrides[-1])
+        assert "Second." in _system_of(llm.requests[-1])
+        saved = _saved(spec)
+        assert saved["reason"] == REASON_COMPACTED and "todo_write" in [tool["name"] for tool in saved["tools"]]
+        llm.add(call("todo_write", {"todos": [{"content": "x", "status": "pending"}]}, "c1"), finish("tool_calls"))
+        llm.add(say("Noted it."), finish())
+        ended = await _ask(session, events, "Note it down.")
+        end = events.of("tool_end")[-1]
+        assert end["tool_name"] == "todo_write" and end["is_error"] is False
+        assert ended["text"] == "Noted it."
     finally:
         await session.close()
-    assert _saved(spec)["reason"] == REASON_TOOLS_ADDED
-    assert "todo_write" in [tool["name"] for tool in _saved(spec)["tools"]]
 
 
 async def test_a_tool_of_the_snapshot_that_is_not_there_now_stays_listed_and_says_so_when_called(
@@ -301,24 +315,16 @@ async def test_after_a_summary_the_system_prompt_and_the_tools_are_put_together_
     await _ask(session, events, "First commission.")
     await session.close()
 
-    # Opened again with more to tell and one more tool; a tool of then is gone.
-    spec = make_spec(tmp_path, model=_small_model(), instructions="Index of now.", disabled_tools=["web_fetch"])
-    llm = ScriptedLLM([[say("ok"), finish()]])
-    session, events = await open_session(spec, llm)
-    try:
-        # (``todo_write`` is missing from the snapshot, so it was put together anew on opening.)
-        assert _saved(spec)["reason"] == REASON_TOOLS_ADDED
-    finally:
-        await session.close()
-
-    # More to tell by now, so what every request begins with is longer than it was.
+    # Opened again with more to tell and one more tool; a tool of then is gone. More to tell
+    # by now, so what every request begins with is longer than it was.
     later = "Index of later. " + "Something more was learned since. " * 12
     spec = make_spec(tmp_path, model=_small_model(), instructions=later, disabled_tools=["web_fetch"])
     llm = ScriptedLLM([[say("ok"), finish()]])
     session, events = await open_session(spec, llm)
     try:
         await _ask(session, events, "Second commission.")
-        assert "Index of now." in _system_of(llm.requests[0])
+        assert "Index of then." in _system_of(llm.requests[0])
+        assert "todo_write" not in _tool_names(llm.overrides[0]) and "web_fetch" in _tool_names(llm.overrides[0])
         await _seed(session, events, llm)
         requests_before = len(llm.requests)
         fixed_before = session.context.fixed_tokens
@@ -332,7 +338,9 @@ async def test_after_a_summary_the_system_prompt_and_the_tools_are_put_together_
         assert llm.overrides[requests_before + 1]["tools"] == llm.overrides[0]["tools"]
         assert summary[-1] == {"role": "user", "content": texts.COMPACTION_INSTRUCTION}
         # What follows the summary begins with what there is to tell by now.
-        assert "Index of later." in _system_of(retry) and "Index of now." not in _system_of(retry)
+        assert "Index of later." in _system_of(retry) and "Index of then." not in _system_of(retry)
+        told = _tool_names(llm.overrides[requests_before + 2])
+        assert "todo_write" in told and "web_fetch" not in told
         compacted = events.of("compacted")
         assert [(event["count"], event["tokens_before"] > 0) for event in compacted] == [(1, True)]
         # Told before the request that follows it is answered.

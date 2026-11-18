@@ -22,9 +22,12 @@ provider can only cache while it stays the same. So what a session was
 opened with is written to ``system.json`` in its directory and read from
 there when the session is opened again.
 
-A snapshot is replaced in two cases only (``TaskAgentSession``): after the
-conversation was summed up, when the head of the request changes anyway,
-and when a tool the session can use now is missing from it.
+A snapshot is replaced in one case only (``TaskAgentSession``): after the
+conversation was summed up, when the head of the request changes anyway.
+Until then the session is told of the tools it was opened with: one that is
+gone since is answered for by a stand-in, and one that came since is not
+told of. (A change every session has to take up when it is next opened is
+made by raising ``_VERSION``: a snapshot of another version counts as none.)
 
 Nothing here is secret: the file holds what every request of the session
 sends to the model.
@@ -50,7 +53,6 @@ _VERSION = 1
 # Why a snapshot was made.
 REASON_OPENED = "opened"
 REASON_COMPACTED = "compacted"
-REASON_TOOLS_ADDED = "tools_added"
 
 
 @dataclass(frozen=True, slots=True)

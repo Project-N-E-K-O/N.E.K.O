@@ -240,10 +240,22 @@ async def test_hidden_entries_and_passive_plugins_are_never_served(host, server)
     assert server.calls == []
 
 
-async def test_without_any_capability_no_tool_is_offered(host, server):
+async def test_without_any_capability_the_two_tools_are_offered_all_the_same(host, server):
     grant = _grant(host, await _commission(host))
 
-    assert (await _rpc(host, grant, "tools/list"))["result"]["tools"] == []
+    # A session keeps the tools it was opened with, and what can be called changes while it
+    # lasts: a plugin installed later is reached through these two.
+    tools = (await _rpc(host, grant, "tools/list"))["result"]["tools"]
+    assert [tool["name"] for tool in tools] == [SEARCH_TOOL, CALL_TOOL]
+    # The plain search tool: no group of built-in tools is told of.
+    assert list(tools[0]["inputSchema"]["properties"]) == ["query"]
+    found = await _call(host, grant, SEARCH_TOOL, {"query": "what the weather is"})
+    assert _text(found) == "No capabilities are available."
+
+    _catalog(server)
+    host.registry.invalidate()
+    assert (await _rpc(host, grant, "tools/list"))["result"]["tools"] == tools
+    assert "plugin__weather__today" in _text(await _call(host, grant, SEARCH_TOOL, {"query": "what the weather is"}))
 
 
 async def test_listed_tools_stay_within_the_token_budget(host, server):
@@ -1174,7 +1186,8 @@ async def test_builtins_alone_are_enough_for_a_gateway(builtin_host):
 async def test_without_a_provider_there_are_no_builtin_tools(host):
     grant = _grant(host, await _commission(host), images=True)
 
-    assert await _tool_names(host, grant) == []
+    assert await _tool_names(host, grant) == [SEARCH_TOOL, CALL_TOOL]
+    assert await _groups_on_offer(host, grant) == []
     assert host.registry.builtins() == []
     asked = await _load(host, grant, "browser")
     assert asked["isError"] is True

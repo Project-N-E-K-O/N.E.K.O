@@ -949,15 +949,16 @@ class TaskAgentManager:
                 # switched on while the task agent works included, and its
                 # screenshots are limited too.
                 image_retention, image_pools = self._image_retention(self._registry.builtins())
-                callable_now = await self._registry.callable_by_task_agents()
-                if callable_now:
-                    url = await self._gateway.start()
-                    token = self._gateway.issue(
-                        commission.id,
-                        candidate_plugin_ids=self._candidates.get(commission.id, ()),
-                        supports_images=model.supports_images,
-                    )
-                    gateway_spec = GatewaySpec(url=url, token=token)
+                # Whether or not anything can be called right now: the
+                # session keeps the tools it is opened with, and what can be
+                # called changes while it lasts.
+                url = await self._gateway.start()
+                token = self._gateway.issue(
+                    commission.id,
+                    candidate_plugin_ids=self._candidates.get(commission.id, ()),
+                    supports_images=model.supports_images,
+                )
+                gateway_spec = GatewaySpec(url=url, token=token)
 
             spec = TaskAgentSpec(
                 session_id=session.session_id,

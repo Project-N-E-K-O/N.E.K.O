@@ -28,7 +28,8 @@ A session whose transcript file already exists continues that conversation,
 with the system prompt and the tool definitions it was opened with before
 (``snapshot.py``): the head of its requests stays the same from one
 commission to the next. They are put together anew after the conversation
-was summed up, and when a tool that can be used now is missing from them.
+was summed up, and not before: a tool that came since the session was first
+opened is told of from then on.
 """
 
 from __future__ import annotations
@@ -107,7 +108,6 @@ from nekoclaw.runtime.prompt import build_system_prompt
 from nekoclaw.runtime.snapshot import (
     REASON_COMPACTED,
     REASON_OPENED,
-    REASON_TOOLS_ADDED,
     SystemSnapshot,
     ToolDefinition,
     definitions_of,
@@ -562,18 +562,22 @@ class TaskAgentSession(SessionInbox):
         self._executors = executors
         self._workdir, self._session_dir = workdir, session_dir
         # A session that goes on with a conversation begins its requests as
-        # it did before. One that has nothing said yet is put together from
-        # what there is now, and so is one whose snapshot lacks a tool that
-        # can be used now: without that it could never call the tool.
+        # it did before, with the tools it was told of then. A tool that
+        # came since is told of after the next summary, when the head of
+        # the requests changes anyway. One that has nothing said yet is put
+        # together from what there is now.
         snapshot = await asyncio.to_thread(read_snapshot, session_dir) if state is not None else None
-        if snapshot is not None and {tool.name for tool in executors} <= snapshot.tool_names:
+        if snapshot is not None:
             self._adopt(snapshot)
         else:
-            await self._renew_snapshot(REASON_OPENED if snapshot is None else REASON_TOOLS_ADDED)
+            await self._renew_snapshot(REASON_OPENED)
         # Fixed for as long as the session is open: a run looks its tools up
-        # here by name. What the model is told of may change after a summary
-        # (``_wire_tools``), and never names a tool that is not among these.
-        self._tools = list(self._wire_tools)
+        # here by name. Every tool there is now, and a stand-in for each the
+        # model is still told of that is not there. What the model is told
+        # of (``_wire_tools``) changes after a summary, and never names a
+        # tool that is not among these.
+        there = {tool.name for tool in executors}
+        self._tools = [*executors, *(tool for tool in self._wire_tools if tool.name not in there)]
 
         self.harness = SessionHarness(
             AgentHarnessConfig(

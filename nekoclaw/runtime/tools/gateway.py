@@ -34,6 +34,7 @@ by the gateway, not by the runtime's own permission hook.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterable
@@ -52,6 +53,28 @@ CLIENT_NAME = "nekoclaw-runtime"
 HANDSHAKE_TIMEOUT_SECONDS = 30.0
 CONNECT_TIMEOUT_SECONDS = 5.0
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
+
+# The one TLS configuration of this process's gateway clients; see ``_tls``.
+_TLS: Any = None
+
+
+async def _tls() -> Any:
+    """Return the TLS configuration every request to the gateway is made with, put together once.
+
+    A request is made with a client of its own, and a client that is given
+    no configuration loads the certificate bundle anew: a tenth of a second
+    and more each time, which is longer than everything else a request to
+    the loopback address takes, three times over for the handshake of a
+    session that is opened. So it is made when first asked for, on a thread,
+    and used from then on. (Made twice by two sessions that ask at the same
+    moment, which does no harm.)
+    """
+    global _TLS
+    if _TLS is None:
+        import httpx
+
+        _TLS = await asyncio.to_thread(httpx.create_ssl_context, trust_env=False)
+    return _TLS
 
 
 MAX_IMAGES_PER_RESULT = 4
@@ -112,7 +135,7 @@ class GatewayClient:
         timeout = httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT_SECONDS)
         try:
             # The gateway is on the loopback address: no proxy, no environment.
-            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False, verify=await _tls()) as client:
                 response = await client.post(self._url, headers=self._headers(), content=json.dumps(message))
         except httpx.HTTPError as exc:
             raise GatewayError(f"{type(exc).__name__}: {exc}") from exc

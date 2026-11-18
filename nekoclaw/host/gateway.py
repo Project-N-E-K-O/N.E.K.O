@@ -719,17 +719,20 @@ class CapabilityGateway:
     # -- tools ------------------------------------------------------------
 
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
-        """Return the tools a task agent is offered: the search and the call tool, when anything can be called.
+        """Return the tools a task agent is offered: the search and the call tool, always.
 
-        The same for every commission. Nothing else is listed: what was
-        picked for a commission is told with the commission
-        (``candidate_definitions``); the built-in tools are told of in the
-        search tool's description, a group at a time, and a group is handed
-        over when it is first used.
+        The same for every commission, and whether or not anything can be
+        called right now. A session keeps the tools it was opened with for
+        as long as it lasts, and what can be called changes meanwhile (a
+        plugin is installed, the browser is switched on): offered only
+        while there is something to call, the two would be missing from a
+        session opened before that, which could then reach none of it.
+        Nothing else is listed: what was picked for a commission is told
+        with the commission (``candidate_definitions``); the built-in tools
+        are told of in the search tool's description, a group at a time,
+        and a group is handed over when it is first used.
         """
         callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
-        if not callable_now:
-            return []
         return [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
 
     async def candidate_definitions(self, commission_id: str) -> list[dict[str, Any]]:

@@ -149,6 +149,42 @@ async def test_handshake_then_tool_list(gateway):
     assert gateway.headers[2]["mcp-protocol-version"] == "2025-06-18"
 
 
+async def test_every_request_is_made_with_the_one_tls_configuration_of_the_process(gateway, monkeypatch):
+    import ssl
+
+    import httpx
+
+    given: list[Any] = []
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs: Any) -> Any:
+        given.append(kwargs.get("verify"))
+        return real_client(**kwargs)
+
+    made: list[Any] = []
+    real_context = httpx.create_ssl_context
+
+    def context(**kwargs: Any) -> Any:
+        made.append(kwargs)
+        return real_context(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    monkeypatch.setattr(httpx, "create_ssl_context", context)
+    monkeypatch.setattr(gateway_module, "_TLS", None)
+
+    # Two sessions: a handshake each, and a call.
+    await GatewayClient(gateway.url, TOKEN).connect()
+    second = GatewayClient(gateway.url, TOKEN)
+    await second.connect()
+    await second.call("plugin__weather__today", {"city": "Lyon"})
+
+    # A client that is given none loads the certificate bundle anew, for every request.
+    assert len(given) == 7 and isinstance(given[0], ssl.SSLContext)
+    assert all(item is given[0] for item in given)
+    # Put together once, and without what the environment says of certificates and proxies.
+    assert made == [{"trust_env": False}]
+
+
 def _picture(data: str = "QUJD", mime: Any = "image/jpeg") -> dict[str, Any]:
     """One MCP image block as the gateway sends it."""
     block: dict[str, Any] = {"type": "image", "data": data}

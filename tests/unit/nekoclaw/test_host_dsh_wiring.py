@@ -788,7 +788,7 @@ async def test_the_session_of_an_old_commission_that_ran_in_dsh_is_cleaned_in_ds
     assert (session_dir / DSH_SESSION_NAME).is_file()
 
     # As the tidying does it for a commission that ended long enough ago.
-    assert await host.space_keeper._clean_one(done, time.time() + 60) == "removed"
+    assert await host.space_keeper._clean_one(done.session_id, time.time() + 60) == "removed"
 
     assert installation.forgotten == [session_dir] and not (session_dir / TRANSCRIPT_NAME).exists()
     # Its working directory is never removed.

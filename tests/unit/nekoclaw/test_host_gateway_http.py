@@ -872,3 +872,42 @@ async def test_task_agent_whose_reply_holds_two_calls_to_a_group_it_has_not_read
     # In the reply after, it went through.
     assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {"verbose": True})]
     assert llm.requests[2][-1] == {"role": "tool", "tool_call_id": "c3", "content": "heading: Opening hours"}
+
+
+async def test_a_session_opened_when_nothing_could_be_called_reaches_a_plugin_installed_since(server, hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            [call("report", {"status": "ready", "summary": "export added"}), finish("tool_calls")],
+            [
+                call("capability_call", {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}),
+                finish("tool_calls"),
+            ],
+            [call("report", {"status": "ready", "summary": "weather column added"}, "c2"), finish("tool_calls")],
+        ]
+    )
+    host = _task_agent_host(hosts, tmp_path, server, llm)
+    await host.space.touch_project("Budget app")
+
+    # No plugin, no built-in tool: nothing the gateway could serve.
+    first = await host.dispatch("add a CSV export to the budget app", lanlan_name="Lan", lang="en")
+    await wait_status(host, first.commission_id, "done")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents._held_by == {}, what="the session being let go")
+    offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
+    assert {"capability_search", "capability_call"} <= set(offered)
+
+    _weather(server)
+    host.registry.invalidate()
+    second = await host.dispatch(
+        "add a column with the weather in Lyon to the budget app", lanlan_name="Lan", lang="en"
+    )
+
+    done = await wait_status(host, second.commission_id, "done")
+    # The same session, opened again with the tools it was told of the first time: the head
+    # of its requests is what it was, and the plugin that came since is called through it.
+    assert done.session_id == first.commission_id
+    assert llm.overrides[1]["tools"] == llm.overrides[0]["tools"]
+    assert llm.requests[1][0] == llm.requests[0][0]
+    (request,) = server.run_requests
+    assert (request["task_id"], request["plugin_id"], request["entry_id"]) == (second.commission_id, "weather", "today")
+    assert llm.requests[2][-1]["content"] == "sunny in Lyon"

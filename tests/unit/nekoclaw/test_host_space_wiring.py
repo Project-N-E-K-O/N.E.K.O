@@ -101,13 +101,15 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
     receipt = await _dispatch(host, "sort the photos", user_text="can you sort my photos")
     await wait_status(host, receipt.commission_id, "done")
 
-    from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_SESSION_FRAME
+    from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_BRIEF_GATEWAY_NOTE, TASK_AGENT_SESSION_FRAME
 
     system = _system(llm)
     assert SPACE_NOTE not in system and "task_agent_space" not in system
-    # What the host adds ends with whom the task agent works for, word for word,
-    # and says nothing of the commission, which is the message that opens it.
-    assert system.endswith(TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan"))
+    # What the host adds is whom the task agent works for and how the gateway is used, word
+    # for word, and says nothing of the commission, which is the message that opens it.
+    assert system.endswith(
+        TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan") + "\n\n" + TASK_AGENT_BRIEF_GATEWAY_NOTE
+    )
     assert "sort the photos" not in system
     assert llm.requests[0][-1]["content"].startswith(
         f"Commission {receipt.commission_id}\nsort the photos\nWhat the user said: can you sort my photos"

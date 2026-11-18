@@ -3011,15 +3011,20 @@ async def test_not_being_able_to_look_the_model_up_counts_as_seeing_pictures(hos
     assert await _status(host, commission.id) == "working"
 
 
-async def test_without_anything_to_serve_a_task_agent_gets_no_gateway_and_no_rule_for_screenshots(hosts, tmp_path):
+async def test_with_nothing_to_serve_a_task_agent_gets_the_gateway_all_the_same_and_no_rule_for_screenshots(
+    hosts, tmp_path
+):
     host, runtimes = _recording_host(hosts, tmp_path)
 
-    _commission, runtime = await _started(host, runtimes)
+    commission, runtime = await _started(host, runtimes)
 
     (spec,) = runtime.specs
-    assert spec.gateway is None
+    # Its session keeps the tools it is opened with: what is installed or switched on while
+    # the session lasts is reached through the gateway's two.
+    assert host.gateway.started and spec.gateway is not None
+    assert spec.gateway.url == host.gateway.url
+    assert host.gateway._by_commission[commission.id].token == spec.gateway.token
     assert (spec.image_retention, spec.image_pools) == ({}, {})
-    assert not host.gateway.started
 
 
 class _ScreenTools:
