@@ -897,15 +897,23 @@ async def test_the_agent_server_keeps_what_was_said_only_while_nekoclaw_is_on(mo
     from app.agent_server import api_runtime
     from nekoclaw.host import conversation
 
-    kept = RecentConversation()
+    # By a clock of its own: when each message was said, and when what was kept was dropped,
+    # are told apart however coarse the clock of the machine is.
+    clock = _Clock(1_700_000_000.0)
+    kept = RecentConversation(clock=clock)
     monkeypatch.setattr(conversation, "_recent", kept)
     event = {
         "event_type": "conversation_turn_observed", "lanlan_name": "Lan", "turn_type": "user_message",
-        "content": "sort the photos please", "event_id": "e1", "ts": __import__("time").time(),
+        "content": "sort the photos please", "event_id": "e1", "ts": clock.now,
     }
     monkeypatch.setattr(api_runtime, "nekoclaw_on", lambda: False)
+    clock.now += 1
     assert api_runtime._note_turn_for_task_agents(event) is False and kept.recent("Lan") == []
     monkeypatch.setattr(api_runtime, "nekoclaw_on", lambda: True)
+    # Said while it was off, and told of once more when it is on again: not kept then either.
+    assert api_runtime._note_turn_for_task_agents({**event, "event_id": "e1-late"}) is False
+    clock.now += 1
+    event = {**event, "ts": clock.now}
     assert api_runtime._note_turn_for_task_agents(event) is True
     assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please"]
     # The event is taken in where the others of its kind are, and a host is handed this process's own by default.
@@ -916,10 +924,13 @@ async def test_the_agent_server_keeps_what_was_said_only_while_nekoclaw_is_on(mo
     assert conversation.recent_conversation() is kept
     # Switched off by its master switch: what was kept goes then and there, whether or not a message
     # comes by while it is off, so that nothing from before is handed over when it is switched on again.
+    clock.now += 1
     api_runtime.forget_turns_for_task_agents()
     assert kept.recent("Lan") == []
     # (That both places the master switch is switched off at do this is run where the routes have
     # their stage: tests/unit/test_agent_browser_left_open.py.)
+    clock.now += 1
+    event = {**event, "ts": clock.now}
     assert api_runtime._note_turn_for_task_agents({**event, "event_id": "e2b", "content": "again"}) is True
     # Off without the master switch (no capability left on): nothing more is kept, and what was
     # kept goes with the next message that comes by.
@@ -4825,3 +4836,42 @@ def test_what_was_kept_of_the_main_dialogue_says_when_it_was_last_dropped() -> N
     kept.forget()
     assert kept.forgotten_at("Lan") == 700.0 and kept.forgotten_at("Mei") == 700.0
     assert kept.recent("Lan") == [] and kept.recent("Mei") == []
+
+
+async def test_what_was_said_before_nekoclaw_went_off_is_not_handed_over_when_it_goes_off_while_the_session_is_set_up(
+    hosts, tmp_path
+):
+    llm = ScriptedLLM([_report("ready", "sorted")])
+    clock = _Clock(1_700_000_000.0)
+    said = RecentConversation(clock=clock)
+    host = _host(hosts, tmp_path, llm, conversation=said)
+    runtime = host.task_agents._runtimes.builtin()
+    start = runtime.start
+    made: list[list[Any]] = []
+
+    async def while_nekoclaw_goes_off_and_on_again(spec: Any) -> None:
+        # The opening message is made by now, with what was said before the commission in it...
+        made.append(list(host.task_agents._excerpts.get(spec.session_id) or []))
+        await start(spec)
+        # ...and the session takes a while to be set up. NekoClaw goes off meanwhile, and on again:
+        # what is kept of the main dialogue goes with the switch.
+        clock.now += 5
+        said.forget()
+        clock.now += 5
+        said.note("Lan", ROLE_USER, "it is on again")
+
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    clock.now += 5
+    runtime.start = while_nekoclaw_goes_off_and_on_again
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "done")
+    finally:
+        runtime.start = start
+    await _let_go(host)
+    assert [[turn.text for turn in turns] for turns in made] == [["the photos are on the desktop"]]
+    # The message that opens the commission is made again before it is sent: what was said before
+    # the switch went off is not in the request that is made after it.
+    opening = _user_messages(llm.requests[0])[0]
+    assert "sort the photos" in opening
+    assert "on the desktop" not in opening and "on again" not in opening

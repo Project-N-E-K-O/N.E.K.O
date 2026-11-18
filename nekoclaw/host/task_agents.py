@@ -1098,6 +1098,10 @@ class TaskAgentManager:
             turns = [turn for turn in turns if turn.at <= upto]
         return list(turns)
 
+    def _dropped_at(self, commission: Commission) -> float:
+        """Return when what is kept of the main dialogue for a commission's character was last dropped; 0.0 for never."""
+        return self._conversation.forgotten_at(commission.lanlan_name) if self._conversation is not None else 0.0
+
     def _excerpt(self, commission: Commission) -> str:
         """Return the part of a commission's opening message that holds what was said just before it; empty for none.
 
@@ -1112,13 +1116,13 @@ class TaskAgentManager:
 
         # (Nothing is kept for a task agent another one started: ``_keep_excerpt``.)
         turns = self._excerpts.get(commission.id)
-        if turns and self._conversation is not None:
+        if turns:
             # Taken when the commission was filed or handed over, which
             # may be before what is kept of the main dialogue was last
             # dropped (NekoClaw went off): what was said before that
             # is not handed to a task agent after it, wherever it was
             # kept meanwhile.
-            since = self._conversation.forgotten_at(commission.lanlan_name)
+            since = self._dropped_at(commission)
             turns = [turn for turn in turns if turn.at > since]
         if not turns:
             return ""
@@ -1467,6 +1471,7 @@ class TaskAgentManager:
             # commission (the second wording) is told, besides, what she
             # and the user said just before it: a session with something
             # in it has that to tell what the commission refers to.
+            excerpt_as_of = self._dropped_at(commission)
             excerpt = self._excerpt(commission)
             onward = await self._opening(commission, cleared=False)
             anew = (
@@ -1570,6 +1575,21 @@ class TaskAgentManager:
                 # The stop has closed the session already.
                 await self._close_session(session)
                 return False
+            while excerpt and self._dropped_at(commission) != excerpt_as_of:
+                # What is kept of the main dialogue was dropped while the
+                # session was being set up, which takes a while (NekoClaw
+                # went off; it may be on again by now). What was said
+                # before that is not handed over after it: the opening
+                # message is made again, without it. (Looked at once
+                # more after that, which waits for something as well.)
+                excerpt_as_of = self._dropped_at(commission)
+                excerpt = self._excerpt(commission)
+                anew = (
+                    await self._opening(commission, cleared=True, excerpt=excerpt)
+                    if commission.continues or excerpt
+                    else onward
+                )
+                text, opens = first_message(runtime_name)
             await self._send_text(runtime, session, "prompt", text, opening=opens)
             session.ready = True
             # What was passed on while the session was being set up. Like the
