@@ -27,7 +27,6 @@ import copy
 import hashlib
 import json
 import os
-import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -99,19 +98,27 @@ class FakePersona:
         return {}
 
 
-def _assert_under_temp_root(path: Path) -> None:
-    """Never touch real runtime root directories: ``path`` must lie under the temp root.
+def _isolate_locale_sidecars(monkeypatch, memory_root: Path) -> None:
+    """Point the process-wide ConfigManager's memory_dir at this test's tmp dir.
 
-    Compares resolved paths. The sidecar sits under whatever the process-wide
-    ConfigManager points at: the isolated root from ``tests/real_root_isolation``
-    (built from ``tempfile.gettempdir()`` as-is), or pytest's basetemp once any
-    test in this worker has used the session-scoped ``clean_user_data_dir``
-    (pytest resolves basetemp). On Windows runners ``gettempdir()`` is the 8.3
-    short form (``C:\\Users\\RUNNER~1\\...``) and the resolved basetemp the long
-    form, so a plain string prefix check fails depending on test order.
+    ``locale_state`` resolves the scoped-locale sidecar through
+    ``get_config_manager().memory_dir`` on every call. Left alone that is
+    whatever root the worker happens to hold: the isolated root from
+    ``tests/real_root_isolation``, or pytest's basetemp once any earlier test
+    used the session-scoped ``clean_user_data_dir``. Both the old string-prefix
+    check against ``tempfile.gettempdir()`` and the sidecar rows themselves
+    then depended on test order (Windows 8.3 short temp paths, ``--basetemp``
+    outside the system temp dir). Only ``memory_dir`` is redirected; the real
+    ConfigManager keeps serving cloudsave fences and local state.
     """
-    temp_root = Path(tempfile.gettempdir()).resolve()
-    assert path.resolve().is_relative_to(temp_root), (path, temp_root)
+    from utils.config_manager import get_config_manager
+
+    monkeypatch.setattr(get_config_manager(), "memory_dir", memory_root)
+
+
+def _assert_under(path: Path, root: Path) -> None:
+    """Never touch real runtime root directories: ``path`` must lie under ``root``."""
+    assert path.resolve().is_relative_to(root.resolve()), (path, root)
 
 
 def _cm(root: Path):
@@ -134,6 +141,7 @@ def env(tmp_path, monkeypatch):
     # Never touch actual runtime roots: every path must lie under tmp_path.
     assert str(memory_root).startswith(str(tmp_path))
     monkeypatch.setattr(runtime, "_config_manager", cm)
+    _isolate_locale_sidecars(monkeypatch, memory_root)
     monkeypatch.setattr(trust_store, "pool_path", lambda: str(tmp_path / "trust.json"))
     trust_store.reset_for_tests()
 
@@ -2596,7 +2604,7 @@ async def test_retry_does_not_reserve_locale_for_a_forgotten_segment(env):
 
     await env.idem.update_key(NAME, KEY_SEGMENTS, forgotten_meanwhile)
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    _assert_under_temp_root(sidecar)
+    _assert_under(sidecar, env.root)
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()                                         # GP is absent from language storage after clearing.
@@ -2683,7 +2691,7 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
     from app.memory_server import locale_state
 
     sidecar = Path(locale_state._subject_locale_path(NAME))
-    _assert_under_temp_root(sidecar)
+    _assert_under(sidecar, env.root)
     locale_state.invalidate_prompt_locale_caches()
     if sidecar.exists():
         sidecar.unlink()
@@ -2708,14 +2716,16 @@ async def test_forget_marked_while_recording_orders_skips_the_reservation(env):
     assert any(PART["subject_id"] in key for key in rows)
 
 
-def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row():
+def test_a_reservation_older_than_a_forget_does_not_recreate_the_locale_row(tmp_path, monkeypatch):
     from app.memory_server import locale_state
     from memory.scopes import MemorySubject
+
+    _isolate_locale_sidecars(monkeypatch, tmp_path)
 
     name = "LocaleRaceChar"
     subject = MemorySubject.participant("neko_visit", "u_race")
     sidecar = Path(locale_state._subject_locale_path(name))
-    _assert_under_temp_root(sidecar)
+    _assert_under(sidecar, tmp_path)
     (stale,) = locale_state.allocate_subject_prompt_locale_orders(name, [subject])
     locale_state.forget_subject_prompt_locale(name, subject)     # Clearing completes after allocation but before reservation persistence.
     locale_state.reserve_subject_prompt_locale_orders(name, [subject], orders=[stale])

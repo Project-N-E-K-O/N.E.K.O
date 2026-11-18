@@ -1455,10 +1455,12 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
         from services.chat_sync import runtime as module
         entered, release, completed = threading.Event(), threading.Event(), threading.Event()
         # Liveness bounds only; each wait returns as soon as its event is set.
-        # After release the real constructor still runs in a worker thread:
-        # first-use imports plus six SQLite files and the writer witness. That
-        # measured ~0.12 s on Linux but overran a 1 s bound on a loaded Windows
-        # runner (random-order run, seed 884835068), so give it real headroom.
+        # entered covers construct()'s first-use memory imports and adapter
+        # setup, which run before this stand-in is called. After release the
+        # real DesktopChatSyncRuntime still opens six SQLite files and the
+        # writer witness in a worker thread. That measured ~0.12 s on Linux but
+        # overran a 1 s bound on a loaded Windows runner (random-order run,
+        # seed 884835068), so give both waits real headroom.
         wait_s = 10
         created, errors = [], []
         original = module.DesktopChatSyncRuntime
@@ -1486,9 +1488,13 @@ def test_shutdown_does_not_register_or_start_late_runtime_construction(tmp_path,
             request = None
         else:
             request = asyncio.create_task(module.get_desktop_chat_sync_runtime(manager))
-        assert await asyncio.to_thread(entered.wait, wait_s)
-        await module.close_desktop_chat_sync_runtimes()
-        release.set()
+        try:
+            assert await asyncio.to_thread(entered.wait, wait_s)
+            await module.close_desktop_chat_sync_runtimes()
+        finally:
+            # Never leave the worker thread parked on release if the scenario
+            # fails early; that would only add a second, misleading error.
+            release.set()
         if request is not None:
             with pytest.raises(ValueError, match="chat_sync_closing"):
                 await request
