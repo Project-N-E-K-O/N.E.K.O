@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 from collections.abc import Mapping
 
+from plugin._types.entry_metadata import unhandled_entry_contract_fields
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
@@ -318,6 +319,7 @@ def _build_entries_from_handlers(
         meta_dict = getattr(meta, "metadata", None)
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
+        _carry_contract_fields(entry_dict, meta, context=f"plugin_entry[{entry_id}]")
 
         # Intentionally do not resolve i18n here: the sole caller (_list_plugins_payload), after receiving
         # entries, resolves each entry again with its own plugin_i18n and the same locale.
@@ -326,6 +328,23 @@ def _build_entries_from_handlers(
         entries.append(entry_dict)
 
     return entries, seen
+
+
+# Contract fields ``GET /plugins`` entries shape themselves, or leave out on
+# purpose. Any other contract field is carried by ``_carry_contract_fields``,
+# so both entry sources (handlers and previews) publish a new field alike.
+_LISTED_ENTRY_HANDLED_FIELDS = frozenset({
+    "timeout", "llm_result_fields", "llm_result_schema", "metadata", "return_message",
+    "kind", "auto_start", "enabled", "dynamic", "persist", "model_validate",
+    "extra", "quick_action", "quick_action_config",
+})
+
+
+def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
+    for name, value in unhandled_entry_contract_fields(source, _LISTED_ENTRY_HANDLED_FIELDS).items():
+        if isinstance(value, Mapping):
+            value = _normalize_mapping(value, context=f"{context}.{name}")
+        entry_dict[name] = value
 
 
 def _index_plugin_entry_handlers(
@@ -446,6 +465,11 @@ def _append_entries_from_preview(
         llm_fields_obj = normalized_preview.get("llm_result_fields")
         if isinstance(llm_fields_obj, list):
             entry_dict["llm_result_fields"] = llm_fields_obj
+        _carry_contract_fields(
+            entry_dict,
+            normalized_preview,
+            context=f"plugins[{plugin_id}].entries_preview[{index}]",
+        )
 
         entries.append(entry_dict)
 

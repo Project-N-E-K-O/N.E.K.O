@@ -10,7 +10,7 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from plugin._types.entry_metadata import ENTRY_CONTRACT_FIELDS
+from plugin._types.entry_metadata import ENTRY_CONTRACT_BOOL_FIELDS, ENTRY_CONTRACT_FIELDS
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
@@ -34,7 +34,7 @@ _PLUGIN_ENTRIES_MAX = 1024
 _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 # Fields the registry coerces with bool(), so "false" would read as True.
-_PLUGIN_ENTRY_BOOL_FIELDS = ("auto_start", "enabled", "dynamic", "model_validate", "quick_action")
+_PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
 
 
 def validate_plugin_dir(
