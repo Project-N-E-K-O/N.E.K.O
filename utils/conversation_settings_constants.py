@@ -15,6 +15,7 @@
 """Protocol constants shared by conversation-settings persistence paths."""
 
 ALLOWED_CONVERSATION_SETTINGS = frozenset({
+    "activityContextPromptEnabled",
     "proactiveChatEnabled",
     "proactiveVisionEnabled",
     "proactiveVisionChatEnabled",
