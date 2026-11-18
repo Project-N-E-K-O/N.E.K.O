@@ -4833,30 +4833,51 @@ async def test_what_a_turn_that_ends_as_the_host_shuts_down_owes_is_written_befo
         await later.close()
 
 
-async def test_a_turn_cut_off_while_its_senders_are_told_keeps_what_it_took(hosts, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "shutting_down, cut_off_at", [(False, "turn_over"), (True, "turn_over"), (True, "get")]
+)
+async def test_a_turn_cut_off_while_its_senders_are_told_keeps_what_it_took(
+    hosts, tmp_path, monkeypatch, shutting_down, cut_off_at
+):
     from nekoclaw.host.task_agents import _Session
 
     host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
-    commission, _first, handing, _second, _later = await _two_notes_in_one_commission(host)
+    commission, first, handing, _second, _later = await _two_notes_in_one_commission(host)
     await host.ledger.wakes_taken([handing.id])
+    agents = host.task_agents
     session = _Session(commission.id)
     session.took = {1: [handing.id]}
     under_way = asyncio.Event()
 
-    async def never(commission_id: str, **more: Any) -> int:
+    async def never(*args: Any, **more: Any) -> Any:
         under_way.set()
         await asyncio.Event().wait()
-        return 0
 
-    monkeypatch.setattr(host.ledger, "turn_over", never)
-    telling = asyncio.ensure_future(host.task_agents._turn_over(session, "the turn's last words"))
-    await asyncio.wait_for(under_way.wait(), 5.0)
-    telling.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await telling
+    with monkeypatch.context() as patched:
+        # Cut off while the ledger is asked how the commission stands, or while it is written.
+        patched.setattr(host.ledger, cut_off_at, never)
+        agents._closed = shutting_down
+        try:
+            telling = asyncio.ensure_future(agents._turn_over(session, "the turn's last words"))
+            await asyncio.wait_for(under_way.wait(), 5.0)
+            telling.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await telling
+        finally:
+            agents._closed = False
 
-    # Not told, and not forgotten either: the session's again.
-    assert session.took == {1: [handing.id]} and host.task_agents._turns_owed == []
+    if not shutting_down:
+        # Not told, and not forgotten either: the session's again.
+        assert session.took == {1: [handing.id]} and agents._turns_owed == []
+        return
+    # As the host shuts down the session is let go, and what was left with it would be told
+    # to nobody: kept, with the turn's words, where shutting down writes it before the
+    # ledger is closed.
+    [(of, words, _state, took, _taken)] = agents._turns_owed
+    assert (of, words, took) == (commission.id, "the turn's last words", [handing.id]) and session.took == {}
+    await agents._settle_owed()
+    assert await _told(host) == ["the turn's last words"] and agents._turns_owed == []
+    assert (await host.ledger.message_get(first.id)).notified_at is not None
 
 
 async def test_a_run_that_was_to_rest_does_so_after_all_when_what_was_said_meanwhile_is_refused(
@@ -5086,3 +5107,101 @@ async def test_a_time_that_comes_while_the_ledger_is_asked_has_come(hosts, tmp_p
     # Not "goes on at" a time that is gone by the time the row is made.
     words_of = SESSION_QUERY_TEXTS["en"]
     assert words_of["due"] in answer.text and "goes on at" not in answer.text
+
+
+# ---------------------------------------------------------------------------
+# Review round 10: a note whose writer was cancelled, and a run that began while a result was about to be written
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_whose_writer_was_cancelled_while_it_was_written_is_a_stops_to_drop_all_the_same(
+    ledger, monkeypatch
+):
+    import threading
+
+    from nekoclaw.host.wakes import SessionWakes
+
+    sender = await _at_work(ledger, title="sender")
+    target = await _at_work(ledger, title="target")
+    mark = ledger.notes_mark()
+    insert, writing, let_go = ledger._wake_insert, threading.Event(), threading.Event()
+
+    def slow(conn: Any, values: dict[str, Any]) -> Any:
+        made = insert(conn, values)
+        if values.get("reason") == "message":
+            writing.set()
+            let_go.wait(5.0)
+        return made
+
+    monkeypatch.setattr(ledger, "_wake_insert", slow)
+    sending = asyncio.ensure_future(_note(ledger, sender, target.session_id, "written all the same"))
+    try:
+        assert await asyncio.to_thread(writing.wait, 5.0)
+        # Whoever asked for the note is cancelled; the thread that writes it goes on.
+        sending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sending
+    finally:
+        let_go.set()
+    # (What the ledger is asked next is done after that write.)
+    [wake] = await ledger.wakes_pending(session_id=target.session_id)
+
+    # It is on record, and counted among the notes a stop drops, though nobody was there
+    # to hear that it was written.
+    assert ledger.notes_mark() == wake.id > mark
+    assert await SessionWakes(ledger, object()).stop_all() == 1
+    assert await ledger.wakes_pending(session_id=target.session_id) == []
+
+
+async def test_a_run_is_not_ended_under_one_that_began_while_its_result_was_about_to_be_written(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.REST_LOOK_RETRY_DELAYS", (0.05, 0.05))
+    release, wait = _gate()
+    llm = ScriptedLLM([[wait, say("All built."), finish()], _report("ready", "and the changelog is in")])
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "build the site")
+    await wait_until(lambda: len(llm.requests) == 1, what="the run under way")
+    get, act = host.ledger.get, host.task_agents._act_on_end
+    ending: list[int] = []
+    looks: list[int] = []
+    failed: list[int] = []
+
+    async def acting(session: Any, event: dict[str, Any]) -> None:
+        ending.append(1)
+        try:
+            await act(session, event)
+        finally:
+            ending.pop()
+
+    async def unreadable_once(*args: Any, **asked: Any) -> Any:
+        if ending and not failed:
+            looks.append(1)
+            if len(looks) == 2:
+                # The second look of the end of a run is the one that writes its result. While
+                # it waits to ask again, the user says more of it.
+                failed.append(1)
+                assert await host.tell(receipt.commission_id, "Add the changelog.") is True
+                raise OSError("the disk is busy")
+        return await get(*args, **asked)
+
+    close = host.task_agents._close_session
+    closed_with: list[str] = []
+
+    async def closing(session: Any) -> None:
+        # How the commission stood when its session was closed.
+        closed_with.append((await get(receipt.commission_id)).status)
+        await close(session)
+
+    monkeypatch.setattr(host.task_agents, "_act_on_end", acting)
+    monkeypatch.setattr(host.task_agents, "_close_session", closing)
+    monkeypatch.setattr(host.ledger, "get", unreadable_once)
+    release.set()
+
+    # The run that sentence began is not closed under by the result of the first: it decides,
+    # and the session is closed once the commission is done, not while it is at work.
+    commission = await wait_status(host, receipt.commission_id, "done")
+    await _let_go(host)
+    assert failed and commission.result_summary == "and the changelog is in"
+    assert closed_with and set(closed_with) == {"done"}
+    assert "Add the changelog." in str(llm.requests[1])

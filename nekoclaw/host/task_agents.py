@@ -2258,9 +2258,24 @@ class TaskAgentManager:
                     return
                 # The run ended without a closing report: its last words are the result.
                 text = str(event.get("text") or "")
-                await self._end(
-                    commission_id, "done", reason="the run completed", text=text, result_summary=self._summary(text)
+
+                def went_on() -> bool:
+                    return isinstance(inputs, int) and inputs < session.sent
+
+                # (Writing it asks the ledger once more, and again where
+                # that fails: looked at there too, for what is said to the
+                # session in that while.)
+                ended = await self._end(
+                    commission_id,
+                    "done",
+                    reason="the run completed",
+                    text=text,
+                    result_summary=self._summary(text),
+                    unless=went_on,
                 )
+                if not ended and went_on():
+                    session.held_end = event
+                    return
         elif reason == "aborted":
             await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
@@ -2613,17 +2628,37 @@ class TaskAgentManager:
         if not took:
             # It took no note: nobody waits to hear of it.
             return
-        text = said.strip()
+        def told(commission: Commission | None) -> tuple[str, str]:
+            # What the senders are told: what the turn ended on (what was
+            # reported, where it ended with no words), and how the
+            # commission stood.
+            words = said.strip()
+            if not words and commission is not None:
+                words = (commission.result_summary or "").strip()
+            words = truncate_to_tokens(words, SESSION_NOTICE_TEXT_MAX_TOKENS)
+            if commission is None:
+                return words, "over"
+            return words, "resting" if commission.resting else commission.status
 
-        def not_told() -> None:
-            # Cut off before it was written (the host is shutting down):
-            # the session's again, as if this had not begun.
-            session.took[numbers[0]] = [*took, *session.took.get(numbers[0], [])]
+        def cut_off(commission: Commission | None) -> None:
+            # Cut off before it was written: the host is shutting down, and
+            # whoever handles the events was stopped. Kept where shutting
+            # down writes it before the ledger is closed
+            # (``_settle_at_close``): the session is let go by then, and
+            # what was left with it would be told to nobody. (Written
+            # after all by the thread that was at it, it is not told
+            # twice: a note that was answered is passed over.) Cut off for
+            # any other reason, it is the session's again, as if this had
+            # not begun.
+            if self._closed:
+                self._turns_owed.append((commission_id, *told(commission), took, sorted(self._unconfirmed)))
+            else:
+                session.took[numbers[0]] = [*took, *session.took.get(numbers[0], [])]
 
         try:
             commission = await self._ledger.get(commission_id)
         except asyncio.CancelledError:
-            not_told()
+            cut_off(session.stands)
             raise
         except Exception:  # noqa: BLE001 - told with how it was last seen to stand
             # How it stands cannot be read this moment. What is told, now
@@ -2632,10 +2667,7 @@ class TaskAgentManager:
             # status), and not what a later turn makes of the commission.
             logger.warning("reading how a commission stands at the end of its turn failed", exc_info=True)
             commission = session.stands
-        if not text and commission is not None:
-            text = (commission.result_summary or "").strip()
-        text = truncate_to_tokens(text, SESSION_NOTICE_TEXT_MAX_TOKENS)
-        state = "resting" if commission is not None and commission.resting else commission.status if commission else "over"
+        text, state = told(commission)
         try:
             # With what its session took and the ledger does not have yet.
             taken = sorted(self._unconfirmed)
@@ -2644,7 +2676,7 @@ class TaskAgentManager:
             )
             self._unconfirmed.difference_update(taken)
         except asyncio.CancelledError:
-            not_told()
+            cut_off(commission)
             raise
         except Exception:  # noqa: BLE001 - kept, and told when the ledger can be written again
             logger.warning("telling the senders of notes that a turn is over failed; it is tried again", exc_info=True)
@@ -2766,6 +2798,7 @@ class TaskAgentManager:
         reason: str,
         text: str,
         suggested_delivery: Any = None,
+        unless: Callable[[], bool] | None = None,
         **values: Any,
     ) -> bool:
         """Move a commission to a final status and tell whoever commissioned it.
@@ -2774,11 +2807,19 @@ class TaskAgentManager:
         change, so a crash in between cannot leave a finished commission
         that is never reported. A parent task agent is told after the change.
         Returns whether the change was made.
+
+        ``unless`` is asked once the commission is read, which may take a
+        while (it is asked again where it cannot be read): where it says
+        so, nothing is changed. For the end of a run that leaves its
+        commission done, which is not to end it under a run that began in
+        that while.
         """
         # Asked again where it cannot be read this moment: given up on at
         # once, a run that is over would leave its commission at work.
         commission = await self._looked(lambda: self._ledger.get(commission_id))
         if commission is None:
+            return False
+        if unless is not None and unless():
             return False
         report = None
         if commission.parent_id is None and target != "cancelled":

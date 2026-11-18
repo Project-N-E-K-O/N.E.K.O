@@ -998,8 +998,16 @@ class Ledger:
         finally:
             executor.shutdown(wait=False)
 
-    async def run(self, work: Callable[[sqlite3.Connection], T]) -> T:
-        """Run ``work(connection)`` on the ledger thread, inside one transaction."""
+    async def run(
+        self, work: Callable[[sqlite3.Connection], T], *, written: Callable[[T], None] | None = None
+    ) -> T:
+        """Run ``work(connection)`` on the ledger thread, inside one transaction.
+
+        ``written`` is called with what it returned once the transaction
+        is on record, on that thread: for what is to be noted of a write
+        whether or not whoever asked for it is still there to hear of it
+        (cancelled meanwhile, the thread goes on and writes all the same).
+        """
         await self.open()
         executor = self._executor
         if executor is None:
@@ -1016,6 +1024,8 @@ class Ledger:
                 conn.execute("ROLLBACK")
                 raise
             conn.execute("COMMIT")
+            if written is not None:
+                written(result)
             return result
 
         return await asyncio.get_running_loop().run_in_executor(executor, call)
@@ -1816,12 +1826,17 @@ class Ledger:
             return message, "", 0.0
 
         written: list[int] = []
-        result = await self.run(work)
-        if written and result[0] is not None:
+
+        def on_record(result: tuple[Message | None, str, float]) -> None:
             # On record now (a transaction that failed wrote nothing, and
             # its number is given out again): a stop from here on drops it.
-            self._notes_high = max(self._notes_high or 0, written[-1])
-        return result
+            # Noted on the ledger's thread, as soon as it is written:
+            # whoever asked for the note may have been cancelled meanwhile,
+            # and the note is written all the same.
+            if written and result[0] is not None:
+                self._notes_high = max(self._notes_high or 0, written[-1])
+
+        return await self.run(work, written=on_record)
 
     async def message_get(self, message_id: int) -> Message | None:
         return await self.run(
