@@ -566,6 +566,8 @@ async def test_stopping_the_listener_drops_every_token_and_it_can_be_started_aga
         ("hangs up as the answer is ready", ["given back"]),
         ("hung up a moment before the answer is written, and the write says nothing", ["given back"]),
         ("hangs up while the answer is written, and the write says nothing", ["given back"]),
+        # What cannot be told: the server knows, the watcher hears of it after the last look.
+        ("hung up in the last turn of the loop before the answer is written, and the write says nothing", []),
         ("is gone when the answer is written", ["given back"]),
     ],
 )
@@ -593,6 +595,11 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
             # it a turn of the loop after the answer is ready to be written.
             loop = asyncio.get_running_loop()
             loop.call_soon(loop.call_soon, hanging_up.set)
+        if how == "hung up in the last turn of the loop before the answer is written, and the write says nothing":
+            # Later still: neither of the turns of the loop that are waited out before the
+            # answer is written brings it to the watcher.
+            loop = asyncio.get_running_loop()
+            loop.call_soon(loop.call_soon, loop.call_soon, loop.call_soon, hanging_up.set)
         return {"jsonrpc": "2.0", "id": 1, "result": {"content": []}}
 
     monkeypatch.setattr(listener._tools, "handle", handle)

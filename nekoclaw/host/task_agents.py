@@ -1662,7 +1662,7 @@ class TaskAgentManager:
             # Looked up in the ledger, and not put back from what the text
             # names: one that was put back already (the session refused it)
             # may be on its way to another commission by now.
-            self._spawn(self._return_untaken(commission_id, self._ledger._clock()))
+            self._spawn(self._return_untaken(commission_id, self._ledger.fired_mark()))
         if kept:
             self._carried[commission_id] = [*self._carried.get(commission_id, []), *kept]
 
@@ -1746,7 +1746,7 @@ class TaskAgentManager:
         if live is not None:
             live.stands = commission
         if commission.status in ENDED_STATUSES and previous not in ENDED_STATUSES and not self._closed:
-            self._spawn(self._return_untaken(commission.id, self._ledger._clock()))
+            self._spawn(self._return_untaken(commission.id, self._ledger.fired_mark()))
         session_id = commission.session_id
         if (
             not self._closed
@@ -2177,6 +2177,14 @@ class TaskAgentManager:
                     # It asked to be woken (a time it set, word of a note it
                     # sent) and that is still to come: it is not done either.
                     return
+                if isinstance(inputs, int) and inputs < session.sent:
+                    # Something was said to the session while the ledger was
+                    # asked (it may have been asked more than once): a run
+                    # is under way again, and ended here it would be closed
+                    # under that run. Its end decides, as where this was
+                    # seen at the outset.
+                    session.held_end = event
+                    return
                 # The run ended without a closing report: its last words are the result.
                 text = str(event.get("text") or "")
                 await self._end(
@@ -2329,10 +2337,11 @@ class TaskAgentManager:
         session of it was sent and may yet take stays with that session,
         which gives it back when it closes.
 
-        ``by`` is when it ended (the ledger's clock). Only what it was
-        handed by then goes back: this may run a while later (the ledger
-        could not be read), and the commission may be under way again by
-        then, with notes of its own that are about to be said to it.
+        ``by`` is the ledger's mark of what had been handed over when it
+        ended (``Ledger.fired_mark``). Only what it was handed by then
+        goes back: this may run a while later (the ledger could not be
+        read), and the commission may be under way again by then, with
+        notes of its own that are about to be said to it.
         """
         try:
             await self._confirm_taken()
@@ -3878,7 +3887,7 @@ class TaskAgentManager:
             raise
         return Handover("handed")
 
-    async def _may_start(self, key: str) -> Handover | None:
+    async def _may_start(self, key: str, *, mark: str | None = None) -> Handover | None:
         """Say why a turn must not be started for what waits right now, or None when it may.
 
         NekoClaw switched off, or no model to work with: it stays where it
@@ -3887,13 +3896,18 @@ class TaskAgentManager:
         nothing is woken (the commission would fail on its way up, and
         what it waited for would be lost), and it is tried again when the
         quota has a request left, at the latest after the next midnight.
+
+        ``mark`` is what the counted request is kept under, where that
+        is not ``key``: one counted for a session with no commission yet
+        (``_session_mark``).
         """
         from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
 
+        mark = key if mark is None else mark
         available, _reason = await self.available()
         if not available:
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
-        if self._meter is None or key in self._prepaid_starts:
+        if self._meter is None or mark in self._prepaid_starts:
             return None
         now = self._ledger._clock()
         if self._quota_out and now < self._quota_asked_again_at:
@@ -3911,8 +3925,18 @@ class TaskAgentManager:
         self._note_quota(bool(allowed), asked_again=True)
         if not allowed:
             return Handover("held", self._quota_asked_again_at - now)
-        self._prepaid_starts.add(key)
+        self._prepaid_starts.add(mark)
         return None
+
+    @staticmethod
+    def _session_mark(session_id: str) -> str:
+        """Return what a request counted for a session, with no commission to have it yet, is kept under.
+
+        Not the session's id alone: a session and its first commission
+        have one id, and that commission, taken up again meanwhile,
+        would take the session's counted request for its own.
+        """
+        return f"session:{session_id}"
 
     async def _file_for_notes(
         self, target: Session, wakes: list[WakeRequest], still_wanted: Callable[[], bool] | None
@@ -3951,17 +3975,16 @@ class TaskAgentManager:
         if stopped():
             # A stop of everything is dropping these this moment.
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
-        held = await self._may_start(target.id)
+        counted_for = self._session_mark(target.id)
+        held = await self._may_start(target.id, mark=counted_for)
         if held is not None:
             return held
-        # Whether a request was counted just now, for the session: not
-        # where no meter counts, nor where the meter could not be asked.
-        # Only one that was counted is the commission's first, counted.
-        # It stays counted for the session until a commission is filed
-        # that has it: where nothing is filed after all (the ledger cannot
-        # be read just now, the notes were dropped), the next try does
-        # not count a second one.
-        prepaid = target.id in self._prepaid_starts
+        # A request was counted just now, for the session (not where no
+        # meter counts, nor where the meter could not be asked). It stays
+        # counted for the session until a commission is filed that has
+        # it: where nothing is filed after all (the ledger cannot be read
+        # just now, the notes were dropped), the next try does not count
+        # a second one.
         last = await self._ledger.last_commission(target.id)
         sender = await self._ledger.get_session(notes[0].from_session)
         lang = (last.lang if last is not None else None) or "en"
@@ -4015,9 +4038,10 @@ class TaskAgentManager:
             await self._put_back(ids, kick=False)
             await self._ledger.transition(commission.id, "cancelled", reason=_STOPPED_MEANWHILE_REASON)
             return Handover("dropped")
-        if prepaid:
-            # The commission's first, counted.
-            self._prepaid_starts.discard(target.id)
+        if counted_for in self._prepaid_starts:
+            # Only one that was counted, and is still the session's, is
+            # the commission's first, counted.
+            self._prepaid_starts.discard(counted_for)
             self._prepaid_starts.add(commission.id)
         await self.submit(commission)
         return Handover("handed")
@@ -4494,14 +4518,26 @@ class TaskAgentManager:
         from config.nekoclaw_settings import TURNS_OWED_CLOSE_WAIT_SECONDS
 
         self._closed = True
+        # One limit for both steps below.
+        loop = asyncio.get_running_loop()
+        limit = loop.time() + TURNS_OWED_CLOSE_WAIT_SECONDS
+        returning, self._returning = self._returning, None
+        if returning is not None and not returning.done():
+            # The loop that tries again ends with the host. Stopped here,
+            # and waited for: this moment it may hold what a turn owes
+            # (taken out of what is kept for as long as the ledger is
+            # asked), which it puts back as it is cancelled. Left to
+            # itself it would sit out its pause among what the steps below
+            # wait for, and what it holds would be seen by nobody.
+            returning.cancel()
+            await asyncio.wait({returning}, timeout=max(0.0, limit - loop.time()))
         if self._turns_owed or self._unconfirmed:
-            # The loop that tries again ends with the host. Tried once more
-            # here, a bounded while, with the ledger still open: the notes
-            # were taken and are not handed over anew, so what is not
-            # written now is told to nobody (a sender that still waits is
-            # told, when its wait is up, that no word came).
+            # Tried once more, a bounded while, with the ledger still open:
+            # the notes were taken and are not handed over anew, so what
+            # is not written now is told to nobody (a sender that still
+            # waits is told, when its wait is up, that no word came).
             try:
-                await asyncio.wait_for(self._settle_owed(), TURNS_OWED_CLOSE_WAIT_SECONDS)
+                await asyncio.wait_for(self._settle_owed(), max(0.0, limit - loop.time()))
             except asyncio.TimeoutError:
                 logger.warning("what turns that are over still owe could not be written in time as the host shuts down")
         queued = list(self._queue)

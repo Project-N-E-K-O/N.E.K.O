@@ -161,7 +161,9 @@ class SessionWakes:
                 # would let the other of the two (writing, removing) in
                 # beside it.
                 await to_thread_through_cancellation(self._ledger.note_stop_owed, before, reason)
-                self._noted_before = before
+                # (The ledger keeps the note of a later stop where this one
+                # is the earlier: two stops may get here in the other order.)
+                self._noted_before = before if self._noted_before is None else max(before, self._noted_before)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - kept in mind here all the same, and noted with the next round

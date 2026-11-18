@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import logging
 import sqlite3
 import time
@@ -138,6 +139,9 @@ _SCHEMA_VERSION = 3
 # row of its own; a ledger of an earlier one has its commissions given theirs.
 _SESSIONS_SINCE_VERSION = 3
 _BUSY_TIMEOUT_SECONDS = 5.0
+# How far apart, at the least, two moments are at which wake requests are put
+# on record as handed over (``Ledger._fire``): a microsecond.
+_FIRED_STEP_SECONDS = 1e-6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS commissions (
@@ -620,6 +624,10 @@ class Ledger:
         self._clock = clock
         self._reconcile_report = reconcile_report
         self._listeners: list[Listener] = []
+        # The latest moment a wake request was put on record as handed
+        # over by this process (``fired_at``). Only ever goes up: see
+        # ``fired_mark``.
+        self._fired_high = 0.0
         self._executor: ThreadPoolExecutor | None = None
         self._conn: sqlite3.Connection | None = None
         self._open_lock = asyncio.Lock()
@@ -863,12 +871,26 @@ class Ledger:
         return path.with_name(path.name + ".stop-owed")
 
     def note_stop_owed(self, before: float, reason: str) -> None:
-        """Note, outside the ledger, that what was written by ``before`` is to be dropped. Blocking."""
+        """Note, outside the ledger, that what was written by ``before`` is to be dropped. Blocking.
+
+        A note of a later stop is not replaced by one of an earlier stop
+        (two stops may get here in the other order), and the note that is
+        there stays whole until the new one is: written beside it first,
+        then put in its place. Cut off half way, the next process would
+        find no note at all, and none of the stops.
+        """
         if self.path is None:
             raise RuntimeError("the ledger was never opened")
-        self._stop_owed_file(self.path).write_text(
-            json.dumps({"before": float(before), "reason": str(reason)}), encoding="utf-8"
-        )
+        target = self._stop_owed_file(self.path)
+        noted = self._stop_owed(self.path)
+        if noted is not None and noted[0] >= float(before):
+            return
+        beside = target.with_name(target.name + ".tmp")
+        with beside.open("w", encoding="utf-8") as file:
+            file.write(json.dumps({"before": float(before), "reason": str(reason)}))
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(beside, target)
 
     def clear_stop_owed(self, before: float | None = None) -> None:
         """Forget that note: the stop is on record in the ledger. Blocking.
@@ -2022,6 +2044,11 @@ class Ledger:
         if not ids:
             return []
         now = self._clock()
+        # Later than everything this process handed over before, whatever
+        # the clock of the computer does in between (it is set back now
+        # and then): what was handed over before a given moment is told
+        # from what was handed over since by this (``fired_mark``).
+        handed_at = self._fired_high = max(now, self._fired_high + _FIRED_STEP_SECONDS)
         marks = ", ".join("?" for _ in ids)
         rows = conn.execute(
             f"SELECT * FROM wake_requests WHERE id IN ({marks}) AND status = 'pending' ORDER BY id", ids
@@ -2042,7 +2069,7 @@ class Ledger:
                     continue
             conn.execute(
                 "UPDATE wake_requests SET status = 'fired', fired_at = ?, fired_into = ? WHERE id = ?",
-                (now, into, row["id"]),
+                (handed_at, into, row["id"]),
             )
             fired.append(int(row["id"]))
             if row["message_id"] is None:
@@ -2224,11 +2251,22 @@ class Ledger:
 
         return await self.run(work)
 
+    def fired_mark(self) -> float:
+        """Return a mark of all that this process has put on record as handed over so far. Not blocking.
+
+        What is handed over from here on is later than the mark, also
+        where the clock was set back meanwhile (``_fire``): asked as a
+        commission ends, it tells what the commission was handed until
+        then from what it is handed once it is taken up again.
+        """
+        return self._fired_high
+
     async def wakes_on_their_way(self, commission_id: str, by: float) -> list[int]:
         """Return the wake requests that are on record as handed to a commission and not as taken.
 
-        Those handed over by ``by``: what a commission was handed before
-        it ended, and not what it is handed once it is taken up again.
+        Those handed over by ``by`` (a ``fired_mark``): what a commission
+        was handed before it ended, and not what it is handed once it is
+        taken up again.
         """
 
         def work(conn: sqlite3.Connection) -> list[int]:

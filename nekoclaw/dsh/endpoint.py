@@ -308,10 +308,15 @@ class LocalEndpoint:
                 # Looked at as the last of the answer is handed to the
                 # server, nothing awaited since. A server that finds the
                 # connection gone writes nothing and says nothing, so that
-                # the write went through does not show that it was sent: but
-                # it tells whoever waits for the request before it lets a
-                # write go on, and the watcher is done by now. One that is
-                # told so only because the answer is complete is not yet.
+                # the write went through does not show that it was sent;
+                # what shows is the watcher, which the server tells before
+                # it lets a write go on. (One that is told only because the
+                # answer is complete hears of it a turn of the loop later.)
+                # It is not proof: a dsh that hangs up in the last turn of
+                # the loop before this look is known to the server and not
+                # yet to the watcher, and nothing here can tell. So this
+                # says that the answer was written to a dsh that was still
+                # listening as far as could be seen, and no more.
                 delivered = not gone.done()
             finally:
                 gone.cancel()

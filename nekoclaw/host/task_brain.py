@@ -1125,10 +1125,14 @@ class TaskBrain:
         # as one she was told of. Each of them is listed once, as it
         # stands now: what the second list has of it is of an earlier
         # moment (ended there, it may be under way again by this look).
+        # Not every one of them is looked at again (one that a plugin
+        # carries out is not): of those, what the second list has is the
+        # later of the two readings, and is what is listed.
+        again = {seen.id for listed, (seen, _said) in zip(active, looked) if seen is not listed}
+        later = {item.id for item in recent} - again
         ended = [seen for seen, _said in looked if seen.status not in ACTIVE_STATUSES]
-        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES]
+        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES and seen.id not in later]
         waiting = {seen.id: said for seen, said in looked if seen.status in ACTIVE_STATUSES}
-        again = {seen.id for seen, _said in looked}
         recent = [*ended, *(item for item in recent if item.id not in again)]
 
         def line(commission: Commission) -> str:

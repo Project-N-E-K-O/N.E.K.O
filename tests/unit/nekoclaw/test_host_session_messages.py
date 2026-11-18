@@ -3363,7 +3363,7 @@ async def test_what_goes_back_to_wait_is_not_kept_to_be_said_to_the_commission_i
     host.task_agents._carried[building.id] = [_Handed("the framed note", [wake.id]), "and mind the tests"]
     host.task_agents._resume[building.id] = _Handed("the framed note, as its next work", [wake.id])
 
-    await host.task_agents._return_untaken(building.id, host.ledger._clock())
+    await host.task_agents._return_untaken(building.id, host.ledger.fired_mark())
 
     # The note goes to whatever its session is at next; taken up again, this commission
     # is told what the user said, and not the note a second time.
@@ -3555,7 +3555,7 @@ async def test_what_a_commission_that_is_over_never_took_is_looked_up_again_when
 
     monkeypatch.setattr(host.ledger, "wakes_on_their_way", unreadable_once)
 
-    await host.task_agents._return_untaken(building.id, host.ledger._clock())
+    await host.task_agents._return_untaken(building.id, host.ledger.fired_mark())
 
     # Kept, and looked up again: no session closes to give it back, and nothing else looks for it.
     assert list(host.task_agents._ended_unlooked) == [building.id]
@@ -3897,13 +3897,13 @@ async def test_no_commission_is_filed_in_a_session_whose_record_is_removed_while
     [wake] = await host.ledger.wakes_pending(session_id=built.session_id)
     may_start = host.task_agents._may_start
 
-    async def tidied_up_meanwhile(key: str) -> Any:
+    async def tidied_up_meanwhile(key: str, **more: Any) -> Any:
         # Nothing holds the session while this waits: what was said in it, being old, is removed.
         assert host.task_agents.hold_files(built.session_id) is True
         if meanwhile == "removed":
             await host.ledger.mark_session_cleared(built.session_id)
             host.task_agents.release_files(built.session_id)
-        return await may_start(key)
+        return await may_start(key, **more)
 
     monkeypatch.setattr(host.task_agents, "_may_start", tidied_up_meanwhile)
 
@@ -4052,7 +4052,7 @@ async def test_a_run_that_is_over_tells_of_the_notes_it_took_though_another_run_
     assert await _told(host) == ["the first run's last words", "the second run's last words"] and session.took == {}
 
 
-async def test_what_is_put_back_for_a_commission_that_ended_is_what_it_was_handed_by_then(hosts, tmp_path):
+async def test_what_is_put_back_for_a_commission_that_ended_is_what_it_was_handed_by_then(hosts, tmp_path, monkeypatch):
     from nekoclaw.host.task_agents import _Handed
 
     host, _llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
@@ -4061,8 +4061,11 @@ async def test_what_is_put_back_for_a_commission_that_ended_is_what_it_was_hande
     await _note(host.ledger, writer, building.session_id, "Keep the changelog.", limits=LOOSE)
     before, since = await host.ledger.wakes_pending(session_id=building.session_id)
     await host.ledger.wakes_fire([before.id], into=building.id)
-    ended_at = host.ledger._clock()
-    await asyncio.sleep(0.02)
+    ended_at = host.ledger.fired_mark()
+    # The clock of the computer is set back meanwhile: what is handed over from here on is
+    # later all the same, by the ledger's own mark.
+    clock = host.ledger._clock
+    monkeypatch.setattr(host.ledger, "_clock", lambda: clock() - 3600.0)
     # Taken up again since, and handed another note, which goes along with the work it is about to be given.
     await host.ledger.wakes_fire([since.id], into=building.id)
     host.task_agents._notes[building.id] = [_Handed("the second note, framed", [since.id])]
@@ -4190,14 +4193,14 @@ async def test_a_request_counted_for_a_session_is_not_counted_again_when_nothing
         await host.task_agents.hand_over(built.session_id, None, [wake])
 
     # Counted once, nothing filed, no model asked: the request stays counted for the session.
-    assert len(counted) == before + 1 and built.session_id in host.task_agents._prepaid_starts
+    assert len(counted) == before + 1 and f"session:{built.session_id}" in host.task_agents._prepaid_starts
     assert await _filed_for_notes(host) == []
     handed = await host.task_agents.hand_over(built.session_id, None, [wake])
     assert handed.outcome == "handed"
     [filed] = await _filed_for_notes(host)
     await wait_status(host, filed.id, "done")
     # The commission that is filed in the end has it, and its one request is not counted a second time.
-    assert len(counted) == before + 1 and built.session_id not in host.task_agents._prepaid_starts
+    assert len(counted) == before + 1 and f"session:{built.session_id}" not in host.task_agents._prepaid_starts
 
 
 async def test_nothing_is_written_to_another_session_while_everything_is_being_stopped(hosts, tmp_path):
@@ -4320,3 +4323,256 @@ async def test_a_commission_that_is_under_way_again_is_not_also_listed_as_it_end
     assert len(rows) == 1 and "resting" in rows[0] and "could not be started" not in answer.text
     assert words_of["active"] in answer.text and words_of["recent"] not in answer.text
     assert [item.id for item in answer.commissions] == [receipt.commission_id]
+
+
+# ---------------------------------------------------------------------------
+# Review round 7: marks that only go up, a note that stays whole, and what the retry holds as the host shuts down
+# ---------------------------------------------------------------------------
+
+
+async def test_what_was_handed_over_before_a_mark_is_told_from_what_is_handed_over_since_whatever_the_clock_does(ledger):
+    sender = await _at_work(ledger, title="sender")
+    target = await _at_work(ledger, title="target")
+    for body in ("one", "two"):
+        await _note(ledger, sender, target.session_id, body, limits=LOOSE)
+    one, two = await ledger.wakes_pending(session_id=target.session_id)
+    ledger.clock.now = 120.0
+    await ledger.wakes_fire([one.id], into=target.id)
+    mark = ledger.fired_mark()
+    # The clock is set back, to before the first was handed over.
+    ledger.clock.now = 90.0
+    await ledger.wakes_fire([two.id], into=target.id)
+
+    assert await ledger.wakes_on_their_way(target.id, mark) == [one.id]
+    assert await ledger.wakes_on_their_way(target.id, ledger.fired_mark()) == [one.id, two.id]
+
+
+def _stop_noted(ledger: Ledger) -> Any:
+    return json.loads(ledger.path.with_name(ledger.path.name + ".stop-owed").read_text(encoding="utf-8"))["before"]
+
+
+async def test_the_note_of_an_earlier_stop_does_not_replace_that_of_a_later_one(ledger):
+    from nekoclaw.host.wakes import SessionWakes
+
+    await _at_work(ledger, title="any")
+    wakes = SessionWakes(ledger, object())
+    # The later of two stops got to note itself first; the earlier one, whose write to the
+    # ledger failed after that, notes itself now.
+    await wakes._note_owed(2000.0, "everything was stopped")
+    await wakes._note_owed(1000.0, "everything was stopped")
+
+    assert _stop_noted(ledger) == 2000.0 and wakes._noted_before == 2000.0
+    # Nor where the one that noted the later stop never got to hear that it was written.
+    wakes._noted_before = None
+    await wakes._note_owed(1000.0, "everything was stopped")
+    assert _stop_noted(ledger) == 2000.0
+
+
+async def test_the_note_that_is_there_stays_whole_while_a_later_one_is_written(ledger, monkeypatch):
+    import os
+
+    await _at_work(ledger, title="any")
+    ledger.note_stop_owed(1000.0, "everything was stopped")
+
+    def cut_off(*args: Any, **kwargs: Any) -> None:
+        raise OSError("the process ends here")
+
+    # Cut off before the new note is in place: the old one is as it was, and is found.
+    monkeypatch.setattr(os, "replace", cut_off)
+    with pytest.raises(OSError):
+        ledger.note_stop_owed(2000.0, "everything was stopped")
+    assert _stop_noted(ledger) == 1000.0 and ledger._stop_owed(ledger.path) == (1000.0, "everything was stopped")
+    monkeypatch.undo()
+    ledger.note_stop_owed(2000.0, "everything was stopped")
+    assert _stop_noted(ledger) == 2000.0
+
+
+async def test_a_run_is_not_ended_under_one_that_began_while_the_ledger_was_asked_again(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.REST_LOOK_RETRY_DELAYS", (0.05, 0.05))
+    release, wait = _gate()
+    llm = ScriptedLLM([[wait, say("All built."), finish()], _report("ready", "and the changelog is in")])
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "build the site")
+    await wait_until(lambda: len(llm.requests) == 1, what="the run under way")
+    select, act = host.ledger.select, host.task_agents._act_on_end
+    ending: list[int] = []
+    failed: list[int] = []
+
+    async def acting(session: Any, event: dict[str, Any]) -> None:
+        ending.append(1)
+        try:
+            await act(session, event)
+        finally:
+            ending.pop()
+
+    async def unreadable_once(*args: Any, **asked: Any) -> Any:
+        if ending and not failed and "parent_id" in asked:
+            failed.append(1)
+            # While the end of the first run waits to ask again, the user says more of it.
+            assert await host.tell(receipt.commission_id, "Add the changelog.") is True
+            raise OSError("the disk is busy")
+        return await select(*args, **asked)
+
+    monkeypatch.setattr(host.task_agents, "_act_on_end", acting)
+    monkeypatch.setattr(host.ledger, "select", unreadable_once)
+    release.set()
+
+    # The run that sentence began is not closed under by the end of the first: it decides.
+    commission = await wait_status(host, receipt.commission_id, "done")
+    assert failed and commission.result_summary == "and the changelog is in"
+    assert "Add the changelog." in str(llm.requests[1])
+
+
+async def test_a_request_counted_for_a_session_is_not_taken_by_the_commission_of_the_same_id(hosts, tmp_path):
+    from nekoclaw.host.task_agents import _Session
+
+    counted: list[str] = []
+
+    async def meter(key: str) -> bool:
+        counted.append(key)
+        return True
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]), task_agent_meter=meter)
+    agents = host.task_agents
+    # A session and its first commission have one id. A request was counted for the session,
+    # for a note that waits for it; that commission is taken up again meanwhile.
+    mark = agents._session_mark("the-one-id")
+    agents._prepaid_starts.add(mark)
+
+    assert await agents._pay_first_request(_Session("the-one-id")) is True
+
+    # It pays for its own first request, and the session's stays for the commission the note gets.
+    assert counted == ["the-one-id"] and agents._prepaid_starts == {mark}
+    assert await agents._may_start("the-one-id", mark=mark) is None and counted == ["the-one-id"]
+
+
+async def test_what_the_retry_holds_as_the_host_shuts_down_is_written_before_the_ledger_closes(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.OUTBOX_RETRY_BASE_SECONDS", 0.02)
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "built")]))
+    commission, first, handing, _second, _later = await _two_notes_in_one_commission(host)
+    await host.ledger.wakes_taken([handing.id])
+    turn_over = host.ledger.turn_over
+    under_way = asyncio.Event()
+    asked: list[int] = []
+
+    async def slow_the_first_time(commission_id: str, **more: Any) -> int:
+        asked.append(1)
+        if len(asked) == 1:
+            # The write of the loop that tries again is under way as the host shuts down.
+            under_way.set()
+            await asyncio.Event().wait()
+        return await turn_over(commission_id, **more)
+
+    monkeypatch.setattr(host.ledger, "turn_over", slow_the_first_time)
+    agents = host.task_agents
+    agents._turns_owed.append((commission.id, "the turn's last words", "done", [handing.id], []))
+    agents._returning = agents._spawn(agents._return_later())
+    await asyncio.wait_for(under_way.wait(), 5.0)
+    # Taken out of what is kept for as long as the ledger is asked.
+    assert agents._turns_owed == []
+    path = host.ledger.path
+    started = asyncio.get_running_loop().time()
+
+    await host.shutdown()
+
+    # The loop was stopped and what it held put back and written, within the time shutting
+    # down gives it: not sat out among what shutting down waits for, and not lost.
+    assert asyncio.get_running_loop().time() - started < 3.0 and len(asked) == 2
+    later = Ledger(path)
+    try:
+        told = await later.run(
+            lambda conn: [row["body"] for row in conn.execute("SELECT body FROM messages WHERE kind = 'done'")]
+        )
+        assert told == ["the turn's last words"] and (await later.message_get(first.id)).notified_at is not None
+    finally:
+        await later.close()
+
+
+async def test_a_note_whose_taking_and_whose_answer_could_not_be_written_is_answered_once_the_ledger_can_be(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr("config.nekoclaw_settings.OUTBOX_RETRY_BASE_SECONDS", 0.02)
+    scripts = {
+        _k("build the site"): ScriptedLLM([_report("ready", "built")]),
+        "Rebuild with the new logo": ScriptedLLM([_report("ready", "rebuilt with the new logo")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    await _let_go(host)
+    sender = await _at_work(host.ledger, title="sender")
+    await host.ledger.transition(sender.id, "waiting_user")
+    note, _refusal, _wait = await _note(
+        host.ledger, sender, built.session_id, "Rebuild with the new logo.", notify_when_done=True
+    )
+    wakes_taken, turn_over = host.ledger.wakes_taken, host.ledger.turn_over
+    down, failed = [True], set()
+
+    async def taking(ids: Any) -> None:
+        if down[0]:
+            failed.add("that it was taken")
+            raise OSError("the disk is full")
+        await wakes_taken(ids)
+
+    async def telling(commission_id: str, **more: Any) -> int:
+        if down[0]:
+            failed.add("that the turn is over")
+            raise OSError("the disk is full")
+        return await turn_over(commission_id, **more)
+
+    # Neither that the session took the note nor that its turn is over can be written.
+    monkeypatch.setattr(host.ledger, "wakes_taken", taking)
+    monkeypatch.setattr(host.ledger, "turn_over", telling)
+    host.wakes.kick()
+    await wait_until(lambda: _filed_for_notes(host), what="a commission being filed for the note")
+    [filed] = await _filed_for_notes(host)
+    assert (await wait_status(host, filed.id, "done")).result_summary == "rebuilt with the new logo"
+    await wait_until(lambda: failed == {"that it was taken", "that the turn is over"}, what="both writes failing")
+    assert (await host.ledger.message_get(note.id)).notified_at is None
+
+    # The ledger can be written again: the loop that tries again writes both, in whatever order
+    # it gets to them, and the sender is told what that turn came to.
+    down[0] = False
+
+    async def notified() -> bool:
+        return (await host.ledger.message_get(note.id)).notified_at is not None
+
+    await wait_until(notified, what="the sender being told that the note was answered")
+    await wait_until(lambda: host.task_agents._unconfirmed == set(), what="the taking being put on record")
+    assert await _told(host) == ["rebuilt with the new logo"] and host.task_agents._turns_owed == []
+    handed = await host.ledger.run(
+        lambda conn: conn.execute(
+            "SELECT status, taken_at FROM wake_requests WHERE message_id = ? AND reason = 'message'", (note.id,)
+        ).fetchone()
+    )
+    assert handed["status"] == "fired" and handed["taken_at"] is not None
+
+
+async def test_a_commission_a_plugin_carries_out_is_listed_as_the_later_reading_has_it(hosts, tmp_path, monkeypatch):
+    import dataclasses
+
+    from config.prompts.prompts_nekoclaw_brain import QUERY_TEXTS
+    from nekoclaw.host.ledger import ACTIVE_STATUSES
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    # Not a task agent's: it is not looked at again as its row is made.
+    commission = await _file(host.ledger, title="send the mail", route="plugin")
+    await host.ledger.transition(commission.id, "working")
+    select = host.ledger.select
+
+    async def done_by_the_second_list(*args: Any, **asked: Any) -> list[Any]:
+        found = await select(*args, **asked)
+        if asked.get("statuses") == ACTIVE_STATUSES or "updated_since" not in asked:
+            return found
+        # It was done between the two lists.
+        current = await host.ledger.get(commission.id)
+        return [dataclasses.replace(current, status="done", result_summary="the mail is sent"), *found]
+
+    monkeypatch.setattr(host.ledger, "select", done_by_the_second_list)
+    answer = await host.query("", lanlan_name="Lan", lang="en")
+
+    # Listed once, as done, and she counts as told of it.
+    words_of = QUERY_TEXTS["en"]
+    rows = [line for line in answer.text.splitlines() if line.startswith("- ")]
+    assert len(rows) == 1 and "the mail is sent" in rows[0]
+    assert words_of["recent"] in answer.text and words_of["active"] not in answer.text
+    assert host.brain._status_answered_at.get("Lan") is not None
