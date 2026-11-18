@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import tempfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -301,6 +302,43 @@ async def test_runs_keep_the_output_schema_violation_code():
     assert response["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
     assert response["error"]["details"]["issues"] == [{"path": "$.n", "type": "required"}]
     assert response["error"]["details"]["entry_id"] == "entry"
+
+
+async def test_runs_keep_code_and_issues_from_a_real_executor_reply():
+    """The reply execute_entry_command builds, through RpcRemoteError, to /runs."""
+    from contextlib import nullcontext
+    import logging
+
+    from plugin.core.entry_executor import EntryExecutor, execute_entry_command
+    from plugin.runs.trigger_service import _execute_trigger
+
+    @plugin_entry(id="entry", output_schema=SCHEMA, strict_output=True)
+    async def entry():
+        return {"n": "not an int"}
+
+    executor = EntryExecutor(
+        plugin_id="demo",
+        context=SimpleNamespace(
+            _handler_scope=lambda _: nullcontext(),
+            _run_scope=lambda _: nullcontext(),
+            _lanlan_scope=lambda _: nullcontext(),
+        ),
+        instance=SimpleNamespace(),
+        entries={"entry": entry},
+        metadata={"entry": getattr(entry, EVENT_META_ATTR)},
+        events={},
+        default_timeout=5,
+        refresh=lambda: None,
+        should_persist=lambda _: False,
+        persist=None,
+        logger=logging.getLogger("test.wire"),
+    )
+    reply = await execute_entry_command(executor, {"req_id": "r", "entry_id": "entry", "args": {}})
+    response = await _execute_trigger(
+        host=_RaisingHost(reply["error"]), plugin_id="demo", entry_id="entry", args={}, trace_id="t",
+    )
+    assert response["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
+    assert response["error"]["details"]["issues"] == [{"path": "$.n", "type": "type"}]
 
 
 async def test_runs_keep_internal_for_other_plugin_errors():

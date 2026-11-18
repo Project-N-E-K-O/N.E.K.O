@@ -30,6 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import unquote
 
 from .finish import normalize_structured_data
 
@@ -40,6 +41,8 @@ CHECK_ERROR_PREFIX = "check_error:"
 # Consecutive $ref hops without descending into the data: only a reference
 # cycle such as {"$ref": "#"} gets this far. Real recursion consumes data.
 _MAX_REF_DEPTH = 32
+# Schema nodes visited in one check; beyond this the checker gives up.
+_MAX_STEPS = 200_000
 _WILDCARD = "*"
 
 SUPPORTED_KEYWORDS = frozenset({
@@ -151,13 +154,15 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         except ValidationError as exc:
             # include_input/include_context off: only loc and type are read,
             # but nothing that quotes the data is even materialized.
-            errors = exc.errors(include_url=False, include_input=False, include_context=False)
-            # Paths are resolved against an untouched copy of the input.
-            shape = copy.deepcopy(value)
-            return [
-                OutputIssue(path=_loc_path(error.get("loc", ()), declared, shape), type=str(error.get("type") or "invalid"))
-                for error in errors[:MAX_REPORTED_ISSUES + 1]
-            ]
+            try:
+                errors = exc.errors(include_url=False, include_input=False, include_context=False)
+                # Paths are walked along the copy the validator received.
+                return [
+                    OutputIssue(path=_loc_path(error.get("loc", ()), declared, probe), type=str(error.get("type") or "invalid"))
+                    for error in errors[:MAX_REPORTED_ISSUES + 1]
+                ]
+            except Exception as path_exc:  # noqa: BLE001 - reporting must not turn into a call failure
+                return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(path_exc).__name__}")]
         except Exception as exc:  # noqa: BLE001 - a crashing custom validator is a checker failure
             return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         return []
@@ -183,10 +188,10 @@ def _loc_path(loc: Sequence[object], declared: frozenset[str], value: object) ->
             path += f".{part}"
         else:
             path += f".{_WILDCARD}"
-        if isinstance(current, Mapping):
-            current = current.get(part)
-        else:
-            current = getattr(current, part, None) if isinstance(part, str) else None
+        # Only plain containers are walked. Attribute access on other objects
+        # (from_attributes models) could run code; past one, segments that are
+        # not declared names render as ``*``.
+        current = current.get(part) if isinstance(current, Mapping) else None
     return path
 
 
@@ -221,13 +226,19 @@ class _JsonSchemaCheck:
     def __init__(self, schema: Mapping[str, object]):
         self._root = schema
         self._patterns: dict[str, re.Pattern[str] | None] = {}
+        self._steps = 0
 
     def __call__(self, value: object) -> list[OutputIssue]:
         issues: list[OutputIssue] = []
+        self._steps = 0
         try:
             self._check(self._root, _json_form(value), "$", issues, 0)
         except _Enough:
             pass
+        except _CheckAborted as exc:
+            # Partial findings are dropped: an unfinished probe inside
+            # anyOf/oneOf/not may have produced them.
+            return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{exc.args[0]}")]
         except Exception as exc:  # noqa: BLE001 - a malformed schema or overly deep data
             # The checker could not finish: reported, but never a violation.
             issues.append(OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}"))
@@ -236,20 +247,26 @@ class _JsonSchemaCheck:
     # -- helpers -----------------------------------------------------------
 
     def _resolve(self, ref: object) -> object:
-        """The referenced schema (a mapping or a boolean), or ``_UNRESOLVED``."""
+        """The referenced schema (a mapping or a boolean), or ``_UNRESOLVED``.
+
+        Local references only: ``#`` is the root, ``#/a/b`` a JSON Pointer
+        (RFC 6901) after URI-fragment decoding; empty segments are keys.
+        """
         if not isinstance(ref, str) or not ref.startswith("#"):
             return _UNRESOLVED
+        pointer = unquote(ref[1:])
         node: object = self._root
-        for token in ref[1:].split("/"):
-            if token == "":
-                continue
-            token = token.replace("~1", "/").replace("~0", "~")
-            if isinstance(node, Mapping) and token in node:
-                node = node[token]
-            elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
-                node = node[int(token)]
-            else:
-                return _UNRESOLVED
+        if pointer:
+            if not pointer.startswith("/"):
+                return _UNRESOLVED  # a plain-name anchor, not supported
+            for token in pointer[1:].split("/"):
+                token = token.replace("~1", "/").replace("~0", "~")
+                if isinstance(node, Mapping) and token in node:
+                    node = node[token]
+                elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
+                    node = node[int(token)]
+                else:
+                    return _UNRESOLVED
         return node if isinstance(node, (Mapping, bool)) else _UNRESOLVED
 
     def _pattern(self, pattern: str) -> re.Pattern[str] | None:
@@ -286,6 +303,10 @@ class _JsonSchemaCheck:
         *,
         limit: int = MAX_REPORTED_ISSUES + 1,
     ) -> None:
+        self._steps += 1
+        if self._steps > _MAX_STEPS:
+            # Nested anyOf/oneOf/not can re-walk the same subtree many times.
+            raise _CheckAborted("budget")
         if schema is True or schema is None:
             return
         if schema is False:
@@ -296,8 +317,8 @@ class _JsonSchemaCheck:
 
         if "$ref" in schema:
             if depth >= _MAX_REF_DEPTH:
-                self._add(issues, path, "ref_depth", limit)
-                return
+                # Not a verdict on the data: the checker gives up.
+                raise _CheckAborted("ref_depth")
             target = self._resolve(schema["$ref"])
             # An unresolvable (e.g. external) reference is not ours to judge.
             if target is not _UNRESOLVED:
@@ -395,13 +416,14 @@ class _JsonSchemaCheck:
                     patterns.append((compiled, sub_schema))
         additional = schema.get("additionalProperties")
         for key, item in value.items():
-            if key in properties:
-                continue
             matched = [sub for compiled, sub in patterns if isinstance(key, str) and compiled.search(key)]
+            declared = key in properties
             for sub_schema in matched:
-                # Pattern-matched keys come from the data too.
-                self._check(sub_schema, item, f"{path}.{_WILDCARD}", issues, 0, limit=limit)
-            if matched or additional is None or additional is True:
+                # A declared key must satisfy matching patterns too. Other
+                # pattern-matched keys come from the data: no name in paths.
+                child = f"{path}.{key}" if declared else f"{path}.{_WILDCARD}"
+                self._check(sub_schema, item, child, issues, 0, limit=limit)
+            if declared or matched or additional is None or additional is True:
                 continue
             # Undeclared keys come from the data: never put them in a path.
             child = f"{path}.{_WILDCARD}"
@@ -466,12 +488,23 @@ class _Enough(Exception):
     """Stop walking once enough issues are collected."""
 
 
+class _CheckAborted(Exception):
+    """The checker gave up (reference cycle, work budget); never a violation.
+
+    Not a subclass of ``_Enough``: ``_matches`` must not read it as "no match".
+    """
+
+
 def _is_count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 def _is_number(value: object) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True  # never converted to float: huge bounds stay exact
+    return isinstance(value, float) and math.isfinite(value)
 
 
 def _is_type(value: object, name: object) -> bool:

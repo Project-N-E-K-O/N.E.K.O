@@ -66,7 +66,7 @@ async def process(self, data: str, **_):
 | `fields` | `type` | `None` | `params` のエイリアス |
 | `metadata` | `dict` | `None` | 追加メタデータ |
 | `output_schema` | `dict` | `None` | 戻り値の JSON Schema。省略時、戻り値の型注釈が Pydantic モデルなら自動で推論される。[エントリーとパラメーター](./entries)の「出力契約」を参照 |
-| `strict_output` | `bool` | `False` | 戻り値が出力契約に合わないとき、警告ログではなく呼び出しの失敗（`PLUGIN_OUTPUT_SCHEMA_VIOLATION`）にする |
+| `strict_output` | `bool` | `False` | 戻り値が出力契約に合わないとき、警告ログに加えて呼び出しを失敗（`PLUGIN_OUTPUT_SCHEMA_VIOLATION`）にする。デフォルトは警告ログのみ |
 
 `output_schema` は `llm_result_fields` / `llm_result_model` とは独立しています。後者はモデルが読むフィールドを決め、`output_schema` は戻り値全体を記述します。両方を同時に使えます。
 

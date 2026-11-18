@@ -343,7 +343,13 @@ _LISTED_ENTRY_HANDLED_FIELDS = frozenset({
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
     for name, value in unhandled_entry_contract_fields(source, _LISTED_ENTRY_HANDLED_FIELDS).items():
         if isinstance(value, Mapping):
-            value = _normalize_mapping(value, context=f"{context}.{name}")
+            try:
+                value = _normalize_mapping(value, context=f"{context}.{name}")
+            except ServerDomainError:
+                # A malformed opt-in field (e.g. non-string schema keys) drops
+                # only itself; it must not degrade the plugin's whole listing.
+                logger.warning("dropping malformed entry field: {}.{}", context, name)
+                continue
         entry_dict[name] = value
 
 

@@ -196,6 +196,9 @@ def test_router_resolution_keeps_every_event_meta_field() -> None:
         quick_action_config=QuickActionConfig(icon="i", priority=2),
         extra={"x": 1},
         metadata={"y": 2},
+        output_schema={"type": "object", "properties": {"a": {"type": "string"}}},
+        output_model=dict,
+        strict_output=True,
     )
     router = PluginRouter(prefix="p_")
     router._decorated_entries.append(("probe", meta, lambda: None))
@@ -207,3 +210,35 @@ def test_router_resolution_keeps_every_event_meta_field() -> None:
     assert resolved.id == "p_probe"
     assert resolved.metadata is not meta.metadata
     assert resolved.input_schema is not meta.input_schema
+    assert resolved.output_schema is not meta.output_schema
+
+
+def test_list_entries_projection_detaches_nested_schemas():
+    from plugin.sdk.plugin.base import _entry_listing
+    from plugin.sdk.shared.core.events import EventMeta
+
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+    meta = EventMeta(event_type="plugin_entry", id="e", output_schema=schema)
+    item = _entry_listing("e", meta, enabled=True, dynamic=False)
+    item["output_schema"]["properties"]["count"]["type"] = "string"
+    assert schema["properties"]["count"]["type"] == "integer"
+
+
+def test_malformed_output_schema_drops_only_itself_from_get_plugins():
+    from plugin._types.events import EventHandler
+    from plugin._types.events import EventMeta as HostEventMeta
+    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
+
+    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
+    broken.output_schema = {1: "not a string key"}  # type: ignore[attr-defined]
+    fine = HostEventMeta(event_type="plugin_entry", id="fine", name="Fine")
+    entries, _seen = _build_entries_from_handlers(
+        plugin_id="demo",
+        handlers_snapshot={
+            "demo.broken": EventHandler(meta=broken, handler=lambda: None),
+            "demo.fine": EventHandler(meta=fine, handler=lambda: None),
+        },
+    )
+    by_id = {item["id"]: item for item in entries}
+    assert set(by_id) == {"broken", "fine"}
+    assert "output_schema" not in by_id["broken"]

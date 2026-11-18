@@ -73,6 +73,10 @@ class EntryExecutor:
         cached = self._output_checks.get(event_id)
         if cached is not None and cached[0] is meta:
             return cached[1]
+        # Entries that are gone (unregistered dynamic entries) leave the cache
+        # here, so it tracks live entries rather than every id ever called.
+        for stale in [key for key in self._output_checks if key not in self._metadata]:
+            del self._output_checks[stale]
         try:
             check = build_output_check(meta)
         except Exception as exc:
@@ -84,12 +88,13 @@ class EntryExecutor:
         self._output_checks[event_id] = (meta, check)
         return check
 
-    def _check_output(self, event_id: str, label: str, result: object) -> None:
+    def _check_output(self, event_id: str, label: str, result: object, meta: object) -> None:
         """Validate a successful result against the entry's output contract.
 
+        ``meta`` is the entry's metadata as resolved when the call started; a
+        re-registration while the handler ran does not change the contract.
         Logs and errors carry field paths and error types only, never the data.
         """
-        meta = self._metadata.get(event_id)
         if meta is None:
             return
         check = self._output_check(event_id, meta)
@@ -169,6 +174,9 @@ class EntryExecutor:
         budget = remaining_budget(budget, deadline)
         if budget is not None and budget <= 0:
             raise RpcDeadlineExceededError(f"{label} deadline expired before execution")
+        # The contract this call is checked against: resolved with the handler,
+        # not re-read after it returns.
+        call_meta = self._metadata.get(event_id) if event_type == "plugin_entry" else None
         call_args = (
             prepare_entry_kwargs(
                 plugin_id=self.plugin_id,
@@ -230,7 +238,7 @@ class EntryExecutor:
                     )
                 result = result.value
             if event_type == "plugin_entry":
-                self._check_output(event_id, label, result)
+                self._check_output(event_id, label, result, call_meta)
             return result
 
 

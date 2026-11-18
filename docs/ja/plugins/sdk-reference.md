@@ -262,7 +262,7 @@ self.register_dynamic_entry(
 
 ```python
 self.register_dynamic_entry(
-    entry_id="my-tool",
+    entry_id="my-tool-strict",
     handler=handler,
     output_schema={"type": "object", "required": ["summary"]},
     strict_output=True,

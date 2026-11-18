@@ -7,6 +7,7 @@ Python validation models and callables stay in the plugin process.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Collection, Mapping
 
 
@@ -98,15 +99,22 @@ def unhandled_entry_contract_fields(
 
     ``None`` and ``False`` count as "not set": contract fields are opt-in, and
     an entry that does not use one keeps a byte-identical projection. Mapping
-    and list values are shallow-copied so projections never alias metadata.
+    and list values are deep-copied (schemas nest) so a caller editing a
+    projection can never reach the entry's metadata.
     """
     carried: dict[str, object] = {}
     for name, value in entry_contract_fields(source).items():
         if name in handled or value is None or value is False:
             continue
-        if isinstance(value, Mapping):
-            value = dict(value)
-        elif isinstance(value, list):
-            value = list(value)
+        if isinstance(value, (Mapping, list)):
+            value = _detached(value)
         carried[name] = value
     return carried
+
+
+def _detached(value: Mapping[object, object] | list[object]) -> object:
+    try:
+        return copy.deepcopy(dict(value) if isinstance(value, Mapping) else value)
+    except Exception:
+        # Something uncopyable inside: a shallow copy still detaches the top.
+        return dict(value) if isinstance(value, Mapping) else list(value)

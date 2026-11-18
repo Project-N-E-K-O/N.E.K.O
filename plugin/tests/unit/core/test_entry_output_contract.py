@@ -131,18 +131,37 @@ def test_optional_model_annotation_is_inferred_like_llm_result():
 
 
 def test_forward_reference_is_resolved_against_the_owner_class():
-    @neko_plugin
     class Demo:
-        class Reply(BaseModel):
-            ok: bool
-
         @plugin_decorators.plugin_entry(id="forward")
         async def forward(self) -> "Reply":
             return self.Reply(ok=True)
 
+        # Declared after the method: unresolvable when the decorator runs.
+        class Reply(BaseModel):
+            ok: bool
+
+    assert _meta_of(Demo.forward).output_schema is None
+    neko_plugin(Demo)
     meta = _meta_of(Demo.forward)
     assert meta.output_model is Demo.Reply
     assert meta.output_schema == Demo.Reply.model_json_schema()
+
+
+def test_non_pydantic_classes_are_not_inferred_as_output_contracts():
+    class SchemaOnly:
+        @classmethod
+        def schema(cls):
+            return {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+
+    @plugin_decorators.plugin_entry(id="legacy")
+    async def legacy() -> SchemaOnly:
+        return SchemaOnly()
+
+    meta = _meta_of(legacy)
+    # llm_result inference keeps accepting it; the output contract does not.
+    assert meta.llm_result_model is SchemaOnly
+    assert meta.output_schema is None
+    assert meta.output_model is None
 
 
 def test_explicit_output_schema_wins_over_annotation():
@@ -464,7 +483,7 @@ def _issues(schema, value):
             [("$[1].id", "required")],
         ),
         ({"type": "object", "properties": {"a": {"type": "string"}}, "x-unknown": 1}, {"a": "b"}, []),
-        ({"$ref": "#"}, 1, [("$", "ref_depth")]),
+        ({"$ref": "#"}, 1, [("$", "check_error:ref_depth")]),
     ],
 )
 def test_json_schema_subset(schema, value, expected):
@@ -674,3 +693,101 @@ async def test_a_crashing_custom_validator_warns_but_does_not_fail_strict(caplog
 )
 def test_review_round_one_schema_cases(schema, value, expected):
     assert _issues(schema, value) == expected
+
+
+# ---------------------------------------------------------------------------
+# Review round 2
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("schema", "value", "expected"),
+    [
+        ({"$defs": {"": {"type": "integer"}}, "$ref": "#/$defs/"}, "x", [("$", "type")]),
+        ({"$defs": {"a b": {"type": "integer"}}, "$ref": "#/$defs/a%20b"}, "x", [("$", "type")]),
+        ({"$defs": {"a/b": {"type": "integer"}}, "$ref": "#/$defs/a~1b"}, "x", [("$", "type")]),
+        ({"type": "integer", "$ref": "#"}, 1, [("$", "check_error:ref_depth")]),
+        ({"anyOf": [{"$ref": "#"}]}, 1, [("$", "check_error:ref_depth")]),
+        ({"type": "integer", "maximum": -(10**400)}, 0, [("$", "maximum")]),
+        (
+            {"type": "object", "properties": {"count": {"type": "integer"}}, "patternProperties": {"^count$": {"minimum": 10}}},
+            {"count": 1},
+            [("$.count", "minimum")],
+        ),
+    ],
+)
+def test_review_round_two_schema_cases(schema, value, expected):
+    assert _issues(schema, value) == expected
+
+
+def test_ref_chains_shorter_than_the_budget_resolve():
+    defs = {f"d{i}": {"$ref": f"#/$defs/d{i + 1}"} for i in range(20)}
+    defs["d20"] = {"type": "integer"}
+    assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, 1) == []
+
+
+def test_runaway_combinators_give_up_as_a_checker_failure():
+    schema: dict[str, object] = {"type": "integer"}
+    for _ in range(25):
+        # oneOf evaluates every branch: 2**25 walks without a budget.
+        schema = {"oneOf": [schema, schema]}
+    result = _issues(schema, 1.5)
+    assert result == [("$", "check_error:budget")]
+
+
+async def test_path_rendering_never_reads_attributes(caplog):
+    class Boom:
+        @property
+        def n(self):
+            raise RuntimeError("attribute access")
+
+    class FromAttrs(BaseModel):
+        model_config = ConfigDict(from_attributes=True)
+        n: int
+
+    meta = EventMeta(
+        event_type="plugin_entry", id="entry",
+        output_schema=FromAttrs.model_json_schema(), output_model=FromAttrs, strict_output=False,
+    )
+    returned = Boom()
+
+    async def entry():
+        return returned
+
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
+
+
+async def test_contract_is_the_one_resolved_when_the_call_started():
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def entry():
+        await release.wait()
+        return {"count": 1}
+
+    metadata = {"entry": EventMeta(event_type="plugin_entry", id="entry", output_schema=EXPLICIT, strict_output=True)}
+    runtime = _executor({"entry": entry}, metadata)
+    call = asyncio.create_task(runtime.invoke("plugin_entry", "entry", {}))
+    await asyncio.sleep(0)
+    # Re-registered with an incompatible strict contract while the call runs.
+    metadata["entry"] = EventMeta(event_type="plugin_entry", id="entry", output_schema={"type": "string"}, strict_output=True)
+    release.set()
+    assert await call == {"count": 1}
+
+
+async def test_cache_drops_entries_that_are_gone():
+    async def entry():
+        return {"count": 1}
+
+    metadata = {
+        "a": EventMeta(event_type="plugin_entry", id="a", output_schema=EXPLICIT),
+        "b": EventMeta(event_type="plugin_entry", id="b", output_schema=EXPLICIT),
+    }
+    runtime = _executor({"a": entry, "b": entry}, metadata)
+    await runtime.invoke("plugin_entry", "a", {})
+    del metadata["a"]
+    await runtime.invoke("plugin_entry", "b", {})
+    assert set(runtime._output_checks) == {"b"}

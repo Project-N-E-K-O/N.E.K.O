@@ -273,7 +273,10 @@ def _output_contract_from_signature(
     output contract describes the whole return value, so it must accept it.
     """
     model, schema = _infer_llm_result_model_from_signature(signature, hints)
-    if model is None or schema is None:
+    if model is None or schema is None or not _is_pydantic_model_type(model):
+        # llm_result inference also accepts any class with a schema(); the
+        # output contract is checked at runtime, so only Pydantic models,
+        # which can validate themselves, are inferred.
         return None, None
     if _hint_allows_none(hints.get("return", signature.return_annotation)):
         schema = dict(schema)
@@ -284,6 +287,17 @@ def _output_contract_from_signature(
             nullable["$defs"] = defs
         schema = nullable
     return model, schema
+
+
+def _is_pydantic_model_type(model: type) -> bool:
+    try:
+        from pydantic import BaseModel
+    except ImportError:  # pragma: no cover - pydantic is a hard dependency
+        return False
+    try:
+        return issubclass(model, BaseModel)
+    except TypeError:
+        return False
 
 
 def _hint_allows_none(hint: object) -> bool:
