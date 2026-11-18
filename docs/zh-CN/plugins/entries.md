@@ -188,8 +188,10 @@ async def search(self, query: str):
 
 - 默认只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (type)`），不记录返回的内容。
 - 设 `strict_output=True` 时，不符合契约会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表。`/runs` 和 `call_entry` 的调用方都能拿到这个错误码。
+  对显式 schema，只有下面列出的支持关键字才会被强制校验；用其他关键字写的约束不会被检查，strict 模式下也一样。
+- 每次不符合都会记一条告警，不限频。高频调用的入口如果返回结构一直不对，会刷满插件日志，请修正返回值或契约。
 
-从返回注解推导出的模型，由模型自己做校验。显式 schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`，其他关键字忽略。
+从返回注解推导出的模型，由模型自己做校验。显式 schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`。其他关键字会被忽略、不参与校验。
 
 插件的入口列表里会带上 `output_schema`（和 `strict_output`），任务 Agent 的工具定义里以 `outputSchema` 导出。
 

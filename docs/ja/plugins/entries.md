@@ -190,8 +190,10 @@ async def search(self, query: str):
 
 - デフォルトでは、合わない場合はプラグインログに警告を 1 件書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (type)`）だけが含まれ、戻り値の内容は記録されません。
 - `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗し、`details.issues` に同じ `{"path", "type"}` の一覧が入ります。`/runs` と `call_entry` の呼び出し側はこのコードを受け取ります。
+  明示した schema では、下記の対応キーワードだけが強制されます。それ以外のキーワードで書いた制約は、strict モードでも検査されません。
+- 警告は合わない呼び出しのたびに書かれ、頻度制限はありません。高頻度で呼ばれるエントリーの戻り値がずっと合わないと、プラグインログが警告で埋まります。戻り値か契約を直してください。
 
-型注釈から推論したモデルは、モデル自身で検証します。明示した schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref` で、それ以外は無視されます。
+型注釈から推論したモデルは、モデル自身で検証します。明示した schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref` で、それ以外のキーワードは無視され、検証に関与しません。
 
 プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれ、タスク Agent のツール定義では `outputSchema` として公開されます。
 
