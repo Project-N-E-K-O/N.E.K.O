@@ -464,13 +464,20 @@ class BuiltinToolProvider:
         """Whether a browser is still held after ``close_browser``: closing it failed, and it is kept to be closed later."""
         return self._browser is not None and self._browser.holds_a_browser()
 
-    async def release_keys(self) -> None:
-        """Let go of keys and buttons a stopped call left held; never raises."""
-        if self._desktop is not None:
-            try:
-                await asyncio.to_thread(self._desktop.release_held)
-            except Exception:  # noqa: BLE001 - shutting down goes on
-                logger.debug("releasing held keys failed", exc_info=True)
+    async def release_keys(self) -> bool:
+        """Let go of keys and buttons a stopped call left held; never raises.
+
+        True when nothing is left held. False when something is (a key that
+        would not come up, or a call still at the keyboard): worth one more
+        try later.
+        """
+        if self._desktop is None:
+            return True
+        try:
+            return bool(await asyncio.to_thread(self._desktop.release_held))
+        except Exception:  # noqa: BLE001 - shutting down goes on
+            logger.debug("releasing held keys failed", exc_info=True)
+            return False
 
     async def aclose(self) -> None:
         """Let go of everything; for shutting down."""

@@ -743,6 +743,14 @@ async def test_the_keys_can_be_let_go_of_without_closing_the_browser(rig: Rig) -
     assert len(rig.desktop.release_threads) == 2 and rig.browser.closed == 1
 
 
+async def test_letting_go_of_the_keys_says_whether_anything_is_left_held(rig: Rig) -> None:
+    assert await rig.provider.release_keys() is True
+    rig.desktop.release_error = RuntimeError("keyUp failed")
+    assert await rig.provider.release_keys() is False
+    # Never made a desktop: nothing can be held.
+    assert await BuiltinToolProvider(state=Switches()).release_keys() is True
+
+
 async def test_a_browser_counts_as_unclosed_only_while_the_browser_tools_still_hold_one() -> None:
     bare = BuiltinToolProvider(state=Switches())
     # No browser tools were made: nothing can have been left unclosed.

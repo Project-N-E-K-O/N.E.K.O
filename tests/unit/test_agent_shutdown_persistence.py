@@ -28,6 +28,8 @@ def shutdown_fixture(tmp_path, monkeypatch):
         events.append(name)
         if name == "host":
             stopped.set()
+        # Like the real ``release_keys``: True when nothing is left held.
+        return True if name == "keys" else None
 
     modules = SimpleNamespace(
         agent_bridge=SimpleNamespace(stop=lambda: phase("bridge")),
@@ -249,6 +251,29 @@ async def test_held_keys_are_released_before_a_later_step_spends_the_cancel_budg
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        await fixture.tracker.asave()
+
+
+@pytest.mark.parametrize("first_result", [True, False])
+@pytest.mark.asyncio
+async def test_held_keys_are_tried_again_after_the_browser_only_when_left_held(shutdown_fixture, monkeypatch, first_result):
+    fixture = shutdown_fixture
+    results = iter([first_result, True])
+
+    async def release_keys():
+        fixture.events.append("keys")
+        return next(results)
+
+    monkeypatch.setattr(fixture.api.builtin_provider, "release_keys", release_keys)
+    try:
+        await asyncio.wait_for(fixture.api.shutdown(), 2)
+        keys = [i for i, event in enumerate(fixture.events) if event == "keys"]
+        if first_result:
+            assert len(keys) == 1
+        else:
+            assert len(keys) == 2
+            assert keys[0] < fixture.events.index("browser") < keys[1]
+    finally:
         await fixture.tracker.asave()
 
 

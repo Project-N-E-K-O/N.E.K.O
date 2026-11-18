@@ -124,6 +124,11 @@ _active_character_request_events: dict[str, asyncio.Event] = {}
 # Tightest is unsubscribe: _release_workshop_character_handles per_call_timeout=2.5s
 # (rename/delete use release_memory_server_character(), 5s).
 _CHARACTER_REQUEST_DRAIN_TIMEOUT_SECONDS = 2.0
+# Shutdown waits for the queued final stats save only until this long after it
+# began, below the launcher's 12 s Memory budget (graceful_shutdown_timeout and
+# the merged coordinator alike). Past it the wait stops; the save is not
+# cancelled and goes on in the save worker.
+_SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS = 10.0
 _STORAGE_LIMITED_MODE_ALLOWED_PATHS = {
     "/health",
     "/shutdown",
@@ -1461,20 +1466,22 @@ async def internal_reset_confirmed_at():
 async def shutdown_event_handler():
     """Cleanup at application shutdown"""
     logger.info("Memory server正在关闭...")
-    from .long_term_sync import close as close_long_term_sync
-    await close_long_term_sync()
-    if _recent_sync_wake_task is not None:
-        _recent_sync_wake_task.cancel()
-        await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
-    # Queue the final save before cleanup, where main saved: it runs on the
-    # save worker while the steps below go on, so a cleanup that is cancelled
-    # or killed by the launcher cannot skip it.
+    save_wait_deadline = asyncio.get_running_loop().time() + _SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS
+    # Queue the final save before the first cleanup wait: it runs on the save
+    # worker while cleanup goes on, so a cleanup that stalls (a long-term memory
+    # file commit close() has to wait for, SQLite, embedding), is cancelled or
+    # is killed by the launcher cannot keep it from being queued.
     token_save = None
     try:
         from utils.token_tracker import TokenTracker
         token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
     except Exception:
         pass  # Best-effort final flush; atexit retries any unpersisted deltas.
+    from .long_term_sync import close as close_long_term_sync
+    await close_long_term_sync()
+    if _recent_sync_wake_task is not None:
+        _recent_sync_wake_task.cancel()
+        await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.
@@ -1527,10 +1534,15 @@ async def shutdown_event_handler():
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
     # Waited for only now, so persistence cannot delay worker stop or
-    # embedding/SQLite cleanup; it was queued before them (see above).
+    # embedding/SQLite cleanup; it was queued before them (see above). The wait
+    # is bounded (a stuck fsync, or a periodic report queued ahead of it) and
+    # shielded: neither its deadline nor a cancellation cancels the save.
     if token_save is not None:
+        left = save_wait_deadline - asyncio.get_running_loop().time()
         try:
-            await asyncio.shield(asyncio.wrap_future(token_save))
+            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(token_save)), timeout=max(left, 0))
+        except asyncio.TimeoutError:
+            logger.warning("[Memory] 最终统计保存未在关闭期限内完成，不再等待（保存线程继续执行）")
         except Exception:
             pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     logger.info("Memory server已关闭")

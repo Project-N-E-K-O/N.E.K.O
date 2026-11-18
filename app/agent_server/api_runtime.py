@@ -681,10 +681,13 @@ async def shutdown():
     # Keys can only be held by calls the host has just stopped. Release them
     # now, local and quick, ahead of the steps that may spend the cancellation
     # budget; like ``aclose``, keys first and the browser afterwards.
-    await step(
-        lambda: asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0),
-        "Agent held keys release",
-    )
+    keys_released = False
+
+    async def release_held_keys():
+        nonlocal keys_released
+        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
+
+    await step(release_held_keys, "Agent held keys release")
 
     for t in list(Modules._persistent_tasks):
         if not t.done():
@@ -717,8 +720,8 @@ async def shutdown():
 
     async def close_builtin_tools():
         # The browser the tools started stays open between tasks; it is closed
-        # at service shutdown. The
-        # host's shutdown above has cancelled every call that was under way.
+        # at service shutdown. The host's shutdown above has cancelled every
+        # call that was under way.
         # The launcher ends this process a few seconds after it began to shut
         # down, and a browser that is still closing then would run on with
         # nobody to close it. It is asked to close within what is left before
@@ -749,6 +752,11 @@ async def shutdown():
         # ``aclose``: a browser that was just killed would be waited for again.
 
     await step(close_builtin_tools, "Agent built-in tools cleanup")
+    if not keys_released:
+        # Something was still held (a key that would not come up, or a call
+        # whose thread was still at the keyboard): one more try, if the
+        # budget allows. Not when the first one let go of everything.
+        await step(release_held_keys, "Agent held keys release retry")
 
     try:
         from utils.token_tracker import TokenTracker
