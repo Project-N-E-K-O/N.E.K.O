@@ -127,8 +127,11 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 "scope": str(args.get("scope", "project")),
                 # How it is known, and the files that show it. The host
                 # looks for the files and tells from both whether the
-                # lesson takes effect; nothing is checked here.
-                "confidence": str(args["confidence"]),
+                # lesson takes effect; nothing is checked here. A session
+                # that was opened before the tool asked for this keeps the
+                # definition it was opened with, and says nothing of it:
+                # the host takes such a lesson for inferred.
+                "confidence": str(args.get("confidence") or ""),
                 "evidence": [str(path) for path in args.get("evidence") or [] if str(path).strip()],
             }
             reply = await ask_host("note_lesson", payload, call)

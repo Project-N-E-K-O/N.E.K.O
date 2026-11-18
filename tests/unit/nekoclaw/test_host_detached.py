@@ -47,9 +47,21 @@ async def test_what_the_work_raises_is_raised_for_whoever_waits():
         await asyncio.wait_for(run_detached(work, name="nekoclaw-test"), 30)
 
 
-async def test_work_that_is_ended_by_something_that_is_no_exception_is_told_without_raising_that(monkeypatch):
+def _ended_threads(monkeypatch: Any) -> tuple[list[Any], threading.Event]:
+    """Note what ends a thread, in place of the hook that would report it; the event is set once one was noted."""
     ended: list[Any] = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: ended.append(args.exc_type))
+    noted = threading.Event()
+
+    def hook(args: Any) -> None:
+        ended.append(args.exc_type)
+        noted.set()
+
+    monkeypatch.setattr(threading, "excepthook", hook)
+    return ended, noted
+
+
+async def test_work_that_is_ended_by_something_that_is_no_exception_is_told_without_raising_that(monkeypatch):
+    ended, noted = _ended_threads(monkeypatch)
 
     def work() -> None:
         raise SystemExit(3)
@@ -60,10 +72,8 @@ async def test_work_that_is_ended_by_something_that_is_no_exception_is_told_with
         await asyncio.wait_for(future, 30)
     # What ended it is told as the cause.
     assert isinstance(raised.value.__cause__, SystemExit) and raised.value.__cause__.code == 3
-    for thread in threading.enumerate():
-        if thread.name == "nekoclaw-test-exit":
-            await asyncio.to_thread(thread.join, 30)
-    # What ended the work went on its way in the thread.
+    # What ended the work went on its way in the thread: waited for, as it gets there after the future is done.
+    assert await asyncio.to_thread(noted.wait, 30)
     assert ended == [SystemExit]
 
 
@@ -192,8 +202,7 @@ def test_work_waited_for_in_a_thread_is_given_up_on_when_its_time_is_up_and_goes
 
 
 def test_work_waited_for_in_a_thread_that_is_ended_by_something_that_is_no_exception_is_not_taken_to_be_at_it(monkeypatch):
-    ended: list[Any] = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: ended.append(args.exc_type))
+    ended, noted = _ended_threads(monkeypatch)
 
     def work() -> None:
         raise SystemExit(3)
@@ -201,6 +210,6 @@ def test_work_waited_for_in_a_thread_that_is_ended_by_something_that_is_no_excep
     # It came back, so it is not given up on as if its time were up; and what ended it is not raised here.
     with pytest.raises(RuntimeError, match="the work ended without a result") as raised:
         wait_detached(work, name="nekoclaw-test-wait", seconds=30)
-    assert ended == [SystemExit]
+    assert noted.wait(30) and ended == [SystemExit]
     # What ended it is told as the cause.
     assert isinstance(raised.value.__cause__, SystemExit) and raised.value.__cause__.code == 3

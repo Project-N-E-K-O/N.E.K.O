@@ -347,3 +347,34 @@ async def test_the_web_fetch_tool_reports_failures_to_the_model(tmp_path: Path) 
         assert json.dumps(llm.requests[1][-1]).count("blocked URL") == 1
     finally:
         await session.close()
+
+
+async def test_a_lesson_from_a_session_that_was_opened_before_the_tool_asked_how_it_is_known_goes_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import copy
+
+    from config.prompts.prompts_nekoclaw_tools import NEKOCLAW_TOOL_SCHEMAS
+
+    # The definition such a session keeps: nothing of how the lesson is known, nor of files.
+    earlier = copy.deepcopy(NEKOCLAW_TOOL_SCHEMAS["note_lesson"])
+    for name in ("confidence", "evidence"):
+        del earlier["parameters"]["properties"][name]
+    earlier["parameters"]["required"] = [name for name in earlier["parameters"]["required"] if name != "confidence"]
+    monkeypatch.setitem(NEKOCLAW_TOOL_SCHEMAS, "note_lesson", earlier)
+    lessons: list = []
+
+    events, _llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    # Handed to the host all the same, which takes a lesson that says nothing of it for inferred.
+    assert lessons == [
+        ("s1", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "scope": "project", "confidence": "", "evidence": []})
+    ]
+    assert events.of("tool_end")[0]["text"] == "lesson submitted."
