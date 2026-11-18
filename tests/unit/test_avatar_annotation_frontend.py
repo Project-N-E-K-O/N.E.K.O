@@ -879,6 +879,8 @@ const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const stopScreenSharing = async () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
+const isManualScreenShareEngaged = () => true;
+const notifyScreenShareStopped = () => { results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 function stopScreening() {
   nativeCaptureGeneration += 1;
   activeNativeCaptureSourceId = null;
@@ -1009,6 +1011,8 @@ const scheduleScreenCaptureIdleCheck = () => {};
 const safeT = (_key, fallback) => fallback;
 const rememberScreenSourceLabel = () => {};
 const resetScreenSharingControls = () => { results.controlsReset = true; };
+const isManualScreenShareEngaged = () => true;
+const notifyScreenShareStopped = () => { results.shareStopNotices = (results.shareStopNotices || 0) + 1; };
 const stopButton = () => ({ disabled: false });
 const screenButton = () => ({ classList: { contains: () => true } });
 const cancelPendingScreenSharingStart = () => false;
@@ -1097,6 +1101,8 @@ def test_title_remap_stops_active_media_stream_before_it_sends_the_old_source():
     assert out["selected"] == "window:new"
     assert out["stopped"] is True
     assert out["sent"] == []
+    # A remap restarts the share on the new source: no stop notice.
+    assert out.get("shareStopNotices") is None
 
 
 @pytest.mark.unit
@@ -1134,6 +1140,8 @@ def test_rejected_remembered_window_stops_active_media_stream(
     assert out["selected"] is None, expected_status
     assert out["stopped"] is True, expected_status
     assert out["sent"] == [], expected_status
+    # The share ends here, so the backend is told (screen_share_stopped).
+    assert out.get("shareStopNotices") == 1, expected_status
 
 
 @pytest.mark.unit

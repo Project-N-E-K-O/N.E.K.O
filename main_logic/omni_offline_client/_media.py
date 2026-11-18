@@ -581,9 +581,14 @@ class _MediaMixin:
 
         A receipt replaces them, like ``_evict_old_images``. Messages without
         recorded kinds (older turns, text-only turns) are left alone.
+
+        Edited in place, unlike eviction: this runs at the start of the next
+        turn and on consent revocation, while the stripped turn may still be
+        replying, and its cancellation / history-replacement write-back finds
+        that message by identity.
         """
         stripped = 0
-        for idx, msg in enumerate(self._conversation_history):
+        for msg in self._conversation_history:
             if not isinstance(msg, HumanMessage):
                 continue
             count = image_count(msg.content)
@@ -597,23 +602,24 @@ class _MediaMixin:
             keep = [i for i, kind in enumerate(kinds) if not should_strip(kind, prefit)]
             if len(keep) == count:
                 continue
-            replacement = replace(
-                msg,
-                content=without_image_pixels(msg.content, keep=keep),
-                metadata={
-                    **metadata,
-                    _HISTORY_IMAGE_KINDS_KEY: [kinds[i] for i in keep],
-                },
-            )
-            self._conversation_history[idx] = replacement
-            self._rebind_resident_anchor(msg, replacement)
+            msg.content = without_image_pixels(msg.content, keep=keep)
+            msg.metadata = {
+                **metadata,
+                _HISTORY_IMAGE_KINDS_KEY: [kinds[i] for i in keep],
+            }
             stripped += count - len(keep)
         return stripped
 
     def _strip_answered_live_frames(self) -> None:
-        """Live share frames serve the turn they rode; the next turn keeps only a receipt."""
+        """Live share frames serve the turn they rode; the next turn keeps only a receipt.
+
+        A turn whose mapping the budget ladder lost is stripped whole when it
+        held live frames: the user's attachment there loses its second turn
+        of pixels rather than a stale screen riding on.
+        """
         stripped = self._strip_history_images(
-            lambda kind, _prefit: kind == _IMAGE_KIND_LIVE
+            lambda kind, prefit: kind == _IMAGE_KIND_LIVE
+            or (kind == _IMAGE_KIND_UNKNOWN and _IMAGE_KIND_LIVE in prefit)
         )
         if stripped:
             logger.info("🖼️ Stripped %d live frame(s) from history after their turn", stripped)

@@ -50,9 +50,12 @@ def _b64(url: str) -> str:
 
 
 async def _turn(client, text, **kwargs):
+    """Run one turn; return the image URLs its request carried, read right away."""
     client.script = [[_text("ok"), _text("", "stop")]]
     await client.stream_text(text, **kwargs)
-    return client.requests[-1]
+    # The recorded request shares message objects with history, which later
+    # turns edit in place: snapshot the URLs now.
+    return _urls(client.requests[-1])
 
 
 def test_without_image_pixels_can_keep_chosen_images():
@@ -80,16 +83,16 @@ async def test_live_frames_keep_pixels_only_for_their_own_turn():
         client, "what am I looking at?",
         turn_images=(live, photo), turn_source="screen", turn_source_count=1,
     )
-    assert len(_urls(first)) == 2
+    assert len(first) == 2
     message = next(m for m in client._conversation_history if image_count(m.content))
     assert message.metadata["image_kinds"] == ["live", "user"]
 
     second = await _turn(client, "and now?")
-    urls = _urls(second)
+    urls = second
     # The live frame left; the photo the user attached is still there.
     assert len(urls) == 1
-    assert _b64(urls[0]) != _b64(_urls(first)[0])
-    assert _b64(urls[0]) == _b64(_urls(first)[1])
+    assert _b64(urls[0]) != _b64(first[0])
+    assert _b64(urls[0]) == _b64(first[1])
     first_turn = next(
         m for m in client._conversation_history
         if isinstance(m.content, list)
@@ -99,7 +102,7 @@ async def test_live_frames_keep_pixels_only_for_their_own_turn():
     assert first_turn.metadata["image_kinds"] == ["user"]
 
     third = await _turn(client, "still?")
-    assert len(_urls(third)) == 1
+    assert len(third) == 1
 
 
 @pytest.mark.asyncio
@@ -120,19 +123,19 @@ async def test_revocation_strips_automatic_captures_and_keeps_user_images():
     photo = _png_b64(41, 41, (4, 5, 6))
     client._pending_images = [photo]
     first = await _turn(client, "reply to proactive talk with my photo")
-    assert len(_urls(first)) == 2
+    assert len(first) == 2
     message = next(m for m in client._conversation_history if image_count(m.content))
     assert message.metadata["image_kinds"] == ["auto_screenshot", "user"]
 
     # The next-turn live rule leaves the proactive screenshot alone.
     second = await _turn(client, "hmm")
-    assert len(_urls(second)) == 2
+    assert len(second) == 2
 
     client.discard_auto_captured_history_images()
     third = await _turn(client, "privacy mode is on now")
-    urls = _urls(third)
+    urls = third
     assert len(urls) == 1
-    assert _b64(urls[0]) == _b64(_urls(first)[1])
+    assert _b64(urls[0]) == _b64(first[1])
 
 
 def test_revocation_fails_closed_when_the_image_mapping_was_lost():
@@ -144,9 +147,9 @@ def test_revocation_fails_closed_when_the_image_mapping_was_lost():
         {"type": "text", "text": "x"},
     ])
     message.metadata["image_kinds"] = ["unknown"]
-    message.metadata["image_prefit_kinds"] = ["live", "user"]
+    message.metadata["image_prefit_kinds"] = ["auto_screenshot", "user"]
     client._conversation_history.append(message)
-    client._strip_answered_live_frames()  # unknown is never stripped as live
+    client._strip_answered_live_frames()  # no live frame in it: not the live rule's business
     assert image_count(client._conversation_history[-1].content) == 1
     client.discard_auto_captured_history_images()
     assert image_count(client._conversation_history[-1].content) == 0
@@ -166,3 +169,33 @@ def test_consent_revocation_reaches_the_session_only_on_allowed_to_revoked():
     assert calls == [1]
     LLMSessionManager.update_proactive_vision_consent(manager, True)
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_stripping_keeps_the_message_identity_for_in_flight_write_back():
+    """A turn still replying finds its message by identity (cancel commit, history replacement)."""
+    client = _client()
+    await _turn(
+        client, "look", turn_images=(_png_b64(40, 40),), turn_source="screen", turn_source_count=1,
+    )
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    client._strip_answered_live_frames()
+    assert any(m is message for m in client._conversation_history)
+    assert image_count(message.content) == 0
+    assert message.metadata["image_kinds"] == []
+
+
+def test_budget_trimmed_turn_with_live_frames_is_stripped_whole_next_turn():
+    from utils.llm_client import HumanMessage
+
+    client = _client()
+    message = HumanMessage(content=[
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBB"}},
+        {"type": "text", "text": "x"},
+    ])
+    message.metadata["image_kinds"] = ["unknown", "unknown"]
+    message.metadata["image_prefit_kinds"] = ["live", "user"]
+    client._conversation_history.append(message)
+    client._strip_answered_live_frames()
+    assert image_count(message.content) == 0
