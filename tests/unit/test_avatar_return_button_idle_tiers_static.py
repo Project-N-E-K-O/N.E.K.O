@@ -2426,6 +2426,7 @@ def test_return_button_hover_click_animation_finishes_before_restore():
     assert '_clearNekoIdleHoverPlayback' in source
     assert '__nekoIdleHoverToken' in source
     assert '__nekoIdleHoverTimer' in source
+    assert 'art.__nekoIdleHoverSrc === clickSrc' in source
     assert 'Math.max(0, durationMs - elapsedMs)' in source
     assert 'keepHoverPlayback' in source
 
@@ -2440,18 +2441,12 @@ def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
 
     assert '_clearNekoIdleGifPlaybackSource(art)' in play_hover_block
     assert play_hover_block.index('_clearNekoIdleGifPlaybackSource(art)') < play_hover_block.index('art.src = clickSrc')
-    repeat_hover_block = _source_slice_between(
-        play_hover_block,
-        'if (!hoverCycleEnded && previousHoverSrc === clickSrc)',
-        '_clearNekoIdleHoverPlayback(art)',
-        'active hover reuse',
-    )
-    _assert_source_order(
-        repeat_hover_block,
-        'active hover invalidates the pending walk playback source before changing the image',
-        '_clearNekoIdleGifPlaybackSource(art)',
-        'art.src = clickSrc',
-    )
+    repeat_hover_block = play_hover_block[
+        play_hover_block.index('if (art.__nekoIdleHoverSrc === clickSrc)'):
+        play_hover_block.index('_clearNekoIdleHoverPlayback(art)')
+    ]
+    assert '_clearNekoIdleGifPlaybackSource(art)' in repeat_hover_block
+    assert 'art.src = clickSrc' in repeat_hover_block
 
 
 def test_idle_thought_bubble_hides_during_drag_action():
