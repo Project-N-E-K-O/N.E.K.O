@@ -3120,10 +3120,12 @@ class TaskAgentSpace:
             def as_judged(gone: tuple[str, ...]) -> None:
                 # Asked about once more as the note was judged, a file it
                 # named may be gone that was there a moment before: it did
-                # not count, and is told with the others that did not.
+                # not count, and is told with the others that did not. By
+                # its name: where it really was is long, and would be cut
+                # before the name.
                 dropped = [path for path in counted_files if path in gone]
                 counted_files[:] = [path for path in counted_files if path not in gone]
-                other_files.extend((path, "not found") for path in dropped)
+                other_files.extend((os.path.basename(path), "not found") for path in dropped)
 
             try:
                 taken = self._take_note(project, note, may_use_place=reserved, allowed=allowed)
