@@ -129,6 +129,7 @@ appearanceTest(
     const conversationHeaders = { 'X-Market-Feedback-Session': 'account-a' }
     let waiting = true
     let open = true
+    let nextMessageCursor: number | null = null
     const issueSummary = () => ({
       id: 71,
       title: issue.issue_title,
@@ -139,7 +140,7 @@ appearanceTest(
     const issueDetail = () => ({
       ...issueSummary(),
       messages: [{ ...original, id: issue.message_id, body: issue.body }],
-      next_message_cursor: null,
+      next_message_cursor: nextMessageCursor,
     })
     await stubMarketPluginCatalog(page)
     const avatarUrl = `${PREVIEW_ORIGIN}/ui/avatar-fixture.png`
@@ -212,10 +213,23 @@ appearanceTest(
       waiting = false
       return route.fulfill({ status: 201, json: { ...original, id: 194, body: payload.body } })
     })
+    await page.route(`${CONVERSATION}/issues/71/messages?after_id=${issue.message_id}`, (route) =>
+      route.fulfill({
+        headers: conversationHeaders,
+        json: {
+          items: [
+            { ...original, id: 194, body: 'Issue reply from the desktop' },
+            { ...original, id: 195, body: 'Another participant replied before close' },
+          ],
+          next_cursor: null,
+        },
+      })
+    )
     for (const action of ['close', 'reopen']) {
       await page.route(`${CONVERSATION}/issues/71/${action}`, (route) => {
         expect(route.request().headers()['x-market-feedback-session']).toBe('account-a')
         open = action === 'reopen'
+        nextMessageCursor = issue.message_id
         return route.fulfill({ json: issueDetail() })
       })
     }
@@ -245,6 +259,12 @@ appearanceTest(
     await expect(badge).toHaveCount(0)
     await dialog.getByRole('button', { name: '关闭 Issue', exact: true }).click()
     await expect(dialog.getByText('已关闭', { exact: true })).toBeVisible()
+    const loadMore = dialog.getByRole('button', { name: '加载更多', exact: true })
+    await expect(loadMore).toBeVisible()
+    await loadMore.click()
+    await expect(dialog.getByText('Another participant replied before close')).toBeVisible()
+    await expect(dialog.getByText('Issue reply from the desktop', { exact: true })).toHaveCount(1)
+    await expect(loadMore).toHaveCount(0)
     await dialog.getByRole('button', { name: '重新打开 Issue', exact: true }).click()
     await expect(dialog.getByText('开放中', { exact: true })).toBeVisible()
   }

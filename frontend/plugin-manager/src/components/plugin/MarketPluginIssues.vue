@@ -295,7 +295,7 @@ function keepLoadedMessages(
   return {
     ...fresh,
     messages: [...messages.values()].sort((left, right) => left.id - right.id),
-    next_message_cursor: current.next_message_cursor,
+    next_message_cursor: current.next_message_cursor ?? fresh.next_message_cursor,
   }
 }
 
