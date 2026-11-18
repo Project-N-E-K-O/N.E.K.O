@@ -97,7 +97,7 @@ Origin 只存指针，不存原文；`speaker` 字段预留为 `None`。Origin �
 
 ### 3.2 宿主侧登记表 `CallRegistry`
 
-新模块 `plugin/server/application/plugins/call_registry.py`（宿主进程内，单例）。
+新模块 `plugin/core/call_registry.py`（只在宿主进程里用；单例放在 `capability_gate.registry`）。
 
 - **键**：`(target_plugin_id, req_id)`。`req_id` 是宿主自己生成的投递 id。
 - **记录** `CallRecord`（frozen）：`call_id`（= `req_id`）、`trace_id`、`depth`、`target`、`event_type`、`event_id`、`caller`（来源插件，宿主投递时为 `None`）、`parent_call_id`、`chain`（从根到自己的插件 id 元组，登记时一次算好）、`origin`（kind、ref）、`started`（monotonic）、`flags`（如 `possible_laundering`）。另有可变的 `uses: Counter[capability]`，只在登记表锁内改。
@@ -107,7 +107,9 @@ Origin 只存指针，不存原文；`speaker` 字段预留为 `None`。Origin �
 - **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`，调用照常进行（这时候它的子调用按插件自发处理）。
 - **并发**：宿主里多个 owner loop 和路由 loop 都会碰它，用 `threading.Lock`，临界区只有字典操作。
 
-宿主内部的链信息全部**显式传参**（`call_origin` / `call_parent` 关键字参数），不靠 contextvar 跨 loop。P0 测试表明 contextvar 在 3.11 下其实能经 `run_coroutine_threadsafe` 带过去（见 5.1），但这依赖 `Handle` 的实现细节，不作为设计前提。
+宿主调用点用 `delivery_link(CallLink(...))` 说明这次投递的 Origin 和父记录（任务内的上下文值，只在同一个协程、同一个 loop 里有效）。`PluginCommunicationResourceManager.trigger` / `trigger_custom_event` 在**调用方的 loop 上**读出它，再作为显式参数 `call_link=` 交给跨 loop 执行的 `_trigger_local` / `_trigger_custom_event_local`，所以不依赖 contextvar 跨 loop。P0 测试表明 contextvar 在 3.11 下其实能经 `run_coroutine_threadsafe` 带过去（见 5.1），但这依赖 `Handle` 的实现细节，不作为设计前提；有测试证明跨 loop 时用的是显式参数。
+
+落地说明（和最初的计划不同）：计划原本让 `call_origin` / `call_parent` 作为关键字参数穿过 `PluginHost.trigger`、`dispatch_service.trigger_custom_event`、`trigger_service`。实现时发现仓库里有十几处测试替身实现了 `trigger(entry_id, args, timeout)` 这个公开签名，第三方代码也可能有；改成上面的做法后公开签名一个都没动，也就不再和 #3771 改同一批函数。
 
 插件互调时的链：`handle_plugin_to_plugin` 先 `lookup(ctx.from_plugin, ctx.parent_request_id)` 得到调用方记录；查到则新记录 `chain = 调用方.chain + (target,)`、Origin 继承；查不到则 `chain = (caller, target)`、Origin 为 `plugin_self`，并在调用方当时 `has_live_chain` 时给新记录打 `possible_laundering`。**调用方插件本身总在链上**，因为它是连接绑定的身份；丢父 id 只会丢掉它更上游的调用方。
 
@@ -125,17 +127,17 @@ def decide(capability: str, chain: tuple[str, ...], granted: Callable[[str], fro
 - `Decision` 同时给出 `caller_blocked`、`self_blocked` 两个布尔，阶段开关据此决定拦不拦（`should_reject(decision, mode, stage)`；P1 恒为 `False`）。
 - `granted` 读失败（consent 文件坏了）按空集处理，并在审计里标 `consent_unavailable`；observe 下不影响调用，enforce 下按失败放行还是失败拒绝，在 P2 的 PR 里定。
 
-宿主所有判定点都调同一个入口 `CapabilityGate.check(plugin_id, parent_request_id, capability, operation)`（放在 `call_registry.py` 旁边的 `capability_gate.py`）：查表 → 组链（查不到时链 = `(plugin_id,)`，打 `unattributed`，`has_live_chain` 时再打 `possible_laundering`）→ `decide` → 记审计 → 按开关决定是否抛 `CAPABILITY_NOT_GRANTED`。**它不读 `_ctx`，也不读插件递交的视图**。
+宿主所有判定点都调同一个入口 `capability_gate.check(plugin_id, parent_request_id, capability, operation)`（`plugin/server/application/plugins/capability_gate.py`）：查表 → 组链（查不到时链 = `(plugin_id,)`，打 `unattributed`，`has_live_chain` 时再打 `possible_laundering`）→ `decide` → 记审计 → 按开关决定是否抛 `CAPABILITY_NOT_GRANTED`。**它不读 `_ctx`，也不读插件递交的视图**。
 
 ### 3.4 RPC handler 的判定入口（对偶）
 
 - `RpcContext` 加字段 `parent_request_id: str | None = None`（有默认值，不影响现有构造）。`RpcDispatcher.dispatch` 从请求里取 `_rpc_parent_request_id`，只接受长度不超过 128 的字符串，否则为 `None`。
 - `build_request_handlers` 里用同一个包装器 `capability_checked(capability, handler)` 包上 2.2 表里的六个操作，能力名来自一张表 `CAPABILITY_BY_OPERATION`。包装器保留 `owns_deadline` 标记。六个 handler 的判定入口完全一样，新增同类 handler 只需在表里加一行；有一条测试断言「表里的每个操作都被包了，且没有别的操作被包」。
-- 包装器第一步只比较一次开关，`off` 时直接调原 handler，不查表、不读 consent、不写审计。
+- 包装器第一步只比较一次开关，`off` 时直接调原 handler，不查表、不读 consent、不写审计。包装器保留原 handler 的 `owns_deadline` 等标记。
 
 ### 3.5 MESSAGE_PUSH 的判定入口
 
-`_route_message` 在 724 行之后：开关不是 `off` 时，`parent = msg.pop("_rpc_parent_request_id", None)`，再 `CapabilityGate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")`。observe 下照常转发；P2 起拒绝时不转发、写审计。`pop` 保证下游（state 记录、消息平面、`proactive_bridge`）看到的字节和现在一样。
+`_route_message` 在 724 行之后：开关不是 `off` 时，`parent = msg.pop("_rpc_parent_request_id", None)`，再 `capability_gate.check(self.plugin_id, parent, "messages.push", "MESSAGE_PUSH")`。observe 下照常转发；P2 起拒绝时不转发、写审计。`pop` 保证下游（state 记录、消息平面、`proactive_bridge`）看到的字节和现在一样。
 
 ### 3.6 SDK 侧带父 id
 
@@ -185,7 +187,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 写入点：
 
 - `forward`、`allow_summary`：登记表摘除时（`_trigger_local` / `_trigger_custom_event_local` 的 `finally`）。宿主直接投递（`/runs`、工具、UI）也写，链长为 1。
-- `decision`：`CapabilityGate.check`。`would_deny` / `deny` 和带 `possible_laundering` 的放行**立即写**；有链的放行只给记录的 `uses` 计数，摘除时进 `allow_summary`。
+- `decision`：`capability_gate.check`。`would_deny` / `deny` 和带 `possible_laundering` 的放行**立即写**；有链的放行只给记录的 `uses` 计数，摘除时进 `allow_summary`。
 - `unattributed_summary`：没有链、也不可疑的放行（定时器、后台任务）按 `(plugin, capability)` 计数，60 秒刷一次，只写非零项；宿主关停时再刷一次。
 
 **不记**参数、返回值、对话正文、异常原文。`result` 只写错误码（`PluginError` 的 `code`，或 `PLUGIN_EXECUTION_FAILED` 这类固定码），`event_id` 是插件代码里的入口名，不是用户内容。测试用带哨兵字符串的参数、返回值、异常消息、push 正文跑一遍，断言 JSONL 和环形缓冲里都找不到哨兵。
@@ -199,7 +201,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 
 ### 3.10 错误码 `CAPABILITY_NOT_GRANTED`
 
-常量定义在 `plugin/core/capability_policy.py`（`CAPABILITY_NOT_GRANTED = "CAPABILITY_NOT_GRANTED"`）和构造 `details` 的函数：`{"capability", "blocked_by": [...], "reason": "self_not_approved" | "caller_chain"}`。P1 只定义；observe 下不会返回给调用方，有测试断言这一点。P2 起由 `CapabilityGate` 以 `ServerDomainError(code, ..., 403)` 抛出，经 `request_router._domain_error` 变成 RPC 错误，SDK 侧映射成 `PluginCallError.code`。
+常量定义在 `plugin/core/capability_policy.py`（`CAPABILITY_NOT_GRANTED = "CAPABILITY_NOT_GRANTED"`）和构造 `details` 的函数：`{"capability", "blocked_by": [...], "reason": "self_not_approved" | "caller_chain"}`。P1 只定义；observe 下不会返回给调用方，有测试断言这一点。P2 起由 `capability_gate.check` 以 `ServerDomainError(code, ..., 403)` 抛出，经 `request_router._domain_error` 变成 RPC 错误，SDK 侧映射成 `PluginCallError.code`。
 
 ## 4. 默认开关值
 
@@ -231,29 +233,29 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 
 ### 5.2 P1：登记表 + 视图 + 审计 + observe（本 PR）
 
-改动点（✳ 表示和 #3771 改的是同一个函数，见第 8 节）：
+改动点（落地后的实际位置）：
 
 | 文件 | 函数 / 位置 | 改动 |
 |---|---|---|
-| `plugin/settings.py` | 模块级 | `PLUGIN_CAPABILITY_POLICY` |
-| `plugin/core/capability_policy.py`（新） | `decide`、`Decision`、`should_reject`、错误码常量 | 纯函数 |
-| `plugin/core/call_chain_view.py`（新） | `CallChainView`、`build_view`、`self_only_view` | 视图数据结构，子进程用 |
-| `plugin/server/application/plugins/call_registry.py`（新） | `CallRegistry`、`CallRecord` | 登记表 |
-| `plugin/server/application/plugins/capability_gate.py`（新） | `CapabilityGate.check`、`capability_checked` 包装器、`CAPABILITY_BY_OPERATION` | 判定入口 |
-| `plugin/server/application/plugins/call_audit.py`（新） | 环形缓冲、JSONL 写线程、滚动、去重、聚合 | 审计 |
-| `plugin/core/rpc.py` | `RpcContext`、`RpcDispatcher.dispatch` | 加 `parent_request_id` |
-| `plugin/core/communication.py` | `trigger`、`_trigger_local`、`trigger_custom_event`、`_trigger_custom_event_local`、`_route_message` | 接 `call_origin` / `call_parent` 关键字参数，登记 / 摘除，下发 `_call_chain`；MESSAGE_PUSH 判定 |
-| `plugin/core/host.py` | `PluginHost.trigger`、`PluginHost.trigger_custom_event`（透传关键字参数）；子进程 `_execute_command`（套视图 scope） | |
-| `plugin/core/context.py` | `_CURRENT_CALL_CHAIN`、`_call_chain_scope`、`call_chain` 属性；`push_message` 带父 id | |
+| `plugin/settings.py` | 模块级 | `PLUGIN_CAPABILITY_POLICY`（不进 `PUBLIC_SYSTEM_CONFIG_KEYS`，插件读到的系统配置不变） |
+| `plugin/core/capability_policy.py`（新） | `decide`、`Decision`、`should_reject`、`not_granted_error`、`current_mode` | 纯函数和开关读取 |
+| `plugin/core/call_registry.py`（新） | `CallRegistry`、`CallRecord`、`CallLink`、`Origin`、`delivery_link` | 登记表和调用点的链信息 |
+| `plugin/sdk/shared/core/call_chain_view.py`（新） | `CallChainView`、`view_from_wire`、`self_only_view`、`call_chain_scope` | 视图，子进程用（放在 SDK 里：SDK 不 import `plugin.core`） |
+| `plugin/server/application/plugins/capability_gate.py`（新） | `check`、`capability_checked`、`CAPABILITY_BY_OPERATION`、`begin_call` / `end_call`、`link_for_plugin_call`、`flush_and_close` | 判定入口、登记 / 摘除 |
+| `plugin/server/application/plugins/call_audit.py`（新） | `CallAudit` | 环形缓冲、JSONL 写线程、滚动、去重、聚合 |
+| `plugin/core/rpc.py` | `RpcContext`、`RpcDispatcher.dispatch`、`current_request_id`、`bounded_parent_request_id` | 加 `parent_request_id` |
+| `plugin/core/communication.py` | `trigger`、`_trigger_local`、`trigger_custom_event`、`_trigger_custom_event_local`、`_send_delivery`（新）、`_route_message`、`_check_message_push`（新） | 登记 / 摘除，下发 `_call_chain`；MESSAGE_PUSH 判定 |
+| `plugin/core/host.py` | 子进程 `_execute_command` | 套视图 scope |
+| `plugin/core/context.py` | `call_chain` 属性；`push_message` 在大小检查后带父 id | |
+| `plugin/sdk/shared/core/context.py` | `SdkContext.call_chain` | SDK 门面转发 |
 | `plugin/server/messaging/handlers/registry.py` | `build_request_handlers` | 六个操作包上判定 |
-| `plugin/server/messaging/handlers/plugin_to_plugin.py` | `handle_plugin_to_plugin` | 查父记录，传 `call_parent` |
-| `plugin/server/application/plugins/dispatch_service.py` | ✳`trigger_custom_event`（加关键字参数透传）、`trigger_custom_event_subscribers`（传 `chat_hook`） | |
-| `plugin/runs/trigger_service.py` | ✳`_execute_trigger`、`trigger_plugin`（透传 `call_origin`） | |
-| `plugin/runs/manager.py` | `_execute_run` | 传 `run` Origin |
-| `plugin/server/routes/llm_tools.py` | 两个回调 | 传 `chat_tool` / `chat_hook` Origin |
-| `plugin/server/application/plugins/ui_query_service.py` | `call_surface_action` | 传 `ui_action` Origin |
+| `plugin/server/messaging/handlers/plugin_to_plugin.py` | `handle_plugin_to_plugin` | 查父记录，设 `delivery_link` |
+| `plugin/runs/manager.py` | `_execute_run` | `run` Origin |
+| `plugin/server/routes/llm_tools.py` | 两个回调 | `chat_tool` / `chat_hook` Origin |
+| `plugin/server/application/plugins/ui_query_service.py` | `call_surface_action` | `ui_action` Origin |
+| `plugin/server/application/plugins/voice_transcript_bridge.py` | `resolve_voice_transcript_request` | `chat_hook` Origin |
 | `plugin/server/routes/plugin_audit.py`（新）、`plugin/server/http_app.py` | 路由 + 注册 | |
-| `plugin/server/lifecycle.py` | 关停 | 刷聚合、停写线程 |
+| `plugin/server/lifecycle.py` | `startup`（重新打开审计）、`_shutdown_internal`（刷聚合、有时限地刷队列） | |
 | `docs/plugins/sdk-reference.md` 及 zh-CN、ja 版 | `ctx.call_chain` 一节 | 插件文档 |
 
 测试（`plugin/tests/unit/` 下新文件，一个主题一个文件）：
@@ -266,7 +268,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 - `unattributed`、`possible_laundering` 两种标记。
 - 审计不含隐私：哨兵出现在参数、返回值、异常消息、push 正文里，JSONL 和环形缓冲里都没有。
 - observe 不拦：`CAPABILITY_NOT_GRANTED` 从不返回给调用方。
-- `off`：登记表、审计、判定都没被调用（用计数桩断言调用次数为 0），handler 没被包，push 信封里没有 `_rpc_parent_request_id`，TRIGGER 消息里没有 `_call_chain`。
+- `off`：登记表、审计、判定都没被调用（用计数桩断言调用次数为 0），包装器直接调原 handler，push 信封里没有 `_rpc_parent_request_id`，TRIGGER 消息里没有 `_call_chain`。
 - 审计接口：本机请求 200；带转发头、非回环 Host 的请求 403；`off` 时返回空。
 - 滚动：超过阈值轮转，最多三个旧文件；队列满时丢弃计数增加、不阻塞。
 - observe 下现有行为不变：push 到达消息平面的记录和 `off` 时逐键相同；TRIGGER 的 `args` 逐字节相同；现有 `plugin/tests` 全部通过。
@@ -281,7 +283,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 
 ### 5.3 P2：强制防借道
 
-- `enforce` 下，`CapabilityGate` 在 `decision.caller_blocked` 时：RPC 抛 `CAPABILITY_NOT_GRANTED`；MESSAGE_PUSH 不转发、写 `deny` 审计。`self_not_approved` 和 `unattributed` 仍然放行。
+- `enforce` 下，`capability_gate.check` 在 `decision.caller_blocked` 时：RPC 抛 `CAPABILITY_NOT_GRANTED`；MESSAGE_PUSH 不转发、写 `deny` 审计。`self_not_approved` 和 `unattributed` 仍然放行。
 - SDK `push_message` 用 `ctx.call_chain.allows("messages.push")` 同步预检，拒绝时返回 `{"ok": False, "submitted": False, "reason": "capability_not_granted"}`（和现有 `payload_too_large` 同一套返回形状），不抛异常；宿主仍做最终判定。
 - SDK：`PluginCallError.code == "CAPABILITY_NOT_GRANTED"` 的文档和示例；视需要做 `call_chain` 关键字参数注入。
 - 补上 P1 没覆盖到的 `conversations.read` 入口：把 `bus.conversations.get` / `get_message` 挪到需要认证的控制 RPC（新增两个 handler，挂同一个判定包装器），SDK 对外接口不变，消息平面上的旧入口保留一个版本；要压测读对话的延迟和背压（今天这条路有独立的并发槽）。
@@ -326,11 +328,11 @@ P2 起如果 SDK 预检的拒绝原因要在界面显示、P3 的待确认通知
 
 ## 8. 和 PR #3771 的关系
 
-#3771（`output_schema`）改了 `entry_executor.invoke` / `execute_entry_command`、`dispatch_service.trigger_custom_event` 的异常分支、`trigger_service._execute_trigger` 的异常分支、`registry.py`、SDK 装饰器。本计划：
+#3771（`output_schema`）改了 `entry_executor.invoke` / `execute_entry_command`、`dispatch_service.trigger_custom_event` 的异常分支、`trigger_service._execute_trigger` 的异常分支、`plugin/core/registry.py`、SDK 装饰器。落地后本 PR 和它**不改同一个函数**：
 
-- 视图 scope 放在子进程 `host.py` 的 `_execute_command`，**不改 `entry_executor.py`**。
-- 不碰 `registry.py`（插件 entry 登记那个，不是 handler 登记表）和 SDK 装饰器。
-- 必须改的两处同名函数：`dispatch_service.trigger_custom_event`（签名加一个关键字参数，并透传给 `host.trigger_custom_event`）和 `trigger_service._execute_trigger` / `trigger_plugin`（透传 `call_origin`）。改动只在签名和调用那一行，和 #3771 改的异常分支不重叠。#3771 合并后用 merge 合 main。
+- 视图 scope 放在子进程 `host.py` 的 `_execute_command`，不改 `entry_executor.py`。
+- 链信息走 `delivery_link`（3.2 落地说明），不改 `dispatch_service`、`trigger_service`。
+- 文件层面都改了 `docs/*/plugins/sdk-reference.md`，位置不同（#3771 在入口一节，本 PR 在跨插件调用一节）。#3771 合并后用 merge 合 main。
 
 ## 9. 已知缺口（P1 不覆盖，已排进后续阶段）
 

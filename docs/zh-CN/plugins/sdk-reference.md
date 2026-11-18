@@ -328,6 +328,28 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 所有方法返回 `Result` 类型 — 在使用 `.value` 之前，请先用 `isinstance(result, Ok)` 检查。
 
+### 谁调了你：`ctx.call_chain`
+
+`self.ctx.call_chain` 是当前这次调用「从哪来」的只读视图。它由宿主按自己的记录生成；插件只能读，改了也不影响宿主。
+
+```python
+chain = self.ctx.call_chain
+chain.callers        # 一路调到这里的插件 id，根在前；宿主直接调你时是 ()
+chain.origin.kind    # "run"、"chat_tool"、"chat_hook"、"ui_action"、"plugin_self" 或 "system"
+chain.origin.ref     # run id 这类编号，不含消息原文
+chain.hops           # 每一步 (plugin_id, event_type, event_id)
+chain.rights         # 链上每个插件都被用户确认过的能力
+chain.rights_known   # 宿主没给出时为 False（见下）
+chain.allows("memory.read")
+```
+
+- 永远不是 `None`。不在调用里（定时器、入口返回后还在跑的后台任务），或宿主把开关关了时，它是只含你自己的链，`rights_known=False`。
+- `allows()` 只是参考。权限未知时它一律回答 `False`，所以「没有」和「不知道」读出来都是 `False`，要区分就看 `rights_known`。每次使用由宿主自己判定：这里是 `False` 不代表宿主一定拒绝，是 `True` 也只是投递那一刻的快照。
+- 交给 `loop.run_in_executor` 或裸 `threading.Thread` 的工作会丢掉调用上下文，宿主会把这些请求当成插件自发的。`asyncio.to_thread` 会保留；自己开线程时，用 `contextvars.copy_context().run(...)` 包住要做的事。
+- 它和旧的 `plugin.sdk.shared.runtime.call_chain`（只在一个插件进程内部记调用）是两回事。
+
+宿主会记录插件互调和能力使用，用于审计（只记编号和能力名，不记参数、返回值和消息原文）。设计见 [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
+
 ---
 
 ## PluginStore（持久化存储）
