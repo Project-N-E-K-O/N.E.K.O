@@ -41,6 +41,8 @@ export async function handleScreenInspection(request, state, socket) {
         const bound = stream && typeof window.getScreenCaptureStreamSourceId === 'function'
             && window.getScreenCaptureStreamSourceId(stream) === id;
         if (id.startsWith('window:')) {
+            // A picker fallback can leave the former native ID selected.
+            if (stream && !bound) throw new Error('scope_changed');
             return {key: selectedKey, restricted: true, id, stream: bound ? stream : null};
         }
         if (displaySurface === 'window' || displaySurface === 'browser') {

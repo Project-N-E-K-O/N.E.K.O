@@ -264,9 +264,55 @@ function sharingFixture({prompting = false, storage = {}, sources} = {}) {
 }
 function sharedStream(displaySurface) {
     const track = {readyState: 'live', getSettings: () => ({displaySurface}),
+        addEventListener() {},
         stop() { this.readyState = 'ended'; }};
     return {active: true, getVideoTracks: () => [track], getTracks: () => [track]};
 }
+
+for (const surface of ['window', 'browser', 'monitor']) {
+    await test(`picker fallback cannot inspect the stale native window: ${surface}`, async () => {
+        const f = sharingFixture();
+        await f.window.selectScreenSource('window:2', 'Editor');
+        const stream = sharedStream(surface);
+        const acquisitions = [];
+        f.mediaDevices.getUserMedia = async options => {
+            acquisitions.push(options.video.mandatory.chromeMediaSourceId);
+            throw new Error('native capture unavailable');
+        };
+        let prompts = 0;
+        f.mediaDevices.getDisplayMedia = async () => { prompts++; return stream; };
+        assert.equal(await f.window.acquireOrReuseCachedStream({allowPrompt: true}), stream);
+        assert.deepEqual(acquisitions, ['window:2']);
+        assert.equal(prompts, 1);
+        assert.equal(f.state.selectedScreenSourceId, 'window:2');
+        assert.equal(f.window.getScreenCaptureStreamSourceId(stream), undefined);
+        const enumerations = f.enumerations.length;
+        for (const operation of ['overview', 'window', 'validate']) {
+            await run({operation, window_id: 'window:2', request_id: operation}, f.state, f.socket);
+            assert.equal(f.sent.at(-1).error, 'scope_changed');
+            assert.equal(f.sent.at(-1).data_url, undefined);
+            assert.equal(f.sent.at(-1).windows, undefined);
+        }
+        assert.deepEqual(f.captures, [], 'inspection must not capture the formerly selected window');
+        assert.equal(f.enumerations.length, enumerations, 'inspection does not enumerate stale sources');
+        assert.equal(prompts, 1, 'inspection does not prompt for another source');
+        assert.equal(f.state.screenCaptureStream, stream);
+        assert.equal(stream.getVideoTracks()[0].readyState, 'live');
+    });
+}
+await test('a bound native window stream still permits read-only inspection', async () => {
+    const f = sharingFixture();
+    await f.window.selectScreenSource('window:2', 'Editor');
+    const stream = sharedStream('window');
+    f.mediaDevices.getUserMedia = async () => stream;
+    assert.equal(await f.window.acquireOrReuseCachedStream({allowPrompt: true}), stream);
+    assert.equal(f.window.getScreenCaptureStreamSourceId(stream), 'window:2');
+    await run({operation: 'overview', request_id: 'bound-native'}, f.state, f.socket);
+    assert.equal(f.sent.at(-1).success, true);
+    assert.deepEqual(f.captures, ['window:2']);
+    assert.equal(f.sent.at(-1).source_id, 'window:2');
+    assert.equal(stream.getVideoTracks()[0].readyState, 'live');
+});
 
 for (const id of ['window:2', 'screen:1']) {
     await test(`forced reselection invalidates persisted ${id} scopes`, async () => {

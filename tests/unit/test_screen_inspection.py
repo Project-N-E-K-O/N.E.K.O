@@ -630,6 +630,53 @@ async def test_tool_invocation_rechecks_owner_after_thinking_bubble(stale):
                 await task
 
 
+@pytest.mark.parametrize("stale", ["session", "speech", "websocket", "reply"])
+async def test_tool_invocation_rechecks_capture_owner_after_image_route(stale):
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolCall, ToolRegistry
+
+    manager, calls = fixture()
+    manager.tool_registry = ToolRegistry()
+    manager.tool_registry.register(m.build_tools(manager)[0])
+    manager._only_looks_up = lambda name: True
+    manager._route_tool_images = ToolCallingMixin._route_tool_images.__get__(manager)
+    session = manager.session
+    owner = session._active_reply_owner = object()
+    session.model, session.vision_model, session.vision_base_url = "chat", "vision", None
+    preparing, release = asyncio.Event(), asyncio.Event()
+
+    async def switch_model(*args, **kwargs):
+        preparing.set()
+        await release.wait()
+
+    session.switch_model = switch_model
+    task = asyncio.create_task(ToolCallingMixin._on_tool_call(manager, ToolCall(
+        call_id="interrupted", name="read_current_screen", arguments={}, reply_owner=owner,
+    ), invoking_session=session))
+    try:
+        await asyncio.wait_for(preparing.wait(), 5)
+        assert len(calls) == 1
+        if stale == "session":
+            manager.session = object.__new__(OmniOfflineClient)
+            manager.session._active_reply_owner = owner
+        elif stale == "speech":
+            manager.current_speech_id = "replacement-turn"
+        elif stale == "websocket":
+            manager.websocket = SimpleNamespace(send_json=manager.websocket.send_json)
+        else:
+            session._active_reply_owner = object()
+        release.set()
+        result = await asyncio.wait_for(task, 5)
+        assert result.is_error and result.output["reason"] == "superseded"
+        assert result.images == []
+        assert "windows" not in result.output and "snapshot_id" not in result.output
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 @pytest.mark.parametrize("empty", [None, "", [], {}])
 async def test_optional_empty_screen_fields_do_not_block_capture(empty):
     manager, calls = fixture()

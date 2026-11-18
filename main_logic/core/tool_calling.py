@@ -199,21 +199,38 @@ class ToolCallingMixin:
                 )
         # Lighting the bubble can yield to a replacement session or reply.
         # Recheck immediately before capture, with no intervening await.
+        capture_owner = None
         if call.name == "read_current_screen":
+            from main_logic.screen_inspection import _owner, failure
+
             if (invoking_session is not None and invoking_session is not self.session) or (
                 call.reply_owner is not None
                 and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
             ):
-                from main_logic.screen_inspection import failure
-
                 rejected = failure(self, "superseded")
                 return ToolResult(call_id=call.call_id, name=call.name,
                                   output=rejected["output"], is_error=True)
+            capture_owner = _owner(self)
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,
             )
+        # Preparing the vision route can yield after capture's final check.
+        # Keep its original revocation epoch, even if consent is enabled again.
+        if capture_owner is not None:
+            reason = None
+            if getattr(self, "_proactive_vision_enabled", None) is False:
+                reason = "disabled"
+            elif capture_owner != _owner(self) or (
+                call.reply_owner is not None
+                and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
+            ):
+                reason = "superseded"
+            if reason:
+                rejected = failure(self, reason)
+                return ToolResult(call_id=call.call_id, name=call.name,
+                                  output=rejected["output"], is_error=True)
         return result
 
     async def _route_tool_images(

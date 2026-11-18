@@ -287,3 +287,160 @@ def test_screen_source_does_not_add_a_recurring_system_notice():
     assert client._conversation_history == original
     client._tool_definitions = []
     assert client._dialog_messages_for_provider(original) == original
+
+
+def _screen_routing_client(provider, monkeypatch):
+    """Real capture, registry, image routing and provider loop; fake only I/O."""
+    import main_logic.omni_offline_client._genai_support as genai
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic import screen_inspection
+    from main_logic.tool_calling import ToolRegistry
+    from tests.unit.test_offline_turn_cancellation_e2e import _client, _text
+    from tests.unit.test_screen_inspection import fixture
+    from tests.unit.test_tool_calling import _GenaiChunk, _GenaiPart, _GenaiFunctionCall
+
+    monkeypatch.setattr(genai, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", lambda: None)
+    manager, captures = fixture()
+    client = _client(provider, cap=2)
+    manager.session = client
+    manager._proactive_vision_enabled = True
+    manager._only_looks_up = lambda name: True
+    manager._route_tool_images = ToolCallingMixin._route_tool_images.__get__(manager)
+    manager.tool_registry = ToolRegistry()
+    tool = screen_inspection.build_tools(manager)[0]
+    manager.tool_registry.register(tool)
+    client._tool_definitions = [tool]
+    client.vision_model = "gemini-2.5-pro" if provider == "gemini" else "vision-test"
+    client.vision_base_url = None
+    client.vision_api_key = "fake"
+
+    async def handler(call):
+        return await ToolCallingMixin._on_tool_call(manager, call, invoking_session=client)
+
+    client.on_tool_call = handler
+    if provider == "gemini":
+        client.script = [
+            [_GenaiChunk([_GenaiPart(function_call=_GenaiFunctionCall("read_current_screen", id_="capture"))])],
+            [_GenaiChunk([_GenaiPart(text="The tool has finished.")])],
+        ]
+    else:
+        client.script = [[LLMStreamChunk(
+            content="", finish_reason="tool_calls", tool_call_deltas=[{
+                "index": 0, "id": "capture", "type": "function",
+                "function": {"name": "read_current_screen", "arguments": "{}"},
+            }],
+        )], [_text("The tool has finished."), _text("", "stop")]]
+    requests = []
+    if provider == "gemini":
+        original = client._genai_client.aio.models.generate_content_stream
+
+        async def record(**kwargs):
+            requests.append(copy.deepcopy(kwargs["contents"]))
+            return await original(**kwargs)
+
+        client._genai_client.aio.models.generate_content_stream = record
+    else:
+        original = client.llm.astream
+
+        def record(messages, **kwargs):
+            requests.append(copy.deepcopy(messages))
+            return original(messages, **kwargs)
+
+        client.llm.astream = record
+    return manager, client, captures, requests
+
+
+def _screen_routing_request(view, provider):
+    if provider == "gemini":
+        images = [part.inline_data for content in view for part in content.parts if part.inline_data]
+        outputs = [part.function_response.response for content in view for part in content.parts
+                   if part.function_response]
+        text = json.dumps([content.model_dump() for content in view], ensure_ascii=False, default=repr)
+    else:
+        images = [part for message in view if isinstance(message, dict)
+                  and isinstance(message.get("content"), list)
+                  for part in message["content"] if part.get("type") == "image_url"]
+        outputs = [json.loads(message["content"]) for message in view
+                   if isinstance(message, dict) and message.get("role") == "tool"]
+        text = json.dumps(view, ensure_ascii=False, default=repr)
+    return images, outputs, text
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+@pytest.mark.parametrize("consent", ["unchanged", "disabled", "reenabled"])
+@pytest.mark.parametrize("route", ["ready", "failed"])
+async def test_image_route_rechecks_capture_consent_before_provider_request(provider, consent, route, monkeypatch):
+    from main_logic.core.proactive import ProactiveMixin
+
+    manager, client, captures, requests = _screen_routing_client(provider, monkeypatch)
+    preparing, release = asyncio.Event(), asyncio.Event()
+
+    async def switch_model(model, *, use_vision_config):
+        assert model == client.vision_model and use_vision_config is True
+        preparing.set()
+        await release.wait()
+        if route == "failed":
+            raise RuntimeError("vision route unavailable")
+
+    client.switch_model = switch_model
+    task = asyncio.create_task(client.stream_text("Read the current screen"))
+    try:
+        await asyncio.wait_for(preparing.wait(), 5)
+        assert len(captures) == len(requests) == 1
+        snapshot_id = next(iter(manager._screen_inspection_state["images"]))
+        if consent != "unchanged":
+            ProactiveMixin.update_proactive_vision_consent(manager, False)
+            if consent == "reenabled":
+                ProactiveMixin.update_proactive_vision_consent(manager, True)
+        release.set()
+        await asyncio.wait_for(task, 5)
+        assert len(requests) == 2
+        images, outputs, text = _screen_routing_request(requests[-1], provider)
+        assert len(outputs) == 1
+        if consent == "unchanged":
+            assert outputs[0]["status"] == "captured"
+            assert "Test APP" in text and snapshot_id in text
+            assert len(images) == (1 if route == "ready" else 0)
+            if route == "failed":
+                assert outputs[0]["_image_warnings"]
+        else:
+            assert images == []
+            assert "Test APP" not in text and snapshot_id not in text
+            assert outputs[0]["status"] == "unavailable"
+            assert outputs[0]["reason"] == ("disabled" if consent == "disabled" else "superseded")
+            assert not client._publish_provider_frames.call_args_list
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("provider", ["openai", "gemini"])
+async def test_cancellation_during_image_route_never_sends_capture(provider, monkeypatch):
+    manager, client, captures, requests = _screen_routing_client(provider, monkeypatch)
+    preparing, release = asyncio.Event(), asyncio.Event()
+
+    async def switch_model(*args, **kwargs):
+        preparing.set()
+        await release.wait()
+
+    client.switch_model = switch_model
+    task = asyncio.create_task(client.stream_text("Read the current screen"))
+    try:
+        await asyncio.wait_for(preparing.wait(), 5)
+        assert len(captures) == len(requests) == 1
+        snapshot_id = next(iter(manager._screen_inspection_state["images"]))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(requests) == 1
+        history = json.dumps(client._conversation_history, default=repr)
+        assert "Test APP" not in history and snapshot_id not in history
+        assert not client._publish_provider_frames.call_args_list
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

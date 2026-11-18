@@ -450,6 +450,7 @@ async def test_builtin_screen_is_lookup_without_reclassifying_a_plugin(source):
     from main_logic.tool_calling import ToolDefinition
 
     manager = ToolCallingMixin()
+    manager.session, manager.current_speech_id, manager.websocket = object(), 'turn', None
     manager.tool_registry = ToolRegistry()
     manager.tool_registry.register(ToolDefinition(
         name='read_current_screen', description='read', handler=lambda _: {}, metadata={'source': source},
