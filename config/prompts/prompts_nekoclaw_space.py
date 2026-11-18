@@ -103,16 +103,19 @@ TASK_AGENT_REVIEW_SYSTEM_PROMPT = (
     "tokens.\n"
     "Return ONLY a JSON object, no other text:\n"
     '{{"review": "...", "entries": [{{"title": "...", "description": "...", "type": "lesson", '
-    '"scope": "project", "content": "..."}}], "project": "", "project_description": ""}}\n'
-    "review: three to six sentences, 150 words at most. What was asked, what was done, how it ended, "
-    "and what went wrong or cost time. Only what the account shows; do not guess.\n"
+    '"scope": "project", "content": "...", "evidence": ["..."]}}], "project": "", '
+    '"project_description": ""}}\n'
+    "review: three to six sentences, 250 words at most, and no longer than it takes. What was asked, "
+    "what was done, how it ended, and what went wrong or cost time. Only what the account shows; do "
+    "not guess.\n"
     "entries: at most {max_entries}, and usually none. Keep only what would change how a later commission "
     "is carried out. type is one of lesson (a reusable finding), reflection (what went wrong and what to "
     "do instead), reference (where something is found), progress (how the project stands; project scope "
     "only). scope is project, or global when it holds for any project. title is a few words; description "
-    "is one line for an index; content is self-contained, two or three sentences of 80 words at most in "
-    "all: what applies, why, and when. Give the path of the file an entry is about, as the account "
-    "has it: one that names no file that exists is kept only once another commission finds the same. "
+    "is one line for an index; content is self-contained, two or three sentences of 120 words at most "
+    "in all: what applies, why, and when. evidence is the paths of up to two files the entry is about, "
+    "as the account has them, and [] when it is about no file: an entry with no file that exists is "
+    "kept as a guess until another commission finds the same. "
     "Do not repeat what "
     "the indexes or the list of what was already filed hold; to add to an entry that exists, use its "
     "exact title. Corrections and approvals from the user are kept elsewhere: leave them out.\n"
@@ -156,14 +159,15 @@ SPACE_ARCHIVE_SYSTEM_PROMPT = (
     "Never copy keys, passwords or tokens.\n"
     "Return ONLY a JSON object, no other text:\n"
     '{{"summary": "...", "line": "...", "entries": [{{"title": "...", "description": "...", '
-    '"type": "lesson", "content": "..."}}]}}\n'
+    '"type": "lesson", "content": "...", "evidence": ["..."]}}]}}\n'
     "summary: what the project was for, what was done, where its files are, how it stands, and what "
-    "to know before going on with it. At most 200 words.\n"
+    "to know before going on with it. At most 300 words, and no longer than it takes.\n"
     "line: one line for an index, at most 25 words.\n"
     "entries: at most {max_entries}, and usually none: what was learned here that holds for other "
     "projects as well, and is not in the index of all projects yet. type is lesson, reflection or "
-    "reference. Give the path of the file an entry is about: one that names no file that exists is "
-    "kept only once it is found again.\n"
+    "reference. content is two or three sentences of 120 words at most. evidence is the paths of up "
+    "to two files the entry is about, and [] when it is about no file: an entry with no file that "
+    "exists is kept as a guess until it is found again.\n"
     "Write all of it in {language}."
 )
 

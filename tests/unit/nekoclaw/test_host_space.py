@@ -1121,10 +1121,10 @@ async def test_every_part_of_the_brief_has_its_cap_and_so_has_the_whole(space, r
         if header.startswith("Index"):
             # An index is cut between lines.
             assert all(line.endswith("— words") for line in kept.split("\n"))
-    # What the owner was told: at most 1400 tokens, headings and the lines
+    # What the owner was told: at most 2100 tokens, headings and the lines
     # that say where the files are included. The four parts leave room for those.
-    assert SPACE_BRIEF_MAX_TOKENS == 1400
-    assert sum(cap for _header, cap in caps) == 1200
+    assert SPACE_BRIEF_MAX_TOKENS == 2100
+    assert sum(cap for _header, cap in caps) == 1800
 
 
 async def test_a_long_project_name_cannot_push_the_whole_over_its_cap(space):
@@ -4534,13 +4534,13 @@ async def test_an_index_that_was_over_its_cap_gives_a_line_before_the_rules_give
 
     await space.write_rules("Never delete files. " * 30)
     line = ("- [an entry](memory/an-entry.md) — " + "word " * 34).rstrip()
-    (root / "MEMORY.md").write_text((line + "\n") * 9, encoding="utf-8")
+    (root / "MEMORY.md").write_text((line + "\n") * 13, encoding="utf-8")
     as_it_was = await space.brief(None)
     rules, index = as_it_was.split("\n\n")[1:]
     lines = index.split("\n")[1:-1]
     # Over its own cap, the index ends at a whole line well below it: there is room it does not use.
     shown = count_tokens("\n".join(lines))
-    assert len(lines) == 7 and index.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    assert len(lines) == 10 and index.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
     assert SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS - shown > 25
     # The path of the space is a little too long for the whole.
     monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 5))
@@ -4551,7 +4551,7 @@ async def test_an_index_that_was_over_its_cap_gives_a_line_before_the_rules_give
     rules_now, index_now = brief.split("\n\n")[1:]
     # The index gave a line; the rules, which are the user's, are as they were.
     assert rules_now == rules
-    assert index_now.split("\n")[1:-1] == [line] * 6 and index_now.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    assert index_now.split("\n")[1:-1] == [line] * 9 and index_now.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
 
 
 async def test_a_summary_with_a_bare_carriage_return_is_known_again_as_the_one_of_this_archiving(space, root, monkeypatch):

@@ -670,8 +670,8 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
     system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
     total = count_tokens(system) + count_tokens(user)
     assert total <= TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
-    # What the owner was told: one call per commission, about 4000 tokens in at most.
-    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 4000
+    # What the owner was told: one call per commission, 7000 tokens in at most.
+    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 7000
     # The account keeps how it began and how it ended.
     process = user.split("What the task agent did:\n", 1)[1].split("\n\nAlready filed", 1)[0]
     assert count_tokens(process) <= TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS
@@ -730,8 +730,8 @@ def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
 def test_the_review_asks_for_no_more_output_than_was_agreed():
     from config.nekoclaw_settings import SPACE_ARCHIVE_OUTPUT_MAX_TOKENS, TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
 
-    assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 800
-    assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 600
+    assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 1500
+    assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 1800
 
 
 def test_the_two_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
@@ -761,7 +761,7 @@ def test_the_two_calls_of_the_space_are_metered_under_their_own_names(monkeypatc
     asyncio.run(run())
 
     assert named == ["task_agent_review", "task_agent_archive", "agent"]
-    assert seen[0] == (TIER_REVIEW, 800) and seen[1] == (TIER_ARCHIVE, 600)
+    assert seen[0] == (TIER_REVIEW, 1500) and seen[1] == (TIER_ARCHIVE, 1800)
     # Both run on the summary model, like the fine selection.
     assert {TIER_REVIEW, TIER_ARCHIVE, decision.TIER_FINE} == decision._SUMMARY_TIERS
 
@@ -902,7 +902,7 @@ async def test_what_is_sent_for_a_summary_stays_within_its_cap(world):
 
     system, user = (message["content"] for message in world.llm.last(TIER_ARCHIVE))
     assert count_tokens(system) + count_tokens(user) <= SPACE_ARCHIVE_INPUT_MAX_TOKENS
-    assert SPACE_ARCHIVE_INPUT_MAX_TOKENS == 3000
+    assert SPACE_ARCHIVE_INPUT_MAX_TOKENS == 5000
 
 
 async def test_a_project_with_a_commission_under_way_is_not_archived(world):
@@ -2297,7 +2297,10 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
     def words(tokens: int) -> str:
         return truncate_to_tokens("lesson " * (2 * tokens), tokens)
 
-    assert count_tokens(words(40)) == 40
+    def path(tokens: int) -> str:
+        return truncate_to_tokens("src/module/" * tokens, tokens)
+
+    assert count_tokens(words(40)) == 40 and count_tokens(path(40)) == 40
     answer = {
         "review": words(settings.TASK_AGENT_REVIEW_TEXT_MAX_TOKENS),
         "entries": [
@@ -2307,6 +2310,8 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
                 "type": "reflection",
                 "scope": "project",
                 "content": words(settings.TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
+                "evidence": [path(settings.TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS)]
+                * settings.TASK_AGENT_REVIEW_ENTRY_EVIDENCE_MAX_PATHS,
             }
         ]
         * settings.TASK_AGENT_REVIEW_MAX_ENTRIES,
@@ -2314,7 +2319,20 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
         "project_description": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
     }
 
-    assert count_tokens(json.dumps(answer)) <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
+    full = count_tokens(json.dumps(answer))
+    # With a fifth to spare, for a provider that counts otherwise than this code does.
+    assert full <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
+    assert 1.2 <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS / full < 1.3
+    # The summary of a project that is archived: the same entries, and a longer text.
+    summary = {
+        "summary": words(settings.SPACE_ARCHIVE_SUMMARY_MAX_TOKENS),
+        "line": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
+        "entries": [{key: value for key, value in answer["entries"][0].items() if key != "scope"}]
+        * settings.SPACE_ARCHIVE_MAX_ENTRIES,
+    }
+    full = count_tokens(json.dumps(summary))
+    assert full <= settings.SPACE_ARCHIVE_OUTPUT_MAX_TOKENS
+    assert 1.2 <= settings.SPACE_ARCHIVE_OUTPUT_MAX_TOKENS / full < 1.3
 
 
 async def test_the_account_of_a_commission_is_made_off_the_event_loop(world, monkeypatch):
@@ -2681,8 +2699,10 @@ def test_two_or_three_sentences_as_the_prompt_asks_for_are_kept_whole():
     from config.prompts import prompts_nekoclaw_space as texts
     from nekoclaw.host.space_keeper import _whole_sentences
 
-    assert "content is self-contained, two or three sentences of 80 words at most in all" in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
-    assert "review: three to six sentences, 150 words at most." in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert "content is self-contained, two or three sentences of 120 words at most in all" in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert "review: three to six sentences, 250 words at most, and no longer than it takes." in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert "content is two or three sentences of 120 words at most." in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
+    assert "At most 300 words, and no longer than it takes." in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
     # Three sentences each, as long as they come; the Chinese one is longer than any the free tier wrote.
     chinese = (
         "当任务明确禁止执行命令时，应完全依赖 write、read 等文件系统工具进行开发，并在写入后逐个读回确认。"
@@ -2939,13 +2959,14 @@ def test_the_two_prompts_ask_for_the_file_an_entry_is_about():
     from config.prompts import prompts_nekoclaw_space as texts
 
     assert (
-        "Give the path of the file an entry is about, as the account has it: one that names no file that "
-        "exists is kept only once another commission finds the same."
+        "evidence is the paths of up to two files the entry is about, as the account has them, and [] when "
+        "it is about no file: an entry with no file that exists is kept as a guess until another commission "
+        "finds the same."
     ) in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
     assert (
-        "Give the path of the file an entry is about: one that names no file that exists is kept only once "
-        "it is found again."
+        "evidence is the paths of up to two files the entry is about, and [] when it is about no file: an "
+        "entry with no file that exists is kept as a guess until it is found again."
     ) in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
-    # What a review is asked to write is what it was: the files are told from its words.
+    # Every entry has a place for them in what a model is asked to write; how it is known is the host's to tell.
     for prompt in (texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT, texts.SPACE_ARCHIVE_SYSTEM_PROMPT):
-        assert '"evidence"' not in prompt and '"confidence"' not in prompt
+        assert '"content": "...", "evidence": ["..."]}}]' in prompt and '"confidence"' not in prompt

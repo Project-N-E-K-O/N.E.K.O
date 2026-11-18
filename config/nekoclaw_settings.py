@@ -173,15 +173,15 @@ in the order they are listed. ``file`` is one file; ``files`` is a
 directory whose files are listed one by one; ``count`` is a directory of
 which only the number of files is told. Only names and sizes are read."""
 
-REPO_DOCUMENTS_MAX_LINES = 10
+REPO_DOCUMENTS_MAX_LINES = 15
 """Most lines of that list; when there are more files, a last line says how
 many were left out."""
 
-REPO_DOCUMENTS_MAX_TOKENS = 400
+REPO_DOCUMENTS_MAX_TOKENS = 600
 """Cap on the whole of it, the sentence in front included. It follows a
 task agent's brief, after the caps of the brief and of the task agent
-space, and is paid with every request of the session. Ten lines of
-ordinary paths are some 280 tokens."""
+space, and is paid with every request of the session. Fifteen lines of
+ordinary paths are some 330 tokens; the cap leaves room for long ones."""
 
 REPO_DOCUMENT_PATH_MAX_TOKENS = 60
 """Cap on one path of that list as it is written out. A file may be called
@@ -229,29 +229,29 @@ DEFERRED_COMMISSION_SECONDS = 3600.0
 # ``config/prompts/prompts_nekoclaw_space.py``.
 # ---------------------------------------------------------------------------
 
-SPACE_BRIEF_GLOBAL_RULES_MAX_TOKENS = 250
+SPACE_BRIEF_GLOBAL_RULES_MAX_TOKENS = 400
 """Cap on the rules for every task agent (``AGENTS.md`` of the space) as they
-are appended to a task agent's system prompt."""
+are appended to a task agent's system prompt. A Chinese character is some
+0.6 to 0.75 of a token here: 400 tokens are some 560 characters."""
 
-SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS = 350
+SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS = 500
 """Cap on the index of the space (``MEMORY.md``) in a task agent's system
 prompt. New lines go to the top of an index, so what is cut is the oldest."""
 
-SPACE_BRIEF_PROJECT_RULES_MAX_TOKENS = 250
+SPACE_BRIEF_PROJECT_RULES_MAX_TOKENS = 400
 """Cap on the rules of the commission's project in a task agent's system prompt."""
 
-SPACE_BRIEF_PROJECT_INDEX_MAX_TOKENS = 350
+SPACE_BRIEF_PROJECT_INDEX_MAX_TOKENS = 500
 """Cap on the index of the commission's project in a task agent's system prompt."""
 
-SPACE_BRIEF_MAX_TOKENS = 1400
+SPACE_BRIEF_MAX_TOKENS = 2100
 """Cap on everything the space adds to a task agent's system prompt: the four
-parts above (1200 together), their headings, the line each has when it was
+parts above (1800 together), their headings, the line each has when it was
 cut, and the note in front of them, which says where the files are and how
-a note is to be read (some 160 tokens with an ordinary path). It is paid
+a note is to be read (some 190 tokens with an ordinary path). It is paid
 with every request of the session. Nothing is added while the space holds
 nothing for the commission. With all four parts at their caps the whole is
-some forty tokens over; what is over comes off the index of the project,
-three of the twenty-nine lines it would show."""
+some 2060 tokens and fits; a test keeps it so."""
 
 SPACE_ENTRY_TITLE_MAX_TOKENS = 24
 SPACE_ENTRY_DESCRIPTION_MAX_TOKENS = 40
@@ -374,60 +374,77 @@ TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS = 24 * 3600.0
 commission is often taken up again; reviewed at once, the review would miss
 how it ended, and every commission is reviewed once at most."""
 
-TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 4000
+TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 7000
 """Cap on everything sent to the model for one review, the instructions
 included."""
 
-TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 1606
+TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 3300
 """Cap on the account of what the task agent did within that input. Of a
 longer one the beginning and the end are kept. With every other part at its
 own cap the whole still fits in ``TASK_AGENT_REVIEW_INPUT_MAX_TOKENS``, so
 nothing is cut off at the end; a test keeps it so. It is what gives way
-when the review's own instructions grow: 34 tokens went to the sentence
-that asks for the path of the file an entry is about."""
+when the review's own instructions grow.
 
-TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS = 60
+It is what is left of the input when what she dispatched may be 600 tokens
+and what the user said 800 (``DISPATCH_TEXT_MAX_TOKENS``,
+``DISPATCH_USER_TEXT_MAX_TOKENS``). While those two are 300 each, 800
+tokens of the input are not used: they are kept for the day the two are
+raised, which is decided and done elsewhere."""
+
+TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS = 100
 """Cap on one line of that account (one tool call, or one thing said)."""
 
-TASK_AGENT_REVIEW_INDEX_MAX_TOKENS = 250
+TASK_AGENT_REVIEW_INDEX_MAX_TOKENS = 400
 """Cap on each of the two indexes (the space's and the project's) shown to
 the review, so it adds to an existing entry instead of repeating it."""
 
-TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS = 200
+TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS = 300
 """Cap on the list of projects shown to the review."""
 
-TASK_AGENT_REVIEW_FILED_MAX_TOKENS = 120
+TASK_AGENT_REVIEW_FILED_MAX_TOKENS = 200
 """Cap on the list of what the commission filed itself, shown to the review
 so that it does not file the same again."""
 
-TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS = 800
+TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS = 1500
 """``max_completion_tokens`` of a review: the review itself, up to
 ``TASK_AGENT_REVIEW_MAX_ENTRIES`` entries and the project. What may be kept
-of an answer (the caps below, and those of a title, a description and a
-project) fits into it with the JSON around it; a test keeps it so. An
-answer that is cut off all the same is not thrown away whole: the review
-and the entries that are complete are kept."""
+of an answer (the caps below, and those of a title, a description, the
+files an entry rests on and a project) comes to some 1230 tokens with the
+JSON around it; a test keeps it within the cap. The fifth that is left over
+is for the provider counting otherwise than this code does, Chinese above
+all: an answer cut off inside its JSON is worse than room that is not
+used. An answer that is cut off all the same is not thrown away whole: the
+review and the entries that are complete are kept."""
 
-TASK_AGENT_REVIEW_TEXT_MAX_TOKENS = 250
-"""Cap on the review as it is kept. Its prompt asks for 150 words at most,
-which is within it; a longer one is ended where a sentence ends."""
+TASK_AGENT_REVIEW_TEXT_MAX_TOKENS = 400
+"""Cap on the review as it is kept. Its prompt asks for 250 words at most,
+which is within it (some 330 tokens of English; 400 tokens are some 560
+Chinese characters); a longer one is ended where a sentence ends."""
 
 TASK_AGENT_REVIEW_MAX_ENTRIES = 2
-"""Most entries one review may file. Together with the cap on the text of
-one, this is what the cap on the answer leaves room for: three entries
-would have to be a sentence or two each."""
+"""Most entries one review may file. Few on purpose: a review is one
+commission's view, and every entry is a line later task agents are shown."""
 
 TASK_AGENT_REVIEW_ENTRIES_WHEN_STOPPED = 0
 """Most entries the review of a commission the user stopped may file. A
 commission is often stopped because it went wrong, and what it did then is
 not what later commissions should learn from; its review is still written."""
 
-TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS = 130
-"""Cap on the text of one entry a review files. Its prompt asks for two or
-three sentences of 80 words at most: some 90 tokens of English or Chinese,
-some 110 of Japanese, some 130 of Russian. A longer one is ended where a
-sentence ends, since the entry stays in the space and is read by later task
-agents."""
+TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS = 200
+"""Cap on the text of one entry a review files, and of one the summary of a
+project files. Their prompts ask for two or three sentences of 120 words at
+most: some 160 tokens of English, and 200 tokens are some 280 Chinese
+characters. A longer one is ended where a sentence ends, since the entry
+stays in the space and is read by later task agents."""
+
+TASK_AGENT_REVIEW_ENTRY_EVIDENCE_MAX_PATHS = 2
+"""Most files a review, or the summary of a project, may name as what one of
+its entries rests on."""
+
+TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS = 40
+"""Cap on one of those paths as the model writes it; a longer one is not
+looked at. A path below a working directory is some ten tokens, a full one
+some twenty-five."""
 
 TASK_AGENT_REVIEWS_PER_UPKEEP = 3
 """Most late reviews one round of tidying has a model write (failed
@@ -441,30 +458,35 @@ TASK_AGENT_REVIEWS_LOOKED_AT_PER_UPKEEP = 20
 oldest first. One that is too short to review costs no model call and does
 not use up ``TASK_AGENT_REVIEWS_PER_UPKEEP``."""
 
-SPACE_ARCHIVE_INPUT_MAX_TOKENS = 3000
+SPACE_ARCHIVE_INPUT_MAX_TOKENS = 5000
 """Cap on everything sent to the model for the summary of a project that is
 archived."""
 
 SPACE_ARCHIVE_REVIEWS = 12
 """How many of a project's reviews, the newest, its summary is written from."""
 
-SPACE_ARCHIVE_REVIEW_MAX_TOKENS = 150
+SPACE_ARCHIVE_REVIEW_MAX_TOKENS = 300
 """Cap on each of those reviews within that input."""
 
-SPACE_ARCHIVE_REVIEWS_MAX_TOKENS = 1500
+SPACE_ARCHIVE_REVIEWS_MAX_TOKENS = 3000
 """Cap on all of them together."""
 
-SPACE_ARCHIVE_INDEX_MAX_TOKENS = 600
+SPACE_ARCHIVE_INDEX_MAX_TOKENS = 800
 """Cap on the project's index within that input."""
 
-SPACE_ARCHIVE_SUMMARY_MAX_TOKENS = 400
-"""Cap on the summary as it is kept."""
+SPACE_ARCHIVE_SUMMARY_MAX_TOKENS = 600
+"""Cap on the summary as it is kept. Its prompt asks for 300 words at most."""
 
 SPACE_ARCHIVE_MAX_ENTRIES = 2
 """Most entries the summary of a project may file for every project."""
 
-SPACE_ARCHIVE_OUTPUT_MAX_TOKENS = 600
-"""``max_completion_tokens`` of that summary."""
+SPACE_ARCHIVE_OUTPUT_MAX_TOKENS = 1800
+"""``max_completion_tokens`` of that summary. What may be kept of an answer
+(the summary, its line for the index, and ``SPACE_ARCHIVE_MAX_ENTRIES``
+entries with the caps a review's entries have) comes to some 1400 tokens
+with the JSON around it; a test keeps it within the cap. The rest is for
+the provider counting otherwise than this code does; see
+``TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS``."""
 
 # ---------------------------------------------------------------------------
 # Capability gateway

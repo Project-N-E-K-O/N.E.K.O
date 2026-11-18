@@ -2331,7 +2331,7 @@ def test_a_task_agent_is_told_what_to_file_and_how_to_read_what_was_filed():
     assert schema["required"] == ["title", "content", "category", "confidence"]
 
 
-async def test_what_is_said_about_reading_notes_costs_the_fullest_space_a_few_lines_of_one_index(space, root, monkeypatch):
+async def test_the_fullest_space_is_shown_whole_with_what_is_said_about_reading_notes(space, root, monkeypatch):
     from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
     from config.prompts import prompts_nekoclaw_space as texts
     from utils.tokenize import count_tokens
@@ -2348,12 +2348,11 @@ async def test_what_is_said_about_reading_notes_costs_the_fullest_space_a_few_li
 
     assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
     note, *sections = brief.split("\n\n")
-    assert count_tokens(note) < 170
+    assert count_tokens(note) < 200
     lines = [len(section.split("\n")) - 2 for section in sections]
-    # The cap on the whole was not raised for it. What is over comes off the index of the project, three
-    # of the 29 lines it had; the rules, which are the user's, and the other index are whole.
-    assert lines == [1, 29, 1, 26]
-    assert [count_tokens(sections[position]) for position in (0, 2)] == [265, 266]
+    # Every part is as long as its own cap lets it be: none gave anything for the whole to fit.
+    assert lines == [1, 41, 1, 41]
+    assert [count_tokens(sections[position]) for position in (0, 2)] == [415, 416]
 
 
 # ---------------------------------------------------------------------------

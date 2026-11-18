@@ -204,10 +204,10 @@ def test_only_so_many_lines_are_listed_and_the_rest_are_counted(tmp_path, monkey
 
     lines = listing(root).split("\n")
 
-    # The sentence, ten files, and how many were left out (four rules and the directory that is counted).
-    assert len(lines) == 12
-    assert lines[1] == "- AGENTS.md (1 B)" and lines[10] == "- .agent/rules/rule-08.md (1 B)"
-    assert lines[11] == "(6 more are not listed)"
+    # The sentence, fifteen files, and how many were left out (the directory that is counted).
+    assert len(lines) == 17
+    assert lines[1] == "- AGENTS.md (1 B)" and lines[15] == "- .agent/rules/rule-13.md (1 B)"
+    assert lines[16] == "(1 more are not listed)"
 
     monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENTS_MAX_LINES", 2)
     assert listing(root).split("\n")[1:] == ["- AGENTS.md (1 B)", "- .agent/rules/rule-00.md (1 B)", "(14 more are not listed)"]
