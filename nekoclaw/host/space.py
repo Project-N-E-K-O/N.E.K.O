@@ -1773,7 +1773,7 @@ class TaskAgentSpace:
         self._change_notes(path, change)
 
     def _drop_held(self, path: Path, marks: Iterable[str]) -> None:
-        """Take notes that have become entries off the list of the ones that wait."""
+        """Take notes off the list of the ones that wait: they have become entries, or are not to be kept."""
         gone = set(marks)
         if not gone:
             return
@@ -1879,15 +1879,28 @@ class TaskAgentSpace:
             # that takes effect by itself is still kept.
             logger.warning("the notes of the task agent space that are not entries cannot be read", exc_info=True)
             record = None
-        for removed in record["removed"] if record is not None else ():
-            if mark in _strings(removed.get("marks")) or (name and _normal(removed.get("title")) == name):
-                raise NoteRemoved("the user removed this note from the space, and it is not kept again")
+        removed_titles, removed_marks = _removed_from(record["removed"] if record is not None else ())
+        if mark in removed_marks or name in removed_titles:
+            raise NoteRemoved("the user removed this note from the space, and it is not kept again")
         same, has_text = self._same_note(paths.memory_dir(project), project, title, content)
         waiting = [
             item
             for item in (record["held"] if record is not None else ())
             if item.get("mark") == mark or (name and _normal(item.get("title")) == name)
         ]
+        # What waits is the same note by its text or by its title, and has
+        # the other of the two of its own: a text filed under another
+        # title, a title another text was filed under. One the user
+        # removed by that is not kept either. It goes into no entry with
+        # this note, and waits no longer.
+        unwanted = [
+            item
+            for item in waiting
+            if item.get("mark") in removed_marks or _normal(item.get("title")) in removed_titles
+        ]
+        if unwanted:
+            waiting = [item for item in waiting if item not in unwanted]
+            self._drop_held(notes_path, [str(item.get("mark")) for item in unwanted])
         own = next((item for item in waiting if item.get("mark") == mark), None)
         observer = note.known.observer
         # How many commissions have seen it, this one counted. An entry
@@ -2746,9 +2759,14 @@ class TaskAgentSpace:
 
                 def remember(data: dict[str, Any]) -> None:
                     data["removed"] = [*data["removed"], record][-SPACE_REMOVED_MAX_RECORDS:]
-                    # Nor does it wait to take effect any longer.
-                    gone = set(record["marks"])
-                    data["held"] = [kept for kept in data["held"] if kept.get("mark") not in gone]
+                    # Nor does it wait to take effect any longer: by any
+                    # of its texts, or under its title in other words.
+                    titles, gone = _removed_from([record])
+                    data["held"] = [
+                        kept
+                        for kept in data["held"]
+                        if kept.get("mark") not in gone and _normal(kept.get("title")) not in titles
+                    ]
 
                 try:
                     self._change_notes(scope / SpacePaths.NOTES_FILE, remember)

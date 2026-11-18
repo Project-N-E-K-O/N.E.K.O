@@ -1210,6 +1210,96 @@ async def test_an_entry_the_user_wrote_and_removed_is_remembered_by_its_text_and
     assert await space.submit(_commission(workdir), _lesson("Framework", "It uses Flask.", "verified")) == REMOVED
 
 
+async def test_removing_an_entry_takes_what_waits_under_its_title_off_the_list(space, root, workdir):
+    # A guess waits under a title; the user has an entry of that title with another text, and removes it.
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+    await space.submit(_commission(workdir), _lesson("Backups", "They may be on the NAS."))
+    await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is F: on this machine.")
+
+    assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+
+    # The guess under that title waits no longer; the other one does.
+    assert [held["title"] for held in _notes(root)["held"]] == ["Backups"]
+    # Its text, filed under another title by another commission, is a guess of that commission alone: the
+    # one that waited under the removed title does not come back as an entry of that title.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo location", "It is probably E: here."))
+    assert reply == HELD_INFERRED
+    assert await space.list_entries(DEFAULT_PROJECT) == [] and "Camera drive" not in _index(root)
+    assert [(held["title"], held["seen_by"]) for held in _notes(root)["held"]] == [
+        ("Backups", ["c1"]),
+        ("Photo location", ["c2"]),
+    ]
+
+
+async def test_removing_an_entry_takes_what_waits_with_its_text_off_the_list_whatever_it_is_called(space, root, workdir):
+    # A guess waits under one title; the user has the same text in an entry of another title, and removes it.
+    await space.submit(_commission(workdir), _lesson("Photo location", "It is probably E: here."))
+    await space.submit(_commission(workdir), _lesson("Backups", "They may be on the NAS."))
+    await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is probably E: here.")
+
+    assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+
+    assert [held["title"] for held in _notes(root)["held"]] == ["Backups"]
+
+
+def _held_and_removed(root: Path, held: list[dict[str, Any]], removed: list[dict[str, Any]]) -> None:
+    """Write the notes of the daily project as they may be found: what waits, and what was removed."""
+    path = root / "projects" / DEFAULT_PROJECT / "notes.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 1, "held": held, "removed": removed}), encoding="utf-8")
+
+
+def _waits(title: str, content: str, by: str) -> dict[str, Any]:
+    return {
+        "mark": _digest(content),
+        "title": title,
+        "description": "",
+        "type": "lesson",
+        "content": content,
+        "confidence": "inferred",
+        "evidence": [],
+        "seen_by": [by],
+        "sources": [by],
+        "first": "2027-01-15",
+        "last": "2027-01-15",
+        "at": 1_800_000_000.0,
+    }
+
+
+async def test_a_note_that_waits_under_a_title_the_user_removed_does_not_become_an_entry_of_it(space, root, workdir):
+    # As it may be found: the note waits, and its title was removed (with another text) without it going.
+    _held_and_removed(
+        root,
+        [_waits("Camera drive", "It is probably E: here.", "c1")],
+        [{"marks": [_digest("It is F: on this machine.")], "title": "Camera drive", "at": "2027-01-15"}],
+    )
+
+    # Its text is filed under another title by another commission: seen twice, it would take effect, and
+    # go in as it was first filed, under the title that was removed.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo location", "It is probably E: here."))
+
+    assert reply == HELD_INFERRED
+    assert not _memory(root).exists() and _index(root) == ""
+    assert [(held["title"], held["seen_by"]) for held in _notes(root)["held"]] == [("Photo location", ["c2"])]
+
+
+async def test_a_note_that_waits_with_a_text_the_user_removed_does_not_go_in_with_a_note_of_its_title(space, root, workdir):
+    _held_and_removed(
+        root,
+        [_waits("Camera drive", "It is probably E: here.", "c1"), _waits("Camera drive", "It may also be G:.", "c1")],
+        [{"marks": [_digest("It is probably E: here.")], "title": "Old camera notes", "at": "2027-01-15"}],
+    )
+
+    # Another commission files under that title: what waits under it is confirmed, but for the removed text.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is F: on this machine.", "verified"))
+
+    assert reply == "kept in project _daily as camera-drive.md"
+    said = (_memory(root) / "camera-drive.md").read_text(encoding="utf-8")
+    assert "It may also be G:." in said and "It is F: on this machine." in said
+    assert "It is probably E: here." not in said
+    assert _notes(root)["held"] == []
+
+
 async def test_removing_an_entry_takes_what_waits_of_it_off_the_list(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
     # Put on the list by hand: the same text, waiting.
