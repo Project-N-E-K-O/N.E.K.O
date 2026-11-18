@@ -261,6 +261,19 @@ self.register_dynamic_entry(
 )
 ```
 
+### Output Contract
+
+`output_schema` on `@plugin_entry` or `register_dynamic_entry()` declares the JSON Schema of the return value. A static entry whose return annotation is a Pydantic model gets it inferred. After each successful call the value is checked (the value inside `Ok`, a bare value, or the `data` of `finish()`). A mismatch is a warning in the plugin log by default; with `strict_output=True` the call fails with `PLUGIN_OUTPUT_SCHEMA_VIOLATION`. Logs and errors carry field paths and error types only. See [Output contract](./entries#output-contract).
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},
+    strict_output=True,
+)
+```
+
 ---
 
 ## Result Types: Ok / Err

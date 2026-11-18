@@ -151,6 +151,50 @@ async def search(self, query: str):
 
 ---
 
+## 输出契约
+
+`output_schema` 声明入口返回值的结构，让别的插件和工具可以依赖它。它和 `llm_result_fields` 是两回事：后者选 AI 读哪些字段，`output_schema` 描述整个返回值。
+
+**从返回注解推导。** 处理函数的返回注解是 Pydantic 模型（或 `Model | None`）时，输出契约就是这个模型，不用另外写：
+
+```python
+class SearchReply(BaseModel):
+    summary: str
+    count: int
+
+@plugin_entry(id="search")
+async def search(self, query: str) -> SearchReply:
+    ...
+```
+
+**显式声明。** 返回普通 dict 的入口，传一个 JSON Schema：
+
+```python
+@plugin_entry(
+    id="search",
+    output_schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["summary", "count"],
+    },
+)
+async def search(self, query: str):
+    return Ok({"summary": "...", "count": 3})
+```
+
+显式的 `output_schema` 优先于返回注解。两者都没有的入口没有输出契约，行为和以前完全一样。
+
+**检查什么。** 每次调用成功后，用契约检查返回值：`Ok(...)` 里的值、直接返回的值，或 `self.finish(...)` 的 `data`。`Err(...)` 本身就是失败，不检查。
+
+- 默认只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (type)`），不记录返回的内容。
+- 设 `strict_output=True` 时，不符合契约会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表。`/runs` 和 `call_entry` 的调用方都能拿到这个错误码。
+
+从返回注解推导出的模型，由模型自己做校验。显式 schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`，其他关键字忽略。
+
+插件的入口列表里会带上 `output_schema`（和 `strict_output`），任务 Agent 的工具定义里以 `outputSchema` 导出。
+
+---
+
 ## 入口的其他选项
 
 `@plugin_entry` 还支持这些选项：
@@ -276,4 +320,5 @@ async def internal_sync(self):
 | 返回成功 | `return Ok({...})` |
 | 返回失败 | `return Err(SdkError("原因"))` |
 | 限制 AI 看到的字段 | `llm_result_fields=["field1", "field2"]` |
+| 声明入口的返回结构 | 返回注解写 Pydantic 模型，或 `output_schema={...}` |
 | 运行时才知道有哪些功能 | `self.register_dynamic_entry(...)` |

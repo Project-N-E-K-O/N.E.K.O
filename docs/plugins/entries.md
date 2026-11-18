@@ -151,6 +151,50 @@ Without `llm_result_fields`, what the AI gets depends on who called the entry; s
 
 ---
 
+## Output contract
+
+`output_schema` declares the shape of what an entry returns, so other plugins and tools can rely on it. It is separate from `llm_result_fields`: that one chooses what a model reads; `output_schema` describes the whole return value.
+
+**Inferred from the return annotation.** If the handler's return annotation is a Pydantic model (or `Model | None`), the output contract is that model. Nothing else to write:
+
+```python
+class SearchReply(BaseModel):
+    summary: str
+    count: int
+
+@plugin_entry(id="search")
+async def search(self, query: str) -> SearchReply:
+    ...
+```
+
+**Declared explicitly.** An entry that returns a plain dict passes a JSON Schema:
+
+```python
+@plugin_entry(
+    id="search",
+    output_schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["summary", "count"],
+    },
+)
+async def search(self, query: str):
+    return Ok({"summary": "...", "count": 3})
+```
+
+An explicit `output_schema` wins over the annotation. An entry with neither has no output contract, and nothing about it changes.
+
+**What is checked.** After each successful call the return value is checked against the contract: the value inside `Ok(...)`, a bare return value, or the `data` of `self.finish(...)`. An `Err(...)` is a failure already and is not checked.
+
+- By default a mismatch only writes a warning to the plugin log, and the result is returned unchanged. The warning lists field paths and error types (for example `$.count (type)`), never the returned values.
+- With `strict_output=True` a mismatch fails the call with the error code `PLUGIN_OUTPUT_SCHEMA_VIOLATION`. `details.issues` lists the same `{"path", "type"}` pairs. Callers of `/runs` and `call_entry` see this code.
+
+A model inferred from the annotation is checked by the model itself. An explicit schema is checked with a built-in subset of JSON Schema: `type`, `enum`, `const`, `properties`, `required`, `additionalProperties`, `items`, `prefixItems`, `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `anyOf`, `oneOf`, `allOf`, `not` and local `$ref`. Other keywords are ignored.
+
+The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries, and the task agent's tool definitions carry it as `outputSchema`.
+
+---
+
 ## Other entry options
 
 `@plugin_entry` supports these additional options:
@@ -276,4 +320,5 @@ When a task is stopped, the host calls `POST /runs/{run_id}/cancel` on the plugi
 | Return success | `return Ok({...})` |
 | Return failure | `return Err(SdkError("reason"))` |
 | Limit what AI sees | `llm_result_fields=["field1", "field2"]` |
+| Declare what the entry returns | Pydantic return annotation, or `output_schema={...}` |
 | Don't know entries until runtime | `self.register_dynamic_entry(...)` |

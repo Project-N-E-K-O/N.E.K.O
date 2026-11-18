@@ -153,6 +153,50 @@ async def search(self, query: str):
 
 ---
 
+## 出力契約
+
+`output_schema` はエントリーの戻り値の形を宣言し、他のプラグインやツールがそれに依存できるようにします。`llm_result_fields` とは別物です。あちらは AI が読むフィールドを選び、`output_schema` は戻り値全体を記述します。
+
+**戻り値の型注釈から推論する。** ハンドラーの戻り値の型注釈が Pydantic モデル（または `Model | None`）なら、そのモデルが出力契約になります。追加の記述は不要です。
+
+```python
+class SearchReply(BaseModel):
+    summary: str
+    count: int
+
+@plugin_entry(id="search")
+async def search(self, query: str) -> SearchReply:
+    ...
+```
+
+**明示的に宣言する。** 普通の dict を返すエントリーは JSON Schema を渡します。
+
+```python
+@plugin_entry(
+    id="search",
+    output_schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["summary", "count"],
+    },
+)
+async def search(self, query: str):
+    return Ok({"summary": "...", "count": 3})
+```
+
+明示した `output_schema` は型注釈より優先されます。どちらもないエントリーには出力契約がなく、動作は以前と変わりません。
+
+**何を検査するか。** 呼び出しが成功するたびに、戻り値を契約で検査します。対象は `Ok(...)` の中の値、そのまま返した値、または `self.finish(...)` の `data` です。`Err(...)` はそれ自体が失敗なので検査しません。
+
+- デフォルトでは、合わない場合はプラグインログに警告を 1 件書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (type)`）だけが含まれ、戻り値の内容は記録されません。
+- `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗し、`details.issues` に同じ `{"path", "type"}` の一覧が入ります。`/runs` と `call_entry` の呼び出し側はこのコードを受け取ります。
+
+型注釈から推論したモデルは、モデル自身で検証します。明示した schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`required`、`additionalProperties`、`items`、`prefixItems`、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref` で、それ以外は無視されます。
+
+プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれ、タスク Agent のツール定義では `outputSchema` として公開されます。
+
+---
+
 ## その他のエントリーオプション
 
 `@plugin_entry` には追加オプションがあります。
@@ -278,4 +322,5 @@ plugin entry の権限カテゴリ（ホストの `permissions.json` の `plugin
 | 成功を返す | `return Ok({...})` |
 | 失敗を返す | `return Err(SdkError("reason"))` |
 | AI に見せる戻り値を制限する | `llm_result_fields=["field1", "field2"]` |
+| エントリーの戻り値の形を宣言する | 戻り値の型注釈に Pydantic モデル、または `output_schema={...}` |
 | 実行時までエントリーが分からない | `self.register_dynamic_entry(...)` |
