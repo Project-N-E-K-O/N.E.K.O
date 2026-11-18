@@ -553,6 +553,7 @@ class PluginRunner:
         on_progress: ProgressCallback | None = None,
         on_run_created: Callable[[str], Awaitable[None]] | None = None,
         housekeeping: bool = False,
+        still_wanted: Callable[[], bool] | None = None,
     ) -> RunOutcome:
         """Call one plugin entry and wait for the run to end.
 
@@ -564,6 +565,10 @@ class PluginRunner:
         no model chose (handing a deferred task's id to the plugin's
         ``bind_task`` entry): such an entry may be hidden from selection, so
         the entry is looked for among all of the plugin's entries.
+
+        ``still_wanted`` is asked after everything this waits for
+        before the request is sent, with nothing awaited in between:
+        a call that is not wanted any more is not made (``not_wanted``).
         """
         plugin_args = dict(args) if isinstance(args, dict) else {}
         requested_entry = entry_id or plugin_args.pop("_entry", None)
@@ -663,6 +668,11 @@ class PluginRunner:
                 error=error,
                 reason=reason,
             )
+
+        if still_wanted is not None and not still_wanted():
+            # Whoever handed the call over no longer wants it made (NekoClaw
+            # was switched off since it was chosen): nothing is sent.
+            return failed("the call is not wanted any more", "not_wanted")
 
         # The request runs as a task of its own. Once it is sent the run may
         # exist on the plugin server, so a caller that is cancelled meanwhile

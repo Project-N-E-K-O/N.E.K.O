@@ -4634,6 +4634,11 @@ class TaskAgentManager:
                         if self._meter is not None and not await self._meter(commission.id):
                             # The daily quota is used up: the host makes no request of its own.
                             return
+                        if not self._is_switched_on():
+                            # Switched off while the quota was looked at,
+                            # which waits for something: nothing is asked
+                            # of a model, though the request was paid for.
+                            return
                         asked = True
                         asked_at = self._ledger._clock()
                         await runtime.compact(session_id)

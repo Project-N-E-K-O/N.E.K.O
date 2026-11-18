@@ -5055,3 +5055,43 @@ async def test_which_question_waits_is_forgotten_with_the_question(hosts, tmp_pa
             await asyncio.gather(other, return_exceptions=True)
     await wait_status(host, first.id, "done")
     await _let_go(host)
+
+
+async def test_nothing_is_summed_up_when_nekoclaw_is_switched_off_while_the_quota_is_looked_at(
+    hosts, tmp_path, monkeypatch
+):
+    _idle_on(monkeypatch, after=30.0)
+    export = ScriptedLLM([*_long_work("export added")])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    on = [True]
+    charged: list[str] = []
+
+    async def switched_off_meanwhile(commission_id: str) -> bool:
+        # The user switches NekoClaw off while the daily quota is looked at; there is some left.
+        charged.append(commission_id)
+        on[0] = False
+        return True
+
+    monkeypatch.setattr(manager, "_switched_on", lambda: on[0])
+    monkeypatch.setattr(manager, "_meter", switched_off_meanwhile)
+    try:
+        task = manager._spawn(manager._idle_compact(first.id))
+        assert await asyncio.wait_for(task, 10) is False
+    finally:
+        monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30.0)
+    # It got as far as the quota, and no further: nothing was asked of a model, and it is not one
+    # of those the day has a limit for.
+    assert charged == [first.id] and len(export.requests) == 5
+    assert not manager._idle_compacted_at and manager._idle_compacts_under_way == 0
+    await wait_until(lambda: first.id not in manager._compacting, what="the session being given back")
+    session = await host.ledger.get_session(first.id)
+    assert session.status == "closed" and session.compacted_at is None
+    assert manager._service == {} and manager._idle_over == {}

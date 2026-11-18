@@ -709,16 +709,9 @@ class TaskBrain:
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
             elif selection.route == "task_agent" and self._task_agents is not None:
-                turned_away: list[bool] = []
-
-                def still_on() -> bool:
-                    # Asked once its session is made ready, before it takes a
-                    # place: NekoClaw may have been switched off meanwhile.
-                    on = self._switched_on()
-                    if not on:
-                        turned_away.append(True)
-                    return on
-
+                # Asked once its session is made ready, before it takes a
+                # place: NekoClaw may have been switched off meanwhile.
+                still_on, turned_away = self._asks_whether_on()
                 await self._task_agents.submit(
                     commission, candidate_plugin_ids=selection.shown_plugin_ids, still_wanted=still_on
                 )
@@ -749,6 +742,24 @@ class TaskBrain:
         finally:
             if not handed_over and self._task_agents is not None:
                 self._task_agents.drop_excerpt(commission.id)
+
+    def _asks_whether_on(self) -> tuple[Callable[[], bool], list[bool]]:
+        """Return what says whether NekoClaw is switched on, and a list that is filled once it said no.
+
+        For whoever is handed a commission and waits for something
+        before it begins: asked there, last thing, a commission that
+        is turned away is put down by what was said then, and not
+        by what the switch says a moment later.
+        """
+        turned_away: list[bool] = []
+
+        def still_on() -> bool:
+            on = self._switched_on()
+            if not on:
+                turned_away.append(True)
+            return on
+
+        return still_on, turned_away
 
     def _no_capability_text(self, commission: Commission, reason: str) -> str:
         return Receipt(kind="no_capability", commissions=[commission], reason=reason).text(commission.lang or "en")
@@ -821,6 +832,11 @@ class TaskBrain:
                 except Exception:  # noqa: BLE001 - showing progress must not disturb the call
                     logger.debug("a progress listener failed", exc_info=True)
 
+        # Asked last thing before the request for the run is sent: what
+        # was written down of the choice, the permissions and the list
+        # of plugins are waited for since NekoClaw was seen to be on,
+        # and it may have been switched off meanwhile.
+        still_on, turned_away = self._asks_whether_on()
         outcome = await self._runner.run_entry(
             commission_id=commission.id,
             plugin_id=selection.plugin_id,
@@ -831,7 +847,13 @@ class TaskBrain:
             latest_user_request=commission.user_text,
             on_progress=progress,
             on_run_created=run_created,
+            still_wanted=still_on,
         )
+        if turned_away:
+            # Nothing was called: put down as what it is, and not as a
+            # call that failed.
+            await self._overturn_no_capability(commission, "NekoClaw was switched off meanwhile", reason="disabled")
+            return
         await self._finish_direct(commission, request.plugins, entry, outcome)
 
     async def _finish_direct(

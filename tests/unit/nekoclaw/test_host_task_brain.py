@@ -747,6 +747,47 @@ async def test_nekoclaw_switched_off_while_the_model_chooses_calls_no_plugin_and
     assert await host.preferences.list() == []
 
 
+async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_called_calls_nothing(
+    server, hosts, tmp_path
+):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+    runner = host.brain._runner
+    plugins, call_plugin = runner._catalog.plugins, host.brain._call_plugin
+    calling: list[bool] = []
+
+    async def chosen(*args: Any, **kwargs: Any) -> None:
+        # It was on when the plugin was chosen, and what was chosen is written down.
+        calling.append(True)
+        await call_plugin(*args, **kwargs)
+
+    async def while_nekoclaw_goes_off(*args: Any, **kwargs: Any) -> Any:
+        listed = await plugins(*args, **kwargs)
+        if calling:
+            # The last thing that is waited for before the request for the run is sent.
+            on[0] = False
+        return listed
+
+    host.brain._call_plugin, runner._catalog.plugins = chosen, while_nekoclaw_goes_off
+    try:
+        receipt = await _dispatch(host, "查一下上海的天气")
+        assert receipt.kind == "accepted"
+        await host.brain.settle()
+    finally:
+        host.brain._call_plugin, runner._catalog.plugins = call_plugin, plugins
+
+    # No request for a run is sent, and the commission is put down as not started because
+    # NekoClaw is off: not as a call that failed.
+    assert calling == [True] and server.calls == [] and server.run_requests == []
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed" and "switched off" in failed.status_reason
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
+    assert await outbox(host, "task_result") == []
+
+
 async def _asked(llm: FakeDecisionLLM) -> bool:
     return llm.count("fine") >= 1
 

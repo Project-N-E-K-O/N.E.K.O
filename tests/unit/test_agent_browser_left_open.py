@@ -1295,6 +1295,37 @@ def _puts_the_master_switch_off(node: ast.AST) -> bool:
     )
 
 
+_LEAVES_OR_WAITS = (ast.Await, ast.Return, ast.Raise, ast.Yield, ast.YieldFrom, ast.Break, ast.Continue)
+
+
+def _master_switch_offs(function: ast.AST) -> list[bool]:
+    """For every place a function puts the master switch off: whether what was kept is dropped right after it.
+
+    Right after it: by a statement of the same block that follows
+    it, before anything in between waits for something or leaves
+    the block. One place that does so does not stand for another
+    that does not.
+    """
+    found: list[tuple[int, bool]] = []
+    for node in [function, *_own_nodes(function)]:
+        for block in ("body", "orelse", "finalbody"):
+            statements = getattr(node, block, None)
+            if not isinstance(statements, list):
+                continue
+            for index, statement in enumerate(statements):
+                if not _puts_the_master_switch_off(statement):
+                    continue
+                dropped = False
+                for later in statements[index + 1 :]:
+                    if isinstance(later, ast.Expr) and _called(later.value) == "forget_turns_for_task_agents":
+                        dropped = True
+                        break
+                    if any(isinstance(inner, _LEAVES_OR_WAITS) for inner in ast.walk(later)):
+                        break
+                found.append((statement.lineno, dropped))
+    return [dropped for _line, dropped in sorted(found)]
+
+
 def _called(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Call):
         return None
@@ -1392,11 +1423,34 @@ def test_what_a_module_does_as_it_is_loaded_and_what_stands_in_a_class_is_looked
     assert sorted(found) == [("<module>", 2), ("puts_one_off", 1), ("reads", 0)]
 
 
+def test_every_place_that_puts_the_master_switch_off_is_looked_at_by_itself() -> None:
+    function = ast.parse(
+        "async def control(action):\n"
+        "    if action == 'off':\n"
+        "        Modules.analyzer_enabled = False\n"
+        "        Modules.analyzer_profile = {}\n"
+        "        forget_turns_for_task_agents()\n"
+        "        await stop_everything()\n"
+        "    elif action == 'off_at_once':\n"
+        "        Modules.analyzer_enabled = False\n"
+        "        return {}\n"
+        "    elif action == 'off_and_wait':\n"
+        "        Modules.analyzer_enabled = False\n"
+        "        await stop_everything()\n"
+        "        forget_turns_for_task_agents()\n"
+        "    else:\n"
+        "        Modules.analyzer_enabled = True\n"
+    ).body[0]
+    # The first drops what was kept right after it. The second leaves without, and the third
+    # waits for something first: neither is covered by the first, nor by what comes later.
+    assert _master_switch_offs(function) == [True, False, False]
+
+
 def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
     from pathlib import Path
 
     capability: list[str] = []
-    master: list[tuple[str, bool]] = []
+    master: list[tuple[str, list[bool]]] = []
     for path in sorted(Path(api_routes.__file__).parent.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for scope, function in _scopes(tree):
@@ -1409,12 +1463,13 @@ def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekocla
                 assert not any(isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)) for node in nodes), name
                 assert "forget_turns_if_nekoclaw_is_off" in {_called(node) for node in nodes}, name
             if any(_puts_the_master_switch_off(node) for node in nodes):
-                # Each by itself: one of the same name elsewhere does not stand for it.
-                master.append((name, "forget_turns_for_task_agents" in {_called(node) for node in nodes}))
+                # Each place by itself: one that drops what was kept does not stand for another,
+                # in the same function or in one of the same name elsewhere.
+                master.append((name, _master_switch_offs(function)))
 
     # With the master switch off, or the last capability switch, NekoClaw is off, and what was kept
     # of the main dialogue for task agents goes with the switch. A capability switch goes off by
     # the user's hand and by itself, in a dozen places: all of them by the one function that
     # drops what was kept in the same breath.
     assert capability == ["_shared.py:_put_switch_off"]
-    assert sorted(master) == [("api_routes.py:admin_control", True), ("api_routes.py:agent_command", True)]
+    assert sorted(master) == [("api_routes.py:admin_control", [True]), ("api_routes.py:agent_command", [True])]
