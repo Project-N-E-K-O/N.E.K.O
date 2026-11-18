@@ -698,7 +698,9 @@ async def test_a_follow_up_to_a_commission_of_a_project_waits_for_the_projects_s
         "semicolons": ScriptedLLM([_report("ready", "now with semicolons")]),
     }
     host = _host(hosts, tmp_path, scripts_by_commission(scripts))
-    await host.space.touch_project("Budget app")
+    workdir = tmp_path / "budget-files"
+    workdir.mkdir()
+    await host.space.touch_project("Budget app", workdir=str(workdir))
     first = await _dispatch(host, "add a CSV export to the budget app")
     await wait_status(host, first.commission_id, "done")
     second = await _dispatch(host, "add a chart to the budget app")
@@ -718,6 +720,8 @@ async def test_a_follow_up_to_a_commission_of_a_project_waits_for_the_projects_s
     await wait_status(host, second.commission_id, "done")
     done = await wait_status(host, follow.commission_id, "done")
     assert done.result_summary == "now with semicolons"
+    # It works where its session works: in the project's folder, which its own words do not name.
+    assert Path(done.workdir) == workdir
 
 
 # ---------------------------------------------------------------------------

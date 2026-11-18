@@ -944,6 +944,70 @@ async def test_commissions_are_found_by_their_session(ledger):
     assert await ledger.select(session_id="nowhere") == []
 
 
+async def test_a_commission_is_given_a_session_once_and_a_session_made_for_it_has_its_id(ledger):
+    first = await _file(ledger, title="sort the photos", route="task_agent")
+
+    given, session = await ledger.give_session(first.id, kind="single", name="sort the photos")
+    again, same = await ledger.give_session(first.id, kind="single", name="another name")
+
+    # The session a commission opens has the commission's id, as every session had.
+    assert (session.id, session.kind, session.name, session.lanlan_name) == (first.id, "single", "sort the photos", "Lan")
+    assert given.session_id == first.id and again.session_id == first.id and same == session
+    # A task agent started by another: a session of its own, whose parent is that one's.
+    child = await _file(ledger, title="count the files", route="task_agent", parent_id=first.id, name="agent-1")
+    _given, child_session = await ledger.give_session(child.id, kind="child", name="sort the photos/agent-1", parent_id=session.id)
+    assert (child_session.id, child_session.kind, child_session.parent_id) == (child.id, "child", first.id)
+
+    with pytest.raises(ValueError):
+        await ledger.give_session("no-such-commission", kind="single", name="x")
+    with pytest.raises(ValueError):
+        await ledger.give_session(first.id, kind="team", name="x")
+
+
+async def test_the_commissions_of_a_project_are_given_the_one_session_the_first_of_them_opened(ledger):
+    first = await _file(ledger, title="add an export", route="task_agent", project="ledger app")
+    second = await _file(ledger, title="add a chart", route="task_agent", project="ledger app")
+    other = await _file(ledger, title="add a chart", route="task_agent", project="ledger app", lanlan_name="Mio")
+    loose = await _file(ledger, title="tidy the desk", route="task_agent")
+
+    opened, session = await ledger.give_session(first.id, kind="project", name="ledger app")
+    joined, same = await ledger.give_session(second.id, kind="project", name="ledger app")
+    _mio, another = await ledger.give_session(other.id, kind="project", name="ledger app")
+    # A commission without a project gets a session of its own whatever kind was asked for.
+    _loose, own = await ledger.give_session(loose.id, kind="project", name="tidy the desk")
+
+    assert (session.id, session.kind, session.project) == (first.id, "project", "ledger app")
+    assert same == session and (opened.session_id, joined.session_id) == (first.id, first.id)
+    # Another character's commission of the project opens that character's session of it.
+    assert (another.id, another.lanlan_name) == (other.id, "Mio")
+    assert own.id == loose.id
+    assert [item.id for item in await ledger.select(session_id=first.id, oldest_first=True)] == [first.id, second.id]
+    # Handed over at the same moment, the commissions of a project still get one session.
+    more = [await _file(ledger, title=f"task {n}", route="task_agent", project="blog") for n in range(6)]
+    given = await asyncio.gather(*(ledger.give_session(item.id, kind="project", name="blog") for item in more))
+    assert len({session.id for _commission, session in given}) == 1
+
+
+async def test_a_commission_that_lost_its_session_id_finds_the_session_of_its_id_again(ledger):
+    commission = await _file(ledger, title="sort the photos", route="task_agent")
+    _given, session = await ledger.give_session(commission.id, kind="single", name="sort the photos")
+    await ledger.update(commission.id, session_id=None)
+
+    given, found = await ledger.give_session(commission.id, kind="single", name="sort the photos")
+
+    assert found == session and given.session_id == commission.id
+
+
+async def test_an_event_of_a_kind_is_looked_for_in_one_commission(ledger):
+    first = await _file(ledger, title="first")
+    second = await _file(ledger, title="second")
+    await ledger.append_event(first.id, "opened", {})
+
+    assert await ledger.has_event(first.id, "opened") is True
+    assert await ledger.has_event(first.id, "closed") is False
+    assert await ledger.has_event(second.id, "opened") is False
+
+
 def _old_ledger(path: Any, rows: list[tuple[Any, ...]], events: list[tuple[Any, ...]] = ()) -> None:
     """Write a ledger as a build from before sessions left it: the tables of then, at version 2."""
     conn = sqlite3.connect(path)

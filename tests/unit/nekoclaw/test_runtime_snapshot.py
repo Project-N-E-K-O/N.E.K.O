@@ -175,6 +175,41 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
     assert _saved(spec) == saved
 
 
+async def test_a_tool_is_described_to_the_model_as_the_snapshot_has_it_and_carried_out_by_what_there_is_now(
+    tmp_path: Path,
+) -> None:
+    workdir = tmp_path / "work"
+    session, events = await open_session(make_spec(tmp_path), ScriptedLLM([[say("ok"), finish()]]))
+    await _ask(session, events, "First commission.")
+    await session.close()
+    spec = make_spec(tmp_path)
+    # As a build that worded its tools otherwise left it.
+    saved = _saved(spec)
+    for tool in saved["tools"]:
+        tool["description"] = f"As it was: {tool['name']}."
+    saved["system"] = "The system prompt of then."
+    (Path(spec.session_dir) / SYSTEM_FILE).write_text(json.dumps(saved), encoding="utf-8")
+    (workdir / "note.txt").write_text("the note", encoding="utf-8")
+
+    llm = ScriptedLLM(
+        [[call("read", {"file_path": str(workdir / "note.txt")}, "c1"), finish("tool_calls")], [say("Read it."), finish()]]
+    )
+    session, events = await open_session(spec, llm)
+    try:
+        await _ask(session, events, "Second commission.")
+        assert _system_of(llm.requests[0]) == "The system prompt of then."
+        described = {tool["function"]["name"]: tool["function"]["description"] for tool in llm.overrides[0]["tools"]}
+        assert described["read"] == "As it was: read." and set(described.values()) == {
+            f"As it was: {name}." for name in described
+        }
+        end = events.of("tool_end")[0]
+        assert end["is_error"] is False and "the note" in end["text"]
+        # What the conversation is measured against is what is sent.
+        assert session.context.fixed_tokens == await session._fixed_tokens()
+    finally:
+        await session.close()
+
+
 async def test_a_session_with_nothing_said_yet_is_put_together_from_what_there_is_now(tmp_path: Path) -> None:
     spec = make_spec(tmp_path, instructions="Fresh instructions.")
     directory = Path(spec.session_dir)
@@ -276,7 +311,9 @@ async def test_after_a_summary_the_system_prompt_and_the_tools_are_put_together_
     finally:
         await session.close()
 
-    spec = make_spec(tmp_path, model=_small_model(), instructions="Index of later.", disabled_tools=["web_fetch"])
+    # More to tell by now, so what every request begins with is longer than it was.
+    later = "Index of later. " + "Something more was learned since. " * 12
+    spec = make_spec(tmp_path, model=_small_model(), instructions=later, disabled_tools=["web_fetch"])
     llm = ScriptedLLM([[say("ok"), finish()]])
     session, events = await open_session(spec, llm)
     try:
@@ -284,6 +321,7 @@ async def test_after_a_summary_the_system_prompt_and_the_tools_are_put_together_
         assert "Index of now." in _system_of(llm.requests[0])
         await _seed(session, events, llm)
         requests_before = len(llm.requests)
+        fixed_before = session.context.fixed_tokens
 
         ended = await _sum_up(session, events, llm)
 
@@ -301,6 +339,14 @@ async def test_after_a_summary_the_system_prompt_and_the_tools_are_put_together_
         assert events.events.index(compacted[0]) < events.events.index(ended)
         saved = _saved(spec)
         assert saved["reason"] == REASON_COMPACTED and saved["system"] == _system_of(retry)
+        # What every request begins with was measured anew with it.
+        assert session.context.fixed_tokens == count_tokens(
+            saved["system"]
+            + json.dumps(
+                [[tool["name"], tool["description"], tool["parameters"]] for tool in saved["tools"]], ensure_ascii=False
+            )
+        )
+        assert session.context.fixed_tokens != fixed_before
 
         # The requests after that keep beginning that way.
         llm.add(say("More."), finish())
