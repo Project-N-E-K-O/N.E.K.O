@@ -158,6 +158,38 @@ TASK_AGENT_MAX_CONCURRENT = 10
 TASK_AGENT_BRIEF_MAX_TOKENS = 1200
 """Cap on the host's instructions appended to a task agent's system prompt."""
 
+REPO_DOCUMENTS: tuple[tuple[str, str], ...] = (
+    ("file", "AGENTS.md"),
+    ("file", "CLAUDE.md"),
+    ("file", ".claude/CLAUDE.md"),
+    ("files", ".agent/rules"),
+    ("files", ".cursor/rules"),
+    ("file", ".github/copilot-instructions.md"),
+    ("count", "docs/adr"),
+)
+"""What a repository keeps for agents, as a task agent that works in it is
+told (``nekoclaw/host/repo_docs.py``): paths below the repository's root,
+in the order they are listed. ``file`` is one file; ``files`` is a
+directory whose files are listed one by one; ``count`` is a directory of
+which only the number of files is told. Only names and sizes are read."""
+
+REPO_DOCUMENTS_MAX_LINES = 10
+"""Most lines of that list; when there are more files, a last line says how
+many were left out."""
+
+REPO_DOCUMENTS_MAX_TOKENS = 400
+"""Cap on the whole of it, the sentence in front included. It follows a
+task agent's brief, after the caps of the brief and of the task agent
+space, and is paid with every request of the session. Ten lines of
+ordinary paths are some 250 tokens."""
+
+REPO_DOCUMENT_DIRECTORY_MAX_FILES = 200
+"""Most files of one directory that are looked at for that list."""
+
+REPO_ROOT_SEARCH_MAX_LEVELS = 32
+"""How many directories up from the working directory a repository's root
+(a ``.git``) is looked for."""
+
 TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS = 400
 """Cap on the result summary stored for a commission."""
 

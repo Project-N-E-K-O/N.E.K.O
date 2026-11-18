@@ -612,6 +612,25 @@ class TaskAgentManager:
             logger.warning("reading the task agent space for a task agent failed", exc_info=True)
             return ""
 
+    async def _repository_documents(self, workdir: str) -> str:
+        """Return the list of the files the repository a task agent works in keeps for agents; empty when it has none.
+
+        A list and nothing more: names and sizes, with a sentence that says
+        they are reference material and not instructions (``repo_docs``).
+        The host reads none of them. Looked for in a worker thread, since
+        it reads the file system; a folder that cannot be looked at does
+        not keep a task agent from starting.
+        """
+        from nekoclaw.host import repo_docs
+
+        try:
+            return await asyncio.to_thread(repo_docs.listing, workdir)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it starts without the list
+            logger.warning("listing the files a repository keeps for agents failed", exc_info=True)
+            return ""
+
     async def _use_project(self, commission: Commission) -> None:
         """Tell the space that a commission of a project is being taken up; see ``TaskAgentSpace.use_project``.
 
@@ -736,12 +755,18 @@ class TaskAgentManager:
                     )
                     gateway_spec = GatewaySpec(url=url, token=token)
 
+            instructions = await self._brief(commission, with_gateway=gateway_spec is not None)
+            # After the brief and what the task agent space holds, each of
+            # which has its own cap: neither is pushed out by it.
+            listed = await self._repository_documents(workdir)
+            if listed:
+                instructions = f"{instructions}\n\n{listed}"
             spec = TaskAgentSpec(
                 session_id=commission.id,
                 workdir=workdir,
                 session_dir=session_path,
                 model=model,
-                instructions=await self._brief(commission, with_gateway=gateway_spec is not None),
+                instructions=instructions,
                 reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
                 top_level=commission.parent_id is None,
                 # A task agent started by a task agent starts none itself.
