@@ -923,16 +923,22 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
     )
     # Allow skip/remote ending while prepare waits; after acknowledgment, restore form only and never revive a torn-down tutorial.
     prepare_ready_index = start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()")
-    cancellation_index = start_round_block.index("this._tutorialEndHandled", prepare_ready_index)
+    cancellation_index = start_round_block.index("if (isCancelled())", prepare_ready_index)
     fixed_layout_index = start_round_block.index(
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
     )
     assert prepare_ready_index < cancellation_index < fixed_layout_index
-    assert "this._isDestroyed" in start_round_block[cancellation_index:fixed_layout_index]
-    assert "!this.isTutorialRunning" in start_round_block[cancellation_index:fixed_layout_index]
-    assert "window.isInTutorial !== true" in start_round_block[cancellation_index:fixed_layout_index]
-    assert "this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare')" in start_round_block
-    assert "return false;" in start_round_block[cancellation_index:fixed_layout_index]
+    cancelled_check = start_round_block.split("const isCancelled = () =>", 1)[1].split(";", 1)[0]
+    assert "this._tutorialEndHandled" in cancelled_check
+    assert "this._isDestroyed" in cancelled_check
+    assert "!this.isTutorialRunning" in cancelled_check
+    assert "window.isInTutorial !== true" in cancelled_check
+    assert "return await cancelStartup('tutorial-start-cancelled-after-prepare')" in start_round_block[cancellation_index:fixed_layout_index]
+    before_prepare_cancel = start_round_block.index("return await cancelStartup('tutorial-start-cancelled-before-prepare')")
+    assert before_prepare_cancel < start_round_block.index("this.relayYuiGuideTutorialLifecycleStarted('home', source)")
+    cancel_startup = start_round_block.split("const cancelStartup = async (reason) => {", 1)[1].split("\n            };", 1)[0]
+    assert "this.restoreYuiGuideCompactChatSurface(reason)" in cancel_startup
+    assert cancel_startup.index("await stateApi.flush()") < cancel_startup.index("return ownsStartup() ? false : null")
     assert start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()") < start_round_block.index(
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
     )

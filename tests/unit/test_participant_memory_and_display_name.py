@@ -1891,9 +1891,14 @@ def test_scoped_synthesis_rechecks_forget_epoch_before_append():
 
     source = inspect.getsource(SynthesisMixin.synthesize_reflections)
     assert "forget_epoch = (" in source
-    assert source.count("_subject_forget_epoch(") >= 2
-    assert "_subject_forget_is_active(" in source
+    assert "_subject_forget_epoch(" in source
+    # Both late writes (skip -> covered_fact_ids, and the append) recheck.
+    assert source.count("self._subject_forget_overlapped(") >= 2
     assert "dropping late result" in source
+    assert "dropping late skip" in source
+    helper = inspect.getsource(SynthesisMixin._subject_forget_overlapped)
+    assert "_subject_forget_epoch(" in helper
+    assert "_subject_forget_is_active(" in helper
 
 
 @pytest.mark.asyncio

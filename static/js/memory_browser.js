@@ -6,9 +6,6 @@
     let currentMemoryFingerprint = null;
     let currentMemoryIdentityToken = null;
     let chatData = [];
-    let chatSyncSnapshot = null;
-    const deletedOriginalIds = new Set();
-    const deletedLocalReplyIds = new Set();
     let currentCatName = '';
     let memoryFileRequestId = 0;
     let memorySaveRequestId = 0;
@@ -28,6 +25,24 @@
     let memorySaveStatusTimer = 0;
     let memorySaveStatusHideTimer = 0;
     let memoryHasUnsavedChanges = false;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const recentMemoryChannel = new BroadcastChannel('neko_page_channel');
+            recentMemoryChannel.onmessage = function (event) {
+                const data = event.data;
+                if (data && data.action === 'recent_memory_changed' && data.catgirl_name === currentCatName
+                        && !memoryHasUnsavedChanges && !memorySaveInFlight && !memoryRowExitInProgress
+                        && !window._memoryImportInProgress) {
+                    refreshImportedMemoryView(currentCatName).catch(function () {});
+                }
+            };
+            window.addEventListener('pagehide', function (event) {
+                if (!event.persisted) recentMemoryChannel.close();
+            });
+        }
+    } catch (error) {
+        console.warn('[MemoryBrowser] Recent-memory refresh channel unavailable', error);
+    }
     let pendingMemorySelection = null;
     let pendingMemoryClose = false;
     let memoryUnsavedSwitchRestoreFocus = null;
@@ -49,6 +64,7 @@
     };
     let storagePreflightState = null;
     let storagePreflightBusy = false;
+    let storageLocationModalOpener = null;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
@@ -2317,6 +2333,20 @@
             // everything around it is disabled.
             if (control) control.disabled = repetitionInsightsBusy || !ready;
         });
+        notifyHabitualPhrasePanel(false);
+    }
+
+    // The habitual-phrase section (memory_habitual_phrases.js) follows the same
+    // target and the same storage / import locks as the analyzer around it.
+    // `reload` asks it to refetch even when neither changed: the panel opened.
+    function notifyHabitualPhrasePanel(reload) {
+        document.dispatchEvent(new CustomEvent('neko:habitual-phrases-target', {
+            detail: {
+                name: repetitionInsightsTarget(),
+                ready: !memoryStorageLimited && !window._memoryImportInProgress,
+                reload: !!reload
+            }
+        }));
     }
 
     function setRepetitionInsightsBusy(busy) {
@@ -3109,7 +3139,10 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
-        if (name === 'insights') syncRepetitionInsightsControls();
+        if (name === 'insights') {
+            syncRepetitionInsightsControls();
+            notifyHabitualPhrasePanel(true);
+        }
         if (name === 'visit') openVisitMemoryPanel();
         panel.focus({ preventScroll: true });
     }
@@ -3162,16 +3195,17 @@
         }
 
         document.addEventListener('keydown', function (event) {
-            if (!activeMemoryAuxiliaryPanel) return;
-            const storageModal = document.getElementById('storage-location-modal');
-            if (storageModal && !storageModal.hidden) return;
-            if (event.key === 'Escape') {
+            if (event.key !== 'Tab' && event.key !== 'Escape') return;
+            const storageDialog = document.querySelector('#storage-location-overlay:not([hidden])')
+                || document.querySelector('#storage-location-modal:not([hidden])');
+            if (!storageDialog && !activeMemoryAuxiliaryPanel) return;
+            if (event.key === 'Escape' && !storageDialog) {
                 event.preventDefault();
                 closeMemoryAuxiliaryPanel(true, true);
                 return;
             }
             if (event.key !== 'Tab') return;
-            const panel = getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
+            const panel = storageDialog || getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
             const focusable = getMemoryPanelFocusableElements(panel);
             if (!focusable.length) {
                 event.preventDefault();
@@ -3628,7 +3662,7 @@
         renderStorageRestartButton();
     }
 
-    function openStorageLocationManager() {
+    function openStorageLocationManager(opener) {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
         const blockingReason = String(state.blockingReason || '').trim();
@@ -3639,7 +3673,7 @@
         }
 
         const modal = document.getElementById('storage-location-modal');
-        if (!modal) return;
+        if (!modal || !modal.hidden) return;
         setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
 
         const input = document.getElementById('storage-target-root-input');
@@ -3651,11 +3685,13 @@
         setStoragePreflightBusy(false);
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
+        storageLocationModalOpener = opener;
         modal.hidden = false;
         document.body.classList.add('storage-location-memory-modal-open');
+        (input || document.getElementById('storage-location-modal-close'))?.focus({ preventScroll: true });
     }
 
-    function closeStorageLocationManager() {
+    function closeStorageLocationManager(restoreFocus = true) {
         const modal = document.getElementById('storage-location-modal');
         if (modal) {
             modal.hidden = true;
@@ -3665,6 +3701,35 @@
         if (input) {
             input.disabled = false;
         }
+        if (restoreFocus) restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
+        storageLocationModalOpener = null;
+    }
+
+    function openStorageLocationFromHash() {
+        if (window.location.hash !== '#change-storage-location') return;
+        if (pendingMemorySelection || pendingMemoryClose) return;
+        if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
+        if (activeMemoryAuxiliaryPanel !== 'settings') return;
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        openStorageLocationManager(document.getElementById('storage-location-manage-btn'));
+    }
+
+    function initStorageLocationControls() {
+        document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
+        const manageButton = document.getElementById('storage-location-manage-btn');
+        manageButton?.addEventListener('click', () => openStorageLocationManager(manageButton));
+        document.getElementById('storage-location-modal-close')?.addEventListener('click', () => closeStorageLocationManager());
+        const modal = document.getElementById('storage-location-modal');
+        modal?.addEventListener('click', function (event) {
+            if (event.target === modal) closeStorageLocationManager();
+        });
+        document.getElementById('storage-location-pick-btn')?.addEventListener('click', pickStorageTargetDirectory);
+        document.getElementById('storage-target-root-input')?.addEventListener('input', function () {
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        });
+        document.getElementById('storage-location-restart-btn')?.addEventListener('click', preflightAndRestartWithStorageLocation);
     }
 
     async function pickStorageTargetDirectory() {
@@ -3936,7 +4001,6 @@
                 }
             } catch (_) {}
         }
-        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 
@@ -3979,6 +4043,11 @@
                 && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
             ) {
                 window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+                const overlay = document.querySelector('#storage-location-overlay:not([hidden])');
+                if (overlay) {
+                    closeStorageLocationManager(false);
+                    overlay.querySelector('.storage-location-close')?.focus({ preventScroll: true });
+                }
             }
         } catch (e) {
             console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);
@@ -3992,9 +4061,6 @@
         currentCatName = '';
         repetitionInsightsCharacterOverride = '';
         chatData = [];
-        chatSyncSnapshot = null;
-        deletedOriginalIds.clear();
-        deletedLocalReplyIds.clear();
         memoryFileRequestId++;
         resetRepetitionInsightsState();
 
@@ -4113,6 +4179,22 @@
             metadata = data && typeof data === 'object' ? data.metadata : null;
         }
         return !!metadata && typeof metadata === 'object' && metadata.source === THEATER_MEMORY_SOURCE;
+    }
+
+    function formatRecentMemoryTime(item) {
+        let metadata = item.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = item.data && typeof item.data === 'object' ? item.data.metadata : null;
+        }
+        const raw = metadata && metadata.recent_memory_time;
+        if (typeof raw !== 'string' || !/^[0-9]{1,16}$/.test(raw)) return '';
+        const millis = Number(raw);
+        if (!Number.isSafeInteger(millis)) return '';
+        const date = new Date(millis);
+        if (!Number.isFinite(date.getTime())) return '';
+        const pad = value => String(value).padStart(2, '0');
+        const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+        return `[${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${weekday} ${pad(date.getHours())}:${pad(date.getMinutes())}]`;
     }
 
     function setMemoryRowDeleteButtonsEnabled(enabled) {
@@ -4299,7 +4381,8 @@
     const MEMORY_ROLE_ORIGIN_KEYS = {
         self: 'character.cardOriginSelf',
         imported: 'character.cardOriginImported',
-        steam: 'character.cardOriginSteam'
+        steam: 'character.cardOriginSteam',
+        molili: 'character.cardOriginMolili'
     };
 
     function syncMemoryRoleNameOverflow(button) {
@@ -4345,6 +4428,12 @@
                 ['circle', { cx: '17', cy: '15.5', r: '1' }]
             ],
             imported: [
+                ['path', { d: 'M12 3v12' }],
+                ['path', { d: 'm7 10 5 5 5-5' }],
+                ['path', { d: 'M5 18v2h14v-2' }]
+            ],
+            // Molili 导入与通用导入共用同一下载箭头图形（提示文案已区分来源）
+            molili: [
                 ['path', { d: 'M12 3v12' }],
                 ['path', { d: 'm7 10 5 5 5-5' }],
                 ['path', { d: 'M5 18v2h14v-2' }]
@@ -4533,7 +4622,7 @@
         if (valueEl) {
             valueEl.textContent = selectedValue === 'auto'
                 ? translate('memory.externalImportAuto', 'Auto detect')
-                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : selectedValue === 'molili' ? 'Molili' : 'Hermes');
         }
         cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
             const selected = option.dataset.externalMemoryFormat === selectedValue;
@@ -4596,7 +4685,13 @@
             if (selected.length !== 1) {
                 throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
             }
-            if (zipFiles[0].size > 8 * 1024 * 1024) {
+            // 上限与后端 _decode_external_archive 的 archive_cap 对齐：auto/molili
+            // 放行到 MAX_ZIP_BYTES（64 MiB，Molili 导出本体就带几 MB 图片附件），
+            // 其余格式仍按 Markdown 预算 8 MiB。
+            const formatValue = format ? String(format.value || 'auto') : 'auto';
+            const zipCapBytes = (formatValue === 'molili' || formatValue === 'auto')
+                ? 64 * 1024 * 1024 : 8 * 1024 * 1024;
+            if (zipFiles[0].size > zipCapBytes) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
             const payload = {
@@ -4629,6 +4724,23 @@
         return payload;
     }
 
+    function externalImportDayNotes(partial) {
+        const notes = [];
+        const failedDays = Number(partial && partial.failed_days) || 0;
+        const oversizedDays = Number(partial && partial.oversized_days) || 0;
+        if (failedDays > 0) {
+            notes.push(translate('memory.externalImportFailedDaysNote',
+                '{{count}} of those journal days failed extraction and will be retried on the next import.',
+                { count: failedDays }));
+        }
+        if (oversizedDays > 0) {
+            notes.push(translate('memory.externalImportOversizedDaysNote',
+                '{{count}} more journal days each exceed the single-import limit; split those days first.',
+                { count: oversizedDays }));
+        }
+        return notes.length ? ' ' + notes.join(' ') : '';
+    }
+
     function broadcastExternalMemoryEdited(characterName) {
         if (typeof BroadcastChannel !== 'undefined') {
             let channel = null;
@@ -4650,6 +4762,7 @@
     async function refreshImportedMemoryView(characterName) {
         if (!characterName || characterName !== currentCatName) return;
         await loadMemoryFileList();
+        if (characterName !== currentCatName) return;
         const button = Array.from(document.querySelectorAll('#memory-file-list .cat-btn')).find(
             item => item.dataset.catname === characterName
         );
@@ -4755,7 +4868,7 @@
             // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
             // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
             // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
-            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 卡超预估），改并发系数前先确认这一点。固定标注 8 分钟后端上限；
             // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
             const fusionCalls = Number(preview.persona_fusion_calls) || 0;
             const personaTokens = Number(preview.persona_candidate_tokens) || 0;
@@ -4764,7 +4877,7 @@
             const llmCalls = fusionCalls + dailyCalls;
             const llmTokens = personaTokens + dailyTokens;
             const etaSeconds = llmCalls > 0
-                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
+                ? Math.min(470, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
                 : 0;
             const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
@@ -4780,7 +4893,7 @@
                     const elapsed = Math.round((Date.now() - workingStartedAt) / 1000);
                     etaText = ' ' + translate(
                         'memory.externalImportEta',
-                        'Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.',
+                        'Estimated ~{{est}}s (up to 8 min) · {{elapsed}}s elapsed.',
                         { est: etaSeconds, elapsed }
                     );
                 }
@@ -4790,7 +4903,7 @@
             if (etaSeconds > 0) {
                 etaTimer = window.setInterval(renderWorkingStatus, 1000);
             }
-            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
+            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=480s），
             // 覆盖 persona 融合的整段耗时。
             // The UI locale is only a render fallback. Read it at commit time so a
             // language switch made while reviewing the preview is not stale, and
@@ -4805,7 +4918,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            }, 270000);
+            }, 540000);
             // 融合网络返回即停表（成功/失败/太大都已无意义再计时）；finally 兜底覆盖
             // commit fetch 抛错（超时/网络）根本没走到这行的情况。
             if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
@@ -4820,11 +4933,22 @@
                         persistedCharacterName = partial.character_name;
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
+                    // 分段续导：超过单次调用上限的日记天顺延到下次，提示用户再导一次接着导
+                    const remainingDays = Number(partial.remaining_days) || 0;
+                    // 抽取失败的天 / 单独超上限的天：后端都有计数，一并告诉用户
+                    const dayNotes = externalImportDayNotes(partial);
+                    if (remainingDays > 0) {
+                        throw new Error(translate(
+                            'memory.externalImportContinue',
+                            'Part of the import is done: {{persona}} persona entries and {{facts}} facts were saved, and {{days}} journal days are left for the next run. Import again to continue; imported content is skipped.',
+                            { persona: partial.added_persona || 0, facts: partial.added_facts || 0, days: remainingDays }
+                        ) + dayNotes);
+                    }
                     throw new Error(translate(
                         'memory.externalImportPartial',
                         'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
                         { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
-                    ));
+                    ) + dayNotes);
                 }
                 if (result.error_code === 'external_import_too_large') {
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
@@ -4833,10 +4957,11 @@
                         persistedCharacterName = big.character_name;
                         broadcastExternalMemoryEdited(big.character_name);
                     }
+                    // 与 partial 分支、Molili 向导对称：带上单独超上限的天数说明
                     throw new Error(translate(
                         'memory.externalImportTooLargeToFuse',
                         'This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.'
-                    ));
+                    ) + externalImportDayNotes(big));
                 }
                 throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
             }
@@ -4873,6 +4998,7 @@
                 if (formatSelect) formatSelect.disabled = false;
                 updateExternalImportButton();
                 syncRepetitionInsightsControls();
+                openStorageLocationFromHash();
             }
         }
     }
@@ -4962,25 +5088,12 @@
             return;
         }
         let conversationPosition = 0;
-        let lastSection = null;
         chatData.forEach((msg, i) => {
-            const section = msg.chat_sync_kind || 'memory';
-            if (chatSyncSnapshot && section !== lastSection) {
-                const heading = document.createElement('div');
-                heading.className = 'memory-chat-section-label';
-                heading.title = translate('memory.chatDeletionHint', '');
-                heading.textContent = translate(section === 'original'
-                    ? 'memory.chatOriginalsSection' : section === 'local'
-                        ? 'memory.localRepliesSection' : 'memory.recentMemorySection', '');
-                div.appendChild(heading);
-                lastSection = section;
-            }
             const container = document.createElement('div');
             container.className = 'chat-item';
             container.setAttribute('data-chat-index', String(i));
             container.setAttribute('data-chat-row-key', getMemoryChatRowKey(msg));
             container.setAttribute('data-role', msg.theater ? 'theater' : (msg.role || ''));
-            if (msg.chat_sync_kind) container.dataset.chatSyncKind = msg.chat_sync_kind;
 
             if (msg.theater) {
                 // 剧场胶囊只读：不可编辑、不可删除，清空对话时也保留。
@@ -5078,8 +5191,8 @@
             } else if (msg.role === 'ai') {
                 conversationPosition += 1;
                 // 提取时间戳和正文，健壮处理
-                const m = !msg.chat_sync_kind && msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
-                const timeStr = m ? m[1] : '';
+                const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
+                const timeStr = m ? m[1] : msg.displayTime || '';
                 const content = (m && m[2]) ? (m[2] || '').trim() : msg.text;
 
                 const contentWrapper = document.createElement('div');
@@ -5140,18 +5253,9 @@
         if (memoryRowExitInProgress) return;
         const item = document.querySelector(`#memory-chat-edit .chat-item[data-chat-index="${idx}"]`);
         if (!item || idx < 0 || idx >= chatData.length) return;
-        stageChatDeletion(chatData[idx]);
         chatData.splice(idx, 1);
         setMemoryDirty(true);
         exitChatItems([item], renderChatEdit);
-    }
-
-    function stageChatDeletion(msg) {
-        // Draft intent only. Source IDs come from the canonical local snapshot,
-        // never from projection indexes/text. Tool replies remain local-only;
-        // future tool sync must explicitly define its own identity/consent rules.
-        if (msg.chat_sync_kind === 'original') deletedOriginalIds.add(msg.messageId);
-        if (msg.chat_sync_kind === 'local') deletedLocalReplyIds.add(msg.messageId);
     }
     // 新增：AI输入框内容变更时，自动拼接时间戳
     function updateAIContent(idx, value) {
@@ -5415,6 +5519,22 @@
         selectMemoryFile(filename, li, catName, options);
     }
 
+    function cancelMemoryUnsavedSwitch() {
+        if (memoryUnsavedSwitchBusy) return;
+        closeMemoryUnsavedSwitchDialog(true);
+        openStorageLocationFromHash();
+    }
+
+    function finishMemoryUnsavedSwitch(selection, closeRequested, suppressUnsavedPrompt) {
+        closeMemoryUnsavedSwitchDialog(false);
+        if (closeRequested) {
+            performCloseMemoryBrowser(suppressUnsavedPrompt);
+            return;
+        }
+        selectMemoryFile(selection.filename, findMemoryRoleListItem(selection.filename), selection.catName);
+        openStorageLocationFromHash();
+    }
+
     function initMemoryUnsavedSwitchDialog() {
         const dialog = document.getElementById('memory-unsaved-switch-dialog');
         const cancel = document.getElementById('memory-unsaved-switch-cancel');
@@ -5422,23 +5542,10 @@
         const save = document.getElementById('memory-unsaved-switch-save');
         if (!dialog || !cancel || !discard || !save) return;
 
-        cancel.addEventListener('click', function () {
-            if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
-        });
+        cancel.addEventListener('click', cancelMemoryUnsavedSwitch);
         discard.addEventListener('click', function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
-            const selection = pendingMemorySelection;
-            const closeRequested = pendingMemoryClose;
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(true);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(pendingMemorySelection, pendingMemoryClose, true);
         });
         save.addEventListener('click', async function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
@@ -5458,23 +5565,14 @@
                 save.focus();
                 return;
             }
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(false);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(selection, closeRequested, false);
         });
         document.addEventListener('keydown', function (event) {
             if (dialog.hidden) return;
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
+                cancelMemoryUnsavedSwitch();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -5513,9 +5611,6 @@
         currentMemoryFile = filename;
         currentMemoryFingerprint = null;
         currentMemoryIdentityToken = null;
-        chatSyncSnapshot = null;
-        deletedOriginalIds.clear();
-        deletedLocalReplyIds.clear();
         const previousTarget = repetitionInsightsTarget();
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         // Opening a file re-couples the panel to the editor: an override set by
@@ -5554,23 +5649,11 @@
         }
         try {
             // 直接获取原始JSON内容
-            const memoryUrl = '/api/memory/recent_file?filename=' + encodeURIComponent(filename);
-            let resp = await fetch(memoryUrl + '&include_chat_sync=true');
-            let data;
-            try { data = await resp.json(); } catch (_) { data = null; }
-            const syncUnavailable = !resp.ok || !data;
-            if (syncUnavailable) {
-                // Remote/proxied deployments retain the existing memory editor.
-                // The optional original-chat API keeps its loopback/origin gate.
-                resp = await fetch(memoryUrl);
-                data = await resp.json();
-            }
+            const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename));
+            const data = await resp.json();
             if (requestId !== memoryFileRequestId) {
                 return;
             }
-            if (!resp.ok) throw new Error('memory_load_failed');
-            chatSyncSnapshot = data.chat_sync || null;
-            if (syncUnavailable) showSaveStatus(translate('memory.chatSyncUnavailable', ''), 'info', 5000);
             currentMemoryFingerprint = typeof data.fingerprint === 'string'
                 ? data.fingerprint
                 : null;
@@ -5608,21 +5691,11 @@
                     // source_index 指向本次快照里的原始条目，服务端据此原样保留剧场胶囊。
                     chatItem.source_index = index;
                     chatItem.theater = isTheaterMemoryItem(item);
+                    if (chatItem.role === 'ai' && !chatItem.theater) {
+                        chatItem.displayTime = formatRecentMemoryTime(item);
+                    }
                     return chatItem;
                 }).filter(Boolean);
-                // Keep raw chats outside the editable recent-memory payload.
-                // Identical projection text is not evidence of shared identity.
-                if (chatSyncSnapshot) {
-                    ['originals', 'localReplies'].forEach(function (field) {
-                        const records = (chatSyncSnapshot[field] || []).slice();
-                        records.sort((a, b) => Number(a.originalTime || 0) - Number(b.originalTime || 0));
-                        records.forEach(function (record) {
-                            chatData.push({ role: record.role === 'assistant' ? 'ai' : 'human',
-                                text: record.text, messageId: record.messageId,
-                                chat_sync_kind: field === 'originals' ? 'original' : 'local' });
-                        });
-                    });
-                }
                 renderChatEdit();
             } else {
                 if (requestId !== memoryFileRequestId) {
@@ -5708,19 +5781,12 @@
             stillTargetsSavedSelection()
             && memoryEditRevision === saveContentRevision
         );
-        const savedRows = chatData.filter(msg => !msg.chat_sync_kind);
-        const saveChat = savedRows.map(msg => ({ ...msg }));
-        const syncEdit = chatSyncSnapshot && (deletedOriginalIds.size || deletedLocalReplyIds.size) ? {
-            characterSyncId: chatSyncSnapshot.characterSyncId,
-            binding: chatSyncSnapshot.binding,
-            messageIds: Array.from(deletedOriginalIds),
-            localMessageIds: Array.from(deletedLocalReplyIds)
-        } : null;
-        // Permanent cross-device deletion must remain explicit even before i18n has loaded.
-        if (syncEdit && syncEdit.messageIds.length && !window.confirm(translate('memory.chatDeleteConfirm',
-            'Permanently delete {{count}} original chats from all synced devices?', {
-            count: syncEdit.messageIds.length
-        }))) return false;
+        const savedRows = chatData.slice();
+        const saveChat = chatData.map(msg => {
+            const saved = { ...msg };
+            delete saved.displayTime;
+            return saved;
+        });
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -5743,18 +5809,12 @@
                     filename: saveFile,
                     chat: saveChat,
                     fingerprint: saveFingerprint,
-                    identity_token: saveIdentityToken,
-                    ...(syncEdit ? { chat_sync: syncEdit } : {})
+                    identity_token: saveIdentityToken
                 })
             });
             const data = await resp.json();
-            if (data.chat_deletion) announceChatDeletion(data);
             if (data.success) {
                 if (stillTargetsSavedSelection()) {
-                    if (syncEdit) {
-                        syncEdit.messageIds.forEach(id => deletedOriginalIds.delete(id));
-                        syncEdit.localMessageIds.forEach(id => deletedLocalReplyIds.delete(id));
-                    }
                     // 保存后的文件与本次提交逐条对应；把 source_index 对齐到新快照，
                     // 否则删除过条目后再次保存会让下标指向错误的原始条目。
                     savedRows.forEach((row, index) => {
@@ -5807,11 +5867,7 @@
                 }
                 return true;
             } else {
-                const errorMsg = data.code === 'CHAT_DELETION_SAVED_MEMORY_FAILED'
-                    ? translate('memory.chatDeletionPartial', '')
-                    : data.detail === 'chat_sync_binding_changed' ? translate('chatSync.historyChanged', '')
-                    : data.detail === 'chat_sync_reply_in_progress' ? translate('chatSync.unfinishedChat', '')
-                    : data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
                 if (stillTargetsSavedSelection()) {
                     showSaveStatus(window.t ? window.t('memory.saveFailed', { error: errorMsg }) : '保存失败：' + errorMsg, false);
                 }
@@ -5823,20 +5879,6 @@
             }
             return false;
         }
-    }
-
-    function announceChatDeletion(data) {
-        const message = { action: 'chat_sync_deleted', characterSyncId: data.characterSyncId,
-            receipt: data.chat_deletion };
-        try {
-            if (typeof BroadcastChannel !== 'undefined') {
-                const channel = new BroadcastChannel('neko_page_channel');
-                channel.postMessage(message);
-                channel.close();
-            } else if (window.parent && window.parent !== window) {
-                window.parent.postMessage(message, PARENT_ORIGIN);
-            }
-        } catch (_) { /* Passive history polling also observes durable tombstones. */ }
     }
     document.getElementById('save-memory-btn').onclick = saveCurrentMemory;
     document.getElementById('clear-memory-btn').onclick = function () {
@@ -5853,11 +5895,7 @@
             return;
         }
         // 只清空对话轮次（用户 / AI）；system＝先前对话的备忘录，一律保留
-        chatData = chatData.filter(msg => {
-            const keep = msg && (msg.theater || (msg.role !== 'human' && msg.role !== 'ai'));
-            if (!keep && msg) stageChatDeletion(msg);
-            return keep;
-        });
+        chatData = chatData.filter(msg => msg && (msg.theater || (msg.role !== 'human' && msg.role !== 'ai')));
         setMemoryDirty(true);
         exitChatItems(itemsToDissolve, function () {
             renderChatEdit();
@@ -6056,12 +6094,15 @@
         initRepetitionInsights();
         initVisitMemoryPanel();
         initMemoryAuxiliaryPanels();
+        initStorageLocationControls();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
             chatEditor.addEventListener('scroll', syncMemoryChatScrollMask, { passive: true });
             window.addEventListener('resize', syncMemoryChatScrollMask);
         }
         const storagePanelState = await initStorageLocationPanel();
+        window.addEventListener('hashchange', openStorageLocationFromHash);
+        openStorageLocationFromHash();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
@@ -6185,53 +6226,6 @@
             externalImport.addEventListener('click', importExternalMemory);
         }
         updateExternalImportButton();
-
-        const openStorageBtn = document.getElementById('storage-location-open-btn');
-        if (openStorageBtn) {
-            openStorageBtn.addEventListener('click', function () {
-                openCurrentStorageRoot();
-            });
-        }
-        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
-        if (manageStorageBtn) {
-            manageStorageBtn.addEventListener('click', function () {
-                openStorageLocationManager();
-            });
-        }
-        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
-        if (closeStorageModalBtn) {
-            closeStorageModalBtn.addEventListener('click', function () {
-                closeStorageLocationManager();
-            });
-        }
-        const storageModal = document.getElementById('storage-location-modal');
-        if (storageModal) {
-            storageModal.addEventListener('click', function (event) {
-                if (event.target === storageModal) {
-                    closeStorageLocationManager();
-                }
-            });
-        }
-        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
-        if (pickStorageBtn) {
-            pickStorageBtn.addEventListener('click', function () {
-                pickStorageTargetDirectory();
-            });
-        }
-        const storageTargetInput = document.getElementById('storage-target-root-input');
-        if (storageTargetInput) {
-            storageTargetInput.addEventListener('input', function () {
-                storagePreflightState = null;
-                setStoragePreflightResult('', '');
-                renderStorageRestartButton();
-            });
-        }
-        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
-        if (restartStorageBtn) {
-            restartStorageBtn.addEventListener('click', function () {
-                preflightAndRestartWithStorageLocation();
-            });
-        }
 
         // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');

@@ -31,6 +31,8 @@ Checks (any failure -> exit 1):
       skips protected and non-negative entries.
 - C9  adapter ``simulate_signal_sequence`` reproduces the funnel
       pending -> confirmed -> promoted across 3 user_fact reinforces.
+- C10 reinforcement is capped at ``EVIDENCE_REINFORCEMENT_CAP`` when read
+      and when written.
 
 Usage:
 
@@ -96,11 +98,12 @@ def check_c2_decay() -> tuple[bool, str]:
     from config import EVIDENCE_DISP_HALF_LIFE_DAYS, EVIDENCE_REIN_HALF_LIFE_DAYS
     from memory.evidence import effective_disputation, effective_reinforcement
 
-    rein_entry = {"reinforcement": 4.0, "rein_last_signal_at": _T0_ISO}
+    # Below EVIDENCE_REINFORCEMENT_CAP, so only the decay is measured (C10).
+    rein_entry = {"reinforcement": 2.0, "rein_last_signal_at": _T0_ISO}
     one_rein_hl = _T0 + timedelta(days=EVIDENCE_REIN_HALF_LIFE_DAYS)
     eff_rein = effective_reinforcement(rein_entry, one_rein_hl)
-    if abs(eff_rein - 2.0) > 1e-6:
-        return False, f"C2 FAIL: rein half-life decay = {eff_rein}, expected ~2.0"
+    if abs(eff_rein - 1.0) > 1e-6:
+        return False, f"C2 FAIL: rein half-life decay = {eff_rein}, expected ~1.0"
 
     # Independent clocks: a rein-only entry has no disputation movement.
     if abs(effective_disputation(rein_entry, one_rein_hl)) > _EPS:
@@ -282,6 +285,22 @@ def check_c9_funnel() -> tuple[bool, str]:
     return True, "C9 OK: simulate funnel pending->confirmed->promoted"
 
 
+def check_c10_cap() -> tuple[bool, str]:
+    from config import EVIDENCE_REINFORCEMENT_CAP
+    from memory.evidence import compute_evidence_snapshot, effective_reinforcement
+
+    legacy = {"reinforcement": 160.0, "rein_last_signal_at": _T0_ISO}
+    if abs(effective_reinforcement(legacy, _T0) - EVIDENCE_REINFORCEMENT_CAP) > _EPS:
+        return False, "C10 FAIL: over-cap stored reinforcement not read as the cap"
+    snap = compute_evidence_snapshot(
+        {"reinforcement": EVIDENCE_REINFORCEMENT_CAP - 0.2},
+        {"reinforcement": 1.0}, _T0_ISO, "user_confirm",
+    )
+    if abs(snap["reinforcement"] - EVIDENCE_REINFORCEMENT_CAP) > _EPS:
+        return False, f"C10 FAIL: written reinforcement {snap['reinforcement']} over the cap"
+    return True, "C10 OK: reinforcement capped on read and on write"
+
+
 _CHECKS = [
     check_c1_import,
     check_c2_decay,
@@ -292,6 +311,7 @@ _CHECKS = [
     check_c7_seed,
     check_c8_sub_zero,
     check_c9_funnel,
+    check_c10_cap,
 ]
 
 

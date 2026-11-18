@@ -64,7 +64,9 @@ class MessagePlaneRpcClient:
                     ctx = zmq.Context.instance()
                 
                 sock = ctx.socket(zmq.DEALER)
-                ident = f"mp:{self._plugin_id}:{int(time.time() * 1000)}".encode("utf-8")
+                # Executor threads may connect in the same millisecond. A
+                # ROUTER must see a distinct identity for each DEALER socket.
+                ident = f"mp:{self._plugin_id}:{uuid.uuid4().hex}".encode("utf-8")
                 try:
                     sock.setsockopt(zmq.IDENTITY, ident)
                 except Exception:

@@ -11,9 +11,90 @@ from utils.file_utils import atomic_write_json
 from utils.storage_policy import save_storage_policy
 
 
+def test_recent_sync_notification_refreshes_saved_view_and_preserves_dirty_draft(mock_page, running_server, seed_memory_file):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f'{running_server}/memory_browser')
+    rows = mock_page.locator('#memory-chat-edit .chat-item')
+    expect(rows).to_have_count(3)
+    current = json.loads(seed_memory_file.read_text())
+    current.append({'type': 'human', 'data': {'content': 'remote visible chat'}})
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    notify = """() => { const channel = new BroadcastChannel('neko_page_channel');
+        channel.postMessage({action:'recent_memory_changed',catgirl_name:'测试猫娘'}); channel.close(); }"""
+    mock_page.evaluate(notify)
+    expect(rows).to_have_count(4)
+    memo = mock_page.locator('#memory-chat-edit .memo-textarea').first
+    memo.fill('unsaved local draft')
+    current.append({'type': 'ai', 'data': {'content': 'another remote chat'}})
+    seed_memory_file.write_text(json.dumps(current, ensure_ascii=False))
+    mock_page.evaluate(notify)
+    mock_page.wait_for_timeout(150)
+    expect(rows).to_have_count(4)
+    expect(memo).to_have_value('unsaved local draft')
+
+
 def _request_json(route):
     post_data_json = route.request.post_data_json
     return post_data_json() if callable(post_data_json) else post_data_json
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('timezone,known,epoch', [
+    ('Asia/Shanghai', '[20261103 Tue 10:26]', '[19700101 Thu 08:00]'),
+    ('America/New_York', '[20261102 Mon 21:26]', '[19691231 Wed 19:00]'),
+])
+def test_recent_memory_sync_time_is_display_only(mock_page, running_server, seed_memory_file, timezone, known, epoch):
+    rows = [
+        {'type': 'system', 'data': {'content': 'memo'}},
+        {'type': 'human', 'data': {'content': 'user text', 'metadata': {'recent_memory_time': '1793672815630'}}},
+        {'type': 'ai', 'data': {'content': '[20261103 Tue 10:26] local reply',
+                              'metadata': {'recent_memory_time': '0'}}},
+        {'type': 'ai', 'data': {'content': 'synced nested reply',
+                              'metadata': {'recent_memory_time': '1793672815630'}}},
+        {'role': 'assistant', 'content': 'synced flat reply', 'metadata': {'recent_memory_time': '1793672815630'}},
+        {'type': 'ai', 'data': {'content': 'epoch reply', 'metadata': {'recent_memory_time': '0'}}},
+        {'type': 'ai', 'data': {'content': 'missing time'}},
+        {'type': 'ai', 'metadata': {}, 'data': {'content': 'top metadata takes precedence',
+                                              'metadata': {'recent_memory_time': '1793672815630'}}},
+    ]
+    for invalid in (None, '', '-1', 'NaN', '1e3', 0, False, '9007199254740992', '8640000000000001'):
+        rows.append({'type': 'ai', 'data': {'content': 'unknown time ' + repr(invalid),
+                                          'metadata': {'recent_memory_time': invalid}}})
+    seed_memory_file.write_text(json.dumps(rows), encoding='utf-8')
+    original_bytes = seed_memory_file.read_bytes()
+    context = mock_page.context.browser.new_context(timezone_id=timezone)
+    try:
+        _install_ready_memory_browser_routes(context, seed_memory_file)
+        posts = []
+
+        def save(route):
+            posts.append(_request_json(route))
+            route.fulfill(json={'success': True, 'need_refresh': False, 'fingerprint': 'next', 'identity_token': 'token'})
+
+        context.route('**/api/memory/recent_file/save', save)
+        page = context.new_page()
+        page.goto(f'{running_server}/memory_browser', wait_until='domcontentloaded')
+        rendered = page.locator('#memory-chat-edit .chat-item')
+        expect(rendered).to_have_count(len(rows))
+        expect(rendered.nth(1).locator('.chat-time')).to_have_count(0)
+        for index, label in [(2, '[20261103 Tue 10:26]'), (3, known), (4, known), (5, epoch)]:
+            expect(rendered.nth(index).locator('.chat-time')).to_have_text(label)
+        expect(rendered.nth(3).locator('.chat-bubble')).to_have_text('synced nested reply')
+        for index in range(6, len(rows)):
+            expect(rendered.nth(index).locator('.chat-time')).to_have_count(0)
+        assert seed_memory_file.read_bytes() == original_bytes
+        page.locator('#memory-chat-edit .memo-textarea').first.fill('edited memo')
+        page.locator('#save-memory-btn').click()
+        expect(page.locator('#memory-unsaved-status')).to_be_hidden()
+        assert len(posts) == 1
+        saved = posts[0]['chat']
+        assert all('displayTime' not in item for item in saved)
+        assert [item['text'] for item in saved[1:]] == [
+            item['data']['content'] if 'data' in item else item['content'] for item in rows[1:]
+        ]
+        assert seed_memory_file.read_bytes() == original_bytes
+    finally:
+        context.close()
 
 
 def _assert_tutorial_reset_notice(page: Page, message: str) -> None:
@@ -248,7 +329,7 @@ def seed_memory_file(clean_user_data_dir, running_server):
     catgirl_dir = memory_dir / "测试猫娘"
     catgirl_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create a minimal recent memory file for a test catgirl
+    # Create a minimal recent memory file for a test neko
     test_data = [
         {
             "type": "system",
@@ -414,6 +495,124 @@ def _install_ready_memory_browser_routes(
     page.route("**/api/memory/recent_file/save", handle_save)
 
 
+def _request_storage_location_in_open_page(page: Page, storage_link: str) -> None:
+    page.evaluate(
+        """async url => {
+            const changed = new Promise(resolve =>
+                window.addEventListener('hashchange', resolve, { once: true }));
+            window.location.replace(url);
+            await changed;
+        }""",
+        storage_link,
+    )
+
+
+@pytest.mark.frontend
+def test_storage_location_link_opens_dialog_and_reuses_memory_page(
+    mock_page: Page, running_server: str, seed_memory_file: Path
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    mock_page.goto(storage_link)
+
+    settings = mock_page.locator("#memory-settings-panel")
+    modal = mock_page.locator("#storage-location-modal")
+    expect(settings).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(mock_page.locator("#storage-target-root-input")).to_be_focused()
+    expect(mock_page.locator("#storage-modal-current-root")).to_have_text(
+        str(seed_memory_file.parents[2])
+    )
+    expect(mock_page).to_have_url(url)
+    close_button = mock_page.locator("#storage-location-modal-close")
+    restart_button = mock_page.locator("#storage-location-restart-btn")
+    close_button.focus()
+    mock_page.keyboard.press("Shift+Tab")
+    expect(restart_button).to_be_focused()
+    mock_page.keyboard.press("Tab")
+    expect(close_button).to_be_focused()
+    close_button.click()
+    expect(modal).to_be_hidden()
+    expect(mock_page.locator("#storage-location-manage-btn")).to_be_focused()
+    settings.locator("[data-memory-panel-close]").click()
+
+    draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    draft.fill("unsaved memory draft")
+    _request_storage_location_in_open_page(mock_page, storage_link)
+    expect(settings).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(draft).to_have_value("unsaved memory draft")
+    expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
+def test_storage_location_link_waits_for_memory_import(
+    mock_page: Page, running_server: str, seed_memory_file: Path
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    pending_previews = []
+    mock_page.route("**/api/memory/external_import/preview", lambda route: pending_previews.append(route))
+    mock_page.goto(url)
+    _open_auxiliary_panel(mock_page, "import")
+    mock_page.locator("#external-memory-files").set_input_files(
+        {"name": "MEMORY.md", "mimeType": "text/markdown", "buffer": b"# imported memory"}
+    )
+    with mock_page.expect_request("**/api/memory/external_import/preview"):
+        mock_page.locator("#external-memory-import-btn").click()
+    _request_storage_location_in_open_page(mock_page, storage_link)
+
+    modal = mock_page.locator("#storage-location-modal")
+    expect(mock_page.locator("#memory-import-panel")).to_be_visible()
+    expect(modal).to_be_hidden()
+    expect(mock_page).to_have_url(storage_link)
+
+    pending_previews[0].fulfill(status=500, json={"success": False, "error": "Test import ended"})
+    expect(mock_page.locator("#memory-settings-panel")).to_be_visible()
+    expect(modal).to_be_visible()
+    expect(mock_page).to_have_url(url)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("confirm_action", ["cancel", "discard"])
+def test_storage_location_link_waits_for_unsaved_memory_confirmation(
+    mock_page: Page, running_server: str, seed_memory_file: Path, confirm_action: str
+):
+    _install_ready_memory_browser_routes(
+        mock_page,
+        seed_memory_file,
+        recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"],
+    )
+    url = f"{running_server}/memory_browser"
+    storage_link = f"{url}#change-storage-location"
+    mock_page.goto(url)
+    draft = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    draft.fill("unsaved memory draft")
+    target = mock_page.locator("#memory-file-list .cat-btn", has_text="备用猫娘")
+    target.click()
+
+    confirmation = mock_page.locator("#memory-unsaved-switch-dialog")
+    cancel_button = mock_page.locator("#memory-unsaved-switch-cancel")
+    expect(cancel_button).to_be_focused()
+    _request_storage_location_in_open_page(mock_page, storage_link)
+    modal = mock_page.locator("#storage-location-modal")
+    expect(confirmation).to_be_visible()
+    expect(cancel_button).to_be_focused()
+    expect(modal).to_be_hidden()
+    expect(mock_page).to_have_url(storage_link)
+
+    mock_page.locator(f"#memory-unsaved-switch-{confirm_action}").click()
+    expect(confirmation).to_be_hidden()
+    expect(modal).to_be_visible()
+    expect(mock_page).to_have_url(url)
+    if confirm_action == "cancel":
+        expect(draft).to_have_value("unsaved memory draft")
+    else:
+        expect(target).to_have_attribute("aria-current", "true")
+
+
 @pytest.mark.frontend
 def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_memory_file):
     """Test that the memory browser page loads and displays the file list."""
@@ -423,14 +622,14 @@ def test_memory_browser_page_load(mock_page: Page, running_server: str, seed_mem
     # Navigate to the memory browser page
     mock_page.goto(f"{running_server}/memory_browser")
     expect(mock_page.locator(".memory-tip-scope")).to_have_text(
-        "展示聊天原文与近期记忆；长期记忆已融入猫娘内核，无法浏览。"
+        "仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。"
     )
 
     # Wait for the file list to populate (the JS fetches /api/memory/recent_files on load)
-    # We should see a button with the catgirl name in the list
+    # We should see a button with the neko name in the list
     mock_page.wait_for_selector("#memory-file-list button.cat-btn", state="attached", timeout=10000)
 
-    # The list should show our seeded catgirl
+    # The list should show our seeded neko
     expect(mock_page.locator("#memory-file-list button.cat-btn", has_text="测试猫娘")).to_have_count(1, timeout=5000)
 
     # Stage 1 storage-location entry is read-only and must not auto-start migration.
@@ -4119,6 +4318,8 @@ def test_memory_browser_unsaved_role_switch_dialog_guards_discard_and_save(
     expect(target).to_have_attribute("aria-current", "false")
     expect(mock_page.locator("#memory-unsaved-switch-cancel")).to_be_focused()
 
+    # Measure the settled position; the entrance animation translates the dialog horizontally.
+    dialog.evaluate("element => Promise.all(element.getAnimations().map(animation => animation.finished))")
     geometry = mock_page.evaluate(
         """
         () => {
@@ -5843,7 +6044,15 @@ def test_memory_browser_storage_restart_standalone_reuses_storage_maintenance_ov
             mock_page.locator("#storage-location-restart-btn").click()
 
     expect(mock_page.get_by_role("heading", name="正在优化存储布局...")).to_be_visible(timeout=10_000)
-    expect(mock_page.locator("#storage-location-overlay")).to_be_visible(timeout=10_000)
+    overlay = mock_page.locator("#storage-location-overlay")
+    expect(overlay).to_be_visible(timeout=10_000)
+    expect(mock_page.locator("#storage-location-modal")).to_be_hidden()
+    maintenance_close = overlay.locator(".storage-location-close")
+    expect(maintenance_close).to_be_focused()
+    mock_page.keyboard.press("Tab")
+    expect(maintenance_close).to_be_focused()
+    mock_page.keyboard.press("Shift+Tab")
+    expect(maintenance_close).to_be_focused()
     expect(mock_page.locator('[role="progressbar"]')).to_be_visible(timeout=10_000)
     assert mock_page.evaluate("typeof window.__nekoStorageLocationStartupBarrier") == "undefined"
     assert mock_page.evaluate("window.location.pathname") == "/memory_browser"
@@ -6146,16 +6355,21 @@ def test_memory_browser_keeps_theater_capsule_read_only_on_save(
 
 @pytest.mark.frontend
 @pytest.mark.parametrize("operation", ["single", "clear", "discard"])
-def test_memory_browser_chat_original_deletion_waits_for_save(
+def test_memory_browser_edits_local_memory_without_chat_sync(
     mock_page, running_server, seed_memory_file, operation,
 ):
-    """Use the existing UI, with exact IDs separate from editable memory rows."""
+    """Ignore sync history and keep delete, clear and discard on local memory."""
     _install_ready_memory_browser_routes(mock_page, seed_memory_file,
         recent_files=["recent_测试猫娘.json", "recent_备用猫娘.json"])
     uid, first, second, local = (char * 32 for char in "abcd")
     posts = []
+    loads = []
+    sync_requests = []
+    mock_page.on("request", lambda request: sync_requests.append(request.url)
+        if "/api/chat-sync/" in request.url else None)
 
     def load(route):
+        loads.append(route.request.url)
         route.fulfill(json={"content": seed_memory_file.read_text(encoding="utf-8"),
             "fingerprint": "fp", "identity_token": "token", "chat_sync": {
                 "characterSyncId": uid, "binding": None,
@@ -6173,37 +6387,37 @@ def test_memory_browser_chat_original_deletion_waits_for_save(
     confirms = []
     mock_page.on("dialog", lambda dialog: (confirms.append(dialog.message), dialog.accept()))
     mock_page.goto(f"{running_server}/memory_browser")
-    originals = mock_page.locator('[data-chat-sync-kind="original"]')
-    expect(originals).to_have_count(2)
-    expect(mock_page.locator('[data-chat-sync-kind="local"]')).to_have_count(1)
-    expect(mock_page.locator('.memory-chat-section-label')).to_have_text([
-        "本机近期记忆", "双端聊天原文", "仅本机的工具回复"])
+    rows = mock_page.locator('#memory-chat-edit .chat-item')
+    expect(rows).to_have_count(3)
+    expect(mock_page.locator('[data-chat-sync-kind]')).to_have_count(0)
+    expect(mock_page.locator('.memory-chat-section-label')).to_have_count(0)
+    expect(mock_page.locator('#memory-chat-edit')).not_to_contain_text('same exact text')
+    expect(mock_page.locator('#memory-chat-edit')).not_to_contain_text('local tool reply')
     if operation == "clear":
         mock_page.locator('#clear-memory-btn').click()
-        expect(mock_page.locator('#memory-chat-edit .chat-item')).to_have_count(1)
+        expect(rows).to_have_count(1)
     else:
-        originals.first.locator('.delete-btn').click()
-        expect(originals).to_have_count(1)
+        mock_page.locator('.chat-item[data-role="human"] .delete-btn').click()
+        expect(rows).to_have_count(2)
     assert posts == []
     expect(mock_page.locator('#memory-unsaved-status')).to_be_visible()
     if operation == "discard":
         mock_page.locator('.cat-btn', has_text='备用猫娘').click()
         mock_page.locator('#memory-unsaved-switch-discard').click()
-        expect(originals).to_have_count(2)
-        mock_page.locator('#save-memory-btn').click()
+        expect(rows).to_have_count(3)
         expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
-        # Discarded deletions leave no exact-ID edit, so the save carries no sync request.
-        assert 'chat_sync' not in posts[0]
-        assert confirms == []
+        assert posts == []
     else:
         mock_page.locator('#save-memory-btn').click()
         expect(mock_page.locator('#memory-unsaved-status')).to_be_hidden()
-        assert posts[0]['chat_sync']['messageIds'] == ([first, second] if operation == "clear" else [first])
-        assert posts[0]['chat_sync']['localMessageIds'] == ([local] if operation == "clear" else [])
-        # Deleting exact originals on both ends always asks first.
-        assert len(confirms) == 1
-    assert all('chat_sync_kind' not in item and 'messageId' not in item for item in posts[0]['chat'])
-    assert posts[0]['chat'][0]['role'] == 'system'
+        assert 'chat_sync' not in posts[0]
+        assert 'chat_history_only' not in posts[0]
+        assert len(posts[0]['chat']) == (1 if operation == "clear" else 2)
+        assert posts[0]['chat'][0]['role'] == 'system'
+        assert all('chat_sync_kind' not in item and 'messageId' not in item for item in posts[0]['chat'])
+    assert confirms == []
+    assert loads and all('include_chat_sync' not in url for url in loads)
+    assert sync_requests == []
 
 
 @pytest.mark.frontend

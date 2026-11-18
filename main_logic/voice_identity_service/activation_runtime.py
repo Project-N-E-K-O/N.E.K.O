@@ -1209,7 +1209,7 @@ class VoiceSessionActivationRuntime:
             checkpoints_attempted=len(self._attempted_checkpoints),
         )
         try:
-            logger.info(
+            logger.debug(
                 "[voice-activation-evidence] scope=%s microphone=%s route=%s "
                 "epoch=%s state=%s stats=%s",
                 self._candidate_diagnostic_id, self._generation.microphone,

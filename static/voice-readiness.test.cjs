@@ -17,7 +17,7 @@ function element() {
     const handlers = new Map();
     const classes = new Set();
     const classList = { toggle(name, force) { const on = force === undefined ? !classes.has(name) : !!force; if (on) classes.add(name); else classes.delete(name); return on; }, contains: name => classes.has(name) };
-    return { value: '', textContent: '', checked: false, children: [], style: {}, disabled: false, hidden: false, classList, setAttribute() {}, removeAttribute() {}, addEventListener(name, fn) { handlers.set(name, fn); }, appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); }, replaceChildren() { this.children = []; }, emit(name, event = { target: this }) { return handlers.get(name)?.(event); } };
+    return { value: '', textContent: '', checked: false, children: [], style: {}, disabled: false, hidden: false, classList, focus() { this.focused = true; }, setAttribute() {}, removeAttribute() {}, addEventListener(name, fn) { handlers.set(name, fn); }, appendChild(child) { this.children.push(child); }, append(...children) { this.children.push(...children); }, replaceChildren() { this.children = []; }, emit(name, event = { target: this }) { return handlers.get(name)?.(event); } };
 }
 function harness({ checkGate, captureGate, accepted = true, reason = 'no_speech_detected', diagnostics, resourceReady = true, desktopGate, requestRouter, translate = (_, fallback) => fallback, status = async () => {}, errorFormatter = error => error.message, clock = Date, enrolling = () => false, cancel = () => {} } = {}) {
     const elements = new Map();
@@ -30,7 +30,7 @@ function harness({ checkGate, captureGate, accepted = true, reason = 'no_speech_
     let controller;
     const root = { crypto, location: { origin: 'http://localhost:48911' }, opener: null, nekoMicrophoneInput: input, addEventListener(name, fn) { events.set(name, fn); }, removeEventListener(name, fn) { if(events.get(name)===fn)events.delete(name); }, setTimeout, clearTimeout };
     if (desktopGate) root.nekoVoiceEnrollment = { prepare: () => desktopGate.promise, release: async () => {} };
-    const document = { getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); }, createElement: element };
+    const document = { documentElement: { lang: 'en' }, getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); }, createElement: element };
     const hooks = {
         translate, render() {}, error: errorFormatter,
         enrolling, stream: () => stream,
@@ -105,6 +105,660 @@ test('input quality alone cannot bypass missing required resources', async () =>
     assert.equal(h.controller.canStart(), false);
 });
 
+function resourceNoticeHarness({ state = 'succeeded', reason = null, canEnroll = true, resourceEntries = {} } = {}) {
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: canEnroll, resources: resourceEntries };
+        if (url === '/resources/operations') return { operation_id: 'notice-operation' };
+        if (url.endsWith('/notice-operation')) return { state, reason };
+        return {};
+    } });
+    const dialog = h.elements.get('voice-identity-resource-complete');
+    Object.assign(dialog, { open: false, showModal() { this.open = true; }, close() { this.open = false; this.emit('close'); } });
+    const timers = new Map(); let next = 0;
+    h.root.setTimeout = (fn, delay) => { const id = ++next; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    return { ...h, dialog, timers, notices: () => [...timers.entries()].filter(([, timer]) => timer.delay === 5000) };
+}
+
+test('resource completion notice waits for confirmed readiness and closes after five seconds', async () => {
+    const h = resourceNoticeHarness();
+    await h.controller.refreshResources();
+    assert.equal(h.dialog.open, false, 'a read-only snapshot does not announce a completed check');
+    await h.elements.get('voice-identity-prepare').emit('click');
+    assert.equal(h.dialog.open, true);
+    assert.equal(h.notices().length, 1);
+    const [id, timer] = h.notices()[0];
+    h.timers.delete(id); timer.fn();
+    assert.equal(h.dialog.open, false);
+    assert.equal(h.notices().length, 0);
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.controller.canStart(), false, 'resource completion does not replace the input test');
+});
+
+test('successful repair hides resource feedback and microphone setup after five seconds while keeping their entry buttons', async () => {
+    const h = resourceNoticeHarness();
+    const details = h.elements.get('voice-identity-resource-details');
+    details.open = true;
+    await h.elements.get('voice-identity-repair').emit('click');
+    assert.equal(details.open, true, 'the success result remains readable before the deadline');
+    assert.equal(h.elements.get('voice-identity-resource-overview').hidden, false);
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    assert.equal(h.dialog.open, false);
+    assert.equal(h.notices().length, 1, 'dismissing the dialog preserves the independent collapse deadline');
+    const [id, timer] = h.notices()[0];
+    h.timers.delete(id); timer.fn();
+    assert.equal(details.open, false);
+    assert.equal(h.elements.get('voice-identity-resource-overview').hidden, true, 'the result disappears with the folded details');
+    h.controller.controls();
+    assert.equal(h.elements.get('voice-identity-resource-overview').hidden, true, 'later renders preserve the hidden result');
+    assert.equal(h.elements.get('voice-identity-repair').hidden, false);
+    assert.equal(h.elements.get('voice-identity-repair').disabled, false);
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, true, 'microphone controls also collapse before a trial has passed');
+    assert.equal(h.elements.get('voice-identity-input-settings').hidden, false, 'the microphone settings entry remains available');
+    h.elements.get('voice-identity-input-settings').emit('click');
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false, 'settings reopens the microphone controls');
+    assert.equal(h.elements.get('voice-identity-resource-overview').hidden, true, 'opening microphone controls does not restore old resource feedback');
+    const retry = h.elements.get('voice-identity-repair').emit('click');
+    assert.equal(h.elements.get('voice-identity-resource-overview').hidden, false, 'retry immediately reveals its progress and settings');
+    await retry;
+    h.events.get('pagehide')();
+});
+
+test('failed or incomplete repairs keep resource details expanded', async () => {
+    for (const options of [{ state: 'failed' }, { state: 'cancelled' }, { canEnroll: false },
+        { resourceEntries: { wake_model: { state: 'missing', required: true } } }]) {
+        const h = resourceNoticeHarness(options);
+        const details = h.elements.get('voice-identity-resource-details');
+        details.open = true;
+        await h.elements.get('voice-identity-repair').emit('click');
+        for (const [id, timer] of h.notices()) { h.timers.delete(id); timer.fn(); }
+        assert.equal(details.open, true, JSON.stringify(options));
+        assert.equal(h.elements.get('voice-identity-resource-overview').hidden, false, JSON.stringify(options));
+    }
+});
+
+test('microphone settings can be closed and reopened before passing a trial without bypassing readiness', async () => {
+    const h = resourceNoticeHarness();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    const panel = h.elements.get('voice-identity-input-setup');
+    const close = h.elements.get('voice-identity-input-close');
+    const settings = h.elements.get('voice-identity-input-settings');
+    for (let attempt = 0; attempt < 2; attempt++) {
+        assert.equal(panel.hidden, false);
+        assert.equal(close.hidden, false, 'an idle panel has an exit before trial success');
+        close.emit('click');
+        h.controller.controls();
+        assert.equal(panel.hidden, true, 'later renders cannot force a dismissed panel open');
+        assert.equal(settings.hidden, false);
+        assert.equal(settings.focused, true);
+        assert.equal(h.controller.canStart(), false, 'collapsing does not count as passing a trial');
+        settings.emit('click');
+    }
+    assert.equal(h.calls.some(call => call.url.includes('/audio/')), false);
+    h.events.get('pagehide')();
+});
+
+test('an old repair timeout cannot fold a newer repair or manually reopened details', async () => {
+    const h = resourceNoticeHarness();
+    const details = h.elements.get('voice-identity-resource-details');
+    details.open = true;
+    await h.elements.get('voice-identity-repair').emit('click');
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    const old = h.notices()[0][1];
+    await h.elements.get('voice-identity-repair').emit('click');
+    old.fn();
+    assert.equal(details.open, true);
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    const current = h.notices()[0][1];
+    details.open = false; details.emit('toggle');
+    details.open = true; details.emit('toggle');
+    current.fn();
+    assert.equal(details.open, true);
+    assert.equal(h.notices().length, 0);
+});
+
+test('leaving the page retires a pending resource collapse', async () => {
+    const h = resourceNoticeHarness();
+    const details = h.elements.get('voice-identity-resource-details');
+    details.open = true;
+    await h.elements.get('voice-identity-repair').emit('click');
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    const timer = h.notices()[0][1];
+    h.events.get('pagehide')();
+    timer.fn();
+    assert.equal(details.open, true);
+    assert.equal(h.notices().length, 0);
+});
+
+test('manually reopening microphone settings retires the old repair collapse callback', async () => {
+    const h = resourceNoticeHarness();
+    await h.elements.get('voice-identity-repair').emit('click');
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    const stale = h.notices()[0][1];
+    h.elements.get('voice-identity-input-close').emit('click');
+    h.elements.get('voice-identity-input-settings').emit('click');
+    stale.fn();
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.notices().length, 0);
+    assert.equal(h.controller.canStart(), false);
+    h.events.get('pagehide')();
+});
+
+for (const finish of [true, false]) {
+    test(`repair supports the full staged budget and remains bounded, finish=${finish}`, async () => {
+        let now = 0; let queries = 0;
+        const h = harness({ clock: { now: () => now }, requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: false, resources: {} };
+            if (url === '/resources/operations') return { operation_id: 'long-repair' };
+            if (url.endsWith('/long-repair')) {
+                now = ++queries === 1 ? 500000 : finish ? 900000 : 960001;
+                return { state: finish && queries === 2 ? 'succeeded' : 'running' };
+            }
+            if (url.endsWith('/cancel')) return { state: 'cancelled' };
+            return {};
+        } });
+        h.root.setTimeout = callback => setTimeout(callback, 0);
+        await h.controller.refreshResources();
+        await h.elements.get('voice-identity-repair').emit('click');
+        assert.equal(queries, 2);
+        assert.equal(h.calls.filter(call => call.url.endsWith('/cancel')).length, finish ? 0 : 1);
+        assert.equal(h.controller.isPending(), false);
+        if (!finish) assert.match(h.elements.get('voice-identity-resource-message').textContent, /resource_operation_timeout/);
+        h.events.get('pagehide')();
+    });
+}
+
+test('preparation keeps its completion result when loading updates the audio contract', async () => {
+    let revision = 0;
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {}, audio_contract: { revision: ++revision } };
+        if (url === '/resources/operations') return { operation_id: 'new-contract' };
+        if (url.endsWith('/new-contract')) return { state: 'succeeded' };
+        return {};
+    } });
+    const dialog = h.elements.get('voice-identity-resource-complete');
+    Object.assign(dialog, { open: false, showModal() { this.open = true; }, close() { this.open = false; this.emit('close'); } });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    try {
+        assert.equal(dialog.open, true);
+        assert.equal(h.controller.isPending(), false);
+        assert.equal(h.controller.canStart(), false);
+    } finally { h.elements.get('voice-identity-resource-complete-close').emit('click'); }
+});
+
+test('failed, warning and not-ready checks show an attention result rather than silently suppressing feedback', async () => {
+    for (const options of [{ state: 'failed' }, { reason: 'runtime_degraded' }, { canEnroll: false }]) {
+        const h = resourceNoticeHarness(options);
+        await h.elements.get('voice-identity-prepare').emit('click');
+        assert.equal(h.dialog.open, true, JSON.stringify(options));
+        assert.equal(h.dialog.classList.contains('needs-attention'), true, JSON.stringify(options));
+        assert.equal(h.elements.get('voice-identity-resource-complete-title').textContent, 'Check finished: action needed');
+        assert.equal(h.notices().length, 1, JSON.stringify(options));
+    }
+});
+
+test('cancelled checks do not announce completion', async () => {
+    const h = resourceNoticeHarness({ state: 'cancelled' });
+    await h.elements.get('voice-identity-prepare').emit('click');
+    assert.equal(h.dialog.open, false);
+    assert.equal(h.notices().length, 0);
+});
+
+test('dismissed and page-hidden completion notices retire their timers without closing a later notice', async () => {
+    const h = resourceNoticeHarness();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    const oldTimer = h.notices()[0][1];
+    h.elements.get('voice-identity-resource-complete-close').emit('click');
+    assert.equal(h.dialog.open, false);
+    assert.equal(h.notices().length, 0);
+    await h.elements.get('voice-identity-prepare').emit('click');
+    oldTimer.fn();
+    assert.equal(h.dialog.open, true, 'an old timeout cannot close its successor');
+    h.events.get('pagehide')();
+    assert.equal(h.dialog.open, false);
+    assert.equal(h.notices().length, 0);
+});
+
+test('repair invokes the supported backend task once and refreshes readiness without opening a guide or microphone', async () => {
+    const gate = deferred();
+    let repaired = false;
+    const h = harness({ requestRouter: async (url, config) => {
+        if (url === '/resources') return { can_enroll: repaired, can_repair_models: !repaired, resources: { campp: { state: repaired ? 'ready' : 'missing', required: true } } };
+        if (url === '/resources/operations') { assert.equal(JSON.parse(config.body).kind, 'repair'); await gate.promise; return { operation_id: 'one-click-repair' }; }
+        if (url.endsWith('/one-click-repair/start')) { repaired = true; return {}; }
+        if (url.endsWith('/one-click-repair')) return { state: 'succeeded' };
+        return {};
+    } });
+    h.root.open = () => { throw new Error('repair must execute rather than open documentation'); };
+    await h.controller.refreshResources();
+    const pending = h.elements.get('voice-identity-repair').emit('click');
+    assert.equal(h.elements.get('voice-identity-repair').disabled, true);
+    assert.equal(h.elements.get('voice-identity-repair').textContent, 'Repairing resources…');
+    await h.elements.get('voice-identity-repair').emit('click');
+    gate.resolve(); await pending;
+    assert.equal(h.calls.filter(call => call.url === '/resources/operations').length, 1);
+    assert.equal(h.elements.get('voice-identity-repair').hidden, false);
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.calls.some(call => call.url.includes('/audio/')), false);
+    assert.equal(h.controller.canStart(), false);
+});
+
+test('repair tries the backend for an unusable existing model even when discovery cannot promise a download', async () => {
+    let repaired = false;
+    const h = harness({ requestRouter: async (url, config) => {
+        if (url === '/resources') return { can_enroll: repaired, can_repair_models: false, resources: { campp: { state: repaired ? 'ready' : 'unavailable', required: true } } };
+        if (url === '/resources/operations') { assert.equal(JSON.parse(config.body).kind, 'repair'); return { operation_id: 'existing-model' }; }
+        if (url.endsWith('/existing-model/start')) { repaired = true; return {}; }
+        if (url.endsWith('/existing-model')) return { state: 'succeeded' };
+        return {};
+    } });
+    h.root.open = () => { throw new Error('repair must not open documentation'); };
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-repair').emit('click');
+    assert.equal(repaired, true);
+    assert.equal(h.elements.get('voice-identity-repair').hidden, false);
+    assert.equal(h.calls.filter(call => call.url === '/resources/operations').length, 1);
+});
+
+test('a completed model repair still reports a required missing native component', async () => {
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, wake_enabled: true, resources: {
+            campp: { state: 'ready', required: true },
+            wake_runtime: { state: 'missing', required: true, reason: 'WAKE_WORD_RUNTIME_MISSING' }
+        } };
+        if (url === '/resources/operations') return { operation_id: 'partial-repair' };
+        if (url.endsWith('/partial-repair')) return { state: 'succeeded' };
+        return {};
+    } });
+    const dialog = h.elements.get('voice-identity-resource-complete');
+    Object.assign(dialog, { open: false, showModal() { this.open = true; }, close() { this.open = false; this.emit('close'); } });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-repair').emit('click');
+    try {
+        assert.equal(dialog.open, true);
+        assert.equal(dialog.classList.contains('needs-attention'), true);
+        assert.match(h.elements.get('voice-identity-resource-message').textContent, /wake_runtime: missing/);
+        assert.match(h.elements.get('voice-identity-resource-complete-help').textContent, /wake_runtime: missing/);
+        assert.equal(h.elements.get('voice-identity-repair').hidden, false);
+    } finally { h.elements.get('voice-identity-resource-complete-close').emit('click'); }
+});
+
+test('a failed repair refresh preserves the connection error instead of reusing stale missing-resource details', async () => {
+    let completed = false;
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') {
+            if (completed) throw new Error('resource_status_offline');
+            return { can_enroll: false, resources: { campp: { state: 'missing', required: true } } };
+        }
+        if (url === '/resources/operations') return { operation_id: 'refresh-failure' };
+        if (url.endsWith('/refresh-failure')) { completed = true; return { state: 'succeeded' }; }
+        if (url.endsWith('/cancel')) return { state: 'succeeded' };
+        return {};
+    } });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-repair').emit('click');
+    assert.equal(h.elements.get('voice-identity-resource-message').textContent, 'resource_status_offline');
+    assert.equal(h.controller.isPending(), false);
+    assert.equal(h.controller.canStart(), false);
+});
+
+test('resource loading acknowledges the click before reservation and shows actual progress until completion', async () => {
+    const reservation = deferred();
+    const finish = deferred();
+    let polls = 0;
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources/operations') return reservation.promise;
+        if (url === '/resources/operations/visible-loading/start') return {};
+        if (url === '/resources/operations/visible-loading') return ++polls === 1 ? { state: 'running', progress: 0.4 } : finish.promise;
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        return {};
+    } });
+    h.controller.controls();
+    const card = h.elements.get('voice-identity-resource-card');
+    const button = h.elements.get('voice-identity-prepare');
+    const progress = h.elements.get('voice-identity-resource-progress');
+    assert.equal(progress.hidden, true);
+    const pending = button.emit('click');
+    try {
+        assert.equal(card.classList.contains('is-loading-resources'), true, 'feedback appears before the server reserves an operation');
+        assert.equal(button.textContent, 'Checking and loading…');
+        assert.equal(button.disabled, true);
+        assert.equal(progress.hidden, false);
+        assert.match(h.elements.get('voice-identity-resource-message').textContent, /Preparing voice resources/);
+        assert.equal(h.calls.some(call => call.url.includes('/audio/')), false);
+        reservation.resolve({ operation_id: 'visible-loading' });
+        await new Promise(setImmediate);
+        assert.equal(progress.value, 0.4);
+        assert.equal(card.classList.contains('is-loading-resources'), true);
+        assert.match(h.elements.get('voice-identity-resource-message').textContent, /40%/);
+    } finally {
+        reservation.resolve({ operation_id: 'visible-loading' });
+        finish.resolve({ state: 'succeeded', progress: 1 });
+        await pending;
+    }
+    assert.equal(card.classList.contains('is-loading-resources'), false);
+    assert.equal(progress.hidden, true);
+    assert.equal(button.disabled, false);
+    assert.equal(button.textContent, 'Check and load resources');
+    assert.match(h.elements.get('voice-identity-resource-summary').textContent, /Select your microphone/);
+});
+
+test('repair shows its resource targets and advances stages only when the corresponding requests finish', async () => {
+    const reservation = deferred(), worker = deferred(), snapshot = deferred();
+    let checkingSnapshot = false;
+    const h = harness({ translate(key, fallback, values = {}) {
+        return Object.entries(values).reduce((text, [name, value]) => text.replaceAll('{{' + name + '}}', String(value)), fallback);
+    }, requestRouter: async url => {
+        if (url === '/resources/operations') return reservation.promise;
+        if (url.endsWith('/stage-repair/start')) return {};
+        if (url.endsWith('/stage-repair')) return worker.promise;
+        if (url === '/resources') { checkingSnapshot = true; return snapshot.promise; }
+        return {};
+    } });
+    const element = name => h.elements.get('voice-identity-' + name);
+    const pending = element('repair').emit('click');
+    try {
+        assert.equal(element('resource-progress-panel').hidden, false);
+        assert.equal(element('resource-phase').textContent, 'Submitting the resource task');
+        assert.equal(element('resource-step').textContent, 'Step 1 / 3');
+        assert.equal(element('resource-targets').textContent, 'Resources: CAM++ / Silero VAD');
+        reservation.resolve({ operation_id: 'stage-repair' });
+        while (!h.calls.some(call => call.url.endsWith('/stage-repair'))) await new Promise(resolve => setImmediate(resolve));
+        assert.equal(element('resource-phase').textContent, 'Checking and repairing resources');
+        assert.equal(element('resource-step').textContent, 'Step 2 / 3');
+        worker.resolve({ state: 'succeeded', progress: null });
+        while (!checkingSnapshot) await new Promise(resolve => setImmediate(resolve));
+        assert.equal(element('resource-phase').textContent, 'Confirming the result');
+        assert.equal(element('resource-step').textContent, 'Step 3 / 3');
+        assert.equal(element('resource-progress-panel').hidden, false);
+        snapshot.resolve({ can_enroll: true, resources: {} });
+        await pending;
+        assert.equal(element('resource-progress-panel').hidden, true);
+    } finally {
+        reservation.resolve({ operation_id: 'stage-repair' });worker.resolve({ state: 'succeeded' });snapshot.resolve({ can_enroll: true, resources: {} });await pending;
+    }
+});
+
+test('enabled wake repair includes runtime and model in the visible repair targets', async () => {
+    const reservation = deferred();
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, wake_enabled: true, resources: {
+            campp: { state: 'ready', required: true }, silero: { state: 'ready', required: true },
+            wake_runtime: { state: 'missing', required: true }, wake_model: { state: 'missing', required: true }
+        } };
+        if (url === '/resources/operations') return reservation.promise;
+        if (url.endsWith('/wake-repair')) return { state: 'succeeded' };
+        return {};
+    } });
+    await h.controller.refreshResources();
+    const pending = h.elements.get('voice-identity-repair').emit('click');
+    try {
+        assert.equal(h.elements.get('voice-identity-resource-targets').textContent,
+            'Resources: CAM++ / Silero VAD / Sherpa ONNX / Wake word model');
+    } finally {
+        reservation.resolve({ operation_id: 'wake-repair' });
+        await pending;
+    }
+});
+
+test('invalidating a pending resource confirmation prevents stale progress and parent status refresh', async () => {
+    const snapshot = deferred();let querying = false, statusCalls = 0;
+    const h = harness({ status: async () => { statusCalls++; }, requestRouter: async url => {
+        if (url === '/resources/operations') return { operation_id: 'stale-confirmation' };
+        if (url.endsWith('/stale-confirmation')) return { state: 'succeeded' };
+        if (url === '/resources') { querying = true;return snapshot.promise; }
+        return {};
+    } });
+    const pending = h.elements.get('voice-identity-repair').emit('click');
+    while (!querying) await new Promise(resolve => setImmediate(resolve));
+    h.controller.deviceLost();
+    snapshot.resolve({ can_enroll: true, resources: {} });await pending;
+    assert.equal(statusCalls, 0);
+    assert.equal(h.elements.get('voice-identity-resource-progress-panel').hidden, true);
+    assert.equal(h.controller.canStart(), false);
+});
+
+for (const [label, detail, expectedValue, expectedText] of [
+    ['known size', { phase: 'downloading', resource: 'campp', downloaded_bytes: 12500000, total_bytes: 25000000, attempt: 1 }, .5, /12\.5 \/ 25\.0 MB.*50\.0%/],
+    ['unknown size', { phase: 'downloading', resource: 'silero', downloaded_bytes: 12500000, total_bytes: null, attempt: 1 }, null, /12\.5 MB downloaded/],
+    ['retry', { phase: 'downloading', resource: 'campp', downloaded_bytes: 1000000, total_bytes: 25000000, attempt: 2 }, .04, /4\.0%.*Retry 2/],
+    ['verification', { phase: 'verifying', resource: 'campp', downloaded_bytes: 25000000, total_bytes: 25000000 }, null, null],
+    ['invalid byte count', { phase: 'downloading', resource: 'campp', downloaded_bytes: -1, total_bytes: 25000000 }, null, null]
+]) {
+    test('resource download feedback uses byte counts and separates ' + label, { timeout: 5000 }, async () => {
+        const finish = deferred();let polls = 0;
+        const h = harness({ requestRouter: async url => {
+            if (url === '/resources/operations') return { operation_id: 'byte-progress' };
+            if (url.endsWith('/byte-progress/start')) return {};
+            if (url.endsWith('/byte-progress')) return ++polls === 1 ? { state: 'running', progress: .99, progress_detail: detail } : finish.promise;
+            if (url === '/resources') return { can_enroll: true, resources: {} };
+            return {};
+        } });
+        const progress = h.elements.get('voice-identity-resource-progress');
+        let value = null;
+        Object.defineProperty(progress, 'value', { set(next) { value = next; }, get() { return value; } });
+        progress.removeAttribute = name => { if (name === 'value') value = null; };
+        const pending = h.elements.get('voice-identity-repair').emit('click');
+        try {
+            while (!polls || !h.elements.get('voice-identity-resource-phase').textContent.startsWith(label === 'verification' ? 'Verifying' : 'Downloading')) await new Promise(resolve => setImmediate(resolve));
+            assert.equal(value, expectedValue);
+            assert.doesNotMatch(h.elements.get('voice-identity-resource-message').textContent, /%/);
+            const info = h.elements.get('voice-identity-resource-download-info');
+            assert.equal(info.hidden, expectedText === null);
+            if (expectedText) assert.match(info.textContent, expectedText);
+            if (label === 'unknown size') assert.doesNotMatch(info.textContent, /%/);
+        } finally { finish.resolve({ state: 'succeeded' });await pending; }
+        assert.equal(h.elements.get('voice-identity-resource-progress-panel').hidden, true);
+    });
+}
+
+test('a failed resource reservation clears loading feedback and leaves the error available for retry', async () => {
+    const h = harness({ requestRouter: async () => { throw new Error('service_unavailable'); } });
+    await h.elements.get('voice-identity-prepare').emit('click');
+    assert.equal(h.elements.get('voice-identity-resource-card').classList.contains('is-loading-resources'), false);
+    assert.equal(h.elements.get('voice-identity-resource-progress').hidden, true);
+    assert.equal(h.elements.get('voice-identity-prepare').disabled, false);
+    assert.equal(h.elements.get('voice-identity-resource-message').hidden, false);
+    assert.equal(h.elements.get('voice-identity-resource-message').textContent, 'service_unavailable');
+});
+
+test('a late resource reservation cannot restore loading feedback after input invalidation', async () => {
+    const reservation = deferred();
+    const h = harness({ requestRouter: async url => url === '/resources/operations' ? reservation.promise : {} });
+    const pending = h.elements.get('voice-identity-prepare').emit('click');
+    h.controller.deviceLost();
+    assert.equal(h.elements.get('voice-identity-resource-card').classList.contains('is-loading-resources'), false);
+    assert.equal(h.elements.get('voice-identity-resource-progress').hidden, true);
+    reservation.resolve({ operation_id: 'late-feedback' });
+    await pending;
+    assert.equal(h.elements.get('voice-identity-resource-card').classList.contains('is-loading-resources'), false);
+    assert.equal(h.elements.get('voice-identity-prepare').classList.contains('is-loading'), false);
+    assert.equal(h.calls.some(call => call.url.endsWith('/late-feedback/start')), false);
+    assert.equal(h.calls.some(call => call.url.endsWith('/late-feedback/cancel')), true);
+});
+
+test('resource preparation reveals input setup without starting capture; a passed trial collapses it and can be reopened', async () => {
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        if (url === '/resources/operations') return { operation_id: 'setup-operation' };
+        if (url.endsWith('/setup-operation')) return { state: 'succeeded' };
+        if (url === '/audio/check/isolation') return { token: 'setup-ticket' };
+        if (url === '/audio/check') return { accepted: true, audio_contract: { revision: 1 } };
+        return {};
+    } });
+    const panel = h.elements.get('voice-identity-input-setup');
+    const settings = h.elements.get('voice-identity-input-settings');
+    h.controller.controls();
+    assert.equal(panel.hidden, true);
+    assert.equal(settings.hidden, true);
+    await h.controller.refreshResources();
+    assert.equal(panel.hidden, true, 'a ready resource snapshot alone does not open microphone settings');
+    assert.equal(h.elements.get('voice-identity-prepare').classList.contains('needs-input-setup'), true);
+    await h.elements.get('voice-identity-prepare').emit('click');
+    assert.equal(panel.hidden, false);
+    assert.equal(h.calls.some(call => call.url.includes('/audio/')), false, 'opening setup does not request input capture');
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(panel.hidden, true);
+    assert.equal(settings.hidden, false);
+    assert.equal(h.controller.canStart(), true);
+    assert.match(h.elements.get('voice-identity-input-summary').textContent, /Input test passed.*Actual device/);
+    assert.equal(h.elements.get('voice-identity-prepare').classList.contains('needs-input-setup'), false);
+    const callsBeforeReopen = h.calls.length;
+    await settings.emit('click');
+    assert.equal(panel.hidden, false);
+    assert.equal(h.elements.get('voice-identity-microphone').focused, true);
+    assert.equal(h.calls.length, callsBeforeReopen, 'reopening does not load resources or capture audio');
+    assert.equal(h.controller.canStart(), true, 'viewing settings preserves the checked input');
+    await h.elements.get('voice-identity-input-close').emit('click');
+    assert.equal(panel.hidden, true);
+    await h.mediaEvents.get('devicechange')();
+    assert.equal(panel.hidden, false, 'device changes reopen the setup instead of leaving an invalid success summary');
+    assert.equal(h.controller.canStart(), false);
+    h.elements.get('voice-identity-gain').value = '6';
+    h.elements.get('voice-identity-gain').emit('change');
+    assert.equal(panel.hidden, false);
+    assert.equal(h.controller.canStart(), false);
+    assert.equal(h.elements.get('voice-identity-input-summary').hidden, true);
+});
+
+test('device controls wait for resource preparation so changing them cannot cancel the load', async () => {
+    const gate = deferred();
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: true, resources: {} };
+        if (url === '/resources/operations') { await gate.promise; return { operation_id: 'setup-operation' }; }
+        if (url.endsWith('/setup-operation')) return { state: 'succeeded' };
+        return {};
+    } });
+    const preparing = h.elements.get('voice-identity-prepare').emit('click');
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.elements.get('voice-identity-microphone').disabled, true);
+    assert.equal(h.elements.get('voice-identity-gain').disabled, true);
+    gate.resolve();
+    await preparing;
+    assert.equal(h.elements.get('voice-identity-microphone').disabled, false);
+    assert.equal(h.elements.get('voice-identity-gain').disabled, false);
+    assert.equal(h.calls.some(call => call.url.includes('/audio/')), false);
+});
+
+function setupFeedbackHarness({ wakeRepair = false, operationReason = null } = {}) {
+    let resourceError = false;
+    const h = harness({ requestRouter: async url => {
+        if (url === '/resources') {
+            if (resourceError) throw new Error('resources_unavailable');
+            return { can_enroll: true, resources: { wake_runtime: { state: 'missing', required: wakeRepair } } };
+        }
+        if (url === '/resources/operations') return { operation_id: 'feedback-operation' };
+        if (url.endsWith('/feedback-operation')) return { state: 'succeeded', reason: operationReason };
+        if (url === '/audio/check/isolation') return { token: 'feedback-ticket' };
+        if (url === '/audio/check') return { accepted: true, audio_contract: { revision: 1 } };
+        return {};
+    } });
+    const timers = new Map();
+    let next = 0;
+    h.root.setTimeout = (fn, delay) => { const id = ++next; timers.set(id, { fn, delay }); return id; };
+    h.root.clearTimeout = id => timers.delete(id);
+    return { ...h, timers, feedbackTimers: () => [...timers.entries()].filter(([, timer]) => timer.delay === 3000), failResources: () => { resourceError = true; } };
+}
+
+test('successful setup shows feedback for three seconds, then keeps only the action buttons without changing eligibility', async () => {
+    const h = setupFeedbackHarness();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.elements.get('voice-identity-input-summary').hidden, false);
+    const [[timerId, timer]] = h.feedbackTimers();
+    h.controller.controls(); h.controller.controls();
+    assert.equal(h.feedbackTimers().length, 1, 'renders do not restart the feedback interval');
+    h.timers.delete(timerId); timer.fn();
+    assert.equal(h.elements.get('voice-identity-resource-card').classList.contains('is-compact'), true);
+    for (const name of ['resource-summary', 'resource-message', 'input-summary']) assert.equal(h.elements.get('voice-identity-' + name).hidden, true);
+    assert.equal(h.elements.get('voice-identity-input-settings').hidden, false);
+    assert.equal(h.elements.get('voice-identity-prepare').disabled, false);
+    assert.equal(h.controller.canStart(), true);
+    assert.equal(h.feedbackTimers().length, 0, 'successful compaction does not schedule another timer');
+});
+
+test('retired feedback timers cannot hide reopened settings, device changes or a successor result', async () => {
+    const h = setupFeedbackHarness();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    await h.elements.get('voice-identity-test').emit('click');
+    const [, oldTimer] = h.feedbackTimers()[0];
+    await h.elements.get('voice-identity-input-settings').emit('click');
+    assert.equal(h.feedbackTimers().length, 0);
+    oldTimer.fn();
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    await h.elements.get('voice-identity-input-close').emit('click');
+    const [, closedTimer] = h.feedbackTimers()[0];
+    await h.mediaEvents.get('devicechange')();
+    closedTimer.fn();
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.controller.canStart(), false);
+    await h.elements.get('voice-identity-test').emit('click');
+    oldTimer.fn(); closedTimer.fn();
+    assert.equal(h.elements.get('voice-identity-input-summary').hidden, false);
+    assert.equal(h.elements.get('voice-identity-resource-card').classList.contains('is-compact'), false);
+    assert.equal(h.feedbackTimers().length, 1);
+});
+
+test('a resource diagnostics failure cancels feedback hiding and restores the visible error', async () => {
+    const h = setupFeedbackHarness();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    await h.elements.get('voice-identity-test').emit('click');
+    const [, oldTimer] = h.feedbackTimers()[0];
+    h.failResources();
+    await assert.rejects(h.controller.refreshResources(), /resources_unavailable/);
+    oldTimer.fn();
+    assert.equal(h.feedbackTimers().length, 0);
+    assert.equal(h.elements.get('voice-identity-resource-message').hidden, false);
+    assert.equal(h.elements.get('voice-identity-resource-message').textContent, 'resources_unavailable');
+    assert.equal(h.elements.get('voice-identity-input-summary').hidden, false);
+});
+
+for (const issue of ['wakeRepair', 'operationReason']) test(`setup feedback stays visible for ${issue}`, async () => {
+    const h = setupFeedbackHarness(issue === 'wakeRepair' ? { wakeRepair: true } : { operationReason: 'runtime_degraded' });
+    await h.elements.get('voice-identity-prepare').emit('click');
+    await h.elements.get('voice-identity-test').emit('click');
+    assert.equal(h.feedbackTimers().length, 0);
+    assert.equal(h.elements.get('voice-identity-resource-summary').hidden, false);
+    assert.equal(h.elements.get('voice-identity-resource-message').hidden, false);
+});
+
+test('pagehide clears the setup feedback timer and fences its callback', async () => {
+    const h = setupFeedbackHarness();
+    await h.elements.get('voice-identity-prepare').emit('click');
+    await h.elements.get('voice-identity-test').emit('click');
+    const [, timer] = h.feedbackTimers()[0];
+    h.events.get('pagehide')();
+    timer.fn();
+    assert.equal(h.feedbackTimers().length, 0);
+    assert.equal(h.elements.get('voice-identity-resource-card').classList.contains('is-compact'), false);
+});
+
+for (const failure of ['rejected', 'release', 'cancelled', 'resources']) test(`input setup stays available after ${failure} instead of collapsing`, async () => {
+    const captureGate = failure === 'cancelled' ? deferred() : null;
+    const h = harness({ captureGate, requestRouter: async url => {
+        if (url === '/resources') return { can_enroll: failure !== 'resources', resources: {} };
+        if (url === '/resources/operations') return { operation_id: 'setup-operation' };
+        if (url.endsWith('/setup-operation')) return { state: 'succeeded' };
+        if (url === '/audio/check/isolation') return { token: 'setup-ticket' };
+        if (url === '/audio/check/isolation/release' && failure === 'release') throw new Error('release_failed');
+        if (url === '/audio/check') return { accepted: failure !== 'rejected', reason: 'no_speech_detected' };
+        return {};
+    } });
+    await h.elements.get('voice-identity-prepare').emit('click');
+    const trial = h.elements.get('voice-identity-test').emit('click');
+    if (captureGate) {
+        while (!h.calls.some(call => call.url === '/audio/check/isolation')) await Promise.resolve();
+        await h.elements.get('voice-identity-test-cancel').emit('click');
+        captureGate.resolve();
+    }
+    await trial;
+    assert.equal(h.elements.get('voice-identity-input-setup').hidden, false);
+    assert.equal(h.elements.get('voice-identity-input-summary').hidden, true);
+    assert.equal(h.controller.canStart(), false);
+});
+
 test('enrollment guidance follows resource and input gates without changing eligibility', async () => {
     const h = harness();
     assert.equal(h.controller.startHintKey(), 'voiceIdentity.resourcesChecking');
@@ -164,7 +818,7 @@ test('optional wake resources do not block enrollment and explain disabled downl
     assert.equal(h.controller.canStart(), true);
 });
 
-test('repair is offered only for required resources; optional wake parts point to their own step', async () => {
+test('repair stays visible while optional wake parts retain their own readiness hints', async () => {
     let payload;
     const h = harness({ translate: key => key, requestRouter: async url => url === '/resources' ? payload : {} });
     const ready = { state: 'ready', required: true };
@@ -178,9 +832,9 @@ test('repair is offered only for required resources; optional wake parts point t
     };
     const summaryGreen = () => h.elements.get('voice-identity-resource-summary').classList.contains('is-ready');
     // Fresh install: wake word off and no model downloaded.
-    assert.deepEqual(await show(false, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
-    assert.deepEqual(await show(false, 'missing', 'missing'), { repair: false, help: 'voiceIdentity.downloadNeedsWakeOn', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
-    assert.deepEqual(await show(true, 'missing', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsModel' });
+    assert.deepEqual(await show(false, 'missing', 'unchecked'), { repair: true, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
+    assert.deepEqual(await show(false, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsWakeOn', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeOptional' });
+    assert.deepEqual(await show(true, 'missing', 'unchecked'), { repair: true, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsModel' });
     // Only repair fixes this; the folded details are not the only place that says so.
     assert.deepEqual(await show(true, 'missing', 'missing'), { repair: true, help: 'voiceIdentity.downloadNeedsRuntime', summary: 'voiceIdentity.resourcesReadyWakeRepair', wake: 'voiceIdentity.wakeNeedsRepair' });
     assert.equal(summaryGreen(), false, 'a pending repair is not shown as success');
@@ -188,14 +842,14 @@ test('repair is offered only for required resources; optional wake parts point t
     payload = { can_enroll: true, wake_enabled: true, resources: { campp: ready, silero: ready,
         wake_model: { state: 'unavailable', reason: 'WAKE_WORD_MODEL_INVALID', required: true }, wake_runtime: { state: 'unchecked', required: true } } };
     await h.controller.refreshResources();
-    assert.equal(h.elements.get('voice-identity-repair').hidden, true);
+    assert.equal(h.elements.get('voice-identity-repair').hidden, false);
     assert.equal(h.elements.get('voice-identity-wake-summary').textContent, 'voiceIdentity.wakeNeedsModel');
     assert.equal(h.elements.get('voice-identity-resource-summary').textContent, 'voiceIdentity.resourcesReady');
     assert.equal(summaryGreen(), true);
     payload.wake_configured = true;
     await h.controller.refreshResources();
     assert.equal(h.elements.get('voice-identity-repair').hidden, false);
-    assert.deepEqual(await show(true, 'ready', 'unchecked'), { repair: false, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
+    assert.deepEqual(await show(true, 'ready', 'unchecked'), { repair: true, help: '', summary: 'voiceIdentity.resourcesReady', wake: 'voiceIdentity.wakeNeedsResources' });
     // A configured model directory wins over the download cache: repair, not download.
     payload = { can_enroll: true, wake_enabled: true, wake_configured: true, resources: { campp: ready, silero: ready,
         wake_model: { state: 'missing', required: true }, wake_runtime: { state: 'unchecked', required: true } } };
@@ -262,6 +916,30 @@ for (const reason of ['volume_too_low', 'speech_too_short', 'no_speech_detected'
         assert.equal(h.calls.filter(call => call.url === '/audio/check/isolation/release').length, 1);
     });
 }
+
+test('invalid trial tickets show localized retry guidance and stop capture in all eight locales', async () => {
+    for (const language of ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es']) {
+        const locale = JSON.parse(fs.readFileSync(path.join(__dirname, 'locales', language + '.json'), 'utf8'));
+        for (const reason of ['preview_invalid', 'preview_expired', 'preview_consumed', 'preview_owner_changed', 'preview_not_ready']) {
+            const h = harness({ translate: (key, fallback) => key.split('.').reduce((value, part) => value?.[part], locale) ?? fallback,
+                requestRouter: async url => {
+                    if (url === '/resources') return { can_enroll: true, resources: {} };
+                    if (url === '/audio/check/isolation') return { token: 'expired-ticket', ttl_seconds: 60 };
+                    if (url === '/audio/check') { const error = new Error(reason); error.status = 409; throw error; }
+                    return {};
+                }
+            });
+            await h.controller.refreshResources();
+            await h.elements.get('voice-identity-test').emit('click');
+            const expected = locale.voiceIdentity['inputReason_' + reason];
+            assert.equal(typeof expected, 'string', language + ': ' + reason);
+            assert.equal(h.elements.get('voice-identity-test-result').textContent, expected);
+            assert.equal(h.hooks.stream(), null);
+            assert.equal(h.controller.canStart(), false);
+            assert.equal(h.calls.filter(call => call.url === '/audio/check/isolation/release').length, 1);
+        }
+    }
+});
 
 test('changing gain during a delayed input check fences its successful result', async () => {
     const gate = deferred(); const h = harness({ checkGate: gate }); await h.controller.refreshResources();
@@ -429,6 +1107,45 @@ function isolationHarness(stopFailure = false) {
     function ack(message, extra = {}) { controller.controlResult({ ...message, ok:true, token:'ticket-'+message.request_id, ttl_seconds:60, ...extra },socket); }
     return {controller,receive:request=>receive(request),sent,timers,ack,S,root,document};
 }
+
+test('a shared preview acknowledgement cannot make another window release the owner ticket', async () => {
+    const owner = isolationHarness();
+    const observer = isolationHarness();
+    const pending = owner.receive({ operationId: 'owned-trial' });
+    await new Promise(resolve => setImmediate(resolve));
+    const begin = owner.sent[0];
+    // Electron broadcasts the same server response to each local WS proxy.
+    observer.ack(begin);
+    assert.equal(observer.sent.length, 0, 'a non-owner must not send preview_end');
+    owner.ack(begin);
+    owner.ack(begin);
+    assert.equal(owner.sent.length, 1, 'same-turn duplicate delivery must not release the accepted token');
+    const result = await pending;
+    assert.equal(result.token, 'ticket-owned-trial');
+    assert.equal(owner.controller.blocked(), true);
+    assert.equal(owner.sent.length, 1);
+    // Duplicate delivery after acceptance must not end an ongoing trial either.
+    owner.ack(begin);
+    assert.equal(owner.sent.length, 1);
+    const released = owner.receive({ event: 'release', operationId: 'owned-trial', token: result.token });
+    owner.ack(owner.sent[1]);
+    await released;
+    assert.equal(owner.controller.blocked(), false);
+});
+
+test('another window acknowledgement cannot release a different in-flight local preview', async () => {
+    const h = isolationHarness();
+    const pending = h.receive({ operationId: 'local-trial' });
+    await new Promise(resolve => setImmediate(resolve));
+    h.ack({ event: 'preview_begin', request_id: 'other-window' });
+    assert.equal(h.sent.length, 1);
+    assert.equal(h.controller.blocked(), true);
+    h.ack(h.sent[0]);
+    const result = await pending;
+    const released = h.receive({ event: 'release', operationId: 'local-trial', token: result.token });
+    h.ack(h.sent[1]);
+    await released;
+});
 
 test('waiting feedback uses all eight locales and cannot override newer activation states', () => {
     const reasons = ['speech_too_short', 'owner_not_confirmed', 'verification_insufficient'];
@@ -729,14 +1446,70 @@ test('an older resource snapshot cannot overwrite the newer audio contract', asy
     assert.equal(rows.length, 1); assert.match(rows[0].textContent, /missing/);
 });
 
-test('resource repair in a remote browser cannot invoke a local desktop repair action', async () => {
-    const h = harness({ requestRouter: async () => ({ can_enroll: false, repair_action: 'app_repair', resources: { wake_runtime: { state: 'missing' } } }) });
+test('unsupported remote repair stays on the page with its reason and never invokes local desktop repair', async () => {
+    const h = harness({ translate: (key, fallback) => key === 'voiceIdentity.resourceReason_resource_repair_unavailable' ? 'Automatic repair unsupported.' : fallback, requestRouter: async url => {
+        if (url === '/resources/operations') throw new Error('resource_repair_unavailable');
+        return { can_enroll: false, repair_action: 'app_repair', resources: { wake_runtime: { state: 'missing', required: true, reason: 'WAKE_WORD_RUNTIME_MISSING' } } };
+    } });
     let localRepairs = 0; let url;
     h.root.location.hostname = 'remote.example';
     h.root.nekoVoiceEnrollment = { async openRepair() { localRepairs++; } };
     h.root.open = value => { url = value; };
     await h.controller.refreshResources(); await h.elements.get('voice-identity-repair').emit('click');
-    assert.equal(localRepairs, 0); assert.equal(url, '/api/voice-identity/resources/repair-guide');
+    assert.equal(localRepairs, 0); assert.equal(url, undefined);
+    assert.equal(h.calls.filter(call => call.url === '/resources/operations').length, 1);
+    assert.equal(h.elements.get('voice-identity-resource-message').textContent,
+        'Automatic repair unsupported.\nwake_runtime: missing — Check or repair this resource.');
+    assert.equal(h.controller.isPending(), false);
+    assert.equal(h.controller.canStart(), false);
+});
+
+for (const hostname of ['localhost', 'remote.example']) {
+    test(`packaged primary failures explain manual recovery without redirecting ${hostname}`, async () => {
+        const help = 'Settings → About, reinstall backend, or contact the service administrator.';
+        const h = harness({ translate: (key, fallback) => key === 'voiceIdentity.resourceAppRepairHelp' ? help : fallback,
+            requestRouter: async url => {
+                if (url === '/resources') return { can_enroll: false, resources: {
+                    campp: { state: 'missing', required: true, reason: 'model_unavailable', repair_action: 'app_repair' },
+                    silero: { state: 'missing', required: true, reason: 'model_unavailable', repair_action: 'app_repair' },
+                } };
+                if (url === '/resources/operations') return { operation_id: 'packaged-repair' };
+                if (url.endsWith('/packaged-repair')) return { state: 'succeeded' };
+                return {};
+            } });
+        h.root.location.hostname = hostname;
+        h.root.open = () => assert.fail('Repair must not open documentation');
+        h.root.nekoVoiceEnrollment = { openRepair: () => assert.fail('Repair must not open About automatically') };
+        const dialog = h.elements.get('voice-identity-resource-complete');
+        Object.assign(dialog, { open: false, showModal() { this.open = true; }, close() { this.open = false; this.emit('close'); } });
+        await h.controller.refreshResources();
+        await h.elements.get('voice-identity-repair').emit('click');
+        const message = h.elements.get('voice-identity-resource-message').textContent;
+        assert.match(message, /campp: missing/);
+        assert.match(message, /silero: missing/);
+        assert.equal(message.split(help).length - 1, 1);
+        assert.equal(h.elements.get('voice-identity-resource-complete').classList.contains('needs-attention'), true);
+        assert.equal(h.controller.canStart(), false);
+        assert.equal(h.calls.filter(call => call.url === '/resources/operations').length, 1);
+        h.elements.get('voice-identity-resource-complete-close').emit('click');
+    });
+}
+
+test('a packaged wake-only failure does not suggest reinstalling primary voiceprint resources', async () => {
+    const h = harness({ translate: (key, fallback) => key === 'voiceIdentity.resourceAppRepairHelp' ? 'primary reinstall guidance' : fallback,
+        requestRouter: async url => {
+            if (url === '/resources') return { can_enroll: true, wake_enabled: true, wake_configured: true, resources: {
+                wake_model: { state: 'missing', required: true, repair_action: 'app_repair' },
+            } };
+            if (url === '/resources/operations') return { operation_id: 'wake-only' };
+            if (url.endsWith('/wake-only')) return { state: 'succeeded' };
+            return {};
+        } });
+    await h.controller.refreshResources();
+    await h.elements.get('voice-identity-repair').emit('click');
+    assert.match(h.elements.get('voice-identity-resource-message').textContent, /wake_model: missing/);
+    assert.doesNotMatch(h.elements.get('voice-identity-resource-message').textContent, /primary reinstall guidance/);
+    h.events.get('pagehide')();
 });
 
 test('idle storage changes refresh the device selector after invalidating trial proof', async () => {

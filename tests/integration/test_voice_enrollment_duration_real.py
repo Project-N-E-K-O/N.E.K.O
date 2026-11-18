@@ -119,10 +119,31 @@ async def test_real_silero_still_rejects_non_speech_and_padded_short_speech(kind
     elif kind == "noise":
         samples[:] = np.random.default_rng(3347).integers(-3000, 3001, len(samples), dtype=np.int16)
     elif kind == "one_second_padded":
+        from main_logic.voice_identity_service.enrollment import EnrollmentAudioError
         samples[:48_000] = _samples("rate4")[:48_000]
+        normalized = await EnrollmentAudioNormalizer(nr_enabled=nr_enabled).normalize(
+            samples.tobytes(), sample_rate_hz=48_000, target_samples=48_000,
+        )
+        formal = SileroEnrollmentSpeechValidator(asset_dir=VAD_ASSETS)
+        try:
+            assert await formal.load()
+            with pytest.raises(EnrollmentAudioError, match="no_speech_detected"):
+                await formal.validate_pcm16(normalized)
+        finally:
+            await formal.close()
+        return
     result = await _check_audio(samples.tobytes(), nr_enabled)
     assert result["accepted"] is False
     assert result["reason"] == "no_speech_detected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("nr_enabled", [True, False])
+async def test_short_utterance_passes_microphone_check(nr_enabled):
+    samples = np.zeros(144_000, dtype="<i2")
+    samples[:48_000] = _samples("rate4")[:48_000]
+    result = await _check_audio(samples.tobytes(), nr_enabled)
+    assert result["accepted"] is True
 
 
 class _RecordingCampPlus(CampPlusEmbeddingModel):

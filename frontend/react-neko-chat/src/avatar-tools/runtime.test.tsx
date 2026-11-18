@@ -469,7 +469,7 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     }
   });
 
-  it('shows the current catgirl cycling hand only inside the raw range and cycles it in the same session', () => {
+  it('shows the current neko cycling hand only inside the raw range and cycles it in the same session', () => {
     vi.useFakeTimers();
     const frameCallbacks: FrameRequestCallback[] = [];
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
@@ -507,7 +507,7 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     }
   });
 
-  it('freezes the user hand on press while the catgirl hand keeps cycling', () => {
+  it('freezes the user hand on press while the neko hand keeps cycling', () => {
     vi.useFakeTimers();
     const frameCallbacks: FrameRequestCallback[] = [];
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
@@ -743,7 +743,7 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     }
   });
 
-  it('does not choose a current catgirl hand for an invalid rps release and clears a confirmed reveal on blur', () => {
+  it('does not choose a current neko hand for an invalid rps release and clears a confirmed reveal on blur', () => {
     vi.useFakeTimers();
     const random = vi.fn(() => 0.5);
     const view = render(

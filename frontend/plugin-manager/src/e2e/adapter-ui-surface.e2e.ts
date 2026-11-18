@@ -102,6 +102,39 @@ test('确实没有任何界面声明的适配器才显示"没有自定义界面"
   await expect(page.locator('.no-ui-overlay'), '真无界面时没有给出提示').toBeVisible()
 })
 
+// Adapter hosts have less chrome than plugin-detail tabs. A viewport cap can
+// pass the detail matrix while leaving a gap below both hosted and legacy UI.
+for (const height of [400, 768, 1340, 2000]) {
+  for (const withSurface of [true, false]) {
+    test(`[h=${height}] ${withSurface ? 'hosted' : 'legacy'} adapter fills its host and remains reachable`, async ({ page }) => {
+      await page.setViewportSize({ width: 1000, height })
+      await stubAdapterApis(page, { withSurface })
+      await openAdapterPage(page, withSurface ? ADAPTER_ID : NO_UI_ID)
+      const geometry = await page.evaluate(() => {
+        const main = document.querySelector('.app-main') as HTMLElement
+        const host = document.querySelector('.adapter-ui-container') as HTMLElement
+        const frame = host.querySelector('.hosted-surface-frame, .plugin-ui-frame') as HTMLElement
+        const box = frame.getBoundingClientRect()
+        const hostBox = host.getBoundingClientRect()
+        const overflow = main.scrollHeight - main.clientHeight
+        main.scrollTop = main.scrollHeight
+        return {
+          topGap: box.top - hostBox.top,
+          bottomGap: hostBox.bottom - box.bottom,
+          frameHeight: box.height,
+          overflow,
+          reachable: frame.getBoundingClientRect().bottom <= main.getBoundingClientRect().bottom + 1,
+        }
+      })
+      expect(geometry.topGap).toBeLessThanOrEqual(1)
+      expect(geometry.bottomGap, 'viewport cap left blank space below the frame').toBeLessThanOrEqual(1)
+      expect(geometry.frameHeight).toBeGreaterThan(200)
+      expect(geometry.reachable, 'short-window scrolling cannot reach the frame bottom').toBe(true)
+      if (height >= 768) expect(geometry.overflow, 'normal window gained an outer scrollbar').toBe(0)
+    })
+  }
+}
+
 /**
  * 侧栏是进适配器页的唯一入口，它拼的 `to` 必须是编码过的 id。
  *

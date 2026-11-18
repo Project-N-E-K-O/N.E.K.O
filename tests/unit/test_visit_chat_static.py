@@ -32,12 +32,22 @@ ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "design" / "visit-infrastructure.md"
 WS = ROOT / "static" / "app" / "app-websocket.js"
 CHAT = ROOT / "static" / "app" / "app-react-chat-window" / "visit-chat.js"
+DISPLAY_RELAY = ROOT / "static" / "visit" / "display-relay.js"
+CAT_SCENE = ROOT / "static" / "visit" / "cat-scene.js"
+CAT_WORLD = ROOT / "static" / "visit" / "cat-world.js"
+NATIVE_CAT_BRIDGE = ROOT / "static" / "visit" / "native-cat-bridge.js"
+CAT_SCENE_CSS = ROOT / "static" / "css" / "visit-cat-scene.css"
+CAT_WORLD_CSS = ROOT / "static" / "css" / "visit-cat-world.css"
+CAT_RESOURCE_REGISTRY = ROOT / "static" / "avatar" / "avatar-ui-buttons" / "cat-resource-registry.js"
+IDLE_PLAYGROUND = ROOT / "static" / "avatar" / "avatar-ui-buttons" / "idle-playground.js"
 PERSONA = ROOT / "static" / "app" / "visit-persona-panel.js"
 ADAPTER = ROOT / "static" / "app" / "app-chat-adapter.js"
 SUBMIT = ROOT / "static" / "app" / "app-react-chat-window" / "message-bundle-actions-and-prompts.js"
 SCHEMA = ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts"
 BLOCK_VIEW = ROOT / "frontend" / "react-neko-chat" / "src" / "MessageBlockView.tsx"
 INDEX_CSS = ROOT / "static" / "css" / "index.css"
+PERSONA_WINDOW_CSS = ROOT / "static" / "css" / "visit_persona_window.css"
+PERSONA_TEMPLATE = ROOT / "templates" / "visit_persona.html"
 TEMPLATES = (ROOT / "templates" / "index.html", ROOT / "templates" / "chat.html")
 LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
@@ -91,6 +101,7 @@ def test_onopen_sends_visit_bind_with_the_csrf_token():
     assert "_sendVisitBind(_thisSocket)" in onopen
     bind = _function_body(source, "_sendVisitBind")
     assert "action: 'visit_bind'" in bind and "csrf_token: token" in bind
+    assert "window.nekoDesktopRuntime" in bind and "desktop_run_id: desktopRunId" in bind
     # Token uses the same source as local HTTP mutation endpoints; nekoLocalMutationSecurity exposes only getMutationHeaders / refreshToken
     token = _function_body(source, "_visitCsrfToken")
     assert "security.getMutationHeaders()" in token and "security.refreshToken()" in token
@@ -99,6 +110,10 @@ def test_onopen_sends_visit_bind_with_the_csrf_token():
 
 def test_every_visit_downlink_type_is_dispatched():
     source = _read(WS)
+    generic = source[source.index("// 串门帧（visit_*）统一再派发一份"):]
+    generic = generic[:generic.index("// Persistent display resources")]
+    assert "response.type.indexOf('visit_') === 0" in generic
+    assert "new CustomEvent('neko-visit-frame', { detail: response })" in generic
     downlink = {"visit_line", "visit_line_delta", "visit_line_abort", "visit_typing",
                 "visit_state_change", "visit_invite", "visit_debrief"}
     block = source[source.index("// 串门帧（§4.5 全部 visit_* 下行）"):]
@@ -106,6 +121,8 @@ def test_every_visit_downlink_type_is_dispatched():
     found = set(re.findall(r"response\.type === '(visit_[a-z_]+)'", block))
     assert downlink <= found
     assert "nekoVisitChat.handleFrame(response)" in block
+    # Cat scenes use the generic visit_* event and do not enter the dialogue state machine.
+    assert "visit_cat_scene" not in block
 
 
 def test_chat_surface_handles_every_state_change_action_of_the_design():
@@ -158,6 +175,260 @@ def test_chat_window_skips_the_iframe_but_still_renders_lines():
     assert "__NEKO_MULTI_WINDOW__ === true" in follower and "chat(?:_full)?" in follower
 
 
+def test_chat_window_relays_visit_lifecycle_to_the_pet_window():
+    chat = _read(CHAT)
+    state = _function_body(chat, "onStateChange")
+    assert "window.nekoRelayVisitStateToDisplay(frame)" in state
+    snapshot = _function_body(chat, "applyState")
+    assert "relayStateSnapshotToDisplay(state, snapshotVisit)" in snapshot
+
+    relay = _read(DISPLAY_RELAY)
+    assert "new BroadcastChannel(CHANNEL_NAME)" in relay
+    assert "neko_visit_display_v1" in relay
+    assert "bridge.onStateChange(frame)" in relay
+    # The transport bridge needs lifecycle metadata, not the host's invite code.
+    assert "'action', 'side', 'visit_id'" in relay
+    assert "frame.cat_scene === 2" in relay and "copy.cat_scene = 2" in relay
+    for field in ("self_cat_asset", "peer_cat_asset"):
+        assert f"'{field}'" in relay
+    assert "value === 'dev_neko' || value === 'yui_neko'" in relay
+    assert "invite_code" not in relay
+
+    snapshot_relay = _function_body(chat, "relayStateSnapshotToDisplay")
+    assert "state.cat_scene === 2" in snapshot_relay and "frame.cat_scene = 2" in snapshot_relay
+    for field in ("self_cat_asset", "peer_cat_asset"):
+        assert f"frame.{field} = state.{field}" in snapshot_relay
+    assert "=== 'dev_neko'" in snapshot_relay and "=== 'yui_neko'" in snapshot_relay
+    assert "state.cat_poses" in snapshot_relay
+    assert "window.nekoRelayVisitCatPoseToDisplay" in snapshot_relay
+    assert "phase: 'commit'" in snapshot_relay
+
+    index = _read(ROOT / "templates" / "index.html")
+    chat_template = _read(ROOT / "templates" / "chat.html")
+    assert index.index("/static/visit/parent-bridge.js") < index.index("/static/visit/display-relay.js")
+    assert chat_template.index("/static/visit/display-relay.js") < chat_template.index(
+        "/static/app/app-react-chat-window/visit-chat.js"
+    )
+
+
+def test_cat_scene_relay_is_scoped_sanitized_and_bounded():
+    relay = _read(DISPLAY_RELAY)
+    safe = _function_body(relay, "safeCatFrame")
+    assert "frame.type !== 'visit_cat_scene'" in safe
+    assert "^[A-Za-z0-9_-]{22}$" in safe
+    assert "frame.actor !== 'self' && frame.actor !== 'peer'" in safe
+    for kind in ("greet", "play", "rest"):
+        assert f"frame.kind !== '{kind}'" in safe
+    assert "Number.isSafeInteger(frame.seq)" in safe and "frame.seq > 0xffffffff" in safe
+    assert "Number.isSafeInteger(frame.seed)" in safe and "frame.seed > 0xffffffff" in safe
+    assert "actor_side" not in safe
+    assert "invite_code" not in safe
+
+    remember = _function_body(relay, "rememberCatScene")
+    key = _function_body(relay, "catSceneKey")
+    assert "frame.visit_id" in key and "frame.actor" in key and "frame.seq" in key
+    assert "CAT_SCENE_HISTORY_MAX = 256" in relay
+    assert "catSceneOrder.length > CAT_SCENE_HISTORY_MAX" in remember
+
+    on_frame = _function_body(relay, "onVisitFrame")
+    assert "relayCatSceneToDisplay(sceneFrame)" in on_frame
+    assert "dispatchCatScene(sceneFrame)" in on_frame
+    dispatch = _function_body(relay, "dispatchCatScene")
+    assert "new CustomEvent('neko-visit-cat-scene', { detail: frame })" in dispatch
+    assert "visit_display_cat_scene" in relay
+    assert "payload.catgirl !== sceneCatgirl" in relay
+    # The relay copies a narrow contract rather than broadcasting the original object.
+    post = _function_body(relay, "relayCatSceneToDisplay")
+    assert "frame: normalized" in post and "frame: frame" not in post
+
+
+def test_cat_pose_relay_is_semantic_sanitized_and_bounded():
+    relay = _read(DISPLAY_RELAY)
+    safe = _function_body(relay, "safeCatPoseFrame")
+    assert "frame.type !== 'visit_cat_pose'" in safe
+    assert "frame.actor !== 'self' && frame.actor !== 'peer'" in safe
+    assert "frame.phase !== 'sample' && frame.phase !== 'commit'" in safe
+    for field in ("motion_id", "sample_seq", "x_q16", "y_q16"):
+        assert f"Number.isSafeInteger(frame.{field})" in safe
+    for mode in ("idle", "walk", "drag", "airborne", "edge", "follow"):
+        assert f"'{mode}'" in safe
+    assert "CAT_POSE_SLOT_TIERS[frame.slot] !== frame.tier" in safe
+    for forbidden in ("screen_x", "screen_y", "pixel_x", "pixel_y", "resource_url"):
+        assert forbidden not in safe
+
+    remember = _function_body(relay, "rememberCatPose")
+    key = _function_body(relay, "catPoseKey")
+    for field in ("visit_id", "actor", "phase", "motion_id", "sample_seq"):
+        assert f"frame.{field}" in key
+    assert "CAT_POSE_HISTORY_MAX = 512" in relay
+    assert "catPoseOrder.length > CAT_POSE_HISTORY_MAX" in remember
+
+    dispatch = _function_body(relay, "dispatchCatPose")
+    assert "new CustomEvent('neko-visit-cat-pose', { detail: frame })" in dispatch
+    assert "retainedCatPoses[frame.actor]" in dispatch
+    assert "window.nekoVisitCatPoseSnapshots" in relay
+    post = _function_body(relay, "relayCatPoseToDisplay")
+    assert "safeCatPoseFrame(frame)" in post
+    assert "frame: normalized" in post and "frame: frame" not in post
+    assert "visit_display_cat_pose" in relay
+
+
+def test_cat_world_relay_http_and_assets_form_one_bounded_pipeline():
+    relay = _read(DISPLAY_RELAY)
+    intent = _function_body(relay, "safeCatWorldIntentFrame")
+    world = _function_body(relay, "safeCatWorldFrame")
+    assert "frame.type !== 'visit_cat_world_intent'" in intent
+    assert "frame.actor !== 'self' && frame.actor !== 'peer'" in intent
+    for kind in ("yarn_spawn", "yarn_grab", "yarn_release", "question_tap", "pointer"):
+        assert f"'{kind}'" in intent
+    for field in ("intent_id", "x_q16", "y_q16"):
+        assert f"Number.isSafeInteger(frame.{field})" in intent
+    assert "frame.type !== 'visit_cat_world'" in world
+    for field in (
+        "world_seq", "yarn_x_q16", "yarn_y_q16", "yarn_vx_q12", "yarn_vy_q12",
+        "question_x_q16", "question_y_q16", "collision_seq",
+    ):
+        assert f"Number.isSafeInteger(frame.{field})" in world
+    assert "neko-visit-cat-world-intent" in relay
+    assert "neko-visit-cat-world" in relay
+    assert "visit_display_cat_world_intent" in relay
+    assert "visit_display_cat_world" in relay
+    assert "window.nekoVisitCatWorldSnapshot" in relay
+    assert "window.nekoVisitCatWorldIntentSnapshots" in relay
+    assert "CAT_WORLD_HISTORY_MAX = 512" in relay
+
+    chat = _read(CHAT)
+    for function_name, endpoint in (
+        ("requestCatWorldIntent", "/api/visit/route/cat-world-intent"),
+        ("requestCatWorldPointer", "/api/visit/route/cat-world-pointer"),
+        ("requestCatWorldState", "/api/visit/route/cat-world-state"),
+    ):
+        body = _function_body(chat, function_name)
+        assert endpoint in body
+    snapshot = _function_body(chat, "relayStateSnapshotToDisplay")
+    assert "state.cat_world" in snapshot
+    assert "window.nekoRelayVisitCatWorldToDisplay" in snapshot
+    assert "window.nekoVisitCatWorldApi = Object.freeze" in chat
+
+    controller = _read(CAT_WORLD)
+    assert "data-neko-visit-cat-input', 'object'" in controller
+    assert "state.side !== 'host'" in controller
+    assert "nekoVisitCatWorldApi" in controller
+    assert "nekoVisitCatWorldSnapshot" in controller
+    assert "nekoVisitCatPoseSnapshots" in controller
+    assert "nekoVisitCatWorldIntentSnapshots" in controller
+    assert "neko:visit-cat-scene-deactivated" in controller
+    for forbidden in ("screen_x", "screen_y", "pixel_x", "resource_url"):
+        assert forbidden not in controller
+    scene = _read(CAT_SCENE)
+    assert "addEventListener('neko:visit-cat-world-collision'" in scene
+    assert "neko-visit-cat-collision" in scene and "neko-visit-cat-collision" in _read(CAT_SCENE_CSS)
+
+    index = _read(ROOT / "templates" / "index.html")
+    assert "/static/css/visit-cat-world.css" in index and CAT_WORLD_CSS.exists()
+    assert index.index("/static/visit/cat-scene.js") < index.index("/static/visit/cat-world.js")
+
+
+def test_cat_scene_visible_runner_is_loaded_after_chat_api_and_uses_group_resources():
+    index = _read(ROOT / "templates" / "index.html")
+    assert "/static/css/visit-cat-scene.css" in index
+    assert index.index("/static/visit/display-relay.js") < index.index(
+        "/static/app/app-react-chat-window/visit-chat.js"
+    ) < index.index("/static/visit/native-cat-bridge.js") < index.index(
+        "/static/visit/cat-scene.js"
+    )
+
+    relay = _read(DISPLAY_RELAY)
+    dispatch = _function_body(relay, "dispatchDisplayState")
+    assert "safeFrame(frame)" in dispatch
+    assert "new CustomEvent('neko-visit-display-state', { detail: normalized })" in dispatch
+    assert "window.nekoVisitDisplayStateSnapshot" in relay
+    assert "retainedCatPhase || lastDisplayState" in relay
+
+    registry = _read(CAT_RESOURCE_REGISTRY)
+    assert "function getAppearanceForGroup(groupId, slot, options)" in registry
+    read_slot = _function_body(registry, "readSlot")
+    assert "Number.isSafeInteger(options.seed)" in read_slot
+    assert "(options.seed >>> 0) % urls.length" in read_slot
+
+    bridge = _read(NATIVE_CAT_BRIDGE)
+    assert "global.NekoIdleCatVisitBridge = Object.freeze({ snapshot: snapshot })" in bridge
+    snapshot = _function_body(bridge, "snapshot")
+    for field in ("tier", "slot", "mode", "facing", "x_q16", "y_q16"):
+        assert f"{field}:" in snapshot
+    for forbidden in ("screenX", "screenY", "pixel_x", "pixel_y", "resource_url"):
+        assert forbidden not in snapshot
+    assert "addEventListener" not in bridge
+
+    scene = _read(CAT_SCENE)
+    for event_name in ("neko-visit-display-state", "neko-visit-cat-scene", "neko-visit-cat-pose"):
+        assert f"addEventListener('{event_name}'" in scene
+    assert "slots: { self: emptySlot('self'), peer: emptySlot('peer') }" in scene
+    for kind in ("greet", "play", "rest"):
+        assert f"{kind}: {{" in scene
+    assert "getAppearanceForGroup(asset, slot, { seed: seed })" in scene
+    assert "global.NekoIdleCatVisitBridge" in scene
+    assert "requestCatPose" in scene
+    assert "requestNativeCatEntry" in scene
+    assert "positionSlot" not in scene and "moveSlot" not in scene
+    assert "data-visit-cat-action'" not in scene
+    assert "neko:visit-cat-geometry-changed" in scene
+    assert "global.nekoVisitCatPoseSnapshots" in scene
+    drain = _function_body(scene, "drainPoseQueue")
+    assert drain.count("scene.pose.generation !== item.generation") == 3
+
+    css = _read(CAT_SCENE_CSS)
+    assert ".neko-visit-cat-world-layer" in css
+    assert "--neko-visit-cat-x" in css and "--neko-visit-cat-y" in css
+    assert "grid-template-columns: repeat(2" not in css
+    assert ".neko-visit-cat-owner" in css
+    assert '.neko-visit-cat-card[data-visit-cat-action-state="action.cat1.play_yarn"] {' in css
+    assert "width: clamp(168px, 24.5vw, 213.5px)" in css
+    assert "width: 175%" not in css
+    assert "body.neko-visit-cat-scene-active [id$=\"-return-button-container\"]" not in css
+
+
+def test_cat_scene_reuses_visit_http_and_guards_existing_model_return():
+    chat = _read(CHAT)
+    action = _function_body(chat, "requestCatAction")
+    assert "'/api/visit/route/cat-action'" in action
+    assert "visit_id: visitId" in action and "kind: kind" in action
+    assert "t('visit.catScene.actionFailed', '动作传输失败，请重试')" in action
+    end = _function_body(chat, "endCatVisitForModelReturn")
+    assert "'/api/visit/route/end'" in end
+    assert "reason: 'route_end'" in end and "lanlan_name: catgirl" in end
+    assert "requestCatAction: requestCatAction" in chat
+    pose = _function_body(chat, "requestCatPose")
+    assert "'/api/visit/route/cat-pose'" in pose
+    for field in ("motion_id", "sample_seq", "x_q16", "y_q16", "mode", "facing", "tier", "slot"):
+        assert f"{field}: pose.{field}" in pose
+    assert "actor" not in pose and "actor_side" not in pose
+    assert "VISIT_CAT_POSE_STALE" in pose and "current_motion_id" in pose
+    assert "requestCatPose: requestCatPose" in chat
+    assert "endCatVisitForModelReturn: endCatVisitForModelReturn" in chat
+    assert "t('visit.error.otherVisitActive', '已有其他串门，请先结束')" in chat
+    assert "t('visit.socialHub.modeMismatch', '串门创建失败，请重试')" in chat
+    reconcile = _function_body(chat, "confirmCatVisitEnded")
+    assert "'/api/visit/state?catgirl='" in reconcile
+    assert "result.body.active === false" in reconcile
+    assert "activeVisitId !== visitId" in reconcile
+    assert "stateFrameSeq !== seqAtRequest" in reconcile
+    assert "applyState(result.body, false)" in reconcile
+    assert "dispatchVisitStatus({ action: 'ended', visit_id: visitId })" in reconcile
+    assert "confirmCatVisitEnded: confirmCatVisitEnded" in chat
+
+    playground = _read(IDLE_PLAYGROUND)
+    dispatch = _function_body(playground, "_dispatchNekoIdleReturnClickFromButton")
+    guard_helper = _function_body(playground, "_guardNekoVisitCatReturn")
+    guard = guard_helper.index("visitCatScene.guardModelReturn(commitReturn)")
+    # The transition lives inside the deferred commit closure; the guard calls
+    # that closure only after exit confirmation and a successful route end.
+    assert "const commitReturn = () =>" in dispatch
+    assert "window.playNekoModelCatTransition" in dispatch
+    assert guard >= 0 and "_guardNekoVisitCatReturn(commitReturn)" in dispatch
+    assert "return commitReturn();" in dispatch
+
+
 # ── Plain-text dialogue (§3.6.6, two layers) ──────────────────────────────────────
 
 
@@ -183,7 +454,7 @@ def test_adapter_and_local_bubble_mark_visit_lines_plain_text():
     render = _function_body(adapter, "renderVisitLine")
     assert "plain_text: true" in render
     role = _function_body(adapter, "visitLineRole")
-    # Peers (visiting catgirl / the other household's human) always use role 'tool'
+    # Peers (visiting neko / the other household's human) always use role 'tool'
     assert "if (!speaker || speaker.self !== true) return 'tool';" in role
     assert set(re.findall(r"'(user|assistant|system|tool|[a-z]+)'", role)) <= {"tool", "user", "assistant", "human"}
     chat = _read(CHAT)
@@ -263,6 +534,43 @@ def test_join_previews_first_and_never_joins_after_a_failed_preview():
     assert "if (!data) return null;" in join
 
 
+def test_all_visit_entry_requests_carry_the_page_cat_asset():
+    chat = _read(CHAT)
+    asset = _function_body(chat, "readCatAsset")
+    assert "window.NekoCatResourceRegistry" in asset
+    assert "registry.selectedAppearanceGroupId" in asset
+    assert "selected === 'yui_neko' ? 'yui_neko' : 'dev_neko'" in asset
+
+    start = _function_body(chat, "startInvite")
+    coded = _function_body(chat, "joinWithCode")
+    direct = _function_body(chat, "joinDirect")
+    assert "cat_asset: readCatAsset()" in start
+    assert "cat_asset: readCatAsset()" in coded
+    assert "cat_asset: readCatAsset()" in direct
+
+
+def test_invite_recovers_an_existing_room_before_creating_and_polls_after_creation():
+    chat = _read(CHAT)
+    url = _function_body(chat, "currentHostRoomUrl")
+    assert "'/api/visit/rooms/current?catgirl=' + encodeURIComponent(catgirl)" in url
+    start = _function_body(chat, "startInvite")
+    assert start.index("currentHostRoomUrl(catgirl)") < start.index("'/api/visit/rooms'")
+    assert "current.status !== 404" in start
+    assert "scheduleInviteRecovery(catgirl" in start
+    recovery = _function_body(chat, "scheduleInviteRecovery")
+    assert "api('GET', currentHostRoomUrl(catgirl))" in recovery
+
+
+def test_invite_creation_fails_immediately_when_start_does_not_succeed():
+    chat = _read(CHAT)
+    start = _function_body(chat, "startInvite")
+    switched = "return { ok: false, error: t('visit.error.characterSwitched'"
+    assert switched in start
+    for function_name in ("createInviteCode", "createDirectInvitation"):
+        body = _function_body(chat, function_name)
+        assert "if (!started || started.ok !== true)" in body
+
+
 def test_persona_409_opens_the_panel_before_any_retry():
     body = _function_body(_read(CHAT), "withPersonaRetry")
     first = body.index("await request()")
@@ -300,7 +608,9 @@ def test_persona_panel_endpoints_and_review_flag():
 def test_no_visit_url_has_a_trailing_slash_before_the_query():
     for path in (CHAT, PERSONA):
         for url in re.findall(r"'(/api/visit/[^']*)'", _read(path)):
-            assert not url.endswith("/") or url in ("/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/"), url
+            assert not url.endswith("/") or url in (
+                "/api/visit/details/", "/api/visit/rooms/", "/api/visit/invites/", "/api/visit/direct/"
+            ), url
 
 
 # ── Eight languages ─────────────────────────────────────────────────────────
@@ -415,6 +725,84 @@ def test_persona_panel_refreshes_compact_hit_geometry_on_open_and_close():
     assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in source
 
 
+def test_persona_panel_refreshes_compact_hit_geometry_after_async_content_changes():
+    source = _read(PERSONA)
+    for name in ("setNotice", "setButtons", "renderPrivate"):
+        assert "refreshCompactGeometry();" in _function_body(source, name), name
+
+
+def test_visit_dialog_owns_compact_input_until_it_closes():
+    source = _read(CHAT)
+    body = _function_body(source, "openDialog")
+    assert "var releaseInteractive = acquireForceInteractiveLease();" in body
+    close = body[body.index("close: function (value)"):body.index("setLines: function (lines)")]
+    assert "releaseInteractive();" in close
+    lease = _function_body(source, "acquireForceInteractiveLease")
+    assert "window.__nekoAcquireForceInteractiveLease" in lease
+    assert "window.__nekoForceInteractiveLeaseState" in lease
+    assert "state.count += 1;" in lease and "state.count = Math.max(0, state.count - 1);" in lease
+    assert "if (state.count === 0)" in lease
+
+    css = _read(INDEX_CSS)
+    overlay = re.search(r"\.visit-dialog-overlay\s*\{([^}]*)\}", css, re.S)
+    dialog = re.search(r"\.visit-dialog\s*\{([^}]*)\}", css, re.S)
+    assert overlay and "background: transparent" in overlay.group(1)
+    assert overlay and "pointer-events: none" in overlay.group(1)
+    assert dialog and "pointer-events: auto" in dialog.group(1)
+    assert dialog and "-webkit-app-region: no-drag" in dialog.group(1)
+
+
+def test_persona_panel_keeps_actions_outside_its_scrollable_body():
+    source = _read(PERSONA)
+    assert "? 'visit-persona-content'" in source
+    assert "? 'visit-persona-actions'" in source
+    assert "? 'visit-persona-editor'" in source
+    assert "var header = el('div', 'modal-header');" in source
+    assert "btnClass = 'visit-persona-action';" in source
+    assert "body.appendChild(privateBox);" in source
+    assert source.index("dialog.appendChild(body);") < source.index("dialog.appendChild(actions);")
+
+    css = _read(PERSONA_WINDOW_CSS)
+    root = re.search(r"#visit-persona-window-root\s*\{([^}]*)\}", css, re.S)
+    actions = re.search(r"\.visit-persona-actions\s*\{([^}]*)\}", css, re.S)
+    assert root and "overflow-y: auto" in root.group(1)
+    assert "#visit-persona-window-root::-webkit-scrollbar" in css
+    assert "width: 8px" in css and "rgba(64, 197, 241, 0.55)" in css
+    assert actions and "flex: 0 0 auto" in actions.group(1)
+    assert actions and "position: sticky" in actions.group(1) and "bottom: 0" in actions.group(1)
+
+
+def test_persona_hides_private_card_sections_in_both_modes_and_standalone_close():
+    source = _read(PERSONA)
+    assert "return standalone ? [] : [closeButton()];" in _function_body(source, "passiveButtons")
+    private = _function_body(source, "renderPrivate")
+    assert "data.private_sections" not in private
+    assert "visit-persona-private-list" not in private
+    assert "data.sections_outdated === true" in private
+    assert "data.scan_complete === false" in private
+
+
+def test_persona_panel_owns_compact_input_and_has_no_dim_backdrop():
+    source = _read(PERSONA)
+    assert "modal-overlay visit-persona-overlay" in source
+    assert "modal-dialog visit-persona" in source
+    assert "modal-input visit-persona-text" in source
+    assert "modal-btn-primary" in source and "modal-btn-secondary" in source
+    assert "standalone ? function () {} : acquireForceInteractiveLease();" in source
+    assert "if (!standalone)" in source
+    assert "releaseInteractive();" in _function_body(source, "close")
+    lease = _function_body(source, "acquireForceInteractiveLease")
+    assert "window.__nekoAcquireForceInteractiveLease" in lease
+    assert "window.__nekoForceInteractiveLeaseState" in lease
+
+    css = _read(INDEX_CSS)
+    overlay = re.search(r"\.modal-overlay\.visit-persona-overlay\s*\{([^}]*)\}", css, re.S)
+    dialog = re.search(r"\.visit-persona-overlay \.visit-persona\s*\{([^}]*)\}", css, re.S)
+    assert overlay and "background: transparent" in overlay.group(1)
+    assert overlay and "pointer-events: none" in overlay.group(1)
+    assert dialog and "pointer-events: auto" in dialog.group(1)
+
+
 def test_visit_lines_do_not_toast_text_chatting():
     buttons = _read(ROOT / "static" / "app" / "app-buttons.js")
     assert """                    if (!isVisitLine) {
@@ -427,6 +815,30 @@ def test_persona_panel_is_reused_only_for_the_same_character():
     assert "if (openPanel.catgirl === catgirl) return openPanel.result;" in source
     assert "openPanel.close(false);" in source
     assert "panel.close = close;" in source
+
+
+def test_persona_panel_displays_the_real_character_name_instead_of_the_placeholder():
+    source = _read(PERSONA)
+    render = _function_body(source, "renderPersonaText")
+    assert "value.split('{LANLAN_NAME}').join(catgirl)" in render
+    assert "loadedText = renderPersonaText(data.text, catgirl);" in source
+
+
+def test_persona_preview_opens_as_a_standalone_neko_tool_window():
+    source = _read(PERSONA)
+    template = _read(PERSONA_TEMPLATE)
+    css = _read(PERSONA_WINDOW_CSS)
+    assert "window.open('/visit_persona?' + params.toString()" in source
+    assert "window.buildCenteredPopupFeatures(820, 720)" in source
+    assert "type: 'neko:visit-persona-result'" in source
+    assert "window.__NEKO_VISIT_PERSONA_STANDALONE__ === true" in source
+    assert "return openStandaloneVisitPersonaPreview(catgirl, options);" in source
+    assert "visit-persona-page-surface" in source
+    assert "data-compact-geometry-owner" in source and "if (!standalone)" in source
+    assert "/static/common_dialogs.js" not in template
+    assert "/static/css/index.css" not in template
+    assert "modal-overlay" not in css and "modal-dialog" not in css
+    assert "-webkit-app-region: no-drag !important" in css
 
 
 def test_refused_ordinary_submission_releases_an_ack_only_text_session():

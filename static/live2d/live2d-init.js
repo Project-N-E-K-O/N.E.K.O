@@ -843,6 +843,17 @@ async function _initLive2DModelInner() {
 
         // 设置页面卸载时的自动清理（确保资源正确释放）
         revealInitialLive2DModelWhenUiReady('initial-live2d-load');
+
+        // 主页面初始模型加载完成后的触摸配置刷新钩子：启动初始化最多只等模型 5 秒，
+        // 慢加载时原生 HitArea 监听会一直处于未接线状态；触摸数据刚拉取过时这里只补
+        // 接线，过期则顺带重拉。模型管理页自己管理 touchSet（见 page-controller），
+        // 不走此钩子。
+        if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+            window.nekoRefreshLive2DTouchSet({ allowLive2DReload: true }).catch((touchSetError) => {
+                console.warn('[Live2D Init] 刷新触摸配置失败:', touchSetError)
+            })
+        }
+
         window.live2dManager.setupUnloadCleanup();
         // 加载成功后再用看门狗兜底"加载完仍不可见"（yui-guide 残留 / 卡在 minimized）。
         ensureLive2DVisibleSoon('post-load');

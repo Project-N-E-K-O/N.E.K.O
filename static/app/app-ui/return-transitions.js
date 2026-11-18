@@ -347,14 +347,44 @@
         if (!src) return '';
         try {
             const url = new URL(src, window.location.href);
-            if (!/\/static\/assets\/cat-resources\/appearance\/.+\.gif$/i.test(url.pathname)) {
+            if (!/\/static\/assets\/cat-resources\/appearance\/.+\.(?:gif|webp)$/i.test(url.pathname)) {
                 return src;
             }
-            url.searchParams.set('reveal', String(playbackToken || Date.now()));
+            url.searchParams.set('reveal', String(playbackToken));
             return url.href;
         } catch (_) {
             return src;
         }
+    }
+
+    // Chromium shares an animated-image timeline across elements using the same
+    // URL, so a restart needs a URL that no other return-button art (including
+    // this one, or a hidden button of another model) is showing right now.
+    // Pick the smallest free token instead of counting up: an ever-new URL
+    // misses the immutable HTTP cache (re-downloading a multi-MB cat animation
+    // on every reveal) and leaves one more decoded image in the memory cache
+    // each time. With one button this alternates between reveal=1 and reveal=2.
+    function nextNekoModelCatRevealPlaybackUrl(src) {
+        const resolve = (value) => {
+            try {
+                return new URL(value, window.location.href).href;
+            } catch (_) {
+                return value;
+            }
+        };
+        const inUse = new Set();
+        document.querySelectorAll('img.neko-idle-return-art').forEach((img) => {
+            const value = img.getAttribute('src');
+            if (value) inUse.add(resolve(value));
+        });
+        // Among inUse.size + 1 tokens at least one is free.
+        for (let token = 1; token <= inUse.size + 1; token += 1) {
+            const candidate = buildNekoModelCatRevealPlaybackUrl(src, token);
+            if (!inUse.has(resolve(candidate))) return candidate;
+        }
+        // Not a cat-resource animation: buildNekoModelCatRevealPlaybackUrl
+        // leaves it unchanged, so restart it in place as before.
+        return src;
     }
 
     I.restartNekoModelCatRevealArt = function restartNekoModelCatRevealArt(container) {
@@ -364,10 +394,7 @@
         if (!art) return false;
         const currentSrc = art.getAttribute('src') || art.currentSrc || '';
         if (!currentSrc) return false;
-        const nextSrc = buildNekoModelCatRevealPlaybackUrl(
-            currentSrc,
-            ++I.nekoModelCatRevealPlaybackToken
-        );
+        const nextSrc = nextNekoModelCatRevealPlaybackUrl(currentSrc);
         art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
         art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
         art.removeAttribute('src');
@@ -1052,6 +1079,12 @@
     function clearReturnButtonBallOnlyVisualState(container) {
         const button = getReturnButtonElement(container);
         if (!button || !button.classList) return;
+        const visualActionClassNames = [
+            'is-cat1-visual-action',
+            'is-cat1-happy',
+            'is-cat1-touching',
+            'is-cat1-cosplay-1'
+        ];
         [
             'is-tier-transitioning',
             'is-thought-bubble-active',
@@ -1059,6 +1092,7 @@
             'is-thought-bubble-popping',
             'is-cat1-facing-right',
             'is-cat1-walking',
+            ...visualActionClassNames,
             'is-cat1-stretching',
             'is-cat1-playing',
             'is-cat1-eating',
@@ -1066,6 +1100,11 @@
             'is-drag-action',
             'is-drag-action-pending'
         ].forEach((className) => button.classList.remove(className));
+        if (container && container.classList) {
+            visualActionClassNames.forEach((className) => container.classList.remove(className));
+        }
+        button.removeAttribute('data-neko-cat1-visual-action');
+        button.removeAttribute('data-neko-cat1-visual-layout');
         if (typeof I.clearNekoIdleCat1EdgePeek === 'function') {
             I.clearNekoIdleCat1EdgePeek(container);
         }
@@ -1301,6 +1340,11 @@
         container.style.pointerEvents = 'none';
         I.applyGoodbyeIdleAppearanceToReturnButton(container);
         positionReturnBallContainer(container, anchorRect, options.edgeAnchor);
+        if (options.captureReturnOrigin) {
+            // 记录限位后的虚拟坐标，且必须早于下面的入场 transform。
+            // 模型放大后中心可能在屏幕外，不能把返回球自动限位当成拖拽。
+            I.savedGoodbyeReturnBallRect = I.toNekoVirtualTransitionRect(container.getBoundingClientRect());
+        }
         container.style.opacity = '0';
         container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
         container.style.transition = 'opacity 325ms cubic-bezier(0.22, 1, 0.36, 1), transform 400ms cubic-bezier(0.22, 1, 0.36, 1)';

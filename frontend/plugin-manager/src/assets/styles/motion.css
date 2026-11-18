@@ -10,6 +10,9 @@
   --motion-duration-fast: 140ms;
   --motion-duration-normal: 220ms;
   --motion-duration-emphasis: 300ms;
+  /* Layout motion: drawers sliding in and the grid reflow they cause. */
+  --motion-ease-layout: cubic-bezier(0.32, 0.72, 0, 1);
+  --motion-duration-layout: 480ms;
   --motion-stagger-max: 240ms;
 }
 
@@ -18,6 +21,7 @@
     --motion-duration-fast: 1ms;
     --motion-duration-normal: 1ms;
     --motion-duration-emphasis: 1ms;
+    --motion-duration-layout: 1ms;
     --motion-stagger-max: 0ms;
   }
 }

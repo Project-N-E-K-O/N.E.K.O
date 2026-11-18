@@ -3,7 +3,8 @@
  *
  * upperBodyRect 与 avatar-portrait.js 的 makeUpperBodyRect 同一比例
  * （宽 = max(w×1.04, h×0.58×aspect)，高 = max(h×0.64, 宽/aspect)，中心 y = top + h×biasY）；
- * avatar-portrait.js 本身不动。fullBodyRect = 包围盒外扩 4% 再按目标宽高比 contain。
+ * avatar-portrait.js 本身不动。fullBodyRect = 包围盒外扩 8% 再按目标宽高比 contain，
+ * 给头饰、尾巴与鞋底留出编码和摆位的安全边。
  * 矩形一律 {x, y, width, height}。
  */
 (function (root) {
@@ -50,8 +51,8 @@
     var s = toRect(bounds);
     if (!s) return null;
     var a = Math.max(0.1, Number(aspect) || 1);
-    var w = s.width * 1.04;
-    var h = s.height * 1.04;
+    var w = s.width * 1.08;
+    var h = s.height * 1.08;
     if (w / h > a) h = w / a;
     else w = h * a;
     var cx = s.x + s.width / 2;

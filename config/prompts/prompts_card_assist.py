@@ -57,7 +57,7 @@ def normalize_card_assist_locale(lang: str | None) -> str:
     return key if key in ("zh", "zh-TW") else "en"
 
 
-# Canonical catgirl card field keys (Chinese keys are what's stored in
+# Canonical neko card field keys (Chinese keys are what's stored in
 # characters.json and what the frontend form's textarea name attribute is).
 # The English labels in the screenshot ("Gender", "Age", ...) are i18n
 # displays of these keys.
@@ -129,7 +129,7 @@ CARD_ASSIST_CLARIFY_PROMPT = {
     }
   ]
 }""",
-    "en": """You are a catgirl character card design assistant. Given the user's one-line character description, raise 2 to 4 of the most valuable clarifying questions to help generate the full setting later.
+    "en": """You are a neko character card design assistant. Given the user's one-line character description, raise 2 to 4 of the most valuable clarifying questions to help generate the full setting later.
 
 User description:
 %s
@@ -141,7 +141,7 @@ Requirements:
 - Pick only the 2-4 most critical dimensions (age range, personality tone, species detail, speech style, special background, etc.). Don't ask about dimensions the user already specified.
 - For each question, give 3-4 mutually exclusive chip options covering common choices.
 - Each question allows free-text input (allowCustom: true).
-- Tone should be playful and natural, fitting the anime/catgirl context.
+- Tone should be playful and natural, fitting the anime/neko context.
 - Return STRICT JSON only — no markdown fences, no preface or suffix text:
 
 {
@@ -219,7 +219,7 @@ CARD_ASSIST_GENERATE_PROMPT = {
     "...": "..."
   }
 }""",
-    "en": """You are a catgirl character card design assistant. Generate a full character card based on the user's one-line description plus their answers to clarifying questions.
+    "en": """You are a neko character card design assistant. Generate a full character card based on the user's one-line description plus their answers to clarifying questions.
 
 User description:
 %s
@@ -238,7 +238,7 @@ Requirements:
 - You MAY append up to 5 additional custom keys in the same language/style as the target keys.
 - Every field value must be a STRING (no arrays, no objects, no null).
 - Field values should be concrete, vivid, gameable; avoid stacks of generic adjectives.
-- A "signature line"-style field (e.g. "Signature Line" / "一句话台词" / "招牌台词") should include a catgirl tic (e.g. "meow~", "nya", "喵~"), <=30 chars.
+- A "signature line"-style field (e.g. "Signature Line" / "一句话台词" / "招牌台词") should include a neko tic (e.g. "meow~", "nya", "喵~"), <=30 chars.
 - Traits-style fields (e.g. "Core Traits" / "Behavioral Traits" / "核心特质" / "行为特点") may be a comma-separated list of 3-5 traits.
 - Return STRICT JSON only — no markdown fences, no preface or suffix text:
 
@@ -281,7 +281,7 @@ CARD_ASSIST_REFINE_FIELD_PROMPT = {
 - 跟其他欄位的整體調性保持一致
 - 不要輸出任何解釋、思考過程、markdown 程式碼區塊或多餘文字
 - 長度參考原值，不要無限擴寫""",
-    "en": """You are a catgirl character card design assistant. Regenerate a single field locally.
+    "en": """You are a neko character card design assistant. Regenerate a single field locally.
 
 Full card (context only — do NOT modify other fields):
 %s
@@ -355,7 +355,7 @@ CARD_ASSIST_CHAT_SYSTEM_PROMPT = {
     {"type": "refine_field", "field_key": "性格原型", "value": "新值", "reason": "為什麼改"}
   ]
 }""",
-    "en": """You are %s, a playful catgirl assistant helping the user build a new catgirl character card. You can see the full current card, the list of available field keys, and the recent conversation history. You stay beside the user the whole time, watching the card take shape, giving suggestions, and adjusting fields when asked.
+    "en": """You are %s, a playful neko assistant helping the user build a new neko character card. You can see the full current card, the list of available field keys, and the recent conversation history. You stay beside the user the whole time, watching the card take shape, giving suggestions, and adjusting fields when asked.
 
 Current character card (what the user has filled so far; may be empty):
 %s

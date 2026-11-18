@@ -162,7 +162,6 @@ class JukeboxControllerPlugin(NekoPluginBase):
             ))
         receipt = self.ctx.push_message(
             source="jukebox_controller",
-            description=f"Jukebox control: {normalized}",
             priority=8,
             parts=[
                 {
@@ -181,6 +180,7 @@ class JukeboxControllerPlugin(NekoPluginBase):
                 "query": clean_query,
                 "value": value,
                 "mode": clean_mode,
+                "description": f"Jukebox control: {normalized}",
             },
             target_lanlan=clean_target_lanlan or None,
         )

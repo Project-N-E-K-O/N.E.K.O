@@ -171,11 +171,6 @@ class _Harness:
             uninstall_module, "get_plugin_state_root", lambda: self.state_root
         )
         monkeypatch.setattr(
-            uninstall_module,
-            "get_user_package_profiles_root",
-            lambda: self.profiles_root,
-        )
-        monkeypatch.setattr(
             uninstall_module, "BUILTIN_PLUGIN_CONFIG_ROOT", self.builtin_root
         )
         monkeypatch.setattr(
@@ -386,36 +381,34 @@ async def test_uninstall_stop_failure_keeps_original_runtime_and_files(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_uninstall_profile_staging_failure_keeps_code_untouched(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    _isolate_runtime_overrides: dict,
+async def test_uninstall_does_not_move_legacy_package_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolate_runtime_overrides: dict,
 ) -> None:
     harness = _Harness(tmp_path)
     harness.install(monkeypatch)
+    profile = harness.profiles_root / "demo_package"
+    profile.mkdir(parents=True)
+    sentinel = profile / "default.toml"
+    sentinel.write_bytes(b"legacy configuration")
+    _package_entry_fakes(monkeypatch, harness)
+    original_replace = Path.replace
 
-    def _fail_stage(plugin_dir: Path, *, manager: object = None) -> None:
-        del plugin_dir, manager
-        raise PermissionError("profile is in use")
+    def refuse_profile_move(path, target):
+        if path == profile:
+            raise AssertionError("uninstall must not move package profiles")
+        return original_replace(path, target)
 
-    monkeypatch.setattr(
-        uninstall_module, "_stage_orphaned_package_profile_sync", _fail_stage
-    )
-
-    with pytest.raises(UninstallPluginError) as captured:
-        await uninstall_plugin("demo")
-
-    assert captured.value.stage == "stage_profile"
-    assert captured.value.filesystem_rollback == "not_needed"
-    assert captured.value.runtime_restart == "not_needed"
-    assert harness.plugin_dir.is_dir()
-    assert harness.manager.marked_removed == []
-    assert harness.manager.restored_entries == []
+    monkeypatch.setattr(Path, "replace", refuse_profile_move)
+    result = await uninstall_plugin("demo")
+    assert result.deleted_from_disk is True
+    assert result.deleted_profile_dir is None
+    assert not harness.plugin_dir.exists()
+    assert sentinel.read_bytes() == b"legacy configuration"
 
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_uninstall_code_staging_failure_restores_profile(
+async def test_uninstall_code_staging_failure_leaves_profile_untouched(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     _isolate_runtime_overrides: dict,
@@ -437,8 +430,7 @@ async def test_uninstall_code_staging_failure_restores_profile(
         await uninstall_plugin("demo")
 
     assert captured.value.stage == "stage_code"
-    # The profile was already staged, so the rollback genuinely restored it.
-    assert captured.value.filesystem_rollback == "completed"
+    assert captured.value.filesystem_rollback == "not_needed"
     assert captured.value.runtime_restart == "not_needed"
     assert profile_dir.is_dir()
     assert (profile_dir / "settings.toml").is_file()
@@ -1025,45 +1017,24 @@ async def test_startup_cleanup_retries_profile_and_committed_code(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_uninstall_committed_profile_cleanup_failure_is_persisted(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    _isolate_runtime_overrides: dict,
+async def test_uninstall_retains_legacy_profile_without_queuing_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _isolate_runtime_overrides: dict,
 ) -> None:
     harness = _Harness(tmp_path)
     harness.install(monkeypatch)
-    profile_dir = harness.profiles_root / "demo_package"
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "settings.toml").write_text("value = 1\n", encoding="utf-8")
+    profile = harness.profiles_root / "demo_package"
+    profile.mkdir(parents=True)
+    sentinel = profile / "default.toml"
+    sentinel.write_bytes(b"retained legacy export")
     _package_entry_fakes(monkeypatch, harness)
-
-    def _fail_finalize(staged_profile: object) -> Path | None:
-        del staged_profile
-        raise OSError("profile tree locked")
-
-    monkeypatch.setattr(
-        uninstall_module, "_finalize_staged_package_profile_sync", _fail_finalize
-    )
-    record_path = tmp_path / "persistent" / "package_profile_cleanup.json"
-    monkeypatch.setattr(
-        uninstall_module,
-        "_deferred_profile_cleanup_record_path_sync",
-        lambda: record_path,
-    )
-
+    record = tmp_path / "package_profile_cleanup.json"
+    monkeypatch.setattr(uninstall_module, "_deferred_profile_cleanup_record_path_sync", lambda: record)
     result = await uninstall_plugin("demo")
-
     assert result.deleted_from_disk is True
     assert result.deleted_profile_dir is None
-    assert result.cleanup_pending is True
-    assert result.filesystem_rollback == "not_needed"
-    assert record_path.is_file()
-    staged = [
-        path
-        for path in harness.profiles_root.iterdir()
-        if path.name.startswith(".demo_package.deleting-")
-    ]
-    assert len(staged) == 1
+    assert result.cleanup_pending is False
+    assert not record.exists()
+    assert sentinel.read_bytes() == b"retained legacy export"
 
 
 @pytest.mark.plugin_unit
@@ -1298,13 +1269,11 @@ async def test_uninstall_incomplete_rollback_revokes_hot_reload_recovery(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
-async def test_uninstall_profile_restore_failure_keeps_hot_reload_recovery(
+async def test_uninstall_rollback_retains_legacy_profile_and_hot_reload_recovery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     _isolate_runtime_overrides: dict,
 ) -> None:
-    """Only the plugin's own source decides: a package profile that failed to
-    come back does not change which code is on disk."""
     harness = _Harness(tmp_path)
     harness.install(monkeypatch)
     profile_dir = harness.profiles_root / "demo_package"
@@ -1314,19 +1283,14 @@ async def test_uninstall_profile_restore_failure_keeps_hot_reload_recovery(
     harness.refresh_error = RuntimeError("scan crashed")
     monkeypatch.setattr(lifecycle_module, "_hot_reload_failed", {"demo"})
 
-    def _profile_restore_fails(_staged) -> None:
-        raise PermissionError("profile is in use")
-
-    monkeypatch.setattr(
-        uninstall_module, "_restore_staged_package_profile_sync", _profile_restore_fails
-    )
-
     with pytest.raises(UninstallPluginError) as captured:
         await uninstall_plugin("demo")
 
-    assert captured.value.filesystem_rollback == "incomplete"
+    assert captured.value.filesystem_rollback == "completed"
     assert harness.plugin_dir.is_dir()
     assert lifecycle_module.plugin_needs_hot_reload_recovery("demo")
+
+    assert (profile_dir / "settings.toml").read_text(encoding="utf-8") == "value = 1\n"
 
 
 @pytest.mark.plugin_unit

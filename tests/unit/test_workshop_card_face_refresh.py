@@ -49,7 +49,7 @@ def test_should_refresh_workshop_card_face_protects_existing_face_without_sideca
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("origin", ("self", "imported"))
+@pytest.mark.parametrize("origin", ("self", "imported", "molili"))
 def test_should_refresh_workshop_card_face_protects_user_owned_origins(tmp_path: Path, origin: str):
     face_path = tmp_path / "card_faces" / "demo.png"
     meta_path = tmp_path / "card_faces" / "demo.meta.json"

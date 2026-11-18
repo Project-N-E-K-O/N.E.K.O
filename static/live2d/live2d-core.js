@@ -165,7 +165,7 @@ class Live2DManager {
         this._bubbleGeometrySettleRefreshMs = LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
         this._bubbleGeometryModelReadyAt = 0;
         this._bubbleGeometryRefreshPass = 0;
-        this._linuxX11RendererProfileOptimized = false;
+        this._rendererProfileOptimized = false;
         this._idleFpsRestoreTimer = null;
         this._idleFpsGovernorTimer = null;
 
@@ -1107,25 +1107,28 @@ class Live2DManager {
     }
 
     /**
-     * Electron/X11 的透明全屏窗口里，WebGL getter 会造成明显同步阻塞。
-     * pixi-live2d-display 的 Cubism renderer 每帧都 save/restore WebGL profile，
-     * 其中包含一批 gl.getParameter/getVertexAttrib 调用；当前页面只有这一个
-     * Live2D WebGL pipeline，PIXI 会在同一帧内重新设置所需状态，所以桌面 X11 下
-     * 跳过这段 profile 保存可以避免每帧 GPU/CPU 同步等待。
+     * 透明全屏窗口里，WebGL getter 会造成明显同步阻塞（Linux X11；Windows 混合显卡
+     * 下实测每帧 ~250ms，见 #3593）。pixi-live2d-display 的 Cubism renderer 每帧都
+     * save/restore WebGL profile，其中包含一批 gl.getParameter/getVertexAttrib/isEnabled
+     * 调用；桌面 X11 和 Electron 桌宠窗口里，stage 上只有这一个 Live2D 模型、没有 filter，
+     * 模型画完后 pixi-live2d-display 会 reset PIXI 的 state/texture，所以跳过这段
+     * profile 保存可以避免每帧 GPU/CPU 同步等待。
+     * 前提：桌宠 stage 不再挂其他 PIXI 对象；以后要加，需重新评估这里的 GL 状态串扰。
+     * 模型管理器、预览页等其他页面仍走原来的 save/restore。
      */
-    _optimizeLinuxX11RendererProfile(model) {
-        if (!isDesktopLinuxX11Runtime()) return;
+    _optimizeRendererProfile(model) {
+        if (!isDesktopLinuxX11Runtime() && window.__LANLAN_IS_ELECTRON_PET__ !== true) return;
         const renderer = model && model.internalModel && model.internalModel.renderer;
         if (!renderer || typeof renderer.saveProfile !== 'function' || typeof renderer.restoreProfile !== 'function') return;
-        if (renderer.__nekoLinuxX11ProfileOptimized) return;
+        if (renderer.__nekoProfileOptimized) return;
 
         renderer.__nekoOriginalSaveProfile = renderer.saveProfile;
         renderer.__nekoOriginalRestoreProfile = renderer.restoreProfile;
         renderer.saveProfile = function() {};
         renderer.restoreProfile = function() {};
-        renderer.__nekoLinuxX11ProfileOptimized = true;
-        this._linuxX11RendererProfileOptimized = true;
-        console.log('[Live2D Core] Linux X11 renderer profile optimization enabled');
+        renderer.__nekoProfileOptimized = true;
+        this._rendererProfileOptimized = true;
+        console.log('[Live2D Core] renderer profile save/restore skipped');
     }
 
     /**
@@ -1192,7 +1195,7 @@ class Live2DManager {
     }
 
     // 保存用户偏好
-    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport, parametersMode) {
         try {
             // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
             if (window.isViewerMode) {
@@ -1213,6 +1216,7 @@ class Live2DManager {
             // 如果有参数，添加到偏好中
             if (parameters && typeof parameters === 'object') {
                 preferences.parameters = parameters;
+                if (parametersMode) preferences.parameters_mode = parametersMode;
             }
 
             // 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）

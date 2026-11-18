@@ -30,9 +30,6 @@
         :total-count="selectablePlugins.length"
         :selected-count="selectedPluginIds.length"
         :plugin-filter="pluginFilter"
-        :use-regex="useRegex"
-        :filter-mode="filterMode"
-        :regex-error="regexError"
         :selected-types="selectedTypes"
         :layout-mode="layoutMode"
         :plugin-count="pluginCount"
@@ -45,8 +42,6 @@
         @clear-selection="clearSelection"
         @toggle-plugin="togglePlugin"
         @update:plugin-filter="pluginFilter = $event"
-        @update:use-regex="useRegex = $event"
-        @update:filter-mode="filterMode = $event"
         @update:selected-types="selectedTypes = $event"
         @update:layout-mode="layoutMode = $event"
       />
@@ -136,7 +131,7 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="检查 / 校验" name="inspect">
+            <el-tab-pane label="检查 / 校验" name="inspect" lazy>
               <el-form label-position="top">
                 <el-form-item label="包路径或 target 中的包名">
                   <el-input v-model="packageRef.package" placeholder="例如 qq_auto_reply.neko-plugin" />
@@ -151,7 +146,7 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="安装" name="install">
+            <el-tab-pane label="安装" name="install" lazy>
               <el-form label-position="top">
                 <el-form-item label="包路径">
                   <el-input v-model="installForm.package" placeholder="例如 qq_auto_reply.neko-plugin" />
@@ -159,13 +154,6 @@
 
                 <el-form-item label="插件目录">
                   <el-input v-model="installForm.plugins_root" placeholder="默认写入我的文档下的用户插件目录" />
-                </el-form-item>
-
-                <el-form-item label="Profiles 目录">
-                  <el-input
-                    v-model="installForm.profiles_root"
-                    placeholder="默认写入我的文档下的 .neko-package-profiles 目录"
-                  />
                 </el-form-item>
 
                 <el-alert
@@ -184,7 +172,7 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="整合包分析" name="analyze">
+            <el-tab-pane label="整合包分析" name="analyze" lazy>
               <el-form label-position="top">
                 <el-form-item label="插件列表">
                   <el-select
@@ -275,9 +263,6 @@ const {
   layoutMode,
   buildMode,
   pluginFilter,
-  useRegex,
-  filterMode,
-  regexError,
   selectedTypes,
   pluginsLoading,
   packagesLoading,
@@ -335,6 +320,11 @@ const {
 
 .package-manager--embedded {
   gap: 14px;
+  padding: 18px 18px 24px;
+  background: var(--surface-card);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .main-grid {
@@ -372,14 +362,9 @@ const {
   gap: 12px;
   width: 100%;
   padding: 14px 16px;
-  border-radius: 18px;
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--el-color-primary) 10%, var(--el-bg-color)),
-      color-mix(in srgb, var(--el-color-info) 9%, var(--el-bg-color))
-    );
-  border: 1px solid color-mix(in srgb, var(--el-color-primary) 12%, var(--el-border-color));
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .embedded-heading__copy {
@@ -412,9 +397,9 @@ const {
   gap: 10px;
   flex-wrap: wrap;
   padding: 12px 14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--el-fill-color-light) 78%, var(--el-bg-color));
-  border: 1px solid color-mix(in srgb, var(--el-color-info) 10%, var(--el-border-color));
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
+  border: 1px solid var(--surface-border);
 }
 
 .embedded-selection-summary__text {
@@ -424,7 +409,7 @@ const {
 
 .history-button {
   position: relative;
-  border-radius: 999px;
+  border-radius: var(--radius-control);
   padding-inline: 18px;
 }
 
@@ -433,7 +418,10 @@ const {
 }
 
 .operations-card {
-  border-radius: 18px;
+  border-radius: var(--radius-card);
+  background: var(--surface-card);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
 }
 
 .card-header {

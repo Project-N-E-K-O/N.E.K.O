@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import CompactExportHistoryPanel from './CompactExportHistoryPanel';
+import CompactExportHistoryPanel, { isCompactExportMessageSelectable } from './CompactExportHistoryPanel';
 import { parseChatMessage } from './message-schema';
+import compactChatStyles from './styles.css?raw';
 
 const message = parseChatMessage({
   id: 'compact-export-message',
@@ -45,6 +46,77 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('keeps visit peer messages visually distinct from both the user and the local assistant', () => {
+    const visitPeerMessage = parseChatMessage({
+      id: 'visit-peer-message',
+      role: 'tool',
+      author: 'Guest Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'I came to visit.' }],
+      status: 'sent',
+    });
+    const { container } = renderPanel({
+      messages: [message, visitPeerMessage],
+      selectedIds: new Set(),
+      selectedCount: 0,
+      selectableCount: 2,
+      previewOpen: false,
+      visibilityState: 'open',
+    });
+
+    const row = container.querySelector('[data-compact-export-history-message-id="visit-peer-message"]');
+    expect(row).toHaveClass('is-visit-peer');
+    // Local assistant -> visit peer is a visual speaker switch, not one assistant group.
+    expect(row).toHaveAttribute('data-compact-history-group', 'switch');
+  });
+
+  it('counts only visible recommendations while preserving dialogue and selection guards', () => {
+    const hidden = ['chat', 'news'].map(category => parseChatMessage({ ...message, id: `hidden-${category}`, blocks: [{
+      type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
+      category, state: 'pending', content: { title: '', source: '', url: '' },
+    }] }));
+    const visible = parseChatMessage({ ...message, id: 'visible-recommendation', blocks: [{
+      type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
+      category: 'vision', state: 'pending', content: { title: 'Look at the sky', source: '', url: '' },
+    }] });
+    const dialogue = parseChatMessage({ ...hidden[0], id: 'mixed-dialogue', blocks: [...hidden[0].blocks, ...message.blocks] });
+    const messages = [...hidden, visible, dialogue, message, { ...message, id: 'sending', status: 'sending' as const }];
+    const selectable = messages.filter(isCompactExportMessageSelectable);
+    expect(selectable.map(item => item.id)).toEqual(['visible-recommendation', 'mixed-dialogue', message.id]);
+    const { container } = renderPanel({ messages, selectedIds: new Set(selectable.map(item => item.id)),
+      selectedCount: selectable.length, selectableCount: selectable.length, previewOpen: false });
+    expect(container.querySelectorAll('.compact-export-history-bubble[role="button"]')).toHaveLength(3);
+    for (const item of hidden) {
+      expect(container.querySelector(`[data-compact-export-history-message-id="${item.id}"]`)).toBeNull();
+    }
+  });
+  it('omits retired proactive placeholder rows while preserving actual dialogue', () => {
+    const placeholder = parseChatMessage({ ...message, id: 'retired-topic', blocks: [{
+      type: 'proactive_recommendation', recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943',
+      category: 'chat', state: 'accepted', content: { title: '', source: '', url: '' },
+    }] });
+    const { container } = renderPanel({ messages: [placeholder, message], controlsOpen: false, previewOpen: false });
+    expect(container.querySelector('[data-compact-export-history-message-id="retired-topic"]')).toBeNull();
+    expect(container.querySelector('.proactive-recommendation')).toBeNull();
+    expect(screen.getByText('Export me.')).toBeInTheDocument();
+  });
+  it('renders music recommendations inside the existing bubble and routes decisions only outside selection mode', () => {
+    const recommendation = parseChatMessage({ ...message, blocks: [{ type: 'music_recommendation',
+      recommendationId: '19f3bbca-a275-43d4-923d-1b2ceee91943', state: 'pending',
+      track: { name: 'Song', artist: 'Artist', url: '/music.wav', cover: '' } }] });
+    const props = createPanelProps({ messages: [recommendation], controlsOpen: false, previewOpen: false,
+      visibilityState: 'open', onAction: vi.fn() });
+    const view = render(<CompactExportHistoryPanel {...props} />);
+    expect(view.container.querySelector('.compact-export-history-bubble .music-recommendation-bubble')).toBeInTheDocument();
+    expect(view.container.querySelector('.music-recommendation-card,img')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Listen/ }));
+    expect(props.onAction).toHaveBeenLastCalledWith(recommendation, expect.objectContaining({ payload: {
+      recommendationId: recommendation.blocks[0].type === 'music_recommendation' && recommendation.blocks[0].recommendationId,
+      kind: 'accepted' } }));
+    view.rerender(<CompactExportHistoryPanel {...props} controlsOpen />);
+    expect(screen.queryByRole('button', { name: /Listen/ })).not.toBeInTheDocument();
+  });
   it('keeps image saving enabled in history and preserves message selection mode', () => {
     const imageMessage = parseChatMessage({
       ...message,
@@ -277,13 +349,50 @@ describe('CompactExportHistoryPanel', () => {
     }
   });
 
-  it('drops the history resize bar hit-region when a choice prompt sits above', () => {
-    const { container } = renderPanel({ previewOpen: false, visibilityState: 'open', choiceLayerAbove: true });
-    const bar = container.querySelector('.compact-export-history-resize-bar');
-    expect(bar).not.toBeNull();
-    expect(bar?.getAttribute('data-compact-hit-region-id')).toBeNull();
-    expect(bar?.getAttribute('data-compact-hit-region')).toBeNull();
-    expect(bar?.getAttribute('data-compact-hit-region-kind')).toBeNull();
+  it('hides the covered history resize bar without collapsing its layout and restores it after choices close', () => {
+    const style = document.createElement('style');
+    style.textContent = compactChatStyles;
+    document.head.append(style);
+    try {
+      const props = createPanelProps({ previewOpen: false, visibilityState: 'open' });
+      const { container, rerender } = render(<CompactExportHistoryPanel {...props} />);
+      const history = container.querySelector('.compact-export-history-anchor');
+      const bar = container.querySelector<HTMLElement>('.compact-export-history-resize-bar')!;
+      expect(bar).not.toBeNull();
+      const layout = () => {
+        const computed = window.getComputedStyle(bar);
+        return {
+          display: computed.display,
+          height: computed.height,
+          margin: computed.margin,
+          flex: computed.flex,
+          position: computed.position,
+        };
+      };
+      const initialLayout = layout();
+      expect(initialLayout.display).not.toBe('none');
+      expect(window.getComputedStyle(bar).visibility).toBe('visible');
+      expect(history).not.toHaveAttribute('inert');
+
+      rerender(<CompactExportHistoryPanel {...props} choiceLayerAbove />);
+      expect(history).toHaveAttribute('inert');
+      expect(window.getComputedStyle(bar).visibility).toBe('hidden');
+      expect(layout()).toEqual(initialLayout);
+      expect(bar).not.toHaveAttribute('data-compact-hit-region-id');
+      expect(bar).not.toHaveAttribute('data-compact-hit-region');
+      expect(bar).not.toHaveAttribute('data-compact-hit-region-kind');
+
+      rerender(<CompactExportHistoryPanel {...props} choiceLayerAbove={false} />);
+      expect(history).not.toHaveAttribute('inert');
+      expect(container.querySelector('.compact-export-history-resize-bar')).toBe(bar);
+      expect(window.getComputedStyle(bar).visibility).toBe('visible');
+      expect(layout()).toEqual(initialLayout);
+      expect(bar).toHaveAttribute('data-compact-hit-region-id', 'history:resize');
+      expect(bar).toHaveAttribute('data-compact-hit-region', 'true');
+      expect(bar).toHaveAttribute('data-compact-hit-region-kind', 'resize');
+    } finally {
+      style.remove();
+    }
   });
 
   it('pins the history list to bottom when returning from preview', () => {

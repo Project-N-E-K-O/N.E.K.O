@@ -15,16 +15,15 @@ describe('Vite Market proxy', () => {
     ).toBe(true)
   })
 
-  it('forwards the GitHub mirror speed test during local development', () => {
+  it('forwards the download preference endpoints during local development', () => {
     const proxy = (config as {
       server?: { proxy?: Record<string, unknown> }
     }).server?.proxy ?? {}
+    const patterns = Object.keys(proxy).map((pattern) => new RegExp(pattern))
 
-    expect(
-      Object.keys(proxy).some((pattern) =>
-        new RegExp(pattern).test('/market/github-proxy/measure')
-      )
-    ).toBe(true)
+    expect(patterns.some((pattern) => pattern.test('/market/download-preferences?token=t'))).toBe(true)
+    expect(patterns.some((pattern) => pattern.test('/market/download-history/reset?token=t'))).toBe(true)
+    expect(patterns.some((pattern) => pattern.test('/market/github-proxy/measure'))).toBe(false)
   })
 
   it('forwards the knowledge bridge but keeps the /knowledge page on Vite', () => {

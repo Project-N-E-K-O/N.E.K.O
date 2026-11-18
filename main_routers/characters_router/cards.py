@@ -245,7 +245,7 @@ async def _save_character_card_serialized(data: dict):
         # Load existing characters.json
         characters = await _config_manager.aload_characters()
 
-        # Ensure the '猫娘' (catgirl) key exists
+        # Ensure the '猫娘' (neko) key exists
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
@@ -264,7 +264,7 @@ async def _save_character_card_serialized(data: dict):
         previous_catgirl_data = copy.deepcopy(characters['猫娘'].get(chara_name, {}))
         filtered_chara_data = _filter_mutable_catgirl_fields(chara_data)
 
-        # Build catgirl data with nonempty fields only
+        # Build neko data with nonempty fields only
         catgirl_data = {}
         for k, v in filtered_chara_data.items():
             if k != '档案名' and k != 'name':
@@ -288,7 +288,7 @@ async def _save_character_card_serialized(data: dict):
         else:
             assign_new_character_uid(catgirl_data)
 
-        # Update or create catgirl data
+        # Update or create neko data
         characters['猫娘'][chara_name] = catgirl_data
 
         # Save characters.json
@@ -358,10 +358,10 @@ async def _save_character_card_serialized(data: dict):
 
 @router.get('/catgirl/{name}/export')
 async def export_catgirl_card(name: str):
-    """Export a catgirl character card as a PNG image (with embedded archive data of the model and profile).
+    """Export a neko character card as a PNG image (with embedded archive data of the model and profile).
 
     Export flow:
-    1. Fetch the catgirl's profile data
+    1. Fetch the neko's profile data
     2. If a non-default model is in use, pack the model files into the archive
     3. Append the archive data to the PNG image
     4. Return the PNG image for download
@@ -627,10 +627,10 @@ async def export_catgirl_card(name: str):
 
 @router.get('/catgirl/{name}/export-settings')
 async def export_catgirl_settings_only(name: str):
-    """Export only the catgirl profile (obfuscated, without model files).
+    """Export only the neko profile (obfuscated, without model files).
 
     Export flow:
-    1. Fetch the catgirl's profile data
+    1. Fetch the neko's profile data
     2. Filter out the specified fields
     3. Apply simple XOR obfuscation
     4. Return the obfuscated JSON file directly
@@ -1027,7 +1027,7 @@ async def import_character_card(
                 else:
                     logger.warning(f"[导入角色卡] model 目录不存在或不是目录: {model_dir}")
 
-                # Automatically select the imported model for the catgirl
+                # Automatically select the imported model for the neko
                 # Store model configuration in the internal _reserved field
                 if imported_model_info:
                     character_data['_reserved'] = character_data.get('_reserved', {})
@@ -1199,7 +1199,7 @@ def _default_card_meta(origin: str = 'self') -> dict:
     """Return the default card-face metadata."""
     return {
         'author': '',
-        'origin': origin,  # self / imported / steam
+        'origin': origin,  # self / imported / steam / molili
         'created_at': None,
         'updated_at': None,
     }
@@ -1231,7 +1231,7 @@ def _write_card_meta(meta_path, meta: dict) -> None:
 
 
 def _detect_card_origin_from_character(catgirl_data: dict) -> str:
-    """Infer origin from the catgirl config (fallback when no sidecar exists).
+    """Infer origin from the neko config (fallback when no sidecar exists).
     Based on the card's own source (character_origin.source), not the model source (avatar.asset_source),
     so swapping models never changes the card's origin label."""
     try:
@@ -1245,7 +1245,7 @@ def _detect_card_origin_from_character(catgirl_data: dict) -> str:
 
 @router.get('/card-faces')
 async def list_card_faces():
-    """Return the names of all catgirls with a custom card face set (lets the frontend avoid pointless 404 requests)."""
+    """Return the names of all nekos with a custom card face set (lets the frontend avoid pointless 404 requests)."""
     _config_manager = get_config_manager()
     faces_dir = _config_manager.card_faces_dir
     names: list[str] = []
@@ -1271,10 +1271,10 @@ async def list_card_faces():
 
 @router.get('/card-metas')
 async def list_card_metas():
-    """Return card-face metadata for all catgirls in bulk.
+    """Return card-face metadata for all nekos in bulk.
 
     For legacy character cards without a sidecar JSON, the origin is inferred
-    from the catgirl config and defaults are returned, so the frontend still
+    from the neko config and defaults are returned, so the frontend still
     shows card-face info after upgrading from older versions.
     """
     _config_manager = get_config_manager()
@@ -1294,7 +1294,7 @@ async def list_card_metas():
                         # Treat corrupt sidecars as missing and infer origin again
                         meta = _default_card_meta(_detect_card_origin_from_character(characters['猫娘'][p.stem]))
                     metas[p.stem] = meta
-        # Fill catgirls lacking sidecars: infer origin from configuration and return defaults
+        # Fill nekos lacking sidecars: infer origin from configuration and return defaults
         for cname, cdata in (characters.get('猫娘', {}) or {}).items():
             if cname in metas:
                 continue
@@ -1309,7 +1309,7 @@ async def list_card_metas():
 
 @router.get('/catgirl/{name}/card-meta')
 async def get_card_meta(name: str):
-    """Get a single catgirl's card-face metadata. Without a sidecar, infers origin from the catgirl config and returns defaults."""
+    """Get a single neko's card-face metadata. Without a sidecar, infers origin from the neko config and returns defaults."""
     _config_manager = get_config_manager()
     name_error = _validate_existing_character_path_name(name)
     if name_error:
@@ -1322,14 +1322,14 @@ async def get_card_meta(name: str):
     meta_path = _config_manager.card_face_meta_path(name)
     meta = await asyncio.to_thread(_read_card_meta, meta_path)
     if not meta_path.exists() or meta.get('origin') is None:
-        # Missing/unreadable sidecar: infer origin from catgirl configuration
+        # Missing/unreadable sidecar: infer origin from neko configuration
         meta['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
     return JSONResponse({'success': True, 'meta': meta})
 
 
 @router.put('/catgirl/{name}/card-meta')
 async def put_card_meta(name: str, request: Request):
-    """Update card-face metadata (currently only the author field, and only when origin=self)."""
+    """Update card-face metadata (author; molili origin mark; only when origin=self/molili)."""
     _config_manager = get_config_manager()
     name_error = _validate_existing_character_path_name(name)
     if name_error:
@@ -1345,21 +1345,30 @@ async def put_card_meta(name: str, request: Request):
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
 
     new_author = data.get('author') if isinstance(data, dict) else None
-    if new_author is None:
-        return JSONResponse({'success': False, 'error': '缺少 author 字段'}, status_code=400)
-    new_author = str(new_author).strip()
-    if len(new_author) > 64:
-        return JSONResponse({'success': False, 'error': '作者名称过长（最长64字符）'}, status_code=400)
+    new_origin = data.get('origin') if isinstance(data, dict) else None
+    if new_author is None and new_origin is None:
+        return JSONResponse({'success': False, 'error': '缺少 author / origin 字段'}, status_code=400)
+    # origin only accepts the one-way Molili-import marker (used by the import wizard); other values cannot be changed here
+    if new_origin is not None and new_origin != 'molili':
+        return JSONResponse({'success': False, 'error': 'origin 仅支持设置为 molili'}, status_code=400)
+
+    if new_author is not None:
+        new_author = str(new_author).strip()
+        if len(new_author) > 64:
+            return JSONResponse({'success': False, 'error': '作者名称过长（最长64字符）'}, status_code=400)
 
     meta_path = _config_manager.card_face_meta_path(name)
     existing = await asyncio.to_thread(_read_card_meta, meta_path)
     if not meta_path.exists() or existing.get('origin') is None:
         existing['origin'] = _detect_card_origin_from_character(characters['猫娘'][name])
 
-    if existing.get('origin') != 'self':
-        return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改作者'}, status_code=403)
+    if existing.get('origin') not in ('self', 'molili'):
+        return JSONResponse({'success': False, 'error': '仅本地创作的卡面可修改元数据'}, status_code=403)
 
-    existing['author'] = new_author
+    if new_author is not None:
+        existing['author'] = new_author
+    if new_origin is not None and existing.get('origin') != 'molili':
+        existing['origin'] = 'molili'
     now_iso = datetime.now().isoformat(timespec='seconds')
     existing['updated_at'] = now_iso
     if not existing.get('created_at'):

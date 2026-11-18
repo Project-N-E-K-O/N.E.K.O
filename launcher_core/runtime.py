@@ -298,33 +298,6 @@ def _reload_runtime_config_from_env() -> None:
     )
 
 
-def _install_logging_brace_compat() -> None:
-    if getattr(logging, "_neko_brace_compat_installed", False):
-        return
-
-    original_get_message = logging.LogRecord.getMessage
-
-    def _compat_get_message(record: logging.LogRecord) -> str:
-        try:
-            return original_get_message(record)
-        except TypeError:
-            msg = str(record.msg)
-            args = record.args
-            if not args or "%" in msg or "{" not in msg or "}" not in msg:
-                raise
-            try:
-                if isinstance(args, dict):
-                    return msg.format(**args)
-                if not isinstance(args, tuple):
-                    args = (args,)
-                return msg.format(*args)
-            except Exception:
-                return f"{msg} | args={record.args!r}"
-
-    logging.LogRecord.getMessage = _compat_get_message
-    logging._neko_brace_compat_installed = True
-
-
 def _patch_http_user_agents() -> None:
     """Globally patch HTTP clients' default User-Agent to prevent CF blocking custom APIs."""
     try:
@@ -365,7 +338,8 @@ def _bootstrap_launcher_runtime(project_dir: str) -> None:
         sys.path.insert(0, project_dir)
     os.chdir(project_dir)
     _configure_multiprocessing_executable(project_dir)
-    _install_logging_brace_compat()
+    from utils.logger_config import install_message_formatting
+    install_message_formatting()
     _initialize_launcher_context()
     # Globally patch requests' default User-Agent to avoid CF blocking.
     _patch_http_user_agents()
@@ -398,12 +372,33 @@ def emit_frontend_event(event_type: str, payload: dict | None = None):
 
 
 def _resolve_storage_layout_for_launch() -> dict:
+    # A normal launch must resolve storage from the committed policy, not from
+    # layout variables inherited from a parent process.  An intentionally
+    # isolated development instance is different: it has its own lifetime lock
+    # and must also be able to select its own policy anchor.  Preserve that
+    # explicit pairing so two local accounts do not silently share one data
+    # root after the launcher clears inherited layout state.
+    isolated_runtime_dir = os.environ.get(single_instance.RUNTIME_STATE_DIR_ENV, "").strip()
+    isolated_selected_root = os.environ.get("NEKO_STORAGE_SELECTED_ROOT", "").strip()
+    isolated_anchor_root = os.environ.get("NEKO_STORAGE_ANCHOR_ROOT", "").strip()
     clear_storage_layout_env()
+    if isolated_runtime_dir and isolated_selected_root:
+        isolated_anchor_root = isolated_anchor_root or isolated_selected_root
+        export_storage_layout_to_env(
+            {
+                "selected_root": isolated_selected_root,
+                "anchor_root": isolated_anchor_root,
+                "cloudsave_root": str(Path(isolated_anchor_root) / "cloudsave"),
+            }
+        )
     reset_config_manager_cache()
     config_manager = get_config_manager(APP_NAME, migrate=False)
 
     try:
-        migration_result = run_pending_storage_migration(config_manager)
+        migration_result = run_pending_storage_migration(
+            config_manager,
+            **({"anchor_root": isolated_anchor_root} if isolated_runtime_dir and isolated_selected_root else {}),
+        )
     except Exception as exc:
         print(f"[Launcher] Warning: pending storage migration processing failed: {exc}", flush=True)
         migration_result = {
@@ -414,7 +409,26 @@ def _resolve_storage_layout_for_launch() -> dict:
 
     reset_config_manager_cache()
     resolved_config_manager = get_config_manager(APP_NAME, migrate=False)
-    layout = resolve_storage_layout(resolved_config_manager)
+    if isolated_runtime_dir and isolated_selected_root:
+        # The inherited selected-root override intentionally pins an isolated instance,
+        # but a migration completed above has just committed a newer selected root.  The
+        # cached manager still reflects the old override, so prefer the authoritative
+        # migration target for this launch while retaining the instance's policy anchor.
+        committed_target = (
+            str(migration_result.get("target_root") or "").strip()
+            if migration_result.get("completed") is True
+            else ""
+        )
+        selected_root = Path(committed_target or resolved_config_manager.app_docs_dir).resolve(strict=False)
+        anchor_root = Path(isolated_anchor_root or resolved_config_manager.anchor_root).resolve(strict=False)
+        layout = {
+            "selected_root": str(selected_root),
+            "anchor_root": str(anchor_root),
+            "cloudsave_root": str(anchor_root / "cloudsave"),
+            "source": "isolated_runtime",
+        }
+    else:
+        layout = resolve_storage_layout(resolved_config_manager)
     export_storage_layout_to_env(layout)
     reset_config_manager_cache()
     return {
@@ -3056,66 +3070,6 @@ def register_shutdown_hooks():
                 exc,
             )
 
-def _ensure_playwright_browsers():
-    """Auto-install Playwright Chromium if missing (needed by browser-use).
-
-    Uses playwright's bundled driver binary directly, so it works inside
-    a Nuitka standalone build where ``python -m playwright`` is unavailable.
-    The ``install chromium`` command is idempotent – if the browser already
-    exists it returns almost instantly.
-
-    When running frozen (Nuitka/PyInstaller), PLAYWRIGHT_BROWSERS_PATH is set
-    to the bundled ``playwright_browsers`` dir so that build-time cached
-    Chromium is used and no on-site download is needed.
-    """
-    try:
-        from playwright._impl._driver import compute_driver_executable, get_driver_env
-    except ImportError:
-        return
-
-    try:
-        if IS_FROZEN:
-            if hasattr(sys, "_MEIPASS"):
-                _bundle = sys._MEIPASS
-            else:
-                _bundle = os.path.dirname(os.path.abspath(__file__))
-            _bundled_browsers = os.path.join(_bundle, "playwright_browsers")
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = _bundled_browsers
-
-            if os.path.isdir(_bundled_browsers) and os.listdir(_bundled_browsers):
-                print("[Launcher] ✓ Playwright Chromium ready (bundled)", flush=True)
-                emit_frontend_event("playwright_check", {"status": "ready"})
-                return
-
-        driver = str(compute_driver_executable())
-        env = get_driver_env()
-        print("[Launcher] Checking Playwright Chromium browser...", flush=True)
-        emit_frontend_event("playwright_check", {"status": "checking"})
-
-        result = subprocess.run(
-            [driver, "install", "chromium"],
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-        )
-
-        if result.returncode == 0:
-            print("[Launcher] ✓ Playwright Chromium ready", flush=True)
-            emit_frontend_event("playwright_check", {"status": "ready"})
-        else:
-            msg = (result.stderr or "").strip()[:300]
-            logging.getLogger(__name__).info("[Launcher] Playwright install warning: %s", msg)
-            emit_frontend_event("playwright_check", {"status": "warning", "message": msg})
-    except subprocess.TimeoutExpired:
-        logging.getLogger(__name__).info("[Launcher] Playwright browser install timed out (300s)")
-        emit_frontend_event("playwright_check", {"status": "timeout"})
-    except Exception as e:
-        logging.getLogger(__name__).info("[Launcher] Playwright browser check skipped: %s", e)
-        emit_frontend_event("playwright_check", {"status": "skipped", "message": str(e)})
-
 
 def _should_use_merged_mode() -> bool:
     """Choose merged vs multi-process mode from env override + runtime shape."""
@@ -3286,9 +3240,6 @@ def main():
                 f"{e}",
                 flush=True,
             )
-
-        # Automatically install Playwright Chromium for browser-use.
-        _ensure_playwright_browsers()
 
         print("=" * 60, flush=True)
         print("N.E.K.O. 服务器启动器", flush=True)

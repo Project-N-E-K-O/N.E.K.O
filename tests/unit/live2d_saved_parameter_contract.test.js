@@ -77,6 +77,110 @@ test('zero offset is retained for frames without motion changes', () => withMao(
     assert.equal(f.value('ParamAngleX'), 0);
 }));
 
+test('held and slowly changing motion values retain control over saved defaults', () => withMao(f => {
+    f.apply({ ParamAngleX: 0 });
+    for (const value of [4, 4, 4, 4.0004, 4.0008, 4.0008, 4.0012]) {
+        f.core.loadParameters();
+        f.writes = { ParamAngleX: value };
+        f.motionManager.update(0);
+        f.core.saveParameters();
+        assert.ok(Math.abs(f.value('ParamAngleX') - value) < 1e-6);
+    }
+    f.writes = {};
+    f.motionManager.update(1);
+    assert.equal(f.value('ParamAngleX'), 0, 'release restores the saved default');
+}));
+
+test('saved offsets stay stable when motion reaches a parameter limit', () => withMao(f => {
+    f.apply({ ParamAngleX: 2 });
+    f.writes = { ParamAngleX: 30 };
+    for (let frame = 0; frame < 30; frame++) {
+        f.core.loadParameters();
+        f.motionManager.update(frame / 30);
+        f.core.saveParameters();
+        assert.equal(f.value('ParamAngleX'), 30);
+    }
+    f.writes = {};
+    f.motionManager.update(1);
+    assert.equal(f.value('ParamAngleX'), 2);
+}));
+
+test('real SDK constant curves preserve saved offsets until the motion stops', () => withMao(f => {
+    f.apply({ ParamAngleX: 0, ParamAngleY: 2 });
+    f.queue = new f.runtime.sdk.Queue();
+    const motion = f.runtime.sdk.Motion.create({ Version: 3,
+        Meta: { Duration: 2, Fps: 30, Loop: false, AreBeziersRestricted: true,
+            FadeInTime: 0, FadeOutTime: 0, CurveCount: 2,
+            TotalSegmentCount: 2, TotalPointCount: 4 },
+        Curves: ['ParamAngleX', 'ParamAngleY'].map(id => ({
+            Target: 'Parameter', Id: id, Segments: [0, 30, 0, 2, 30]
+        })) });
+    motion.setEffectIds([], []);
+    f.queue.startMotion(motion, false, 0);
+    for (let frame = 0; frame < 30; frame++) {
+        f.core.loadParameters();
+        f.motionManager.update(frame / 30);
+        f.core.saveParameters();
+        assert.equal(f.value('ParamAngleX'), 30);
+        assert.equal(f.value('ParamAngleY'), 30);
+    }
+    f.queue.stopAllMotions();
+    f.motionManager.update(1);
+    assert.equal(f.value('ParamAngleX'), 0);
+    assert.equal(f.value('ParamAngleY'), 2);
+}));
+
+for (const savedOffset of [2, 0.1, -2]) {
+    test(`real SDK fade composes saved offset ${savedOffset} once`, () => withMao(f => {
+        const reference = createMao(f.runtime);
+        try {
+            f.apply({ ParamAngleX: savedOffset });
+            reference.apply({});
+            for (const fixture of [f, reference]) {
+                fixture.queue = new fixture.runtime.sdk.Queue();
+                const motion = fixture.runtime.sdk.Motion.create({ Version: 3,
+                    Meta: { Duration: 2, Fps: 30, Loop: false, AreBeziersRestricted: true,
+                        FadeInTime: 0.5, FadeOutTime: 0.5, CurveCount: 1,
+                        TotalSegmentCount: 1, TotalPointCount: 2 },
+                    Curves: [{ Target: 'Parameter', Id: 'ParamAngleX', Segments: [0, 4, 0, 2, 4] }] });
+                motion.setEffectIds([], []);
+                fixture.queue.startMotion(motion, false, 0);
+                fixture.core.saveParameters();
+            }
+            for (let frame = 0; frame < 60; frame++) {
+                for (const fixture of [f, reference]) {
+                    fixture.core.loadParameters();
+                    fixture.motionManager.update(frame / 30);
+                    fixture.core.saveParameters();
+                }
+                assert.ok(Math.abs(f.value('ParamAngleX') - reference.value('ParamAngleX') - savedOffset) < 1e-5,
+                    `frame ${frame}: saved offset must be composed once`);
+            }
+            f.queue.stopAllMotions();
+            f.motionManager.update(2);
+            assert.ok(Math.abs(f.value('ParamAngleX') - savedOffset) < 1e-6);
+        } finally { reference.release(); }
+    }));
+}
+
+test('motion write recording releases the Core setter after success and exceptions', () => withMao(f => {
+    f.apply({ ParamAngleX: 0 });
+    const setter = f.core.setParameterValueByIndex;
+    assert.equal(Object.hasOwn(f.core, 'setParameterValueByIndex'), false);
+    f.writes = { ParamAngleX: 4 };
+    f.motionManager.update(0);
+    assert.equal(f.core.setParameterValueByIndex, setter);
+    assert.equal(Object.hasOwn(f.core, 'setParameterValueByIndex'), false);
+
+    f.core.setParameterValueByIndex = function(...args) { return setter.apply(this, args); };
+    const ownSetter = f.core.setParameterValueByIndex;
+    f.afterMotion = () => { throw new Error('motion update failed'); };
+    f.motionManager.update(1);
+    assert.equal(f.value('ParamAngleX'), 4, 'writes before the error still belong to motion');
+    assert.equal(f.core.setParameterValueByIndex, ownSetter);
+    assert.equal(Object.hasOwn(f.core, 'setParameterValueByIndex'), true);
+}));
+
 test('canonical and index aliases install only one offset and invalid indices stay outside Core', () => withMao(f => {
     const index = f.core.getParameterIndex('ParamAngleX');
     f.manager.savedModelParameters = { [`param_${index}`]: 5, ParamAngleX: 2,

@@ -27,6 +27,23 @@ def test_route_is_registered_without_trailing_slash():
     paths = {getattr(r, "path", None) for r in pages_router.router.routes}
     assert "/visit/transport" in paths
     assert "/visit/transport/" not in paths
+    assert "/visit_persona" in paths
+    assert "/visit_persona/" not in paths
+
+
+def test_persona_page_reuses_the_framed_neko_window_shell(monkeypatch):
+    resp = _client(monkeypatch).get("/visit_persona?catgirl=ATLS&request_id=test&require_confirm=1")
+    assert resp.status_code == 200
+    assert 'class="page-title-bar"' in resp.text
+    assert 'class="neko-window-controls"' in resp.text
+    assert 'data-neko-window-control="minimize"' in resp.text
+    assert 'data-neko-window-control="maximize"' in resp.text
+    assert 'data-neko-window-control="close"' in resp.text
+    assert 'id="visit-persona-window-root"' in resp.text
+    assert "/static/app/visit-persona-panel.js?v=" in resp.text
+    assert "/static/common_dialogs.js" not in resp.text
+    assert "/static/css/index.css" not in resp.text
+    assert "{{" not in resp.text
 
 
 def test_page_injects_the_static_asset_version(monkeypatch):

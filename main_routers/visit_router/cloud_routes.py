@@ -60,7 +60,7 @@ from main_routers.visit_router import transcript_upload as tu
 from main_routers.visit_router.local_context import (
     load_character_context,
     prompt_lang,
-    protected_display_names,
+    protected_live_display_names,
     speaker_label,
 )
 from main_routers.visit_router.local_guard import http_denied
@@ -281,7 +281,7 @@ async def visit_history(request: Request, cursor: str = ""):
         return _error(503, "servers_unreachable")
     lang = prompt_lang()
     ctx = await load_character_context()
-    protected = protected_display_names(lang, ctx.family_names, ctx.char_names)
+    protected = protected_live_display_names(lang, ctx.family_names)
     label = speaker_label("peer_cat", lang)
     items = []
     for item in raw_items:

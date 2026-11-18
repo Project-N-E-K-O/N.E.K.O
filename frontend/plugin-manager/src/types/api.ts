@@ -138,6 +138,11 @@ export interface PluginMeta {
   runtime_enabled?: boolean
   runtime_auto_start?: boolean
   autostart_pending?: boolean
+  consent?: {
+    state: import('@/api/pluginConsent').ConsentState
+    decision: import('@/api/pluginConsent').ConsentDecision | null
+    upgraded: boolean
+  }
   author?: PluginAuthor
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
@@ -145,6 +150,8 @@ export interface PluginMeta {
   status?: string
   list_actions?: PluginListAction[]
   install_source?: PluginInstallSource
+  /** Registry source; `project` marks a workbench project, which never auto-starts. */
+  source?: string
   /** Present on summary cards; full detail responses may omit these derived values. */
   entry_count?: number
   dependency_count?: number
@@ -289,18 +296,12 @@ export interface PluginMessage {
 
 // 日志条目
 export interface LogEntry {
+  id?: string
   timestamp: string
   level: string
   file: string
   line: number
   message: string
-}
-
-// 日志文件信息
-export interface LogFile {
-  filename: string
-  size: number
-  modified: number
 }
 
 // 插件配置

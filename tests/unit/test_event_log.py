@@ -3,7 +3,8 @@
 Unit tests for memory.event_log.EventLog.
 
 P2.a.1: pure infrastructure tests. No production wiring is touched.
-Covers the resilience guarantees described in RFC §3.4 / §3.5 / §3.6.
+Covers the resilience guarantees described in RFC §3.4 / §3.5; journal
+compaction lives in tests/unit/test_event_log_compaction.py.
 """
 from __future__ import annotations
 
@@ -72,8 +73,8 @@ def test_read_since_null_sentinel_returns_all(tmp_path):
 
 
 def test_read_since_unknown_sentinel_falls_back_to_full_replay(tmp_path):
-    """RFC §3.5 safe default: sentinel points to a compacted-away event →
-    replay everything currently in the body."""
+    """RFC §3.5 safe default: sentinel names an event that is not in the
+    body → replay everything currently in the body."""
     from memory.event_log import EVT_FACT_ADDED
 
     log = _fresh_log(str(tmp_path))
@@ -147,131 +148,34 @@ def test_sentinel_persists_across_fresh_instances(tmp_path):
     assert log2.read_sentinel("小天") == eid
 
 
-# ── compaction (RFC §3.6) ────────────────────────────────────────────
+# ── compaction atomicity (full suite: tests/unit/test_event_log_compaction.py) ──
 
 
-def test_should_compact_false_when_empty(tmp_path):
-    log = _fresh_log(str(tmp_path))
-    assert log.should_compact("小天") is False
-
-
-def test_compact_if_needed_skips_below_threshold(tmp_path):
-    from memory.event_log import EVT_FACT_ADDED
+def test_compaction_leaves_only_the_journal_and_the_sentinel(tmp_path):
+    """One atomic replace and nothing else: no snapshot side file, no .tmp."""
+    from memory.event_log import EVT_REFLECTION_EVIDENCE_UPDATED
 
     log = _fresh_log(str(tmp_path))
+    log._config_manager.load_root_state.return_value = {"mode": "normal"}
+    view: dict = {}
     for i in range(5):
-        log.append("小天", EVT_FACT_ADDED, {"i": i})
-    dropped = log.compact_if_needed("小天", lambda: [])
-    assert dropped == 0
-    # File still has the 5 events
-    tail = log.read_since("小天", None)
-    assert len(tail) == 5
-
-
-def test_compact_triggered_by_line_threshold(tmp_path):
-    """Force threshold low via monkeypatch to avoid writing 10K lines."""
-    from memory.event_log import EVT_FACT_ADDED
-
-    log = _fresh_log(str(tmp_path))
-    for i in range(10):
-        log.append("小天", EVT_FACT_ADDED, {"i": i})
-
-    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 5):
-        # Seed provider returns 2 snapshot-start events
-        seeds = [
-            (EVT_FACT_ADDED, {"fact_id": "f_seed1"}),
-            (EVT_FACT_ADDED, {"fact_id": "f_seed2"}),
-        ]
-        dropped = log.compact_if_needed("小天", lambda: seeds)
-
-    assert dropped == 10 - 2
-    tail = log.read_since("小天", None)
-    assert len(tail) == 2
-    assert {r["payload"]["fact_id"] for r in tail} == {"f_seed1", "f_seed2"}
-
-
-def test_compact_resets_sentinel_to_null(tmp_path):
-    from memory.event_log import EVT_FACT_ADDED
-
-    log = _fresh_log(str(tmp_path))
-    eid = log.append("小天", EVT_FACT_ADDED, {"i": 1})
-    log.advance_sentinel("小天", eid)
-    # Force compact
-    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
-        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": True})])
-    # Sentinel reset to null
-    assert log.read_sentinel("小天") is None
-
-
-def test_compact_atomicity_single_rename(tmp_path):
-    """RFC §3.6: no intermediate events.snapshot file is ever written."""
-    from memory.event_log import EVT_FACT_ADDED
-
-    log = _fresh_log(str(tmp_path))
-    for i in range(5):
-        log.append("小天", EVT_FACT_ADDED, {"i": i})
+        log.record_and_save(
+            "小天", EVT_REFLECTION_EVIDENCE_UPDATED, {"i": i},
+            sync_load_view=lambda n: view,
+            sync_mutate_view=lambda v: None,
+            sync_save_view=lambda n, v: None,
+        )
 
     char_dir = os.path.join(str(tmp_path), "小天")
-    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
-        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
+    with patch("memory.event_log._COMPACT_TRIGGER_BYTES", 1), \
+            patch("memory.event_log._RETAIN_APPLIED_DAYS", 0), \
+            patch("memory.event_log._RETAIN_APPLIED_MAX_BYTES", 0):
+        result = log.compact_applied_history("小天")
+
+    assert result.outcome == "compacted"
     after = set(os.listdir(char_dir))
-
-    # events.ndjson and events_applied.json — nothing else
     assert after == {"events.ndjson", "events_applied.json"}
-    # No lingering tempfiles from atomic_write_text
     assert not any(name.endswith(".tmp") for name in after)
-    # No events.snapshot file (deliberately eliminated in v2/v3)
-    assert "events.snapshot" not in after
-
-
-def test_compact_crash_between_swap_and_sentinel_reset_is_safe(tmp_path):
-    """Simulate: new body swapped in, but sentinel reset 'failed' — old
-    sentinel now points to an event_id that doesn't exist in the body.
-    On next boot read_since falls through to full replay (seed events)."""
-    from memory.event_log import EVT_FACT_ADDED
-
-    log = _fresh_log(str(tmp_path))
-    for i in range(5):
-        log.append("小天", EVT_FACT_ADDED, {"i": i})
-    stale_sentinel = log.append("小天", EVT_FACT_ADDED, {"i": 5})
-    log.advance_sentinel("小天", stale_sentinel)
-
-    # Crash simulation: body swap happens, sentinel reset does NOT (blocked
-    # atomic_write_json — the only code path used for sentinel writes inside
-    # compact_if_needed). Body is still rewritten via atomic_write_text.
-    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1), \
-         patch("memory.event_log.atomic_write_json") as _mock_aj:
-        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": 1})])
-    # Sentinel reset was blocked → still points to the (now-gone) old event
-    assert log.read_sentinel("小天") == stale_sentinel
-
-    # Next-boot simulation: read_since falls through to full body replay
-    tail = log.read_since("小天", stale_sentinel)
-    assert len(tail) == 1
-    assert tail[0]["payload"] == {"seed": 1}
-
-
-def test_scan_head_handles_corrupt_first_line(tmp_path):
-    """RFC §3.6 edge case: corrupt first line → age threshold disabled,
-    line-count threshold still works."""
-    from memory.event_log import EVT_FACT_ADDED
-
-    log = _fresh_log(str(tmp_path))
-    path = log._events_path("小天")
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("garbage not json\n")
-        for i in range(3):
-            rec = {"event_id": str(uuid.uuid4()), "type": EVT_FACT_ADDED,
-                   "ts": datetime.now().isoformat(), "payload": {"i": i}}
-            f.write(json.dumps(rec) + "\n")
-
-    # should_compact should not crash on the corrupt head
-    result = log.should_compact("小天")
-    assert result is False  # 4 lines, no age info, under default threshold
-
-    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 2):
-        assert log.should_compact("小天") is True
 
 
 # ── record_and_save (the core write-ordering helper) ────────────────
@@ -467,57 +371,6 @@ def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
         f"expected lost updates without lock, got {mutable_view['value']}"
 
 
-def test_concurrent_append_during_compact_preserves_events(tmp_path):
-    """Per-character lock must block append during compaction and vice-versa.
-    Regression guard: catches future changes that move body-swap outside the lock."""
-    import time
-    import threading as real_threading
-    from memory.event_log import EVT_FACT_ADDED
-
-    log = _fresh_log(str(tmp_path))
-    # Seed a handful of events so compact has something to drop
-    for i in range(3):
-        log.append("小天", EVT_FACT_ADDED, {"i": i, "source": "seed"})
-
-    append_errors: list[Exception] = []
-    appended_ids: list[str] = []
-    stop_flag = real_threading.Event()
-
-    def appender():
-        while not stop_flag.is_set():
-            try:
-                appended_ids.append(log.append("小天", EVT_FACT_ADDED, {"source": "parallel"}))
-            except Exception as e:
-                append_errors.append(e)
-
-    t = real_threading.Thread(target=appender, daemon=True)
-    t.start()
-    # Do not guess "has the thread started?" with a fixed sleep: thread startup delay is uncontrolled, and on Windows
-    # sleep duration is quantized in 15.6 ms increments; if it sleeps too briefly, compact can finish before the first concurrent
-    # append and the test silently degrades to sequential execution with a vacuous assertion. Poll until one event has actually
-    # been written so the concurrency precondition is deterministic.
-    _deadline = time.monotonic() + 5.0
-    while not appended_ids and not append_errors and time.monotonic() < _deadline:
-        time.sleep(0.001)
-    assert appended_ids or append_errors, "appender 线程 5s 内一条都没写出，并发前提不成立"
-
-    with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
-        log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": "kept"})])
-
-    stop_flag.set()
-    t.join(timeout=2.0)
-
-    assert append_errors == [], f"append raised under concurrent compact: {append_errors}"
-    # Body is not corrupt: read_since returns valid JSON for every record
-    tail = log.read_since("小天", None)
-    assert all(isinstance(r.get("event_id"), str) and isinstance(r.get("type"), str)
-               for r in tail)
-    # At least the seed from compact must be present — appends that happened
-    # AFTER the body swap land on the fresh body
-    seed_ids = [r["event_id"] for r in tail if r["payload"].get("seed") == "kept"]
-    assert len(seed_ids) == 1, f"expected exactly one compact seed, got {seed_ids}"
-
-
 def test_apply_and_advance_does_not_interleave_with_record_and_save(tmp_path):
     """Replay-apply + sentinel-advance is one critical section, shared with
     record_and_save's.
@@ -704,7 +557,7 @@ def test_apply_and_advance_detects_the_conflict_before_running_the_handler(tmp_p
     already been done.
 
     Nothing can move the sentinel between the check and the apply either:
-    record_and_save, compact_if_needed and advance_sentinel all take the
+    record_and_save, compact_applied_history and advance_sentinel all take the
     per-character lock, which this method holds across both steps.
 
     Refusing the sentinel write matters for a second reason: rolling it

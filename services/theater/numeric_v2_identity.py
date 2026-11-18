@@ -1,4 +1,4 @@
-"""Stable identity projection of catgirl character cards for Numeric v2."""  # noqa: DOCSTRING_CJK
+"""Stable identity projection of neko character cards for Numeric v2."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .llm_context import _load_player_address
 
 
 def numeric_v2_character_ids(config_manager: Any) -> dict[str, str]:
-    """Return a stable identity index of currently installed catgirl character cards."""  # noqa: DOCSTRING_CJK
+    """Return a stable identity index of currently installed neko character cards."""  # noqa: DOCSTRING_CJK
 
     # This index authorizes destructive storage audit. Chat's fallback profiles
     # and IDs that failed to persist cannot prove that a saved character is gone.

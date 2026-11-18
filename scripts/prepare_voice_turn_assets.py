@@ -106,7 +106,11 @@ def _download_source_candidates(source: str) -> tuple[str, ...]:
     return tuple(candidates)
 
 
-def _download_verified(source: str, destination: Path, expected_sha256: str) -> None:
+def _download_verified(
+    source: str, destination: Path, expected_sha256: str, *, maximum_bytes: int | None = None, on_progress=None,
+) -> None:
+    if maximum_bytes is not None and (type(maximum_bytes) is not int or maximum_bytes <= 0):
+        raise AssetManifestError("invalid download size limit")
     temporary = destination.with_suffix(destination.suffix + ".part")
     last_error: Exception | None = None
     candidates = _download_source_candidates(source)
@@ -117,12 +121,34 @@ def _download_verified(source: str, destination: Path, expected_sha256: str) -> 
         for attempt in range(3):
             digest = hashlib.sha256()
             try:
+                total = None
+                transfer_attempt = index * 3 + attempt + 1
+                if on_progress is not None:
+                    on_progress({"phase": "downloading", "downloaded_bytes": 0, "total_bytes": None, "attempt": transfer_attempt})
                 with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
                     "wb"
                 ) as output:
-                    while chunk := response.read(1024 * 1024):
+                    received = 0
+                    if on_progress is not None:
+                        try:
+                            declared = int(response.headers.get("Content-Length", ""))
+                        except (TypeError, ValueError):
+                            declared = 0
+                        if 0 < declared <= (maximum_bytes or 2 ** 40):
+                            total = declared
+                        on_progress({"phase": "downloading", "downloaded_bytes": 0, "total_bytes": total, "attempt": transfer_attempt})
+                    while chunk := response.read(min(1024 * 1024, maximum_bytes - received + 1) if maximum_bytes is not None else 1024 * 1024):
+                        received += len(chunk)
+                        if maximum_bytes is not None and received > maximum_bytes:
+                            raise AssetManifestError(f"download exceeds maximum size for {destination.name}")
                         digest.update(chunk)
                         output.write(chunk)
+                        if on_progress is not None:
+                            if total is not None and received > total:
+                                total = None
+                            on_progress({"phase": "downloading", "downloaded_bytes": received, "total_bytes": total, "attempt": transfer_attempt})
+                if on_progress is not None:
+                    on_progress({"phase": "verifying", "downloaded_bytes": received, "total_bytes": total, "attempt": transfer_attempt})
                 actual = digest.hexdigest()
                 if actual.lower() != expected_sha256.lower():
                     # A mirror serving different bytes is a hard failure, not a
@@ -166,7 +192,9 @@ def _copy_verified(source: Path, destination: Path, expected_sha256: str) -> Non
 
 
 def prepare_assets(
-    directory: Path, *, offline: bool = False, source_cache: Path | None = None
+    directory: Path, *, offline: bool = False, source_cache: Path | None = None,
+    maximum_asset_bytes: int | None = None,
+    on_progress=None,
 ) -> list[Path]:
     manifest = load_manifest(directory)
     prepared: list[Path] = []
@@ -186,6 +214,8 @@ def prepare_assets(
                 require_downloadable_source(spec),
                 directory / spec.filename,
                 spec.sha256,
+                **({"maximum_bytes": maximum_asset_bytes} if maximum_asset_bytes is not None else {}),
+                **({"on_progress": on_progress} if on_progress is not None else {}),
             )
         prepared.append(verify_asset(directory, spec))
     return prepared

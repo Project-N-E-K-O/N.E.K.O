@@ -3,6 +3,7 @@ import math
 import os
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -245,6 +246,44 @@ LIFECYCLE_QUEUE_MAX = _get_int_env("NEKO_LIFECYCLE_QUEUE_MAX", 1000)
 MESSAGE_QUEUE_MAX = _get_int_env("NEKO_MESSAGE_QUEUE_MAX", 1000)
 EXPORT_INLINE_BINARY_MAX_BYTES = _get_int_env("NEKO_EXPORT_INLINE_BINARY_MAX_BYTES", 256 * 1024)
 
+
+@dataclass(frozen=True)
+class PluginRpcQuotas:
+    """Per-plugin shares of the host control router, so one plugin cannot starve others."""
+
+    # Requests one plugin connection may have admitted but not yet started,
+    # including requests whose BUSY reply is still being delivered.
+    max_queued_per_plugin: int
+    # Handlers one plugin connection may have running at once.
+    max_in_flight_per_plugin: int
+    # PLUGIN_TO_PLUGIN calls that may wait on one target plugin at once, from
+    # all callers together; a hung target holds at most this many slots. One
+    # caller may use at most half of it (at least 1), whatever value is set.
+    max_in_flight_per_target_plugin: int
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    value = _get_int_env(name, default)
+    return value if value > 0 else default
+
+
+# Read when the plugin router starts, so a restart picks up changed values.
+# Env: NEKO_PLUGIN_RPC_MAX_QUEUED_PER_PLUGIN, default=64
+# Env: NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_PLUGIN, default=32
+# Env: NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_TARGET_PLUGIN, default=32
+def get_plugin_rpc_quotas() -> PluginRpcQuotas:
+    return PluginRpcQuotas(
+        max_queued_per_plugin=_get_positive_int_env(
+            "NEKO_PLUGIN_RPC_MAX_QUEUED_PER_PLUGIN", 64
+        ),
+        max_in_flight_per_plugin=_get_positive_int_env(
+            "NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_PLUGIN", 32
+        ),
+        max_in_flight_per_target_plugin=_get_positive_int_env(
+            "NEKO_PLUGIN_RPC_MAX_IN_FLIGHT_PER_TARGET_PLUGIN", 32
+        ),
+    )
+
 RUN_TOKEN_SECRET = os.getenv("NEKO_RUN_TOKEN_SECRET", "dev-insecure-run-token-secret")
 RUN_TOKEN_TTL_SECONDS = _get_int_env("NEKO_RUN_TOKEN_TTL_SECONDS", 3600)
 # Maximum run execution seconds; automatically mark timeout after expiry.
@@ -371,33 +410,11 @@ NEKO_AUTH_URL = _validate_http_url(
 # it in main_routers/community_oauth.py — never reuse neko-desktop there.
 NEKO_AUTH_CLIENT_ID = os.getenv("NEKO_AUTH_CLIENT_ID", "neko-desktop").strip() or "neko-desktop"
 
-# Marketplace API URL; configuration enables the marketplace entry in plugin management.
-# Env: NEKO_MARKET_API_URL, default="https://market.project-neko.cn"
-# Legacy env NEKO_MARKET_URL remains supported; environment overrides serve local development.
-MARKET_API_URL = _validate_http_url(
-    os.getenv(
-        "NEKO_MARKET_API_URL",
-        os.getenv("NEKO_MARKET_URL", "https://market.project-neko.cn"),
-    ),
-    name="NEKO_MARKET_API_URL",
-    allow_empty=True,
-)
+# Shared URL policy keeps application and plugin Market origins aligned.
+from utils.market_config import get_market_api_url, get_market_web_url
 
-# Marketplace web URL for detail pages; API calls still use MARKET_API_URL + /api/v1.
-# Local development defaults to frontend Vite port 5173; unset production configuration
-# defaults to MARKET_API_URL's origin.
-# Env: NEKO_MARKET_WEB_URL
-_market_web_url_env = os.getenv("NEKO_MARKET_WEB_URL")
-if _market_web_url_env is not None:
-    MARKET_WEB_URL = _validate_http_url(
-        _market_web_url_env,
-        name="NEKO_MARKET_WEB_URL",
-        allow_empty=True,
-    )
-elif MARKET_API_URL.rstrip("/") in {"http://localhost:8000", "http://127.0.0.1:8000"}:
-    MARKET_WEB_URL = "http://localhost:5173"
-else:
-    MARKET_WEB_URL = MARKET_API_URL
+MARKET_API_URL = get_market_api_url()
+MARKET_WEB_URL = get_market_web_url()
 
 # Allowed Market CORS origins, comma-separated.
 # Allow Market frontends to call local /market/* endpoints cross-origin.
@@ -471,10 +488,6 @@ PLUGIN_LOG_BUS_SUBSCRIPTIONS = _get_bool_env("NEKO_PLUGIN_LOG_BUS_SUBSCRIPTIONS"
 # Env: NEKO_PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS, default=True
 PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS = _get_bool_env("NEKO_PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS", True)
 
-# Whether to warn on SDK-call timeouts.
-# Env: NEKO_PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS, default=True
-PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS = _get_bool_env("NEKO_PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS", True)
-
 # Whether ctx.status.update prints logs.
 # Env: NEKO_PLUGIN_LOG_CTX_STATUS_UPDATE, default=True
 PLUGIN_LOG_CTX_STATUS_UPDATE = _get_bool_env("NEKO_PLUGIN_LOG_CTX_STATUS_UPDATE", True)
@@ -500,14 +513,6 @@ MESSAGE_SCHEMA_ALLOW_UNSAFE = _get_bool_env("NEKO_MESSAGE_SCHEMA_ALLOW_UNSAFE", 
 # Whether unknown fields outside the schema trigger warnings.
 # Env: NEKO_MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS, default=True
 MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS = _get_bool_env("NEKO_MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS", True)
-
-# Whether ZeroMQ IPC between plugin/main processes is enabled.
-# Env: NEKO_PLUGIN_ZMQ_IPC_ENABLED, default=True
-PLUGIN_ZMQ_IPC_ENABLED = _get_bool_env("NEKO_PLUGIN_ZMQ_IPC_ENABLED", True)
-
-# ZeroMQ IPC endpoint address.
-# Env: NEKO_PLUGIN_ZMQ_IPC_ENDPOINT, default="tcp://127.0.0.1:38765"
-PLUGIN_ZMQ_IPC_ENDPOINT = os.getenv("NEKO_PLUGIN_ZMQ_IPC_ENDPOINT", "tcp://127.0.0.1:38765")
 
 # [MESSAGE FORWARD] deduplication window, seconds.
 # Env: NEKO_PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS, default=1.0
@@ -923,7 +928,9 @@ __all__ = [
     "EVENT_QUEUE_MAX",
     "LIFECYCLE_QUEUE_MAX",
     "MESSAGE_QUEUE_MAX",
-    
+    "PluginRpcQuotas",
+    "get_plugin_rpc_quotas",
+
     # Timeout configuration.
     "PLUGIN_EXECUTION_TIMEOUT",
     "PLUGIN_TRIGGER_TIMEOUT",
@@ -962,7 +969,6 @@ __all__ = [
     "PLUGIN_LOG_SYNC_CALL_WARNINGS",
     "PLUGIN_LOG_BUS_SUBSCRIPTIONS",
     "PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS",
-    "PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS",
     "PLUGIN_LOG_CTX_STATUS_UPDATE",
     "PLUGIN_LOG_CTX_MESSAGE_PUSH",
     "PLUGIN_LOG_SERVER_DEBUG",
@@ -1038,7 +1044,6 @@ PUBLIC_SYSTEM_CONFIG_KEYS = (
     "PLUGIN_LOG_SYNC_CALL_WARNINGS",
     "PLUGIN_LOG_BUS_SUBSCRIPTIONS",
     "PLUGIN_LOG_BUS_SUBSCRIBE_REQUESTS",
-    "PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS",
     "PLUGIN_LOG_CTX_STATUS_UPDATE",
     "PLUGIN_LOG_CTX_MESSAGE_PUSH",
     "PLUGIN_LOG_SERVER_DEBUG",

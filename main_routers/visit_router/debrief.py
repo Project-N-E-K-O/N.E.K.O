@@ -316,8 +316,12 @@ async def run_debrief(rt: Any, *, input_stamp: float) -> None:
         if rt.handoff is not None:
             rt.handoff.skip("debrief")
         try:
-            await rt.host.mirror_assistant_output(text, metadata=rt._mirror_meta("visit_debrief"),
-                                                  request_id=f"visit-debrief-summary:{rt.visit_id}")
+            await rt.host.mirror_assistant_output(
+                text,
+                metadata=rt._mirror_meta("visit_debrief"),
+                request_id=f"visit-debrief-summary:{rt.visit_id}",
+                finalize_turn=True,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: debrief summary not shown: %s", rt.visit_id[:6], type(exc).__name__)
     else:
@@ -886,7 +890,7 @@ async def _choose(visit_id: str, choice: str, seq: Optional[int], lanlan_name: s
             return 404, {"error": "unknown_or_expired"}
         own_char = await _own_char(state)
         if not own_char or own_char != lanlan_name:
-            # Origin no longer belongs to this catgirl, possibly after old-name reuse: clicking stale blocks must neither
+            # Origin no longer belongs to this neko, possibly after old-name reuse: clicking stale blocks must neither
             # return this preview there nor change its choice.
             return 404, {"error": "unknown_or_expired"}
         current = state["debrief_choice"]

@@ -78,10 +78,13 @@ def test_only_index_loads_the_bridge_after_the_websocket_script():
     index = _read("templates/index.html")
     ws = index.index("/static/app/app-websocket.js")
     geo = index.index("/static/visit/crop-geometry.js")
+    relay = index.index("/static/visit/voice-relay.js")
     bridge = index.index("/static/visit/parent-bridge.js")
-    assert ws < geo < bridge
+    assert ws < geo < relay < bridge
+    # The voice relay lives where TTS plays: the Pet / single window (the chat follower window gets no audio frames).
+    assert index.index("/static/app/app-audio-playback.js") < relay
     chat = _read("templates/chat.html")
-    assert "parent-bridge.js" not in chat and "crop-geometry.js" not in chat
+    assert "parent-bridge.js" not in chat and "crop-geometry.js" not in chat and "voice-relay.js" not in chat
 
 
 def test_websocket_dispatch_skips_the_chat_follower_window():

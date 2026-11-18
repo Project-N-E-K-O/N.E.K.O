@@ -262,12 +262,15 @@ async def test_combo_counter_not_triggered_by_user_confirm(tmp_path):
     }]
     await re.asave_reflections("小天", seed)
 
+    # 0.5 per signal keeps the total (2.5) under EVIDENCE_REINFORCEMENT_CAP,
+    # so a combo bonus would still show (it would reach the cap, 3.0).
     for _ in range(5):
-        await re.aapply_signal("小天", rid, {"reinforcement": 1.0},
+        await re.aapply_signal("小天", rid, {"reinforcement": 0.5},
                                source="user_confirm")
     r = _find_by_id(await re.aload_reflections("小天"), rid)
-    assert r["reinforcement"] == pytest.approx(5.0)
+    assert r["reinforcement"] == pytest.approx(2.5)
     assert r["user_fact_reinforce_count"] == 0  # never touched by user_confirm
+    assert r["user_confirm_count"] == 5
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import ormsgpack
 import zmq
@@ -82,10 +82,12 @@ class MessagePlaneIngestServer:
         stores: StoreRegistry,
         pub_server: Optional[MessagePlanePubServer],
         auth_token: str,
+        on_record_accepted: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         self.endpoint = str(endpoint)
         self._stores = stores
         self._pub = pub_server
+        self._on_record_accepted = on_record_accepted
         self._auth_token = str(auth_token or "").strip()
         if not self._auth_token:
             raise ValueError("message-plane ingest requires an auth token")
@@ -201,6 +203,14 @@ class MessagePlaneIngestServer:
             # when its detail line is lost.
             pass
 
+    def _notify_record_accepted(self, event: Dict[str, Any]) -> None:
+        callback = getattr(self, "_on_record_accepted", None)
+        if callback is not None:
+            try:
+                callback(event)
+            except Exception:
+                logger.exception("message plane record observer failed")
+
     def _ingest_delta_batch(self, msg: Dict[str, Any]) -> None:
         items = msg.get("items")
         if not isinstance(items, list):
@@ -261,13 +271,17 @@ class MessagePlaneIngestServer:
                     )
                     continue
             try:
-                event = st.publish(topic, payload)
+                if st.name == "conversations" and topic == "all":
+                    event, revision = st.publish_with_revision(topic, payload)
+                else:
+                    event, revision = st.publish(topic, payload), 0
             except Exception as _exc:
                 self._record_drop(
                     "publish_error", store=st.name, topic=topic,
                     plugin_id=drop_plugin_id, err=type(_exc).__name__,
                 )
                 continue
+            self._notify_record_accepted({**event, "_revision": revision} if revision else event)
             self._stats_accepted += 1
             self._stats_last_store = str(st.name)
             self._stats_last_topic = str(topic)
@@ -345,13 +359,17 @@ class MessagePlaneIngestServer:
         if str(mode or "replace") == "append":
             for rec in records:
                 try:
-                    event = st.publish(topic, rec)
+                    if st.name == "conversations" and topic == "all":
+                        event, revision = st.publish_with_revision(topic, rec)
+                    else:
+                        event, revision = st.publish(topic, rec), 0
                 except Exception as _exc:
                     self._record_drop(
                         "publish_error", store=st.name, topic=topic,
                         err=type(_exc).__name__,
                     )
                     continue
+                self._notify_record_accepted({**event, "_revision": revision} if revision else event)
                 self._stats_accepted += 1
                 self._stats_last_store = str(st.name)
                 self._stats_last_topic = str(topic)
@@ -362,8 +380,15 @@ class MessagePlaneIngestServer:
                         pass
             return
 
+        replaced = False
         try:
-            events = st.replace_topic(topic, records)
+            if st.name == "conversations" and topic == "all":
+                observed_events = st.replace_topic_with_revisions(topic, records)
+                events = [event for event, _ in observed_events]
+            else:
+                events = st.replace_topic(topic, records)
+                observed_events = [(event, 0) for event in events]
+            replaced = True
         except Exception as _exc:
             # A failed replace loses the whole snapshot, which until now was not
             # even counted as a drop -- the caller saw an untouched aggregate and
@@ -383,6 +408,13 @@ class MessagePlaneIngestServer:
                 err=type(_exc).__name__,
             )
             events = []
+            observed_events = []
+        for event, revision in observed_events:
+            self._notify_record_accepted({**event, "_revision": revision} if revision else event)
+        if replaced and st.name == "conversations" and topic == "all":
+            # Replacements can remove old window members, including when the
+            # replacement is empty. Record notifications alone cannot express that.
+            self._notify_record_accepted({"store": st.name, "topic": topic, "conversation_op": "view.invalidated"})
         self._stats_accepted += int(len(events))
         self._stats_last_store = str(st.name)
         self._stats_last_topic = str(topic)

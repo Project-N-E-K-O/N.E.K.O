@@ -1251,7 +1251,10 @@ function Modal(props) {
     if (props.lockScroll !== false) document.body.style.overflow = 'hidden';
     window.setTimeout(() => focusFirstModalControl(modalRef.current), 0);
     const onKeyDown = (event) => {
-      if (event.key === 'Escape' && closeOnEscape && typeof props.onClose === 'function') props.onClose();
+      if (event.key === 'Escape' && closeOnEscape && typeof props.onClose === 'function') {
+        event.preventDefault();
+        props.onClose();
+      }
       trapModalFocus(event, modalRef.current);
     };
     window.addEventListener('keydown', onKeyDown);
@@ -2013,6 +2016,10 @@ function requestHost(method, payload, options) {
   });
 }
 const api = {
+  display: createPluginDisplayClient({
+    origin: __hostedContextOrigin,
+    reportError: reportHostedRuntimeError,
+  }),
   // Async handlers lose the synchronous DOM event scope after an await. They
   // can explicitly preserve the attribution for this one action with
   // { userInitiated: true }, without making unrelated background calls noisy.

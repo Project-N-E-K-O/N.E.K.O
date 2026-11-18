@@ -39,7 +39,11 @@ logger = get_module_logger(__name__, "Main")
 
 _sweep_task: Optional[asyncio.Task] = None
 _recovery_task: Optional[asyncio.Task] = None
+_invite_reset_event: Optional[asyncio.Event] = None
+_invite_reset_error: Optional[Exception] = None
+_invite_reset_retry: Optional[asyncio.Task] = None
 _RECOVERY_STOP_WAIT_S = 0.2
+_INVITE_RESET_TIMEOUT_S = 15.0
 _STOP_ALL_SLACK_S = 0.5  # stop_all bounds each step with VISIT_SHUTDOWN_BUDGET_S; the outer timeout only catches hangs, leaving cleanup margin.
 
 SHUTDOWN_STEP_BUDGET_S = VISIT_SHUTDOWN_BUDGET_S + 2 * _RECOVERY_STOP_WAIT_S + _STOP_ALL_SLACK_S + 0.3
@@ -97,7 +101,60 @@ async def run_startup_recovery() -> Any:
     return report
 
 
+def _unfinished_reset() -> Exception:
+    from main_routers.visit_router.credentials import VisitServersUnreachable
+
+    return VisitServersUnreachable("startup_invite_reset")
+
+
+async def _reset_pending_invites() -> Optional[Exception]:
+    """One bounded invalidation of the previous run's unused invitations; returns the failure, None once done."""
+    try:
+        from main_routers.visit_router.credentials import VisitServersError, cancel_pending_host_invites
+
+        # asyncio.timeout, not wait_for: 3.11's wait_for drops a shutdown cancel that lands as the
+        # reset completes, and the recovery would then keep running past stop_all.
+        async with asyncio.timeout(_INVITE_RESET_TIMEOUT_S):
+            cancelled = await cancel_pending_host_invites()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - Returned to the admission fence, which retries it; never blocks recovery.
+        logger.warning("visit invitation reset failed: %s", type(exc).__name__)
+        # Servers errors (login required, banned, unreachable) carry the copy the
+        # frontend shows; a timeout or anything else reads as an unfinished reset.
+        return exc if isinstance(exc, VisitServersError) else _unfinished_reset()
+    if cancelled:
+        logger.info("visit startup invalidated %d pending invitation(s)", cancelled)
+    return None
+
+
+async def _retry_invite_reset(event: asyncio.Event) -> Optional[Exception]:
+    """Admission retry of a failed startup reset; records success before finishing.
+
+    Clearing the failure inside the task (not in a waiter resumed later) closes the
+    gap where a new admission would see the finished retry plus the stale failure
+    and start another bulk cancel while the first caller is already minting a room.
+    """
+    global _invite_reset_error
+    error = await _reset_pending_invites()
+    if error is None and _invite_reset_event is event:
+        _invite_reset_error = None
+    return error
+
+
 async def _recover_in_background() -> None:
+    global _invite_reset_error
+    event = _invite_reset_event
+    error: Optional[Exception] = _unfinished_reset()
+    try:
+        error = await _reset_pending_invites()
+    finally:
+        # A cancelled rollback task can retire after a later startup already
+        # installed a new fence.  Never publish the old attempt into that run.
+        if _invite_reset_event is event:
+            _invite_reset_error = error
+        if event is not None:
+            event.set()
     try:
         await run_startup_recovery()
     except asyncio.CancelledError:
@@ -108,13 +165,49 @@ async def _recover_in_background() -> None:
 
 def start_visit_background_tasks() -> None:
     """Start the visit sweep and the startup recovery (``create_task``; never awaited by startup)."""
-    global _sweep_task, _recovery_task
+    global _sweep_task, _recovery_task, _invite_reset_event, _invite_reset_error
     from main_routers.visit_router import runtime
 
     if _sweep_task is None or _sweep_task.done():
         _sweep_task = asyncio.create_task(runtime.visit_sweep_loop(), name="visit-sweep")
     if _recovery_task is None or _recovery_task.done():
+        _invite_reset_event = asyncio.Event()
+        _invite_reset_error = None
         _recovery_task = asyncio.create_task(_recover_in_background(), name="visit-recovery")
+
+
+async def wait_startup_invite_reset() -> Optional[Exception]:
+    """Admission fence: wait for the startup invite invalidation (not spool recovery).
+
+    Returns None once the reset is done, else the Servers error to answer with.
+    A failed startup reset (signed out, offline, unverifiable session) is
+    retried here -- one attempt shared by concurrent callers -- instead of
+    refusing every room until the next restart.  Nothing can mint a room
+    while the reset is unfinished, so a late retry never cancels a fresh invite.
+    """
+    global _invite_reset_retry
+    event = _invite_reset_event
+    if event is None:
+        return None
+    if not event.is_set():
+        await event.wait()
+    if _invite_reset_event is not event:
+        return _unfinished_reset()
+    if _invite_reset_error is None:
+        return None
+    retry = _invite_reset_retry
+    if retry is None or retry.done():
+        retry = asyncio.create_task(_retry_invite_reset(event), name="visit-invite-reset-retry")
+        _invite_reset_retry = retry
+    try:
+        error = await asyncio.shield(retry)
+    except asyncio.CancelledError:
+        if not retry.cancelled():
+            raise
+        return _unfinished_reset()
+    if _invite_reset_event is not event:
+        return _unfinished_reset()
+    return error
 
 
 def startup_recovery_running() -> bool:
@@ -129,11 +222,17 @@ def _cancel(task: Optional[asyncio.Task]) -> None:
 
 async def stop_visit_background_tasks() -> None:
     """Shutdown: stop the sweep, ``stop_all`` within ``VISIT_SHUTDOWN_BUDGET_S``, cancel the recovery."""
-    global _sweep_task, _recovery_task
+    global _sweep_task, _recovery_task, _invite_reset_event, _invite_reset_error, _invite_reset_retry
     from main_routers.visit_router import runtime
 
     sweep, recovery = _sweep_task, _recovery_task
     _sweep_task = _recovery_task = None
+    if _invite_reset_event is not None:
+        _invite_reset_event.set()
+    _invite_reset_event = None
+    _invite_reset_error = None
+    _cancel(_invite_reset_retry)
+    _invite_reset_retry = None
     _cancel(sweep)  # Timing no longer runs concurrently with shutdown finalization.
     # Stop backfill first and resume unfinished work next startup; otherwise it can spawn digest/summary writes
     # after stop_all snapshots background tasks, escaping shutdown cancellation.
@@ -160,7 +259,7 @@ async def stop_visit_background_tasks() -> None:
 
 def cancel_visit_background_tasks() -> None:
     """Startup rollback: cancel both tasks and the upload retries recovery scheduled (no visit is live yet)."""
-    global _sweep_task, _recovery_task
+    global _sweep_task, _recovery_task, _invite_reset_event, _invite_reset_error, _invite_reset_retry
     from main_routers.visit_router import transcript_upload
 
     from main_routers.visit_router import runtime
@@ -168,6 +267,12 @@ def cancel_visit_background_tasks() -> None:
     _cancel(_sweep_task)
     _cancel(_recovery_task)
     _sweep_task = _recovery_task = None
+    if _invite_reset_event is not None:
+        _invite_reset_event.set()
+    _invite_reset_event = None
+    _invite_reset_error = None
+    _cancel(_invite_reset_retry)
+    _invite_reset_retry = None
     # Backfill's transcript reuploads/report retries and its spawned digest/summary writes are independent tasks; do not let them keep uploading
     # or modifying spool after rollback and overlap the next initialization.
     transcript_upload.cancel_retry_workers()

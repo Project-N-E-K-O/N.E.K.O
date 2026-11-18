@@ -31,7 +31,8 @@ from main_logic.omni_realtime_client import (
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase, session_reply_in_progress
-from services.chat_sync.source import mark_tool_turn, mark_turn_origin
+from main_logic.agent_event_bus import conversation_reply_observation, conversation_reply_origin
+from services.chat_sync.source import mark_turn_origin
 from main_logic.proactive_delivery import (
     PASSIVE_MEDIA_BUDGET_DEFERRED_KEY,
     PASSIVE_MEDIA_MAX_RETRIES,
@@ -63,6 +64,36 @@ from .callback_render import _build_callback_instruction, _select_callbacks_with
 
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
+
+    @staticmethod
+    def _callback_reply_origin(callbacks: list) -> dict[str, object]:
+        """Project only provenance established on every callback in this batch."""
+        def is_plugin_callback(callback: object) -> bool:
+            if not isinstance(callback, dict) or callback.get("source_kind") != "plugin":
+                return False
+            channel = callback.get("channel")
+            return isinstance(channel, str) and (channel == "plugin" or channel.startswith("plugin:"))
+
+        def shared_nonempty(field: str) -> str | None:
+            values = [callback.get(field) for callback in callbacks]
+            if any(not isinstance(value, str) or not value.strip() for value in values):
+                return None
+            normalized = {value.strip() for value in values}
+            return next(iter(normalized)) if len(normalized) == 1 else None
+
+        all_plugin = bool(callbacks) and all(is_plugin_callback(callback) for callback in callbacks)
+        all_tasks = bool(callbacks) and all(
+            isinstance(callback, dict)
+            and callback.get("origin") == "task_result"
+            and not is_plugin_callback(callback)
+            for callback in callbacks
+        )
+        return {
+            "kind": "plugin" if all_plugin else "agent",
+            "is_proactive": True,
+            "plugin_id": shared_nonempty("source_name") if all_plugin else None,
+            "task_id": shared_nonempty("task_id") if all_tasks else None,
+        }
 
     def update_proactive_vision_consent(self, enabled: bool) -> None:
         """Apply live browser consent without granting persisted permission."""
@@ -135,14 +166,21 @@ class ProactiveMixin:
                 'computer_use_enabled',
                 'browser_use_enabled',
                 'user_plugin_enabled',
-                'openclaw_enabled',
-                'openclaw_ready',
             ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
             # Malformed flags payload — keep the current flags.
             pass
+        # The two task tools follow the switches: they are offered to the
+        # model only while NekoClaw is on, so a session without it does not
+        # pay for their definitions. Only an actual change touches the live
+        # session's tool list.
+        try:
+            if self._register_task_tools():
+                self._fire_task(self._sync_tools_to_active_session())
+        except Exception:
+            logger.debug("[%s] task tools not re-registered after a flag update", self.lanlan_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Voice-chat proactive text trigger (dedicated path)
@@ -655,7 +693,11 @@ class ProactiveMixin:
             # expected_speech_id already passed through phase2 and was just validated;
             # use that stable snapshot.
             commit_sid = expected_speech_id or self.current_speech_id
-            # Pin ordinary proactive output separately from Agent callback turns.
+            # What tells a user turn that begins during the awaits below from
+            # this one: its input moves the engagement time, its reply the sid.
+            # getattr: managers built without ``__init__`` (bare test managers).
+            engagement_at_commit = getattr(self, "last_user_engagement_time", None)
+            # Pin ordinary proactive output to its own origin.
             mark_turn_origin(self, commit_sid, 'proactive')
             # Enter COMMITTING. send_lanlan_response rechecks after its own final await and
             # before synchronous queue writing, preventing stale bubbles even if UI
@@ -666,18 +708,40 @@ class ProactiveMixin:
             )
             await self.state.fire(SessionEvent.PROACTIVE_COMMITTING, **round_payload)
             publication_times: list[float] = []
-            published = await self.send_lanlan_response(
-                full_text,
-                is_first_chunk=True,
-                turn_id=commit_sid,
-                expected_speech_id=expected_speech_id,
-                expected_user_engagement_time=expected_user_engagement_time,
-                on_published=publication_times.append,
-                publish_if=(
-                    None if expected_round_id is None
-                    else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
-                ),
-            )
+            observation = {
+                "reply_id": uuid4().hex,
+                "origin": {"kind": "unknown", "is_proactive": True, "plugin_id": None, "task_id": None},
+                "audio_expected": bool(self.use_tts),
+                "started": False,
+                "closed": False,
+                "lifecycle": "proactive_direct",
+            }
+            token = conversation_reply_observation.set(observation)
+            try:
+                published = await self.send_lanlan_response(
+                    full_text,
+                    is_first_chunk=True,
+                    turn_id=commit_sid,
+                    expected_speech_id=expected_speech_id,
+                    expected_user_engagement_time=expected_user_engagement_time,
+                    on_published=publication_times.append,
+                    publish_if=(
+                        None if expected_round_id is None
+                        else lambda: ProactiveMixin._proactive_round_owned(self, expected_round_id)
+                    ),
+                )
+            except (asyncio.CancelledError, Exception) as exc:
+                if observation["started"]:
+                    try:
+                        self._close_external_reply_observation(
+                            observation,
+                            "interrupted" if isinstance(exc, asyncio.CancelledError) else "failed",
+                        )
+                    except Exception:
+                        logger.warning("Failed to close proactive reply observation", exc_info=True)
+                raise
+            finally:
+                conversation_reply_observation.reset(token)
             if published is None:
                 logger.info(
                     "[%s] finish_proactive_delivery skip: final publish guard rejected",
@@ -690,6 +754,8 @@ class ProactiveMixin:
             # (only the agent-direct-reply path in main_server.py does), so
             # without this the buffer would carry the proactive text forward
             # and contaminate the next user-initiated turn's AI message.
+            if observation["started"]:
+                self._close_external_reply_observation(observation, "completed")
             self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
 
             if self.session and hasattr(self.session, '_conversation_history'):
@@ -774,12 +840,32 @@ class ProactiveMixin:
                 # with outbound BM25 exemptions.
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
-                    await self._request_tts_done_for_turn("finish_proactive_delivery")
+                    # Only for this delivery's turn: a user turn begun meanwhile
+                    # has its own speech, which this signal would cut off.
+                    await self._request_tts_done_for_turn("finish_proactive_delivery", expected_speech_id=commit_sid)
                 except Exception:
                     # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass
 
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            turn_end_msg = {'type': 'system', 'data': 'turn end'}
+            if (
+                self.current_speech_id == commit_sid
+                and getattr(self, "last_user_engagement_time", None) == engagement_at_commit
+            ):
+                # Carried as by every other turn end, though a turn she
+                # starts herself has no task tools to act through.
+                if self._close_turn_tool_state():
+                    turn_end_msg['acted_through_tools'] = True
+            else:
+                # The user began a turn while this one was being delivered
+                # (the sends and the TTS signal above are awaited). Its words
+                # and its tool calls are that turn's, which closes them itself
+                # when it ends. Nor may this turn end have cross_server check
+                # that turn by it: it carries none of that turn's marks, and a
+                # task done through a tool would be dispatched again. The
+                # callback kind ends a turn without a check.
+                turn_end_msg['data'] = 'turn end agent_callback'
+            self.sync_message_queue.put(turn_end_msg)
             try:
                 if (self.websocket
                         and hasattr(self.websocket, 'client_state')
@@ -1523,9 +1609,6 @@ class ProactiveMixin:
                     }
                     if events_before_text:
                         inject_kwargs["events_before_text"] = events_before_text
-                    # The explicit callback origin belongs only to this rotated speech ID.
-                    mark_turn_origin(self, self.current_speech_id, 'agent')
-                    mark_tool_turn(self, self.current_speech_id)
                     await voice_sess.inject_text_and_request_response(
                         instruction,
                         **inject_kwargs,
@@ -1998,8 +2081,7 @@ class ProactiveMixin:
                     callbacks_snapshot[:] = []
 
             _sid_token = _proactive_expected_sid.set(proactive_sid)
-            # Freeze origin before asynchronous callback delivery can interleave.
-            mark_turn_origin(self, proactive_sid, 'agent')
+            _origin_token = conversation_reply_origin.set(ProactiveMixin._callback_reply_origin(active_callbacks))
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
             # with text_start/text_end. text_end clears the manager's in-flight
@@ -2034,6 +2116,7 @@ class ProactiveMixin:
                             await self.send_cancel_topic_hint(turn_id=proactive_sid)
                         raise
             finally:
+                conversation_reply_origin.reset(_origin_token)
                 _proactive_expected_sid.reset(_sid_token)
                 try:
                     self.lifecycle_bus.emit("text_end")

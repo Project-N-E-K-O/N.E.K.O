@@ -199,6 +199,78 @@ def test_social_open_request_is_deduped_before_fetching_config():
 
 
 @pytest.mark.unit
+def test_social_theme_bridge_reaches_only_held_windows_and_leaves_reload_gap_to_desktop_main():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not installed")
+    source = read_js_parts(APP_UI_PATH)
+    bridge_start = source.index("function isResolvedDarkTheme()")
+    bridge = source[bridge_start:source.index("// 喵宇宙（社交平台）按钮", bridge_start)]
+    script = r"""
+const assert = require('node:assert/strict');
+const makeCommunityWindow = () => ({ messages: [], postMessage(data, origin) { this.messages.push({ data, origin }); } });
+// Each Pet renderer load runs the bridge in a fresh realm: its own window,
+// listeners and timers. Only the community windows outlive a reload.
+function bootPetRenderer() {
+    const listeners = new Map();
+    const timers = [];
+    const window = {
+        location: new URL('http://127.0.0.1:48911/'),
+        addEventListener(type, listener) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(listener);
+        },
+        dispatch(type, event) {
+            for (const listener of listeners.get(type) || []) listener(event);
+        },
+    };
+    const document = { documentElement: { getAttribute: () => 'light' } };
+    const setTimeout = (callback) => { timers.push(callback); };
+""" + bridge + r"""
+    return { window, timers, registerSocialThemeTarget };
+}
+
+const renderer = bootPetRenderer();
+const community = makeCommunityWindow();
+const target = renderer.registerSocialThemeTarget(community, 'https://community.example/feed?neko_theme=light');
+assert.deepEqual(target, { targetWindow: community, targetOrigin: 'https://community.example' });
+const fileWindow = makeCommunityWindow();
+assert.equal(renderer.registerSocialThemeTarget(fileWindow, 'file:///tmp/feed'), null);
+
+renderer.window.dispatch('neko-theme-changed', { detail: { darkMode: true } });
+assert.deepEqual(community.messages, [{
+    data: { source: 'neko-desktop', type: 'theme-change', theme: 'dark' },
+    origin: 'https://community.example',
+}]);
+assert.deepEqual(fileWindow.messages, []);
+
+// theme-ready is answered only for the held window at its registered origin.
+const strayWindow = makeCommunityWindow();
+renderer.window.dispatch('message', { source: community, origin: 'https://evil.example', data: { source: 'neko-community', type: 'theme-ready' } });
+renderer.window.dispatch('message', { source: strayWindow, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+assert.equal(community.messages.length, 1);
+assert.deepEqual(strayWindow.messages, []);
+renderer.window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+assert.equal(community.messages.length, 2);
+
+// A rebuilt Pet renderer loads the bridge again from scratch: it no longer
+// holds the surviving community window, so neither theme changes nor that
+// window's theme-ready reach it. NEKO-PC main covers this gap by forwarding
+// each dark-mode broadcast itself.
+const reloaded = bootPetRenderer();
+reloaded.window.dispatch('neko-theme-changed', { detail: { darkMode: false } });
+reloaded.window.dispatch('message', { source: community, origin: 'https://community.example', data: { source: 'neko-community', type: 'theme-ready' } });
+assert.equal(community.messages.length, 2);
+assert.deepEqual(fileWindow.messages, []);
+assert.deepEqual(strayWindow.messages, []);
+assert.equal(renderer.timers.length, 0);
+assert.equal(reloaded.timers.length, 0);
+"""
+    result = run_node_stdin(node, script, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.unit
 def test_social_existing_window_is_reused_and_closed_window_reopens():
     node = shutil.which("node")
     if not node:
@@ -1519,3 +1591,74 @@ def test_authoritative_credit_refresh_cannot_be_overwritten_by_queued_animation(
     assert "neko-forge-credit-state" in source
     assert "/api/card-drop/credits/local-summary" not in source
     assert "neko-forge-credit-animation-complete" in source
+
+
+@pytest.mark.unit
+def test_hide_community_entry_toggle_only_hides_the_social_button():
+    """The hide-nekoverse-entry toggle only hides the social button and is also offered in the web settings popup."""
+    methods = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons" / "methods-buttons.js").read_text(
+        encoding="utf-8"
+    )
+    popup = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    social_ui = APP_SOCIAL_UI_PATH.read_text(encoding="utf-8")
+    home_steps = (PROJECT_ROOT / "static" / "tutorial" / "click-guide" / "home-steps.js").read_text(
+        encoding="utf-8"
+    )
+
+    # 社交按钮包装器打标，创建时和响应式重排时都按偏好显隐
+    assert "btnWrapper.dataset.communityEntry = 'true';" in methods
+    sync = _extract_js_function(
+        methods, "ManagerPrototype.syncResponsiveButtonVisibility = function(buttonsContainer)"
+    )
+    assert '[data-community-entry="true"]' in sync
+    assert "window.nekoCommunityEntry.isHidden()" in sync
+
+    # 设置弹窗「动画设置」里的开关，走同一份偏好，并跟随其他入口的改动
+    assert "settings.toggles.hideCommunityEntry" in popup
+    assert "window.nekoCommunityEntry.setHidden(!communityEntryCheckbox.checked)" in popup
+    # 跟随其他入口的改动：只挂一个文件级监听器，面板创建函数里不挂（否则旧面板被监听器引用住无法释放）
+    assert popup.count("window.addEventListener('neko-community-entry-visibility-changed'") == 1
+    assert "window.__nekoCommunityEntryToggleSyncInstalled" in popup
+    sync_toggles = _extract_js_function(popup, "function syncCommunityEntryToggles(event)")
+    assert "input[data-neko-community-entry-toggle]" in sync_toggles
+    anim_panel = _extract_js_function(popup, "function createAnimationSettingsSidePanel(manager, prefix)")
+    assert "neko-community-entry-visibility-changed" not in anim_panel
+    assert "data-neko-community-entry-toggle" in anim_panel
+    assert popup.index("trackingRow.appendChild(forgeDropEffectsRow);") < popup.index(
+        "trackingRow.appendChild(communityEntryRow);"
+    )
+
+    # 只藏按钮：社区消息提示照常
+    assert "nekoCommunityEntry" not in social_ui
+    # 掉券照常播放；按钮被藏时券卡原地淡出，不再飞向别的按钮
+    fly_target = _extract_js_function(overlay, "function getFlyTarget()")
+    assert fly_target.index("window.nekoCommunityEntry.isHidden()") < fly_target.index("readVisibleSocialCenter()")
+    assert "|| { x: cur.left + CARD_W / 2, y: cur.top + CARD_H / 2 };" in overlay
+
+    # 引导：按钮被藏时跳过喵宇宙一步；标题直接用按钮名
+    social_step = home_steps[home_steps.index("optional('social'"):]
+    social_step = social_step[: social_step.index("optional('settings'")]
+    assert "when: () => !(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden())" in social_step
+    assert "title: root.t('buttons.social')" in social_step
+    # 按钮被藏时，按钮总览不再列出喵宇宙
+    overview_step = home_steps[home_steps.index("optional('floatingOverview'"):]
+    overview_step = overview_step[: overview_step.index("optional('mic'")]
+    assert "'floatingOverviewWithoutSocial' : 'floatingOverview.body'" in overview_step
+
+    # 喵宇宙浮层标题跟随当前语言的按钮名
+    hub = (PROJECT_ROOT / "static" / "social-hub.js").read_text(encoding="utf-8")
+    assert "el('h2', 'neko-social-hub-title', tr('buttons.social', '喵宇宙'))" in hub
+
+    for locale in ("en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"):
+        locale_source = (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
+        assert '"hideCommunityEntry"' in locale_source
+        assert '"floatingOverviewWithoutSocial"' in locale_source
+
+
+@pytest.mark.unit
+def test_english_ui_calls_the_community_nekoverse():
+    """The English UI names the community "nekoverse" instead of mixing older names."""
+    en = (PROJECT_ROOT / "static" / "locales" / "en.json").read_text(encoding="utf-8")
+    for stale in ("Neko Universe", "Meow universe", "Neko community", "N.E.K.O Community"):
+        assert stale not in en, stale

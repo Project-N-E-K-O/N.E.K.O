@@ -213,8 +213,9 @@ async def _call_local_install(
                 return 1
             logger.info("Install task created: {}", task_id)
 
-            # Poll until completion. Bridge download timeout is 120s before unpack
-            # work starts, so the protocol handler must wait longer than that.
+            # Poll until completion. This outlasts one stalled download read
+            # (package_download.REQUEST_TIMEOUT); a slow large install can still
+            # finish after the handler stops waiting.
             deadline = asyncio.get_running_loop().time() + _INSTALL_POLL_TIMEOUT_SECONDS
             while asyncio.get_running_loop().time() < deadline:
                 await asyncio.sleep(_INSTALL_POLL_INTERVAL_SECONDS)

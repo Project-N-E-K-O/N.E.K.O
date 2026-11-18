@@ -4,7 +4,7 @@
  * 包含状态快照、变更通知、繁忙状态等
  */
 (function () {
-    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled', 'openclaw_enabled'];
+    const FLAG_KEYS = ['computer_use_enabled', 'browser_use_enabled', 'user_plugin_enabled'];
 
     const state = {
         snapshot: null,
@@ -19,8 +19,6 @@
         globalBusy: false,
         optimistic: {},
         busyTimer: null,
-        openclawReady: null,
-        openclawReason: '',
         globalEventsBound: false,
     };
     
@@ -34,7 +32,6 @@
         keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard'),
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin'),
-        openclaw: getEls('live2d-agent-openclaw', 'vrm-agent-openclaw', 'mmd-agent-openclaw', 'pngtuber-agent-openclaw'),
         status: getEls('live2d-agent-status', 'vrm-agent-status', 'mmd-agent-status', 'pngtuber-agent-status'),
     });
     const sync = (cbs) => {
@@ -48,7 +45,6 @@
             computer_use_enabled: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             browser_use_enabled: window.t ? window.t('settings.toggles.browserUse') : 'Browser Control',
             user_plugin_enabled: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
-            openclaw_enabled: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
         };
         return map[key] || key;
     };
@@ -125,7 +121,6 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
-            openclaw_enabled: 'openclaw',
         };
         const cap = caps[map[key]];
         if (!cap) return true;
@@ -137,15 +132,10 @@
             computer_use_enabled: 'computer_use',
             browser_use_enabled: 'browser_use',
             user_plugin_enabled: 'user_plugin',
-            openclaw_enabled: 'openclaw',
         };
         const cap = caps[map[key]];
         return (cap && cap.reason) || '';
     };
-    const sanitizeOpenClawReason = (reason) => String(reason || '')
-            .replace(/OpenClaw\(QwenPaw\)/g, 'OpenClaw')
-            .replace(/QwenPaw/g, 'OpenClaw service')
-            .trim();
     const translateAgentReasonCode = (reason) => {
         const reasonText = String(reason || '').trim();
         if (reasonText && /^AGENT[A-Z0-9_-]*$/i.test(reasonText) && window.t) {
@@ -159,40 +149,6 @@
         }
         return reasonText;
     };
-    const formatOpenClawUnavailable = (reason, name) => {
-        const reasonText = sanitizeOpenClawReason(reason);
-        if (reasonText && !reasonText.includes('PENDING')) {
-            const displayReason = translateAgentReasonCode(reasonText);
-            return window.t
-                ? window.t('settings.toggles.openclawUnavailableReason', { name, reason: displayReason })
-                : `${name}不可用：${displayReason}。请确认猫爪连接服务已启动，并监听 127.0.0.1:8088。`;
-        }
-        return window.t
-            ? window.t('settings.toggles.capabilityNotReady', { name })
-            : `${name}尚未就绪，点击尝试启用`;
-    };
-
-    async function refreshOpenClawAvailability() {
-        try {
-            const r = await fetch('/api/agent/openclaw/availability');
-            if (!r.ok) {
-                state.openclawReady = null;
-                state.openclawReason = `status ${r.status}`;
-                if (state.snapshot) render('openclaw-refresh-error');
-                return false;
-            }
-            const payload = await r.json();
-            state.openclawReady = !!payload.ready;
-            state.openclawReason = Array.isArray(payload.reasons) ? String(payload.reasons[0] || '') : '';
-            if (state.snapshot) render('openclaw-refresh');
-            return state.openclawReady;
-        } catch (e) {
-            state.openclawReady = null;
-            state.openclawReason = String(e && e.message ? e.message : e || '');
-            if (state.snapshot) render('openclaw-refresh-error');
-            return false;
-        }
-    }
 
     async function fetchSnapshotRaw() {
         const r = await fetch('/api/agent/state');
@@ -241,7 +197,6 @@
                 computer_use_enabled: false,
                 browser_use_enabled: false,
                 user_plugin_enabled: false,
-                openclaw_enabled: false,
             },
             active_tasks: [],
             notification: null,
@@ -249,8 +204,6 @@
         };
         state.pending.clear();
         state.optimistic = {};
-        state.openclawReady = null;
-        state.openclawReason = '';
         setGlobalBusy(false);
         state.snapshot = snapshot;
         // 本地快照只用于立即收起 UI，下一次权威快照必须能覆盖它。
@@ -277,7 +230,6 @@
             computer_use: 'computer_use_enabled',
             browser_use: 'browser_use_enabled',
             user_plugin: 'user_plugin_enabled',
-            openclaw: 'openclaw_enabled',
         };
         const prevCaps = (state.snapshot && state.snapshot.capabilities) || {};
         const prevFlags = (state.snapshot && state.snapshot.flags) || {};
@@ -302,7 +254,6 @@
             const prevInfo = prevCaps[capName];
             const wasPending = prevInfo && !prevInfo.ready && prevInfo.reason && prevInfo.reason.includes('PENDING');
             const nowFailed = capInfo.reason && !capInfo.reason.includes('PENDING');
-            if (capName === 'openclaw') continue;
             if (wasPending && nowFailed && typeof window.showStatusToast === 'function' && window.t) {
                 const precheckKey = `agent.precheck.${capInfo.reason}`;
                 let reasonText = window.t(precheckKey);
@@ -322,7 +273,7 @@
     }
 
     function render(source = 'render') {
-        const { master, keyboard, browser, userPlugin, openclaw } = el();
+        const { master, keyboard, browser, userPlugin } = el();
         if (!master.length) return;
         const snap = state.snapshot;
         if (!snap) {
@@ -331,7 +282,7 @@
                 m.checked = false;
             });
             sync(master);
-            [keyboard, browser, userPlugin, openclaw].forEach(list => {
+            [keyboard, browser, userPlugin].forEach(list => {
                 list.forEach(cb => {
                     cb.disabled = true;
                     cb.checked = false;
@@ -360,7 +311,7 @@
                 m.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
             });
             sync(master);
-            [keyboard, browser, userPlugin, openclaw].forEach(list => {
+            [keyboard, browser, userPlugin].forEach(list => {
                 list.forEach(cb => {
                     cb.checked = false;
                     cb.disabled = true;
@@ -412,38 +363,6 @@
             sync(list);
         });
 
-        if (openclaw.length) {
-            const capabilityOpenClawReady = capabilityReady(snap, 'openclaw_enabled');
-            const capabilityOpenClawReason = capabilityReason(snap, 'openclaw_enabled');
-            const disabledByPending = state.pending.has('openclaw_enabled');
-            const activating = !!flags['openclaw_enabled'] && capabilityOpenClawReason && capabilityOpenClawReason.includes('PENDING');
-            const ready = flags['openclaw_enabled'] && capabilityOpenClawReady
-                ? true
-                : (typeof state.openclawReady === 'boolean' ? state.openclawReady : capabilityOpenClawReady);
-            const reason = flags['openclaw_enabled'] && capabilityOpenClawReady
-                ? capabilityOpenClawReason
-                : (state.openclawReason || capabilityOpenClawReason);
-            const canUse = effectiveAnalyzerEnabled && (ready || activating) && !disabledByPending;
-            const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
-            const optimisticVal = Object.prototype.hasOwnProperty.call(state.optimistic, 'openclaw_enabled')
-                ? !!state.optimistic['openclaw_enabled']
-                : !!flags['openclaw_enabled'];
-            openclaw.forEach(cb => {
-                cb.checked = optimisticVal && (canUse || disabledByPending);
-                cb.disabled = !!state.globalBusy || disabledByPending || activating || !effectiveAnalyzerEnabled || !ready;
-                if (disabledByPending || activating) {
-                    cb.title = window.t ? window.t('settings.toggles.checking') : '切换中...';
-                } else if (canUse) {
-                    cb.title = openclawName;
-                } else if (!effectiveAnalyzerEnabled) {
-                    cb.title = window.t ? window.t('settings.toggles.masterRequired', { name: openclawName }) : '\u8bf7\u5148\u5f00\u542fAgent\u603b\u5f00\u5173';
-                } else {
-                    cb.title = formatOpenClawUnavailable(reason, openclawName);
-                }
-            });
-            sync(openclaw);
-        }
-
         const anyPending = Object.values(snap.capabilities || {}).some(
             c => c && typeof c.reason === 'string' && c.reason.includes('PENDING')
         );
@@ -474,7 +393,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin, openclaw } = el();
+        const { master, keyboard, browser, userPlugin } = el();
         if (!master.length) return;
         const bindChangeOnce = (cb, key, handler) => {
             if (!cb) return;
@@ -530,11 +449,6 @@
                     const ts = performance.now();
                     await fetchSnapshot().catch(() => { });
                     console.log('[AgentUIv2Timing]', { phase: 'fetch_snapshot_after_master', ms: Number((performance.now() - ts).toFixed(2)) });
-                    if (opSeq === state.masterOpSeq && enabled) {
-                        const openclawTs = performance.now();
-                        await refreshOpenClawAvailability();
-                        console.log('[AgentUIv2Timing]', { phase: 'refresh_openclaw_after_master', ms: Number((performance.now() - openclawTs).toFixed(2)) });
-                    }
                 }
             } catch (e) {
                 if (opSeq === state.masterOpSeq) {
@@ -643,56 +557,12 @@
         bindFlag(browser, 'browser_use_enabled');
         bindFlag(userPlugin, 'user_plugin_enabled');
 
-        openclaw.forEach(cb => {
-            bindChangeOnce(cb, 'flag:openclaw_enabled', async (e) => {
-                if (state.suppressChange) { clearProcessing(openclaw); return; }
-                const value = !!e.target.checked;
-                const opToken = makeSnapshotToken();
-                const openclawName = window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw';
-                state.pending.add('openclaw_enabled');
-                state.optimistic['openclaw_enabled'] = value;
-                setGlobalBusy(true, window.t ? window.t('settings.toggles.checking') : '\u5df2\u63a5\u53d7\u64cd\u4f5c\uff0c\u5207\u6362\u4e2d...');
-                render('command');
-                try {
-                    await sendCommand('set_flag', { key: 'openclaw_enabled', value });
-                    if (!isSnapshotTokenCurrent(opToken)) return;
-                    await fetchSnapshot().catch(() => {});
-                } catch (err) {
-                    if (!isSnapshotTokenCurrent(opToken)) return;
-                    state.pending.delete('openclaw_enabled');
-                    state.optimistic = {};
-                    setGlobalBusy(false);
-                    fetchSnapshot().catch(() => {});
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(window.t ? window.t('settings.toggles.toggleFailed', { name: openclawName, error: err.message }) : `${openclawName}切换失败: ${err.message}`, 2500);
-                    }
-                    return;
-                } finally {
-                    clearProcessing(openclaw);
-                }
-                if (!isSnapshotTokenCurrent(opToken)) return;
-                state.pending.delete('openclaw_enabled');
-                state.optimistic = {};
-                setGlobalBusy(false);
-                render('command');
-            });
-        });
-
         if (state.globalEventsBound) return;
         state.globalEventsBound = true;
 
         window.addEventListener('neko-popup-opening', async () => {
             state.popupOpen = true;
             render('popup');
-            refreshOpenClawAvailability()
-                .catch(() => {})
-                .finally(() => {
-                    // The initial state request can beat the availability probe
-                    // and preserve its startup PENDING value.  Fetch the terminal
-                    // snapshot once the probe settles instead of requiring the
-                    // user to close and reopen the popup.
-                    if (state.popupOpen) fetchSnapshot().catch(() => {});
-                });
             if (!state.snapshot) {
                 await fetchSnapshot().catch(() => render('popup'));
                 return;
@@ -729,9 +599,6 @@
             if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
                 render('character-switch-refresh-failed');
             }
-        }
-        if (resetMasterSeq === state.masterOpSeq && state.pending.size === 0 && isSnapshotTokenCurrent(resetToken)) {
-            await refreshOpenClawAvailability().catch(() => {});
         }
     };
 

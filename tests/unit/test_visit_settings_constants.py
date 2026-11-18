@@ -46,6 +46,19 @@ def test_visit_setting_defaults():
     assert vs.VISIT_ENABLED_DEFAULT is False
 
 
+def test_visit_release_gate_is_default_on_but_remains_env_overridable():
+    tree = ast.parse((REPO_ROOT / "config" / "visit_settings.py").read_text(encoding="utf-8"))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "VISIT_ENABLED" for target in node.targets)
+    )
+    call = assignment.value
+    assert isinstance(call, ast.Call)
+    assert isinstance(call.func, ast.Name) and call.func.id == "_read_bool_env"
+    assert [ast.literal_eval(arg) for arg in call.args] == ["VISIT_ENABLED", True]
+
+
 def test_user_owned_fields_mirror_is_identical_and_covers_visit_keys():
     server = _frozenset_literal(
         REPO_ROOT / "main_routers" / "proactive_router.py", "_USER_OWNED_FIELDS",

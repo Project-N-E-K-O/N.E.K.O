@@ -1065,8 +1065,15 @@ def build_report(
     rules_by_language: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     message_count_threshold: int = 1,
     max_occurrences: int | None = None,
+    include_source_lines: bool = False,
 ) -> dict[str, object]:
-    """Build a deterministic, review-only candidate report."""
+    """Build a deterministic, review-only candidate report.
+
+    ``include_source_lines`` adds each candidate's sorted ``source_lines``, the
+    distinct messages it was mined from. Off by default so the review artifacts
+    keep their documented shape; the habitual-phrase job needs it to tell
+    repetition across sessions from a burst inside one.
+    """
     config.validate()
     if message_count_threshold < 1:
         raise CandidateMinerError("message_count_threshold must be at least 1")
@@ -1117,19 +1124,20 @@ def build_report(
         )
         if config.exclude_covered and all_occurrences_covered:
             continue
-        candidates.append(
-            {
-                "covered_by_rule_ids": covered_by,
-                "language": language,
-                "message_count": len(candidate_stats.source_lines),
-                "normalized_phrase": normalized,
-                "occurrence_count": candidate_stats.occurrence_count,
-                "phrase": min(
-                    candidate_stats.phrases, key=lambda item: (item.casefold(), item)
-                ),
-                "status": "pending",
-            }
-        )
+        candidate: dict[str, object] = {
+            "covered_by_rule_ids": covered_by,
+            "language": language,
+            "message_count": len(candidate_stats.source_lines),
+            "normalized_phrase": normalized,
+            "occurrence_count": candidate_stats.occurrence_count,
+            "phrase": min(
+                candidate_stats.phrases, key=lambda item: (item.casefold(), item)
+            ),
+            "status": "pending",
+        }
+        if include_source_lines:
+            candidate["source_lines"] = sorted(candidate_stats.source_lines)
+        candidates.append(candidate)
 
     candidates.sort(
         key=lambda item: (

@@ -290,6 +290,9 @@
   }
 
   function getFlyTarget() {
+    // 0) 用户在设置里隐藏了喵宇宙按钮：没有可飞向的按钮，交给调用方原地淡出
+    if (window.nekoCommunityEntry && window.nekoCommunityEntry.isHidden()) return null;
+
     // 1) 可见时直接读真实中心（并缓存）
     var visible = readVisibleSocialCenter();
     if (visible) return visible;
@@ -579,7 +582,8 @@
             card.style.opacity = '1';
             void card.offsetWidth;
 
-            var target = getFlyTarget();
+            var target = getFlyTarget()
+              || { x: cur.left + CARD_W / 2, y: cur.top + CARD_H / 2 };
             var endLeft = Math.round(target.x - CARD_W / 2);
             var endTop = Math.round(target.y - CARD_H / 2);
             var flyMs = reduced ? 200 : FLY_MS;

@@ -177,7 +177,20 @@ class FakeElement {{
     return results.length > 0 ? results[0] : null;
   }}
 
-  focus() {{}}
+  contains(element) {{
+    let current = element;
+    while (current) {{
+      if (current === this) return true;
+      current = current.parentNode;
+    }}
+    return false;
+  }}
+
+  get isConnected() {{
+    return document.body.contains(this) || document.head.contains(this);
+  }}
+
+  focus() {{ document.activeElement = this; }}
 
   select() {{}}
 }}
@@ -186,6 +199,7 @@ const document = {{
   head: new FakeElement('head'),
   body: new FakeElement('body'),
   _listeners: new Map(),
+  activeElement: null,
   createElement(tagName) {{
     return new FakeElement(tagName);
   }},
@@ -221,6 +235,7 @@ const document = {{
     return null;
   }},
 }};
+document.activeElement = document.body;
 
 const silentConsole = {{
   log() {{}},
@@ -463,6 +478,25 @@ def test_decision_prompt_lifecycle_events_do_not_fire_for_alerts():
 
 
 @pytest.mark.unit
+def test_page_shortcut_block_still_allows_escape_cancellation():
+    result = _run_common_dialogs_node_scenario(
+        """
+    let prevented = 0;
+    const shortcut = { type: 'keydown', key: 'w', metaKey: true,
+      preventDefault() { prevented++; } };
+    document.dispatchEvent(shortcut);
+    assert.strictEqual(prevented, 1, 'Pages retain their close-tab shortcut block');
+    const pending = window.showConfirm('Delete across devices?', 'Delete', { danger: true });
+    document.dispatchEvent({ type: 'keydown', key: 'Escape' });
+    const cancelled = await pending;
+    assert.strictEqual(cancelled, false);
+    assert.strictEqual(overlayCount(), 0);
+    return { prevented, cancelled };
+        """
+    )
+    assert result == {'prevented': 1, 'cancelled': False}
+
+
 def test_show_confirm_implicit_dismiss_returns_false():
     result = _run_common_dialogs_node_scenario(
         """
@@ -512,10 +546,111 @@ def test_show_confirm_implicit_dismiss_returns_false():
     }
 
 
+def test_titleless_confirm_uses_message_as_accessible_name_and_common_buttons():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const pending = window.showConfirm('是否退出猫猫串门', '', {
+      danger: true,
+      ariaLabel: '是否退出猫猫串门',
+    });
+    await wait(10);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const dialog = overlay.querySelector('.modal-dialog');
+    const state = {
+      titleCount: overlay.querySelectorAll('.modal-title').length,
+      ariaLabel: dialog.attributes['aria-label'],
+      buttons: modalButtonTexts(),
+    };
+    overlay.querySelectorAll('.modal-btn')[1].onclick();
+    state.confirmed = await pending;
+    return state;
+        """
+    )
+
+    assert result == {
+        "titleCount": 0,
+        "ariaLabel": "是否退出猫猫串门",
+        "buttons": ["取消", "确定"],
+        "confirmed": True,
+    }
+
+
+def test_confirm_traps_tab_and_restores_the_opening_control():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const pending = window.showConfirm('是否退出猫猫串门', '', {
+      danger: true,
+      ariaLabel: '是否退出猫猫串门',
+    });
+    await wait(120);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const buttons = overlay.querySelectorAll('.modal-btn');
+    const cancel = buttons[0];
+    const confirm = buttons[1];
+    const initialFocusIsCancel = document.activeElement === cancel;
+    confirm.focus();
+    let forwardPrevented = false;
+    document.dispatchEvent({ type: 'keydown', key: 'Tab', shiftKey: false,
+      preventDefault() { forwardPrevented = true; } });
+    const forwardWrappedToCancel = document.activeElement === cancel;
+    let reversePrevented = false;
+    document.dispatchEvent({ type: 'keydown', key: 'Tab', shiftKey: true,
+      preventDefault() { reversePrevented = true; } });
+    const reverseWrappedToConfirm = document.activeElement === confirm;
+    cancel.onclick();
+    const confirmed = await pending;
+    return {
+      initialFocusIsCancel, forwardPrevented, forwardWrappedToCancel,
+      reversePrevented, reverseWrappedToConfirm,
+      restoredToOpener: document.activeElement === opener,
+      confirmed,
+    };
+        """
+    )
+
+    assert result == {
+        "initialFocusIsCancel": True,
+        "forwardPrevented": True,
+        "forwardWrappedToCancel": True,
+        "reversePrevented": True,
+        "reverseWrappedToConfirm": True,
+        "restoredToOpener": True,
+        "confirmed": False,
+    }
+
+
 @pytest.mark.unit
 def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
     result = _run_common_dialogs_node_scenario(
         """
+    // Keep the 320ms fallback separate from the 200ms close animation even
+    // when a busy runner cannot resume a real 10ms wait before that fallback.
+    let clock = 0;
+    let nextTimerId = 1;
+    const timers = new Map();
+    global.setTimeout = function (callback, delay = 0, ...args) {
+      const id = nextTimerId++;
+      timers.set(id, { at: clock + Number(delay), callback, args });
+      return id;
+    };
+    global.clearTimeout = function (id) { timers.delete(id); };
+    function advanceTime(milliseconds) {
+      const end = clock + milliseconds;
+      while (true) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= end)
+          .sort(([leftId, left], [rightId, right]) => left.at - right.at || leftId - rightId)[0];
+        if (!due) break;
+        const [id, timer] = due;
+        timers.delete(id);
+        clock = timer.at;
+        timer.callback(...timer.args);
+      }
+      clock = end;
+    }
     const state = {
       geometryRefreshes: 0,
       resolved: [],
@@ -542,7 +677,7 @@ def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
       state.resolved.push(value);
     });
 
-    await wait(10);
+    advanceTime(10);
     const overlay = document.querySelectorAll('.modal-overlay')[0];
     const dialog = overlay.querySelector('.modal-dialog');
     state.overlayClasses = overlay.className;
@@ -553,12 +688,16 @@ def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
 
     const buttons = overlay.querySelectorAll('.modal-btn');
     buttons[0].onclick();
-    await wait(250);
+    advanceTime(250);
+    await Promise.resolve();
 
     assert.strictEqual(overlayCount(), 0);
     assert.deepStrictEqual(state.resolved, [false]);
     assert.strictEqual(state.geometryRefreshes, 2);
     assert.deepStrictEqual(state.resolveCallbacks, [false]);
+    state.geometryRefreshesAfterClose = state.geometryRefreshes;
+    advanceTime(60);
+    assert.strictEqual(state.geometryRefreshes, 3);
     return state;
         """
     )
@@ -568,7 +707,8 @@ def test_theater_confirm_registers_compact_hit_island_and_refreshes_geometry():
     assert result["geometryOwner"] == "surface"
     assert result["geometryItem"] == "theaterModal"
     assert result["dialogTabIndex"] == -1
-    assert result["geometryRefreshes"] == 2
+    assert result["geometryRefreshesAfterClose"] == 2
+    assert result["geometryRefreshes"] == 3
     assert result["resolveCallbacks"] == [False]
     assert result["resolved"] == [False]
 

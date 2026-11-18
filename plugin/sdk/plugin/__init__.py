@@ -133,3 +133,32 @@ __all__ = [
 from plugin.sdk.shared.core.cards import ChatCard, CardSubmissionError, PluginView
 
 __all__ += ["ChatCard", "CardSubmissionError", "PluginView"]
+
+_MEMORY_TYPES = (
+    "MemoryTarget", "MemorySubject", "MemoryHit", "MemorySearchResult",
+    "MemoryPersona", "MemoryPersonaSection", "MemoryPersonaEntry", "MemoryError",
+)
+_CONVERSATION_TYPES = (
+    "ConversationMessage", "ReplyOrigin", "ConversationChange", "InputSubmission",
+    "InputSubmittedEvent", "ReplyDetail", "ReplyEvent", "PlaybackDetail",
+    "InteractionInput", "InteractionDetail",
+)
+__all__ += ["MemoryClient", *_MEMORY_TYPES, *_CONVERSATION_TYPES]
+
+
+def __getattr__(name: str):
+    if name == "MemoryClient":
+        module = _import_module("plugin.sdk.shared.memory.client")
+    elif name in _MEMORY_TYPES:
+        module = _import_module("plugin.sdk.shared.contracts.memory")
+    elif name in _CONVERSATION_TYPES:
+        module = _import_module("plugin.sdk.shared.contracts.conversations")
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

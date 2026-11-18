@@ -13,6 +13,7 @@ Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6
 from __future__ import annotations
 
 import asyncio
+import json
 import ssl
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -917,6 +918,58 @@ class TestOpenAICompatibleErrors:
     ChatOpenAI level rather than httpx level.
     """
 
+    @pytest.mark.parametrize(
+        ("url", "official_openai"),
+        [
+            ("https://api.openai.com/v1", True),
+            ("https://API.OPENAI.COM/v1/", True),
+            ("https://api.example.com/v1", False),
+            ("https://api.openai.com.example.com/v1", False),
+            ("https://api.openai.com@api.example.com/v1", False),
+            ("http://api.openai.com/v1", False),
+        ],
+    )
+    async def test_probe_output_budget_on_wire(self, url, official_openai):
+        """Exercise the real project client and SDK against a local transport.
+
+        The simulated OpenAI response reproduces #3640 when a one-token
+        request reaches the wire; other endpoints retain their cheap probe.
+        No network request or real credential is used.
+        """
+        from config import CONNECTIVITY_TEST_MAX_TOKENS
+
+        requests = []
+
+        def handle(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            budget = payload["max_completion_tokens"]
+            if official_openai and budget < 64:
+                return httpx.Response(400, json={"error": {
+                    "message": "Could not finish the message because max_tokens or model output limit was reached.",
+                    "type": "invalid_request_error",
+                }})
+            return httpx.Response(200, json={
+                "id": "probe", "object": "chat.completion", "created": 0,
+                "model": payload["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+            })
+
+        transport = httpx.MockTransport(handle)
+        with patch("openai.DefaultAsyncHttpxClient", side_effect=lambda **_: httpx.AsyncClient(transport=transport)):
+            result = await _test_openai_compatible(url, "sk-test-only", "gpt-5.6-luna")
+
+        assert result["success"] is True
+        assert len(requests) == 1
+        assert requests[0]["model"] == "gpt-5.6-luna"
+        assert requests[0]["messages"] == [{"role": "user", "content": "hi"}]
+        assert requests[0]["stream"] is False
+        if official_openai:
+            assert 64 <= requests[0]["max_completion_tokens"] <= 128
+        else:
+            assert requests[0]["max_completion_tokens"] == CONNECTIVITY_TEST_MAX_TOKENS
+
     async def test_success(self):
         """Successful chat completion → success."""
         mock_response = MagicMock()
@@ -1074,6 +1127,33 @@ class TestOpenAICompatibleErrors:
 
 class TestClassifyOpenAIError:
     """Test _classify_openai_error directly for edge cases."""
+
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_output_limit_has_safe_diagnostic(self, nested):
+        from openai import BadRequestError
+
+        detail = {
+            "message": "Could not finish the message because max_tokens or model output limit was reached. "
+                       "Please try again with higher max_tokens. sk-secret-must-not-appear",
+            "type": "invalid_request_error", "param": None, "code": None,
+        }
+        response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+        result = _classify_openai_error(BadRequestError(
+            "sensitive upstream message", response=response,
+            body={"error": detail} if nested else detail,
+        ))
+        assert result["success"] is False
+        assert result["error_code"] == "output_limit"
+        assert "sk-secret" not in str(result)
+        assert "sensitive upstream" not in str(result)
+
+    @pytest.mark.parametrize("body", [None, "not json", {"error": []}, {"message": "invalid model"}])
+    def test_unrelated_bad_request_stays_failure(self, body):
+        from openai import BadRequestError
+
+        response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+        result = _classify_openai_error(BadRequestError("sensitive message", response=response, body=body))
+        assert result == {"success": False, "error": "HTTP 400", "error_code": "unknown"}
 
     def test_asyncio_timeout(self):
         """asyncio.TimeoutError → timeout."""

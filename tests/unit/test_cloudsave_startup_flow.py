@@ -104,7 +104,6 @@ def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatc
         "report_startup_failure",
         lambda message, show_dialog=True: reported_failures.append((message, show_dialog)),
     )
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
     monkeypatch.setattr(launcher, "SERVERS", [{"name": "Main Server", "process": None}])
     monkeypatch.setattr(launcher, "start_server", lambda server: True)
@@ -189,6 +188,118 @@ def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch,
             launcher.os.environ.pop("NEKO_STORAGE_CLOUDSAVE_ROOT", None)
         else:
             launcher.os.environ["NEKO_STORAGE_CLOUDSAVE_ROOT"] = original_cloudsave_env
+
+
+@pytest.mark.unit
+def test_launcher_preserves_storage_override_for_isolated_local_instance(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    runtime_dir = tmp_path / "runtime"
+    selected_root = tmp_path / "storage"
+    config_manager = SimpleNamespace(app_docs_dir=selected_root, anchor_root=selected_root)
+    observed_layout_env = []
+
+    monkeypatch.setenv("NEKO_RUNTIME_STATE_DIR", str(runtime_dir))
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_CLOUDSAVE_ROOT", str(tmp_path / "stale-cloudsave"))
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+
+    def get_config_manager(_app_name, **_kwargs):
+        observed_layout_env.append(
+            (
+                launcher.os.environ.get("NEKO_STORAGE_SELECTED_ROOT"),
+                launcher.os.environ.get("NEKO_STORAGE_ANCHOR_ROOT"),
+                launcher.os.environ.get("NEKO_STORAGE_CLOUDSAVE_ROOT"),
+            )
+        )
+        return config_manager
+
+    monkeypatch.setattr(launcher, "get_config_manager", get_config_manager)
+    migration_calls = []
+
+    def run_pending_storage_migration(_manager, **kwargs):
+        migration_calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(launcher, "run_pending_storage_migration", run_pending_storage_migration)
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: {
+            "selected_root": str(selected_root),
+            "anchor_root": str(selected_root),
+            "cloudsave_root": str(selected_root / "cloudsave"),
+            "source": "policy",
+        },
+    )
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        for key in (
+            "NEKO_STORAGE_SELECTED_ROOT",
+            "NEKO_STORAGE_ANCHOR_ROOT",
+            "NEKO_STORAGE_CLOUDSAVE_ROOT",
+        ):
+            launcher.os.environ.pop(key, None)
+
+    expected = (
+        str(selected_root),
+        str(selected_root),
+        str(selected_root / "cloudsave"),
+    )
+    assert observed_layout_env == [expected, expected]
+    assert result["layout"]["selected_root"] == str(selected_root)
+    assert result["layout"]["source"] == "isolated_runtime"
+    assert migration_calls == [{"anchor_root": str(selected_root)}]
+
+
+@pytest.mark.unit
+def test_isolated_instance_uses_the_committed_migration_target(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    runtime_dir = tmp_path / "runtime"
+    anchor_root = tmp_path / "storage-anchor"
+    old_root = tmp_path / "storage-old"
+    target_root = tmp_path / "storage-new"
+    stale_manager = SimpleNamespace(app_docs_dir=old_root, anchor_root=anchor_root)
+
+    monkeypatch.setenv("NEKO_RUNTIME_STATE_DIR", str(runtime_dir))
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(old_root))
+    monkeypatch.setenv("NEKO_STORAGE_ANCHOR_ROOT", str(anchor_root))
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: stale_manager)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager, **_kwargs: {
+            "attempted": True,
+            "completed": True,
+            "source_root": str(old_root),
+            "target_root": str(target_root),
+            "anchor_root": str(anchor_root),
+        },
+    )
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        for key in (
+            "NEKO_STORAGE_SELECTED_ROOT",
+            "NEKO_STORAGE_ANCHOR_ROOT",
+            "NEKO_STORAGE_CLOUDSAVE_ROOT",
+            "NEKO_RUNTIME_STATE_DIR",
+        ):
+            launcher.os.environ.pop(key, None)
+
+    assert result["layout"] == {
+        "selected_root": str(target_root.resolve()),
+        "anchor_root": str(anchor_root.resolve()),
+        "cloudsave_root": str((anchor_root / "cloudsave").resolve()),
+        "source": "isolated_runtime",
+    }
+
 
 
 @pytest.mark.unit
@@ -1221,7 +1332,6 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
     monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
     monkeypatch.setattr(launcher, "_resolve_storage_layout_for_launch", lambda: {})
     monkeypatch.setattr(launcher, "_prepare_cloudsave_runtime_for_launch", lambda: {})
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(

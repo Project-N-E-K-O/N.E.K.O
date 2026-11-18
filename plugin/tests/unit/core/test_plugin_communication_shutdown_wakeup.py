@@ -107,15 +107,15 @@ async def test_shutdown_wakes_parked_consumers_instead_of_waiting_out_the_poll(m
 @pytest.mark.plugin_unit
 async def test_a_result_already_queued_at_shutdown_still_resolves_its_request(monkeypatch) -> None:
     manager, transport = await _start_parked(monkeypatch)
-    future = asyncio.get_running_loop().create_future()
-    manager._pending_futures["req-stop"] = future
+    future = asyncio.create_task(manager._send_command_and_wait_local(
+        "req-stop", {"type": "TRIGGER"}, 1, "test"))
+    await _wait_until(lambda: manager.get_pending_requests_count() == 1)
     result = {"req_id": "req-stop", "success": True, "data": {"stopped": True}}
     transport.backlog["recv"].append((CH_RES, result))
 
     await manager.shutdown(timeout=5.0)
 
-    assert future.done() and not future.cancelled()
-    assert future.result() == result
+    assert await future == {"stopped": True}
 
 
 @pytest.mark.plugin_unit
@@ -124,13 +124,13 @@ async def test_a_request_with_no_result_is_cancelled_so_its_caller_does_not_hang
     caller = asyncio.create_task(
         manager._send_command_and_wait_local("req-lost", {"type": "TRIGGER"}, None, "demo")
     )
-    await _wait_until(lambda: "req-lost" in manager._pending_futures)
+    await _wait_until(lambda: manager.get_pending_requests_count() == 1)
 
     await manager.shutdown(timeout=5.0)
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(RuntimeError, match="connection closed"):
         await asyncio.wait_for(caller, timeout=2.0)
-    assert manager._pending_futures == {}
+    assert manager.get_pending_requests_count() == 0
 
 
 @pytest.mark.plugin_unit

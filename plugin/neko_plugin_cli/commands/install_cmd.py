@@ -24,7 +24,9 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     pkg_arg = parser.add_argument("package", help="Package file path or filename under target/")
     pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--plugins-root", default=str(defaults.plugins_root), help="Destination root for extracted plugin directories")
-    parser.add_argument("--profiles-root", default=str(defaults.profiles_root), help="Destination root for extracted package profiles")
+    # Accept legacy invocations of this disabled command without advertising
+    # a destination that runtime installation no longer uses.
+    parser.add_argument("--profiles-root", default=str(defaults.profiles_root), help=argparse.SUPPRESS)
     parser.add_argument(
         "--on-conflict",
         choices=("fail",),

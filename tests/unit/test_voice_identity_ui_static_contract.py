@@ -177,7 +177,7 @@ def test_voice_identity_template_is_a_four_segment_enrollment_flow() -> None:
     assert 'id="voice-identity-result"' in template
     assert 'id="voice-identity-result-title"' in template
     assert 'id="voice-identity-match-percent"' in template
-    assert 'id="voice-identity-score-help"' in template
+    assert 'id="voice-identity-score-help"' not in template
     assert 'id="voice-identity-result-status"' in template
     assert 'id="voice-identity-eyebrow"' in template
     assert 'id="voice-identity-rule-note"' in template
@@ -480,6 +480,12 @@ def test_all_locales_define_complete_voice_identity_copy() -> None:
         "privacyBody",
         "activeRecordingBody",
         "recordingRule",
+        "setupGuideTitle",
+        "setupGuideVoiceNotesTitle",
+        "setupGuideDismiss",
+        "setupGuideResources",
+        "setupGuideInput",
+        "setupGuideEnrollment",
         "enrollAndEnable",
         "recording",
         "cancel",

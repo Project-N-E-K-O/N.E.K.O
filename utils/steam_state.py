@@ -19,8 +19,7 @@ Steamworks process-global handle.
 The Steamworks SDK is initialized once during app startup (``app/main_server/__init__.py``)
 and consumed by code at every layer of the dependency stack:
 
-* high-level routers / brain agents (e.g. ``main_routers/workshop_router.py``,
-  ``brain/browser_use_adapter.py``)
+* high-level routers (e.g. ``main_routers/workshop_router.py``)
 * mid-level helpers (e.g. ``utils/config_manager.py``'s GeoIP probe,
   ``utils/language_utils.py``'s Steam-language detection)
 
@@ -70,6 +69,15 @@ def set_steamworks(steamworks: Optional[Any]) -> None:
     global _steamworks
     with _steamworks_lock:
         _steamworks = steamworks
+
+
+def can_probe_steamworks() -> bool:
+    """Whether this process owns a Steamworks probe (a live handle or a registered initializer).
+
+    Only main_server registers the initializer. agent_server / memory_server never
+    touch the SDK, so a ``None`` handle there says nothing about whether Steam is in use.
+    """
+    return _steamworks is not None or _steamworks_initializer is not None
 
 
 def set_steamworks_initializer(initializer: Optional[Callable[[], Optional[Any]]]) -> None:

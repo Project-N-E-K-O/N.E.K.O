@@ -12,7 +12,7 @@ dependencies = [
   "av==16.1.0",
   # Shared HTTP and document-parser security floors must survive lock refreshes.
   "anyio>=4.14.2,<5",
-  "pypdf>=6.19.0,<7",
+  "pypdf>=6.21.4,<7",
   "starlette>=1.3.1,<2",
   "fastapi>=0.141.1,<0.142.0",
   "websockets~=15.0.1",
@@ -22,9 +22,14 @@ dependencies = [
   "jinja2",
   "dashscope==1.27.7",
   "python-multipart",
-  "pillow",
+  # Image-decoder security floor (13.0.0 fixes the 12.x CVE batch).
+  "pillow>=13.0.0,<14",
   "regex",
   "pyautogui",
+  # Typing text beyond ASCII goes through the clipboard (nekoclaw/builtin/desktop.py).
+  # pyautogui pulls it in through mouseinfo; it is imported directly, so it is
+  # declared.
+  "pyperclip",
   "backoff",
   "toml",
   "openai",
@@ -44,6 +49,10 @@ dependencies = [
   "pyrnnoise>=0.4.3 ; sys_platform != 'darwin' or platform_machine != 'x86_64'",
   "aiotieba>=4.8.0",
   "beautifulsoup4>=4.12.0",
+  # HTML to markdown for the task agent's web fetch tool
+  # (nekoclaw/runtime/tools/web.py) and the MCP adapter plugin, which imports
+  # it at module load. Declared here because no other dependency pulls it in.
+  "markdownify>=1.2.2",
   "bilibili-api-dev==18.0.0a2",
   # Twitch read-only Helix/EventSub integration. OAuth Device Code Flow remains
   # in-tree because TwitchIO 3.2 does not expose the client-secret-free flow.
@@ -62,9 +71,6 @@ dependencies = [
   # lint 守门：scripts/check_no_loguru.py（CI: .github/workflows/analyze.yml）
   "pyzmq>=27.1.0",
   "ormsgpack>=1.4.0",
-  "browser-use>=0.11.0",
-  # browser-use imports this at startup but 0.11.13 omits it from its metadata.
-  "pydantic-settings>=2.12.0",
   "cryptography>=50.0.0",
   "python-dotenv>=1.2.1",
   "requests>=2.32.5",
@@ -75,10 +81,17 @@ dependencies = [
   "portalocker>=2.10.1",
   "filelock>=3.16",
   "pyncm-async==1.8.1",
-  "tornado>=6.5.4",
+  # Never imported by name, but required at runtime: pyzmq's zmq.asyncio (used by
+  # plugin/core/zmq_transport.py, plugin/core/message_plane_transport.py and
+  # plugin/sdk/shared/transport/message_plane.py) borrows
+  # tornado's AddThreadSelectorEventLoop whenever the running loop is a Windows
+  # ProactorEventLoop -- the default for the embedded plugin server thread
+  # (app/agent_server/plugin_host.py) and for asyncio.run() in plugin child
+  # processes. Without it zmq.asyncio raises RuntimeError there. The floor is a
+  # security floor (6.6.1 fixes the 6.5.x CVEs).
+  "tornado>=6.6.1,<7",
   "jmespath>=1.1.0",
   "orjson>=3.11.8",
-  "playwright>=1.58.0",
   # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
   # token budgeting (o200k_base encoding). PR-1 pins the dep; PR-3 ships
   # utils/tokenize.py and wires render-time counting.
@@ -137,12 +150,12 @@ neko-plugin = "plugin.neko_plugin_cli.cli:main"
 packages = [
   "app",
   "launcher_core",
-  "brain",
   "config",
   "main_logic",
   "main_routers",
   "knowledge",
   "memory",
+  "nekoclaw",
   "plugin",
   "services",
   "steamworks",
@@ -150,6 +163,8 @@ packages = [
 ]
 exclude = [
   "plugin/plugins",
+  # Author tooling is source-only, even though its parent services is shipped.
+  "services/theater_workshop",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
   "knowledge/data",
@@ -160,16 +175,21 @@ exclude = [
   "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
 
+[tool.hatch.build.targets.wheel.force-include]
+# The authored neko-plugin skill lives outside the package tree; ship it where
+# plugin/neko_plugin_cli/templates/agent_kit.py looks for installed data.
+".agent/skills/neko-plugin" = "plugin/neko_plugin_cli/agent_kit"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "app",
   "launcher_core",
-  "brain",
   "config",
   "main_logic",
   "main_routers",
   "knowledge",
   "memory",
+  "nekoclaw",
   "plugin",
   "services",
   "steamworks",
@@ -178,11 +198,15 @@ include = [
   "templates",
   "assets",
   "launcher.py",
+  # Source of the wheel's plugin/neko_plugin_cli/agent_kit (force-include above).
+  ".agent/skills/neko-plugin",
   "README.MD",
   "LICENSE",
 ]
 exclude = [
   "plugin/plugins",
+  # Author tooling is source-only, even though its parent services is shipped.
+  "services/theater_workshop",
   # Legacy data files kept in the repo; the knowledge subsystem only serves
   # packs the user imports, so they are not shipped.
   "knowledge/data",
@@ -211,6 +235,10 @@ rapidocr-pillow = { path = "./deps/rapidocr_pillow" }
 constraint-dependencies = [
     "oauthlib>=4.0.0",
     "fsspec>=2026.6.0",
+    "brotli>=1.2.1",
+    "pyasn1>=0.6.5",
+    # Fixed soupsieve releases require Python >=3.11.5; 3.11.0-3.11.4 stay on 2.10.
+    "soupsieve>=4.1.1 ; python_full_version >= '3.11.5'",
 ]
 override-dependencies = [
     "python3-xlib ; sys_platform == 'never'",
@@ -229,11 +257,18 @@ required-environments = [
 [dependency-groups]
 dev = [
     "hypothesis>=6.100",
+    # Schema validation in tests of the minigame manifest and the theater's
+    # structured output. Nothing at runtime imports it.
+    "jsonschema>=4.26.0",
     "nest-asyncio>=1.6.0",
     "pyinstaller==6.22.3",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
+    # tests/frontend and plugin/tests/e2e drive a Chromium through Playwright.
+    # The application itself does not: its browser tools talk to a browser the
+    # user already has installed, so this stays a test-only dependency.
+    "playwright>=1.58.0",
     "pytest-playwright>=0.7.2",
     # 打乱用例顺序，暴露隐藏的用例间顺序依赖。日常 CI 用 pytest.ini 里钉死的
     # seed 跑（确定性），另有 .github/workflows/random-order-tests.yml 定时用

@@ -1,6 +1,12 @@
 <template>
   <el-dropdown @command="handleCommand" trigger="click" :persistent="false">
-    <el-button circle :aria-busy="localeLoadState.pending !== null" data-testid="language-switcher">
+    <el-button
+      circle
+      :aria-label="t('common.chooseLanguage')"
+      :title="t('common.chooseLanguage')"
+      :aria-busy="localeLoadState.pending !== null"
+      data-testid="language-switcher"
+    >
       <span class="language-icon">{{ displayLabel }}</span>
     </el-button>
     <template #dropdown>
@@ -39,10 +45,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { setLocale, getLocale, getLocaleSetting, localeLoadState } from '@/i18n'
 import type { LocaleSetting, AppLocale } from '@/i18n'
 
 const currentSetting = computed(() => getLocaleSetting())
+const { t } = useI18n()
 
 const LOCALE_SHORT_LABELS: Record<AppLocale, string> = {
   'zh-CN': '简',

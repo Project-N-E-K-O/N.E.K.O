@@ -22,9 +22,15 @@ def memory(key, **overrides):
     }
 
 
+def shown(row):
+    """The text the forge receives for ``row`` (scoped rows carry a scope hint)."""
+    return F._forge_text(row, "en")
+
+
 @pytest.fixture
 def query_pool(tmp_path, monkeypatch):
     monkeypatch.delenv("NEKO_FORGE_FACTS_URL", raising=False)
+    monkeypatch.setattr(F, "get_global_language_full", lambda: "en")
     monkeypatch.delenv("NEKO_CARD_FORGE_ALLOW_CHARACTER_OVERRIDE", raising=False)
 
     async def context(*_args, **_kwargs):
@@ -434,10 +440,10 @@ async def test_scoped_equal_text_keeps_distinct_candidates(query_pool, collectio
     assert len({item["id"] for item in payload["facts"]}) == 5
     assert len({item["hash"] for item in payload["facts"]}) == 5
     assert payload["fallbackReason"] == ""
-    for selected in (item for item in payload["facts"] if item["text"] == "Shared scoped memory"):
+    for selected in (item for item in payload["facts"] if item["text"].endswith("Shared scoped memory")):
         remaining = await query_pool(active, archive, exclude_fact_ids=selected["id"], exclude_hashes=selected["hash"])
         assert remaining["returnedCount"] == 4
-        assert sum(item["text"] == "Shared scoped memory" for item in remaining["facts"]) == 1
+        assert sum(item["text"].endswith("Shared scoped memory") for item in remaining["facts"]) == 1
 
 
 @pytest.mark.asyncio
@@ -474,7 +480,7 @@ async def test_historical_scoped_id_excludes_unambiguous_memory(query_pool, coll
     archive = [dict(target)] if collection in ("archive", "overlap") else []
     archive += [memory("kept")]
     initial = await query_pool(active, archive)
-    wire_id = next(item["id"] for item in initial["facts"] if item["text"] == target["text"])
+    wire_id = next(item["id"] for item in initial["facts"] if item["text"] == shown(target))
     assert wire_id != "fact_historical"
     for excluded_id in ("fact_historical", wire_id):
         payload = await query_pool(active, archive, exclude_fact_ids=excluded_id)
@@ -488,13 +494,13 @@ async def test_ambiguous_historical_id_requires_hash_or_unique_wire_id(query_poo
     second = memory("second", id="fact_shared", subject_kind="group_chat", subject_id="qq:b", scope="group_chat:qq:b")
     ambiguous = await query_pool([first], [second], exclude_fact_ids="fact_shared")
     assert ambiguous["returnedCount"] == 2
-    selected = next(item for item in ambiguous["facts"] if item["text"] == first["text"])
+    selected = next(item for item in ambiguous["facts"] if item["text"] == shown(first))
     for exclusions in (
         {"exclude_fact_ids": "fact_shared", "exclude_hashes": first["hash"]},
         {"exclude_fact_ids": selected["id"]},
     ):
         payload = await query_pool([first], [second], **exclusions)
-        assert [item["text"] for item in payload["facts"]] == [second["text"]]
+        assert [item["text"] for item in payload["facts"]] == [shown(second)]
 
 
 @pytest.mark.asyncio
@@ -502,7 +508,7 @@ async def test_scoped_legacy_alias_does_not_shadow_current_private_id(query_pool
     private = memory("private", id="fact_shared")
     scoped = memory("scoped", id="fact_shared", subject_kind="participant", subject_id="qq:user", scope="participant:qq:user")
     payload = await query_pool([private], [scoped], exclude_fact_ids="fact_shared")
-    assert [item["text"] for item in payload["facts"]] == [scoped["text"]]
+    assert [item["text"] for item in payload["facts"]] == [shown(scoped)]
 
 
 @pytest.mark.asyncio
@@ -724,7 +730,7 @@ async def test_original_prefixed_fallback_id_excludes_memory(query_pool, identit
     archive = [dict(target)] if collection in ("archive", "overlap") else []
     archive += [memory("kept")]
     initial = await query_pool(active, archive)
-    current_id = next(row["id"] for row in initial["facts"] if row["text"] == target["text"])
+    current_id = next(row["id"] for row in initial["facts"] if row["text"] == shown(target))
     for excluded_id in (legacy_id, current_id):
         payload = await query_pool(active, archive, exclude_fact_ids=excluded_id)
         assert payload["totalMemoryCount"] == 2
@@ -786,3 +792,66 @@ async def test_an_unshareable_visit_fact_does_not_shadow_an_archived_memory(quer
     visit = memory("visit-1", hash="same-hash", origin="neko_visit", visit_id="v" * 22)
     payload = await query_pool([visit], [archived])
     assert [f["id"] for f in payload["facts"]] == ["old-1"]
+
+
+VISIT_PAIR = "neko_visit:42c320e7c8a7bba0865b2924"
+SCOPED_SUBJECTS = {
+    "visit_group_chat": {"subject_kind": "group_chat", "subject_id": VISIT_PAIR, "scope": f"group_chat:{VISIT_PAIR}"},
+    "visit_group_participant": {
+        "subject_kind": "group_participant", "subject_id": f"{VISIT_PAIR}:c_peer",
+        "scope": f"group_participant:{VISIT_PAIR}:c_peer",
+    },
+    "visit_participant": {"subject_kind": "participant", "subject_id": "neko_visit:p_peer", "scope": "participant:neko_visit:p_peer"},
+    "group_chat": {"subject_kind": "group_chat", "subject_id": "qq:group-a", "scope": "group_chat:qq:group-a"},
+    "group_participant": {"subject_kind": "group_participant", "subject_id": "qq:group-a:42", "scope": "group_participant:qq:group-a:42"},
+    "participant": {"subject_kind": "participant", "subject_id": "qq:42", "scope": "participant:qq:42"},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["active", "archive"])
+async def test_scoped_facts_carry_scope_hint_for_the_forge(query_pool, collection):
+    from config.prompts.prompts_memory import FORGE_SCOPE_HINT
+
+    hints = FORGE_SCOPE_HINT["en"]
+    assert len(set(hints.values())) == len(SCOPED_SUBJECTS)
+    own = memory("own", text="likes iced drinks too")
+    for key, subject in SCOPED_SUBJECTS.items():
+        row = memory(key, text="likes iced drinks", **subject)
+        active, archive = ([row, own], []) if collection == "active" else ([], [row, own])
+        payload = await query_pool(active, archive)
+        forged = {item["hash"]: item["text"] for item in payload["facts"]}
+        assert forged == {row["hash"]: hints[key] + "likes iced drinks", own["hash"]: "likes iced drinks too"}
+
+
+@pytest.mark.asyncio
+async def test_scope_hint_follows_the_global_language(query_pool, monkeypatch):
+    from config.prompts.prompts_memory import FORGE_SCOPE_HINT
+
+    monkeypatch.setattr(F, "get_global_language_full", lambda: "zh-TW")
+    row = memory("peer", text="喜歡冰飲", **SCOPED_SUBJECTS["visit_group_participant"])
+    payload = await query_pool([row], [])
+    assert payload["facts"][0]["text"] == FORGE_SCOPE_HINT["zh-TW"]["visit_group_participant"] + "喜歡冰飲"
+
+
+@pytest.mark.asyncio
+async def test_scope_hint_keeps_identity_and_skips_partial_subjects(query_pool):
+    scoped = memory("scoped", **SCOPED_SUBJECTS["visit_group_chat"])
+    partial = memory("partial", subject_kind="group_chat", subject_id=VISIT_PAIR)
+    initial = await query_pool([scoped, partial], [])
+    forged = {row["hash"]: row for row in initial["facts"]}
+    # The hint only decorates the outgoing text: hash and wire id still come from the stored row.
+    assert forged[scoped["hash"]]["text"] != scoped["text"]
+    assert forged[partial["hash"]]["text"] == partial["text"]
+    again = await query_pool([scoped, partial], [], exclude_fact_ids=forged[scoped["hash"]]["id"])
+    assert [row["hash"] for row in again["facts"]] == [partial["hash"]]
+
+
+def test_forge_scope_hint_locales_share_one_key_set():
+    from config.prompts.prompts_memory import FORGE_SCOPE_HINT
+
+    expected = set(SCOPED_SUBJECTS)
+    assert set(FORGE_SCOPE_HINT) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    for lang, table in FORGE_SCOPE_HINT.items():
+        assert set(table) == expected, lang
+        assert all(isinstance(value, str) and value.strip() for value in table.values()), lang

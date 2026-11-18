@@ -13,8 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import replace
 from typing import Sequence
 
+from utils.image_history import replace_history_text
+
+from main_logic.agent_event_bus import conversation_reply_observation
 from main_logic.proactive_delivery import (
     TURN_ATTACHED_IMAGE_MAX_TOTAL_BYTES,
     fit_images_to_turn_budget,
@@ -387,6 +391,8 @@ class _StreamingMixin:
         tail = getattr(reply_owner, "reply_tail", None)
         if tail is not None and live and shown:
             tail.completed = True
+            if getattr(tail, "hooks", ()):
+                tail.text = shown
 
     def _trim_cancelled_round_text(self, shown: str, rounds) -> None:
         """Make a kept, cancelled tool round hold only the text that was shown.
@@ -647,6 +653,7 @@ class _StreamingMixin:
     @staticmethod
     def _focus_stream_overrides(
         thinking_on: bool, model: str, base_max_tokens: int | None = None,
+        base_url: str | None = None,
     ) -> dict:
         """Per-call streaming overrides for a Focus turn.
 
@@ -682,7 +689,7 @@ class _StreamingMixin:
         if not thinking_on:
             return {}
         from config.providers import focus_extra_body, get_extra_body
-        fb = focus_extra_body(model)
+        fb = focus_extra_body(model, base_url)
         overrides: dict = {"extra_body": fb}
         # Headroom only when Focus actually enables thinking for this provider:
         # ``fb is None`` ⇒ no thinking-enable override at all (unknown model);
@@ -694,7 +701,7 @@ class _StreamingMixin:
         if (
             base_max_tokens is not None
             and fb is not None
-            and fb != get_extra_body(model)
+            and fb != get_extra_body(model, base_url)
         ):
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
@@ -1131,6 +1138,8 @@ class _StreamingMixin:
         # worker) with the generation still live: the model was cut off, not
         # silent, so no LLM_NO_RESPONSE.
         task_cancelled = False
+        observation_failed = False
+        observation_committed = False
         # Set while a cancellation of this task would skip a cancelled-reply
         # commit: from the stream loop through the end-of-stream flush and the
         # summary epilogue (the summary call, the tail or summary sent to
@@ -1319,7 +1328,7 @@ class _StreamingMixin:
                         # summary-mode lift / vision switch), ``None`` stays
                         # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
-                            thinking_on, self.model,
+                            thinking_on, self.model, base_url=getattr(self, "base_url", None),
                             base_max_tokens=(
                                 getattr(getattr(self, "llm", None), "max_completion_tokens", None)
                             ),
@@ -1906,6 +1915,8 @@ class _StreamingMixin:
                                 self._mark_reply_tail_completed(
                                     reply_owner, _live_at_commit, recovery_text,
                                 )
+                                observation_committed = bool(_live_at_commit)
+                                observation_failed = False
                                 if _live_at_commit:
                                     await self._check_repetition(recovery_text)
                                 assistant_message = history_recovery_text
@@ -2056,6 +2067,8 @@ class _StreamingMixin:
                             self._mark_reply_tail_completed(
                                 reply_owner, _live_at_commit, assistant_message_total,
                             )
+                            observation_committed = bool(_live_at_commit)
+                            observation_failed = False
                             if _live_at_commit and summary_prefix_for_history:
                                 await self._check_repetition(summary_prefix_for_history)
                             assistant_message = ""
@@ -2136,6 +2149,8 @@ class _StreamingMixin:
                         self._mark_reply_tail_completed(
                             reply_owner, _live_at_commit, assistant_message_total,
                         )
+                        observation_committed = bool(_live_at_commit)
+                        observation_failed = False
                         # Repetition detection checks all turn text (including pre-tool), matching
                         # the human user's perception of what the AI said this turn.
                         if assistant_message_total and _live_at_commit:
@@ -2152,6 +2167,8 @@ class _StreamingMixin:
                         break
 
                 except _llm_retry_error_types() as e:
+                    if not observation_committed:
+                        observation_failed = True
                     # A failed stream's text is discarded below, never kept.
                     cut_keeps_shown = False
                     from openai import InternalServerError
@@ -2234,6 +2251,8 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
+                    if not observation_committed:
+                        observation_failed = True
                     cut_keeps_shown = False
                     is_api_key_rejected = _is_api_key_rejected_error(e)
                     # Telemetry: LLM call failures drive much D1 churn. Low-cardinality error_class
@@ -2343,7 +2362,9 @@ class _StreamingMixin:
                     _history, history_replacement_index, user_message,
                 )
                 if _replace_at >= 0:
-                    _history[_replace_at] = HumanMessage(content=history_replacement_text)
+                    _history[_replace_at] = replace(user_message, content=replace_history_text(
+                        user_message.content, _user_text_with_prefix, history_replacement_text,
+                    ))
                     # This turn's resident knowledge blocks follow the replacement message.
                     self._rebind_resident_anchor(user_message, _history[_replace_at])
 
@@ -2407,6 +2428,22 @@ class _StreamingMixin:
             # over: an interrupter (mid-reply, or a claim during the status
             # await above) or a user reply that displaced this one (see
             # _begin_response_generation). A close() still runs it.
+            if task_cancelled or response_cancelled:
+                observation_reason = "unknown"
+            elif observation_failed:
+                observation_reason = "failed"
+            elif observation_committed:
+                observation_reason = "completed"
+            elif guard_exhausted:
+                observation_reason = "discarded"
+            else:
+                observation_reason = "unknown"
+            if reply_owner is not None and hasattr(reply_owner, "observation_close_reason"):
+                if reply_owner.observation_close_reason == "unknown":
+                    reply_owner.observation_close_reason = observation_reason
+            observation = conversation_reply_observation.get()
+            if isinstance(observation, dict) and observation.get("lifecycle") == "external_voice":
+                observation.setdefault("close_reason", observation_reason)
             done_callback = response_done_callback or self.on_response_done
             if not completion_taken_over and done_callback:
                 await done_callback()

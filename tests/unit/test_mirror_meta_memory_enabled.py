@@ -112,3 +112,15 @@ def test_anything_but_false_falls_back_to_the_previous_rules(value):
     for base in ({}, {"hasUserSpeech": True}, {"game_memory_enabled": False}):
         event = {**base, "memory_enabled": value}
         assert is_mirror_event_memory_disabled(event) is _frozen_is_mirror_event_memory_disabled(base)
+
+
+@pytest.mark.unit
+def test_main_logic_mirror_meta_is_a_pure_reexport_of_utils():
+    """services imports utils.mirror_meta; main_logic must hand out the same objects, not a drifting copy."""
+    from main_logic import mirror_meta as shim
+    from utils import mirror_meta as schema
+
+    assert shim.build_mirror_meta is schema.build_mirror_meta
+    assert set(shim.__all__) <= set(vars(schema))
+    for name in shim.__all__:
+        assert getattr(shim, name) is getattr(schema, name), name

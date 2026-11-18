@@ -1,0 +1,63 @@
+.neko-visit-cat-shared-world {
+    position: fixed;
+    inset: 0;
+    z-index: 2147483591;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.neko-visit-cat-shared-world > button {
+    position: absolute;
+    display: block;
+    padding: 0;
+    border: 0;
+    background-color: transparent;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.neko-visit-cat-shared-world > button[hidden] {
+    display: none;
+}
+
+.neko-visit-cat-question {
+    width: clamp(42px, 6vw, 64px);
+    aspect-ratio: 1;
+    cursor: pointer;
+    background-image: url('/static/assets/neko-idle/cat1-question-mark.png');
+}
+
+.neko-visit-cat-yarn {
+    width: clamp(58px, 8vw, 86px);
+    aspect-ratio: 1.25;
+    cursor: grab;
+    background-image: url('/static/assets/neko-idle/chat-minimized-yarn-ball.png');
+}
+
+.neko-visit-cat-yarn:active,
+.neko-visit-cat-yarn[data-visit-cat-holder='host'],
+.neko-visit-cat-yarn[data-visit-cat-holder='guest'] {
+    cursor: grabbing;
+}
+
+.neko-visit-cat-shared-world.is-collision > button:not([hidden]) {
+    animation: neko-visit-shared-collision 180ms ease-out;
+}
+
+@keyframes neko-visit-shared-collision {
+    0% { filter: brightness(1); }
+    45% { filter: brightness(1.35); }
+    100% { filter: brightness(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-visit-cat-shared-world.is-collision > button:not([hidden]) {
+        animation: none;
+    }
+}

@@ -114,6 +114,86 @@ def record_settings_state() -> None:
         pass
 
 
+AVATAR_TELEMETRY_TYPES = ("live2d", "vrm", "mmd", "pngtuber")
+
+
+def resolve_avatar_telemetry_type(catgirl: dict) -> str:
+    """Map one character config to a low-cardinality avatar type: live2d / vrm / mmd / pngtuber / unknown.
+
+    Mirrors the renderer choice in ``/page_config``: a missing model_type means Live2D,
+    legacy ``vrm`` means Live3D, and Live3D picks VRM vs MMD from ``live3d_sub_type``
+    with a model-path fallback (MMD path first, then VRM path).
+    """
+    from utils.config_manager.reserved_schema import get_reserved
+
+    if not isinstance(catgirl, dict):
+        return "unknown"
+    model_type = str(
+        get_reserved(catgirl, "avatar", "model_type", default="live2d", legacy_keys=("model_type",))
+        or "live2d"
+    ).strip().lower()
+    if model_type == "vrm":
+        model_type = "live3d"
+    if model_type in ("live2d", "pngtuber"):
+        return model_type
+    if model_type != "live3d":
+        return "unknown"
+    sub_type = str(
+        get_reserved(catgirl, "avatar", "live3d_sub_type", default="", legacy_keys=("live3d_sub_type",))
+        or ""
+    ).strip().lower()
+    if sub_type in ("vrm", "mmd"):
+        return sub_type
+    if get_reserved(catgirl, "avatar", "mmd", "model_path", default=""):
+        return "mmd"
+    if get_reserved(catgirl, "avatar", "vrm", "model_path", default="", legacy_keys=("vrm",)):
+        return "vrm"
+    return "unknown"
+
+
+def record_avatar_state() -> None:
+    """Emit which avatar types (Live2D / VRM / MMD / PNGTuber) this install uses, once per app start.
+
+    Two counters, both with a single ``type`` dim (live2d / vrm / mmd / pngtuber / unknown):
+    - ``avatar_type_active``: the type of the current character. Server-side
+      ``COUNT(DISTINCT device_id)`` per type = how many users actually run each type.
+    - ``avatar_type_owned``: one entry per type present among all characters, value =
+      number of characters of that type. Distinct devices per type = how many users have
+      at least one character of that type (a device can count under several types).
+
+    Same observation-count semantics as ``settings_state`` (main_server start only).
+    Only the enum type is sent — never character names or model paths.
+    """
+    if _DO_NOT_TRACK:
+        return
+    try:
+        from utils.config_manager import get_config_manager
+        from utils.instrument import counter as _c
+
+        characters = get_config_manager().load_characters()
+        if not isinstance(characters, dict):
+            return
+        catgirls = characters.get("猫娘")
+        if not isinstance(catgirls, dict) or not catgirls:
+            return
+
+        owned: dict[str, int] = {}
+        for cfg in catgirls.values():
+            t = resolve_avatar_telemetry_type(cfg)
+            owned[t] = owned.get(t, 0) + 1
+        for t, n in owned.items():
+            _c("avatar_type_owned", n, type=t)
+
+        current = characters.get("当前猫娘", "")
+        if current not in catgirls:
+            # Same fallback as get_character_data: first character when the current one is invalid.
+            current = next(iter(catgirls))
+        _c("avatar_type_active", 1, type=resolve_avatar_telemetry_type(catgirls.get(current)))
+    except Exception:
+        # Telemetry failures silently leave business behavior unaffected.
+        pass
+
+
 class ReportingMixin:
     """Remote reporting and periodic persistence methods."""
 

@@ -84,6 +84,9 @@ from utils.config_manager import (
     get_reserved,
     set_reserved,
 )
+from utils.api_config_loader import (  # noqa: F401 - re-exported by the characters_router facade
+    DEFAULT_NEW_CHARACTER_FREE_VOICE_ID as DEFAULT_NEW_CATGIRL_FREE_VOICE_ID,
+)
 from utils.asyncio_retirement import await_retirement
 from utils.chat_avatar_store import ChatAvatarError, remove_record as remove_chat_avatar_record
 from utils.config_manager.storage_roots import chat_avatar_directory
@@ -124,21 +127,19 @@ from services.theater.numeric_v2_maintenance import (
 )
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry
 from services.theater.paths import theater_root
-
-
-DEFAULT_NEW_CATGIRL_FREE_VOICE_ID = "voice-tone-PGLiyZt65w"
+from services.chat_sync import host as _chat_sync_host
 
 
 def _get_new_catgirl_default_voice_id() -> str:
-    """Get the default voice for a newly created character, tolerating legacy/custom configs missing free_voices."""
-    from utils.api_config_loader import get_free_voices
+    """Late-bound alias of ``utils.api_config_loader.get_new_character_default_voice_id``.
 
-    free_voices = get_free_voices() or {}
-    return (
-        free_voices.get('cuteGirl')
-        or next((voice_id for voice_id in free_voices.values() if voice_id), '')
-        or DEFAULT_NEW_CATGIRL_FREE_VOICE_ID
-    )
+    add_catgirl looks this name up here, so patching it still reaches that
+    route; resolving the utils attribute at call time keeps patches of the
+    utils function effective too, and survives ``importlib.reload`` of crud.
+    """
+    from utils import api_config_loader
+
+    return api_config_loader.get_new_character_default_voice_id()
 
 
 EXTERNAL_ROUTE_ACTIVE = "EXTERNAL_ROUTE_ACTIVE"
@@ -1037,7 +1038,7 @@ async def get_characters(request: Request):
                 fields_to_translate=['昵称']
             )
 
-        # Translate catgirl data concurrently for performance.
+        # Translate neko data concurrently for performance.
         if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
             async def translate_catgirl(name, data):
                 if isinstance(data, dict):
@@ -1091,7 +1092,7 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
     if new_name in characters['猫娘']:
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
 
-    # If renaming the active catgirl, cache its WebSocket first;
+    # If renaming the active neko, cache its WebSocket first;
     # notify only after all persistence and reload succeeds, preventing frontend switches to uncommitted state.
     is_current_catgirl = characters.get('当前猫娘') == old_name
 
@@ -1149,6 +1150,16 @@ async def _rename_catgirl_serialized(old_name: str, new_name: str, *, sync_commi
         # Cancellation during finalization: marker handling finished; propagate cancellation normally, like other cleanup calls.
         raise asyncio.CancelledError
     return result
+
+
+# Chat sync's confirmed remote rename (services layer) reuses this exact
+# transaction. The lambda looks the function up on every call, so patches of
+# _rename_catgirl_serialized reach chat sync and reload(crud) just reinstalls.
+_chat_sync_host.install_rename_transaction(
+    rename_character=lambda old_name, new_name, *, sync_commit=None: _rename_catgirl_serialized(
+        old_name, new_name, sync_commit=sync_commit,
+    ),
+)
 
 
 async def _visit_name_refusal(config_manager, name: str, label: str):
@@ -1336,7 +1347,7 @@ async def _rename_catgirl_transaction(
             # Rename the authoritative character source.
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
             _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
-            # Update the current catgirl too if it is the renamed character.
+            # Update the current neko too if it is the renamed character.
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
             if sync_commit is None:
@@ -1366,7 +1377,7 @@ async def _rename_catgirl_transaction(
                 catgirl_name=new_name,
             )
 
-            # Fast path: remove the old name and start one catgirl slot with the new name.
+            # Fast path: remove the old name and start one neko slot with the new name.
             # Equivalent to delete old + add new, without traversing the other N-1 characters.
             remove_one_catgirl = get_remove_one_catgirl()
             init_one_catgirl = get_init_one_catgirl()
@@ -1548,7 +1559,7 @@ async def _rename_catgirl_transaction(
 
 @router.get('/current_catgirl')
 async def get_current_catgirl():
-    """Get the name of the currently active catgirl."""
+    """Get the name of the currently active neko."""
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     current_catgirl = characters.get('当前猫娘', '')
@@ -1557,7 +1568,7 @@ async def get_current_catgirl():
 
 @router.post('/current_catgirl')
 async def set_current_catgirl(request: Request):
-    """Set the currently active catgirl."""
+    """Set the currently active neko."""
     data = await request.json()
     catgirl_name = data.get('catgirl_name', '') if data else ''
 
@@ -1594,7 +1605,7 @@ async def set_current_catgirl(request: Request):
         latest_characters['当前猫娘'] = catgirl_name
         await _config_manager.asave_characters(latest_characters)
     # Fast path: switching changes only 当前猫娘; per-k prompt / voice_id / thread remain unchanged,
-    # requiring only refreshed globals. With 20 catgirls this reduces O(N) to O(1).
+    # requiring only refreshed globals. With 20 nekos this reduces O(N) to O(1).
     switch_current_catgirl_fast = get_switch_current_catgirl_fast()
     await switch_current_catgirl_fast()
 
@@ -1816,7 +1827,7 @@ async def add_catgirl(request: Request):
         if '猫娘' not in characters:
             characters['猫娘'] = {}
 
-        # Create catgirl data, saving nonempty fields only.
+        # Create neko data, saving nonempty fields only.
         catgirl_data = {}
         for k, v in created_data.items():
             if k != '档案名' and v:
@@ -1836,7 +1847,7 @@ async def add_catgirl(request: Request):
         )
         pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
-        # Fast path: allocate resources and start a thread only for catgirl key, without affecting others.
+        # Fast path: allocate resources and start a thread only for neko key, without affecting others.
         init_one_catgirl = get_init_one_catgirl()
         await init_one_catgirl(key, is_new=True)
 
@@ -1989,7 +2000,7 @@ async def update_catgirl(name: str, request: Request):
         session_manager = get_session_manager()
         is_current_catgirl = (name == characters.get('当前猫娘', ''))
 
-        # For the active catgirl, end only the current voice session; refresh session_manager voice_id below.
+        # For the active neko, end only the current voice session; refresh session_manager voice_id below.
         if is_current_catgirl and name in session_manager and session_manager[name].is_active:
             logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备结束当前语音会话...")
             notify_session_ended = getattr(session_manager[name], "send_session_ended_by_server", None)
@@ -2007,12 +2018,12 @@ async def update_catgirl(name: str, request: Request):
 
         if is_current_catgirl:
             # Fast path: refresh only the edited character's session_manager prompt/voice_id;
-            # leave the other N-1 catgirls unchanged.
+            # leave the other N-1 nekos unchanged.
             init_one_catgirl = get_init_one_catgirl()
             await init_one_catgirl(name, is_new=False)
             logger.info("配置已重新加载，新的voice_id已生效")
         else:
-            # Noncurrent catgirls were previously rescued by full initialization on the next switch. Fast-path switches
+            # Noncurrent nekos were previously rescued by full initialization on the next switch. Fast-path switches
             # no longer do that, so explicitly refresh session_manager[name] here.
             # init_one_catgirl updates only that manager's prompt/voice_id, without touching its current session.
             init_one_catgirl = get_init_one_catgirl()
@@ -2065,6 +2076,78 @@ async def _delete_catgirl_by_name(name: str):
             end_character_mutation(name)
 
 
+async def _delete_synced_character(uid: str, before_delete):
+    """Apply an authenticated remote deletion by UID under the ordinary lifecycle lock."""
+    from utils.config_manager import assign_new_character_uid
+    from utils.config_manager.reserved_schema import ensure_catgirl_character_id
+
+    async with character_config_mutation_lock:
+        await before_delete()
+        cm = get_config_manager()
+        characters = await cm.aload_characters()
+        name = next((key for key, raw in characters.get('猫娘', {}).items()
+                     if isinstance(raw, dict) and get_character_uid(raw) == uid), None)
+        if name is None:
+            return True
+        managers = get_session_manager() or {}
+        sockets = [manager.websocket for manager in managers.values() if getattr(manager, 'websocket', None)]
+        if _chat_sync_host.conversation_busy(managers.get(name)) or is_character_lifecycle_locked(name):
+            return False
+        previous_current = characters.get('当前猫娘', '')
+        switched = previous_current == name
+        fallback = None
+        created_fallback = False
+        success = False
+        try:
+            if switched:
+                fallback = next((key for key in characters['猫娘'] if key != name), None)
+                if fallback is None:
+                    default_name, default_role = next(iter(cm.get_default_characters()['猫娘'].items()))
+                    fallback = default_name if default_name != name else f"{default_name} (2)"
+                    default_role = copy.deepcopy(default_role)
+                    assign_new_character_uid(default_role)
+                    ensure_catgirl_character_id(default_role)
+                    characters['猫娘'][fallback] = default_role
+                    created_fallback = True
+                characters['当前猫娘'] = fallback
+                await before_delete()
+                await cm.asave_characters(characters)
+                if created_fallback:
+                    await get_init_one_catgirl()(fallback, is_new=False)
+                await get_switch_current_catgirl_fast()()
+                await force_disable_agent_for_character_switch(fallback, name)
+            await before_delete()
+            result = await _delete_catgirl_by_name_serialized(name)
+            success = isinstance(result, dict) and result.get('success') is True
+        finally:
+            end_character_mutation(name)
+            if switched and not success:
+                async def restore_previous_character():
+                    latest = await cm.aload_characters()
+                    if name in latest.get('猫娘', {}):
+                        latest['当前猫娘'] = previous_current
+                        if created_fallback and get_character_uid(latest['猫娘'].get(fallback, {})) == get_character_uid(default_role):
+                            del latest['猫娘'][fallback]
+                        await cm.asave_characters(latest)
+                        if created_fallback:
+                            await get_remove_one_catgirl()(fallback)
+                        await get_switch_current_catgirl_fast()()
+                try:
+                    await _await_cleanup_to_completion(restore_previous_character())
+                except (Exception, asyncio.CancelledError):
+                    logger.exception("Failed to restore current character after sync deletion")
+        if success and switched:
+            frame = json.dumps({'type': 'catgirl_switched', 'old_catgirl': name, 'new_catgirl': fallback})
+            await asyncio.gather(*(asyncio.wait_for(socket.send_text(frame), timeout=1) for socket in sockets),
+                                 return_exceptions=True)
+        return success
+
+
+_chat_sync_host.install_delete_transaction(
+    delete_character=lambda uid, before_delete: _delete_synced_character(uid, before_delete),
+)
+
+
 async def _cleanup_deleted_chat_avatar(directory, uid):
     if uid is None:
         return True
@@ -2082,7 +2165,7 @@ async def _delete_catgirl_by_name_serialized(name: str):
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
 
-    # Check whether this is the currently used catgirl.
+    # Check whether this is the currently used neko.
     current_catgirl = characters.get('当前猫娘', '')
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
@@ -2514,7 +2597,7 @@ async def set_microphone(request: Request):
 
         # Save configuration
         await _config_manager.asave_characters(characters_data)
-        # Microphone ID is frontend-only (read solely by get_microphone), affecting no catgirl prompt /
+        # Microphone ID is frontend-only (read solely by get_microphone), affecting no neko prompt /
         # voice_id / session_manager, so no initialization is needed.
 
         return {"success": True}

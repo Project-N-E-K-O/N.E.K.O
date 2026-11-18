@@ -255,7 +255,7 @@ class VoiceInputAudioPipeline:
                        latest_probability_last=evidence.last,
                        latest_probability_ema=evidence.ema)
         try:
-            logger.info("[voice-rnnoise] pipeline=%s stats=%s", self._diagnostic_id, summary)
+            logger.debug("[voice-rnnoise] pipeline=%s stats=%s", self._diagnostic_id, summary)
         except Exception:
             # Diagnostics cannot reject PCM or break cancellation/close ownership.
             pass

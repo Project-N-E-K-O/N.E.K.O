@@ -605,7 +605,9 @@ html #chat-container {
 [data-theme="dark"] #vrm-popup-mic div[style*="border-right"],
 [data-theme="dark"] #vrm-popup-mic div[style*="border-left"],
 [data-theme="dark"] #mmd-popup-mic div[style*="border-right"],
-[data-theme="dark"] #mmd-popup-mic div[style*="border-left"] {
+[data-theme="dark"] #mmd-popup-mic div[style*="border-left"],
+[data-theme="dark"] #pngtuber-popup-mic div[style*="border-right"],
+[data-theme="dark"] #pngtuber-popup-mic div[style*="border-left"] {
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -1859,6 +1861,10 @@ html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
 [data-theme="dark"] .model-item:hover,
 [data-theme="dark"] .model-card:hover {
   background: #383838;
+}
+
+[data-theme="dark"] .model-item input:disabled ~ label {
+  color: #b0b0b0;
 }
 
 /* ===== 子页面：Live2D 参数编辑器 ===== */

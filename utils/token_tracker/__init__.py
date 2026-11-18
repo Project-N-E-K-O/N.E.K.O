@@ -82,7 +82,9 @@ from .reporting import (
     _TELEMETRY_SERVER_URL,
     _TELEMETRY_TIMEOUT,
     _compute_telemetry_signature,
+    record_avatar_state,
     record_settings_state,
+    resolve_avatar_telemetry_type,
 )
 
 

@@ -15,6 +15,8 @@ import os
 import re
 import threading
 import time
+import subprocess
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,106 @@ from utils.llm_client import (
     messages_from_dict,
     messages_to_dict,
 )
+
+
+def test_recent_file_lock_excludes_a_separate_process(tmp_path):
+    """Main and legacy memory-server processes must share the same RMW fence."""
+    path = tmp_path / 'recent.json'
+    attempted, entered = tmp_path / 'attempted', tmp_path / 'entered'
+    path.write_text('[]')
+    script = '''
+import json, sys
+from pathlib import Path
+from utils.recent_file import recent_file_access, read_recent_text_unlocked, write_recent_payload_unlocked
+path, attempted, entered = map(Path, sys.argv[1:])
+attempted.write_text('ready')
+with recent_file_access(path) as locked:
+    entered.write_text('entered')
+    rows = json.loads(read_recent_text_unlocked(locked))
+    rows.append({'from': 'child'})
+    write_recent_payload_unlocked(locked, rows)
+'''
+    process = None
+    try:
+        with recent_file.recent_file_access(path) as locked:
+            process = subprocess.Popen([shutil.which('uv'), 'run', '--offline', '--no-sync', 'python', '-c',
+                                        script, str(path), str(attempted), str(entered)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            deadline = time.monotonic() + 10
+            while not attempted.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert attempted.exists()
+            time.sleep(.2)
+            assert not entered.exists(), 'another process entered the recent RMW critical section'
+            recent_file.write_recent_payload_unlocked(locked, [{'from': 'parent'}])
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, (stdout, stderr)
+        assert json.loads(path.read_text()) == [{'from': 'parent'}, {'from': 'child'}]
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate()
+
+
+@pytest.mark.skipif(not hasattr(os, 'getuid'), reason='POSIX ownership and permissions')
+def test_recent_lock_directory_is_private_and_separated_by_user(tmp_path, monkeypatch):
+    import stat
+    monkeypatch.setattr(recent_file.tempfile, 'gettempdir', lambda: str(tmp_path))
+    lock = recent_file.recent_file_lock(tmp_path / 'Role/recent.json')
+    directory = Path(lock._file.lock_file).parent
+    assert directory.name == f'neko-recent-locks-{os.getuid()}'
+    with lock:
+        info = directory.lstat()
+        assert stat.S_IMODE(info.st_mode) == 0o700
+        assert info.st_uid == os.getuid()
+    uid = os.getuid()
+    monkeypatch.setattr(recent_file.os, 'getuid', lambda: uid + 1)
+    other = recent_file.recent_file_lock(tmp_path / 'Other/recent.json')
+    assert Path(other._file.lock_file).parent != directory
+
+
+@pytest.mark.skipif(not hasattr(os, 'getuid'), reason='POSIX ownership and permissions')
+@pytest.mark.parametrize('unsafe', ['symlink', 'permissions', 'owner'])
+def test_recent_lock_rejects_untrusted_directory_without_holding_thread_lock(tmp_path, monkeypatch, unsafe):
+    from types import SimpleNamespace
+    monkeypatch.setattr(recent_file.tempfile, 'gettempdir', lambda: str(tmp_path))
+    lock = recent_file.recent_file_lock(tmp_path / 'Role/recent.json')
+    directory = Path(lock._file.lock_file).parent
+    target = tmp_path / 'unrelated'
+    target.mkdir()
+    marker = target / 'data'
+    marker.write_bytes(b'unrelated user data')
+    if unsafe == 'symlink':
+        directory.symlink_to(target, target_is_directory=True)
+    else:
+        directory.mkdir(mode=0o700)
+        if unsafe == 'permissions':
+            directory.chmod(0o777)
+        else:
+            original = recent_file.os.lstat
+            def foreign_owner(path, *args, **kwargs):
+                info = original(path, *args, **kwargs)
+                if os.fspath(path) == str(directory):
+                    return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid() + 1)
+                return info
+            monkeypatch.setattr(recent_file.os, 'lstat', foreign_owner)
+    with pytest.raises(PermissionError, match='unsafe recent lock directory'):
+        with lock:
+            pytest.fail('unsafe directory was used')
+    assert not lock.locked()
+    assert not lock._file.is_locked
+    assert marker.read_bytes() == b'unrelated user data'
+    assert list(target.iterdir()) == [marker]
+
+
+def test_recent_lock_supports_platform_without_getuid(tmp_path, monkeypatch):
+    monkeypatch.setattr(recent_file.tempfile, 'gettempdir', lambda: str(tmp_path))
+    monkeypatch.delattr(recent_file.os, 'getuid', raising=False)
+    lock = recent_file.recent_file_lock(tmp_path / 'Role/recent.json')
+    assert Path(lock._file.lock_file).parent.name == 'neko-recent-locks-user'
+    with lock:
+        assert lock.locked()
+    assert not lock.locked()
 
 
 # ─────────────── fixtures / helpers ───────────────
@@ -2278,6 +2380,128 @@ def test_lock_registry_is_thread_safe(tmp_path):
     assert len({id(lock) for lock in seen}) == 1
 
 
+@pytest.mark.parametrize('entry', ['single', 'access', 'multiple'])
+def test_recent_lock_serializes_separate_processes(tmp_path, entry):
+    import subprocess
+    import sys
+
+    path = tmp_path / 'uncreated-role' / 'recent.json'
+    ready, done = tmp_path / 'ready', tmp_path / 'done'
+    child = '''
+import sys
+from pathlib import Path
+from utils.recent_file import recent_file_access,recent_file_lock
+from utils.file_utils import atomic_write_json
+lock=recent_file_lock(sys.argv[1])
+blocked=not lock.acquire(blocking=False)
+if not blocked:
+    lock.release()
+atomic_write_json(sys.argv[2],blocked)
+with recent_file_access(sys.argv[1]):
+    Path(sys.argv[3]).touch()
+'''
+    scope = (recent_file.recent_file_lock(path) if entry == 'single' else
+             recent_file.recent_file_access(path) if entry == 'access' else
+             recent_file.recent_file_locks([path, tmp_path / 'other.json']))
+    process = None
+    try:
+        with scope:
+            process = subprocess.Popen([sys.executable, '-c', child, str(path), str(ready), str(done)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + 5
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), 'separate reader did not start'
+            assert json.loads(ready.read_text()) is True, 'another process acquired the same file lock'
+            assert not done.exists(), 'another process entered the protected file section'
+        _, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, stderr
+        assert done.exists()
+        assert not path.parent.exists(), 'locking a stale path must not create a character directory'
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+
+
+def test_recent_process_lock_is_released_on_owner_exit(tmp_path):
+    import subprocess
+    import sys
+
+    path, ready = tmp_path / 'recent.json', tmp_path / 'holder-ready'
+    child = '''
+import sys,time
+from utils.recent_file import recent_file_lock
+from utils.file_utils import atomic_write_json
+with recent_file_lock(sys.argv[1]):
+    atomic_write_json(sys.argv[2],True)
+    time.sleep(30)
+'''
+    process = subprocess.Popen([sys.executable, '-c', child, str(path), str(ready)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    lock = recent_file.recent_file_lock(path)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        assert lock.acquire(blocking=False) is False
+        process.kill()
+        process.communicate(timeout=5)
+        assert lock.acquire(timeout=3) is True
+        lock.release()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
+
+
+def test_recent_process_lock_can_be_released_by_another_worker(tmp_path):
+    import subprocess
+    import sys
+
+    path = tmp_path / 'recent.json'
+    lock = recent_file.recent_file_lock(path)
+    lock.acquire()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(lock.release).result(timeout=3)
+    child = '''
+import sys
+from utils.recent_file import recent_file_lock
+lock=recent_file_lock(sys.argv[1])
+assert lock.acquire(blocking=False)
+lock.release()
+'''
+    subprocess.run([sys.executable, '-c', child, str(path)], check=True,
+                   capture_output=True, text=True, timeout=5)
+
+
+def test_recent_lock_failure_releases_both_single_and_previously_acquired_gates(tmp_path, monkeypatch):
+    first = recent_file.recent_file_lock(tmp_path / 'a.json')
+    second = recent_file.recent_file_lock(tmp_path / 'b.json')
+
+    def fail(*args, **kwargs):
+        raise OSError('synthetic OS lock failure')
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(second._file, 'acquire', fail)
+            with pytest.raises(OSError, match='synthetic OS lock failure'):
+                second.acquire()
+            assert not second.locked()
+            with pytest.raises(OSError, match='synthetic OS lock failure'):
+                with recent_file.recent_file_locks([tmp_path / 'a.json', tmp_path / 'b.json']):
+                    pass
+            assert not first.locked() and not second.locked()
+        with recent_file.recent_file_locks([tmp_path / 'a.json', tmp_path / 'b.json']):
+            assert first.locked() and second.locked()
+    finally:
+        for lock in (first, second):
+            if lock.locked():
+                lock.release()
+
+
 @pytest.mark.asyncio
 async def test_recent_file_route_maps_deleted_identity_to_not_found(
     tmp_path, monkeypatch,
@@ -2737,3 +2961,20 @@ def test_review_close_failure_does_not_mask_a_valid_review(tmp_path):
     result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
 
     assert result[0] == 'patched'
+
+
+@pytest.mark.parametrize('broken', ['{', '{"bad":true}'])
+def test_corrupt_optional_receipt_does_not_block_ordinary_save(tmp_path, broken):
+    import utils.recent_file as recent
+    path = tmp_path / 'recent.json'
+    path.write_text('[]')
+    recent_path = recent.recent_sidecar_path(path, recent._write_receipts_filename(path))
+    from pathlib import Path
+    Path(recent_path).write_text(broken)
+    with recent.recent_file_access(path) as resolved:
+        recent.write_recent_payload_unlocked(resolved, [{'role': 'user', 'content': 'saved'}])
+        with pytest.raises(ValueError, match='^invalid_recent_write_receipt$'):
+            recent.read_recent_write_receipt_unlocked(resolved, 'domain', 'token')
+        with pytest.raises(ValueError, match='^invalid_recent_write_receipt$'):
+            recent.write_recent_payload_unlocked(resolved, [], receipt=('domain', 'token'))
+    assert 'saved' in path.read_text()

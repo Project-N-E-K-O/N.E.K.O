@@ -9,6 +9,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers import bus_delete as bus_delete_module
 from plugin.server.messaging.handlers import bus_subscribe as bus_subscribe_module
 from plugin.server.messaging.handlers import plugin_config as plugin_config_module
+from tests.plugin_handler_rpc import invoke_handler as _invoke
 
 
 class _Recorder:
@@ -41,15 +42,7 @@ async def test_bus_subscribe_and_unsubscribe_error_paths(monkeypatch: pytest.Mon
         "subscribe",
         _subscribe,
     )
-    await bus_subscribe_module.handle_bus_subscribe(
-        {
-            "from_plugin": "p1",
-            "request_id": "r1",
-            "bus": "events",
-            "plan": {"kind": "get"},
-        },
-        send,
-    )
+    await _invoke(bus_subscribe_module.handle_bus_subscribe, {'from_plugin': 'p1', 'request_id': 'r1', 'bus': 'events', 'plan': {'kind': 'get'}}, send)
     assert send.calls[-1][2] == {"ok": True, "sub_id": "s1"}
     assert "plan" not in subscribe_calls[-1]
 
@@ -61,21 +54,15 @@ async def test_bus_subscribe_and_unsubscribe_error_paths(monkeypatch: pytest.Mon
         "subscribe",
         _raise_subscribe,
     )
-    await bus_subscribe_module.handle_bus_subscribe(
-        {"from_plugin": "p1", "request_id": "r2", "bus": "events"},
-        send,
-    )
-    assert send.calls[-1][3] == "subscribe failed"
+    await _invoke(bus_subscribe_module.handle_bus_subscribe, {'from_plugin': 'p1', 'request_id': 'r2', 'bus': 'events'}, send)
+    assert send.calls[-1][3]["message"] == "subscribe failed"
 
     monkeypatch.setattr(
         bus_subscribe_module.bus_subscription_service,
         "unsubscribe",
         lambda **_: {"ok": True},
     )
-    await bus_subscribe_module.handle_bus_unsubscribe(
-        {"from_plugin": "p1", "request_id": "r3", "bus": "events", "sub_id": "s1"},
-        send,
-    )
+    await _invoke(bus_subscribe_module.handle_bus_unsubscribe, {'from_plugin': 'p1', 'request_id': 'r3', 'bus': 'events', 'sub_id': 's1'}, send)
     assert send.calls[-1][2] == {"ok": True}
 
 
@@ -115,11 +102,8 @@ def test_bus_subscription_service_does_not_store_replay_plan(monkeypatch: pytest
 async def test_bus_delete_validation_and_domain_error(monkeypatch: pytest.MonkeyPatch) -> None:
     send = _Recorder()
 
-    await bus_delete_module.handle_message_del(
-        {"from_plugin": "p1", "request_id": "r1"},
-        send,
-    )
-    assert send.calls[-1][3] == "message_id is required"
+    await _invoke(bus_delete_module.handle_message_del, {'from_plugin': 'p1', 'request_id': 'r1'}, send)
+    assert send.calls[-1][3]["message"] == "message_id is required"
 
     def _raise_delete(_: str) -> bool:
         raise ServerDomainError(code="E", message="delete failed", status_code=500, details={})
@@ -129,21 +113,15 @@ async def test_bus_delete_validation_and_domain_error(monkeypatch: pytest.Monkey
         "delete_event",
         _raise_delete,
     )
-    await bus_delete_module.handle_event_del(
-        {"from_plugin": "p1", "request_id": "r2", "event_id": "e1"},
-        send,
-    )
-    assert send.calls[-1][3] == "delete failed"
+    await _invoke(bus_delete_module.handle_event_del, {'from_plugin': 'p1', 'request_id': 'r2', 'event_id': 'e1'}, send)
+    assert send.calls[-1][3]["message"] == "delete failed"
 
     monkeypatch.setattr(
         bus_delete_module.bus_mutation_service,
         "delete_lifecycle",
         lambda _: True,
     )
-    await bus_delete_module.handle_lifecycle_del(
-        {"from_plugin": "p1", "request_id": "r3", "lifecycle_id": "l1"},
-        send,
-    )
+    await _invoke(bus_delete_module.handle_lifecycle_del, {'from_plugin': 'p1', 'request_id': 'r3', 'lifecycle_id': 'l1'}, send)
     assert send.calls[-1][2] == {"deleted": True, "lifecycle_id": "l1"}
 
 
@@ -152,23 +130,14 @@ async def test_bus_delete_validation_and_domain_error(monkeypatch: pytest.Monkey
 async def test_plugin_config_scope_and_payload_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     send = _Recorder()
 
-    await plugin_config_module.handle_plugin_config_get(
-        {"from_plugin": "p1", "request_id": "r1", "plugin_id": "p2"},
-        send,
-    )
-    assert send.calls[-1][3] == "Permission denied: can only access own config"
+    await _invoke(plugin_config_module.handle_plugin_config_get, {'from_plugin': 'p1', 'request_id': 'r1', 'plugin_id': 'p2'}, send)
+    assert send.calls[-1][3]["message"] == "Permission denied: can only access own config"
 
-    await plugin_config_module.handle_plugin_config_update(
-        {"from_plugin": "p1", "request_id": "r2", "updates": "bad"},
-        send,
-    )
-    assert send.calls[-1][3] == "Invalid updates: must be a dict"
+    await _invoke(plugin_config_module.handle_plugin_config_update, {'from_plugin': 'p1', 'request_id': 'r2', 'updates': 'bad'}, send)
+    assert send.calls[-1][3]["message"] == "Invalid updates: must be a dict"
 
-    await plugin_config_module.handle_plugin_config_effective_get(
-        {"from_plugin": "p1", "request_id": "r3", "profile_name": " "},
-        send,
-    )
-    assert send.calls[-1][3] == "Invalid profile_name"
+    await _invoke(plugin_config_module.handle_plugin_config_effective_get, {'from_plugin': 'p1', 'request_id': 'r3', 'profile_name': ' '}, send)
+    assert send.calls[-1][3]["message"] == "Invalid profile_name"
 
     async def _get_config(*, plugin_id: str) -> dict[str, object]:
         assert plugin_id == "p1"
@@ -179,10 +148,7 @@ async def test_plugin_config_scope_and_payload_validation(monkeypatch: pytest.Mo
         "get_plugin_config",
         _get_config,
     )
-    await plugin_config_module.handle_plugin_config_get(
-        {"from_plugin": "p1", "request_id": "r4"},
-        send,
-    )
+    await _invoke(plugin_config_module.handle_plugin_config_get, {'from_plugin': 'p1', 'request_id': 'r4'}, send)
     assert send.calls[-1][2] == {"config": {"k": 1}}
 
 
@@ -214,15 +180,7 @@ async def test_plugin_config_update_returns_memory_only_payload_before_persisten
     )
 
     await asyncio.wait_for(
-        plugin_config_module.handle_plugin_config_update(
-            {
-                "from_plugin": "p1",
-                "request_id": "r-timeout",
-                "updates": {"feature": {"enabled": True}},
-                "timeout": 0.05,
-            },
-            send,
-        ),
+        _invoke(plugin_config_module.handle_plugin_config_update, {'from_plugin': 'p1', 'request_id': 'r-timeout', 'updates': {'feature': {'enabled': True}}, 'timeout': 0.05}, send),
         timeout=0.5,
     )
 
@@ -266,14 +224,7 @@ async def test_plugin_config_replace_uses_replace_command(
         _replace,
     )
 
-    await plugin_config_module.handle_plugin_config_replace(
-        {
-            "from_plugin": "p1",
-            "request_id": "r-replace",
-            "config": {"replacement": {"enabled": True}},
-        },
-        send,
-    )
+    await _invoke(plugin_config_module.handle_plugin_config_replace, {'from_plugin': 'p1', 'request_id': 'r-replace', 'config': {'replacement': {'enabled': True}}}, send)
 
     assert send.calls[-1][2] == {"config": {"replacement": {"enabled": True}}}
     assert send.calls[-1][3] is None

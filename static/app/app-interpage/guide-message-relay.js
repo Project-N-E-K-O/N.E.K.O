@@ -117,6 +117,7 @@
                     case 'memory_edited':
                         await I.handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'request_voice_chat_active':
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态
@@ -900,6 +901,11 @@
     }
 
     function dispatchIdleChatMinimizedState(detail) {
+        // The desktop shell republishes the effective minimized target through
+        // preload after applying native window bounds and display scaling. The
+        // renderer BroadcastChannel copy still carries the Web shell's 51px
+        // geometry, so accepting both would create two competing authorities.
+        if (window.__NEKO_DESKTOP_RUNTIME__) return false;
         window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
             detail: Object.assign({
                 action: 'idle_chat_minimized_state',
@@ -914,6 +920,7 @@
                 via: 'broadcast-channel'
             })
         }));
+        return true;
     }
 
     function dispatchIdleChatCompactSurfaceState(detail) {

@@ -20,8 +20,8 @@ def test_dims_and_profile_for_both_framings():
     )
     assert (out["upper"]["cropW"], out["upper"]["cropH"], out["upper"]["packW"], out["upper"]["packH"]) == (320, 448, 320, 896)
     assert (out["full"]["cropW"], out["full"]["cropH"], out["full"]["packW"], out["full"]["packH"]) == (256, 560, 256, 1120)
-    assert out["pu"] == {"width": 320, "height": 896, "frameRate": 30, "bitrate": 560}
-    assert out["pf"] == {"width": 256, "height": 1120, "frameRate": 15, "bitrate": 560}
+    assert out["pu"] == {"width": 320, "height": 896, "frameRate": 30, "bitrate": 528}
+    assert out["pf"] == {"width": 256, "height": 1120, "frameRate": 15, "bitrate": 528}
     sd = VISIT_TIERS["sd600"]
     assert (out["geo"]["upper"]["w"], out["geo"]["upper"]["h"]) == sd["crop_upper"]
     assert (out["geo"]["full"]["w"], out["geo"]["full"]["h"]) == sd["crop_full"]

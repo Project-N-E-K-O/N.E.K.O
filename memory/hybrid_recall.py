@@ -144,7 +144,7 @@ def _tokenize(text: str, stop_names: list[str] | None) -> list[str]:
     never took effect — with set input every key's count is 1. This version
     makes multiplicity actually reach BM25.
 
-    stop_names: strip master/catgirl names from the text before tokenizing,
+    stop_names: strip master/neko names from the text before tokenizing,
     keeping high-frequency entity names from polluting BM25 IDF.
 
     Traditional Chinese is folded onto Simplified first (#2584). Both the
@@ -867,6 +867,7 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
 #   id                                   _drop_archive_overlap, result rendering
 #   text                                 _hard_filter, _bm25_rank, rendering
 #   score / suppress / suppressed /
+#     permanent_suppression /
 #     protected / target_type / status   MemoryRecallReranker._hard_filter
 #   subject_kind / subject_id / scope    memory.scopes.filter_entries_for_subjects
 #   entity                               result rendering
@@ -886,7 +887,8 @@ def _invalidate_pool_cache(path: str | None = None) -> None:
 # drift apart unnoticed.
 _ARCHIVE_RECALL_KEYS = frozenset({
     'id', 'text',
-    'score', 'suppress', 'suppressed', 'protected', 'target_type', 'status',
+    'score', 'suppress', 'suppressed', 'permanent_suppression',
+    'protected', 'target_type', 'status',
     'subject_kind', 'subject_id', 'scope',
     'entity',
     'created_at', 'event_start_at', 'event_end_at',
@@ -1347,7 +1349,7 @@ async def hybrid_recall(
     bm25_pool = MemoryRecallReranker._hard_filter(bm25_pool_raw)
     embedding_pool = MemoryRecallReranker._hard_filter(embedding_pool_raw)
 
-    # stop_names: strip master/catgirl nicknames so high-DF entity names do not
+    # stop_names: strip master/neko nicknames so high-DF entity names do not
     # dominate BM25 IDF.
     try:
         from memory.stop_names import collect_stop_names

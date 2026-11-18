@@ -4,7 +4,7 @@
 Pin two invariants:
 
 1. ``_periodic_reflection_synthesis_loop`` exists and calls ``reflection_engine.synthesize_reflections(name)``
-   for every catgirl each ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` interval.
+   for every neko each ``MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS`` interval.
    One character's failure neither blocks others nor terminates the loop.
 
 2. ``main_routers/system_router.py``'s proactive_chat handler no longer
@@ -66,7 +66,7 @@ def _missing_reason_code_action_dicts(fn):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
-    """Call synthesize_reflections once per catgirl in each loop round.
+    """Call synthesize_reflections once per neko in each loop round.
 
     Patch asyncio.sleep as a switch: the second call at loop tail raises CancelledError,
     ending after one round; the first _INITIAL_DELAY_REFLECTION_SYNTHESIS sleep
@@ -97,7 +97,7 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
         with pytest.raises(asyncio.CancelledError):
             await memory_server._periodic_reflection_synthesis_loop()
 
-    # Each catgirl is called once.
+    # Each neko is called once.
     assert fake_engine.synthesize_reflections.await_count == 3
     assert fake_engine.synthesize_scoped_reflections.await_count == 3
     called_names = {call.args[0] for call in fake_engine.synthesize_reflections.await_args_list}

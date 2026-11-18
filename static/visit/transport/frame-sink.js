@@ -1,7 +1,8 @@
 /*
  * 串门传输页：父页 ↔ iframe 的同步入口与 postMessage（设计稿 §3.3.1 / §4.4）。
  *
- * window.__nekoVisitFrameSink 只在这里一次性构造完整对象 {onFrame, suspend, setAuthToken}；
+ * window.__nekoVisitFrameSink 只在这里一次性构造完整对象 {onFrame, suspend, setAuthToken, setLocalVoice,
+ * remoteAudioTrack}；
  * 其它模块只提供实现，不得整体赋值覆盖（否则父页调到的 setAuthToken 会是 undefined、
  * iframe 永远连不上传输 WS）。帧触发不走 postMessage：异步任务里父页后备缓冲已被合成清空。
  */
@@ -52,6 +53,14 @@
     setAuthToken: function (csrfToken) {
       if (typeof csrfToken !== 'string' || !csrfToken) return;
       if (NVT.controller) NVT.controller.onAuthToken(csrfToken);
+    },
+    /** 父页交来自家猫娘 TTS 的旁路 MediaStream（null = 收回）。MediaStream 不能 postMessage，只能同步交。 */
+    setLocalVoice: function (stream) {
+      if (NVT.controller) NVT.controller.onLocalVoice(stream || null);
+    },
+    /** 对端猫娘的音频轨（父页收到 remote_audio{on:true} 后来取，接进自家扬声器音量链）。 */
+    remoteAudioTrack: function () {
+      return NVT.controller ? NVT.controller.remoteAudioTrack() : null;
     },
   };
 

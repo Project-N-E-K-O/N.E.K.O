@@ -4,9 +4,9 @@ import App from './App';
 import { chatWindowPropsSchema } from './message-schema';
 
 // 串门工具条（docs/design/visit-infrastructure.md §5 PR-12）：宿主给状态与按钮，点按钮回传 id；
-// 与 compact 选项共用同一层（定位与 Electron 命中区），但不把聊天面切到 options 态。
+// 使用独立 Portal，不改变 Galgame 选项原本的布局和命中区。
 describe('compact visit bar', () => {
-  it('renders the badge, detail and actions in the choice layer and reports clicks', () => {
+  it('renders the badge, detail and actions in its own layer and reports clicks', () => {
     const onVisitBarAction = vi.fn();
     render(
       <App
@@ -25,9 +25,13 @@ describe('compact visit bar', () => {
       />,
     );
 
-    const layer = document.body.querySelector('body > .compact-chat-choice-anchor');
+    const layer = document.body.querySelector('body > .compact-chat-visit-anchor');
     expect(layer).not.toBeNull();
-    expect(layer).toHaveAttribute('data-choice-layer-open', 'true');
+    expect(layer).toHaveAttribute('data-visit-layer-open', 'true');
+    expect(document.documentElement.style.getPropertyValue('--compact-visit-layer-reserved-block-size')).toBe('22px');
+    expect((layer as HTMLElement).style.getPropertyValue('--compact-choice-surface-left')).toBe('');
+    expect((layer as HTMLElement).style.getPropertyValue('--compact-choice-surface-top')).toBe('');
+    expect(document.body.querySelector('.compact-chat-choice-anchor .composer-visit-bar')).toBeNull();
     const bar = layer!.querySelector('.composer-visit-bar');
     expect(bar).not.toBeNull();
     expect(bar).toHaveClass('is-active');
@@ -41,10 +45,9 @@ describe('compact visit bar', () => {
     expect(document.body.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
   });
 
-  it('renders nothing and keeps the layer closed without a bar', () => {
+  it('renders no visit layer without a bar', () => {
     render(<App chatSurfaceMode="compact" visitBar={null} />);
-    const layer = document.body.querySelector('body > .compact-chat-choice-anchor');
-    expect(layer).toHaveAttribute('data-choice-layer-open', 'false');
+    expect(document.body.querySelector('body > .compact-chat-visit-anchor')).toBeNull();
     expect(document.body.querySelector('.composer-visit-bar')).toBeNull();
   });
 
@@ -56,6 +59,34 @@ describe('compact visit bar', () => {
     });
     expect(parsed.visitBar).toEqual({ actions: [{ id: 'entry', label: '串门' }] });
     expect(typeof parsed.onVisitBarAction).toBe('function');
+  });
+
+  it('centers the two first-level idle actions above the compact chat surface', () => {
+    const onVisitBarAction = vi.fn();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        visitBar={{
+          tone: 'idle',
+          actions: [
+            { id: 'invite', label: '邀请客人', variant: 'primary' },
+            { id: 'go', label: '去别人家', variant: 'primary' },
+          ],
+        }}
+        onVisitBarAction={onVisitBarAction}
+      />,
+    );
+
+    const layer = document.body.querySelector('body > .compact-chat-visit-anchor');
+    expect(layer).not.toBeNull();
+    const bar = layer!.querySelector('.composer-visit-bar.is-idle');
+    expect(Array.from(bar!.querySelectorAll('button')).map(button => button.textContent)).toEqual([
+      '邀请客人',
+      '去别人家',
+    ]);
+    expect(bar!.querySelector('[data-visit-bar-action="entry"]')).toBeNull();
+    fireEvent.click(bar!.querySelector('[data-visit-bar-action="invite"]')!);
+    expect(onVisitBarAction).toHaveBeenCalledWith('invite');
   });
 });
 

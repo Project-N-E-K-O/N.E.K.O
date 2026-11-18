@@ -168,6 +168,14 @@ class CustomStaticFiles(StaticFiles):
 class StaticRootFiles(LegacyStaticAssetAliasMixin, CustomStaticFiles):
     """The repository ``static/`` mount; also answers retired asset URLs."""
 
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        # Windows file associations may classify .mjs as text/plain. Only
+        # repository assets get this override, not user model/mod directories.
+        if path.endswith(".mjs"):
+            response.headers["Content-Type"] = "application/javascript"
+        return response
+
 
 class AvatarToolStaticFiles(CustomStaticFiles):
     """Expose generated media only; private records never enter HTTP space."""
@@ -374,6 +382,7 @@ from main_routers.cloudsave_router import router as cloudsave_router  # noqa
 from main_routers.config_router import router as config_router  # noqa
 from main_routers.emote_template_router import router as emote_template_router  # noqa
 from main_routers.proactive_router import router as proactive_router  # noqa
+from main_routers.proactive_feedback_router import router as proactive_feedback_router  # noqa
 from main_routers.galgame_router import router as galgame_router  # noqa
 from main_routers.widget_mode_router import router as widget_mode_router  # noqa
 from main_routers.icebreaker_router import router as icebreaker_router  # noqa
@@ -542,7 +551,7 @@ async def get_card_drop_active_character(
     master_name = ""
     # Community forge used to treat an empty live snapshot as "本体未连接" even
     # when the local ledger/credits were healthy. Fall back to the configured
-    # current catgirl so ticket selection can proceed before Pet avatar sync.
+    # current neko so ticket selection can proceed before Pet avatar sync.
     used_fallback = False
     if not name:
         name, master_name = await _fallback_active_character_identity()
@@ -732,7 +741,8 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     # Knowledge calls (manager page -> plugin server's /market/knowledge) are
     # streamed through under their size cap instead; see below.
     knowledge_path = path == "knowledge" or path.startswith("knowledge/")
-    body = b"" if knowledge_path else await request.body()
+    theater_path = path.startswith("theater/")
+    body = b"" if knowledge_path or theater_path else await request.body()
     if request.scope.get("neko.instance_identity"):
         # This is a new authenticated service-to-service hop. The plugin's
         # proxy middleware must observe its real loopback caller, not rewrite
@@ -754,6 +764,13 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
         refused, body = _knowledge_body(request, path[len("knowledge"):].lstrip("/"))
         if refused is not None:
             return refused
+    elif theater_path and request.method == "POST":
+        from utils.http.knowledge_proxy import capped_body, declared_size_problem
+        limit = 8 * 1024 * 1024 if path.endswith("/import") else 4096
+        problem = declared_size_problem(request.headers.get("content-length"), limit)
+        if problem is not None:
+            return _payload_too_large()
+        body = capped_body(request, limit)
     from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large
 
     try:
@@ -800,6 +817,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
 app.include_router(config_router)
 app.include_router(emote_template_router)
 app.include_router(proactive_router)
+app.include_router(proactive_feedback_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
 app.include_router(vrm_router)
@@ -833,7 +851,9 @@ app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(numeric_theater_router)
-# Catgirl visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
+from main_routers.theater_market_router import router as theater_market_router
+app.include_router(theater_market_router)
+# Neko visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
 app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
 app.include_router(community_oauth_router)

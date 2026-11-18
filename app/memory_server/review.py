@@ -50,6 +50,14 @@ from utils.recent_file import capture_recent_generation
 # Global variables managing correction tasks.
 correction_tasks = {}  # {lanlan_name: asyncio.Task}
 correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
+# Weekly introspection runs (refine_loops). Registered here, under the review
+# spawn lock, so a character rename / delete cancels and drains a run that is
+# waiting on the model instead of letting it write to the released identity.
+introspection_tasks: dict[str, asyncio.Task] = {}
+# The daily pinned-section check (evidence_loops IdleMaint Task 4), registered
+# the same way: a release cancels a check waiting on the model before it
+# writes into the released identity's directory.
+pinned_review_tasks: dict[str, asyncio.Task] = {}
 
 
 # Phase C: prevent spawn races; /process /renew /settle / IdleMaint share maybe_spawn_review,
@@ -124,7 +132,9 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
         cancel_event.set()
 
     candidates = []
-    for registry in (correction_tasks, compress_backup_tasks):
+    for registry in (
+        correction_tasks, compress_backup_tasks, introspection_tasks, pinned_review_tasks,
+    ):
         task = registry.get(lanlan_name)
         if task is not None and not task.done() and task not in candidates:
             candidates.append(task)
@@ -142,7 +152,9 @@ async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
                 exc,
             )
 
-    for registry in (correction_tasks, compress_backup_tasks):
+    for registry in (
+        correction_tasks, compress_backup_tasks, introspection_tasks, pinned_review_tasks,
+    ):
         task = registry.get(lanlan_name)
         if task is None or task.done():
             registry.pop(lanlan_name, None)
@@ -861,6 +873,9 @@ async def _run_backup_compress(
         # 'merged' and 'moot' both mean backlog handled or obsolete; clear backoff counts.
         await _clear_compress_backup_failure(lanlan_name, admission_generation)
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩完成：{status}")
+        if status == 'merged':
+            from .long_term_sync import queue_capture
+            queue_capture(lanlan_name, force=True)
     except asyncio.CancelledError:
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩被取消（主路径已成功）")
     except Exception as e:
@@ -898,6 +913,8 @@ async def _on_compress_done(
         if task is not None and not task.done():
             task.cancel()
         await _clear_compress_backup_failure(lanlan_name, admission_generation)
+        from .long_term_sync import queue_capture
+        queue_capture(lanlan_name, force=True)
         return
     # ok=False: primary compression failed → launch background fallback.
     if not snapshot:
@@ -1083,6 +1100,8 @@ async def _run_review_in_background(
             )
             if applied:
                 logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
+                from .long_term_sync import queue_capture
+                queue_capture(lanlan_name, force=True)
         elif status == 'white':
             applied = await gates._amutate_maint_state(
                 lanlan_name,

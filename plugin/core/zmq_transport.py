@@ -33,9 +33,11 @@ Channel tags
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+import math
 import json
-import pickle
 import os
+import pickle
 import queue
 import secrets
 import threading
@@ -60,14 +62,9 @@ CH_COMM = "comm"
 CH_RESP = "resp"
 
 _LINGER_MS = 1000
-# Which channels each child -> host socket is allowed to carry. The split
-# belongs to the socket, not to the decoder: _decode_uplink still accepts the
-# union by default, so a transport pair built without a dedicated message
-# endpoint (see ChildTransport, where _msg_sock falls back to _ul_sock) keeps
-# working against a host that reads both planes off one socket. What the split
-# closes is the smuggling route into *this* host: HostTransport always binds
-# both sockets, so a plugin holding the control endpoint must not be able to
-# use it to push message frames around the message plane's own ceiling.
+# Which channels each child -> host socket is allowed to carry. Each host
+# socket decodes with its own set, so a plugin holding the control endpoint
+# cannot use it to push message frames around the message plane's own ceiling.
 _CONTROL_UPLINK_CHANNELS = frozenset({CH_RES, CH_STS, CH_COMM})
 _MESSAGE_UPLINK_CHANNELS = frozenset({CH_MSG, CH_MSG_BATCH})
 _UPLINK_CHANNELS = _CONTROL_UPLINK_CHANNELS | _MESSAGE_UPLINK_CHANNELS
@@ -98,39 +95,54 @@ def _normalize_uplink_extension(value: object) -> object:
     raise TypeError(f"unsupported uplink value type: {type(value).__name__}")
 
 
+def pack_rpc_payload(value: Any) -> bytes:
+    """The control protocol's supported value types, shared by its adapters."""
+    return ormsgpack.packb(value, default=_normalize_uplink_extension, option=_UPLINK_PACK_OPTIONS)
+
+
+def unpack_rpc_payload(raw: bytes) -> Any:
+    return ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+
+
+def _result_fault(payload: dict, code: str, message: str) -> dict:
+    req_id = payload.get("req_id")
+    return {"req_id": req_id if isinstance(req_id, (str, int)) else "unknown", "success": False,
+            "data": None, "error": {"code": code, "message": message}}
+
+
 def _encode_uplink(token: str, channel: str, payload: Any) -> bytes:
     if not token or channel not in _UPLINK_CHANNELS or not isinstance(payload, dict):
         raise TypeError("invalid uplink message")
     try:
-        return ormsgpack.packb(
-            [token, channel, payload],
-            default=_normalize_uplink_extension,
-            option=_UPLINK_PACK_OPTIONS,
-        )
+        return pack_rpc_payload([token, channel, payload])
     except Exception as exc:
         if channel == CH_RES:
-            req_id = payload.get("req_id")
-            error_payload = {
-                "req_id": req_id if isinstance(req_id, (str, int)) else "unknown",
-                "success": False,
-                "data": None,
-                "error": "Plugin result is not MessagePack-serializable",
-            }
-            return ormsgpack.packb(
-                [token, channel, error_payload],
-                option=_UPLINK_PACK_OPTIONS,
-            )
+            return pack_rpc_payload([token, channel, _result_fault(payload, "SERIALIZATION_FAILED",
+                "Plugin result is not MessagePack-serializable")])
         raise TypeError("uplink payload must be MessagePack-serializable") from exc
+
+
+def _encode_bounded_uplink(token: str, channel: str, payload: Any) -> bytes:
+    data = _encode_uplink(token, channel, payload)
+    try:
+        _refuse_oversized_uplink_frame(channel, data)
+    except ValueError:
+        if channel != CH_RES or not isinstance(payload.get("req_id"), str):
+            raise
+        data = _encode_uplink(token, channel, _result_fault(payload, "RESULT_TOO_LARGE",
+            f"Plugin result exceeds control transport limit: {len(data)} > {_control_uplink_max_bytes()} bytes"))
+        _refuse_oversized_uplink_frame(channel, data)
+    return data
 
 
 def _decode_uplink(
     raw: bytes,
     *,
     expected_token: str,
-    allowed_channels: frozenset = _UPLINK_CHANNELS,
+    allowed_channels: frozenset,
 ) -> Tuple[str, dict]:
     try:
-        decoded = ormsgpack.unpackb(raw, option=_UPLINK_UNPACK_OPTIONS)
+        decoded = unpack_rpc_payload(raw)
     except Exception as exc:
         raise ValueError("invalid uplink payload") from exc
     if not isinstance(decoded, list) or len(decoded) != 3:
@@ -343,6 +355,70 @@ if hasattr(os, "register_at_fork"):
     _TRANSPORT_CREDENTIAL_FORK_HOOK_REGISTERED = True
 
 
+# Limits apply only to new bounded RPC results and BUS_CHANGE observations.
+_DOWNLINK_FRAME_MAX = 2 * 1024 * 1024
+_DOWNLINK_HOST_BYTES = 8 * 1024 * 1024
+_DOWNLINK_GLOBAL_BYTES = 32 * 1024 * 1024
+_DOWNLINK_HOST_ITEMS = 128
+_DOWNLINK_GLOBAL_ITEMS = 1024
+_DOWNLINK_TREE_NODES = 250_000
+_DOWNLINK_TREE_DEPTH = 32
+_downlink_credit_lock = threading.Lock()
+_downlink_global_bytes = 0
+_downlink_global_items = 0
+
+
+class DownlinkCapacityError(RuntimeError):
+    """A bounded response cannot be accepted by the shared downlink."""
+
+
+def validate_bounded_downlink(value: Any) -> None:
+    """Bound work before first serialization, rejecting non-JSON trees."""
+    stack = [(value, 0)]
+    nodes = 0
+    size = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > _DOWNLINK_TREE_NODES or depth > _DOWNLINK_TREE_DEPTH:
+            raise DownlinkCapacityError("Downlink value exceeds structural limit")
+        if item is None or isinstance(item, bool):
+            size += 5
+        elif isinstance(item, int):
+            if item.bit_length() > 1024:
+                raise DownlinkCapacityError("Downlink integer exceeds limit")
+            size += len(str(item))
+        elif isinstance(item, float):
+            if not math.isfinite(item):
+                raise DownlinkCapacityError("Downlink number is not finite")
+            size += 32
+        elif isinstance(item, str):
+            if len(item) > _DOWNLINK_FRAME_MAX:
+                raise DownlinkCapacityError("Downlink value exceeds frame limit")
+            # Both wire encodings carry UTF-8 strings without JSON escaping.
+            # Count in C; scanning every character here would stall the receive
+            # loop before STOP can even reach the priority queue.
+            size += len(item.encode('utf-8')) + 5
+        elif isinstance(item, (list, tuple)):
+            size += 2 + len(item)
+            if len(item) > _DOWNLINK_TREE_NODES - nodes:
+                raise DownlinkCapacityError("Downlink value exceeds structural limit")
+            stack.extend((child, depth + 1) for child in item)
+        elif isinstance(item, dict):
+            size += 2 + 2 * len(item)
+            if len(item) * 2 > _DOWNLINK_TREE_NODES - nodes:
+                raise DownlinkCapacityError("Downlink value exceeds structural limit")
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    raise DownlinkCapacityError("Downlink key is not a string")
+                stack.append((key, depth + 1))
+                stack.append((child, depth + 1))
+        else:
+            raise DownlinkCapacityError("Downlink value is not a JSON tree")
+        if size > _DOWNLINK_FRAME_MAX:
+            raise DownlinkCapacityError("Downlink value exceeds frame limit")
+
+
 class HostTransport:
     """Async ZMQ transport for the host (main-process) side.
 
@@ -361,7 +437,11 @@ class HostTransport:
         # Downlink: host → child (PUSH/PULL)
         self._dl_sock = self._ctx.socket(zmq.PUSH)
         self._dl_sock.setsockopt(zmq.LINGER, _LINGER_MS)
-        self._dl_sock.setsockopt(zmq.SNDHWM, 5000)
+        # A small host-side pipe keeps unsent frames in the application queue,
+        # where credits, eviction and STOP-before-bulk apply. It bounds only
+        # this side: the child's PULL keeps the default RCVHWM (1000 frames),
+        # so up to that many accepted frames can still sit ahead of STOP.
+        self._dl_sock.setsockopt(zmq.SNDHWM, 8)
         self._dl_sock.bind("tcp://127.0.0.1:*")
         self.downlink_endpoint: str = self._dl_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
@@ -408,6 +488,12 @@ class HostTransport:
         self.image_uplink_endpoint: str = self._img_sock.getsockopt(zmq.LAST_ENDPOINT).decode()
 
         self._closed = False
+        self._downlink_priority = deque()
+        self._downlink_bulk = deque()
+        self._downlink_bytes = 0
+        self._downlink_items = 0
+        self._downlink_drain_task = None
+        self._downlink_owner_loop = None
 
     def clear_inherited_credentials(self) -> None:
         """Erase this transport's copied credential in a forked child."""
@@ -420,12 +506,126 @@ class HostTransport:
     # ── send helpers ─────────────────────────────────────────────
 
     async def send_command(self, msg: dict) -> None:
-        """Send a command on the downlink."""
-        await self._dl_sock.send(pickle.dumps((CH_CMD, msg)))
+        """Send commands, giving unsent lifecycle traffic priority over bulk."""
+        bounded = msg.get("type") == "BUS_CHANGE" and msg.get("bus") == "conversations"
+        await self._enqueue_downlink(CH_CMD, msg, bounded=bounded)
 
-    async def send_response(self, msg: dict) -> None:
-        """Send a plugin-to-plugin response on the downlink."""
-        await self._dl_sock.send(pickle.dumps((CH_RESP, msg)))
+    async def send_response(self, msg: dict, *, bounded: bool = False) -> None:
+        await self._enqueue_downlink(CH_RESP, msg, bounded=bounded)
+
+    def _release_downlink(self, item) -> None:
+        global _downlink_global_bytes, _downlink_global_items
+        if not item['bounded'] or item['released']:
+            return
+        item['released'] = True
+        size = len(item['frame'])
+        with _downlink_credit_lock:
+            self._downlink_bytes -= size
+            self._downlink_items -= 1
+            _downlink_global_bytes -= size
+            _downlink_global_items -= 1
+
+    async def _enqueue_downlink(self, channel: str, msg: dict, *, bounded: bool) -> None:
+        global _downlink_global_bytes, _downlink_global_items
+        if self._closed:
+            raise RuntimeError("Downlink is closed")
+        if bounded:
+            validate_bounded_downlink(msg)
+        frame = pickle.dumps((channel, msg))
+        if bounded and len(frame) > _DOWNLINK_FRAME_MAX:
+            raise DownlinkCapacityError("Downlink frame exceeds limit")
+        loop = asyncio.get_running_loop()
+        if self._downlink_owner_loop is None or (
+            self._downlink_owner_loop.is_closed() and
+            not self._downlink_priority and not self._downlink_bulk
+        ):
+            self._downlink_owner_loop = loop
+        elif self._downlink_owner_loop is not loop:
+            raise RuntimeError("Downlink is bound to another event loop")
+        future = loop.create_future()
+        observation = channel == CH_CMD and msg.get("type") == "BUS_CHANGE"
+        item = {'frame': frame, 'future': future, 'bounded': bounded,
+                'observation': observation, 'released': False, 'sending': False}
+        if bounded:
+            while True:
+                with _downlink_credit_lock:
+                    available = not (
+                        self._downlink_bytes + len(frame) > _DOWNLINK_HOST_BYTES or
+                        self._downlink_items >= _DOWNLINK_HOST_ITEMS or
+                        _downlink_global_bytes + len(frame) > _DOWNLINK_GLOBAL_BYTES or
+                        _downlink_global_items >= _DOWNLINK_GLOBAL_ITEMS
+                    )
+                    if available:
+                        self._downlink_bytes += len(frame)
+                        self._downlink_items += 1
+                        _downlink_global_bytes += len(frame)
+                        _downlink_global_items += 1
+                if available:
+                    break
+                # Observations are best effort: evict the oldest unsent local
+                # observation, never a request result. Its caller sees failure
+                # and can invalidate the affected view.
+                old = next((entry for entry in self._downlink_bulk
+                            if entry['observation'] and not entry['sending']), None) if observation else None
+                if old is None:
+                    raise DownlinkCapacityError("Downlink capacity exhausted")
+                self._downlink_bulk.remove(old)
+                self._release_downlink(old)
+                if not old['future'].done():
+                    old['future'].set_exception(DownlinkCapacityError("Observation evicted"))
+        queue = self._downlink_bulk if bounded else self._downlink_priority
+        queue.append(item)
+        if self._downlink_drain_task is None or self._downlink_drain_task.done():
+            self._downlink_drain_task = asyncio.create_task(self._drain_downlink())
+        try:
+            await future
+        finally:
+            if not future.done():
+                future.cancel()
+            # Cancelled senders immediately give their credits back. The drain
+            # skips their entries before touching the socket.
+            if future.cancelled() and not item['sending']:
+                try:
+                    queue.remove(item)
+                except ValueError:
+                    pass
+                self._release_downlink(item)
+
+    async def _drain_downlink(self) -> None:
+        try:
+            while self._downlink_priority or self._downlink_bulk:
+                queue = self._downlink_priority if self._downlink_priority else self._downlink_bulk
+                item = queue[0]
+                future = item['future']
+                if future.done():
+                    queue.popleft()
+                    self._release_downlink(item)
+                    continue
+                try:
+                    item['sending'] = True
+                    await self._dl_sock.send(item['frame'], flags=zmq.DONTWAIT)
+                except zmq.Again:
+                    item['sending'] = False
+                    # Never hold an awaited socket send: reselect priority after
+                    # a short yield, so a blocked bulk frame cannot pin STOP.
+                    await asyncio.sleep(0.005)
+                    continue
+                except Exception as exc:
+                    item['sending'] = False
+                    if item in queue:
+                        queue.remove(item)
+                    self._release_downlink(item)
+                    if not future.done():
+                        future.set_exception(exc)
+                else:
+                    item['sending'] = False
+                    if item in queue:
+                        queue.remove(item)
+                    self._release_downlink(item)
+                    if not future.done():
+                        future.set_result(None)
+        finally:
+            self._downlink_drain_task = None
 
     # ── recv helper ──────────────────────────────────────────────
 
@@ -486,6 +686,26 @@ class HostTransport:
         if self._closed:
             return
         self._closed = True
+        def close_pending():
+            task = self._downlink_drain_task
+            if task is not None and not task.done():
+                task.cancel()
+            for item in list(self._downlink_priority) + list(self._downlink_bulk):
+                self._release_downlink(item)
+                if not item['future'].done():
+                    item['future'].set_exception(RuntimeError("Downlink is closed"))
+            self._downlink_priority.clear()
+            self._downlink_bulk.clear()
+
+        owner = self._downlink_owner_loop
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        if owner is not None and owner is not current and owner.is_running():
+            owner.call_soon_threadsafe(close_pending)
+        else:
+            close_pending()
         for sock in (
             self._dl_sock,
             self._ul_sock,
@@ -522,7 +742,7 @@ class ChildTransport:
         uplink_endpoint: str,
         uplink_token: str,
         *,
-        message_uplink_endpoint: str | None = None,
+        message_uplink_endpoint: str,
         image_uplink_endpoint: str | None = None,
     ) -> None:
         # Sync context — used for the uplink PUSH socket (thread-safe via lock)
@@ -534,14 +754,11 @@ class ChildTransport:
         self._ul_sock.connect(uplink_endpoint)
         self._ul_lock = threading.Lock()
 
-        self._msg_sock = self._ul_sock
-        self._msg_lock = self._ul_lock
-        if message_uplink_endpoint:
-            self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
-            self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
-            self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
-            self._msg_sock.connect(message_uplink_endpoint)
-            self._msg_lock = threading.Lock()
+        self._msg_sock = self._sync_ctx.socket(zmq.PUSH)
+        self._msg_sock.setsockopt(zmq.LINGER, _LINGER_MS)
+        self._msg_sock.setsockopt(zmq.SNDHWM, 5000)
+        self._msg_sock.connect(message_uplink_endpoint)
+        self._msg_lock = threading.Lock()
         self._message_batcher = None
         self._message_batcher_init_lock = threading.Lock()
 
@@ -561,7 +778,7 @@ class ChildTransport:
 
         self._downlink_endpoint = downlink_endpoint
         self._uplink_endpoint = uplink_endpoint
-        self._message_uplink_endpoint = message_uplink_endpoint or uplink_endpoint
+        self._message_uplink_endpoint = message_uplink_endpoint
         self._uplink_token = uplink_token
         self._closed = False
 
@@ -661,12 +878,10 @@ class ChildTransport:
         ``send_uplink_nowait`` — the "non-blocking" one — block. Bounding this
         bounds that.
 
-        Raises ``queue.Full`` rather than something transport-shaped:
-        ``ChannelSender`` stands in for a ``multiprocessing.Queue``, and that
-        is what ``Queue.put(timeout=...)`` raises when it cannot deliver.
+        Raises ``queue.Full`` when it cannot deliver in time; the context's
+        backpressure handling classifies that as a full uplink.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         budget = max(0.0, float(timeout))
         deadline = time.monotonic() + budget
@@ -699,8 +914,7 @@ class ChildTransport:
         one in-flight send; blocking on it without a cap is what made this
         method's name a lie while a bounded ``send_uplink`` held the lock.
         """
-        data = _encode_uplink(self._uplink_token, channel, msg)
-        _refuse_oversized_uplink_frame(channel, data)
+        data = _encode_bounded_uplink(self._uplink_token, channel, msg)
         sock, lock = self._uplink_socket(channel)
         if not lock.acquire(timeout=_UPLINK_NOWAIT_LOCK_WAIT_S):
             raise queue.Full(f"uplink busy: {channel}")
@@ -748,10 +962,10 @@ class ChildTransport:
                     self._message_batcher = batcher
         batcher.enqueue(msg)
 
-    # ── channel senders (queue-compatible interface) ─────────────
+    # ── channel senders ──────────────────────────────────────────
 
     def channel_sender(self, channel: str) -> "ChannelSender":
-        """Return a :class:`ChannelSender` that mimics ``mp.Queue.put`` / ``put_nowait``."""
+        """Return a :class:`ChannelSender` bound to *channel*."""
         if channel == CH_MSG:
             return MessageChannelSender(self, channel)
         return ChannelSender(self, channel)
@@ -882,15 +1096,15 @@ class ChildTransport:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ChannelSender — drop-in for mp.Queue on the child side
+# ChannelSender — child-side send handles
 # ═══════════════════════════════════════════════════════════════════
 
 class ChannelSender:
-    """Queue-like object that tags each message with a *channel* and sends it
+    """Send-only handle that tags each message with a *channel* and sends it
     through the shared :class:`ChildTransport` uplink.
 
-    Accepted by :class:`~plugin.core.context.PluginContext` in place of the
-    old ``multiprocessing.Queue`` references (``status_queue``, ``message_queue``, etc.).
+    :class:`~plugin.core.context.PluginContext` holds these as
+    ``status_queue`` and ``message_queue``.
     """
 
     __slots__ = ("_transport", "_ch")
@@ -899,24 +1113,15 @@ class ChannelSender:
         self._transport = transport
         self._ch = channel
 
-    def put(self, obj: Any, block: bool = True, timeout: float | None = None) -> None:
-        self._transport.send_uplink(self._ch, obj, timeout=timeout or 10.0)
+    def put(self, obj: Any, *, timeout: float | None) -> None:
+        # An unlimited RPC still bounds the frame send itself.
+        if timeout is None:
+            self._transport.send_uplink(self._ch, obj)
+        else:
+            self._transport.send_uplink(self._ch, obj, timeout=timeout)
 
     def put_nowait(self, obj: Any) -> None:
         self._transport.send_uplink_nowait(self._ch, obj)
-
-    def get(self, block: bool = True, timeout: float | None = None) -> Any:
-        raise NotImplementedError("ChannelSender is send-only; use transport.recv_downlink() for reads")
-
-    def get_nowait(self) -> Any:
-        raise NotImplementedError("ChannelSender is send-only")
-
-    # no-ops for mp.Queue compat
-    def close(self) -> None:
-        pass
-
-    def cancel_join_thread(self) -> None:
-        pass
 
 
 class MessageChannelSender(ChannelSender):

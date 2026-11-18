@@ -25,11 +25,13 @@ import os
 import shutil
 import tempfile
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from config import DEFAULT_CONFIG_DATA
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
+from utils.preferences_sanitize import sanitize_preferences_payload
 from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 from ._shared import (
@@ -40,6 +42,7 @@ from ._shared import (
     TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
     RUNTIME_ASSET_DIR_NAMES,
     TARGET_OPTIONAL_STATE_FILES,
+    logger,
 )
 from .staging import (
     _json_canonical_dumps,
@@ -282,7 +285,7 @@ def _load_seed_characters_payload(config_manager) -> dict[str, Any]:
 
 
 def _catgirl_payload_without_character_id(payload: Any) -> dict[str, Any] | None:
-    """Return a deep copy of a catgirl payload without its device-local ``_reserved.character_id``."""
+    """Return a deep copy of a neko payload without its device-local ``_reserved.character_id``."""
     if not isinstance(payload, dict):
         return None
     from utils.config_manager import delete_reserved
@@ -350,15 +353,20 @@ def _preferences_entry_key(entry: Any) -> str:
 
 
 def _merge_preferences_payloads(legacy_payload: Any, current_payload: Any) -> list[Any]:
+    from utils.preferences_audit import attach_journal, merge_local_journals
+
+    legacy = _normalize_preferences_payload(legacy_payload)
+    current = _normalize_preferences_payload(current_payload)
+    journal = merge_local_journals(legacy, current)
     merged_entries: dict[str, Any] = {}
     ordered_keys: list[str] = []
-    for payload in (_normalize_preferences_payload(legacy_payload), _normalize_preferences_payload(current_payload)):
+    for payload in (legacy, current):
         for entry in payload:
             key = _preferences_entry_key(entry)
             if key not in merged_entries:
                 ordered_keys.append(key)
             merged_entries[key] = deepcopy(entry)
-    return [merged_entries[key] for key in ordered_keys]
+    return attach_journal([merged_entries[key] for key in ordered_keys], journal)
 
 
 def _deep_merge_json_dicts(legacy_payload: Any, current_payload: Any) -> dict[str, Any]:
@@ -595,6 +603,14 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
         target_root / "state" / "character_tombstones.json"
     )
 
+    def _log_scrubbed(filename: str, path: str) -> None:
+        """Report one dropped non-finite value; the value itself is never logged."""
+        logger.warning(
+            "legacy root import: dropped non-finite value while merging %s (path=%r)",
+            filename,
+            path,
+        )
+
     source_characters = _load_json_if_exists(source_root / "config" / "characters.json")
     target_characters = _load_json_if_exists(target_root / "config" / "characters.json")
     if source_characters is not None or target_characters is not None:
@@ -612,13 +628,33 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
             current_name = str(merged_characters.get("当前猫娘") or "")
             if current_name in target_tombstone_names:
                 merged_characters["当前猫娘"] = next(iter(merged_catgirls), "")
-        atomic_write_json(config_dir / "characters.json", merged_characters, ensure_ascii=False, indent=2)
+        # Same M-001 class as the preferences merge below: ``_load_json_if_exists``
+        # accepts NaN/Infinity, ``atomic_write_json`` refuses to emit them, so a
+        # legacy character carrying a poisoned number would abort the whole import.
+        atomic_write_json(
+            config_dir / "characters.json",
+            scrub_non_finite_numbers(
+                merged_characters, on_drop=partial(_log_scrubbed, "characters.json")
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     source_preferences = _load_json_if_exists(source_root / "config" / "user_preferences.json")
     target_preferences = _load_json_if_exists(target_root / "config" / "user_preferences.json")
     if source_preferences is not None or target_preferences is not None:
         merged_preferences = _merge_preferences_payloads(source_preferences, target_preferences)
-        atomic_write_json(config_dir / "user_preferences.json", merged_preferences, ensure_ascii=False, indent=2)
+        # The legacy file is read with ``json.load``, which accepts the non-finite
+        # literals ``atomic_write_json`` rejects (M-001). Merging copies the
+        # poisoned model entry -- and any poisoned number inside the settings
+        # journal -- straight through, so the import would fail and leave the user
+        # on the old root. Clean the payload instead of dropping it.
+        atomic_write_json(
+            config_dir / "user_preferences.json",
+            sanitize_preferences_payload(merged_preferences),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     # plugin_models.json is copied as one configuration unit by
     # _copy_runtime_root_entries (the current root wins). Deep-merging it could
@@ -635,7 +671,14 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
                 source_root=source_root,
                 target_root=target_root,
             )
-        atomic_write_json(config_dir / filename, merged_payload, ensure_ascii=False, indent=2)
+        atomic_write_json(
+            config_dir / filename,
+            scrub_non_finite_numbers(
+                merged_payload, on_drop=partial(_log_scrubbed, filename)
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 def _copy_optional_legacy_state(*, source_root: Path, target_root: Path, temp_root: Path) -> list[str]:

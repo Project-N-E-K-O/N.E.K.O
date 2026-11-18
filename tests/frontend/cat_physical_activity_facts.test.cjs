@@ -105,6 +105,7 @@ test('VRM return-ball drag dispatches one terminal event with aggregated physica
     },
     cancelAnimationFrame: (id) => rafCallbacks.delete(id),
     setTimeout: () => 0,
+    _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
     _dispatchNekoIdleReturnBallManualMove: (target, reason, detail) => {
       terminalCalls.push({ target, reason, detail });
     }

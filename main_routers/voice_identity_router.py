@@ -384,7 +384,7 @@ async def reserve_voice_resource_operation(request: Request):
     if rejected is not None:
         return rejected
     payload = await _read_resource_json(request)
-    if payload is None or set(payload) != {"kind"} or payload["kind"] not in ("prepare", "download"):
+    if payload is None or set(payload) != {"kind"} or payload["kind"] not in ("prepare", "download", "repair"):
         return JSONResponse({"error_code": "invalid_resource_operation"}, status_code=400)
     service = _service()
     if service is None:

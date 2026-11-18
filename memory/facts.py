@@ -30,8 +30,10 @@ import re
 import asyncio
 import secrets
 import threading
+from collections.abc import Awaitable, Callable
 from contextlib import nullcontext
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from config import (
@@ -39,6 +41,7 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+    EXTERNAL_IMPORT_DAILY_CALL_INTERVAL,
     EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     EXTERNAL_IMPORT_DAILY_MAX_FILES,
@@ -57,12 +60,14 @@ from config.prompts.prompts_memory import (
     get_scoped_batch_middle_omission_marker,
     get_signal_detection_prompt,
 )
+from memory import cold_store
 from memory.evidence import evidence_score
 from memory.timeindex import (
     FACT_NEAR_DUP_ARBITRATE_OVERLAP,
     FACT_NEAR_DUP_ENQUEUE_TIMEOUT_SECONDS,
 )
 from memory.scopes import (
+    SUBJECT_GROUP_CHAT,
     MemorySubject,
     coerce_subject,
     entry_matches_subject,
@@ -85,6 +90,15 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
+
+# A pair nominated because both facts cite the same chat message, not because
+# their wording overlaps. A real text match is always above zero.
+SHARED_SOURCE_OVERLAP = 0.0
+
+# ``extraction_path`` stamped on facts the AI-aware pass (path B) writes. Path
+# B lets the model label each fact's source itself; the marker lets those
+# labels be audited later against the conversation (who really said it).
+EXTRACTION_PATH_B = "path_b"
 
 
 def _detect_fact_extraction_prompt_language(
@@ -240,6 +254,16 @@ def _fact_scoped_identity(entry: dict) -> tuple[str, str, str, str] | None:
     )
 
 
+# Markers of a demoted fact row. A row carrying either belongs in cold storage
+# (memory/cold_store.py); one still in facts_archive.json was demoted before
+# cold storage existed and moves there at the next archive window.
+_COLD_MARKERS = ('arbitration_archived_at', 'subject_archived_at')
+
+
+def _is_cold_row(entry: object) -> bool:
+    return isinstance(entry, dict) and any(entry.get(marker) for marker in _COLD_MARKERS)
+
+
 def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     """Merge archive rows by full scoped identity; later occurrence wins.
 
@@ -331,6 +355,47 @@ class FactStore:
         """
         self._dedup_resolver = resolver
 
+    # Pinned-fact section (memory/pinned_facts.py). Without one, the ``pin``
+    # fields of Stage-1 output are simply not read.
+    _pinned_fact_store = None
+
+    def attach_pinned_fact_store(self, store) -> None:
+        """Wire the pinned-fact section that private-chat Stage-1 results feed.
+
+        Set by the memory runtime next to ``attach_dedup_resolver``; the
+        store needs the persona manager for its character-card check, which
+        the FactStore does not hold.
+        """
+        self._pinned_fact_store = store
+
+    async def _aadmit_pinned_candidates(
+        self, lanlan_name: str, extracted, *, default_source: str = 'user_observation',
+        conversation_at: datetime | None = None,
+    ) -> None:
+        """Offer one private-chat Stage-1 result to the pinned-fact section.
+
+        Best-effort and called only after the facts themselves persisted: a
+        failure here leaves the ordinary pipeline untouched, and the fact still
+        reaches the prompt the slow way. ``conversation_at`` (the latest
+        message of the extracted window; None means now) dates the entries.
+        """
+        store = self._pinned_fact_store
+        if store is None or not extracted:
+            return
+        try:
+            await store.aadmit_extracted(
+                lanlan_name, extracted, default_source=default_source,
+                noted_at=(
+                    conversation_at.timestamp()
+                    if isinstance(conversation_at, datetime) else None
+                ),
+            )
+        except Exception as e:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: pinned-fact admission failed: "
+                f"{type(e).__name__}"
+            )
+
     def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
         self._time_indexed = time_indexed_memory
@@ -338,6 +403,19 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # Per-character file locks.
         self._locks_guard = threading.Lock()  # Protect the _locks dictionary itself.
         self._persist_alocks: dict[str, asyncio.Lock] = {}
+        # Courtesy call-start interval for external daily imports: it lives on the shared FactStore, so several characters
+        # importing at once share one interval (they share one provider quota).
+        # The last call time is stored on the gate lock object (gate.last_call_at), so sharing this one lock
+        # when the runtime hot-replaces the FactStore shares the interval state as well.
+        # Built at construction (not lazily): runtime hot replacement copies this object to the new
+        # FactStore, and a lazily built gate could be copied as None, leaving old and new imports with separate gates.
+        # asyncio.Lock only binds an event loop on its first wait, so creating it at construction is safe.
+        self._external_daily_call_gate: asyncio.Lock = asyncio.Lock()
+        self._external_daily_call_gate.last_call_at = 0.0
+        # Ordering hint for segmented external daily imports: days extracted in this process whose facts all matched existing
+        # facts and left no completion marker ({character: {day fingerprint}}). Only used to order them after deferred days;
+        # never skips a day on its own and is never persisted, so a rollback or restart clears it and restores the original order, keeping rollback self-healing intact.
+        self._external_daily_deduped_fps: dict[str, set[str]] = {}
         # Per-character, per-subject erase generations. Scoped extraction
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
@@ -476,18 +554,23 @@ class FactStore:
     _ENTITY_RENAMES = {'user': 'master', 'ai': 'neko'}
 
     def load_facts(self, name: str) -> list[dict]:
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         path = self._facts_path(name)
         if name in self._facts:
             return self._facts[name]
         with self._get_lock(name):
+            require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
             # Double-check: another thread may have loaded while waiting for lock.
             if name in self._facts:
                 return self._facts[name]
             if os.path.exists(path):
                 try:
-                    with open(path, encoding='utf-8') as f:
-                        data = json.load(f)
+                    with consistent_view_read(path):
+                        with open(path, encoding='utf-8') as f:
+                            data = json.load(f)
                     if isinstance(data, list):
+                        data = self._without_cold_copies(name, data)
                         if self._migrate_v1_entity_values(data):
                             try:
                                 assert_cloudsave_writable(
@@ -506,13 +589,99 @@ class FactStore:
             self._facts[name] = []
             return self._facts[name]
 
+    def _character_dir(self, name: str) -> str:
+        # Cold shards sit next to facts_archive.json (same character directory).
+        return os.path.dirname(self._facts_archive_path(name))
+
+    def _cold_fact_stubs(self, name: str) -> list[dict]:
+        """Stubs of this character's cold facts (no text); raises ``ColdStoreUnreadable``."""
+        return cold_store.status(self._character_dir(name))
+
+    def _shared_cold_fact_stubs(self, name: str) -> list[dict]:
+        """Cold fact stubs as the shared sync list states them.
+
+        Another device may have retracted a fact this device holds as
+        superseded (or the reverse); the merged ``cold`` list then says which
+        holds. Source counting reads the stub, so the list's status is laid
+        over it; the shard itself is never rewritten by a sync.
+        """
+        from memory.long_term_sync import shared_cold_facts
+        stubs = self._cold_fact_stubs(name)
+        shared = shared_cold_facts(self._character_dir(name))
+        if not shared:
+            return stubs
+        for row in stubs:
+            item = shared.get((row.get('entity'), row.get('id')))
+            if item is None or row.get('scope') or row.get('subject_kind'):
+                continue
+            if item['status'] == 'retracted':
+                row.pop('superseded_by', None)
+            elif item.get('supersededById'):
+                row['superseded_by'] = item['supersededById']
+        return stubs
+
+    def _activate_restored_rows(self, name: str, facts: list, rows: list[dict]) -> None:
+        """Durably add revived cold rows to the active pool, skipping any already there.
+
+        A retry after cold storage failed to let go of a group row finds its
+        copy already active (same scoped identity); appending it again would
+        leave two rows with one id.
+        """
+        held = {
+            identity for identity in map(_fact_scoped_identity, facts)
+            if identity is not None
+        }
+        fresh = [row for row in rows if _fact_scoped_identity(row) not in held]
+        atomic_write_json(
+            self._facts_path(name), facts + fresh, indent=2, ensure_ascii=False,
+        )
+        facts.extend(fresh)
+
+    def _cold_identities(self, name: str) -> set:
+        return {
+            identity for identity in (
+                _fact_scoped_identity(row) for row in self._cold_fact_stubs(name)
+            ) if identity is not None
+        }
+
+    def _without_cold_copies(self, name: str, rows: list) -> list:
+        """Drop rows also held in cold storage: a cold copy wins over any other.
+
+        Such a pair is left by an interrupted demotion, or by a cloud save
+        restoring an older file after the row went cold here. The dropped copy
+        leaves the file at the next save. An unreadable cold store drops
+        nothing; its readers fail on their own.
+        """
+        try:
+            cold = self._cold_identities(name)
+        except cold_store.ColdStoreUnreadable as exc:
+            logger.warning(f"[FactStore] {name}: 冷存读取失败，暂不按冷存过滤: {exc}")
+            return rows
+        if not cold:
+            return rows
+        kept = [row for row in rows if _fact_scoped_identity(row) not in cold]
+        if len(kept) != len(rows):
+            logger.warning(
+                f"[FactStore] {name}: {len(rows) - len(kept)} 条事实同时在冷存里，按冷存处理"
+            )
+        return kept
+
     async def aload_facts(self, name: str) -> list[dict]:
+        from memory.long_term_sync import require_consistent_views
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         if name in self._facts:
             return self._facts[name]
         return await asyncio.to_thread(self.load_facts, name)
 
-    def load_facts_full(self, name: str) -> list[dict]:
-        """Full fact pool: active + archived (Phase C-2).
+    def load_facts_full(self, name: str, *, include_cold_stubs: bool = False) -> list[dict]:
+        """Full fact pool: active + archived (Phase C-2), cold storage excluded.
+
+        Cold rows (demoted by arbitration or by subject archival) are left out,
+        including any still waiting in facts_archive.json to move to cold
+        storage. ``include_cold_stubs`` appends them as stubs instead: every
+        field except the wording, tags and vectors, plus ``text_sha256``. Only
+        callers that count or match rows by id, subject, status or provenance
+        pass it; none of them may show or rank a stub.
 
         Archived = old entries already moved into facts_archive.json by
         `_archive_absorbed` (absorbed more than _ARCHIVE_AGE_DAYS = 7 days ago).
@@ -528,40 +697,72 @@ class FactStore:
         P2). ``UnicodeDecodeError`` is a ``ValueError`` subclass, distinct from
         ``JSONDecodeError``, so it is listed explicitly.
 
-        Rows whose id also exists among the active facts are dropped, keeping
-        the active copy. That is not an optional extra guard — it is the read
+        Rows whose id and subject also exist among the active facts are
+        dropped, keeping the active copy. That is not an optional extra guard — it is the read
         half of ``_archive_absorbed``'s two-file commit protocol, whose write
         order deliberately prefers "the row is in both files" over "the row is
         in neither". Something has to collapse "in both", and a warning makes
         this a backstop with a detector rather than a cover-up."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read, LongTermMemoryRecoveryRequired
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         active = self.load_facts(name)
+        def checked(rows):
+            require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
+            if self._facts.get(name) is not active:
+                raise LongTermMemoryRecoveryRequired()
+            return rows
         archive_path = self._facts_archive_path(name)
-        if not os.path.exists(archive_path):
-            return list(active)
+        cold_stubs: list[dict] = []
         try:
-            with open(archive_path, encoding='utf-8') as f:
-                archived = json.load(f)
+            cold_stubs = (
+                self._shared_cold_fact_stubs(name) if include_cold_stubs
+                else self._cold_fact_stubs(name)
+            )
+        except cold_store.ColdStoreUnreadable as e:
+            # Best-effort like the archive read below: the cold rows are left out.
+            logger.warning(f"[FactStore] {name}: 读取冷存失败，不含冷存: {e}")
+        cold_identities = {
+            identity for identity in map(_fact_scoped_identity, cold_stubs)
+            if identity is not None
+        }
+
+        def with_cold(rows: list) -> list:
+            if include_cold_stubs:
+                rows.extend(dict(row) for row in cold_stubs)
+            return rows
+
+        if not os.path.exists(archive_path):
+            return checked(with_cold(list(active)))
+        try:
+            with consistent_view_read(archive_path):
+                with open(archive_path, encoding='utf-8') as f:
+                    archived = json.load(f)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
             logger.warning(f"[FactStore] {name}: 读取 archive 失败，降级仅 active: {e}")
-            return list(active)
+            return checked(with_cold(list(active)))
         if not isinstance(archived, list):
-            return list(active)
+            return checked(with_cold(list(active)))
         # Active/archive ID overlap is residue from an interrupted two-file archive commit.
         # Converge to active copy: at least as recent as archive, authoritative for monotonic
         # flags such as absorbed / signal_processed.
+        # Scoped identity, not the bare id: another subject may reuse the same fact id.
         merged = list(active)
-        active_ids = {
-            fid for fid in (
-                _readable_fact_id(f) for f in merged if isinstance(f, dict)
-            ) if fid is not None
+        active_identities = {
+            identity for identity in map(_fact_scoped_identity, merged)
+            if identity is not None
         }
         dropped = 0
         for f in archived:
             if not isinstance(f, dict):
                 continue
-            fid = _readable_fact_id(f)
-            if fid is not None and fid in active_ids:
+            if _fact_scoped_identity(f) in active_identities:
                 dropped += 1
+                continue
+            if _fact_scoped_identity(f) in cold_identities:
+                continue
+            if _is_cold_row(f):
+                if include_cold_stubs:
+                    merged.append(cold_store.stub(f))
                 continue
             merged.append(f)
         if dropped:
@@ -569,10 +770,12 @@ class FactStore:
                 f"[FactStore] {name}: active/archive 存在 {dropped} 条 id 重叠，"
                 f"已按 active 收敛（多半是上一次归档两文件提交被打断）"
             )
-        return merged
+        return checked(with_cold(merged))
 
-    async def aload_facts_full(self, name: str) -> list[dict]:
-        return await asyncio.to_thread(self.load_facts_full, name)
+    async def aload_facts_full(self, name: str, *, include_cold_stubs: bool = False) -> list[dict]:
+        return await asyncio.to_thread(
+            self.load_facts_full, name, include_cold_stubs=include_cold_stubs,
+        )
 
     def _assert_active_facts_readable(self, name: str) -> int:
         """Raise ``RuntimeError`` when ``facts.json`` exists but is not a readable JSON list.
@@ -595,7 +798,9 @@ class FactStore:
             raise RuntimeError(f"facts of {name!r} is not a list")
         return len(data)
 
-    def load_facts_strict(self, name: str, *, include_archive: bool = False) -> list[dict]:
+    def load_facts_strict(
+        self, name: str, *, include_archive: bool = False, include_cold_stubs: bool = False,
+    ) -> list[dict]:
         """Active facts (plus archived ones) read from disk, raising ``RuntimeError`` when unreadable.
 
         For keyed writes deciding "was this already written": the lenient
@@ -603,39 +808,70 @@ class FactStore:
         save would erase it) and :meth:`load_facts_full` reads an unreadable
         archive as absent. Nothing is cached. Absent files read as empty; a
         row present in both files (an interrupted archive commit) counts once,
-        as in :meth:`load_facts_full`.
+        as in :meth:`load_facts_full`. ``include_cold_stubs`` adds the cold rows
+        as stubs (no text, see :meth:`load_facts_full`); a cold row's stub
+        replaces any copy of it in the two files. An unreadable cold shard
+        raises too.
         """
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         from utils.file_utils import read_json_tolerating_replace
+        try:
+            cold_stubs = (
+                self._shared_cold_fact_stubs(name) if include_cold_stubs
+                else self._cold_fact_stubs(name)
+            )
+        except cold_store.ColdStoreUnreadable as e:
+            raise RuntimeError(f"cold facts of {name!r} unreadable: {e}") from e
+        cold_identities = {
+            identity for identity in map(_fact_scoped_identity, cold_stubs)
+            if identity is not None
+        }
 
         rows: list[dict] = []
         paths = [self._facts_path(name)]
         if include_archive:
             paths.append(self._facts_archive_path(name))
-        active_ids: set = set()
-        for index, path in enumerate(paths):
-            if not os.path.exists(path):
-                continue
-            try:
-                data = read_json_tolerating_replace(path)
-            except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
-                raise RuntimeError(f"{os.path.basename(path)} of {name!r} unreadable: {e}") from e
-            if not isinstance(data, list):
-                raise RuntimeError(f"{os.path.basename(path)} of {name!r} is not a list")
-            for row in data:
-                if not isinstance(row, dict):
+        active_identities: set = set()
+        with consistent_view_read(paths[0]):
+            for index, path in enumerate(paths):
+                if not os.path.exists(path):
                     continue
-                fid = _readable_fact_id(row)
-                if index == 0:
-                    if fid is not None:
-                        active_ids.add(fid)
-                elif fid is not None and fid in active_ids:
-                    # Same as load_facts_full: interrupted two-file archive commits duplicate rows; active copy wins.
-                    continue
-                rows.append(row)
+                try:
+                    data = read_json_tolerating_replace(path)
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError) as e:
+                    raise RuntimeError(f"{os.path.basename(path)} of {name!r} unreadable: {e}") from e
+                if not isinstance(data, list):
+                    raise RuntimeError(f"{os.path.basename(path)} of {name!r} is not a list")
+                for row in data:
+                    if not isinstance(row, dict):
+                        continue
+                    identity = _fact_scoped_identity(row)
+                    if identity in cold_identities:
+                        continue
+                    if index == 0:
+                        # Only rows still visible after the cold filter shadow archive copies.
+                        if identity is not None:
+                            active_identities.add(identity)
+                    elif identity is not None and identity in active_identities:
+                        # Same as load_facts_full: interrupted two-file archive commits duplicate rows; active copy wins.
+                        continue
+                    if index > 0 and _is_cold_row(row):
+                        if include_cold_stubs:
+                            rows.append(cold_store.stub(row))
+                        continue
+                    rows.append(row)
+        if include_cold_stubs:
+            rows.extend(dict(row) for row in cold_stubs)
         return rows
 
-    async def aload_facts_strict(self, name: str, *, include_archive: bool = False) -> list[dict]:
-        return await asyncio.to_thread(self.load_facts_strict, name, include_archive=include_archive)
+    async def aload_facts_strict(
+        self, name: str, *, include_archive: bool = False, include_cold_stubs: bool = False,
+    ) -> list[dict]:
+        return await asyncio.to_thread(
+            self.load_facts_strict, name, include_archive=include_archive,
+            include_cold_stubs=include_cold_stubs,
+        )
 
     def _read_archived_effect_keys(self, name: str) -> set[str]:
         """Effect keys stamped on archived rows (keyed scoped writes only).
@@ -646,9 +882,17 @@ class FactStore:
         guessing "absent" could duplicate a row that was archived meanwhile,
         so the keyed apply fails and is retried with the same key.
         """
+        try:
+            cold = self._cold_fact_stubs(name)
+        except cold_store.ColdStoreUnreadable as e:
+            raise RuntimeError(f"cold facts of {name!r} unreadable: {e}") from e
+        keys = {
+            row['effect_key'] for row in cold
+            if isinstance(row.get('effect_key'), str)
+        }
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
-            return set()
+            return keys
         from utils.file_utils import read_json_tolerating_replace
 
         try:
@@ -657,7 +901,7 @@ class FactStore:
             raise RuntimeError(f"facts archive of {name!r} unreadable: {e}") from e
         if not isinstance(archived, list):
             raise RuntimeError(f"facts archive of {name!r} is not a list")
-        return {
+        return keys | {
             row['effect_key'] for row in archived
             if isinstance(row, dict) and isinstance(row.get('effect_key'), str)
         }
@@ -803,6 +1047,7 @@ class FactStore:
                 # cooldown by 24h, delaying archival another full day afterward.
                 archive_ran = True
                 try:
+                    self._migrate_cold_rows_locked(name)
                     self._archive_absorbed(name)
                 except MaintenanceModeError as exc:
                     # Match load_facts migration branch: maintenance skips log at debug.
@@ -883,6 +1128,10 @@ class FactStore:
 
         Strict FTS deletion precedes JSON changes: unconfirmed index cleanup fails the entire
         forget operation, retaining main-store IDs for retry; successful per-ID deletions are idempotent.
+
+        Cold storage is erased too, and an unreadable cold shard fails the whole
+        forget before anything changes. Erased cold rows count as ``facts_archive``,
+        where they lived before cold storage existed.
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import coerce_subject, entry_matches_subject
         memory_subject = coerce_subject(subject)
@@ -975,6 +1224,17 @@ class FactStore:
                 ]
                 removed_archive = len(removed_from_archive)
 
+            character_dir = self._character_dir(lanlan_name)
+            try:
+                removed_from_cold = [
+                    f for f in await cold_store.aread_full(character_dir)
+                    if entry_matches_subject(f, memory_subject)
+                ]
+            except cold_store.ColdStoreUnreadable as exc:
+                raise RuntimeError(
+                    f"cold facts unreadable during forget: {exc}"
+                ) from exc
+
             # Persist the privacy boundary before deleting any recoverable
             # copy. Reflection/persona archive events can recreate their shard
             # snapshots during a later full replay; restore must still know
@@ -993,7 +1253,7 @@ class FactStore:
             # DELETE is idempotent and no JSON state has changed yet.
             if self._time_indexed is not None:
                 deleted_fact_ids: set = set()
-                for fact in removed + removed_from_archive:
+                for fact in removed + removed_from_archive + removed_from_cold:
                     fact_id = _readable_fact_id(fact)
                     if fact_id is None or fact_id in deleted_fact_ids:
                         continue
@@ -1002,10 +1262,26 @@ class FactStore:
                         lanlan_name, fact_id, strict=True,
                     )
 
-            # Archive first: if the later active write fails, facts.json still
-            # contains enough subject-stamped rows for a retry. The reverse
-            # order is the irrecoverable half-commit reported by Greptile.
-            if removed_archive:
+            # Cold storage and archive first: if the later active write fails,
+            # facts.json still contains enough subject-stamped rows for a retry.
+            # The reverse order is the irrecoverable half-commit reported by Greptile.
+            if removed_from_cold:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{lanlan_name}/{cold_store.FACT_COLD_DIRNAME}",
+                )
+                try:
+                    await cold_store.aforget(
+                        character_dir,
+                        lambda row: entry_matches_subject(row, memory_subject),
+                    )
+                except cold_store.ColdStoreUnreadable as exc:
+                    raise RuntimeError(
+                        f"cold facts unreadable during forget: {exc}"
+                    ) from exc
+                removed_archive += len(removed_from_cold)
+            if removed_from_archive:
                 assert_cloudsave_writable(
                     self._config_manager,
                     operation="save",
@@ -1045,10 +1321,18 @@ class FactStore:
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
 
     def _load_archived_speaker_trust_signal_facts(self, name: str) -> list[dict]:
-        """Strictly load archived rows carrying issued trust signals."""
+        """Strictly load archived and cold rows carrying issued trust signals (cold ones as stubs)."""
+        try:
+            cold = [
+                dict(row) for row in self._cold_fact_stubs(name)
+                if isinstance(row.get('_speaker_trust_signal_events'), list)
+            ]
+        except cold_store.ColdStoreUnreadable as exc:
+            raise RuntimeError(f"cold facts unreadable during trust replay: {exc}") from exc
+        cold_identities = {_fact_scoped_identity(row) for row in cold}
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
-            return []
+            return cold
         try:
             with open(archive_path, encoding='utf-8') as fh:
                 archived = json.load(fh)
@@ -1064,8 +1348,9 @@ class FactStore:
             if (
                 isinstance(row, dict)
                 and isinstance(row.get('_speaker_trust_signal_events'), list)
+                and _fact_scoped_identity(row) not in cold_identities
             )
-        ]
+        ] + cold
 
     async def aload_archived_speaker_trust_signal_facts(
         self, name: str,
@@ -1150,8 +1435,21 @@ class FactStore:
         survivor_updates: dict[tuple[object, str, str, str], dict] | None = None,
         expected_survivors: dict[tuple[object, str, str, str], dict] | None = None,
         expected_losers: dict[tuple[object, str, str, str], dict] | None = None,
+        archive_check: Callable[[list, list], bool] | None = None,
+        archived_at: str | None = None,
     ) -> int:
-        """Archive trust/dedup losers with an archive-first two-file commit."""
+        """Move trust/dedup losers into cold storage with a cold-first two-file commit.
+
+        The losers carry ``arbitration_archived_at`` (and ``superseded_by`` when
+        a survivor replaces them) into cold storage, where nothing recalls,
+        searches or organizes them; only cold_store's restore brings one back.
+
+        ``archive_check(archive_rows, live_rows)`` runs under the same lock, after
+        facts_archive.json is read; a False refuses the whole commit (a caller whose
+        decision rests on archived rows checks them where nothing can change them).
+        ``archived_at`` stamps the archive time instead of now, so a caller can later
+        tell its own archiving apart (the time survives a snapshot round trip).
+        """
         if not archive_specs:
             return 0
         survivor_updates = survivor_updates or {}
@@ -1169,7 +1467,7 @@ class FactStore:
                     assert_cloudsave_writable(
                         self._config_manager,
                         operation="archive",
-                        target=f"memory/{name}/facts_archive.json",
+                        target=f"memory/{name}/{cold_store.FACT_COLD_DIRNAME}",
                     )
                     facts = self._facts.get(name, [])
                     fact_identities = {
@@ -1281,7 +1579,9 @@ class FactStore:
                                 "facts_archive is not a list during arbitration"
                             )
                         archived = data
-                    now_iso = datetime.now().isoformat()
+                    if archive_check is not None and not archive_check(archived, facts):
+                        raise RuntimeError("fact arbitration archive check failed")
+                    now_iso = archived_at or datetime.now().isoformat()
                     stamped = []
                     for fact in losers:
                         copy = dict(fact)
@@ -1295,7 +1595,6 @@ class FactStore:
                         if spec.get('superseded_by'):
                             copy['superseded_by'] = spec['superseded_by']
                         stamped.append(copy)
-                    merged_archive = _merge_archive_entries(archived, stamped)
                     loser_identities = {
                         _fact_scoped_identity(fact) for fact in losers
                     }
@@ -1308,18 +1607,37 @@ class FactStore:
                         active.append(
                             dict(replacement) if replacement is not None else fact
                         )
-                    # Never reverse: crash between writes leaves a recoverable
-                    # duplicate, not an unrecoverable missing fact.
+                    # Never reverse: crash between writes leaves a duplicate,
+                    # which readers settle as cold, not a missing fact.
+                    cold_written = False
                     try:
-                        atomic_write_json(
-                            archive_path, merged_archive, indent=2,
-                            ensure_ascii=False,
+                        cold_store.append(
+                            self._character_dir(name), stamped,
+                            identity=_fact_scoped_identity,
                         )
+                        cold_written = True
                         atomic_write_json(
                             self._facts_path(name), active, indent=2,
                             ensure_ascii=False,
                         )
                     except Exception:
+                        if cold_written:
+                            # The survivors were not updated: take this commit's
+                            # cold copies back so the whole arbitration retries,
+                            # instead of a cold loser next to a stale survivor.
+                            try:
+                                cold_store.rewrite_rows(
+                                    self._character_dir(name),
+                                    lambda row: None if (
+                                        row.get('arbitration_archived_at') == now_iso
+                                        and _fact_scoped_identity(row) in loser_identities
+                                    ) else row,
+                                )
+                            except Exception:  # noqa: BLE001 - the duplicate then reads as cold
+                                logger.warning(
+                                    f"[FactStore] {name}: 仲裁提交失败后撤回冷存副本也失败",
+                                    exc_info=True,
+                                )
                         # The active cache may no longer match either durable
                         # file after a partial two-file commit.  Force reload;
                         # archive-first ordering still guarantees recoverability.
@@ -1677,47 +1995,50 @@ class FactStore:
                             raise RuntimeError(
                                 "facts_archive is not a list during trust persist"
                             )
-                    archive_changed = False
-                    for fact in archived:
-                        if not isinstance(fact, dict):
-                            continue
-                        fact_identity = _speaker_trust_fact_identity(fact)
-                        additions = valid_by_fact.get(fact_identity)
-                        if not additions:
-                            continue
-                        matches_expected_reconciliation = (
-                            expected_provenance_by_fact.get(fact_identity)
-                            == _provenance(fact)
-                        )
-                        recorded = fact.get('_speaker_trust_signal_events')
-                        if not isinstance(recorded, list):
-                            recorded = []
-                            fact['_speaker_trust_signal_events'] = recorded
-                        known = {
-                            str(item.get('event_id') or '')
-                            for item in recorded
-                            if isinstance(item, dict)
-                        }
-                        for event in additions:
-                            is_replay = event['event_id'] in known
-                            if (
-                                not is_replay
-                                and not matches_expected_reconciliation
-                                and (
-                                    fact.get('speaker_provenance_mixed') is True
-                                    or stable_speaker_id(fact.get('speaker_id'))
-                                    != event['speaker_id']
-                                )
-                            ):
+                    def _attach(rows: list) -> bool:
+                        rows_changed = False
+                        for fact in rows:
+                            if not isinstance(fact, dict):
                                 continue
-                            if not is_replay:
-                                recorded.append(event)
-                                known.add(event['event_id'])
-                                archive_changed = True
-                            if event['event_id'] not in durable_event_ids:
-                                durable_event_ids.add(event['event_id'])
-                                durable_events.append(dict(event))
-                    if archive_changed:
+                            fact_identity = _speaker_trust_fact_identity(fact)
+                            additions = valid_by_fact.get(fact_identity)
+                            if not additions:
+                                continue
+                            matches_expected_reconciliation = (
+                                expected_provenance_by_fact.get(fact_identity)
+                                == _provenance(fact)
+                            )
+                            recorded = fact.get('_speaker_trust_signal_events')
+                            if not isinstance(recorded, list):
+                                recorded = []
+                                fact['_speaker_trust_signal_events'] = recorded
+                            known = {
+                                str(item.get('event_id') or '')
+                                for item in recorded
+                                if isinstance(item, dict)
+                            }
+                            for event in additions:
+                                is_replay = event['event_id'] in known
+                                if (
+                                    not is_replay
+                                    and not matches_expected_reconciliation
+                                    and (
+                                        fact.get('speaker_provenance_mixed') is True
+                                        or stable_speaker_id(fact.get('speaker_id'))
+                                        != event['speaker_id']
+                                    )
+                                ):
+                                    continue
+                                if not is_replay:
+                                    recorded.append(event)
+                                    known.add(event['event_id'])
+                                    rows_changed = True
+                                if event['event_id'] not in durable_event_ids:
+                                    durable_event_ids.add(event['event_id'])
+                                    durable_events.append(dict(event))
+                        return rows_changed
+
+                    if _attach(archived):
                         assert_cloudsave_writable(
                             self._config_manager,
                             operation="save",
@@ -1727,6 +2048,17 @@ class FactStore:
                             archive_path, archived,
                             indent=2, ensure_ascii=False,
                         )
+
+                    def _attach_cold(row: dict) -> dict:
+                        copy = json.loads(json.dumps(row, ensure_ascii=False))
+                        return copy if _attach([copy]) else row
+
+                    try:
+                        cold_store.rewrite_rows(self._character_dir(name), _attach_cold)
+                    except cold_store.ColdStoreUnreadable as exc:
+                        raise RuntimeError(
+                            f"cold facts unreadable during trust persist: {exc}"
+                        ) from exc
                 return durable_events
 
             persist_task = asyncio.create_task(asyncio.to_thread(_persist))
@@ -1851,6 +2183,18 @@ class FactStore:
                             indent=2, ensure_ascii=False,
                         )
                         changed = True
+
+                    def _restore_cold(row: dict) -> dict:
+                        copy = dict(row)
+                        return copy if _restore([copy]) else row
+
+                    try:
+                        if cold_store.rewrite_rows(self._character_dir(name), _restore_cold):
+                            changed = True
+                    except cold_store.ColdStoreUnreadable as exc:
+                        raise RuntimeError(
+                            f"cold facts unreadable during trust rollback: {exc}"
+                        ) from exc
                 return changed
 
             rollback_task = asyncio.create_task(asyncio.to_thread(_rollback))
@@ -1876,155 +2220,64 @@ class FactStore:
                 _ = rollback_task.result()
                 raise cancellation
 
-    async def arestore_arbitrated_fact(
-        self,
-        name: str,
-        fact_id: object,
-        *,
-        subject: MemorySubject | dict | None = None,
-    ) -> bool:
-        """Restore one arbitration row, rejecting ambiguous scoped IDs."""
-        target_id = str(fact_id if fact_id is not None else '').strip()
-        if not target_id:
-            return False
-        target_subject = coerce_subject(subject)
-        target_scope = (
-            (
-                target_subject.kind,
-                target_subject.subject_id,
-                target_subject.scope,
-            )
-            if target_subject is not None
-            else None
-        )
+    async def arestore_cold_facts(
+        self, name: str, select: Callable[[dict], bool],
+    ) -> list[dict]:
+        """Bring cold facts chosen by ``select(row)`` back into the active pool.
+
+        Goes through ``cold_store.restore``: a private-chat fact comes back as
+        a copy under a new id (its cold row stays, so peers that hold the old
+        id as cold never fold the copy away again); a group-subject fact comes
+        back under its own id and leaves cold storage. The active file is
+        written before cold storage changes, so a crash leaves the row cold,
+        never lost. Returns the rows added.
+        """
         async with self._get_persist_alock(name):
-            def _restore() -> bool:
+            def _restore() -> list[dict]:
                 # Warm the non-reentrant cache lock before taking it below.
                 self.load_facts(name)
                 with self._get_lock(name):
                     assert_cloudsave_writable(
                         self._config_manager,
                         operation='restore',
-                        target=f'memory/{name}/facts_archive.json',
+                        target=f'memory/{name}/facts.json',
                     )
+                    # Rows demoted before cold storage existed are restorable too.
+                    if self._migrate_cold_rows_locked(name) is None:
+                        raise RuntimeError('cold facts could not be prepared for restore')
+                    facts = self._facts.get(name, [])
+                    # A copy restored earlier may itself have aged into the
+                    # archive or gone cold since; it still counts as restored.
                     archive_path = self._facts_archive_path(name)
-                    if not os.path.exists(archive_path):
-                        return False
-                    try:
+                    archived: list = []
+                    if os.path.exists(archive_path):
                         with open(archive_path, encoding='utf-8') as fh:
                             archived = json.load(fh)
-                    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-                        raise RuntimeError(
-                            f'facts_archive unreadable during restore: {exc}'
-                        ) from exc
-                    if not isinstance(archived, list):
-                        raise RuntimeError('facts_archive is not a list during restore')
-
-                    def _restore_id(row: dict) -> str | None:
-                        readable = _readable_fact_id(row)
-                        if readable is None:
-                            return None
-                        normalized = str(readable).strip()
-                        return normalized or None
-
-                    def _restore_identity(row: dict) -> tuple | None:
-                        return _fact_scoped_identity(row)
-
-                    def _restore_scope(row: dict) -> tuple[str, str, str] | None:
-                        row_subject = subject_from_entry(row)
-                        if row_subject is None:
-                            return None
-                        return (
-                            row_subject.kind,
-                            row_subject.subject_id,
-                            row_subject.scope,
-                        )
-
-                    matches = [
-                        row for row in archived
-                        if isinstance(row, dict)
-                        and _restore_id(row) == target_id
-                        and row.get('arbitration_archived_at')
-                        and not row.get('subject_archived_at')
-                        and (
-                            target_scope is None
-                            or _restore_scope(row) == target_scope
-                        )
-                    ]
-                    if not matches:
-                        return False
-                    match_identities = {
-                        _restore_identity(row) for row in matches
+                        if not isinstance(archived, list):
+                            raise RuntimeError('facts_archive is not a list during restore')
+                    already = {
+                        row.get('restored_from')
+                        for row in [*facts, *archived, *self._cold_fact_stubs(name)]
+                        if isinstance(row, dict) and row.get('restored_from')
                     }
-                    exact_fact_id = (
-                        target_id if isinstance(fact_id, str) else fact_id
+
+                    def _activate(rows: list[dict]) -> None:
+                        self._activate_restored_rows(name, facts, rows)
+
+                    restored = cold_store.restore(
+                        self._character_dir(name),
+                        lambda row: select(row) and (
+                            subject_from_entry(row) is not None
+                            or row.get('id') not in already
+                        ),
+                        activate=_activate,
                     )
-                    exact_identity = (
-                        _speaker_trust_fact_id(exact_fact_id),
-                        *(target_scope or ('', '', '')),
-                    )
-                    exact_matches = (
-                        [
-                            row for row in matches
-                            if _restore_identity(row) == exact_identity
-                        ]
-                        if target_scope is not None else []
-                    )
-                    if exact_matches:
-                        matches = exact_matches
-                        selected_identity = exact_identity
-                    elif len(match_identities) == 1:
-                        # Compatibility: a string request may address one
-                        # legacy numeric archive id when no exact string id
-                        # exists. Multiple scalar types remain ambiguous.
-                        selected_identity = next(iter(match_identities))
-                    else:
-                        return False
-                    facts = self._facts.get(name, [])
-                    active_identities = {
-                        _restore_identity(row)
-                        for row in facts
-                        if isinstance(row, dict)
-                    }
-                    restored = dict(matches[-1])
-                    for key in (
-                        'arbitration_archived_at', 'arbitration_reason',
-                        'superseded_by',
-                    ):
-                        restored.pop(key, None)
-                    restored_at = datetime.now().isoformat()
-                    restored['arbitration_restored_at'] = restored_at
-                    restored['restored_at'] = restored_at
-                    active = list(facts)
-                    if selected_identity not in active_identities:
-                        active.append(restored)
-                    remaining = [
-                        row for row in archived
-                        if not (
-                            isinstance(row, dict)
-                            and _restore_identity(row) == selected_identity
-                            and row.get('arbitration_archived_at')
-                        )
-                    ]
-                    # Restore is the mirror transaction: active first, archive
-                    # second. A crash leaves a duplicate, never a missing fact.
-                    atomic_write_json(
-                        self._facts_path(name), active, indent=2,
-                        ensure_ascii=False,
-                    )
-                    atomic_write_json(
-                        archive_path, remaining, indent=2, ensure_ascii=False,
-                    )
-                    facts[:] = active
-                    logger.info(
-                        f'[FactStore] {name}: 仲裁恢复 fact={target_id}'
-                    )
-                    return True
+                    if restored:
+                        logger.info(f'[FactStore] {name}: 从冷存恢复 {len(restored)} 条事实')
+                    return restored
 
             try:
-                # Restoration need not touch index: archive rows already reside there (see
-                # _aensure_fact_index_backfilled).
-                return await asyncio.to_thread(_restore)
+                restored = await asyncio.to_thread(_restore)
             except BaseException:
                 def _invalidate() -> None:
                     with self._get_lock(name):
@@ -2032,6 +2285,82 @@ class FactStore:
 
                 await asyncio.to_thread(_invalidate)
                 raise
+            if restored and self._time_indexed is not None:
+                # Indexed under the same lock as the write: a subject forget queued
+                # behind this restore must find the rows indexed, or its strict index
+                # delete would run first and this write would put the words back.
+                index_task = asyncio.create_task(self._aindex_restored_rows(name, restored))
+                try:
+                    await asyncio.shield(index_task)
+                except asyncio.CancelledError:
+                    # Every further cancellation is absorbed too, as the trust
+                    # persist path above does: the lock is released only once the
+                    # index write has finished.
+                    current_task = asyncio.current_task()
+                    while not index_task.done():
+                        try:
+                            await asyncio.shield(index_task)
+                        except asyncio.CancelledError:
+                            if current_task is not None:
+                                while current_task.cancelling():
+                                    current_task.uncancel()
+                    raise
+        return restored
+
+    async def _aindex_restored_rows(self, name: str, rows: list[dict]) -> None:
+        for row in rows:
+            try:
+                await self._time_indexed.aindex_fact(name, row['id'], row.get('text', ''))
+            except Exception as error:  # noqa: BLE001 - the index backfill repairs a missing row
+                logger.warning(
+                    f"[FactStore] {name}: 恢复的事实写入检索索引失败: {type(error).__name__}"
+                )
+
+    def _migrate_cold_rows_locked(self, name: str) -> int | None:
+        """Move demoted rows still in facts_archive.json into cold storage. Caller holds the fact lock.
+
+        Rows demoted before cold storage existed (arbitration losers, archived
+        group subjects) and rows a cloud save brought back after they went cold
+        both end up here. Cold storage is written first and skips rows it already
+        holds, so a run cut short is simply repeated by the next one. Returns
+        how many rows left the archive, or None when either store is unreadable
+        (nothing changes then).
+        """
+        archive_path = self._facts_archive_path(name)
+        if not os.path.exists(archive_path):
+            return 0
+        try:
+            with open(archive_path, encoding='utf-8') as fh:
+                archived = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过冷存迁移: {exc}")
+            return None
+        if not isinstance(archived, list):
+            return None
+        directory = self._character_dir(name)
+        try:
+            cold = self._cold_identities(name)
+        except cold_store.ColdStoreUnreadable as exc:
+            logger.warning(f"[FactStore] {name}: 读取冷存失败，跳过冷存迁移: {exc}")
+            return None
+        moving = [row for row in archived if _is_cold_row(row)]
+        staying = [
+            row for row in archived
+            if not _is_cold_row(row) and _fact_scoped_identity(row) not in cold
+        ]
+        if len(staying) == len(archived):
+            return 0
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="archive",
+            target=f"memory/{name}/{cold_store.FACT_COLD_DIRNAME}",
+        )
+        cold_store.append(directory, moving, identity=_fact_scoped_identity)
+        atomic_write_json(archive_path, staying, indent=2, ensure_ascii=False)
+        logger.info(
+            f"[FactStore] {name}: {len(archived) - len(staying)} 条降级事实从归档挪进冷存"
+        )
+        return len(archived) - len(staying)
 
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
@@ -2050,7 +2379,7 @@ class FactStore:
             except (ValueError, TypeError):
                 active.append(f)
                 continue
-            if f.get('absorbed') and created < cutoff:
+            if f.get('absorbed') and created < cutoff and not f.get('_near_dup_pending'):
                 to_archive.append(f)
             else:
                 active.append(f)
@@ -2103,18 +2432,17 @@ class FactStore:
         self, name: str, subject: MemorySubject, archived_at_iso: str,
         stale_cutoff: datetime,
     ) -> int | None:
-        """Move the stale facts of one scoped subject into facts_archive.json.
+        """Move the stale facts of one scoped subject into cold storage.
 
         Returns the number of rows stamped, or ``None`` when the pass ABORTED
         because a fresh write revealed the subject just revived — the caller
         must treat None as "subject is active again" and skip the subject's
         remaining stores, not as an ordinary zero-count result.
 
-        Also stamps ``subject_archived_at`` onto the subject's rows that the
-        absorbed-shrink path had ALREADY moved into facts_archive.json: those
-        rows stay recallable by design for live subjects, so without the
-        in-place stamp an archived subject would remain searchable through
-        its absorbed history forever.
+        Also moves the subject's rows that the absorbed-shrink path had ALREADY
+        put into facts_archive.json, stamped the same way: those rows stay
+        recallable by design for live subjects, so leaving them there would
+        keep an archived subject searchable through its absorbed history.
 
         Time-driven counterpart of `_archive_absorbed` (score/absorbed-driven).
         Every moved row is stamped with ``subject_archived_at`` — the marker
@@ -2140,9 +2468,10 @@ class FactStore:
         file likewise aborts with ``None``: proceeding would leave the
         subject permanently split (facts active, higher stores archived).
 
-        Same two-file commit discipline as `_archive_absorbed`: archive first,
-        facts.json second — an interruption leaves the row in BOTH files
-        (readers converge by id, next run is idempotent), never in neither.
+        Same two-file commit discipline as `_archive_absorbed`: cold storage
+        first, then facts_archive.json and facts.json — an interruption leaves
+        the row in both places (readers settle it as cold, the next run skips
+        it), never in neither.
         """
         self.load_facts(name)  # ensure cache before taking the lock (non-reentrant)
         with self._get_lock(name):
@@ -2151,6 +2480,8 @@ class FactStore:
                 operation="archive",
                 target=f"memory/{name}/facts.json",
             )
+            if self._migrate_cold_rows_locked(name) is None:
+                return None
             facts = self._facts.get(name, [])
             matching = [
                 f for f in facts
@@ -2205,38 +2536,53 @@ class FactStore:
                         f"[FactStore] {name}: 读取归档文件失败，中止本轮 subject 归档: {e}"
                     )
                     return None
-            # Same-subject rows already archived by absorbed shrinkage get subject_archived_at
-            # stamped in place, removing them from recall together with active rows.
-            stamped_in_archive = 0
-            for f in existing_archive:
-                if (
-                    isinstance(f, dict)
-                    and not f.get('subject_archived_at')
-                    and not f.get('arbitration_archived_at')
-                    and entry_matches_subject(f, subject)
-                ):
-                    f['subject_archived_at'] = archived_at_iso
-                    stamped_in_archive += 1
+            # Same-subject rows already archived by absorbed shrinkage leave for
+            # cold storage too, removed from recall together with active rows.
+            # (The migration above already moved every marked row.)
+            from_archive = [
+                f for f in existing_archive
+                if isinstance(f, dict) and entry_matches_subject(f, subject)
+            ]
+            stamped_in_archive = len(from_archive)
             if not to_archive and not stamped_in_archive:
                 return 0
             stamped = []
-            for f in to_archive:
+            # An interrupted absorbed-archive commit can leave one row in both
+            # places; the live copy is the newer one and is the one kept.
+            for f in _merge_archive_entries(from_archive, to_archive):
                 copy = dict(f)
                 copy['subject_archived_at'] = archived_at_iso
                 stamped.append(copy)
-            existing_archive = _merge_archive_entries(existing_archive, stamped)
-            atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
-            if to_archive:
-                active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
-                atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
-                # Remove cache rows in place by identity (retain concurrent appends for next save).
-                archived_identities = {id(f) for f in to_archive}
-                facts[:] = [f for f in facts if id(f) not in archived_identities]
+            try:
+                cold_store.append(
+                    self._character_dir(name), stamped, identity=_fact_scoped_identity,
+                )
+            except cold_store.ColdStoreUnreadable as e:
+                logger.warning(f"[FactStore] {name}: 读取冷存失败，中止本轮 subject 归档: {e}")
+                return None
+            try:
+                if from_archive:
+                    leaving = {id(f) for f in from_archive}
+                    atomic_write_json(
+                        archive_path,
+                        [f for f in existing_archive if id(f) not in leaving],
+                        indent=2, ensure_ascii=False,
+                    )
+                if to_archive:
+                    active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
+                    atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+                    # Remove cache rows in place by identity (retain concurrent appends for next save).
+                    archived_identities = {id(f) for f in to_archive}
+                    facts[:] = [f for f in facts if id(f) not in archived_identities]
+            except Exception:
+                # The rows are cold already; the next load filters the stale copies.
+                self._facts.pop(name, None)
+                raise
             # Privacy: log domain identifiers/counts only, never original text.
             logger.info(
                 f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
-                f"/{subject.subject_id}] 活跃 {len(to_archive)} 条 + 归档池补标记 "
-                f"{stamped_in_archive} 条"
+                f"/{subject.subject_id}] 活跃 {len(to_archive)} 条 + 归档池 "
+                f"{stamped_in_archive} 条挪进冷存"
             )
             return len(to_archive) + stamped_in_archive
 
@@ -2254,29 +2600,25 @@ class FactStore:
         restored_at_iso: str | None = None,
         archived_after_iso: str | None = None,
     ) -> int | None:
-        """Move a subject's ``subject_archived_at`` rows back into facts.json.
+        """Move a subject's ``subject_archived_at`` rows from cold storage back into facts.json.
 
-        Inverse of `_archive_subject_facts`; absorbed-archived rows (no
-        marker) are untouched. Write order is the mirror image — facts.json
-        (with the restored rows) first, archive (without them) second — so an
-        interruption again leaves rows in BOTH files, and every reader's
-        by-id convergence keeps the active copy.
+        Inverse of `_archive_subject_facts`, through ``cold_store.restore``:
+        group rows keep their ids, facts.json is written before cold storage
+        changes, so an interruption leaves the row cold rather than lost.
 
         Every restored row is stamped with ``restored_at``: the staleness
         ledger counts it as a write (see ``subject_archive._TIMESTAMP_FIELDS``),
         so an explicit restore resets the subject's archival clock instead of
         being undone by the very next sweep.
 
-        A row carrying both subject and arbitration markers remains archived:
+        A row carrying both subject and arbitration markers stays cold:
         subject restoration clears only its subject marker, preserving the
-        independent trust-arbitration decision until an explicit arbitration
-        restore is requested.
+        independent trust-arbitration decision.
 
-        Returns the number of rows moved back, or ``None`` when the archive
-        file is corrupt — mirroring the archival side's abort semantics, so
-        the orchestrator skips the higher stores instead of leaving the
-        subject split (facts still archived, reflections/persona active).
-        A missing archive file is an ordinary no-op 0.
+        Returns the number of rows touched, or ``None`` when facts_archive.json
+        or cold storage cannot be read — mirroring the archival side's abort
+        semantics, so the orchestrator skips the higher stores instead of
+        leaving the subject split (facts still cold, reflections/persona active).
         """
         if restored_at_iso is None:
             restored_at_iso = datetime.now().isoformat()
@@ -2287,27 +2629,13 @@ class FactStore:
                 operation="save",
                 target=f"memory/{name}/facts.json",
             )
-            archive_path = self._facts_archive_path(name)
-            if not os.path.exists(archive_path):
-                return 0
-            try:
-                with open(archive_path, encoding='utf-8') as fh:
-                    archived = json.load(fh)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(
-                    f"[FactStore] {name}: 读取归档文件失败，中止 subject 恢复: {e}"
-                )
-                return None
-            if not isinstance(archived, list):
-                logger.warning(
-                    f"[FactStore] {name}: 归档文件顶层非 list，中止 subject 恢复"
-                )
+            if self._migrate_cold_rows_locked(name) is None:
                 return None
 
             def _is_subject_marked_row(f) -> bool:
                 return (
                     isinstance(f, dict)
-                    and f.get('subject_archived_at')
+                    and bool(f.get('subject_archived_at'))
                     and (
                         archived_after_iso is None
                         or str(f.get('subject_archived_at')) > archived_after_iso
@@ -2315,59 +2643,36 @@ class FactStore:
                     and entry_matches_subject(f, subject)
                 )
 
-            to_restore = [
-                f for f in archived
-                if _is_subject_marked_row(f)
-                and not f.get('arbitration_archived_at')
-            ]
-            arbitration_rows = [
-                f for f in archived
-                if _is_subject_marked_row(f)
-                and f.get('arbitration_archived_at')
-            ]
-            if not to_restore and not arbitration_rows:
-                return 0
+            directory = self._character_dir(name)
             facts = self._facts.get(name, [])
-            active_ids = {
-                fid for fid in (
-                    _readable_fact_id(f) for f in facts if isinstance(f, dict)
-                ) if fid is not None
-            }
-            restored: list[dict] = []
-            for f in to_restore:
-                fid = _readable_fact_id(f)
-                if fid is not None and fid in active_ids:
-                    # Both copies left by interrupted restoration: active wins; simply
-                    # remove archive duplicate to converge.
-                    continue
+
+            def _activate(rows: list[dict]) -> None:
+                self._activate_restored_rows(name, facts, rows)
+
+            def _unmark_arbitration_row(f: dict) -> dict:
+                if not (_is_subject_marked_row(f) and f.get('arbitration_archived_at')):
+                    return f
                 copy = dict(f)
                 copy.pop('subject_archived_at', None)
                 copy['restored_at'] = restored_at_iso
-                restored.append(copy)
-            restore_object_ids = {id(f) for f in to_restore}
-            arbitration_object_ids = {id(f) for f in arbitration_rows}
-            remaining_archive = []
-            for f in archived:
-                if id(f) in restore_object_ids:
-                    continue
-                if id(f) in arbitration_object_ids:
-                    copy = dict(f)
-                    copy.pop('subject_archived_at', None)
-                    copy['restored_at'] = restored_at_iso
-                    remaining_archive.append(copy)
-                    continue
-                remaining_archive.append(f)
-            atomic_write_json(
-                self._facts_path(name), facts + restored, indent=2, ensure_ascii=False,
-            )
-            atomic_write_json(
-                archive_path, remaining_archive, indent=2, ensure_ascii=False,
-            )
-            facts.extend(restored)
+                return copy
+
+            try:
+                restored = cold_store.restore(
+                    directory,
+                    lambda f: _is_subject_marked_row(f) and not f.get('arbitration_archived_at'),
+                    activate=_activate, restored_at=restored_at_iso,
+                )
+                arbitration_rows = cold_store.rewrite_rows(directory, _unmark_arbitration_row)
+            except cold_store.ColdStoreUnreadable as e:
+                logger.warning(f"[FactStore] {name}: 读取冷存失败，中止 subject 恢复: {e}")
+                return None
+            if not restored and not arbitration_rows:
+                return 0
             logger.info(
                 f"[FactStore] {name}: subject 恢复 [scoped {subject.kind}"
                 f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池，"
-                f"{len(arbitration_rows)} 条仲裁 loser 清除 subject 标记后保持归档"
+                f"{len(arbitration_rows)} 条仲裁 loser 清除 subject 标记后保持冷存"
             )
             return len(restored) + len(arbitration_rows)
 
@@ -2784,10 +3089,26 @@ class FactStore:
         max_retries: int = 3,
         timeout: float = 60,
         thinking: bool = False,
+        parse_max_retries: int | None = None,
+        failure_info: dict | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ):
         """Shared LLM helper: retry on network errors + JSON errors, same
         policy as the old `extract_facts`. Returns parsed JSON or None on
         terminal failure (caller decides whether to abort / swallow).
+
+        ``parse_max_retries`` caps JSON-parse failures separately (``None`` =
+        same as ``max_retries``). A caller with its own fallback for malformed
+        or truncated output (the external daily import splits the batch) sets
+        it to 1 while network errors / 429 / 5xx keep the full backoff budget.
+
+        ``failure_info``: on terminal failure, ``failure_info["reason"]`` is set
+        to ``"parse"`` (the last attempt returned unparseable JSON) or
+        ``"transport"`` (network / provider / other error), so a caller can
+        tell output it might repair from an outage it cannot.
+
+        ``before_attempt`` is awaited before every provider attempt, retries
+        included (the external daily import paces all its calls through it).
 
         Note: no longer accepts temperature. The project-wide convention is to
         never send that parameter (gatekeeper: scripts/check_no_temperature.py).
@@ -2812,12 +3133,18 @@ class FactStore:
         from memory.thinking_llm import ainvoke_thinking, describe_output
 
         retries = 0
+        parse_failures = 0
+        last_failure = "transport"
         while retries < max_retries:
             resp = None
             try:
                 set_call_type(call_type)
                 api_config = await self._config_manager.aget_model_api_config(tier)
                 if thinking:
+                    # Keep the hook right before the actual request: config reads / client construction can also suspend, and putting it before them
+                    # would scramble the real call-start order of concurrent requests
+                    if before_attempt is not None:
+                        await before_attempt()
                     resp, _ = await ainvoke_thinking(
                         api_config, prompt, timeout=timeout,
                         call_label=f"{lanlan_name} {call_type}",
@@ -2833,6 +3160,8 @@ class FactStore:
                         provider_type=api_config.get('provider_type'),
                     )
                     try:
+                        if before_attempt is not None:
+                            await before_attempt()
                         resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # extract-facts prompt assembled from token-capped recent history components.
                     finally:
                         await llm.aclose()
@@ -2841,6 +3170,7 @@ class FactStore:
                 return robust_json_loads(raw)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
                 retries += 1
+                last_failure = "transport"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} 网络错误 {type(e).__name__}, "
                     f"重试 {retries}/{max_retries}"
@@ -2850,15 +3180,20 @@ class FactStore:
                 continue
             except json.JSONDecodeError as e:
                 retries += 1
+                parse_failures += 1
+                last_failure = "parse"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} JSON 解析失败 "
                     f"(重试 {retries}/{max_retries}): {e} ({describe_output(resp)})"
                 )
+                if parse_max_retries is not None and parse_failures >= parse_max_retries:
+                    break
                 if retries < max_retries:
                     await asyncio.sleep(2 ** (retries - 1))
                 continue
             except Exception as e:
                 retries += 1
+                last_failure = "transport"
                 logger.warning(
                     f"[FactStore] {lanlan_name}: {call_type} 失败 "
                     f"(重试 {retries}/{max_retries}): {type(e).__name__}: {e}"
@@ -2870,12 +3205,18 @@ class FactStore:
         logger.warning(
             f"[FactStore] {lanlan_name}: {call_type} 达到最大重试 {max_retries}，放弃"
         )
+        if failure_info is not None:
+            failure_info["reason"] = last_failure
         return None
 
     async def _allm_extract_facts(
         self, lanlan_name: str, messages: list,
         *, treat_malformed_as_failure: bool = False,
         speaker_label: str | None = None,
+        parse_max_retries: int | None = None,
+        failure_info: dict | None = None,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
+        label_own_words: bool = False,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
@@ -2895,12 +3236,21 @@ class FactStore:
         legacy prompt assumes the human speaker IS the master — true for
         private admin chats, wrong for group-member batches, whose speaker
         would otherwise have their statements extracted as facts about the
-        master (Codex P2)."""
+        master (Codex P2).
+
+        ``label_own_words``: a group-chat history that contains the
+        character's own messages; the model also marks each fact's
+        ``source`` (``ai_disclosure`` for the character's words), which
+        persistence honours. Without it every fact counts as the others'
+        words."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         if speaker_label:
             name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
+        from memory.long_term_sync import retirement_source_prompt
+        conversation_text, source_instruction = retirement_source_prompt(
+            os.path.join(self._config_manager.memory_dir, lanlan_name) if getattr(self._config_manager, 'memory_dir', None) is not None else None, messages, conversation_text, name_mapping)
         prompt_lang = _detect_fact_extraction_prompt_language(
             self._messages_locale_text(
                 messages,
@@ -2909,17 +3259,28 @@ class FactStore:
             ui_language=get_global_language_full(),
         )
 
+        template = get_fact_extraction_prompt(prompt_lang)
+        if label_own_words:
+            from config.prompts.prompts_memory import (
+                get_fact_extraction_group_source_addendum,
+            )
+            template += get_fact_extraction_group_source_addendum(prompt_lang)
         prompt = (
-            get_fact_extraction_prompt(prompt_lang)
+            template
             .replace('{CONVERSATION}', conversation_text)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
         )
 
+        prompt += source_instruction
+
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
             tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
             call_type="memory_fact_extraction",
+            parse_max_retries=parse_max_retries,
+            failure_info=failure_info,
+            before_attempt=before_attempt,
         )
         if extracted is None:
             return None
@@ -2929,6 +3290,8 @@ class FactStore:
                     f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
                     f"{type(extracted).__name__}，当作抽取失败（可重试，不 checkpoint）"
                 )
+                if failure_info is not None:
+                    failure_info["reason"] = "schema"
                 return None
             logger.warning(
                 f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
@@ -3261,6 +3624,17 @@ class FactStore:
                 prov['speaker_entity_id'] = entity_id
         return prov or None
 
+    @staticmethod
+    def group_history_has_own_words(messages, subject) -> bool:
+        """Whether a scoped history is a group chat that includes the
+        character's own messages, the case ``label_own_words`` is for."""
+        memory_subject = coerce_subject(subject)
+        return (
+            memory_subject is not None
+            and memory_subject.kind == SUBJECT_GROUP_CHAT
+            and any(getattr(m, 'type', '') == 'ai' for m in messages or ())
+        )
+
     async def extract_facts_batch(
         self, segments: list[dict], lanlan_name: str,
     ) -> list[dict]:
@@ -3473,6 +3847,10 @@ class FactStore:
         reconciled_facts: list[dict] | None = None,
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
+        source_messages: list | None = None,
+        source_accepted: list[dict] | None = None,
+        extraction_path: str | None = None,
+        progress_pass: str | None = None,
     ) -> list[dict]:
         # Collect near-duplicate pairs under lock, submit only afterward: submission needs
         # FactDedupResolver's per-character lock, while aresolve reverses the order,
@@ -3480,49 +3858,203 @@ class FactStore:
         # this _persist_alock. Mutual waits on one loop deadlock, permanently blocking
         # this character's writes and deduplication decisions.
         near_dup_pairs: list[tuple[dict, dict, float]] = []
-        async with self._get_persist_alock(lanlan_name):
-            memory_subject = coerce_subject(subject)
-            if (
-                memory_subject is not None
-                and (
-                    self._subject_forget_is_active(
-                        lanlan_name, memory_subject,
-                    )
-                    or (
-                        expected_subject_generation is not None
-                        and self._subject_forget_generation(
+        await self.aretry_pending_near_dups(lanlan_name)
+        memory_subject = coerce_subject(subject)
+        from memory.long_term_sync import (
+            RETIRED_ASSERTION_REVIEW_MAX_PAIRS, retirement_evidence, retirement_review_pairs, verify_retired_assertions,
+            resolve_retirement_cutoffs, trusted_message_source,
+        )
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+        retirements = await asyncio.to_thread(retirement_evidence, directory) if memory_subject is None else []
+        expected_retirements = retirements
+        if default_source not in self._SOURCE_VALUES:
+            default_source = self._SOURCE_DEFAULT
+        # Validate the whole batch before changing any fact or signal marker.
+        if memory_subject is None and (retirements or source_messages):
+            extracted = [{**candidate,
+                'entity': candidate.get('entity') if candidate.get('entity') in ('master', 'neko', 'relationship') else 'master',
+                'source': candidate.get('source') if isinstance(candidate.get('source'), str) and candidate.get('source') in self._SOURCE_VALUES else default_source}
+                if isinstance(candidate, dict) else candidate for candidate in extracted]
+        # The held-back proof and queue id are this device's own records. A model
+        # output carrying the same keys must not pass for one: drop them first.
+        from memory.long_term_sync import STORED_PROOF
+        from memory.retirement_review_queue import ANCHOR, QUEUE_ID, RETRY_LATER
+        internal = (STORED_PROOF, QUEUE_ID, RETRY_LATER, ANCHOR)
+        extracted = [{key: value for key, value in candidate.items() if key not in internal}
+                     if isinstance(candidate, dict) and any(key in candidate for key in internal) else candidate
+                     for candidate in extracted]
+        # Candidates an earlier extraction held back come first, so the queue drains.
+        review_queue = None
+        if memory_subject is None and source_messages is not None:
+            from memory import retirement_review_queue
+            queue_key = retirement_review_queue.key(default_source, extraction_path, progress_pass)
+            review_queue = await asyncio.to_thread(retirement_review_queue.read, directory)
+            brought_back = retirement_review_queue.candidates(review_queue, queue_key)
+            extracted = brought_back + list(extracted)
+        matches = {}
+        held_back: list = []
+        lookup = ((lambda ids: self._time_indexed.aget_original_source_evidence(lanlan_name, ids))
+                  if getattr(self._time_indexed, 'aget_original_source_evidence', None) is not None else None)
+        if retirements:
+            if review_queue is not None and sum(len(pairs) for _, pairs in retirement_review_pairs(
+                    retirements, extracted, source_messages, default_source=default_source)) > RETIRED_ASSERTION_REVIEW_MAX_PAIRS:
+                # Over budget: known correction times narrow the pairs, since a record
+                # whose time is still unknown pairs with every new fact on its subject.
+                # Only a help here; a batch that fits never waits on this lookup.
+                try:
+                    retirements = await resolve_retirement_cutoffs(retirements, source_messages, lookup=lookup)
+                except Exception as error:  # noqa: BLE001 - the strict resolution below still runs
+                    logger.info(f"[FactStore] {lanlan_name}: 预先解析纠正时间失败，按原样配对: {error}")
+            matches = await verify_retired_assertions(retirements, extracted, source_messages,
+                lambda prompt, **kwargs: self._allm_call_with_retries(prompt, lanlan_name, **kwargs), default_source=default_source,
+                deferred=held_back if review_queue is not None else None)
+            reviewed = [candidate for candidate in extracted if id(candidate) not in {id(item) for item in held_back}]
+            relevant = [row for row in retirements if any(isinstance(candidate, dict)
+                and candidate.get('entity') == row['subject'] and (row['id'] in matches.get(id(candidate), ())
+                    or isinstance(candidate.get('text'), str) and candidate['text'].strip() == row.get('text', '').strip())
+                for candidate in reviewed)]
+            resolved = await resolve_retirement_cutoffs(relevant, source_messages, lookup=lookup)
+            repaired = {(row['subject'], row['id']): row for row in resolved}
+            retirements = [repaired.get((row['subject'], row['id']), row) for row in retirements]
+        if held_back:
+            logger.info(f"[FactStore] {lanlan_name}: 退役断言审查本轮已达上限，{len(held_back)} 条候选留到下一轮")
+            held = {id(candidate) for candidate in held_back}
+            extracted = [candidate for candidate in extracted if id(candidate) not in held]
+        retirement_review = (expected_retirements, retirements, matches)
+        try:
+            async with self._get_persist_alock(lanlan_name):
+                memory_subject = coerce_subject(subject)
+                if (
+                    memory_subject is not None
+                    and (
+                        self._subject_forget_is_active(
                             lanlan_name, memory_subject,
-                        ) != expected_subject_generation
+                        )
+                        or (
+                            expected_subject_generation is not None
+                            and self._subject_forget_generation(
+                                lanlan_name, memory_subject,
+                            ) != expected_subject_generation
+                        )
                     )
+                ):
+                    logger.info(
+                        f"[FactStore] {lanlan_name}: 丢弃撤回期间完成的 scoped "
+                        f"fact extraction ({memory_subject.key}/"
+                        f"{memory_subject.scope})"
+                    )
+                    return []
+                created = await self._apersist_new_facts_locked(
+                    lanlan_name,
+                    extracted,
+                    default_source=default_source,
+                    semantic_dedup=semantic_dedup,
+                    subject=subject,
+                    speaker_provenance=speaker_provenance,
+                    reconciled_facts=reconciled_facts,
+                    near_dup_pairs_out=near_dup_pairs,
+                    retirement_review=retirement_review,
+                    **({'source_messages': source_messages} if source_messages is not None else {}),
+                    **({'source_accepted': source_accepted} if source_accepted is not None else {}),
+                    **(
+                        {"effect_keys": effect_keys}
+                        if effect_keys is not None else {}
+                    ),
+                    **(
+                        {"visit_origin": visit_origin}
+                        if visit_origin is not None else {}
+                    ),
+                    **(
+                        {"extraction_path": extraction_path}
+                        if extraction_path is not None else {}
+                    ),
+                    **({'held_back_out': held_back} if review_queue is not None else {}),
                 )
-            ):
-                logger.info(
-                    f"[FactStore] {lanlan_name}: 丢弃撤回期间完成的 scoped "
-                    f"fact extraction ({memory_subject.key}/"
-                    f"{memory_subject.scope})"
-                )
-                return []
-            created = await self._apersist_new_facts_locked(
-                lanlan_name,
-                extracted,
-                default_source=default_source,
-                semantic_dedup=semantic_dedup,
-                subject=subject,
-                speaker_provenance=speaker_provenance,
-                reconciled_facts=reconciled_facts,
-                near_dup_pairs_out=near_dup_pairs,
-                **(
-                    {"effect_keys": effect_keys}
-                    if effect_keys is not None else {}
-                ),
-                **(
-                    {"visit_origin": visit_origin}
-                    if visit_origin is not None else {}
-                ),
-            )
-        if near_dup_pairs:
-            await self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs)
+                progressed = source_messages
+                if review_queue is not None:
+                    kept, settled = await self._asave_retirement_review_queue_locked(
+                        lanlan_name, queue_key, [candidate[retirement_review_queue.QUEUE_ID] for candidate in brought_back],
+                        held_back, source_messages)
+                    # A message whose fact still waits is not read yet, on any device.
+                    progressed = [message for message in source_messages or []
+                                  if trusted_message_source(message)[0] not in kept]
+                    if progress_pass is not None and settled:
+                        await self._arecord_extraction_progress_locked(
+                            lanlan_name, progress_pass, None, identities=settled)
+                if progress_pass is not None and memory_subject is None:
+                    # Same lock as the facts above: a snapshot never carries this
+                    # progress without the facts extracted from those messages.
+                    await self._arecord_extraction_progress_locked(lanlan_name, progress_pass, progressed)
+        finally:
+            if near_dup_pairs:
+                # Only committed pairs reach this basket. Release persist before
+                # taking the resolver lock, including when cancellation is pending.
+                from utils.asyncio_retirement import await_retirement
+                await await_retirement(self._aenqueue_near_dup_pairs(lanlan_name, near_dup_pairs, durable=True))
         return created
+
+    async def aextraction_progress(self, lanlan_name: str) -> dict:
+        """Message identities each extraction pass has already read, on any device."""
+        from memory import extraction_progress
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+        return await asyncio.to_thread(extraction_progress.read, directory)
+
+    async def arecord_extraction_progress(self, lanlan_name: str, passage: str, messages: list | None) -> None:
+        """Record a pass over messages that produced no fact to persist."""
+        async with self._get_persist_alock(lanlan_name):
+            await self._arecord_extraction_progress_locked(lanlan_name, passage, messages)
+
+    async def _asave_retirement_review_queue_locked(self, lanlan_name, queue_key, brought_ids, held_back, source_messages):
+        """Keep candidates still waiting for review; returns (identities waiting, identities now settled)."""
+        from memory import retirement_review_queue
+        from memory.long_term_sync import STORED_PROOF, fact_source_evidence
+        added = []
+        for candidate in held_back:
+            if candidate.get(retirement_review_queue.QUEUE_ID):
+                continue
+            # Proven now, while its messages are at hand. A candidate the source
+            # checks reject would be rejected on its return too.
+            proof = fact_source_evidence([], candidate, candidate.get('entity', 'master'), source_messages,
+                                         source=candidate.get('source', 'user_observation'))
+            if proof:
+                added.append({**{name: value for name, value in candidate.items() if name != 'source_indices'},
+                              STORED_PROOF: proof, retirement_review_queue.ANCHOR: datetime.now().isoformat()})
+        if not brought_ids and not added:
+            return set(), []
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+
+        def save():
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+            target = Path(directory) / retirement_review_queue.FILE
+            with cloudsave_writable_transaction(self._config_manager, operation='save', target=target):
+                return retirement_review_queue.commit(directory, queue_key, set(brought_ids), held_back, added, STORED_PROOF)
+        from memory.recent import _await_recent_mutation_to_completion
+        return await _await_recent_mutation_to_completion(save)
+
+    async def _arecord_extraction_progress_locked(self, lanlan_name: str, passage: str, messages: list | None,
+                                                  *, identities: list | None = None) -> None:
+        from memory import extraction_progress
+        if identities is None and messages:
+            # Whatever path records it, a message whose fact still waits for review is not read yet.
+            from memory import retirement_review_queue
+            from memory.long_term_sync import STORED_PROOF, trusted_message_source
+            waiting = await asyncio.to_thread(
+                retirement_review_queue.waiting_identities,
+                os.path.join(self._config_manager.memory_dir, lanlan_name), STORED_PROOF)
+            if waiting:
+                messages = [message for message in messages if trusted_message_source(message)[0] not in waiting]
+        processed = extraction_progress.identities(messages) if identities is None else identities
+        if not processed:
+            return
+        directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+
+        def save():
+            from utils.cloudsave_runtime import cloudsave_writable_transaction
+            target = Path(directory) / extraction_progress.STATE_FILE
+            with cloudsave_writable_transaction(self._config_manager, operation='save', target=target):
+                extraction_progress.record_processed(directory, passage, processed)
+        from memory.recent import _await_recent_mutation_to_completion
+        await _await_recent_mutation_to_completion(save)
 
     async def apersist_scoped_facts(
         self,
@@ -3558,8 +4090,13 @@ class FactStore:
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
         near_dup_pairs_out: list | None = None,
+        retirement_review=None,
         effect_keys: list[str | None] | None = None,
         visit_origin: dict | None = None,
+        source_messages: list | None = None,
+        source_accepted: list[dict] | None = None,
+        extraction_path: str | None = None,
+        held_back_out: list | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -3574,9 +4111,9 @@ class FactStore:
         preview to avoid one FTS5 search per candidate while holding the
         persistence lock. Exact SHA-256 deduplication still applies.
 
-        Monotonic source upgrade: when SHA-256 hits an existing fact, normally
-        skip without writing. **Sole exception**: the existing fact's source is
-        'ai_disclosure' and the new fact's is 'user_observation' → upgrade
+        Exact matches keep their identity while retaining new trusted source
+        evidence. If the existing source is 'ai_disclosure' and the incoming
+        source is 'user_observation', upgrade
         existing.source in place + reset signal_processed=False so Stage-2
         re-evaluates. The reverse (user→ai) never downgrades — user
         corroboration is irreversible.
@@ -3590,6 +4127,10 @@ class FactStore:
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this call reconciled, so callers can distinguish their own
         write from a concurrent provenance change.
+
+        ``source_accepted`` receives the candidates that passed source and
+        retirement checks, before dedup folds any of them into existing rows,
+        so the pinned section never admits a candidate persistence rejected.
 
         ``effect_keys`` (keyed scoped_history only) is aligned index-for-index
         with ``extracted``. A non-empty entry is stamped onto the created row
@@ -3605,21 +4146,87 @@ class FactStore:
             default_source = self._SOURCE_DEFAULT
         memory_subject = coerce_subject(subject)
 
+        from memory.long_term_sync import retirement_evidence, fact_source_evidence, FactEvidenceUnavailable, STORED_PROOF
+        from memory.retirement_review_queue import RETRY_LATER
+        expected, retirements, matches = retirement_review
+        if memory_subject is None:
+            directory = os.path.join(self._config_manager.memory_dir, lanlan_name)
+            if await asyncio.to_thread(retirement_evidence, directory) != expected:
+                raise FactEvidenceUnavailable('retirement_evidence_changed')
+            if retirements != expected:
+                def save_repairs():
+                    from utils.file_utils import atomic_write_json
+                    from utils.cloudsave_runtime import cloudsave_writable_transaction
+                    state_path = Path(directory) / 'long_term_portable.json'
+                    with cloudsave_writable_transaction(self._config_manager, operation='save', target=state_path):
+                        with open(state_path, encoding='utf-8') as handle:
+                            state = json.load(handle)
+                        repaired = {(row['subject'], row['id']): row for row in retirements}
+                        for row in state['evidence']['retirements']:
+                            update = repaired.get((row['subject'], row['id']), {})
+                            for field in ('retiredThroughAt', 'retiredThroughAtFromCorrection'):
+                                if field in update:
+                                    row[field] = update[field]
+                        atomic_write_json(state_path, state, ensure_ascii=False, indent=2)
+                from memory.recent import _await_recent_mutation_to_completion
+                await _await_recent_mutation_to_completion(save_repairs)
+        source_provenance = {}
+        # A candidate brought back from the review queue carries its own proof; it is
+        # checked (and keeps its provenance) even with no retirements or messages left.
+        brought_proof = any(isinstance(candidate, dict) and STORED_PROOF in candidate for candidate in extracted)
+        if memory_subject is None and (retirements or source_messages or brought_proof):
+            accepted = []
+            accepted_effects = [] if effect_keys is not None else None
+            for index, candidate in enumerate(extracted):
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_entity = candidate.get('entity', 'master')
+                if candidate_entity not in ('master', 'neko', 'relationship'):
+                    candidate_entity = 'master'
+                candidate_source = candidate.get('source', default_source)
+                try:
+                    proof = fact_source_evidence(retirements, candidate, candidate_entity, source_messages, source=candidate_source, matched_ids=matches.get(id(candidate), ()))
+                except FactEvidenceUnavailable:
+                    if held_back_out is None or STORED_PROOF not in candidate:
+                        raise
+                    # A candidate brought back from the queue waits again instead of
+                    # failing the window it happened to join.
+                    held_back_out.append(candidate)
+                    # Reviewed and still waiting: it goes behind those not reached yet.
+                    candidate[RETRY_LATER] = True
+                    continue
+                if proof is not None:
+                    accepted.append(candidate)
+                    source_provenance[id(candidate)] = proof
+                    if accepted_effects is not None:
+                        accepted_effects.append(effect_keys[index] if index < len(effect_keys) else None)
+            rejected = sum(isinstance(candidate, dict) for candidate in extracted) - len(accepted)
+            unproven = sum(1 for candidate in accepted if not source_provenance[id(candidate)])
+            if rejected or unproven:
+                # Counts only: fact texts never go to the logger.
+                logger.info(
+                    f"[FactStore] {lanlan_name}: 来源校验拒绝 {rejected} 条候选，"
+                    f"{unproven} 条没有可用来源编号、按无来源保存"
+                )
+            extracted = accepted
+            effect_keys = accepted_effects
+        if source_accepted is not None:
+            source_accepted.extend(candidate for candidate in extracted if isinstance(candidate, dict))
+
         new_facts: list[dict] = []
         # Stage-2 candidates (new fact, existing fact, text overlap). Only collect into caller's
         # basket here, never submit: submission acquires resolver lock, while this entire method
         # runs under _persist_alock, opposite aresolve's lock order (see caller comments).
         # Actually enqueue only after successful persistence and lock release; IDs-only queues
         # referencing facts not yet in facts.json would hold dangling references.
-        near_dup_pairs: list[tuple[dict, dict, float]] = (
-            near_dup_pairs_out if near_dup_pairs_out is not None else []
-        )
+        near_dup_pairs: list[tuple[dict, dict, float]] = []
         upgraded_count = 0
         provenance_updated_count = 0
         # (entry, original source, original signal_processed): restore in-place upgrades on persistence/index
         # failure, otherwise retries hit guard and skip saving.
         upgraded_snapshots: list[tuple[dict, Any, Any]] = []
         provenance_snapshots: list[tuple[dict, dict[str, Any]]] = []
+        source_snapshots: list[tuple[dict, dict[str, Any]]] = []
         request_provenance: dict[str, Any] = {}
         if isinstance(speaker_provenance, dict):
             from memory.speaker_trust import stable_speaker_id
@@ -3667,6 +4274,19 @@ class FactStore:
             existing: dict | None, *, dedup_stage: str,
         ) -> None:
             nonlocal provenance_updated_count
+            proof = source_provenance.get(id(fact), {})
+            if existing is not None and proof.get('source_message_ids') and (
+                source == 'user_observation' or existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
+            ):
+                from memory.long_term_sync import merge_fact_source_evidence
+                previous = {key: existing[key] for key in ('source_message_ids', 'source_created_at') if key in existing}
+                replacing = source == 'user_observation' and existing.get('source') == 'ai_disclosure'
+                desired = merge_fact_source_evidence({} if replacing else existing, proof)
+                if previous != desired:
+                    source_snapshots.append((existing, previous))
+                    existing.pop('source_created_at', None)
+                    existing.update(desired)
+                    provenance_updated_count += 1
             if (
                 existing is None
                 or source != 'user_observation'
@@ -3782,396 +4402,446 @@ class FactStore:
                 self._read_archived_effect_keys, lanlan_name,
             )
 
-        for fact_index, fact in enumerate(extracted):
-            if not isinstance(fact, dict):
-                continue
-            effect_key = None
-            if existing_effect_keys is not None and fact_index < len(effect_keys):
-                candidate_effect_key = effect_keys[fact_index]
-                if isinstance(candidate_effect_key, str) and candidate_effect_key:
-                    effect_key = candidate_effect_key
-            if effect_key is not None and effect_key in existing_effect_keys:
-                # This effect already persisted last time (crash between fact write and journal record).
-                if effect_key in active_effect_rows:
-                    replayed_effect_rows.append(dict(active_effect_rows[effect_key]))
-                continue
-            text = fact.get('text', '').strip()
-            if not text:
-                continue
-            try:
-                importance = int(fact.get('importance', 5))
-            except (ValueError, TypeError):
-                importance = 5
-            # Clamp to the documented 1..10 range so downstream consumers
-            # can assume a well-formed value; dirty LLM output (-3, 999)
-            # would otherwise leak straight into reflection synthesis
-            # weighting and audit dashboards (CodeRabbit PR #929).
-            if importance < 1:
-                importance = 1
-            elif importance > 10:
-                importance = 10
-            # RFC §3.1.3: no longer drop importance < 5 at extraction entry. All facts
-            # Persist uniformly; consumers filter via scenario-specific min_importance=, retaining complete audit.
+        committed = False
+        try:
+            for fact_index, fact in enumerate(extracted):
+                if not isinstance(fact, dict):
+                    continue
+                effect_key = None
+                if existing_effect_keys is not None and fact_index < len(effect_keys):
+                    candidate_effect_key = effect_keys[fact_index]
+                    if isinstance(candidate_effect_key, str) and candidate_effect_key:
+                        effect_key = candidate_effect_key
+                if effect_key is not None and effect_key in existing_effect_keys:
+                    # This effect already persisted last time (crash between fact write and journal record).
+                    if effect_key in active_effect_rows:
+                        replayed_effect_rows.append(dict(active_effect_rows[effect_key]))
+                    continue
+                text = fact.get('text', '').strip()
+                if not text:
+                    continue
+                try:
+                    importance = int(fact.get('importance', 5))
+                except (ValueError, TypeError):
+                    importance = 5
+                # Clamp to the documented 1..10 range so downstream consumers
+                # can assume a well-formed value; dirty LLM output (-3, 999)
+                # would otherwise leak straight into reflection synthesis
+                # weighting and audit dashboards (CodeRabbit PR #929).
+                if importance < 1:
+                    importance = 1
+                elif importance > 10:
+                    importance = 10
+                # RFC §3.1.3: no longer drop importance < 5 at extraction entry. All facts
+                # Persist uniformly; consumers filter via scenario-specific min_importance=, retaining complete audit.
 
-            # Scoped writes own their entity: untrusted LLM output must not
-            # redirect a group/participant fact into the legacy master bucket.
-            # Legacy writes keep the original three-value whitelist unchanged.
-            if memory_subject is not None:
-                entity = memory_subject.kind
-            else:
-                raw_entity = fact.get('entity', 'master')
-                if raw_entity in ('master', 'neko', 'relationship'):
-                    entity = raw_entity
+                # Scoped writes own their entity: untrusted LLM output must not
+                # redirect a group/participant fact into the legacy master bucket.
+                # Legacy writes keep the original three-value whitelist unchanged.
+                if memory_subject is not None:
+                    entity = memory_subject.kind
                 else:
-                    logger.debug(
-                        f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
-                    )
-                    entity = 'master'
-
-            # Source resolution: explicit LLM source first + whitelist + default fallback.
-            raw_source = fact.get('source')
-            if raw_source in self._SOURCE_VALUES:
-                source = raw_source
-            else:
-                source = default_source
-
-            # Stage 1: SHA-256 exact dedup（+ source monotonic upgrade）。
-            # Daily import uses event_date + text as exact key: same-day retries remain idempotent,
-            # while repeated events on different dates (e.g. gym visits on consecutive days) persist separately with provenance
-            # (CodeRabbit). Salt persisted 'hash'; retries compare equally salted values.
-            external_import = fact.get('_external_import')
-            if not isinstance(external_import, dict):
-                external_import = None
-            daily_event_date = (
-                str(external_import.get('event_date'))
-                if external_import
-                and external_import.get('section') == 'daily'
-                and external_import.get('event_date')
-                else None
-            )
-            hash_input = f"{daily_event_date}\n{text}" if daily_event_date else text
-            if memory_subject is not None:
-                hash_input = f"{memory_subject.key}\n{memory_subject.scope}\n{hash_input}"
-            content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-            if content_hash in existing_hashes:
-                existing = hash_to_existing.get(content_hash)
-                if (
-                    existing is not None
-                    and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
-                    and source == 'user_observation'
-                ):
-                    # Path A user messages confirm ai_disclosure facts previously written by path B:
-                    # upgrade source and reenter Stage-2 evidence loop.
-                    # Scoped facts are exempt: simplified pipeline skips Stage-2; upgrade source but
-                    # retain signal_processed=True.
-                    upgraded_snapshots.append((
-                        existing,
-                        existing.get('source', self._SOURCE_DEFAULT),
-                        existing.get('signal_processed'),
-                    ))
-                    existing['source'] = 'user_observation'
-                    existing['signal_processed'] = memory_subject is not None
-                    # If confirmation comes from external import, attach external_import provenance too;
-                    # SHA hit followed by immediate continue would miss the label (external_import semantics reset
-                    # signal_processed=True and skip Stage-2) (Codex P2).
-                    if external_import is not None:
-                        self._apply_external_import_provenance(existing, external_import)
-                    # Leave a note for save_facts monotonic read-merge: this False reset is deliberate;
-                    # do not force it back to True via False→True-only rules. After provenance,
-                    # recheck actual value: external imports reseal it True, in which case
-                    # leave no note inconsistent with actual entry state.
-                    if existing.get('signal_processed') is False:
-                        existing[self._SIGNAL_RESET_PENDING] = True
-                    upgraded_count += 1
-                _reconcile_existing_provenance(
-                    existing, dedup_stage='exact',
-                )
-                continue
-
-            # Stage 2: FTS5 near-duplicate retrieval (lightweight, no LLM).
-            #
-            # This gate no longer decides duplication itself (#2703): high text overlap does not mean
-            # identical meaning. "养了一只猫" and "养了一只狗" have 2/3-gram
-            # overlap 0.87, highest of all, yet both must remain. Thus except identical normalized
-            # token sets (overlap 1.0, Stage-1 hash variants from Traditional/Simplified folding
-            # or stop-name removal), persist all matches normally, submitting (new, old) pairs
-            # to fact_dedup LLM arbitration for merge / replace / keep_both.
-            arbitration_hit: tuple[dict, float] | None = None
-            if semantic_dedup and self._time_indexed is not None:
-                # Fanout (same event stored for N subjects, tied BM25 ranks) may fill
-                # all first-window ten slots, putting this subject's candidates below rank 10;
-                # expand once to 200 and rescan. If still insufficient, permit writes (>200 matches imply
-                # degenerate generic text where deduplication is pointless). Skip cross-subject /
-                # cross-entity / absorbed matches without stopping scanning.
-                is_dup = False
-                duplicate_hit: dict | None = None
-                raw_limit = 10
-                archived_by_id: dict | None = None
-
-                async def _aarchived_by_id() -> dict:
-                    # Lazily read facts_archive.json only for FTS hits outside the active set:
-                    # archive rows remain FTS-indexed, while facts_by_id contains active rows only.
-                    # Without archive metadata, archived identical text bypasses deduplication
-                    # (legacy blocked this on main, so regression; scoped needs
-                    # subject stamps for boundaries).
-                    nonlocal archived_by_id
-                    if archived_by_id is None:
-                        def _read() -> dict:
-                            path = self._facts_archive_path(lanlan_name)
-                            if os.path.exists(path):
-                                try:
-                                    with open(path, encoding='utf-8') as fh:
-                                        data = json.load(fh)
-                                    if isinstance(data, list):
-                                        return {
-                                            r.get('id'): r for r in data
-                                            if isinstance(r, dict)
-                                        }
-                                except (
-                                    json.JSONDecodeError,
-                                    UnicodeDecodeError,
-                                    OSError,
-                                ):
-                                    # Corrupt archives degrade to active-only data (matching
-                                    # load_facts_full), never blocking this write.
-                                    pass
-                            return {}
-                        archived_by_id = await asyncio.to_thread(_read)
-                    return archived_by_id
-
-                while True:
-                    similar = await self._time_indexed.asearch_similar_facts(
-                        lanlan_name, text, raw_limit,
-                    )
-                    # Rescan and select across the full window each pass: dice is calculated after SQL LIMIT,
-                    # so highest-BM25 first-window rows need not have highest overlap;
-                    # expansion requires reconsidering the larger window.
-                    arbitration_hit = None
-                    for fid, overlap in similar:
-                        hit = facts_by_id.get(fid)
-                        if hit is None:
-                            hit = (await _aarchived_by_id()).get(fid)
-                        # Time-archived subject rows (subject_archived_at) do not block
-                        # deduplication: resurrected subjects must be able to persist restated old facts as
-                        # new active facts; archived rows no longer recall/render, so blocking restatements
-                        # makes information permanently invisible. Absorbed archives without this marker
-                        # continue blocking duplicates normally.
-                        if (
-                            hit is None
-                            or hit.get('subject_archived_at')
-                            or hit.get('arbitration_archived_at')
-                            or not entry_matches_subject(hit, memory_subject)
-                        ):
-                            continue
-                        if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
-                            continue
-                        if daily_event_date:
-                            # Daily candidates matching existing daily facts on different dates represent
-                            # repeated events, not semantic duplicates (same-date near matches still block,
-                            # preserving retry idempotency despite variable LLM re-extraction).
-                            hit_meta = (hit or {}).get('external_import')
-                            hit_date = (
-                                str(hit_meta.get('event_date'))
-                                if isinstance(hit_meta, dict) and hit_meta.get('event_date')
-                                else None
-                            )
-                            if hit_date and hit_date != daily_event_date:
-                                continue
-                        if (hit.get('text') or '') == text:
-                            # Only criterion permitting immediate new-fact discard: text identical
-                            # character for character to the matched row.
-                            #
-                            # Former normalizations included token sets / Traditional-Simplified folding / stop-name
-                            # removal / punctuation / case / whitespace; every one had counterexamples:
-                            # n-gram sets lose order ("喜欢猫，不喜欢狗"
-                            # versus "喜欢狗，不喜欢猫"); Traditional many-to-one (`鍾`/`鐘`
-                            # both become `钟`); stop-name lists contain both names (`主人喜欢
-                            # 猫`/`兰兰喜欢猫`); punctuation carries meaning (`-10`/`10`);
-                            # case carries meaning (`/Foo`/`/foo`); whitespace carries meaning
-                            # (`echo 'a  b'`/`echo 'a b'`). No normalization is safe here:
-                            # irreversible discard requires character-for-character equality.
-                            #
-                            # Still necessary: Stage-1 hash sets contain active rows only,
-                            # so only this gate blocks text identical to archived rows
-                            # (archives blocking duplicates is existing main behavior).
-                            is_dup = True
-                            duplicate_hit = hit
-                            break
-                        if (
-                            (hit.get('entity') or 'master') != entity
-                            or hit.get('absorbed')
-                        ):
-                            # Cross-entity: arbitration queues bucket by entity (same boundary as vector
-                            # detect_candidates); master / neko /
-                            # relationship facts are incomparable; sending them to
-                            # LLM invites erroneous merges. Absorbed facts already entered reflections;
-                            # merging new text resurrects them from archives, worse than retaining duplicates.
-                            # Hard blockers above are unaffected: Stage-1 hashes
-                            # also omit entity, so identical sentences across entities already
-                            # retain only one row; absorbed rows blocking duplicates is existing behavior.
-                            continue
-                        # No candidate budget anymore: take only first (descending overlap,
-                        # hence strongest), making quota counting pointless. Its break could
-                        # stop scanning before an exactly identical row:
-                        # several rows with equal token sets but differing order (all overlap
-                        # 1.0) ahead of it could permanently hide the true text match.
-                        if arbitration_hit is None:
-                            arbitration_hit = (hit, overlap)
-                    if (
-                        is_dup
-                        or len(similar) < raw_limit
-                        or raw_limit >= 200
-                    ):
-                        # Only reason to stop: initial window not full (nothing outside it).
-                        #
-                        # Deliberately do not stop because a candidate was selected or budget exhausted:
-                        # dice is computed after SQL LIMIT, so three 0.26 matches in first window
-                        # must not block the true 0.9 duplicate outside it,
-                        # not yet scored. Three-candidate budgets govern candidates examined
-                        # per pass, never whether to expand the window.
-                        break
-                    raw_limit = 200
-                if is_dup:
-                    # Archived absorbed rows are outside this active-facts
-                    # commit; only an active survivor can be reconciled here.
-                    if (
-                        duplicate_hit is not None
-                        and duplicate_hit.get('id') in facts_by_id
-                    ):
-                        _reconcile_existing_provenance(
-                            duplicate_hit, dedup_stage='semantic',
+                    raw_entity = fact.get('entity', 'master')
+                    if raw_entity in ('master', 'neko', 'relationship'):
+                        entity = raw_entity
+                    else:
+                        logger.debug(
+                            f"[FactStore] {lanlan_name}: LLM 返回非法 entity={raw_entity!r}，回退到 master"
                         )
+                        entity = 'master'
+
+                # Source resolution: explicit LLM source first + whitelist + default fallback.
+                raw_source = fact.get('source')
+                # Type first: a list/dict source is unhashable and would abort the
+                # whole batch; it falls back to the default like any other junk.
+                if isinstance(raw_source, str) and raw_source in self._SOURCE_VALUES:
+                    source = raw_source
+                else:
+                    source = default_source
+
+                # Stage 1: SHA-256 exact dedup（+ source monotonic upgrade）。
+                # Daily import uses event_date + text as exact key: same-day retries remain idempotent,
+                # while repeated events on different dates (e.g. gym visits on consecutive days) persist separately with provenance
+                # (CodeRabbit). Salt persisted 'hash'; retries compare equally salted values.
+                external_import = fact.get('_external_import')
+                if not isinstance(external_import, dict):
+                    external_import = None
+                daily_event_date = (
+                    str(external_import.get('event_date'))
+                    if external_import
+                    and external_import.get('section') == 'daily'
+                    and external_import.get('event_date')
+                    else None
+                )
+                hash_input = f"{daily_event_date}\n{text}" if daily_event_date else text
+                if memory_subject is not None:
+                    hash_input = f"{memory_subject.key}\n{memory_subject.scope}\n{hash_input}"
+                content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+                if content_hash in existing_hashes:
+                    existing = hash_to_existing.get(content_hash)
+                    _reconcile_existing_provenance(existing, dedup_stage='exact')
+                    if (
+                        existing is not None
+                        and existing.get('source', self._SOURCE_DEFAULT) == 'ai_disclosure'
+                        and source == 'user_observation'
+                    ):
+                        # Path A user messages confirm ai_disclosure facts previously written by path B:
+                        # upgrade source and reenter Stage-2 evidence loop.
+                        # Scoped facts are exempt: simplified pipeline skips Stage-2; upgrade source but
+                        # retain signal_processed=True.
+                        upgraded_snapshots.append((
+                            existing,
+                            existing.get('source', self._SOURCE_DEFAULT),
+                            existing.get('signal_processed'),
+                        ))
+                        existing['source'] = 'user_observation'
+                        existing['signal_processed'] = memory_subject is not None
+                        if not source_provenance.get(id(fact), {}).get('source_message_ids'):
+                            # Without its own citation the claim keeps no proof at all:
+                            # the character lines must not read as the user's source.
+                            stale_proof = {key: existing.pop(key) for key in ('source_message_ids', 'source_created_at') if key in existing}
+                            if stale_proof:
+                                source_snapshots.append((existing, stale_proof))
+                        # If confirmation comes from external import, attach external_import provenance too;
+                        # SHA hit followed by immediate continue would miss the label (external_import semantics reset
+                        # signal_processed=True and skip Stage-2) (Codex P2).
+                        if external_import is not None:
+                            self._apply_external_import_provenance(existing, external_import)
+                        # Leave a note for save_facts monotonic read-merge: this False reset is deliberate;
+                        # do not force it back to True via False→True-only rules. After provenance,
+                        # recheck actual value: external imports reseal it True, in which case
+                        # leave no note inconsistent with actual entry state.
+                        if existing.get('signal_processed') is False:
+                            existing[self._SIGNAL_RESET_PENDING] = True
+                        upgraded_count += 1
                     continue
 
-            created_at_iso = datetime.now().isoformat()
-            # Event timing (schema v2): LLM outputs relative offsets + units; system
-            # resolves ISO timestamps anchored at created_at. Facts lack temporal_scope, but event
-            # start is needed for outdated-block rendering/future rechecks; fallback_start=True
-            # guarantees event_start_at. end_at is optional (facts mostly describe immediate
-            # observations without explicit end).
-            event_when_raw = normalize_event_when(fact.get('event_when'))
-            event_start_at, event_end_at = compute_event_timestamps(
-                event_when_raw,
-                created_at_iso,
-                fallback_start=True,
-                fallback_end=False,
-            )
-            fact_entry = {
-                'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
-                'text': text,
-                'importance': importance,
-                'entity': entity,
-                # Trust-tier source: path A writes 'user_observation', path B
-                # 'ai_disclosure'. Stage-2 / other evidence-loop consumers filter as needed.
-                # Missing legacy source defaults to 'user_observation' on read for backward compatibility.
-                'source': source,
-                # RFC §2.7: retain tags field, but new facts default empty; LLM no longer fills it.
-                'tags': [],
-                'hash': content_hash,
-                'created_at': created_at_iso,
-                # Schema v2 (memory/temporal.py): event time, output by LLM as relative
-                # offset + unit, resolved against created_at. Retain event_when_raw
-                # for later rechecks / debug inspection.
-                'event_when_raw': event_when_raw,
-                'event_start_at': event_start_at,
-                'event_end_at': event_end_at,
-                'schema_version': MEMORY_SCHEMA_VERSION_CURRENT,
-                'absorbed': False,  # True when consumed by a reflection
-                # Stage-2 signal detection drain marker. False → still in queue
-                # for the next idle-loop tick. amark_signal_processed() flips
-                # to True after Stage-2 LLM returns successfully. Old facts.json
-                # without this key are read with default=True (i.e. treated as
-                # already processed) so an upgrade doesn't replay months of
-                # history through Stage-2.
+                # Stage 2: FTS5 near-duplicate retrieval (lightweight, no LLM).
                 #
-                # ⚠️ source='ai_disclosure' facts persist directly with True, so Stage-2
-                # never selects them. Together with aextract_facts_and_detect_signals'
-                # source filter, this provides double protection against leaks.
-                # ⚠️ Scoped group/member facts likewise use True: group memory takes simplified pipeline
-                # (facts → periodic confirmed reflection synthesis → time-driven promotion),
-                # not Stage-2 evidence. Scoped partitions lack user-confirm channels,
-                # leaving observation pools empty at cold start; queued entries permanently consume batch
-                # slots and starve legacy private-chat processing.
-                'signal_processed': (
-                    source == 'ai_disclosure' or memory_subject is not None
-                ),
-                # Vector-embedding cache (memory-enhancements P2 — see
-                # memory/embeddings.py). Written as None so /process
-                # returns immediately without blocking on embedding;
-                # the background warmup worker fills the triple in
-                # batches once the EmbeddingService is ready. Used by
-                # the upcoming fact dedup path (cosine > threshold →
-                # LLM arbitration queue).
-                'embedding': None,
-                'embedding_text_sha256': None,
-                'embedding_model_id': None,
-            }
-            if memory_subject is not None:
-                fact_entry.update(memory_subject.as_entry_fields())
-            if request_provenance and source == 'user_observation':
-                # Whitelisted, request-derived fields only. Model-produced
-                # lookalike keys never enter request_provenance.
-                fact_entry.update(request_provenance)
+                # This gate no longer decides duplication itself (#2703): high text overlap does not mean
+                # identical meaning. "养了一只猫" and "养了一只狗" have 2/3-gram
+                # overlap 0.87, highest of all, yet both must remain. Thus except identical normalized
+                # token sets (overlap 1.0, Stage-1 hash variants from Traditional/Simplified folding
+                # or stop-name removal), persist all matches normally, submitting (new, old) pairs
+                # to fact_dedup LLM arbitration for merge / replace / keep_both.
+                arbitration_hit: tuple[dict, float] | None = None
+                if semantic_dedup and self._time_indexed is not None:
+                    # Fanout (same event stored for N subjects, tied BM25 ranks) may fill
+                    # all first-window ten slots, putting this subject's candidates below rank 10;
+                    # expand once to 200 and rescan. If still insufficient, permit writes (>200 matches imply
+                    # degenerate generic text where deduplication is pointless). Skip cross-subject /
+                    # cross-entity / absorbed matches without stopping scanning.
+                    is_dup = False
+                    duplicate_hit: dict | None = None
+                    raw_limit = 10
+                    archived_by_id: dict | None = None
 
-            if external_import is not None:
-                self._apply_external_import_provenance(fact_entry, external_import)
-            if visit_origin is not None:
-                # Visit save-as-diary facts (only visit_facts passes this parameter; never read model-provided fields):
-                # stamp new rows only, never upgrade exact-dedup existing facts. absorbed=True prevents reflection synthesis.
-                self._apply_visit_origin(fact_entry, visit_origin)
-            if effect_key is not None:
-                fact_entry['effect_key'] = effect_key
-                existing_effect_keys.add(effect_key)
-            existing_facts.append(fact_entry)
-            existing_hashes.add(content_hash)
-            facts_by_id[fact_entry['id']] = fact_entry
-            # Update hash_to_existing too: if later facts in this batch share text
-            # (occasional LLM repetition / same observation across segments), the next
-            # `content_hash in existing_hashes` match can obtain this turn's newly inserted
-            # fact_entry and take the monotonic upgrade path. Otherwise hash_to_existing.
-            # get() returns None, skipping upgrade and silently discarding
-            # the new user_observation upgrade (Codex P2 round-10 on PR #1408).
-            hash_to_existing[content_hash] = fact_entry
-            new_facts.append(fact_entry)
-            if arbitration_hit is not None:
-                near_dup_pairs.append(
-                    (fact_entry, arbitration_hit[0], arbitration_hit[1]),
+                    async def _aarchived_by_id() -> dict:
+                        # Lazily read facts_archive.json only for FTS hits outside the active set:
+                        # archive rows remain FTS-indexed, while facts_by_id contains active rows only.
+                        # Without archive metadata, archived identical text bypasses deduplication
+                        # (legacy blocked this on main, so regression; scoped needs
+                        # subject stamps for boundaries).
+                        nonlocal archived_by_id
+                        if archived_by_id is None:
+                            def _read() -> dict:
+                                path = self._facts_archive_path(lanlan_name)
+                                if os.path.exists(path):
+                                    try:
+                                        cold = self._cold_identities(lanlan_name)
+                                    except cold_store.ColdStoreUnreadable:
+                                        cold = set()
+                                    try:
+                                        with open(path, encoding='utf-8') as fh:
+                                            data = json.load(fh)
+                                        if isinstance(data, list):
+                                            # A copy also held cold is cold: it never
+                                            # blocks a new statement of the same fact.
+                                            return {
+                                                r.get('id'): r for r in data
+                                                if isinstance(r, dict)
+                                                and _fact_scoped_identity(r) not in cold
+                                            }
+                                    except (
+                                        json.JSONDecodeError,
+                                        UnicodeDecodeError,
+                                        OSError,
+                                    ):
+                                        # Corrupt archives degrade to active-only data (matching
+                                        # load_facts_full), never blocking this write.
+                                        pass
+                                return {}
+                            archived_by_id = await asyncio.to_thread(_read)
+                        return archived_by_id
+
+                    while True:
+                        similar = await self._time_indexed.asearch_similar_facts(
+                            lanlan_name, text, raw_limit,
+                        )
+                        # Rescan and select across the full window each pass: dice is calculated after SQL LIMIT,
+                        # so highest-BM25 first-window rows need not have highest overlap;
+                        # expansion requires reconsidering the larger window.
+                        arbitration_hit = None
+                        for fid, overlap in similar:
+                            hit = facts_by_id.get(fid)
+                            if hit is None:
+                                hit = (await _aarchived_by_id()).get(fid)
+                            # Time-archived subject rows (subject_archived_at) do not block
+                            # deduplication: resurrected subjects must be able to persist restated old facts as
+                            # new active facts; archived rows no longer recall/render, so blocking restatements
+                            # makes information permanently invisible. Absorbed archives without this marker
+                            # continue blocking duplicates normally.
+                            if (
+                                hit is None
+                                or hit.get('subject_archived_at')
+                                or hit.get('arbitration_archived_at')
+                                or not entry_matches_subject(hit, memory_subject)
+                            ):
+                                continue
+                            if overlap < FACT_NEAR_DUP_ARBITRATE_OVERLAP:
+                                continue
+                            if daily_event_date:
+                                # Daily candidates matching existing daily facts on different dates represent
+                                # repeated events, not semantic duplicates (same-date near matches still block,
+                                # preserving retry idempotency despite variable LLM re-extraction).
+                                hit_meta = (hit or {}).get('external_import')
+                                hit_date = (
+                                    str(hit_meta.get('event_date'))
+                                    if isinstance(hit_meta, dict) and hit_meta.get('event_date')
+                                    else None
+                                )
+                                if hit_date and hit_date != daily_event_date:
+                                    continue
+                            if (hit.get('text') or '') == text:
+                                # Only criterion permitting immediate new-fact discard: text identical
+                                # character for character to the matched row.
+                                #
+                                # Former normalizations included token sets / Traditional-Simplified folding / stop-name
+                                # removal / punctuation / case / whitespace; every one had counterexamples:
+                                # n-gram sets lose order ("喜欢猫，不喜欢狗"
+                                # versus "喜欢狗，不喜欢猫"); Traditional many-to-one (`鍾`/`鐘`
+                                # both become `钟`); stop-name lists contain both names (`主人喜欢
+                                # 猫`/`兰兰喜欢猫`); punctuation carries meaning (`-10`/`10`);
+                                # case carries meaning (`/Foo`/`/foo`); whitespace carries meaning
+                                # (`echo 'a  b'`/`echo 'a b'`). No normalization is safe here:
+                                # irreversible discard requires character-for-character equality.
+                                #
+                                # Still necessary: Stage-1 hash sets contain active rows only,
+                                # so only this gate blocks text identical to archived rows
+                                # (archives blocking duplicates is existing main behavior).
+                                is_dup = True
+                                duplicate_hit = hit
+                                break
+                            if (
+                                (hit.get('entity') or 'master') != entity
+                                or hit.get('absorbed')
+                            ):
+                                # Cross-entity: arbitration queues bucket by entity (same boundary as vector
+                                # detect_candidates); master / neko /
+                                # relationship facts are incomparable; sending them to
+                                # LLM invites erroneous merges. Absorbed facts already entered reflections;
+                                # merging new text resurrects them from archives, worse than retaining duplicates.
+                                # Hard blockers above are unaffected: Stage-1 hashes
+                                # also omit entity, so identical sentences across entities already
+                                # retain only one row; absorbed rows blocking duplicates is existing behavior.
+                                continue
+                            # No candidate budget anymore: take only first (descending overlap,
+                            # hence strongest), making quota counting pointless. Its break could
+                            # stop scanning before an exactly identical row:
+                            # several rows with equal token sets but differing order (all overlap
+                            # 1.0) ahead of it could permanently hide the true text match.
+                            if arbitration_hit is None:
+                                arbitration_hit = (hit, overlap)
+                        if (
+                            is_dup
+                            or len(similar) < raw_limit
+                            or raw_limit >= 200
+                        ):
+                            # Only reason to stop: initial window not full (nothing outside it).
+                            #
+                            # Deliberately do not stop because a candidate was selected or budget exhausted:
+                            # dice is computed after SQL LIMIT, so three 0.26 matches in first window
+                            # must not block the true 0.9 duplicate outside it,
+                            # not yet scored. Three-candidate budgets govern candidates examined
+                            # per pass, never whether to expand the window.
+                            break
+                        raw_limit = 200
+                    if is_dup:
+                        # Archived absorbed rows are outside this active-facts
+                        # commit; only an active survivor can be reconciled here.
+                        if (
+                            duplicate_hit is not None
+                            and duplicate_hit.get('id') in facts_by_id
+                        ):
+                            _reconcile_existing_provenance(
+                                duplicate_hit, dedup_stage='semantic',
+                            )
+                        continue
+
+                if arbitration_hit is None and memory_subject is None and self._dedup_resolver is not None:
+                    # The same chat lines can reach extraction twice: on two devices, or
+                    # after their progress entry aged out. Sharing a source proves nothing
+                    # about meaning, so the pair only goes to the arbitration a text
+                    # near-duplicate gets; nothing is folded together without its verdict.
+                    cited = set(source_provenance.get(id(fact), {}).get('source_message_ids') or ())
+                    if cited:
+                        from memory.scopes import is_legacy_private_entry as _private
+                        # One message often yields several facts; those of this batch are
+                        # siblings, not repeats, so only rows from an earlier pass qualify.
+                        siblings = {id(row) for row in new_facts}
+                        arbitration_hit = next((
+                            (row, SHARED_SOURCE_OVERLAP) for row in existing_facts
+                            if isinstance(row, dict) and row.get('id') and not row.get('absorbed')
+                            and id(row) not in siblings
+                            and (row.get('entity') or 'master') == entity and _private(row)
+                            and cited & set(row.get('source_message_ids') or ())), None)
+
+                created_at_iso = datetime.now().isoformat()
+                # Event timing (schema v2): LLM outputs relative offsets + units; system
+                # resolves ISO timestamps anchored at created_at. Facts lack temporal_scope, but event
+                # start is needed for outdated-block rendering/future rechecks; fallback_start=True
+                # guarantees event_start_at. end_at is optional (facts mostly describe immediate
+                # observations without explicit end).
+                event_when_raw = normalize_event_when(fact.get('event_when'))
+                # A candidate that waited for retired-assertion review keeps the time it was extracted.
+                from memory.retirement_review_queue import ANCHOR as _review_anchor
+                # Only an explicit relative time uses it; without one the start falls back to
+                # created_at as for any fact, so it is not mistaken for an event window.
+                anchor = (fact.get(_review_anchor) if event_when_raw and isinstance(fact.get(_review_anchor), str)
+                          else created_at_iso)
+                event_start_at, event_end_at = compute_event_timestamps(
+                    event_when_raw,
+                    anchor,
+                    fallback_start=True,
+                    fallback_end=False,
                 )
+                fact_entry = {
+                    'id': f"fact_{datetime.now().strftime('%Y%m%d%H%M%S')}_{content_hash[:8]}",
+                    'text': text,
+                    'importance': importance,
+                    'entity': entity,
+                    # Trust-tier source: path A writes 'user_observation', path B
+                    # 'ai_disclosure'. Stage-2 / other evidence-loop consumers filter as needed.
+                    # Missing legacy source defaults to 'user_observation' on read for backward compatibility.
+                    'source': source,
+                    # RFC §2.7: retain tags field, but new facts default empty; LLM no longer fills it.
+                    'tags': [],
+                    'hash': content_hash,
+                    'created_at': created_at_iso,
+                    # Schema v2 (memory/temporal.py): event time, output by LLM as relative
+                    # offset + unit, resolved against created_at. Retain event_when_raw
+                    # for later rechecks / debug inspection.
+                    'event_when_raw': event_when_raw,
+                    'event_start_at': event_start_at,
+                    'event_end_at': event_end_at,
+                    'schema_version': MEMORY_SCHEMA_VERSION_CURRENT,
+                    'absorbed': False,  # True when consumed by a reflection
+                    # Stage-2 signal detection drain marker. False → still in queue
+                    # for the next idle-loop tick. amark_signal_processed() flips
+                    # to True after Stage-2 LLM returns successfully. Old facts.json
+                    # without this key are read with default=True (i.e. treated as
+                    # already processed) so an upgrade doesn't replay months of
+                    # history through Stage-2.
+                    #
+                    # ⚠️ source='ai_disclosure' facts persist directly with True, so Stage-2
+                    # never selects them. Together with aextract_facts_and_detect_signals'
+                    # source filter, this provides double protection against leaks.
+                    # ⚠️ Scoped group/member facts likewise use True: group memory takes simplified pipeline
+                    # (facts → periodic confirmed reflection synthesis → time-driven promotion),
+                    # not Stage-2 evidence. Scoped partitions lack user-confirm channels,
+                    # leaving observation pools empty at cold start; queued entries permanently consume batch
+                    # slots and starve legacy private-chat processing.
+                    'signal_processed': (
+                        source == 'ai_disclosure' or memory_subject is not None
+                    ),
+                    # Vector-embedding cache (memory-enhancements P2 — see
+                    # memory/embeddings.py). Written as None so /process
+                    # returns immediately without blocking on embedding;
+                    # the background warmup worker fills the triple in
+                    # batches once the EmbeddingService is ready. Used by
+                    # the upcoming fact dedup path (cosine > threshold →
+                    # LLM arbitration queue).
+                    'embedding': None,
+                    'embedding_text_sha256': None,
+                    'embedding_model_id': None,
+                }
+                fact_entry.update(source_provenance.get(id(fact), {}))
+                if memory_subject is not None:
+                    fact_entry.update(memory_subject.as_entry_fields())
+                if request_provenance and source == 'user_observation':
+                    # Whitelisted, request-derived fields only. Model-produced
+                    # lookalike keys never enter request_provenance.
+                    fact_entry.update(request_provenance)
 
-            if self._time_indexed is not None:
+                if external_import is not None:
+                    self._apply_external_import_provenance(fact_entry, external_import)
+                if visit_origin is not None:
+                    # Visit save-as-diary facts (only visit_facts passes this parameter; never read model-provided fields):
+                    # stamp new rows only, never upgrade exact-dedup existing facts. absorbed=True prevents reflection synthesis.
+                    self._apply_visit_origin(fact_entry, visit_origin)
+                if extraction_path is not None:
+                    # Which extraction pass wrote the row (EXTRACTION_PATH_B for
+                    # the AI-aware pass). New rows only, like visit_origin; an
+                    # exact-dedup hit keeps the existing row's marker or none.
+                    fact_entry['extraction_path'] = extraction_path
+                if effect_key is not None:
+                    fact_entry['effect_key'] = effect_key
+                    existing_effect_keys.add(effect_key)
+                existing_facts.append(fact_entry)
+                existing_hashes.add(content_hash)
+                facts_by_id[fact_entry['id']] = fact_entry
+                # Update hash_to_existing too: if later facts in this batch share text
+                # (occasional LLM repetition / same observation across segments), the next
+                # `content_hash in existing_hashes` match can obtain this turn's newly inserted
+                # fact_entry and take the monotonic upgrade path. Otherwise hash_to_existing.
+                # get() returns None, skipping upgrade and silently discarding
+                # the new user_observation upgrade (Codex P2 round-10 on PR #1408).
+                hash_to_existing[content_hash] = fact_entry
+                new_facts.append(fact_entry)
+                if arbitration_hit is not None:
+                    if self._dedup_resolver is not None:
+                        # Persist the ids-only handoff with the fact, before either file can commit alone.
+                        fact_entry['_near_dup_pending'] = {
+                            'existing_id': arbitration_hit[0]['id'], 'text_overlap': arbitration_hit[1],
+                        }
+                    near_dup_pairs.append(
+                        (fact_entry, arbitration_hit[0], arbitration_hit[1]),
+                    )
+
+                if self._time_indexed is not None:
+                    await self._time_indexed.aindex_fact(lanlan_name, fact_entry['id'], text)
+
+            # Save additions, source upgrades and reconciled evidence. Without
+            # upgrade persistence, B after A hits hash but
+            # differing sources lose in-place modifications, and next startup's facts.json reload
+            # wipes the upgrade.
+            if new_facts or upgraded_count or provenance_updated_count:
+                save_task = asyncio.create_task(self.asave_facts(lanlan_name))
                 try:
-                    await self._time_indexed.aindex_fact(
-                        lanlan_name, fact_entry['id'], text,
-                    )
-                except BaseException:
-                    # Index failures also require rollback, including cancellation (CancelledError bypasses
-                    # except Exception; retained cache makes retries deduplicate into empty success). Row already entered cache/hash set;
-                    # retaining it makes fail-closed retries deduplicate to empty success and advance caller cursor,
-                    # though facts.json never received it (e.g. maintenance mode).
-                    await self._rollback_uncommitted_facts(
-                        lanlan_name, new_facts, existing_hashes,
-                        upgraded_snapshots, provenance_snapshots,
-                    )
+                    await asyncio.shield(save_task)
+                    committed = True
+                except asyncio.CancelledError:
+                    # Do not release the persist lock while a submitted write is running.
+                    while not save_task.done():
+                        try:
+                            await asyncio.shield(save_task)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    committed = not save_task.cancelled() and save_task.exception() is None
                     raise
-
-        # Save if we either added new facts OR upgraded existing ones'
-        # source field. Without upgrade persistence, B after A hits hash but
-        # differing sources lose in-place modifications, and next startup's facts.json reload
-        # wipes the upgrade.
-        if new_facts or upgraded_count or provenance_updated_count:
-            try:
-                await self.asave_facts(lanlan_name)
-            except BaseException:
-                # Persistence failure/cancellation: in-process cache already appended and FTS indexed;
-                # retaining makes fail-closed caller retries hit content-hash deduplication, get empty success,
-                # and advance cursor despite empty disk, permanently losing data on restart. Roll back
-                # batch additions (retain in-place upgrade fields: field-idempotent,
-                # retries redo them), allowing full extraction+persistence on retry.
-                await self._rollback_uncommitted_facts(
+        except BaseException:
+            if not committed:
+                from utils.asyncio_retirement import await_retirement
+                await await_retirement(self._rollback_uncommitted_facts(
                     lanlan_name, new_facts, existing_hashes,
-                    upgraded_snapshots, provenance_snapshots,
-                )
-                raise
+                    upgraded_snapshots, provenance_snapshots, source_snapshots,
+                ))
+            raise
+        finally:
+            if committed and near_dup_pairs_out is not None:
+                near_dup_pairs_out.extend(near_dup_pairs)
         if new_facts:
             logger.info(
                 f"[FactStore] {lanlan_name}: 提取了 {len(new_facts)} 条新事实"
@@ -4202,7 +4872,7 @@ class FactStore:
             if reconciled_facts is not None:
                 reconciled_by_identity = {
                     identity: dict(entry)
-                    for entry, _before in provenance_snapshots
+                    for entry, _before in [*provenance_snapshots, *source_snapshots]
                     if (identity := _fact_scoped_identity(entry)) is not None
                 }
                 reconciled_facts.extend(reconciled_by_identity.values())
@@ -4324,10 +4994,53 @@ class FactStore:
         if exc is not None:
             logger.warning(f"[FactStore] 后台投递近重复候选失败: {exc}")
 
+    async def _aack_near_dup_pairs(self, name, acknowledgements):
+        from utils.asyncio_retirement import await_retirement
+        from memory.fact_dedup import _fact_dedup_domain
+
+        async def commit():
+            async with self._get_persist_alock(name):
+                rows = await self.aload_facts(name)
+                changed = []
+                for row in rows:
+                    pending = row.get('_near_dup_pending') if isinstance(row, dict) else None
+                    if pending and (row.get('id'), pending.get('existing_id'), _fact_dedup_domain(row)) in acknowledgements:
+                        changed.append((row, row.pop('_near_dup_pending')))
+                if changed:
+                    try:
+                        await self.asave_facts(name)
+                    except Exception:
+                        for row, pending in changed:
+                            row['_near_dup_pending'] = pending
+                        raise
+        await await_retirement(commit())
+
+    async def aretry_pending_near_dups(self, name) -> bool:
+        """Recover durable fact-to-queue handoffs before resolving or publishing them."""
+        from memory.fact_dedup import _fact_dedup_domain
+
+        async with self._get_persist_alock(name):
+            rows = await self.aload_facts(name)
+            pairs, stale = [], set()
+            for row in rows:
+                pending = row.get('_near_dup_pending') if isinstance(row, dict) else None
+                if not pending:
+                    continue
+                target = next((other for other in rows if isinstance(other, dict)
+                               and other.get('id') == pending.get('existing_id')
+                               and _fact_dedup_domain(other) == _fact_dedup_domain(row)), None)
+                if target is None:
+                    stale.add((row.get('id'), pending.get('existing_id'), _fact_dedup_domain(row)))
+                else:
+                    pairs.append((row, target, pending.get('text_overlap', 0.0)))
+        if stale:
+            await self._aack_near_dup_pairs(name, stale)
+        return await self._aenqueue_near_dup_pairs(name, pairs, durable=True) if pairs else True
+
     async def _aenqueue_near_dup_pairs(
         self, lanlan_name: str,
-        pairs: list[tuple[dict, dict, float]],
-    ) -> None:
+        pairs: list[tuple[dict, dict, float]], *, durable=False,
+    ) -> bool:
         """Hand Stage-2's near-dup hits to the LLM arbitration queue.
 
         Stage-2 knows two facts read alike; it does not know whether they
@@ -4350,7 +5063,7 @@ class FactStore:
             logger.debug(
                 f"[FactStore] {lanlan_name}: {len(pairs)} 对近重复命中无仲裁队列可投递"
             )
-            return
+            return False
         payload: list[dict] = []
         for candidate, existing, overlap in pairs:
             domain = _fact_dedup_domain(existing)
@@ -4372,10 +5085,17 @@ class FactStore:
                 # and queue cosine enters arbitration prompts unchanged, misrepresenting evidence strength
                 # if substituted. Store text overlap separately; detector identifies its origin.
                 'text_overlap': overlap,
-                'detector': 'fts_near_dup',
+                'detector': 'shared_source' if overlap == SHARED_SOURCE_OVERLAP else 'fts_near_dup',
             })
         if not payload:
-            return
+            return True
+        acknowledgements = {(candidate.get('id'), existing.get('id'), _fact_dedup_domain(candidate)) for candidate, existing, _ in pairs}
+        acknowledged = False
+
+        async def acknowledge():
+            nonlocal acknowledged
+            await self._aack_near_dup_pairs(lanlan_name, acknowledgements)
+            acknowledged = True
         try:
             # Bound waiting: aresolve holds resolver's per-character lock
             # throughout the LLM call (60s timeout). Routes such as scoped-history directly
@@ -4388,7 +5108,7 @@ class FactStore:
             # whichever atomic replacement finishes last overwrites the other's entire update. With shield,
             # stop waiting only; queue completes its write normally.
             enqueue = asyncio.ensure_future(
-                resolver.aenqueue_candidates(lanlan_name, payload)
+                resolver.aenqueue_candidates(lanlan_name, payload, **({'on_persisted': acknowledge} if durable else {}))
             )
             appended = await asyncio.wait_for(
                 asyncio.shield(enqueue),
@@ -4400,12 +5120,12 @@ class FactStore:
                 f"候选改在后台投递"
             )
             enqueue.add_done_callback(self._log_background_enqueue_result)
-            return
+            return False
         except Exception as e:
             logger.warning(
                 f"[FactStore] {lanlan_name}: 近重复候选入队失败: {e}"
             )
-            return
+            return False
         if not appended:
             # Zero means either all pairs already queued (normal), or maintenance prevented
             # queue-file writing (candidates lost: retry hits Stage-1 exact deduplication,
@@ -4415,6 +5135,7 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: {len(payload)} 对近重复候选未入队"
                 f"（重复配对或队列不可写）"
             )
+        return acknowledged if durable else True
 
     async def _aload_signal_targets(
         self, lanlan_name: str,
@@ -4426,6 +5147,7 @@ class FactStore:
         Per RFC §3.4.2 coverage rule:
           - all confirmed + promoted reflections (most recent first)
           - all non-protected persona entries
+          (entries introspection retired are left out of both)
 
         Scale control (§3.4.2 end):
           - When ``new_facts`` is provided, the pool is routed through
@@ -4459,10 +5181,18 @@ class FactStore:
         # from failed pool parts. Let errors raise instead, so drain callers
         # catch and skip marking, retrying next idle round.
         # NegKW caller (memory_server.py) already catches errors independently, unaffected.
+        from memory.introspection import is_permanently_suppressed
+
         if reflection_engine is not None:
             all_refl = await reflection_engine._aload_reflections_full(lanlan_name)
             for r in all_refl:
                 if r.get('status') not in ('confirmed', 'promoted'):
+                    continue
+                if is_permanently_suppressed(r):
+                    # Retired by introspection: no longer worth a slot in
+                    # the evidence prompt. Excluded here, at the source,
+                    # because the rebuilt pool rows do not carry the flag
+                    # and some callers skip the hard filter.
                     continue
                 pool.append({
                     'id': f"reflection.{r.get('id', '')}",
@@ -4501,6 +5231,8 @@ class FactStore:
                     if entry.get('protected'):
                         # protected = character_card; evidence always
                         # inf, so applying signals has no meaning. Skip.
+                        continue
+                    if is_permanently_suppressed(entry):
                         continue
                     pool.append({
                         'id': f"persona.{entity_key}.{entry.get('id', '')}",
@@ -4758,6 +5490,7 @@ class FactStore:
     async def aextract_facts_and_detect_signals(
         self, lanlan_name: str, messages: list,
         reflection_engine=None, persona_manager=None,
+        *, conversation_at: datetime | None = None, judge: bool = True,
     ) -> tuple[list[dict], list[dict], list[str]]:
         """Two-stage extraction (RFC §3.4.2) with drain semantics.
 
@@ -4808,8 +5541,38 @@ class FactStore:
 
         # Persist newly extracted facts with signal_processed=False.
         # Even zero new facts still drains previous unprocessed tail below.
-        persisted_this_round = await self._apersist_new_facts(lanlan_name, extracted)
+        source_accepted: list[dict] = []
+        persisted_this_round = await self._apersist_new_facts(
+            lanlan_name, extracted, source_messages=messages, source_accepted=source_accepted,
+            progress_pass='a',
+        )
+        # The pre-dedup result, not the persisted rows: a fact that dedup folded into
+        # an existing one still has to renew its pinned entry. Candidates rejected by
+        # the source checks (for example a retired assertion) never reach it.
+        await self._aadmit_pinned_candidates(
+            lanlan_name, source_accepted, conversation_at=conversation_at,
+        )
 
+        if not judge:
+            # Judging belongs to the device that organizes this character. The facts
+            # stay unjudged, travel in the snapshot that way, and are judged there.
+            return persisted_this_round, [], []
+        signals, batch_fact_ids = await self.adetect_pending_signals(
+            lanlan_name, reflection_engine=reflection_engine, persona_manager=persona_manager,
+        )
+        return persisted_this_round, signals, batch_fact_ids
+
+    async def adetect_pending_signals(
+        self, lanlan_name: str, reflection_engine=None, persona_manager=None,
+    ) -> tuple[list[dict], list[str]]:
+        """Stage-2 alone: judge facts still waiting, wherever they were extracted.
+
+        Returns ``(signals, batch_fact_ids)`` with the contract of
+        ``aextract_facts_and_detect_signals``: mark the batch processed only
+        after every signal was applied. Facts another device extracted arrive
+        unjudged in a snapshot, so the organizing device calls this without
+        needing a conversation of its own.
+        """
         # Drain all signal_processed=False facts (historical tail + current additions).
         # Old facts lacking this field default True, avoiding months of historical facts
         # reentering Stage-2 after upgrade.
@@ -4824,6 +5587,7 @@ class FactStore:
         unprocessed = [
             f for f in all_facts
             if not f.get('signal_processed', True)
+            and not f.get('_near_dup_pending')
             and f.get('source', self._SOURCE_DEFAULT) != 'ai_disclosure'
         ]
 
@@ -4850,7 +5614,7 @@ class FactStore:
             if stray_ids:
                 await self.amark_signal_processed(lanlan_name, stray_ids)
         if not unprocessed:
-            return persisted_this_round, [], []
+            return [], []
 
         # Sort importance DESC + creation time ASC; take first N as this batch.
         # Leave excess signal_processed=False for next idle tick.
@@ -4878,21 +5642,21 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: _aload_signal_targets 失败，"
                 f"跳过本轮 Stage-2（batch 保持未处理下轮重试）: {e}"
             )
-            return persisted_this_round, [], []
+            return [], []
         if not existing_observations:
             # Cold start: no confirmed reflection/persona observation targets yet.
             # Leave unmarked and retry next round (same semantics as before scope).
-            return persisted_this_round, [], []
+            return [], []
 
         signals = await self._allm_detect_signals(
             lanlan_name, batch, existing_observations,
         )
         if signals is None:
             # Stage-2 LLM failure: return no IDs; caller leaves unmarked and retries same batch next round.
-            return persisted_this_round, [], []
+            return [], []
 
         # Caller still marks only after every returned signal dispatch succeeds.
-        return persisted_this_round, signals, [
+        return signals, [
             fact['id'] for fact in batch if fact.get('id')
         ]
 
@@ -4906,6 +5670,8 @@ class FactStore:
         speaker_label: str | None = None,
         speaker_provenance: dict | None = None,
         reconciled_facts: list[dict] | None = None,
+        conversation_at: datetime | None = None,
+        label_own_words: bool = False,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -4927,8 +5693,8 @@ class FactStore:
         permanently drop the batch (Codex P1). A genuine empty extraction
         still returns [].
 
-        ``speaker_label`` is forwarded to the extraction prompt — see
-        :meth:`_allm_extract_facts`.
+        ``speaker_label`` and ``label_own_words`` are forwarded to the
+        extraction prompt — see :meth:`_allm_extract_facts`.
 
         ``speaker_provenance``: stamped onto newly created user_observation facts
         (speaker_label / speaker_trust / speaker_id); AI
@@ -4939,6 +5705,9 @@ class FactStore:
 
         ``reconciled_facts`` receives snapshots of existing rows whose
         provenance this extraction reconciled.
+
+        ``conversation_at``: when the turn took place, for the pinned-fact
+        section (a turn replayed after a restart is older than now).
         """  # noqa: DOCSTRING_CJK
         memory_subject = coerce_subject(subject)
         expected_subject_generation = (
@@ -4949,6 +5718,7 @@ class FactStore:
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
             speaker_label=speaker_label,
+            label_own_words=label_own_words,
         )
         if extracted is None and fail_closed:
             raise FactExtractionFailed(
@@ -4973,13 +5743,35 @@ class FactStore:
                     f"(fail_closed caller)"
                 )
         if not extracted:
+            if memory_subject is None:
+                if isinstance(extracted, list):
+                    # Nothing new still drains candidates an earlier extraction held
+                    # back, and records progress the way a non-empty one does.
+                    drained: list[dict] = []
+                    await self._apersist_new_facts(lanlan_name, [], source_messages=messages, progress_pass='a',
+                                                   source_accepted=drained)
+                    # Brought-back candidates join the pinned section as they would have.
+                    await self._aadmit_pinned_candidates(lanlan_name, drained, conversation_at=conversation_at)
+                else:
+                    await self.arecord_extraction_progress(lanlan_name, 'a', messages)
             return []
-        return await self._apersist_new_facts(
+        source_accepted: list[dict] = []
+        created = await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
             expected_subject_generation=expected_subject_generation,
             reconciled_facts=reconciled_facts,
+            source_messages=messages,
+            source_accepted=source_accepted,
+            progress_pass='a',
         )
+        if memory_subject is None:
+            # Private chat only: the pinned section renders into the private
+            # prompt, so scoped (group / member) content must never enter it.
+            await self._aadmit_pinned_candidates(
+                lanlan_name, source_accepted, conversation_at=conversation_at,
+            )
+        return created
 
     # ── external import state (sidecar) ──────────────────────────────
 
@@ -5052,7 +5844,7 @@ class FactStore:
         state = await asyncio.to_thread(self._load_external_import_state, name)
         sidecar_fps = self._state_daily_fingerprints(state)
         provenance_fps: set[str] = set()
-        for f in await self.aload_facts_full(name):
+        for f in await self.aload_facts_full(name, include_cold_stubs=True):
             meta = f.get('external_import')
             if isinstance(meta, dict) and meta.get('day_fingerprint'):
                 provenance_fps.add(str(meta['day_fingerprint']))
@@ -5201,6 +5993,7 @@ class FactStore:
     async def aimport_external_daily(
         self, lanlan_name: str, candidates: list[dict], source_format: str,
         imported_at: str,
+        on_progress: Callable[[dict], None] | None = None,
     ) -> dict:
         """LLM-extract facts from imported daily journals (Stage-1, no signals).
 
@@ -5211,7 +6004,9 @@ class FactStore:
         file (one file == one day); each day's fragments are joined into a single
         user turn and extracted independently so the day's ``event_date`` can be
         stamped onto every fact it yields. A day whose joined fragments exceed
-        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` is split into multiple
+        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` — or the per-batch fragment
+        cap in ``batch_daily_fragments`` (dense days otherwise overflow the
+        4096 output guard in a single call) — is split into multiple
         extraction batches (``batch_daily_fragments``) rather than truncated —
         no journal tail is silently dropped (Greptile P1). Days run concurrently
         under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
@@ -5242,13 +6037,23 @@ class FactStore:
         re-extraction output is absorbed by the same-date FTS5 dedup in
         ``_apersist_new_facts``.
 
-        After fingerprint filtering, more than ``EXTERNAL_IMPORT_DAILY_MAX_FILES``
-        genuinely-new days raises ``ExternalMemoryImportTooLargeError`` — an
-        unbounded workspace would mean hundreds of LLM calls and blow the 240s
-        window even under bounded concurrency; the frontend guides splitting
-        the import, and already-imported days keep skipping for free (Codex P2).
+        After fingerprint filtering, the genuinely-new days are capped at
+        ``EXTERNAL_IMPORT_DAILY_MAX_FILES`` extraction calls per import (an
+        unbounded workspace would mean hundreds of LLM calls and blow the
+        forwarding window even under bounded concurrency, Codex P2). Over the
+        cap, the oldest days that fit are imported and the rest are deferred
+        (``deferred_days``): the caller reports a retryable partial result, and
+        each re-import skips the finished days by fingerprint and continues
+        with the next ones, so any history converges in a few imports. Files
+        never imported before go first, then previously imported files whose
+        content changed (their facts often all dedupe and leave no fingerprint,
+        so putting them first would re-select them forever). A day that alone
+        needs more calls than the cap can never run; it is set aside
+        (``oversized_days``) instead of blocking later days, and only when
+        nothing else is left does ``ExternalMemoryImportTooLargeError`` raise.
 
-        Returns ``{'added': int, 'days': int, 'failed_days': int, 'skipped_days': int}``.
+        Returns ``{'added': int, 'days': int, 'failed_days': int,
+        'skipped_days': int, 'deferred_days': int, 'oversized_days': int}``.
         """
         from memory.external_markdown_import import batch_daily_fragments
         from memory.persona.fusion import ExternalMemoryImportTooLargeError
@@ -5296,9 +6101,10 @@ class FactStore:
         skipped_days = len(by_file) - len(pending)
 
         # Precompute batches and cap total extraction calls, not days: one huge diary file can split into
-        # dozens of serial calls, with len(pending) failing to prevent the 240s wall (Codex P2). tiktoken
-        # encoding is synchronous CPU work; offload to thread pool.
-        batches_by_file: dict[str, list[str]] = await asyncio.to_thread(
+        # dozens of serial calls, with len(pending) failing to prevent the forwarding wall (Codex P2). tiktoken
+        # encoding is synchronous CPU work; offload to thread pool. Batches keep fragment groups (not joined
+        # text) so a failed batch can be split in half adaptively without re-parsing the joined string.
+        groups_by_file: dict[str, list[list[str]]] = await asyncio.to_thread(
             lambda: {
                 source_file: batch_daily_fragments(
                     [p for p in (str(g.get("text") or "").strip() for g in group) if p],
@@ -5307,26 +6113,122 @@ class FactStore:
                 for source_file, group in pending.items()
             }
         )
-        total_batches = sum(len(b) for b in batches_by_file.values())
+        total_batches = sum(len(b) for b in groups_by_file.values())
+        deferred_days = 0
+        oversized_days = 0
         if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
-            raise ExternalMemoryImportTooLargeError(
-                f"daily import needs {total_batches} extraction calls across "
-                f"{len(pending)} new journal days (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); "
-                "split the workspace"
+            # Segmented resume: over the per-import call cap, the days that fit run now and the rest are deferred to the next
+            # import. Finished days skip by daily fingerprint, so every re-import moves further ahead and
+            # any number of days converges within a few imports, as long as each day fits one import (Molili archives cannot be split; rejecting the whole archive would
+            # leave long-time users unable to import ever).
+            # - Days that alone exceed the cap are set aside (oversized): retrying cannot progress them, but they must not
+            #   block later dates; only when nothing else is left are they rejected as too_large.
+            # - Never-imported files go first, then files imported before whose content changed, each from
+            #   earliest to latest: facts extracted from edited old diaries often all dedupe against existing facts,
+            #   such days record no completion marker (see _aload_imported_day_fps, kept for rollback self-healing),
+            #   and if they came first they would be re-selected every time and fill the budget, starving the genuinely new dates.
+            # Days just tried in this process whose facts all deduped go last: otherwise they are re-selected every time and
+            # fill the budget, so deferred days never get their turn (e.g. the same history was already imported from another source).
+            recently_deduped = self._external_daily_deduped_fps.get(lanlan_name, set())
+            previously_imported_files = {
+                str(meta.get('file'))
+                for f in await self.aload_facts_full(lanlan_name, include_cold_stubs=True)
+                if isinstance(meta := f.get('external_import'), dict) and meta.get('file')
+            }
+            ordered = sorted(
+                groups_by_file,
+                key=lambda f: (
+                    day_fps[f] in recently_deduped,
+                    f in previously_imported_files,
+                    day_dates.get(f) or "",
+                    f,
+                ),
             )
+            oversized = [
+                f for f in ordered if len(groups_by_file[f]) > EXTERNAL_IMPORT_DAILY_MAX_FILES
+            ]
+            oversized_set = set(oversized)
+            selectable = [f for f in ordered if f not in oversized_set]
+            if not selectable:
+                raise ExternalMemoryImportTooLargeError(
+                    f"daily journal {oversized[0]} alone needs "
+                    f"{len(groups_by_file[oversized[0]])} extraction calls "
+                    f"(cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split that day"
+                )
+            if all(day_fps[f] in recently_deduped for f in selectable):
+                # Every remaining day already ran in this process and all of its facts
+                # deduped against existing ones, so re-running them cannot add anything and
+                # (having no completion fingerprint) they would be re-selected forever. Count
+                # them as skipped and let this import finish. The hint is in-memory only:
+                # a reload / restart clears it and the next import tries them again.
+                logger.info(
+                    f"[FactStore] {lanlan_name}: {len(selectable)} remaining daily journal(s) "
+                    "already deduped entirely in this process; finishing the import"
+                )
+                skipped_days += len(selectable)
+                selectable = []
+            selected: list[str] = []
+            used_calls = 0
+            for source_file in selectable:
+                calls = len(groups_by_file[source_file])
+                if used_calls + calls > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+                    break
+                selected.append(source_file)
+                used_calls += calls
+            deferred_days = len(selectable) - len(selected)
+            oversized_days = len(oversized)
+            logger.info(
+                f"[FactStore] {lanlan_name}: 外部 daily 导入超过单次 "
+                f"{EXTERNAL_IMPORT_DAILY_MAX_FILES} 次调用上限，本次先导 "
+                f"{len(selected)} 天（{used_calls} 次调用），{deferred_days} 天顺延到下次导入，"
+                f"{oversized_days} 天单独超上限"
+            )
+            pending = {source_file: pending[source_file] for source_file in selected}
+            groups_by_file = {source_file: groups_by_file[source_file] for source_file in selected}
+            total_batches = used_calls
+        # Progress reporting (for the external import progress bar): report the total first, then +1 per finished batch
+        if on_progress is not None:
+            on_progress({'daily_total': total_batches, 'daily_done': 0})
 
+        daily_progress = {'done': 0}
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
+        # Extra call budget for split-in-half recursion: the cap above only counts the pre-split batches, and each split of a failed batch
+        # adds 2 calls. The budget matches the cap (total calls <= 2x cap); once spent, failed batches
+        # fail the day directly (day-atomic, retryable) instead of recursing unboundedly into the forwarding timeout.
+        split_budget = {'left': EXTERNAL_IMPORT_DAILY_MAX_FILES}
+
+        # Free-tier courtesy interval: the minimum gap between any two extraction call starts (across days / batches, and across
+        # concurrent imports of several characters, since the lock and timestamp live on the shared FactStore), turning
+        # concurrency bursts into a steady pace. Concurrency slots bound how many calls are in flight; this interval bounds the
+        # start rate; together they actually spare free quotas / WAFs. The lock only covers the time arithmetic and
+        # sleep, never the LLM call itself (so it does not extend concurrency slot residency).
+        call_gate = self._external_daily_call_gate
+
+        async def _polite_gap() -> None:
+            if EXTERNAL_IMPORT_DAILY_CALL_INTERVAL <= 0:
+                return
+            async with call_gate:
+                now = asyncio.get_running_loop().time()
+                wait = call_gate.last_call_at + EXTERNAL_IMPORT_DAILY_CALL_INTERVAL - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                call_gate.last_call_at = asyncio.get_running_loop().time()
 
         async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
             """One day's extraction+persist; returns (added, day_failed)."""
             event_date = day_dates[source_file]
-            batches = batches_by_file[source_file]
-            # Extract all batches for a day before persistence; any failed batch prevents persisting the entire day.
-            # Persisting early batches with full-day fingerprints before later failure makes retries skip the whole day,
-            # permanently losing failed content (Greptile P1). Atomic days leave no facts/fingerprints on failure, retrying
-            # from scratch; gather likewise counts persistence crashes as failed_days without fingerprint residue.
-            day_extracted: list[dict] = []
-            for batch_text in batches:
+
+            async def _extract_group(fragments: list[str], depth: int) -> list[dict] | None:
+                """One batch's extraction; ``None`` = day-terminal failure.
+
+                The dominant failure shape is the batch's output JSON hitting
+                the 4096 output guard mid-JSON -- blind retries of the same
+                batch re-truncate. Split in half and retry each half instead:
+                halves halve the output size and dense days converge under the
+                guard; a single fragment that still fails is a real failure.
+                Day-atomic semantics unchanged -- any leaf failure propagates
+                up, nothing persists, no fingerprint residue."""
+                batch_text = "\n".join(fragments)
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
                 )
@@ -5334,28 +6236,74 @@ class FactStore:
                 # per-character locks. Keep writes outside slots so other days' LLM calls start sooner.
                 # Malformed non-arrays are retryable failed days, never empty-extraction sidecar checkpoints,
                 # which would skip later LLM calls and silently lose that day's facts (Codex P2).
+                # Arrays without object elements, or mixing elements persistence would drop, are equally
+                # strict (split fallback): _apersist_new_facts_locked silently drops non-dicts and dicts
+                # without a valid text, so accepting the batch and recording its fingerprint would make
+                # re-imports skip the dropped content forever (wehos 14 / coderabbit).
+                def _persistable_element(element: object) -> bool:
+                    # Must mirror _apersist_new_facts_locked's drop conditions one-to-one (not
+                    # _as_fact_entry, which promotes bare strings; this path does not).
+                    if not isinstance(element, dict):
+                        return False
+                    text = element.get('text')
+                    return isinstance(text, str) and bool(text.strip())
+
+                failure: dict = {}
                 async with llm_slots:
                     extracted = await self._allm_extract_facts(
                         lanlan_name, messages, treat_malformed_as_failure=True,
+                        failure_info=failure,
+                        # The courtesy interval runs before every actual request (including internal network retries): under rate limiting
+                        # retries must queue too instead of starting alongside other batches.
+                        before_attempt=_polite_gap,
+                        # Truncation-type failures go to _extract_group's split-in-half recursion (each half is itself
+                        # a subset retry); blindly retrying the same batch 3 times is pure waste, so split after 1 parse failure.
+                        # Parse failures only: network errors / 429 / 5xx still retry with full backoff,
+                        # since a single-fragment batch cannot be split and one hiccup must not drop the whole day.
+                        parse_max_retries=1,
                     )
-                if extracted is None:
+                has_malformed_elements = (
+                    extracted is not None and any(not _persistable_element(f) for f in extracted)
+                )
+                if extracted is None or has_malformed_elements:
+                    # Only output-type failures (parse failure / wrong shape) might be fixed by splitting; network /
+                    # 429 / 5xx failures after full backoff would only burn more quota and time if split.
+                    output_failure = extracted is not None or failure.get("reason") in {"parse", "schema"}
+                    if output_failure and len(fragments) >= 2 and depth < 6 and split_budget['left'] >= 2:
+                        split_budget['left'] -= 2
+                        mid = len(fragments) // 2
+                        logger.warning(
+                            f"[FactStore] {lanlan_name}: 外部 daily 抽取批次失败，"
+                            f"拆半重试（{len(fragments)} 片段 → {mid}+{len(fragments) - mid}）"
+                        )
+                        left = await _extract_group(fragments[:mid], depth + 1)
+                        if left is None:
+                            return None
+                        right = await _extract_group(fragments[mid:], depth + 1)
+                        if right is None:
+                            return None
+                        return left + right
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
                         f"放弃 {source_file}（整天重试重抽）"
                     )
-                    return 0, True
-                batch_facts = [f for f in extracted if isinstance(f, dict)]
-                if extracted and not batch_facts:
-                    # Nonempty arrays without object elements (e.g. ["Master likes tea"]) are schema failures,
-                    # not confirmed empty extraction; treat_malformed_as_failure rejects non-arrays only,
-                    # not arrays wrapping strings. Treat as retryable failed days, avoiding empty checkpoints
-                    # that silently skip future LLM extraction and lose facts (Codex P2).
-                    logger.warning(
-                        f"[FactStore] {lanlan_name}: 外部 daily 抽取返回无 object 元素的"
-                        f"数组，放弃 {source_file}（整天重试重抽）"
-                    )
+                    return None
+                return [f for f in extracted if isinstance(f, dict)]
+
+            # Extract all batches for a day before persistence; any failed batch prevents persisting the entire day.
+            # Persisting early batches with full-day fingerprints before later failure makes retries skip the whole day,
+            # permanently losing failed content (Greptile P1). Atomic days leave no facts/fingerprints on failure, retrying
+            # from scratch; gather likewise counts persistence crashes as failed_days without fingerprint residue.
+            # Failed batches no longer retry blindly; they split in half recursively (see _extract_group).
+            day_extracted: list[dict] = []
+            for fragments in groups_by_file[source_file]:
+                batch_facts = await _extract_group(fragments, 0)
+                if batch_facts is None:
                     return 0, True
                 day_extracted.extend(batch_facts)
+                daily_progress['done'] += 1
+                if on_progress is not None:
+                    on_progress({'daily_done': daily_progress['done']})
             if not day_extracted:
                 # Empty-extraction days: LLM found no facts, leaving sidecar as sole fingerprint carrier;
                 # otherwise every reimport re-extracts the day and consumes cap allowance (Codex P2 follow-up).
@@ -5412,6 +6360,11 @@ class FactStore:
             #    A concurrent empty-extraction sidecar would defeat that recovery.
             # Most days lack this sidecar fingerprint, returning after one stat (Codex).
             await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
+            if not new_facts:
+                # Facts were extracted but all deduped: record no completion marker (see above), only the in-process ordering hint
+                self._external_daily_deduped_fps.setdefault(lanlan_name, set()).add(
+                    day_fps[source_file]
+                )
             return len(new_facts), False
 
         outcomes = await asyncio.gather(
@@ -5437,6 +6390,8 @@ class FactStore:
             "days": len(by_file),
             "failed_days": failed_days,
             "skipped_days": skipped_days,
+            "deferred_days": deferred_days,
+            "oversized_days": oversized_days,
         }
 
     @staticmethod
@@ -5460,6 +6415,7 @@ class FactStore:
         known_pool: list[dict],
         *,
         subject: MemorySubject | dict | None = None,
+        conversation_at: datetime | None = None,
     ) -> list[dict] | None:
         """AI-aware Stage-1 (path B) extraction — input is the role-tagged full
         user+ai message set; the prompt embeds ``known_pool`` (facts path A
@@ -5470,7 +6426,10 @@ class FactStore:
         - Uses the new prompt (``FACT_EXTRACTION_AI_AWARE_PROMPT``) instead of the basic one
         - The prompt adds a known-pool section + trust-tier guidance + a source-field output requirement
         - Persists with default_source='ai_disclosure' (a source explicitly emitted by the LLM still wins)
-        - No Stage-2 (path B by design never enters the evidence loop)
+        - No Stage-2 in this call. Facts the model labels user_observation are
+          still written with signal_processed=False, so the next path-A Stage-2
+          drain uses them as the user's evidence; rows are stamped
+          ``extraction_path=EXTRACTION_PATH_B`` so those labels can be audited
 
         Returns:
             - ``None``: Stage-1 terminal failure — retries exhausted / LLM
@@ -5493,9 +6452,59 @@ class FactStore:
         if extracted is None:
             return None
         if not extracted:
+            # A run that found nothing new is data too: how often path B
+            # adds nothing. Failures (None, above) stay unlogged here.
+            self._log_path_b_labels(lanlan_name, [], [])
+            if coerce_subject(subject) is None:
+                # Same as a non-empty run: held-back candidates drain, progress is recorded.
+                drained: list[dict] = []
+                await self._apersist_new_facts(lanlan_name, [], default_source='ai_disclosure', source_messages=messages,
+                                               extraction_path=EXTRACTION_PATH_B, progress_pass='b', source_accepted=drained)
+                await self._aadmit_pinned_candidates(lanlan_name, drained, default_source='ai_disclosure',
+                                                     conversation_at=conversation_at)
             return []
-        return await self._apersist_new_facts(
-            lanlan_name, extracted, default_source='ai_disclosure', subject=subject,
+        source_accepted: list[dict] = []
+        persisted = await self._apersist_new_facts(
+            lanlan_name, extracted, default_source='ai_disclosure', subject=subject, source_messages=messages,
+            source_accepted=source_accepted,
+            extraction_path=EXTRACTION_PATH_B,
+            progress_pass='b',
+        )
+        self._log_path_b_labels(lanlan_name, extracted, persisted)
+        if coerce_subject(subject) is None:
+            # Same private-only rule and source default as the persistence above:
+            # a fact without an explicit user_observation source is never pinned.
+            await self._aadmit_pinned_candidates(
+                lanlan_name, source_accepted, default_source='ai_disclosure',
+                conversation_at=conversation_at,
+            )
+        return persisted
+
+    def _log_path_b_labels(
+        self, lanlan_name: str, extracted: list, persisted: list[dict],
+    ) -> None:
+        """Log how path B's model labeled the facts it returned, and what was
+        written: the data for deciding whether its own ``source`` labels can
+        be trusted (owner decision 2026-11-07: observe before changing them).
+
+        ``unlabeled`` facts (no valid ``source``) fall back to ``ai_disclosure``.
+        """
+        labels = {'user_observation': 0, 'ai_disclosure': 0, 'unlabeled': 0}
+        for item in extracted:
+            source = item.get('source') if isinstance(item, dict) else None
+            # A list or dict source is unhashable: check the type first, or a
+            # malformed item would crash the whole path-B call.
+            known = isinstance(source, str) and source in self._SOURCE_VALUES
+            labels[source if known else 'unlabeled'] += 1
+        written = {'user_observation': 0, 'ai_disclosure': 0}
+        for fact in persisted or ():
+            if isinstance(fact, dict) and fact.get('source') in written:
+                written[fact['source']] += 1
+        logger.info(
+            f"[PathB] {lanlan_name}: 模型标注 用户 {labels['user_observation']} / "
+            f"猫娘自述 {labels['ai_disclosure']} / 未标 {labels['unlabeled']}；"
+            f"新写入 用户 {written['user_observation']} / "
+            f"猫娘自述 {written['ai_disclosure']}"
         )
 
     async def _allm_extract_facts_with_known_pool(
@@ -5513,6 +6522,9 @@ class FactStore:
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
+        from memory.long_term_sync import retirement_source_prompt
+        conversation_text, source_instruction = retirement_source_prompt(
+            os.path.join(self._config_manager.memory_dir, lanlan_name) if getattr(self._config_manager, 'memory_dir', None) is not None else None, messages, conversation_text, name_mapping)
         prompt_lang = _detect_fact_extraction_prompt_language(
             self._messages_locale_text(
                 messages,
@@ -5539,6 +6551,8 @@ class FactStore:
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
         )
+
+        prompt += source_instruction
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -5581,6 +6595,7 @@ class FactStore:
         self, lanlan_name: str, new_facts: list, existing_hashes: set,
         upgraded_snapshots: list | None = None,
         provenance_snapshots: list | None = None,
+        source_snapshots: list | None = None,
     ) -> None:
         """Undo in-memory effects of a batch that never reached disk.
 
@@ -5589,6 +6604,10 @@ class FactStore:
         success and the caller advances a volatile cursor over facts that
         facts.json never received. In-place source and provenance changes are
         restored so a retry cannot hit the dedup guard and skip persistence."""
+        for entry, previous in reversed(source_snapshots or []):
+            entry.pop('source_message_ids', None)
+            entry.pop('source_created_at', None)
+            entry.update(previous)
         for entry, prev_source, prev_signal in (upgraded_snapshots or []):
             # Restore in-place upgrades too: otherwise retry hits upgrade guard (source already
             # user_observation), gets upgraded_count=0, skips saving altogether;
@@ -5654,6 +6673,7 @@ class FactStore:
             if isinstance(f, dict)
             and f.get('id')
             and not f.get('absorbed')
+            and not f.get('_near_dup_pending')
             # safe_importance: nonnumeric values in manually edited rows (e.g. "high") would
             # raise TypeError in native comparisons, killing this character's scoped synthesis every tick.
             and safe_importance(f, 0) >= min_importance
@@ -5883,6 +6903,9 @@ class FactStore:
         Returns: True when one fact was processed successfully; False when no
         candidate was found or processing failed.
         """
+        from memory import organizer
+        if not organizer.allowed(name):
+            return False
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,

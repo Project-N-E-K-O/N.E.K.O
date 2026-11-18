@@ -154,6 +154,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/fish-cookie.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/toy-mouse.png",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
+    _PROJECT_ROOT / "static/css/chat_sync.css",
     *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
@@ -176,8 +177,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     *_CAT_RESOURCE_ASSET_PATHS,
     _PROJECT_ROOT / "static/css/theater_selector.css",
     _PROJECT_ROOT / "static/js/theater_selector.js",
-    _PROJECT_ROOT / "static/css/theater_settings.css",
-    _PROJECT_ROOT / "static/js/theater_settings.js",
+    _PROJECT_ROOT / "static/js/theater_market.js",
     _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/vrm/motion/player.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
@@ -305,16 +305,6 @@ async def get_theater(request: Request):
     """Render the single Numeric v2 story-selection page."""  # noqa: DOCSTRING_CJK
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/theater.html", {
-        "request": request,
-        **_static_assets_ctx(),
-    })
-
-
-@router.get("/theater/settings", response_class=HTMLResponse)
-async def get_theater_settings(request: Request):
-    """Render the standalone theater settings page."""  # noqa: DOCSTRING_CJK
-    templates = get_templates()
-    return templates.TemplateResponse(request, "templates/theater_settings.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -456,6 +446,16 @@ async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     })
 
 
+@router.get('/visit_persona', response_class=HTMLResponse)
+async def visit_persona_page(request: Request):
+    """Standalone N.E.K.O tool window for reviewing the visit persona."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/visit_persona.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
@@ -497,6 +497,16 @@ async def get_chat_page(request: Request):
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
+    })
+
+
+@router.get("/social_hub", response_class=HTMLResponse)
+async def get_social_hub_page(request: Request):
+    """Standalone mutual-friend visit panel for the desktop floating window."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/social_hub.html", {
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 

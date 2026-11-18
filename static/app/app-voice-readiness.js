@@ -124,12 +124,19 @@
         }
         function controlResult(details, sourceSocket) {
             const pending = details && waiting.get(details.request_id);
-            if (!pending && details && details.event === 'preview_begin' && details.ok === true && details.token && sourceSocket === S.socket) {
+            // Electron fans a server acknowledgement out to multiple windows.
+            // Only the window still waiting for its own late begin may release
+            // that ticket. Unrelated or already-accepted replies are not orphans.
+            if (!pending && details && details.event === 'preview_begin' && details.ok === true && details.token && sourceSocket === S.socket
+                && isolation && isolation.operationId === details.request_id && isolation.token === null) {
                 compensatePreview(details);
                 return;
             }
             if (!pending || pending.socket !== sourceSocket || sourceSocket !== S.socket || pending.event !== details.event) return;
             waiting.delete(details.request_id); root.clearTimeout(pending.timeout);
+            // Claim before resolving: duplicate replies may arrive before the
+            // awaiting prepare continuation has had a chance to store its token.
+            if (details.ok === true && details.event === 'preview_begin' && isolation && isolation.operationId === details.request_id) isolation.token = details.token || null;
             if (details.ok === true) pending.resolve(details); else {
                 const error = new Error(details.reason || 'voice_control_failed');
                 error.voiceControlConfirmed = true;

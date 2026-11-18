@@ -122,6 +122,7 @@ async def test_music_delivery_reports_effective_source_mode(
         'type': 'music',
     }
     delivery = CommittedDelivery(
+        turn_id='turn-1',
         primary_channel=primary_channel,
         source_links=[music_link],
         delivered_tag='MUSIC',
@@ -190,6 +191,35 @@ def test_action_note_unknown_channel_falls_back_to_source_links():
     )
     assert 'T' in note_both
     assert 'M' not in note_both
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('screenshot', 'links', 'text', 'expected'), [
+    ('private-image', [], 'You are tending a farm.', True),
+    (None, [], 'Ordinary dialogue', False),
+    ('private-image', [{'url': 'https://example.com/news'}], 'A link', False),
+    ('private-image', [], '  ', False),
+])
+@pytest.mark.parametrize(('primary_channel', 'source_tag'), [('chat', 'CHAT'), ('unknown', ''), ('vision', 'CHAT')])
+async def test_only_committed_visual_content_carries_a_screen_presentation(monkeypatch, screenshot, links, text, expected, primary_channel, source_tag):
+    for name in ('_record_proactive_chat', '_record_proactive_material', '_mini_game_invite_count_post_response_chat'):
+        monkeypatch.setattr(proactive_delivery, name, MagicMock())
+    monkeypatch.setattr(proactive_delivery, '_increment_proactive_chat_total', AsyncMock())
+    delivery = CommittedDelivery(turn_id='visual-turn', primary_channel=primary_channel, source_links=links, delivered_tag=source_tag,
+                                 delivered_music_link=None, is_music_used=False, action_note='',
+                                 vision_screenshot_b64=screenshot)
+    result = await _record_committed_delivery(
+        mgr=SimpleNamespace(current_speech_id='visual-turn'), delivery=delivery,
+        lanlan_name='Neko', response_text=text, source_tag=source_tag, active_channels=['vision'],
+        has_unfinished_thread=False, surfaced_reflection_ids=[], selected_web_link=None,
+        selected_web_topic_key=None, web_parsed=None, selected_music_link=None,
+        selected_music_topic_key=None, selected_meme_link=None, selected_meme_topic_key=None,
+        meme_content=None,
+    )
+    assert ('screen_observation' in result.body) is expected
+    if expected:
+        assert result.body['screen_observation'] == {'text': text}
+    assert 'private-image' not in str(result.body)
 
 
 def test_action_note_music_includes_title_and_artist():

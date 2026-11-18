@@ -79,6 +79,7 @@ from main_logic.proactive_chat.decisions import (
     _should_use_voice_fast_path,
 )
 from main_logic.proactive_chat.delivery import (
+    CommitmentOffer,
     CommittedDelivery,
     DeliveryCommit,
     ProactiveLifecycle,
@@ -89,7 +90,9 @@ from main_logic.proactive_chat.candidate_selection import (
     _format_phase1_link_candidate,
     _number_phase1_links_by_source,
     _phase1_linkless_modes,
+    _unmatched_pick_may_be_grounded_news,
     _round_robin_phase1_links,
+    _selected_web_link_from_match,
 )
 from main_logic.proactive_chat.generation import (
     Phase2PromptContext,
@@ -113,12 +116,14 @@ from main_logic.proactive_chat.mini_game_invite import (
     _mini_game_invite_get_state,
     _mini_game_invite_record_delivered,
     _pick_mini_game_type,
+    _select_theater_story,
 )
 from main_logic.proactive_chat.music_recommendation import (
     _build_music_dynamic_context,
     _build_music_playing_hint,
     _select_music_recommendation,
 )
+from main_logic.proactive_chat.music_refusal import is_music_refusal_cooldown_active
 from main_logic.proactive_chat.state import (
     _enter_proactive_phase2,
     _ensure_source_history_loaded,
@@ -278,9 +283,25 @@ def _open_threads_for_activity_state(
     return list(fresh_open_threads or [])
 
 
+def _offered_commitment_ids(commitment: dict[str, Any] | None) -> list[Any]:
+    """The id of the promise the memory cues render, kept apart from reflections.
+
+    It goes to /record_surfaced as ``commitment_ids`` for the promise's own
+    offer cooldown, and never counts as use of the reminiscence channel: a
+    promise shown on its own must not decay the reflections that follow.
+    """
+    from main_logic.topic.hooks import commitment_cue_text
+
+    if commitment_cue_text(commitment) and commitment.get("id"):
+        return [commitment["id"]]
+    return []
+
+
 def _render_followup_topic_hooks(
     proactive_lang: str,
     followup_topics: list[dict[str, Any]],
+    *,
+    commitment: dict[str, Any] | None = None,
 ) -> tuple[str, list[Any]]:
     """Render follow-up topic hooks and return the surfaced reflection ids.
 
@@ -291,17 +312,21 @@ def _render_followup_topic_hooks(
     it. Semantic open_threads intentionally do not flow through this helper:
     they render inside the activity-state section, where the live state/tone
     and decision rules can arbitrate them separately from old reminiscence.
-    """
-    if not followup_topics:
-        return "", []
 
+    ``commitment`` (from /followup_topics: a promise that comes due soon)
+    renders first. Its id is not a reflection id: see _offered_commitment_ids.
+    """
     from main_logic.topic.common import clean_text
     from main_logic.topic.hooks import build_topic_hook_prompt
+
+    if not followup_topics and not _offered_commitment_ids(commitment):
+        return "", []
 
     rendered_followup_topics = followup_topics[:3]
     prompt = build_topic_hook_prompt(
         proactive_lang,
         followup_topics=rendered_followup_topics,
+        commitment=commitment,
     )
     if not prompt:
         return "", []
@@ -318,6 +343,33 @@ def _render_followup_topic_hooks(
         if topic.get("id"):
             surfaced_reflection_ids.append(topic["id"])
     return prompt, surfaced_reflection_ids
+
+
+def _drop_reminiscence_cues(
+    lanlan_name: str,
+    proactive_lang: str,
+    commitment: dict[str, Any] | None,
+    commitment_ids: list[Any],
+) -> tuple[str, list[Any], list[Any]]:
+    """The memory cues left once the reminiscence channel is suppressed.
+
+    Old reflections go. A promise coming due is not reminiscence: it stays
+    (its own offer cooldown keeps it from repeating), but only if it was
+    offered (``commitment_ids``) and still renders. Returns ``(prompt,
+    surfaced reflection ids, offered commitment ids)``.
+    """
+    if not commitment_ids:
+        return "", [], []
+    try:
+        prompt, reflection_ids = _render_followup_topic_hooks(
+            proactive_lang, [], commitment=commitment,
+        )
+    except Exception as err:
+        logger.debug(f"[{lanlan_name}] commitment cue build failed: {err}")
+        return "", [], []
+    if not prompt:
+        return "", [], []
+    return prompt, reflection_ids, list(commitment_ids)
 
 
 def _command_language_candidates(
@@ -526,6 +578,7 @@ async def _collect_sources_under_vision_consent(
     enabled_modes: list[str],
     lanlan_name: str,
     vision_consent_check: Any,
+    mgr: Any = None,
 ) -> tuple[list[str], dict[str, dict], bool]:
     """Collect enabled sources; screen and window sources only under vision consent.
 
@@ -550,6 +603,10 @@ async def _collect_sources_under_vision_consent(
         enabled_modes=enabled_modes,
         lanlan_name=lanlan_name,
         log=logger,
+        community_locale=(
+            _resolve_proactive_locale(command, mgr, fmt="full")
+            if "community" in enabled_modes else None
+        ),
     )
     if await _withhold_revoked_vision_sources(
         sources, vision_consent_check, lanlan_name=lanlan_name, stage="采集期间",
@@ -586,7 +643,9 @@ async def handle_proactive_chat(
         is_playing_music = command.is_playing_music
         is_music_occupied = command.is_music_occupied
         current_track = command.current_track
-        music_cooldown = command.music_cooldown
+        # Card skips and verbal refusals are counted on the backend, so every
+        # window sees them; the frontend flag only covers player-side skips.
+        music_cooldown = command.music_cooldown or is_music_refusal_cooldown_active(lanlan_name)
 
         # Get session manager.
         mgr = session_manager.get(lanlan_name)
@@ -863,6 +922,7 @@ async def handle_proactive_chat(
         # after flag already bypassed upstream gates; toggle returned None there and caller
         # continued ordinary source picking, leaking through blocked contexts.
         _user_invite_toggle = command.mini_game_invite_enabled
+        _theater_invite_toggle = command.theater_invite_enabled
 
         # Non-None ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` bypasses all upstream
         # early-return gates (closed / skip_probability / restricted_screen_only),
@@ -874,7 +934,9 @@ async def handle_proactive_chat(
         # CodeRabbit Major: checking outside ``_maybe_deliver_mini_game_invite`` is necessary,
         # since upstream gates already passed inside, too late to guarantee forced delivery.
         _debug_force_invite = (
-            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None and _user_invite_toggle
+            MINI_GAME_INVITE_FORCE_GAME_TYPE is not None
+            and (_theater_invite_toggle if MINI_GAME_INVITE_FORCE_GAME_TYPE == "theater"
+                 else _user_invite_toggle)
         )
 
         # ========== Hard short-circuit: propensity=closed ==========
@@ -1076,18 +1138,27 @@ async def handle_proactive_chat(
                 _gi_prob = _gi_prob_default
             branch_game_invite = False
             chosen_game_type: str | None = None
+            selected_theater = None
             gi_prompt: str | None = None
-            if MINI_GAME_INVITE_ENABLED and _user_invite_toggle and _gi_prob > 0:
+            if MINI_GAME_INVITE_ENABLED and (_user_invite_toggle or _theater_invite_toggle) and _gi_prob > 0:
                 import random as _random
 
                 if _random.random() < _gi_prob:
-                    chosen_game_type = _pick_mini_game_type(lanlan_name, manager=mgr)
+                    chosen_game_type = _pick_mini_game_type(
+                        lanlan_name, manager=mgr, user_toggle_enabled=_user_invite_toggle,
+                        theater_toggle_enabled=_theater_invite_toggle,
+                    )
+                    if chosen_game_type == "theater":
+                        selected_theater = await _select_theater_story()
+                        if selected_theater is None:
+                            chosen_game_type = None
                     if chosen_game_type is not None:
                         gi_prompt = _render_work_break_game_invite_prompt(
                             pending=water_pending,
                             game_type=chosen_game_type,
                             master_name=master_name_current,
                             lang=_break_lang,
+                            theater_story=selected_theater,
                         )
                         if gi_prompt is not None:
                             branch_game_invite = True
@@ -1132,6 +1203,7 @@ async def handle_proactive_chat(
                     _mini_game_invite_get_state(lanlan_name)["last_game_type"] = (
                         chosen_game_type
                     )
+                    _mini_game_invite_get_state(lanlan_name)["theater_selection"] = selected_theater
                     # Persist counter+1 + ever_delivered atomically (mini-game cooldown
                     # contract). Track success so we can fall back to the plain
                     # _increment_proactive_chat_total if persistence fails — otherwise
@@ -1377,7 +1449,11 @@ async def handle_proactive_chat(
             invite_lang=invite_lang,
             master_name=master_name_current,
             user_toggle_enabled=_user_invite_toggle,
+            theater_toggle_enabled=_theater_invite_toggle,
             round_id=lifecycle.screenshot_request_id,
+            # A theater invite is spoken in the character's own voice.
+            character_prompt=lanlan_prompt_map.get(lanlan_name, "").replace(
+                "{LANLAN_NAME}", lanlan_name).replace("{MASTER_NAME}", master_name_current),
             **state_storage_kwargs,
         )
         if invite_short_circuit is not None:
@@ -1433,6 +1509,7 @@ async def handle_proactive_chat(
                 enabled_modes=enabled_modes,
                 lanlan_name=lanlan_name,
                 vision_consent_check=vision_consent_check,
+                mgr=mgr,
             )
         )
         avatar_position = command.avatar_position
@@ -1572,6 +1649,8 @@ async def handle_proactive_chat(
         # also saving reflect POST's15s timeout risk. stale_returning welcomes reminiscence.
         followup_topics_prompt = ""
         _followup_topics = []
+        _due_commitment = None  # A promise coming due, offered ahead of the reflections.
+        _surfaced_commitment_ids = []  # Its id once the cue renders it; not a reflection.
         _surfaced_reflection_ids = []  # Track pending reflections mentioned this turn.
         _allow_reminiscence = (
             activity_snapshot is None
@@ -1599,8 +1678,10 @@ async def handle_proactive_chat(
                     timeout=5.0,
                 )
                 if _topics_resp.status_code == 200:
-                    _followup_topics = _topics_resp.json().get("topics", [])
-                    if _followup_topics:
+                    _topics_payload = _topics_resp.json()
+                    _followup_topics = _topics_payload.get("topics", [])
+                    _due_commitment = _topics_payload.get("commitment")
+                    if _followup_topics or _due_commitment:
                         try:
                             (
                                 followup_topics_prompt,
@@ -1608,13 +1689,19 @@ async def handle_proactive_chat(
                             ) = _render_followup_topic_hooks(
                                 topic_hook_lang,
                                 _followup_topics,
+                                commitment=_due_commitment,
                             )
+                            if followup_topics_prompt:
+                                _surfaced_commitment_ids = _offered_commitment_ids(
+                                    _due_commitment
+                                )
                         except Exception as _followup_prompt_err:
                             logger.debug(
                                 f"[{lanlan_name}] followup topic prompt build failed: {_followup_prompt_err}"
                             )
                         print(
                             f"[{lanlan_name}] 回调话题候选: {len(_followup_topics)} 条"
+                            f"{'，另有 1 条快到期的承诺' if _due_commitment else ''}"
                         )
             except Exception as e:
                 logger.debug(f"[{lanlan_name}] 回调话题获取失败（不影响主流程）: {e}")
@@ -1713,6 +1800,10 @@ async def handle_proactive_chat(
         )
 
         all_web_links: list[dict] = []
+        # Phase 1 sections rendered as plain text without links (e.g. window
+        # search); an unmatched pick may legitimately come from one of them.
+        phase1_linkless_labels: list[str] = []
+        phase1_linkless_records: list[str] = []
 
         # Collect music links after Phase1 web selection.
         # Memes likewise bypass Phase1 LLM selection and add topics directly.
@@ -1783,8 +1874,13 @@ async def handle_proactive_chat(
                         f"[{lanlan_name}] reminiscence channel suppressed by weight, dropping followup section"
                     )
                 _followup_topics = []
-                _surfaced_reflection_ids = []
-                followup_topics_prompt = ""
+                (
+                    followup_topics_prompt,
+                    _surfaced_reflection_ids,
+                    _surfaced_commitment_ids,
+                ) = _drop_reminiscence_cues(
+                    lanlan_name, topic_hook_lang, _due_commitment, _surfaced_commitment_ids,
+                )
 
 
         # Build once after source suppression so candidates are decayed only once.
@@ -1856,6 +1952,8 @@ async def handle_proactive_chat(
                             for record in fallback_records[:fallback_limit]
                         ]
                         parts.append((f"--- {label} ---", fallback_lines))
+                        phase1_linkless_labels.append(label)
+                        phase1_linkless_records.extend(fallback_lines)
                         remaining_total -= len(fallback_lines)
                         if is_reserved_fallback:
                             remaining_fallback_modes -= 1
@@ -1916,6 +2014,17 @@ async def handle_proactive_chat(
                     f"[{lanlan_name}] Phase 1 社区卡牌选择未匹配，跳过: "
                     f"{web_parsed.get('title', '')[:60]}"
                 )
+            elif matched is None and _unmatched_pick_may_be_grounded_news(
+                web_parsed.get("source"),
+                all_web_links,
+                title=web_parsed.get("title"),
+                linkless_labels=phase1_linkless_labels,
+                linkless_records=phase1_linkless_records,
+            ):
+                print(
+                    f"[{lanlan_name}] Phase 1 海外新闻选择未匹配，跳过: "
+                    f"{web_parsed.get('title', '')[:60]}"
+                )
             else:
                 topic_key = _source_hash(
                     (matched.get("dedupe_key") or matched.get("url", ""))
@@ -1933,26 +2042,8 @@ async def handle_proactive_chat(
                     )
                 else:
                     if matched:
-                        selected_web_link = dict(matched)
-                        canonical_title = matched.get("title", "")
-                        selected_title = (
-                            canonical_title
-                            if matched.get("mode") == "community"
-                            else web_parsed.get("title", canonical_title)
-                        )
-                        selected_web_link.update(
-                            {
-                                "title": selected_title,
-                                "url": matched["url"],
-                                "source": (
-                                    matched.get("source", "")
-                                    if matched.get("mode") == "community"
-                                    else web_parsed.get(
-                                        "source", matched.get("source", "")
-                                    )
-                                ),
-                                "mode": matched.get("mode", "web"),
-                            }
+                        selected_web_link = _selected_web_link_from_match(
+                            matched, web_parsed
                         )
                         print(
                             f"[{lanlan_name}] Phase 1 链接预匹配成功: {matched.get('title', '')[:60]}"
@@ -2156,6 +2247,7 @@ async def handle_proactive_chat(
             phase1_topics,
             vision_content,
             has_unfinished_thread=_has_unfinished_thread,
+            has_due_commitment=bool(_surfaced_commitment_ids),
         )
         if phase1_decision.result is not None:
             print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
@@ -2164,7 +2256,7 @@ async def handle_proactive_chat(
             )
         if not phase1_topics and not vision_content:
             print(
-                f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2"
+                f"[{lanlan_name}] Phase 1 无话题但有未收尾话题或快到期的承诺，进入 text-only 跟进 Phase 2"
             )
 
         # Phase1 preemption check after topic assembly, before Phase2.
@@ -2522,7 +2614,16 @@ async def handle_proactive_chat(
         # exact episode/turn (race guard: a no-op if inline moved it since).
         lifecycle.mark_phase2(mgr.state.snapshot())
 
+        # Recorded as offered once the model answered, whatever the answer: a
+        # [PASS] must not bring the same promise (and another Phase 2 call)
+        # back next round. The reply only sets a flag; the record goes out
+        # after generation, so nothing is awaited between the last consent
+        # check and the send.
+        commitment_offer = CommitmentOffer(
+            lanlan_name, _surfaced_commitment_ids, memory_server_port=MEMORY_SERVER_PORT,
+        )
         guarded_output = await _run_phase2_generation(
+            on_model_reply=commitment_offer.mark_model_replied,
             mgr=mgr,
             vision_consent_epoch=vision_consent_epoch,
             round_is_current=lifecycle.owns_round,
@@ -2546,6 +2647,7 @@ async def handle_proactive_chat(
             music_cooldown=music_cooldown,
             log=logger,
         )
+        await commitment_offer.record_if_offered()
         if _round_preempted():
             return await _end_proactive(ProactiveChatResult(
                 body=_proactive_preempted_json("phase2_post_generation"),
@@ -2622,6 +2724,7 @@ async def handle_proactive_chat(
             **state_storage_kwargs,
             has_unfinished_thread=_has_unfinished_thread,
             surfaced_reflection_ids=_surfaced_reflection_ids,
+            surfaced_commitment_ids=commitment_offer.unrecorded_ids,
             selected_web_link=selected_web_link,
             selected_web_topic_key=selected_web_topic_key,
             web_parsed=web_parsed,

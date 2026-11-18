@@ -11,6 +11,7 @@ from plugin.sdk.shared.models.exceptions import (
     InvalidEventRefError,
     PluginCallError,
 )
+
 from .context import ensure_sdk_context
 from .types import EntryRef, EventRef, JsonObject, JsonValue, PluginContextProtocol
 
@@ -119,6 +120,8 @@ class Plugins:
             return Err(
                 PluginCallError(
                     f"plugin call failed: {error}",
+                    code=getattr(error, "code", "DEADLINE_EXCEEDED" if isinstance(error, TimeoutError) else "REQUEST_FAILED"),
+                    details=getattr(error, "details", None),
                     op_name="plugins.call",
                     plugin_id=plugin_id,
                     event_type=event_type,

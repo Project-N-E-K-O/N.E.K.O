@@ -6,7 +6,13 @@ export function initializeAvatarPlacement(stage, avatar, handle) {
     const bounds=stage.getBoundingClientRect();
     width=clamp(width,Math.min(100,bounds.width),bounds.width);
     height=clamp(height,Math.min(120,bounds.height),bounds.height);
-    Object.assign(avatar.style,{right:'auto',left:`${clamp(left,0,bounds.width-width)}px`,top:`${clamp(top,0,bounds.height-height)}px`,width:`${width}px`,height:`${height}px`});
+    left=clamp(left,0,bounds.width-width);
+    // The default spot is anchored right/bottom in CSS; once placed, left/top take over.
+    Object.assign(avatar.style,{right:'auto',bottom:'auto',left:`${left}px`,top:`${clamp(top,0,bounds.height-height)}px`,width:`${width}px`,height:`${height}px`});
+    // The reaction bubble opens toward the roomier side, or over her head when neither side has room.
+    const room=Math.max(left,bounds.width-left-width);
+    avatar.dataset.side=room<140?'top':left+width/2<bounds.width/2?'left':'right';
+    avatar.style.setProperty('--bubble-room',`${Math.round(room)+14}px`);
   }
   const down=event=>{
     if(event.button!==0)return;

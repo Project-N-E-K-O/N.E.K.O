@@ -32,7 +32,14 @@ BACKGROUND = REPO / "main_routers" / "visit_router" / "background.py"
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    async def no_pending_invites():
+        return 0
+
+    # Startup resets invites first; never reach the real Servers (a signed-in dev machine would cancel its own).
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", no_pending_invites)
     background.cancel_visit_background_tasks()
     yield
     background.cancel_visit_background_tasks()
@@ -107,9 +114,11 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
 
     captured: dict = {}
     gate = asyncio.Event()
+    entered = asyncio.Event()
 
     async def fake_recovery(render_chips, upload_transcript=None, **kw):
         captured.update(kw, render_chips=render_chips, upload_transcript=upload_transcript)
+        entered.set()
         await gate.wait()
         return SimpleNamespace(crashed=[], chips=[], swept=0)
 
@@ -125,8 +134,7 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
     sweep, rec = background._sweep_task, background._recovery_task
     background.start_visit_background_tasks()         # Idempotent: do not create a second instance.
     assert background._sweep_task is sweep and background._recovery_task is rec
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert captured["render_chips"] is debrief.render_chips
     assert captured["upload_transcript"] is transcript_upload.upload_visit_transcript
     assert captured["is_live"] is runtime.is_visit_live
@@ -154,6 +162,165 @@ async def test_recovery_failure_is_logged_not_raised(monkeypatch, caplog):
     background.start_visit_background_tasks()
     assert await background._recovery_task is None
     assert "visit recovery failed" in caplog.text
+
+
+async def test_startup_invalidates_pending_invites_before_spool_recovery(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    order = []
+
+    async def reset_invites():
+        order.append("reset")
+        return 1
+
+    async def recover():
+        order.append("recover")
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    assert await background.wait_startup_invite_reset() is None
+    assert await background._recovery_task is None
+    assert order == ["reset", "recover"]
+
+
+async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    cancelled = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def hanging_reset():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cancelled.set()
+
+    async def recover():
+        recovered.set()
+
+    monkeypatch.setattr(background, "_INVITE_RESET_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", hanging_reset)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    failure = await background.wait_startup_invite_reset()
+    assert isinstance(failure, credentials.VisitServersUnreachable)
+    assert failure.reason == "startup_invite_reset"
+    assert await background._recovery_task is None
+    assert cancelled.is_set() and recovered.is_set()
+
+
+async def test_failed_startup_invite_reset_is_retried_at_admission(monkeypatch):
+    # Signed out at startup, signed in later: the next admission retries the reset
+    # instead of refusing every room until restart; the failure surfaces as is.
+    from main_routers.visit_router import credentials
+
+    calls = []
+    signed_in = False
+
+    async def reset_invites():
+        calls.append("reset")
+        if not signed_in:
+            raise credentials.VisitLoginRequired("no_session")
+        return 0
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    assert isinstance(await background.wait_startup_invite_reset(), credentials.VisitLoginRequired)
+    assert calls == ["reset", "reset"]
+    signed_in = True
+    assert await background.wait_startup_invite_reset() is None
+    assert await background.wait_startup_invite_reset() is None
+    assert calls == ["reset", "reset", "reset"]
+
+
+async def test_concurrent_admissions_share_one_reset_retry(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    calls = []
+    release = asyncio.Event()
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("session_unverified")
+        await release.wait()
+        return 2
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    waiters = [asyncio.create_task(background.wait_startup_invite_reset()) for _ in range(3)]
+    await asyncio.sleep(0.05)
+    assert calls == ["reset", "reset"]
+    release.set()
+    assert await asyncio.gather(*waiters) == [None, None, None]
+    assert calls == ["reset", "reset"]
+
+
+async def test_successful_retry_is_recorded_before_any_waiter_resumes(monkeypatch):
+    # A finished retry plus a not-yet-cleared failure would let the next admission
+    # start a second bulk cancel while the first caller is already minting a room.
+    from main_routers.visit_router import credentials
+
+    calls = []
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("network")
+        return 0
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    first = asyncio.create_task(background.wait_startup_invite_reset())
+    while background._invite_reset_retry is None:
+        await asyncio.sleep(0)
+    assert await background._invite_reset_retry is None
+    assert background._invite_reset_error is None
+    assert await background.wait_startup_invite_reset() is None
+    assert await first is None
+    assert calls == ["reset", "reset"]
+
+
+async def test_shutdown_releases_admissions_waiting_on_a_reset_retry(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    calls = []
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("network")
+        await asyncio.sleep(60)
+
+    async def recover():
+        return None
+
+    async def stopped(reason="shutdown"):
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    monkeypatch.setattr(runtime, "stop_all", stopped)
+    background.start_visit_background_tasks()
+    waiter = asyncio.create_task(background.wait_startup_invite_reset())
+    await asyncio.sleep(0.05)
+    await background.stop_visit_background_tasks()
+    failure = await asyncio.wait_for(waiter, 1.0)
+    assert isinstance(failure, credentials.VisitServersUnreachable)
+    assert failure.reason == "startup_invite_reset"
 
 
 async def test_shutdown_is_bounded_even_when_stop_all_hangs(monkeypatch):

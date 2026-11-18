@@ -25,6 +25,7 @@ import httpx
 from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 from utils.social_base import DEFAULT_SOCIAL_BASE_URL, social_base_url
+from utils.language_utils import get_global_language_full, normalize_language_code
 import random
 import re
 import time
@@ -44,6 +45,9 @@ from .platform_helpers import (
 )
 from .youtube_feed import fetch_youtube_home_feed
 from .twitch_feed import fetch_twitch_live_streams
+from .google_trends_feed import fetch_google_trends, google_trend_headline
+from .steam_store_feed import fetch_steam_featured, steam_game_details
+from .news_filters import is_tragic_news_text
 from .bilibili_content import fetch_bilibili_radar
 
 
@@ -55,7 +59,7 @@ XHH_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
 )
-# The community API's discover feed is deliberately fetched as its first page
+# Each proactive fetch starts a fresh server recommendation round with a page
 # of 60 cards. The caller's smaller ``limit`` is applied after normalization,
 # so Phase 1 keeps its existing prompt budget while still getting a varied pool.
 NEKO_COMMUNITY_FEED_PAGE_SIZE = 60
@@ -77,7 +81,7 @@ def _neko_community_urls() -> tuple[str, str]:
     """Return community feed and discover URLs for the configured social host."""
 
     base_url = social_base_url().rstrip("/")
-    return f"{base_url}/api/feed", f"{base_url}/discover"
+    return f"{base_url}/api/feed/recommendations", f"{base_url}/discover"
 
 
 def _same_community_origin(left: str, right: str) -> bool:
@@ -886,13 +890,26 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
         response["error"] = "; ".join(errors) if errors else "Twitch 与 YouTube 获取失败（无错误详情）"
     return response
 
+def _drop_tragic_twitter_trends(twitter_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove overseas Twitter trends about death, violence, or disasters."""
+    kept = [
+        item for item in twitter_result.get('trending', []) or []
+        if not is_tragic_news_text(item.get('word', '') or item.get('name', ''))
+    ]
+    filtered = {**twitter_result, 'trending': kept}
+    if not kept:
+        filtered['success'] = False
+        filtered['error'] = 'Twitter returned only filtered trends'
+    return filtered
+
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch news/trending-topic content based on the user's region
     
     Chinese region: trending Weibo topics, Tieba community discussions,
     and Xiaoheihe feed
-    non-Chinese region: Twitter trends and Xiaoheihe feed
+    non-Chinese region: Twitter trends, Google Trends daily searches, and
+    Steam store top sellers/new releases
     
     Args:
         limit: maximum amount of content
@@ -942,30 +959,42 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
                 response['error'] = '; '.join(errors) if errors else '暂时无法获取热议话题'
             return response
 
-        logger.info("检测到非中文区域，并行获取 Twitter 与小黑盒内容")
-        twitter_result, xhh_result = await asyncio.gather(
+        # Xiaoheihe is a Chinese-language gaming community; keep it out of
+        # non-China news so overseas users are not handed Chinese posts.
+        # Google Trends and Steam are localized by the user's language.
+        logger.info("检测到非中文区域，并行获取 Twitter、Google Trends 与 Steam 内容")
+        twitter_result, google_trends_result, steam_result = await asyncio.gather(
             fetch_twitter_trending(limit),
-            fetch_xhh_feed_content(limit),
+            fetch_google_trends(limit),
+            fetch_steam_featured(limit),
             return_exceptions=True,
         )
-        if isinstance(twitter_result, Exception):
+        # BaseException: a sub-task cancelled on its own comes back as CancelledError.
+        if isinstance(twitter_result, BaseException):
             logger.warning(f"Twitter 热门话题获取失败: {twitter_result}")
             twitter_result = {'success': False, 'error': str(twitter_result)}
-        if isinstance(xhh_result, Exception):
-            logger.warning(f"小黑盒首页内容获取失败: {xhh_result}")
-            xhh_result = {'success': False, 'error': str(xhh_result), 'posts': []}
+        elif twitter_result.get('success'):
+            twitter_result = _drop_tragic_twitter_trends(twitter_result)
+        if isinstance(google_trends_result, BaseException):
+            logger.warning(f"Google Trends 获取失败: {google_trends_result}")
+            google_trends_result = {'success': False, 'error': str(google_trends_result), 'trending': []}
+        if isinstance(steam_result, BaseException):
+            logger.warning(f"Steam 商店热门获取失败: {steam_result}")
+            steam_result = {'success': False, 'error': str(steam_result), 'games': []}
 
-        success = bool(twitter_result.get('success') or xhh_result.get('success'))
+        source_results = (twitter_result, google_trends_result, steam_result)
+        success = any(item.get('success') for item in source_results)
         response = {
             'success': success,
             'region': region,
             'news': twitter_result,
-            'xhh': xhh_result,
+            'google_trends': google_trends_result,
+            'steam': steam_result,
         }
         if not success:
             errors = [
                 str(item.get('error'))
-                for item in (twitter_result, xhh_result)
+                for item in source_results
                 if item.get('error')
             ]
             response['error'] = '; '.join(errors) if errors else 'Unable to fetch trending topics'
@@ -1639,6 +1668,37 @@ def _format_twitter_trending(trending_list: List[Dict], limit: int = 5) -> List[
     output_lines.append("")
     return output_lines
 
+def _format_google_trends(trending_list: List[Dict], geo: str = '', limit: int = 5) -> List[str]:
+    """Format Google Trends daily searches with their top headline"""
+    header = f"【Google Trends ({geo})】" if geo else "【Google Trends】"
+    output_lines = [header]
+    for i, item in enumerate(trending_list[:limit], 1):
+        line = f"{i}. {item.get('word', '')}"
+        traffic = item.get('traffic', '')
+        if traffic:
+            line += f" ({traffic} searches)"
+        headline = google_trend_headline(item)
+        if headline:
+            line += "\n   " + headline
+        output_lines.append(line)
+    output_lines.append("")
+    return output_lines
+
+def _format_steam_featured(games: List[Dict], limit: int = 5) -> List[str]:
+    """Format Steam store top sellers and new releases"""
+    output_lines = ["【Steam Store】"]
+    for i, game in enumerate(games[:limit], 1):
+        details = steam_game_details(game)
+        line = f"{i}. {game.get('title', '')}"
+        if details:
+            line += f" ({details})"
+        description = game.get('description', '')
+        if description:
+            line += "\n   " + description
+        output_lines.append(line)
+    output_lines.append("")
+    return output_lines
+
 def format_trending_content(trending_content: Dict[str, Any]) -> str:
     """
     Format trending content into a readable string
@@ -1731,7 +1791,7 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     Formats automatically by region:
     - Chinese region: trending Weibo topics, Tieba community discussions,
       and Xiaoheihe feed
-    - non-Chinese region: Twitter trends and Xiaoheihe feed
+    - non-Chinese region: Twitter trends, Google Trends, and Steam store
     
     Args:
         news_content: result returned by fetch_news_content
@@ -1758,6 +1818,15 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
         if news_data.get('success'):
             trending_list = news_data.get('trending', [])
             output_lines.extend(_format_twitter_trending(trending_list))
+        google_trends_data = news_content.get('google_trends', {}) or {}
+        if google_trends_data.get('success'):
+            output_lines.extend(_format_google_trends(
+                google_trends_data.get('trending', []),
+                geo=google_trends_data.get('geo', ''),
+            ))
+        steam_data = news_content.get('steam', {}) or {}
+        if steam_data.get('success'):
+            output_lines.extend(_format_steam_featured(steam_data.get('games', [])))
 
     xhh_data = news_content.get('xhh', {})
     if xhh_data.get('success'):
@@ -1840,20 +1909,12 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
-    """Return a bounded prefix of the first list-shaped card collection."""
-
-    def bounded_items(items: list[Any]) -> list[dict[str, Any]]:
-        return [
-            item
-            for item in islice(items, NEKO_COMMUNITY_FEED_PAGE_SIZE)
-            if isinstance(item, dict)
-        ]
-
+def _community_feed_collection(payload: Any) -> list[Any] | None:
+    """Locate the first supported card collection, distinguishing empty from absent."""
     if isinstance(payload, list):
-        return bounded_items(payload)
+        return payload
     if not isinstance(payload, dict):
-        return []
+        return None
 
     containers: list[Any] = [payload]
     for key in ("data", "result", "feed"):
@@ -1862,14 +1923,24 @@ def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
             containers.append(value)
     for container in containers:
         if isinstance(container, list):
-            return bounded_items(container)
+            return container
         if not isinstance(container, dict):
             continue
         for key in ("items", "posts", "cards", "results", "list"):
             value = container.get(key)
             if isinstance(value, list):
-                return bounded_items(value)
-    return []
+                return value
+    return None
+
+
+def _community_feed_items(payload: Any) -> list[dict[str, Any]]:
+    """Return a bounded prefix of the first list-shaped card collection."""
+    items = _community_feed_collection(payload)
+    return [
+        item
+        for item in islice(items if items is not None else [], NEKO_COMMUNITY_FEED_PAGE_SIZE)
+        if isinstance(item, dict)
+    ]
 
 
 def _community_text(
@@ -2138,14 +2209,14 @@ async def _fetch_neko_community_payload(
     client: httpx.AsyncClient,
     feed_api: str,
     *,
-    params: dict[str, int],
+    query: dict[str, Any],
     headers: dict[str, str],
 ) -> tuple[int, Any | None]:
     """Read one bounded community feed response before JSON decoding."""
 
     body = bytearray()
     async with client.stream(
-        "GET", feed_api, params=params, headers=headers, timeout=10.0
+        "POST", feed_api, json=query, headers=headers, timeout=10.0
     ) as response:
         if response.status_code in {401, 403}:
             return response.status_code, None
@@ -2157,7 +2228,9 @@ async def _fetch_neko_community_payload(
     return response.status_code, json.loads(body)
 
 
-async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
+async def fetch_neko_community_feed(
+    limit: int = 10, *, locale: str | None = None
+) -> dict[str, Any]:
     """Fetch community cards with the validated desktop OAuth session when available."""
 
     try:
@@ -2167,14 +2240,15 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
             "Referer": discover_url,
             "User-Agent": XHH_USER_AGENT,
         }
-        params = {"offset": 0, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
+        query: dict[str, Any] = {"cursor": None, "limit": NEKO_COMMUNITY_FEED_PAGE_SIZE}
         access_token = ""
         if _neko_community_bearer_transport_allowed(feed_api):
             access_token = await _neko_community_access_token(feed_api)
         authenticated = bool(access_token)
+        rejected_auth_status: int | None = None
         if authenticated:
-            # Never put a refreshable community bearer into the process-wide client:
-            # its cookie jar and connection lifetime are shared by unrelated scrapers.
+            # Omit locale so the server honors the account's saved language.
+            # Keep the refreshable bearer out of the shared client's cookie jar.
             headers["Authorization"] = f"Bearer {access_token}"
             async with httpx.AsyncClient(
                 timeout=10.0,
@@ -2182,30 +2256,32 @@ async def fetch_neko_community_feed(limit: int = 10) -> dict[str, Any]:
                 follow_redirects=False,
             ) as client:
                 status_code, payload = await _fetch_neko_community_payload(
-                    client, feed_api, params=params, headers=headers
+                    client, feed_api, query=query, headers=headers
                 )
-            # A permission/scope mismatch must not suppress the public discovery feed.
             if status_code in {401, 403}:
+                rejected_auth_status = status_code
                 authenticated = False
                 headers.pop("Authorization", None)
-                _, payload = await _fetch_neko_community_payload(
-                    get_external_http_client(), feed_api, params=params, headers=headers
-                )
-        else:
-            _, payload = await _fetch_neko_community_payload(
-                get_external_http_client(), feed_api, params=params, headers=headers
+        if not authenticated:
+            # Missing or rejected credentials use anonymous recommendations.
+            query["locale"] = normalize_language_code(
+                locale or get_global_language_full(), format="full"
+            )
+            status_code, payload = await _fetch_neko_community_payload(
+                get_external_http_client(), feed_api, query=query, headers=headers
+            )
+        if status_code in {401, 403}:
+            auth_context = (
+                f" after authenticated HTTP {rejected_auth_status}"
+                if rejected_auth_status is not None else ""
+            )
+            raise ValueError(
+                f"Anonymous community recommendations rejected: HTTP {status_code}{auth_context}"
             )
         posts = normalize_neko_community_feed(payload, limit=limit)
-        if not posts:
+        if not posts and _community_feed_collection(payload) != []:
             raise ValueError("喵宇宙社区 feed 未返回可用卡牌")
-        # The feed API ranks cards by hot score, so this first page's order is
-        # near-static within a day. Feeding Phase 1 that fixed order every
-        # round made the same candidate prefix — and the same logged top
-        # titles — reappear on every proactive cycle. Shuffle the bounded
-        # pool so each round presents a fresh slice of it; the source-history
-        # cooldown (keyed by dedupe_key, order-independent) still keeps
-        # already-delivered cards out.
-        random.shuffle(posts)
+        # Preserve server ranking; an exhausted language pool may legitimately be empty.
         return {
             "success": True,
             "posts": posts,

@@ -59,6 +59,8 @@ class VRMManager {
         this._animationFrameId = null;
         this._uiUpdateLoopId = null;
         this.enablePhysics = true;
+        this._physicsProfile = null;
+        this._physicsProfileModel = '';
         this._lookAtTarget = null;
         this._mouseMoveHandler = null;
         this._mouseRaycaster = null;
@@ -396,57 +398,83 @@ class VRMManager {
         return texture;
     }
 
+    // 蒙皮网格的 computeBoundingBox 得到的是网格局部、当前姿态的包围盒。
+    // 没有蒙皮属性时退回几何体包围盒，那是绑定姿态的静态边界。
+    _cloneMeshLocalBounds(object) {
+        if (!object?.geometry) return null;
+        if (object.isSkinnedMesh && typeof object.computeBoundingBox === 'function') {
+            const previousBox = object.boundingBox;
+            try {
+                // computeBoundingBox 会清空并原地重填已有盒子。先换成新盒子，
+                // finally 再把原来的引用放回去，内容才不会被这次测量改掉。
+                object.boundingBox = null;
+                object.computeBoundingBox();
+                const computed = object.boundingBox;
+                if (computed && !computed.isEmpty()) return computed.clone();
+            } catch (error) {
+                // 缺少蒙皮属性时走下面的静态几何体边界。
+            } finally {
+                object.boundingBox = previousBox;
+            }
+        }
+        const geometry = object.geometry;
+        if (typeof geometry.computeBoundingBox !== 'function') return null;
+        if (!geometry.boundingBox) geometry.computeBoundingBox();
+        if (!geometry.boundingBox || geometry.boundingBox.isEmpty()) return null;
+        return geometry.boundingBox.clone();
+    }
+
+    // 每个网格先变到 vrm.scene 局部再合并。先合并世界 AABB 再整盒逆变换时，
+    // 场景绕 Y 轴旋转 45° 会把局部宽深放大到约 2 倍，阴影直径跟着朝向变。
+    _collectSceneLocalBodyBox(scene) {
+        const localBodyBox = new window.THREE.Box3();
+        if (!scene) return localBodyBox;
+        scene.updateMatrixWorld(true);
+        const invScene = scene.matrixWorld.clone().invert();
+        const toLocal = new window.THREE.Matrix4();
+        const meshes = [];
+        scene.traverse((object) => {
+            if (object.isSkinnedMesh) meshes.push(object);
+        });
+        if (meshes.length === 0) {
+            scene.traverse((object) => {
+                if (object.isMesh && object !== this._shadowMesh && object.geometry) {
+                    meshes.push(object);
+                }
+            });
+        }
+        for (const object of meshes) {
+            object.updateMatrixWorld(true);
+            const box = this._cloneMeshLocalBounds(object);
+            if (!box || box.isEmpty()) continue;
+            toLocal.multiplyMatrices(invScene, object.matrixWorld);
+            localBodyBox.union(box.applyMatrix4(toLocal));
+        }
+        return localBodyBox;
+    }
+
     _calculateAndAddShadow(result) {
         const SHADOW_SCALE_MULT = 0.5;
         const SHADOW_Y_OFFSET = 0.001;
         const FIX_CENTER_XZ = true;
 
-        result.vrm.scene.updateMatrixWorld(true);
+        // 阴影网格挂在 vrm.scene 下，直径用场景局部尺寸，避免用户缩放被乘两次。
+        const localBodyBox = this._collectSceneLocalBodyBox(result.vrm.scene);
 
-        const bodyBox = new window.THREE.Box3();
-        let hasBodyMesh = false;
-
-        result.vrm.scene.traverse((object) => {
-            if (object.isSkinnedMesh) {
-                object.updateMatrixWorld(true);
-                const meshBox = new window.THREE.Box3();
-                meshBox.setFromObject(object);
-                bodyBox.union(meshBox);
-                hasBodyMesh = true;
-            }
-        });
-
-        if (!hasBodyMesh) {
-            bodyBox.setFromObject(result.vrm.scene);
+        // 阴影网格会挂到 vrm.scene 上，并跟着 scene.scale 一起缩放。
+        // 直径必须用场景局部尺寸：世界包围盒已经包含用户缩放，再写进子节点
+        // 会把缩放乘第二次。模型管理里放大后保存，主页面阴影就会按缩放的
+        // 平方变大；缩得很小时，原先 0.3 的绝对下限也不会跟着模型变小。
+        const localBodySize = new window.THREE.Vector3();
+        localBodyBox.getSize(localBodySize);
+        const footprint = Math.max(localBodySize.x, localBodySize.z);
+        let shadowDiameter = footprint * SHADOW_SCALE_MULT;
+        if (!(shadowDiameter > 0) && localBodySize.y > 0) {
+            shadowDiameter = localBodySize.y * 0.2;
         }
-
-        result.vrm.scene.updateMatrixWorld(true);
-        const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
-        const worldCorners = [
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.max.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.max.y, bodyBox.min.z),
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.max.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.max.z),
-            new window.THREE.Vector3(bodyBox.min.x, bodyBox.max.y, bodyBox.max.z),
-            new window.THREE.Vector3(bodyBox.max.x, bodyBox.max.y, bodyBox.max.z),
-        ];
-        const localBodyBox = new window.THREE.Box3();
-        worldCorners.forEach(corner => {
-            const localCorner = corner.clone().applyMatrix4(sceneInverseMatrix);
-            localBodyBox.expandByPoint(localCorner);
-        });
-
-        // 获取包围盒尺寸（用于计算阴影大小，使用世界空间的尺寸）
-        const bodySize = new window.THREE.Vector3();
-        bodyBox.getSize(bodySize);
-
-        // 计算阴影大小（使用身体宽度和深度的较大值作为基准）
-        const shadowDiameter = Math.max(
-            Math.max(bodySize.x, bodySize.z) * SHADOW_SCALE_MULT,
-            0.3  // 最小尺寸保底
-        );
+        if (!Number.isFinite(shadowDiameter) || shadowDiameter <= 0) {
+            return;
+        }
 
         // 5. 清理之前的阴影资源（如果存在）
         this._disposeShadowResources();
@@ -1532,27 +1560,8 @@ class VRMManager {
                     const sceneRotY = this.currentModel.vrm.scene.rotation.y;
                     console.log('[VRM] Scene rotation Y:', sceneRotY);
 
-                    // 减小碰撞体半径
-                    // 原因：UniVRM 导出 bug (#673) 导致碰撞体普遍过大
-                    // 50% 是经验值，修复所有测试模型
-                    // 参考：https://github.com/vrm-c/UniVRM/issues/673
-                    const COLLIDER_REDUCTION = 0.5;  // 可调整，经验默认值
-                    const collidersSet = springBoneManager.colliders;
-                    const colliders = collidersSet ? Array.from(collidersSet) : [];
-                    colliders.forEach(collider => {
-                        if (collider.shape?.radius !== undefined) {
-                            // 保存真正的原始半径（只在第一次）
-                            if (collider._rawOriginalRadius === undefined) {
-                                collider._rawOriginalRadius = collider.shape.radius;
-                            }
-                            // 应用基础缩减
-                            const reducedRadius = collider._rawOriginalRadius * COLLIDER_REDUCTION;
-                            collider.shape.radius = reducedRadius;
-                            // 保存缩减后的半径作为"工作半径"供场景缩放使用
-                            collider._originalRadius = reducedRadius;
-                        }
-                    });
-                    console.log(`[VRM] Reduced ${colliders.length} colliders by ${(1 - COLLIDER_REDUCTION) * 100}%`);
+                    const profileResult = this._applyPhysicsProfile(springBoneManager, modelUrl);
+                    console.log(`[VRM] Physics profile: source=${profileResult.source}, colliders=${profileResult.colliders}, joints=${profileResult.joints}, reset=${profileResult.reset === true}`);
                 }
 
                 this.currentModel.vrm.scene.visible = true;
@@ -1638,10 +1647,11 @@ class VRMManager {
 
         // 同时等待场景稳定和待机动画加载完成，确保模型不以 T-pose 显示
         this._loadState = 'settling';
+        const physicsProfilePromise = this.loadPhysicsProfile(modelUrl).catch(() => false);
         const stabilityPromise = (result && result.vrm && result.vrm.scene && this._isLoadTokenActive(loadToken))
             ? this._waitForSceneStability(result.vrm.scene, loadToken)
             : Promise.resolve(false);
-        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady]);
+        const [stabilityResult, animationSucceeded] = await Promise.all([stabilityPromise, animationReady, physicsProfilePromise]);
 
         if (this._isLoadTokenActive(loadToken) && stabilityResult === true) {
             this._loadState = 'ready';
@@ -1791,6 +1801,7 @@ class VRMManager {
             this.renderer.domElement.style.width = visibleWidth + 'px';
             this.renderer.domElement.style.height = visibleHeight + 'px';
             this.interaction?._revalidateMovementTarget();
+            this.core?.refreshSyntheticOutlineWidth?.();
             return;
         }
 
@@ -1807,6 +1818,7 @@ class VRMManager {
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);
         this.interaction?._revalidateMovementTarget();
+        this.core?.refreshSyntheticOutlineWidth?.();
     }
     getCurrentModel() {
         return this.currentModel;
@@ -1850,6 +1862,16 @@ class VRMManager {
                 }
             });
 
+            const joints = springBoneManager.joints
+                ? Array.from(springBoneManager.joints)
+                : [];
+            // 只缩放物理配置写过基准值的关节；没有配置的模型保持原有行为（hitRadius 不随缩放变化）
+            joints.forEach(joint => {
+                const settings = joint && joint.settings;
+                if (!settings || typeof joint._originalHitRadius !== 'number') return;
+                settings.hitRadius = joint._originalHitRadius * scaleFactor;
+            });
+
             console.log(`[VRM] Scaled ${colliders.length} colliders with factor ${scaleFactor.toFixed(3)}`);
         }
     }
@@ -1860,6 +1882,96 @@ class VRMManager {
      */
     setModelScaleScalar(scale) {
         this.setModelScale(scale, scale, scale);
+    }
+
+    _currentSceneScale() {
+        const scene = this.currentModel && this.currentModel.vrm ? this.currentModel.vrm.scene : null;
+        if (!scene || !scene.scale) return 1;
+        const s = Number(scene.scale.x);
+        return Number.isFinite(s) && s > 0 ? s : 1;
+    }
+
+    _applyPhysicsProfile(springBoneManager, modelUrl) {
+        const modelName = this._resolvePhysicsProfileModelName(modelUrl);
+        const usable = this._physicsProfile
+            && this._physicsProfile.hasProfile
+            && modelName
+            && this._physicsProfileModel === modelName;
+
+        if (usable) {
+            const sceneScale = this._currentSceneScale();
+            const applied = this._physicsProfile.apply(springBoneManager, sceneScale);
+            return {
+                source: applied.source,
+                colliders: applied.colliders,
+                joints: applied.joints,
+                reset: applied.reset
+            };
+        }
+
+        let applied = 0;
+        if (this._physicsProfile) {
+            applied = this._physicsProfile.applyDefaultReduction(springBoneManager);
+        } else {
+            const collidersSet = springBoneManager.colliders;
+            const colliders = collidersSet ? Array.from(collidersSet) : [];
+            const reduction = window.VrmPhysicsProfile
+                ? window.VrmPhysicsProfile.DEFAULT_REDUCTION
+                : 0.5;
+            colliders.forEach(collider => {
+                if (collider.shape?.radius !== undefined) {
+                    if (collider._rawOriginalRadius === undefined) {
+                        collider._rawOriginalRadius = collider.shape.radius;
+                    }
+                    const reducedRadius = collider._rawOriginalRadius * reduction;
+                    collider.shape.radius = reducedRadius;
+                    collider._originalRadius = reducedRadius;
+                    applied++;
+                }
+            });
+        }
+        return { source: 'default', colliders: applied, joints: 0, reset: false };
+    }
+
+    async loadPhysicsProfile(modelUrl) {
+        const modelName = this._resolvePhysicsProfileModelName(modelUrl);
+        if (!window.VrmPhysicsProfile || !modelName) {
+            this._physicsProfile = null;
+            this._physicsProfileModel = '';
+            return false;
+        }
+        if (!this._physicsProfile) {
+            this._physicsProfile = new window.VrmPhysicsProfile();
+        }
+        // 每次加载都重新请求（cache: no-store），调参时改了 _physics.json 重新加载即可生效
+        this._physicsProfileModel = '';
+        const profile = this._physicsProfile;
+        const loaded = await profile.load(modelName);
+        if (this._physicsProfile !== profile) {
+            return false;
+        }
+        if (loaded && profile.hasProfile && profile.lastModel === modelName) {
+            this._physicsProfileModel = modelName;
+            return true;
+        }
+        return false;
+    }
+
+    _resolvePhysicsProfileModelName(modelUrl) {
+        const url = modelUrl || this.currentModel?.url || '';
+        if (!url || typeof url !== 'string') return '';
+        const cleaned = url.split('?')[0].split('#')[0];
+        const last = cleaned.substring(cleaned.lastIndexOf('/') + 1);
+        if (!last) return '';
+        const dot = last.lastIndexOf('.');
+        const stem = dot > 0 ? last.substring(0, dot) : last;
+        if (!stem) return '';
+        // 与 ModelPathHelper.getVrmModelName 一致：文件名里本来就有 %（如 100%cute.vrm）时解码会失败，保留原名
+        try {
+            return decodeURIComponent(stem);
+        } catch (error) {
+            return stem;
+        }
     }
 
     /**
@@ -2084,6 +2196,8 @@ class VRMManager {
 
         // 12. 重置引用和状态
         this.currentModel = null;
+        this._physicsProfile = null;
+        this._physicsProfileModel = '';
         this.animationMixer = null;
         this.scene = null;
         this.camera = null;
@@ -2222,6 +2336,7 @@ class VRMManager {
         if (!scene) return null;
 
         const box = new window.THREE.Box3().setFromObject(scene);
+        if (box.isEmpty()) return null;
         const corners = [
             new window.THREE.Vector3(box.min.x, box.min.y, box.min.z),
             new window.THREE.Vector3(box.min.x, box.min.y, box.max.z),
@@ -2233,11 +2348,31 @@ class VRMManager {
             new window.THREE.Vector3(box.max.x, box.max.y, box.max.z)
         ];
 
+        this.camera.updateWorldMatrix(true, false);
+        for (const corner of corners) {
+            corner.applyMatrix4(this.camera.matrixWorldInverse);
+        }
+        const clipZ = -Math.max(this.camera.near, 0.0001);
+        const visibleCorners = corners.filter(corner => corner.z <= clipZ);
+        // 包围盒穿过相机时，直接投影背后的角点会反转/缩小屏幕边界。
+        // 先沿 12 条盒边裁剪到近裁剪面，保留前方角点及裁剪交点。
+        for (let i = 0; i < corners.length; i++) {
+            for (const axisBit of [1, 2, 4]) {
+                const j = i ^ axisBit;
+                if (j <= i) continue;
+                const a = corners[i], b = corners[j];
+                if ((a.z <= clipZ) !== (b.z <= clipZ)) {
+                    visibleCorners.push(a.clone().lerp(b, (clipZ - a.z) / (b.z - a.z)));
+                }
+            }
+        }
+        if (!visibleCorners.length) return null;
+
         let screenLeft = Infinity, screenRight = -Infinity;
         let screenTop = Infinity, screenBottom = -Infinity;
 
-        for (const corner of corners) {
-            corner.project(this.camera);
+        for (const corner of visibleCorners) {
+            corner.applyMatrix4(this.camera.projectionMatrix);
             const sx = canvasRect.left + (corner.x * 0.5 + 0.5) * canvasWidth;
             const sy = canvasRect.top + (-corner.y * 0.5 + 0.5) * canvasHeight;
             screenLeft = Math.min(screenLeft, sx);

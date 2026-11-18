@@ -185,8 +185,12 @@ onBeforeUnmount(() => {
 }
 
 .danger-dialog__hero {
-  background: linear-gradient(180deg, rgba(251, 191, 36, 0.14) 0%, rgba(248, 113, 113, 0.08) 100%);
-  border: 1px solid rgba(248, 113, 113, 0.16);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--el-color-warning) 14%, transparent) 0%,
+    color-mix(in srgb, var(--el-color-danger) 8%, transparent) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--el-color-danger) 16%, transparent);
 }
 
 .danger-dialog__badge {
@@ -195,7 +199,7 @@ onBeforeUnmount(() => {
   min-height: 24px;
   padding: 0 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: color-mix(in srgb, var(--surface-card) 72%, transparent);
   color: var(--el-color-danger);
   font-size: 12px;
   font-weight: 600;
@@ -216,8 +220,12 @@ onBeforeUnmount(() => {
 }
 
 .danger-dialog__notice {
-  background: linear-gradient(180deg, rgba(148, 163, 184, 0.14) 0%, rgba(148, 163, 184, 0.08) 100%);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--el-color-info) 14%, transparent) 0%,
+    color-mix(in srgb, var(--el-color-info) 8%, transparent) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--el-color-info) 14%, transparent);
 }
 
 .danger-dialog__notice-title {
@@ -240,8 +248,12 @@ onBeforeUnmount(() => {
   min-height: 52px;
   border: none;
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(248, 113, 113, 0.18) 0%, rgba(239, 68, 68, 0.14) 100%);
-  box-shadow: 0 10px 24px rgba(239, 68, 68, 0.14);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--el-color-danger) 18%, transparent) 0%,
+    color-mix(in srgb, var(--el-color-danger) 14%, transparent) 100%
+  );
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--el-color-danger) 14%, transparent);
   color: var(--el-color-danger);
   cursor: pointer;
   transition: transform 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
@@ -250,7 +262,7 @@ onBeforeUnmount(() => {
 
 .danger-dialog__hold-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 14px 28px rgba(239, 68, 68, 0.18);
+  box-shadow: 0 14px 28px color-mix(in srgb, var(--el-color-danger) 18%, transparent);
 }
 
 .danger-dialog__hold-button--holding {
@@ -267,7 +279,11 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   transform-origin: left center;
-  background: linear-gradient(90deg, rgba(248, 113, 113, 0.18) 0%, rgba(239, 68, 68, 0.34) 100%);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--el-color-danger) 18%, transparent) 0%,
+    color-mix(in srgb, var(--el-color-danger) 34%, transparent) 100%
+  );
   transition: transform 0.08s linear;
 }
 

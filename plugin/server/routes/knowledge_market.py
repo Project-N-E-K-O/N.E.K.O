@@ -63,12 +63,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from plugin.logging_config import get_logger
 from plugin.server.routes.knowledge_bridge import _client, main_write_headers
 from plugin.server.routes.market_bridge import (
-    _GITHUB_PROXY_SOURCES,
     _ensure_valid_oauth_token,
     _measure_github_proxy_sources,
     _main_server_port,
     _verify_token,
 )
+from plugin.server.infrastructure.package_sources import GITHUB_DOWNLOAD_SOURCES
 from plugin.settings import MARKET_API_URL, NEKO_AUTH_CLIENT_ID
 from plugin.utils.http_imports import ensure_httpx
 
@@ -95,7 +95,7 @@ _ARTIFACT_REDIRECT_STATUSES = frozenset((301, 302, 303, 307, 308))
 # one place decides which third parties are trusted to relay bytes; the bytes
 # are checked against the market's size and SHA-256 either way).
 _GITHUB_MIRROR_PREFIXES = tuple(
-    base_url for source_id, base_url in _GITHUB_PROXY_SOURCES if source_id != "github-direct"
+    base_url for source_id, base_url in GITHUB_DOWNLOAD_SOURCES if source_id != "github-direct"
 )
 _ALLOWED_ARTIFACT_HOSTS = frozenset(
     {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}

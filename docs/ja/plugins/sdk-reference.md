@@ -73,6 +73,8 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 | 構造化された SQLite データ | `[plugin.database]` を有効にして `self.db` を使用 |
 | 任意の永続ファイル | `self.data_path(...)` |
 | 再生成可能なファイル | `self.cache_path(...)` |
+| 他のプラグインに読ませるファイル | `self.shared_path(...)` |
+| 他のプラグインが公開したファイル | `[plugin.shared]` で宣言したうえで `self.shared_path_of("<plugin_id>", ...)` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -108,7 +110,7 @@ self.report_status({
 
 #### `push_message(**kwargs) -> PushMessageResult`
 
-v2 schema でホストシステムにメッセージをプッシュします。
+v2 schema でホストシステムにメッセージをプッシュします。`visibility` はユーザーのチャットまたは HUD への表示を決め、`ai_behavior` はモデルがメッセージを読むか応答するかを独立して決め、`parts` がテキスト・画像・`ui_action` を運びます。
 
 ```python
 result = self.push_message(
@@ -118,45 +120,11 @@ result = self.push_message(
     parts=[{"type": "text", "text": "タスクが完了しました"}],
     priority=5,
 )
-
 if not result["submitted"]:
-    # ローカル状態を保持します。再試行と重複排除はプラグイン側の方針です。
-    self.logger.warning("message submission failed: %s", result["reason"])
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
-`submitted=True` は、SDK の正規ローカル送信経路が payload の送信責任を
-引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
-確認ではありません。拒否理由は `backpressure`、`transport_error`、
-`transport_unavailable` のいずれかで、メッセージ本文や生の例外テキストは含みません。
-拒否結果には従来の呼び出し元との互換性のため `ok=False` も含まれます。新しいコードでは
-`submitted` を正式な判定基準として使用してください。
-
-v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は deprecated ですが current source では変換されます。今すぐ移行し、この文書から正確な removal release を保証しないでください。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
-
-#### メディアパート
-
-- テキストと画像のパートはホストで処理されます。小さな画像は inline で送れます：
-
-  ```python
-  parts=[{"type": "image", "data": image_bytes, "mime": "image/png"}]
-  ```
-
-- 小さくない画像は host に一時 upload し、返された part を送信してください：
-
-  ```python
-  image_part = await self.ctx.images.upload(image_bytes, mime="image/png")
-  result = self.push_message(
-      source="my_feature",
-      visibility=["chat"],
-      ai_behavior="read",
-      parts=[image_part],
-  )
-  ```
-
-  model への配信では任意の外部画像 URL は受け付けません。この host の一時 upload を使ってください。inline 画像は message plane payload の予算を message 全体と共有しますが、upload 後の part は画像 bytes をその envelope に含めません。lifecycle handler の実行中は plugin command loop が upload response を処理できないため、`ctx.images.upload()` は使用できません。plugin entry、timer、message handler、または custom event handler から呼び出してください。
-- `visibility` はユーザーのチャットまたは HUD への表示を決め、`ai_behavior` はモデルがメッセージを読むか応答するかを独立して決めます。
-- 音声と動画のメッセージパートは現在ホストから配信されません。送信成功を再生・表示の成功として扱わないでください。
-- Hosted UI パネル内ではユーザー向けの音声や動画を再生できますが、ネイティブのチャットまたはモデル経路へのメディア配信ではありません。
+戻り値はローカル送信の結果（`submitted` / `reason`）だけを示します。2 つの軸の完全なセマンティクス、`parts` の種類、payload と画像のサイズ制限、`ctx.images.upload()`、v1 フィールドの移行は[メッセージ配信](./push-message)を参照してください。
 
 #### `data_path(*parts) -> Path`
 
@@ -175,6 +143,27 @@ db_path = self.data_path("records.db")
 preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
+
+#### `shared_path(*parts) -> Path`
+
+このプラグインの共有ディレクトリ配下のパスを取得します。ここに置いたファイルは他のプラグインに読ませるためのものです。ディレクトリは自動では作成されず、プラグインが削除されても残ります。ディレクトリ名はプラグイン id に基づきます。id に含まれる小文字の英字、数字、`_`、`-` 以外の文字はディレクトリ名の中でエスケープされるため、パスは必ずこのメソッドから取得してください。
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+他のプラグインの共有ディレクトリ配下のパスを、読み取り用に取得します。そのプラグインの id が `plugin.toml` の `[plugin.shared] reads` に書かれている必要があり、書かれていなければ `ValidationError`（`code="shared_not_declared"`）が発生します。共有ディレクトリの外に出るパスも拒否されます（`code="shared_bad_path"`）。
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+これはプラグイン間の取り決めであり、セキュリティ境界ではありません。プラグイン同士はサンドボックスで隔離されていません。取得したファイルは読み取り専用として扱ってください。
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 
@@ -237,19 +226,21 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 ### 返信制御
 
-`finish()` メソッドは `reply` パラメータ（デフォルト `True`）を受け付け、プラグインの結果がメインキャラクターの発話をトリガーするかどうかを制御します。
+`finish()` は `delivery` パラメータ（`"proactive"`（既定）/ `"passive"` / `"silent"`）で、結果をメイン AI のコンテキストに入れるか、キャラクターにすぐ話させるかを制御します。`reply=True/False` は非推奨のブール別名です。`delivery` が効くのは、Agent がエントリを直接呼んだ場合です。task agent がエントリを呼んだ場合、結果は task agent に返り、ユーザーへの伝え方はその用件自体の設定に従います。
 
 ```python
 # 通常：キャラクターが結果を報告する
-return await self.finish(data={"summary": "完了"}, reply=True)
+return await self.finish(data={"summary": "完了"})
 
 # サイレント：結果は記録されるがキャラクターは話さない
-return await self.finish(data={"summary": "完了"}, reply=False)
+return await self.finish(data={"summary": "完了"}, delivery="silent")
 ```
+
+3 つのモードの違い、`result_kind` による結果セマンティクス、`{MASTER_NAME}` / `{LANLAN_NAME}` ロールプレースホルダーは[メッセージ配信](./push-message)を参照してください。
 
 ### LLM 結果フィールドフィルタリング
 
-`@plugin_entry`（静的エントリ）または `register_dynamic_entry()`（動的エントリ）の `llm_result_fields` パラメータを使用して、メイン LLM が参照できる結果フィールドを制御します。リストにないフィールドは LLM プロンプトから除外されますが、タスクレジストリには保存されます。
+`@plugin_entry`（静的エントリ）または `register_dynamic_entry()`（動的エントリ）の `llm_result_fields` パラメータを使用して、モデルが参照できる結果フィールドを制御します。直接呼び出しではメイン LLM、task agent からの呼び出しではその task agent が対象です。リストにないフィールドはプロンプトから除外されますが、Run の結果には残ります。エントリがフィールドを宣言しない場合にモデルへ何が渡るかは、[エントリーとパラメーター](./entries)の「Agent が entry を呼ぶとき」を参照してください。
 
 ```python
 # 静的エントリ

@@ -40,6 +40,7 @@ from typing import Any, Mapping
 from fastapi import APIRouter, Request
 
 from utils.cloudsave_runtime import MaintenanceModeError
+from main_routers.recommendation_router import router as recommendation_router
 from utils.logger_config import get_module_logger
 from utils.preferences import (
     aload_global_conversation_settings,
@@ -48,6 +49,7 @@ from utils.preferences import (
 
 
 router = APIRouter(prefix="/api/proactive", tags=["proactive"])
+router.include_router(recommendation_router)
 logger = get_module_logger(__name__, "Main")
 
 
@@ -78,6 +80,7 @@ _PROACTIVE_BOOL_FIELDS = (
     "proactiveMusicEnabled",
     "proactiveMemeEnabled",
     "proactiveMiniGameInviteEnabled",
+    "proactiveTheaterInviteEnabled",
 )
 _PROACTIVE_INT_FIELDS = (
     "proactiveChatInterval",
@@ -103,6 +106,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveMusicEnabled": False,
         "proactiveMemeEnabled": False,
         "proactiveMiniGameInviteEnabled": False,
+        "proactiveTheaterInviteEnabled": False,
     },
     "normal": {
         "proactiveChatEnabled": True,
@@ -114,6 +118,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveMusicEnabled": True,
         "proactiveMemeEnabled": True,
         "proactiveMiniGameInviteEnabled": True,
+        "proactiveTheaterInviteEnabled": True,
         "proactiveChatInterval": 15,
         "proactiveVisionInterval": 10,
     },
@@ -129,6 +134,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveMusicEnabled": False,
         "proactiveMemeEnabled": False,
         "proactiveMiniGameInviteEnabled": False,
+        "proactiveTheaterInviteEnabled": False,
         "proactiveChatInterval": 60,
         "proactiveVisionInterval": 60,
     },
@@ -143,6 +149,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveMusicEnabled": True,
         "proactiveMemeEnabled": True,
         "proactiveMiniGameInviteEnabled": True,
+        "proactiveTheaterInviteEnabled": True,
         "proactiveChatInterval": 5,
         "proactiveVisionInterval": 5,
     },

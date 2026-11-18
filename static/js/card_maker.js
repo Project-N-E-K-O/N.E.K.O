@@ -2731,8 +2731,9 @@
         a.download = filename;
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        a.remove();
+        // 等浏览器 / Electron 接管下载后再释放 Blob URL。
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
     }
     // ====== 图层列表面板 ======
 

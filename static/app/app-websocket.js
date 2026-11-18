@@ -63,13 +63,15 @@
 
     function scheduleAgentTaskReconciliation() {
         if (_agentTaskReconcileTimer || !window._agentTaskMap) return;
+        // waiting_user (waiting for the user's reply) is still under way;
+        // blocked has ended, like failed.
         if (!Array.from(window._agentTaskMap.values()).some(function (task) {
-            return task.status === 'running' || task.status === 'queued';
+            return task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';
         })) return;
         _agentTaskReconcileTimer = setInterval(async function () {
             var taskMap = window._agentTaskMap;
             if (!taskMap || !Array.from(taskMap.values()).some(function (task) {
-                return task.status === 'running' || task.status === 'queued';
+                return task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';
             })) {
                 clearInterval(_agentTaskReconcileTimer);
                 _agentTaskReconcileTimer = null;
@@ -91,7 +93,7 @@
                 }).map(function (task) { return [task.id, task]; }));
                 var changed = false;
                 taskMap.forEach(function (task, id) {
-                    if (task.status !== 'running' && task.status !== 'queued') {
+                    if (task.status !== 'running' && task.status !== 'queued' && task.status !== 'waiting_user') {
                         _agentTaskMissingCounts.delete(id);
                         return;
                     }
@@ -111,7 +113,7 @@
                         return;
                     }
                     _agentTaskMissingCounts.delete(id);
-                    if (['completed', 'failed', 'cancelled'].indexOf(current.status) === -1) return;
+                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) return;
                     var terminalAt = Date.now();
                     taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
                     changed = true;
@@ -124,7 +126,7 @@
                                 var remaining = Array.from(window._agentTaskMap.values());
                                 window.AgentHUD.updateAgentTaskHUD({
                                     success: true, tasks: remaining, total_count: remaining.length,
-                                    running_count: remaining.filter(function (item) { return item.status === 'running'; }).length,
+                                    running_count: remaining.filter(function (item) { return item.status === 'running' || item.status === 'waiting_user'; }).length,
                                     queued_count: remaining.filter(function (item) { return item.status === 'queued'; }).length,
                                     completed_count: remaining.filter(function (item) { return item.status === 'completed'; }).length,
                                     failed_count: remaining.filter(function (item) { return item.status === 'failed'; }).length,
@@ -143,7 +145,7 @@
                     var tasks = Array.from(taskMap.values());
                     window.AgentHUD.updateAgentTaskHUD({
                         success: true, tasks: tasks, total_count: tasks.length,
-                        running_count: tasks.filter(function (task) { return task.status === 'running'; }).length,
+                        running_count: tasks.filter(function (task) { return task.status === 'running' || task.status === 'waiting_user'; }).length,
                         queued_count: tasks.filter(function (task) { return task.status === 'queued'; }).length,
                         completed_count: tasks.filter(function (task) { return task.status === 'completed'; }).length,
                         failed_count: tasks.filter(function (task) { return task.status === 'failed'; }).length,
@@ -1322,6 +1324,24 @@
         );
     }
 
+    function isVisitAssistantMirrorResponse(response) {
+        var metadata = response && response.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = response && response.meta;
+        }
+        if (!metadata || typeof metadata !== 'object' || metadata.source !== 'neko_visit') {
+            return false;
+        }
+        var kind = String(metadata.kind || '');
+        var sessionId = String(metadata.session_id || '');
+        var mirror = metadata.mirror && typeof metadata.mirror === 'object'
+            ? metadata.mirror : {};
+        return !!sessionId
+            && ['visit_direct_invite_question', 'visit_line', 'visit_ritual', 'visit_debrief'].indexOf(kind) >= 0
+            && mirror.kind === kind
+            && String(mirror.session_id || '') === sessionId;
+    }
+
     function allocateAssistantTurnId(serverTurnId) {
         var normalized = normalizeAssistantTurnId(serverTurnId);
         if (normalized) {
@@ -2144,6 +2164,7 @@
         VISIT_LOGIN_REQUIRED: 'visit.status.VISIT_LOGIN_REQUIRED',
         VISIT_BANNED: 'visit.status.VISIT_BANNED',
         VISIT_QUOTA_EXCEEDED: 'visit.status.VISIT_QUOTA_EXCEEDED',
+        VISIT_CONCURRENCY_LIMIT: 'visit.status.VISIT_CONCURRENCY_LIMIT',
         VISIT_TIER_NOT_ENTITLED: 'visit.status.VISIT_TIER_NOT_ENTITLED',
         VISIT_FORGET_IN_PROGRESS: 'visit.status.VISIT_FORGET_IN_PROGRESS',
         VISIT_UPLOAD_BACKLOG: 'visit.status.VISIT_UPLOAD_BACKLOG',
@@ -2168,13 +2189,25 @@
     // CSRF token 与本机 HTTP 变更端点同一个：nekoLocalMutationSecurity 只对外给 getMutationHeaders / refreshToken
     async function _visitCsrfToken(refresh) {
         var security = window.nekoLocalMutationSecurity;
-        if (!security) return '';
+        if (security) {
+            try {
+                if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
+                if (typeof security.getMutationHeaders === 'function') {
+                    var headers = await security.getMutationHeaders();
+                    var token = headers && headers['X-CSRF-Token'];
+                    if (typeof token === 'string' && token) return token;
+                }
+            } catch (_) { /* fall through to direct same-origin refresh */ }
+        }
+        // index.html 里主 WebSocket 可能比公共安全 helper 更早连上；后端重启后
+        // helper 也可能仍握着旧 token。直接同源读取一次，避免 display bind
+        // 永久未授权，后续 pending 帧无法驱动 Pet 窗创建传输 iframe。
         try {
-            if (refresh && typeof security.refreshToken === 'function') await security.refreshToken();
-            if (typeof security.getMutationHeaders !== 'function') return '';
-            var headers = await security.getMutationHeaders();
-            var token = headers && headers['X-CSRF-Token'];
-            return typeof token === 'string' ? token : '';
+            var response = await fetch('/api/config/page_config', { cache: 'no-store' });
+            if (!response.ok) return '';
+            var data = await response.json();
+            return data && typeof data.autostart_csrf_token === 'string'
+                ? data.autostart_csrf_token : '';
         } catch (_) {
             return '';
         }
@@ -2194,8 +2227,13 @@
             token = await _visitCsrfToken(forceRefresh === true || attempt > 0);
         }
         if (!token || S.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        var desktopRuntime = window.nekoDesktopRuntime;
+        var desktopRunId = desktopRuntime && typeof desktopRuntime.id === 'string'
+            && desktopRuntime.id.length > 0 && desktopRuntime.id.length <= 128
+            ? desktopRuntime.id : '';
         try {
-            socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token }));
+            socket.send(JSON.stringify({ action: 'visit_bind', csrf_token: token,
+                desktop_run_id: desktopRunId || undefined }));
         } catch (_) {
             return;
         }
@@ -3031,12 +3069,12 @@
                     filteredTasks.forEach(function (t) { if (t && t.id) window._agentTaskMap.set(t.id, t); });
                     scheduleAgentTaskReconciliation();
                     var tasks = Array.from(window._agentTaskMap.values());
-                    var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
+                    var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user'; });
                     if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                         window.AgentHUD.showAgentTaskHUD();
                         window.AgentHUD.updateAgentTaskHUD({
                             success: true, tasks: tasks,
-                            running_count: tasks.filter(function (t) { return t.status === 'running'; }).length,
+                            running_count: tasks.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                             queued_count: tasks.filter(function (t) { return t.status === 'queued'; }).length,
                         });
                         if (hasRunning && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
@@ -3330,18 +3368,32 @@
 
                 // -------- gemini_response --------
                 if (response.type === 'chat_sync_history_changed') {
-                    // Only a local committed-page hint reaches this current socket.
-                    // The sync UI reads its own cursor/history before passive merge.
-                    if (window.nekoChatSync) window.nekoChatSync.notifyHistoryCommitted(response).catch(function () {});
-                    return;
-                }
-                if (response.type === 'chat_original_identity') {
-                    // Backend identities only join optimistic UI; they never submit new chat.
-                    if (window.nekoChatSync && response.role === 'user') window.nekoChatSync.markAcceptedUser(response);
+                    document.dispatchEvent(new Event('neko:chat-sync-history-changed'));
+                    if (window.nekoChatSync && typeof window.nekoChatSync.notifyMediaChanged === 'function') {
+                        window.nekoChatSync.notifyMediaChanged().catch(function () {});
+                    }
+                    if (typeof response.memoryEditedName === 'string') {
+                        if (window.nekoChatSync && typeof window.nekoChatSync.requestMemoryRefresh === 'function') {
+                            window.nekoChatSync.requestMemoryRefresh(response.memoryEditedName);
+                        }
+                        try {
+                            if (typeof BroadcastChannel !== 'undefined') {
+                                const channel = new BroadcastChannel('neko_page_channel');
+                                channel.postMessage({ action: 'recent_memory_changed', catgirl_name: response.memoryEditedName });
+                                channel.close();
+                            }
+                        } catch (error) {
+                            console.warn('[ChatSync] Recent-memory refresh channel unavailable', error);
+                        }
+                    }
                     return;
                 }
                 if (response.type === 'gemini_response') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    // 串门期间普通会话可能已关闭，但邀请询问、自家猫娘台词、回家仪式语
+                    // 和复盘语都通过正式助手消息链路送达。仅按完整的服务端 mirror 身份
+                    // 放行这些串门回复；suppression 锁不解除，其他迟到回复仍会被丢弃。
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant chunk after session ended by server');
                         return;
                     }
@@ -3428,9 +3480,6 @@
                             assistantResponseMeta,
                             response.request_id
                         );
-                    }
-                    if (window.nekoChatSync && response.chat_original_id) {
-                        window.nekoChatSync.markAssistantOriginal(response.chat_original_id, window._nekoAssistantTurnId);
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -3661,10 +3710,6 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
-                    // Snapshot exact display IDs before this accepted voice frame is rendered.
-                    var syncVoiceHost = window.reactChatWindowHost;
-                    var syncVoiceBefore = syncVoiceHost && typeof syncVoiceHost.getState === 'function'
-                        ? new Set(syncVoiceHost.getState().messages.map(function (item) { return item.id; })) : null;
                     // user_transcript 不带轮次身份（由 main_logic/core/turn.py 发出），
                     // 这里无法配对，只能保持无条件移除；迟到 final 误删新一轮气泡的情况
                     // 由后端在 user_transcript 之后补发该轮 preview 复原
@@ -3704,9 +3749,6 @@
                     }
                     var now = Date.now();
                     var shouldMerge = S.isRecording &&
-                        // A canonical transcript owns one exact display identity.
-                        // Keep separate accepted frames separate on the React host.
-                        !(response.chat_original_id && syncVoiceBefore) &&
                         S.lastVoiceUserMessage &&
                         S.lastVoiceUserMessage.isConnected &&
                         (now - S.lastVoiceUserMessageTime) < C.VOICE_TRANSCRIPT_MERGE_WINDOW;
@@ -3728,14 +3770,6 @@
                                 }
                             }
                         }
-                    }
-
-                    if (response.chat_original_id && window.nekoChatSync && syncVoiceBefore) {
-                        syncVoiceHost.getState().messages.forEach(function (item) {
-                            if (item.role === 'user' && !syncVoiceBefore.has(item.id)) {
-                                window.nekoChatSync.markLiveOriginal(response.chat_original_id, item.id);
-                            }
-                        });
                     }
 
                 // -------- user_activity --------
@@ -3837,7 +3871,8 @@
                         typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
                         window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
                             speechId || S.currentPlayingSpeechId || null,
-                            resolveAssistantLifecycleTurnId(response.turn_id)
+                            resolveAssistantLifecycleTurnId(response.turn_id),
+                            response.audio_done_timeout_ms
                         );
                     }
                     S.skipNextAudioBlob = false;
@@ -4977,7 +5012,7 @@
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
-                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled);
+                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
                         if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
@@ -4996,7 +5031,7 @@
                         window._agentTaskMap.forEach(function (t, id) {
                             if (!newMap.has(id)) {
                                 if (curName2 && t.lanlan_name && t.lanlan_name !== curName2) return;
-                                var isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+                                var isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'blocked';
                                 if (isTerminal && t.terminal_at && (now2 - t.terminal_at < LINGER_MS)) {
                                     newMap.set(id, t);
                                 }
@@ -5011,7 +5046,7 @@
                                     success: true,
                                     tasks: tasks2,
                                     total_count: tasks2.length,
-                                    running_count: tasks2.filter(function (t) { return t.status === 'running'; }).length,
+                                    running_count: tasks2.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                                     queued_count: tasks2.filter(function (t) { return t.status === 'queued'; }).length,
                                     completed_count: tasks2.filter(function (t) { return t.status === 'completed'; }).length,
                                     failed_count: tasks2.filter(function (t) { return t.status === 'failed'; }).length,
@@ -5057,17 +5092,17 @@
                             if (existing && existing.params && typeof task.params === 'undefined') {
                                 merged.params = existing.params;
                             }
-                            if (['completed', 'failed', 'cancelled'].indexOf(task.status) !== -1) {
-                                if (!existing || ['completed', 'failed', 'cancelled'].indexOf(existing.status) === -1) {
+                            if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(task.status) !== -1) {
+                                if (!existing || ['completed', 'failed', 'cancelled', 'blocked'].indexOf(existing.status) === -1) {
                                     merged.terminal_at = Date.now();
                                 }
                             }
                             window._agentTaskMap.set(task.id, merged);
-                            if (['completed', 'failed', 'cancelled'].indexOf(task.status) !== -1) {
+                            if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(task.status) !== -1) {
                                 if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.set(task.id, setTimeout(function () {
                                     var current = window._agentTaskMap.get(task.id);
-                                    if (current && ['completed', 'failed', 'cancelled'].indexOf(current.status) !== -1) {
+                                    if (current && ['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) !== -1) {
                                         window._agentTaskMap.delete(task.id);
                                     }
                                     window._agentTaskRemoveTimers.delete(task.id);
@@ -5076,7 +5111,7 @@
                                         window.AgentHUD.updateAgentTaskHUD({
                                             success: true, tasks: remaining,
                                             total_count: remaining.length,
-                                            running_count: remaining.filter(function (t) { return t.status === 'running'; }).length,
+                                            running_count: remaining.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                                             queued_count: remaining.filter(function (t) { return t.status === 'queued'; }).length,
                                             completed_count: remaining.filter(function (t) { return t.status === 'completed'; }).length,
                                             failed_count: remaining.filter(function (t) { return t.status === 'failed'; }).length,
@@ -5091,7 +5126,7 @@
                         }
                         var tasks3 = Array.from(window._agentTaskMap.values());
                         scheduleAgentTaskReconciliation();
-                        var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
+                        var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user'; });
                         if (tasks3.length > 0 && window.AgentHUD) {
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                                 window.AgentHUD.showAgentTaskHUD();
@@ -5107,7 +5142,7 @@
                                 success: true,
                                 tasks: tasks3,
                                 total_count: tasks3.length,
-                                running_count: tasks3.filter(function (t) { return t.status === 'running'; }).length,
+                                running_count: tasks3.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                                 queued_count: tasks3.filter(function (t) { return t.status === 'queued'; }).length,
                                 completed_count: tasks3.filter(function (t) { return t.status === 'completed'; }).length,
                                 failed_count: tasks3.filter(function (t) { return t.status === 'failed'; }).length,
@@ -5122,6 +5157,32 @@
                         }
                     } catch (e) {
                         console.warn('[App] 处理 agent_task_update 失败:', e);
+                    }
+
+                // -------- agent_builtin_activity --------
+                // 使魔开始 / 停止使用键鼠或浏览器。页面自己不画横幅：只把事件原样
+                // 交出去，桌面壳（N.E.K.O.-PC）据此盖横幅、接 Esc 叫停。
+                // 契约见 docs/design/nekoclaw-rewrite.md 11.8 节。
+                } else if (response.type === 'agent_builtin_activity') {
+                    try {
+                        var activity = response.activity || {};
+                        if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                        if (activity.group) {
+                            if (activity.state === 'started') {
+                                window._agentBuiltinActivity[activity.group] = activity;
+                            } else {
+                                // 上一个任务的「结束」可能比下一个任务的「开始」晚到：
+                                // 只清它自己那条，别把正在用这一组的任务清掉。
+                                var keptActivity = window._agentBuiltinActivity[activity.group];
+                                if (!keptActivity || activity.commission_id == null
+                                    || keptActivity.commission_id === activity.commission_id) {
+                                    delete window._agentBuiltinActivity[activity.group];
+                                }
+                            }
+                        }
+                        window.dispatchEvent(new CustomEvent('neko-agent-builtin-activity', { detail: activity }));
+                    } catch (e) {
+                        console.warn('[App] 处理 agent_builtin_activity 失败:', e);
                     }
 
                 // -------- capture_bridge_computer_use_request (full desktop) --------
@@ -5498,7 +5559,8 @@
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    if (S.suppressAssistantStreamUntilNextSession) {
+                    if (S.suppressAssistantStreamUntilNextSession
+                            && !isVisitAssistantMirrorResponse(response)) {
                         console.log('[App] discard assistant turn_end after session ended by server');
                         clearPendingRollbackForRequest(response.request_id);
                         clearPendingAssistantTurnStart();
@@ -6355,7 +6417,7 @@
             if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
             if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
 
-            // Auto-reconnect: skip if switching catgirl OR this socket was already
+            // Auto-reconnect: skip if switching neko OR this socket was already
             // replaced by a newer connectWebSocket() call (prevents reconnect storm
             // when the old socket's onclose fires after the switch completes).
             if (!S.isSwitchingCatgirl && S.socket === _thisSocket) {

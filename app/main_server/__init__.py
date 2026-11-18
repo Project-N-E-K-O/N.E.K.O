@@ -100,6 +100,7 @@ import time  # noqa
 import signal  # noqa
 from datetime import datetime, timezone  # noqa
 from config import (
+    EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
     MAIN_SERVER_PORT,
     MONITOR_SERVER_PORT,
     USER_NOTIFICATION_ERROR_MAX_CHARS,
@@ -122,7 +123,7 @@ from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 
 # Initialize logging early to persist import-time errors too.
-from utils.logger_config import setup_logging  # noqa: E402
+from utils.logger_config import install_httpx_filter, setup_logging  # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware  # noqa: E402
@@ -135,6 +136,9 @@ _main_log_level = getattr(
 logger, log_config = setup_logging(
     service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS
 )
+# Here rather than in __main__: the launcher imports this package and runs the
+# app directly, so only module import is shared by every startup path.
+install_httpx_filter()
 importlib.import_module(f"{__package__}._shared").runtime.logger = logger
 importlib.import_module(
     f"{__package__}._shared"
@@ -186,7 +190,7 @@ try:
     from main_logic import core as core, cross_server as cross_server  # noqa
     from main_logic.agent_event_bus import (
         MainServerAgentBridge,
-        notify_analyze_ack,
+        notify_turn_check_ack,
         set_main_bridge,
     )  # noqa
     from fastapi.templating import Jinja2Templates  # noqa
@@ -319,6 +323,8 @@ def get_default_steam_info():
 # avoiding DLL loading during module imports.
 steamworks = None
 _server_loop: asyncio.AbstractEventLoop | None = None
+# Default-on stall watchdog for _server_loop (shared with memory/agent in merged mode).
+_loop_stall_watchdog = None
 
 _config_manager = get_config_manager()
 _cloudsave_manager = get_cloudsave_manager(_config_manager)
@@ -544,10 +550,12 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
     "/voice_identity",
     "/chara_manager",
     "/character_card_manager",
+    "/visit_persona",
     "/cloudsave_manager",
     "/memory_browser",
     "/cookies_login",
     "/chat",
+    "/social_hub",
     "/web_chat_compact",
     "/subtitle",
     "/agenthud",
@@ -635,8 +643,15 @@ def _avatar_tool_multipart_preflight(scope):
 # Global nonmultipart requests retain 16 MiB Content-Length guards. Custom-prop
 # POST/PUT also check local access, CSRF/origin, and aggregate size before FastAPI
 # multipart parsing; receive-byte counting covers missing/untrusted Content-Length.
+# External memory import preview/commit upload the archive as base64 inside JSON: those two
+# exact paths get the archive cap's base64 size (4/3) plus 1 MiB of JSON headroom; every
+# other route stays at 16 MiB.
 app.add_middleware(
     InboundBodySizeLimitMiddleware,
+    json_path_limits={
+        "/api/memory/external_import/preview": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+        "/api/memory/external_import/commit": EXTERNAL_IMPORT_MAX_REQUEST_BODY_BYTES,
+    },
     multipart_path_prefix="/api/avatar-tools",
     multipart_methods=("POST", "PUT"),
     max_multipart_body_bytes=AVATAR_TOOL_MAX_MULTIPART_BODY_BYTES,
@@ -1143,7 +1158,7 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             if _game_cleanup_task is None or _game_cleanup_task.done():
                 _game_cleanup_task = asyncio.create_task(cleanup_expired_sessions())
-            # Catgirl visits: timed sweep and startup backfill for transcript uploads, crashed chips, digests, and summaries.
+            # Neko visits: timed sweep and startup backfill for transcript uploads, crashed chips, digests, and summaries.
             # Schedule both with create_task without awaiting on startup.
             try:
                 from main_routers.visit_router.background import start_visit_background_tasks
@@ -1357,6 +1372,8 @@ async def release_storage_startup_barrier(
     # startup is optional and detached; it never delays the normal chat boot.
     from services.chat_sync.runtime import schedule_desktop_chat_sync_start
     schedule_desktop_chat_sync_start(_config_manager)
+    from main_routers.proactive_feedback_router import schedule_start as schedule_proactive_feedback_start
+    schedule_proactive_feedback_start()
     return {
         "ok": True,
         "initialized": bool(initialized),
@@ -1368,12 +1385,24 @@ async def release_storage_startup_barrier(
 async def on_startup():
     """Initialization performed at server startup"""
     if _IS_MAIN_PROCESS:
-        global _server_loop
+        global _server_loop, _loop_stall_watchdog
         _server_loop = asyncio.get_running_loop()
         importlib.import_module(
             f"{__package__}._shared"
         ).runtime.server_loop = _server_loop
         configure_default_executor(_server_loop, logger=logger)
+        # Logs the loop thread's stack when the loop misses its heartbeat for
+        # NEKO_LOOP_STALL_THRESHOLD_MS (default 1000; 0 disables). Started first
+        # so stalls in the rest of startup are covered; returns immediately.
+        if _loop_stall_watchdog is None:
+            try:
+                from utils.event_loop_watchdog import start_loop_stall_watchdog_from_env
+
+                _loop_stall_watchdog = start_loop_stall_watchdog_from_env(
+                    _server_loop, logger=logger, label="main_server"
+                )
+            except Exception as _e:
+                logger.warning("[loop-stall] watchdog start failed: %s", _e)
 
         init_shared_state(
             role_state=role_state,
@@ -1456,15 +1485,26 @@ async def on_startup():
         # selection-required path above. Shutdown cancels the owned bootstrap.
         from services.chat_sync.runtime import schedule_desktop_chat_sync_start
         schedule_desktop_chat_sync_start(_config_manager)
+        from main_routers.proactive_feedback_router import schedule_start as schedule_proactive_feedback_start
+        schedule_proactive_feedback_start()
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     """Clean up resources at server shutdown"""
-    global _preload_task, _game_cleanup_task, agent_event_bridge
+    global _preload_task, _game_cleanup_task, agent_event_bridge, _loop_stall_watchdog
 
     if _IS_MAIN_PROCESS:
         logger.info("正在清理资源...")
+        # Release first: shutdown runs known synchronous cleanup that would only
+        # produce stall noise. In merged mode the loop's watchdog is shared and
+        # stops once every service sharing it has released it.
+        if _loop_stall_watchdog is not None:
+            try:
+                _loop_stall_watchdog.stop()
+            except Exception as e:
+                logger.debug(f"loop stall watchdog stop failed: {e}")
+            _loop_stall_watchdog = None
         # Isolate each step's failure; after first caller cancellation share 8 s including cancellation grace.
         # Skip subsequent async steps only on total-budget exhaustion, then reraise the first cancellation.
         shutdown_cancellation: asyncio.CancelledError | None = None

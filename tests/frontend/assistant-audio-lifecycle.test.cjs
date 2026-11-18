@@ -12,7 +12,7 @@ const page = (value, bos = false) => { const b = new Uint8Array(29); b.set([79, 
 const join = (...parts) => Uint8Array.from(parts.flatMap(p => Array.from(p)));
 const pcm = r => r ? Array.from(r.float32Data) : [];
 
-function harness(withPlayback = false) {
+function harness(withPlayback = false, crypto = undefined) {
     const timers = new Map(), listeners = new Map(), instances = [], buffers = [], logs = [];
     let nextTimer = 1;
     const control = { ready: null, decode: null, flush: null, rejectDecode: false, rejectFlush: false, decoderErrors: false };
@@ -52,6 +52,7 @@ function harness(withPlayback = false) {
         dispatchEvent(ev) { for (const handler of listeners.get(ev.type) || []) handler(ev); return true; },
         requestAnimationFrame() { return 0; }, cancelAnimationFrame() {},
     };
+    if (crypto !== undefined) win.crypto = crypto;
     const box = { window: win, console: { log() {}, warn(...args) { logs.push(args); }, error(...args) { logs.push(args); } },
         document: { getElementById() { return null; }, addEventListener() {}, removeEventListener() {} },
         localStorage: { getItem() { return null; }, setItem() {} }, navigator: { userAgent: 'node-test' },
@@ -72,8 +73,8 @@ function harness(withPlayback = false) {
     const fire = ms => { for (const [id, timer] of Array.from(timers)) if (timer.ms === ms) { timers.delete(id); timer.fn(); } };
     const emit = (type, turnId) => win.dispatchEvent(new Event(type, { detail: { turnId } }));
     const start = (turnId, sid = turnId) => { S.assistantTurnId = turnId; S.currentPlayingSpeechId = sid; emit('neko-assistant-turn-start', turnId); };
-    const enqueue = (sid, turn, bytes, gate = null) => {
-        A.rememberAssistantAudioSpeechTurn(sid, turn);
+    const enqueue = (sid, turn, bytes, gate = null, audioDoneTimeoutMs) => {
+        A.rememberAssistantAudioSpeechTurn(sid, turn, audioDoneTimeoutMs);
         S.pendingAudioChunkMetaQueue.push({ speechId: sid, turnId: turn, epoch: S.incomingAudioEpoch, receivedAt: Date.now(), shouldSkip: false, playbackGain: .7 });
         A.enqueueIncomingAudioBlob({ arrayBuffer: async () => { if (gate) await gate.promise; return Uint8Array.from(bytes).buffer; } });
     };
@@ -84,6 +85,10 @@ function harness(withPlayback = false) {
 const reports = [];
 async function check(name, fn) { await fn(); reports.push(name); }
 (async () => {
+    await check('playback-id-randomness-failure-does-not-break-player', async () => {
+        const h = harness(true, { randomUUID() { throw new Error('denied'); } });
+        assert.ok(h.A);
+    });
     await check('stream-boundaries-and-fragmentation', async () => {
         const h = harness(), bytes = join(page(1, true), page(2), page(3, true), page(4)), chunks = [bytes.slice(0, 3), bytes.slice(3, 39), bytes.slice(39)];
         let out = [];
@@ -207,6 +212,40 @@ async function check(name, fn) { await fn(); reports.push(name); }
             }
         }
     });
+    await check('playback-report-identity-and-real-stop-reasons', async () => {
+        const presenters = [];
+        for (const missingDone of [false, true]) {
+            const h = harness(true), signals = [];
+            h.S.socket = { readyState: 1, send: value => signals.push(JSON.parse(value)) };
+            h.start('turn', 'speech'); h.enqueue('speech', 'turn', join(page(1, true), page(2)));
+            h.emit('neko-assistant-turn-end', 'turn'); await ticks(); h.endSources();
+            if (missingDone) h.fire(700); else h.A.noteAssistantAudioStreamClosed('speech');
+            await ticks(); h.endSources();
+            assert.equal(signals.length, 2);
+            assert.equal(signals[0].action, 'voice_play_start');
+            assert.equal(signals[1].action, 'voice_play_end');
+            assert.equal(signals[0].turnId, 'turn');
+            assert.ok(signals[0].presentationId && signals[0].presenterId);
+            assert.equal(signals[0].presentationId, signals[1].presentationId);
+            assert.equal(signals[0].presenterId, signals[1].presenterId);
+            assert.equal(signals[1].stopReason, missingDone ? 'fallback' : 'completed');
+            presenters.push(signals[0].presenterId);
+        }
+        assert.notEqual(presenters[0], presenters[1]);
+        const h = harness(true), signals = [];
+        h.S.socket = { readyState: 1, send: value => signals.push(JSON.parse(value)) };
+        h.start('turn'); h.enqueue('turn', 'turn', join(page(1, true), page(2))); await ticks();
+        h.A.clearAudioQueueWithoutDecoderReset();
+        assert.equal(signals.at(-1).stopReason, 'canceled');
+        assert.equal(signals[0].presentationId, signals.at(-1).presentationId);
+        h.start('turn'); h.enqueue('turn', 'turn', join(page(3, true), page(4))); await ticks();
+        assert.notEqual(signals[0].presentationId, signals.at(-1).presentationId);
+        const replacementSignals = [];
+        h.S.socket = { readyState: 1, send: value => replacementSignals.push(JSON.parse(value)) };
+        h.A.clearAudioQueueWithoutDecoderReset();
+        assert.equal(replacementSignals.at(-1).action, 'voice_play_end');
+        assert.equal(replacementSignals.at(-1).presentationId, undefined);
+    });
     await check('header-only-close-and-cancel-do-not-leave-stale-turn-headers', async () => {
         const h = harness(true); h.start('header'); h.A.rememberAssistantAudioSpeechTurn('header', 'header');
         h.emit('neko-assistant-turn-end', 'header'); h.fire(700); await ticks();
@@ -221,6 +260,38 @@ async function check(name, fn) { await fn(); reports.push(name); }
         const h = harness(true); h.start('t', 's'); h.enqueue('s', 't', join(page(1, true), page(2))); h.emit('neko-assistant-turn-end', 't'); await ticks();
         h.endSources(); h.fire(700); await ticks(); assert.deepEqual(h.buffers.flat(), [1, 2]); assert.notEqual(h.S.assistantTurnSettledId, 't');
         h.endSources(); assert.equal(h.S.assistantTurnSettledId, 't');
+    });
+    await check('gsv-pcm-gap-waits-for-authoritative-audio-done', async () => {
+        for (const textEndsFirst of [true, false]) {
+            const h = harness(true), ends = [];
+            const pcm = new Uint8Array(new Int16Array([8192, -8192]).buffer);
+            h.win.addEventListener('neko-assistant-speech-end', event => ends.push(event.detail.turnId));
+            h.start('t', 's'); h.enqueue('s', 't', pcm, null, 35000);
+            if (textEndsFirst) h.emit('neko-assistant-turn-end', 't');
+            await ticks(); h.endSources();
+            if (!textEndsFirst) h.emit('neko-assistant-turn-end', 't');
+            h.fire(700); h.fire(30000); await ticks();
+            assert.deepEqual(ends, []);
+            assert.equal(h.S.assistantTurnCompletedId, 't');
+            h.enqueue('s', 't', pcm, null, 35000);
+            h.A.noteAssistantAudioStreamClosed('s'); await ticks(); h.endSources();
+            assert.deepEqual(ends, ['t']);
+            assert.equal(h.S.isPlaying, false);
+            assert.equal(h.S.assistantTurnSettledId, 't');
+        }
+    });
+    await check('late-same-speech-after-fallback-can-settle-again', async () => {
+        const h = harness(true);
+        const pcm = new Uint8Array(new Int16Array([8192, -8192]).buffer);
+        h.start('t', 's'); h.enqueue('s', 't', pcm, null, 35000);
+        h.emit('neko-assistant-turn-end', 't'); await ticks(); h.endSources();
+        h.fire(35000); await ticks();
+        assert.equal(h.S.assistantTurnSettledId, 't');
+        h.enqueue('s', 't', pcm, null, 35000); await ticks();
+        assert.equal(h.S.assistantTurnSettledId, null);
+        h.A.noteAssistantAudioStreamClosed('s'); await ticks(); h.endSources();
+        assert.equal(h.S.isPlaying, false);
+        assert.equal(h.S.assistantTurnSettledId, 't');
     });
     await check('cancel-during-fallback-flush-drops-old-tail', async () => {
         const h = harness(true); h.start('old'); h.enqueue('old', 'old', join(page(9, true), page(8))); h.emit('neko-assistant-turn-end', 'old'); await ticks(); h.endSources();

@@ -1208,6 +1208,7 @@ let saves = 0;
 let snapshotCalls = 0;
 let deferredFrames = null;
 const markedSwitches = [];
+const dragUiCalls = {{ disabled: 0, restored: 0 }};
 
 const requestAnimationFrame = (callback) => {{
   if (deferredFrames) {{
@@ -1252,6 +1253,10 @@ const window = {{
     async recordPointerEdgeApproach() {{ return false; }},
     async recordPointerEdgeRelease() {{ return false; }},
     markDisplaySwitchSuccess(source) {{ markedSwitches.push(source); }},
+  }},
+  DragHelpers: {{
+    disableButtonPointerEvents() {{ dragUiCalls.disabled += 1; }},
+    restoreButtonPointerEvents() {{ dragUiCalls.restored += 1; }},
   }},
 }};
 
@@ -1328,6 +1333,7 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   manager.startDrag(pointer('pointerdown', 154, 534, 155, 535));
   assert.equal(manager._isDraggingModel, true);
   assert.equal(attributes.get('data-dragging'), 'pending');
+  assert.equal(dragUiCalls.disabled, 1);
 
   manager.moveDrag(pointer('pointermove', -201, 534, -200, 535));
   assert.equal(attributes.get('data-dragging'), 'true');
@@ -1350,6 +1356,7 @@ function pointer(type, clientX, clientY, screenX, screenY, pointerId = 7) {{
   assert.equal(manager._isDraggingModel, false);
   assert.equal(attributes.has('data-dragging'), false);
   assert.equal(bodyClasses.has('neko-model-dragging'), false);
+  assert.equal(dragUiCalls.restored, 1);
 
   currentDisplay = primary;
   currentWindowBounds = {{ ...primaryWindowBounds }};
@@ -2211,6 +2218,83 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     # unmarkControlsHover must check whether relatedTarget remains inside the controls before removing the hover marker
     assert "const related = event && event.relatedTarget;" in setup_block
     assert "buttonsContainer.contains(related)" in setup_block
+
+
+@pytest.mark.parametrize("model_script", [
+    "static/live2d/live2d-ui-buttons.js",
+    "static/vrm/vrm-ui-buttons.js",
+    "static/mmd/mmd-ui-buttons.js",
+    "static/pngtuber-core.js",
+])
+def test_avatar_mic_startup_click_guard(model_script):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for microphone button tests")
+
+    source = (PROJECT_ROOT / model_script).read_text(encoding="utf-8")
+    loop = source.index("buttonConfigs.forEach")
+    start = source.index("btn.addEventListener('click', (e) => {", loop)
+    end = source.index("btnWrapper.appendChild(btn);", start)
+    script = "const handlerSource = " + json.dumps(source[start:end]) + ";\n" + r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+
+function fixture({ starting = false, active = false } = {}) {
+  const events = [];
+  let click;
+  const btn = {
+    dataset: { active: String(active) }, style: {},
+    addEventListener(type, handler) { click = handler; },
+  };
+  const window = {
+    isMicStarting: starting, isRecording: false,
+    dispatchEvent(event) {
+      assert.equal(event.type, 'live2d-mic-toggle');
+      events.push(event.detail.active);
+      if (event.detail.active) this.isMicStarting = true;
+    },
+  };
+  const hiddenMic = {
+    classList: { contains: () => window.isMicStarting || window.isRecording },
+  };
+  vm.runInNewContext(handlerSource, {
+    btn, config: { id: 'mic' }, imgOff: { style: {} }, imgOn: { style: {} },
+    window, document: { getElementById: () => hiddenMic },
+    CustomEvent: class {
+      constructor(type, options) { this.type = type; this.detail = options.detail; }
+    },
+    setButtonActive(id, value) { btn.dataset.active = String(value); },
+  });
+  return {
+    btn, window, events,
+    click: () => click({ stopPropagation() {}, preventDefault() {} }),
+  };
+}
+
+// The first click starts voice; subsequent clicks during startup cannot stop it.
+const session = fixture();
+session.click();
+assert.deepEqual(session.events, [true]);
+assert.equal(session.btn.dataset.active, 'true');
+session.click();
+session.click();
+assert.deepEqual(session.events, [true]);
+assert.equal(session.btn.dataset.active, 'true');
+
+// Once recording is established, the button must still stop voice normally.
+session.window.isMicStarting = false;
+session.window.isRecording = true;
+session.click();
+assert.deepEqual(session.events, [true, false]);
+assert.equal(session.btn.dataset.active, 'false');
+
+// A stale inactive icon is reconciled without emitting another start request.
+const stale = fixture({ starting: true });
+stale.click();
+assert.deepEqual(stale.events, []);
+assert.equal(stale.btn.dataset.active, 'true');
+"""
+    run_node_script(node, script, check=True, cwd=PROJECT_ROOT)
 
 
 def test_pngtuber_get_stable_anchor_rect_strips_animation_transforms():

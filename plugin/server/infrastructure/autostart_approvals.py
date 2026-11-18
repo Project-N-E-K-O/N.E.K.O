@@ -14,10 +14,11 @@
 
 """Installed plugins awaiting explicit auto-start approval.
 
-A plugin's manifest declares ``plugin_runtime.auto_start`` and it defaults to
-true, so a freshly installed plugin would run its own code at the next greeting
-without explicit auto-start approval. Installing, running manually, and
-approving future automatic launches are separate user actions.
+A plugin's manifest may declare ``plugin_runtime.auto_start = true``; omitting
+it defaults to false. A first local installation saves auto-start as off and
+keeps approval pending until the user enables the independent switch.
+Installing, running manually, and approving future automatic launches are
+separate user actions.
 
 The record is deliberately a list of plugins **awaiting** approval rather than a
 list of approved ones. An approved-list needs a baseline — some moment where

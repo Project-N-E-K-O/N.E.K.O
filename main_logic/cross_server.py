@@ -23,6 +23,7 @@ Note that the cross server is a one-way forwarder and never sends anything back 
 import ssl
 import uuid
 import inspect
+import functools
 from urllib.parse import quote
 
 import asyncio
@@ -46,7 +47,7 @@ from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
-from main_logic.agent_event_bus import publish_analyze_request_reliably
+from main_logic.agent_event_bus import publish_turn_check_reliably
 from services.chat_sync.source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
 
 # Setup logger for this module
@@ -64,68 +65,89 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True, language: str | None = None) -> bool:
-    """Publish analyze request via EventBus with ack/retry.
+def _turn_to_check(messages: list[dict]) -> tuple[str, str, bool] | None:
+    """Return ``(user_text, reply_text, has_attachments)`` of the latest exchange, or None.
 
-    ``had_user_input`` is False for a proactive turn (lanlan spoke with no fresh
-    user input). Such turns carry NO user-text gate hint (master-emotion never
-    re-ran, and the "latest user message" here is a stale prior turn) and are
-    marked ``proactive=True`` so the agent routes them through its throttled
-    proactive path instead of the user-turn dedupe (which would drop them).
+    The latest user message and everything she said after it. None when there
+    is no user message or she said nothing in reply: there is nothing to
+    compare then.
+    """
+    last_user = None
+    for index in range(len(messages) - 1, -1, -1):
+        item = messages[index]
+        if isinstance(item, dict) and item.get("role") == "user":
+            last_user = index
+            break
+    if last_user is None:
+        return None
+    user_message = messages[last_user]
+    user_text = str(user_message.get("content") or user_message.get("text") or "")
+    reply_text = "\n".join(
+        str(item.get("content") or "")
+        for item in messages[last_user + 1:]
+        if isinstance(item, dict) and item.get("role") == "assistant" and item.get("content")
+    )
+    if not reply_text.strip():
+        return None
+    return user_text, reply_text, bool(user_message.get("attachments"))
+
+
+async def _publish_turn_check_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, language: str | None = None) -> bool:
+    """Ask the agent process to check the turn that just ended, via EventBus with ack/retry.
+
+    Sent only for a turn the user started and in which she called no tool
+    that acts (the caller decides that). What she said is compared with what
+    was done: a promise is dispatched for her, a wrong "cannot" or "done" is
+    put right by herself after a notice. Whether the turn is worth a model
+    call is decided on the other side.
 
     ``language`` is the live session locale, taken from the same
     ``_current_user_language()`` provider that already feeds the memory-server
-    calls and the agent task-result rendering. The agent process cannot read the
-    session's ``user_language`` on its own, so its analyzer prompts would
+    calls and the task-result rendering. The agent process cannot read the
+    session's ``user_language`` on its own, so what it writes for her would
     otherwise follow the machine's Steam/system locale instead of the UI language.
     """
     try:
+        turn = _turn_to_check(messages)
+        if turn is None:
+            return False
+        user_text, reply_text, has_attachments = turn
+        if not user_text.strip():
+            # A turn of images only: nothing in words to hold her reply against.
+            return False
         # Optional optimization hint: the cheap pre-gate signal the master-emotion
         # call produced at input-time, matched to THIS turn's latest user message.
         # It must NEVER block or abort the publish — wrapped in its own try so any
-        # lazy-import/read failure degrades to None (the agent gate then fails open
-        # and runs its assessment). turn_end also never blocks on the emotion call,
-        # so this only reads an already-cached value. Cache miss / disabled / stale
-        # (different turn) / no-signal / proactive turn → None.
+        # lazy-import/read failure degrades to None (the gate on the other side
+        # then lets the turn through). turn_end also never blocks on the emotion
+        # call, so this only reads an already-cached value. Cache miss / disabled /
+        # stale (different turn) / no-signal → None.
         external_intent = None
-        if had_user_input:
+        # Skip the gate hint when the latest user turn carries attachments:
+        # the actionable intent may live in the image, which the text-only
+        # signal never saw → leave external_intent None.
+        if not has_attachments:
             try:
                 from main_logic.activity.master_emotion import gate_signal_for
-                _latest_user_msg = next(
-                    (m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
-                    None,
-                )
-                # Skip the gate hint when the latest user turn carries attachments:
-                # the actionable intent may live in the image, which the text-only
-                # signal never saw → leave external_intent None so the agent fails
-                # open and assesses the turn (never drop an image-driven task).
-                if _latest_user_msg is not None and not _latest_user_msg.get("attachments"):
-                    _latest_user_text = str(_latest_user_msg.get("content") or _latest_user_msg.get("text") or "")
-                    external_intent = gate_signal_for(lanlan_name, _latest_user_text)
+                external_intent = gate_signal_for(lanlan_name, user_text)
             except Exception:
                 external_intent = None
-        sent = await publish_analyze_request_reliably(
+        sent = await publish_turn_check_reliably(
             lanlan_name=lanlan_name,
-            trigger=trigger,
-            messages=messages,
+            user_text=user_text,
+            reply_text=reply_text,
             ack_timeout_s=0.8,
             retries=1,
             conversation_id=conversation_id,
             external_intent=external_intent,
-            proactive=not had_user_input,
             language=language,
         )
         if sent:
-            logger.debug(
-                "[%s] analyze_request forwarded with ack: trigger=%s messages=%d",
-                lanlan_name,
-                trigger,
-                len(messages) if isinstance(messages, list) else 0,
-            )
+            logger.debug("[%s] turn check forwarded with ack: trigger=%s", lanlan_name, trigger)
             return True
     except Exception as e:
         logger.info(
-            "[%s] analyze_request forwarding exception: trigger=%s error=%s",
+            "[%s] turn check forwarding exception: trigger=%s error=%s",
             lanlan_name,
             trigger,
             e,
@@ -170,7 +192,7 @@ def normalize_assistant_text(text, tool_names=None):
     return normalize_text(head + stripped)
 
 
-# Mirror schema + detection now lives in main_logic.mirror_meta;
+# Mirror schema + detection lives in utils.mirror_meta (re-exported by main_logic.mirror_meta);
 # cross_server only consumes those helpers — does not own the schema.
 from main_logic.mirror_meta import (
     MIRROR_USER_INPUT_TYPES,
@@ -216,7 +238,7 @@ def merge_unsynced_tail_assistants(chat_history, last_synced_index):
         return 0
 
     # Keep only the latest proactive message, discarding older redundancy to avoid persistent-memory growth.
-    merged = {'role': 'assistant', 'content': [{'type': 'text', 'text': parts[-1]}]}
+    merged = {**chat_history[-1], 'content': [{'type': 'text', 'text': parts[-1]}]}
     removed = consecutive - 1
     chat_history[first_idx:] = [merged]
     logger.info(f"[cleanup] 精简了 {consecutive} 条未同步的连续主动搭话消息，仅保留最后一条")
@@ -327,7 +349,17 @@ def _latest_user_message_has_source(messages: list[dict], source: str) -> bool:
     return False
 
 
-def _append_user_input_cache_to_history(chat_history: list, text: object, sources: set[str]) -> bool:
+# A spoken line has no chat-original proof. This identity is written once, so the
+# recent-memory file and the time index still know the message by one name.
+MEMORY_MESSAGE_ID_KEY = 'memory_message_id'
+
+
+def _new_memory_message_id() -> str:
+    from uuid import uuid4
+    return uuid4().hex
+
+
+def _append_user_input_cache_to_history(chat_history: list, text: object, sources: set[str], proof=None) -> bool:
     user_text = str(text or "")
     if not user_text:
         sources.clear()
@@ -339,9 +371,21 @@ def _append_user_input_cache_to_history(chat_history: list, text: object, source
         item["metadata"] = {"sources": normalized_sources}
         if len(normalized_sources) == 1:
             item["source"] = normalized_sources[0]
+    if proof:
+        item.setdefault("metadata", {})["chat_original_source"] = dict(proof)
+    else:
+        item.setdefault("metadata", {})[MEMORY_MESSAGE_ID_KEY] = _new_memory_message_id()
     chat_history.append(item)
     sources.clear()
     return True
+
+
+def _assistant_history_message(text, proof):
+    """Preserve producer identity in the original archive, outside model context."""
+    item = {'role': 'assistant', 'content': [{'type': 'text', 'text': text}]}
+    item['metadata'] = ({'chat_original_source': dict(proof)} if proof
+                        else {MEMORY_MESSAGE_ID_KEY: _new_memory_message_id()})
+    return item
 
 
 def _normalize_pending_user_attachments(pending_user_images: list) -> list[dict]:
@@ -805,6 +849,12 @@ async def _complete_session_end_memory_barrier(message: dict, lanlan_name: str) 
             completion.set_result(None)
 
 
+# How long a stopping connector waits for its queued memory writes (see run_sync_connector).
+MEMORY_LANE_DRAIN_TIMEOUT_S = 1.5
+# Queued memory writes at which (and at each further multiple of which) a backlog warning is logged.
+MEMORY_LANE_BACKLOG_WARN = 50
+
+
 async def run_sync_connector(
     message_queue: asyncio.Queue,
     lanlan_name,
@@ -941,13 +991,18 @@ async def run_sync_connector(
         )
 
     user_input_cache = ''
+    user_input_proof = None
     user_input_sources: set[str] = set()
     text_output_cache = ''  # lanlan's current message.
     text_output_request_id = None
+    text_output_proof = None
     # Raw originals use server-created identities and never normalized memory text.
     original_output = AssistantOriginalBuffer(tail_grace=LATE_TEXT_GRACE_SECONDS)
     current_turn = 'user'
     had_user_input_this_turn = False  # Whether the current turn has user input; False means proactive chat.
+    # How much of chat_history had been through a turn end already. A session
+    # that ends with a user message past this point was cut off mid-turn.
+    turn_checked_history_len = 0
     current_turn_start_index = 0
     last_screen = None
     pending_user_images: list = []
@@ -957,6 +1012,212 @@ async def run_sync_connector(
         MEMORY_CACHE_SCOPE_AVATAR: False,
         MEMORY_CACHE_SCOPE_TURN_END: False,
     }
+
+    # Memory-server writes run one at a time on this lane, in the order the loop produced them,
+    # and the loop never waits for them (#3601): a hot-reset /renew summary or a slow /cache must
+    # not hold up monitor forwarding, analyzer requests or the next turn of a live conversation.
+    memory_lane: asyncio.Queue = asyncio.Queue()
+    # Turn-end messages the memory server did not accept. The next ordinary write resends them,
+    # as the loop used to by leaving them past last_synced_index.
+    memory_carry: list = []
+    # Avatar dedupe entries whose /cache failed while a later interaction already held the slot,
+    # keyed by id (the tuple keeps the entry alive): {id(entry): (entry, its prior entry)}.
+    avatar_unsaved_dedupe_entries: dict[int, tuple] = {}
+
+    memory_lane_running: list = []  # The job the lane is executing, if any.
+
+    async def _run_memory_lane():
+        while True:
+            job = await memory_lane.get()
+            memory_lane_running[:] = [job]
+            try:
+                await job()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"[{lanlan_name}] 记忆写入任务异常: {type(e).__name__}: {e}", exc_info=True)
+            finally:
+                memory_lane_running.clear()
+                memory_lane.task_done()
+
+    def _enqueue_memory_write(job) -> None:
+        memory_lane.put_nowait(job)
+        # The loop no longer slows down when the memory server does; say so once the backlog grows.
+        backlog = memory_lane.qsize()
+        if backlog >= MEMORY_LANE_BACKLOG_WARN and backlog % MEMORY_LANE_BACKLOG_WARN == 0:
+            logger.warning(f"[{lanlan_name}] 记忆写入积压 {backlog} 个，记忆服务可能响应缓慢")
+
+    async def _resolve_memory_flush(done) -> None:
+        if isinstance(done, asyncio.Future) and not done.done():
+            done.set_result(None)
+
+    def _take_memory_carry(messages: list) -> list:
+        payload = memory_carry + messages
+        memory_carry.clear()
+        return payload
+
+    async def _cache_avatar_turn(messages, language, render_language, dedupe_key, written_entry, prior_entry):
+        cache_persist_failed = False
+        try:
+            ok, err_detail, _ = await _post_memory_server(
+                "cache",
+                lanlan_name,
+                messages,
+                timeout_s=10.0,
+                language=language,
+                render_language=render_language,
+            )
+            if ok:
+                _mark_memory_cache_success(
+                    lanlan_name,
+                    MEMORY_CACHE_SCOPE_AVATAR,
+                    memory_cache_health_state,
+                )
+            else:
+                cache_persist_failed = True
+                _mark_memory_cache_business_failure(
+                    lanlan_name,
+                    MEMORY_CACHE_SCOPE_AVATAR,
+                    err_detail,
+                    memory_cache_health_state,
+                )
+        except Exception as e:
+            cache_persist_failed = True
+            _mark_memory_cache_exception(
+                lanlan_name,
+                MEMORY_CACHE_SCOPE_AVATAR,
+                e,
+                memory_cache_health_state,
+            )
+        if not dedupe_key or written_entry is None:
+            return
+        # The next interaction on this key captured written_entry as its prior; once this
+        # write is final, nothing else can restore prior_entry through it.
+        if not cache_persist_failed:
+            avatar_unsaved_dedupe_entries.pop(id(prior_entry), None)
+            return
+        if avatar_interaction_memory_cache.get(dedupe_key) is not written_entry:
+            # A later interaction owns the slot; if its write fails too, its rollback must
+            # skip this unsaved entry rather than restore it. Records past the dedupe window
+            # can no longer suppress anything and are dropped.
+            now_ms = int(time.time() * 1000)
+            for entry_id, (entry, _) in list(avatar_unsaved_dedupe_entries.items()):
+                if now_ms - int(entry.get('ts', 0) or 0) >= AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS:
+                    del avatar_unsaved_dedupe_entries[entry_id]
+            avatar_unsaved_dedupe_entries[id(written_entry)] = (written_entry, prior_entry)
+            return
+        restored = prior_entry
+        while restored is not None and id(restored) in avatar_unsaved_dedupe_entries:
+            restored = avatar_unsaved_dedupe_entries.pop(id(restored))[1]
+        if restored is not None:
+            avatar_interaction_memory_cache[dedupe_key] = restored
+        else:
+            avatar_interaction_memory_cache.pop(dedupe_key, None)
+
+    async def _cache_turn_end(messages, language, render_language):
+        payload = _take_memory_carry(messages)
+        try:
+            ok, err_detail, _ = await _post_memory_server(
+                "cache",
+                lanlan_name,
+                payload,
+                timeout_s=10.0,
+                language=language,
+                render_language=render_language,
+            )
+        except Exception as e:
+            memory_carry[:0] = payload
+            _mark_memory_cache_exception(
+                lanlan_name,
+                MEMORY_CACHE_SCOPE_TURN_END,
+                e,
+                memory_cache_health_state,
+            )
+            return
+        if ok:
+            _mark_memory_cache_success(
+                lanlan_name,
+                MEMORY_CACHE_SCOPE_TURN_END,
+                memory_cache_health_state,
+            )
+        else:
+            memory_carry[:0] = payload
+            _mark_memory_cache_business_failure(
+                lanlan_name,
+                MEMORY_CACHE_SCOPE_TURN_END,
+                err_detail,
+                memory_cache_health_state,
+            )
+
+    async def _settle_hot_reset(messages, language, render_language):
+        # Failures are logged only: the conversation goes on in the new session, and its
+        # own writes are unaffected by this one.
+        payload = _take_memory_carry(messages)
+        # Select /renew for new messages, otherwise /settle to complete summaries/timestamps.
+        endpoint = "renew" if payload else "settle"
+        try:
+            ok, err_detail, _ = await _post_memory_server(
+                endpoint,
+                lanlan_name,
+                payload,
+                timeout_s=30.0,
+                language=language,
+                render_language=render_language,
+            )
+            if not ok:
+                logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({endpoint}): {err_detail}")
+            else:
+                logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({endpoint})")
+        except RuntimeError as e:
+            if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                logger.info(f"[{lanlan_name}] 进程正在关闭，{endpoint}请求已取消")
+            else:
+                logger.exception(f"[{lanlan_name}] 调用 /{endpoint} API 失败: {type(e).__name__}: {e}")
+        except Exception as e:
+            logger.exception(f"[{lanlan_name}] 调用 /{endpoint} API 失败: {type(e).__name__}: {e}")
+
+    async def _settle_session_end(messages, is_context_reset_barrier, language, render_language):
+        payload = _take_memory_carry(messages)
+        # Ordinary-session settlement: /process with new messages, otherwise /settle.
+        # The language-switch barrier authoritatively clears recent.json afterward, so skip
+        # summaries destined for deletion; write only unsynced tails through lightweight /cache into
+        # the time index/outbox. Without a tail, proceed directly to cleanup callbacks.
+        if is_context_reset_barrier:
+            endpoint = "cache" if payload else None
+        else:
+            endpoint = "process" if payload else "settle"
+        if endpoint is None:
+            return
+        try:
+            ok, err_detail, _ = await _post_memory_server(
+                endpoint,
+                lanlan_name,
+                payload,
+                timeout_s=10.0 if is_context_reset_barrier else 30.0,
+                language=language,
+                render_language=render_language,
+            )
+            if not ok:
+                logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({endpoint}): {err_detail}")
+                if status_callback:
+                    try:
+                        status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
+                    except Exception:
+                        pass  # A failed status push must not mask the settlement result logged above.
+            else:
+                logger.info(f"[{lanlan_name}] session end 记忆结算完成（{endpoint}），{len(payload)} 条消息")
+        except Exception as e:
+            logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({endpoint}): {e}")
+            if status_callback:
+                try:
+                    status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
+                except Exception:
+                    pass  # A failed status push must not mask the settlement error logged above.
+
+    memory_lane_task = asyncio.create_task(
+        _run_memory_lane(),
+        name=f"MemoryLane-{lanlan_name}",
+    )
 
     try:
         while True:
@@ -983,12 +1244,14 @@ async def run_sync_connector(
                             if current_turn == 'user':  # assistant new message starts
                                 had_user_input_this_turn = bool(user_input_cache)
                                 if user_input_cache:
-                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''
                                 current_turn = 'assistant'
                                 text_output_request_id = message["data"].get("request_id")
                                 current_turn_start_index = len(chat_history)
                                 text_output_cache = datetime.now().strftime('[%Y%m%d %a %H:%M] ')
+                                text_output_proof = message['data'].get('chat_original_source')
+                                text_output_proof = dict(text_output_proof) if isinstance(text_output_proof, dict) else None
 
                                 if bullet_slot is not None and bullet_slot.ws is not None:
                                     try:
@@ -1034,6 +1297,7 @@ async def run_sync_connector(
                                 for source_value in _iter_source_values(transcript_metadata.get("sources")):
                                     user_input_sources.add(source_value)
                             if user_input_cache == '':
+                                user_input_proof = message['data'].get('chat_original_source')
                                 await _try_send_json(sync_slot, {'type': 'user_activity'})  # Interrupt frontend audio playback.
                             user_input_cache += data
                             # Send user transcripts to monitor for secondary-terminal display.
@@ -1064,11 +1328,6 @@ async def run_sync_connector(
 
                     elif message["type"] == "system":
                         try:
-                            if message["data"] == "chat original tool":
-                                # Provenance only: keep the whole reply local,
-                                # without changing memory or forwarding a UI event.
-                                original_output.mark_tool(message.get("chat_original_id"))
-                                continue
                             if message["data"] == "google disconnected":
                                 original_output.discard()
                                 if len(text_output_cache) > 0:
@@ -1076,13 +1335,22 @@ async def run_sync_connector(
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                             
                             elif message["data"] == "response_discarded_clear":
                                 original_output.discard()
                                 logger.debug(f"[{lanlan_name}] 收到 response_discarded_clear，清空当前输出缓存")
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                             
+                            if message["data"] == "memory flush":
+                                # A starting session waits until the writes queued before it are sent,
+                                # so its /new_dialog reads them (#3601); see LifecycleMixin.
+                                _enqueue_memory_write(functools.partial(
+                                    _resolve_memory_flush, message.get("_memory_flush_done"),
+                                ))
+
                             if message["data"] == "renew session":
                                 # Check shutdown state.
                                 if shutdown_event.is_set():
@@ -1093,7 +1361,7 @@ async def run_sync_connector(
                                 
                                 # First process unfinished user-input buffers, if any.
                                 if user_input_cache:
-                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''
                                 
                                 # Then process unfinished output buffers, if any.
@@ -1101,9 +1369,10 @@ async def run_sync_connector(
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
-                                            {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
+                                            _assistant_history_message(text_output_cache, text_output_proof))
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                                 current_turn_start_index = len(chat_history)
                                 # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
@@ -1112,43 +1381,17 @@ async def run_sync_connector(
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
                                     chat_history.clear()
+                                    turn_checked_history_len = 0
                                     break
                                 
                                 # Send only remaining messages not covered by /cache, triggering LLM settlement.
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                # Select /renew for new messages, otherwise /settle to complete summaries/timestamps.
-                                _renew_endpoint = "renew" if remaining else "settle"
-                                _renew_payload = remaining if remaining else []
-                                _memory_language, _memory_render_language = (
-                                    _current_memory_languages()
-                                )
-                                try:
-                                    ok, err_detail, _ = await _post_memory_server(
-                                        _renew_endpoint,
-                                        lanlan_name,
-                                        _renew_payload,
-                                        timeout_s=30.0,
-                                        language=_memory_language,
-                                        render_language=_memory_render_language,
-                                    )
-                                    if not ok:
-                                        logger.error(f"[{lanlan_name}] 热重置记忆处理失败 ({_renew_endpoint}): {err_detail}")
-                                        if status_callback:
-                                            try:
-                                                status_callback(f"⚠️ 热重置记忆失败: {err_detail}")
-                                            except Exception:
-                                                pass
-                                    else:
-                                        logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server ({_renew_endpoint})")
-                                except RuntimeError as e:
-                                    if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                        logger.info(f"[{lanlan_name}] 进程正在关闭，{_renew_endpoint}请求已取消")
-                                    else:
-                                        logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
-                                except Exception as e:
-                                    logger.exception(f"[{lanlan_name}] 调用 /{_renew_endpoint} API 失败: {type(e).__name__}: {e}")
+                                _enqueue_memory_write(functools.partial(
+                                    _settle_hot_reset, remaining, *_current_memory_languages(),
+                                ))
                                 chat_history.clear()
+                                turn_checked_history_len = 0
                                 last_synced_index = 0
 
                             if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan's message ended.
@@ -1190,6 +1433,7 @@ async def run_sync_connector(
                                         original_output.discard()
                                         text_output_cache = ''
                                         text_output_request_id = None
+                                        text_output_proof = None
                                         current_turn = 'user'
                                         current_turn_start_index = len(chat_history)
                                         had_user_input_this_turn = False
@@ -1205,9 +1449,10 @@ async def run_sync_connector(
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
-                                        {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
+                                        _assistant_history_message(text_output_cache, text_output_proof))
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                                 # Only kind == 'avatar_interaction' enters isolation; otherwise process as
                                 # proactive / normal.
                                 # Core labels turn-end meta atomically and clears it if user input takes over avatar
@@ -1251,46 +1496,14 @@ async def run_sync_connector(
                                             {'role': 'user', 'content': [{'type': 'text', 'text': memory_note}]},
                                             {'role': 'assistant', 'content': [{'type': 'text', 'text': avatar_turn_assistant_text}]},
                                         ]
-                                        cache_persist_failed = False
-                                        _memory_language, _memory_render_language = (
-                                            _current_memory_languages()
-                                        )
-                                        try:
-                                            ok, err_detail, _ = await _post_memory_server(
-                                                "cache",
-                                                lanlan_name,
-                                                avatar_memory_messages,
-                                                timeout_s=10.0,
-                                                language=_memory_language,
-                                                render_language=_memory_render_language,
-                                            )
-                                            if ok:
-                                                _mark_memory_cache_success(
-                                                    lanlan_name,
-                                                    MEMORY_CACHE_SCOPE_AVATAR,
-                                                    memory_cache_health_state,
-                                                )
-                                            else:
-                                                cache_persist_failed = True
-                                                _mark_memory_cache_business_failure(
-                                                    lanlan_name,
-                                                    MEMORY_CACHE_SCOPE_AVATAR,
-                                                    err_detail,
-                                                    memory_cache_health_state,
-                                                )
-                                        except Exception as e:
-                                            cache_persist_failed = True
-                                            _mark_memory_cache_exception(
-                                                lanlan_name,
-                                                MEMORY_CACHE_SCOPE_AVATAR,
-                                                e,
-                                                memory_cache_health_state,
-                                            )
-                                        if cache_persist_failed and dedupe_rollback_key:
-                                            if dedupe_prior_entry is not None:
-                                                avatar_interaction_memory_cache[dedupe_rollback_key] = dedupe_prior_entry
-                                            else:
-                                                avatar_interaction_memory_cache.pop(dedupe_rollback_key, None)
+                                        _enqueue_memory_write(functools.partial(
+                                            _cache_avatar_turn,
+                                            avatar_memory_messages,
+                                            *_current_memory_languages(),
+                                            dedupe_rollback_key,
+                                            avatar_interaction_memory_cache.get(dedupe_rollback_key),
+                                            dedupe_prior_entry,
+                                        ))
 
                                     if avatar_turn_slice:
                                         del chat_history[avatar_turn_start_index:]
@@ -1302,8 +1515,12 @@ async def run_sync_connector(
                                     # leftover screenshots/camera frames would contaminate the next analyzer turn.
                                     pending_user_images = []
                                     continue
-                                # Send recent conversation to tool_server nonblockingly for potential-task analysis.
-                                # Skip only the dedicated agent-callback channel to avoid reanalyzing task-result callbacks.
+                                # Ask the agent process to check this turn: what she said against what was done.
+                                # Not for a turn she started herself, not for the dedicated agent-callback
+                                # channel (her words there are about a result she was just given), and not
+                                # for a turn in which she called a tool that acts: then that tool's result
+                                # is the one judgement of the turn.
+                                acted_through_tools = bool(message.get("acted_through_tools")) if isinstance(message, dict) else False
                                 if not shutdown_event.is_set():
                                     selected_pending_user_images, remaining_pending_user_images = (
                                         _partition_pending_user_images_for_turn(
@@ -1332,76 +1549,46 @@ async def run_sync_connector(
                                             f"avatar_drop_turn={latest_user_is_avatar_drop}"
                                         )
                                         if recent and has_user and latest_user_is_avatar_drop:
-                                            logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop turn_end), messages={len(recent)}")
-                                        elif recent and not is_agent_callback_turn_end:
-                                            # had_user_input gates the proactive marking: a turn with no
-                                            # user text but WITH a fresh user image (screenshot/camera) is
-                                            # still a user turn — count its attachments as input so it is
-                                            # NOT mis-marked proactive (which, with the feature off, would
-                                            # drop the image task). Only a genuinely self-initiated turn
-                                            # (no text, no image) is proactive.
-                                            _turn_had_user_input = had_user_input_this_turn or bool(selected_pending_user_images)
-                                            sent = await _publish_analyze_request_with_fallback(
+                                            logger.info(f"[{lanlan_name}] turn check skipped (avatar_drop turn_end), messages={len(recent)}")
+                                        elif (
+                                            recent
+                                            and has_user
+                                            and had_user_input_this_turn
+                                            and not is_agent_callback_turn_end
+                                            and not acted_through_tools
+                                        ):
+                                            sent = await _publish_turn_check_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                had_user_input=_turn_had_user_input,
                                                 language=_current_analyze_language(),
                                             )
                                             if sent:
-                                                logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
-                                            else:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] turn check sent (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求超时")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过轮次核对请求")
                                         else:
-                                            logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                            logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e}")
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e}")
                                     finally:
                                         pending_user_images = remaining_pending_user_images
+                                turn_checked_history_len = len(chat_history)
 
                                 # Lightweight turn-end cache: write recent history only, without LLM summarization/organization.
                                 # Do not cache proactive chat; persist with the next ordinary turn after the user's response.
                                 if had_user_input_this_turn and not shutdown_event.is_set() and last_synced_index < len(chat_history):
+                                    # Handed to the memory lane; one it fails to deliver is resent from
+                                    # memory_carry with the next write.
                                     new_messages = chat_history[last_synced_index:]
-                                    _memory_language, _memory_render_language = (
-                                        _current_memory_languages()
-                                    )
-                                    try:
-                                        ok, err_detail, _ = await _post_memory_server(
-                                            "cache",
-                                            lanlan_name,
-                                            new_messages,
-                                            timeout_s=10.0,
-                                            language=_memory_language,
-                                            render_language=_memory_render_language,
-                                        )
-                                        if ok:
-                                            _mark_memory_cache_success(
-                                                lanlan_name,
-                                                MEMORY_CACHE_SCOPE_TURN_END,
-                                                memory_cache_health_state,
-                                            )
-                                            last_synced_index = len(chat_history)
-                                        else:
-                                            _mark_memory_cache_business_failure(
-                                                lanlan_name,
-                                                MEMORY_CACHE_SCOPE_TURN_END,
-                                                err_detail,
-                                                memory_cache_health_state,
-                                            )
-                                    except Exception as e:
-                                        _mark_memory_cache_exception(
-                                            lanlan_name,
-                                            MEMORY_CACHE_SCOPE_TURN_END,
-                                            e,
-                                            memory_cache_health_state,
-                                        )
+                                    last_synced_index = len(chat_history)
+                                    _enqueue_memory_write(functools.partial(
+                                        _cache_turn_end, new_messages, *_current_memory_languages(),
+                                    ))
 
                             elif message["data"] == 'session end': # Current session ended.
                                 is_context_reset_barrier = callable(
@@ -1415,7 +1602,7 @@ async def run_sync_connector(
                                 
                                 # First process any unfinished user-input buffers.
                                 if user_input_cache:
-                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources)
+                                    _append_user_input_cache_to_history(chat_history, user_input_cache, user_input_sources, user_input_proof)
                                     user_input_cache = ''
                                 
                                 # Then process any unfinished output buffers.
@@ -1423,15 +1610,24 @@ async def run_sync_connector(
                                 text_output_cache = _normalized_reply(text_output_cache)
                                 if len(text_output_cache) > 0:
                                     chat_history.append(
-                                        {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
+                                        _assistant_history_message(text_output_cache, text_output_proof))
                                 text_output_cache = ''
                                 text_output_request_id = None
+                                text_output_proof = None
                                 current_turn_start_index = len(chat_history)
                                 # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
 
-                                # Send recent conversation to tool_server for potential-task analysis, matching turn-end handling.
+                                # A session that ends in the middle of a turn never gets that turn's
+                                # turn end. If the user said something since the last one, the turn is
+                                # checked here, as a turn end would have had it checked.
                                 # Recheck shutdown state.
+                                cut_off_start = min(turn_checked_history_len, len(chat_history))
+                                cut_off_mid_turn = any(
+                                    isinstance(item, dict) and item.get('role') == 'user'
+                                    for item in chat_history[cut_off_start:]
+                                )
+                                turn_checked_history_len = len(chat_history)
                                 if not shutdown_event.is_set():
                                     try:
                                         # Build recent-message summaries and retain this turn's latest image attachments.
@@ -1449,31 +1645,31 @@ async def run_sync_connector(
                                             AVATAR_DROP_SOURCE,
                                         )
                                         if recent and has_user and latest_user_is_avatar_drop:
-                                            logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop session_end), messages={len(recent)}")
-                                        elif recent and has_user:
-                                            sent = await _publish_analyze_request_with_fallback(
+                                            logger.info(f"[{lanlan_name}] turn check skipped (avatar_drop session_end), messages={len(recent)}")
+                                        elif message.get("acted_through_tools"):
+                                            # She called a tool that acts in the turn that was cut
+                                            # off. Its result was the judgement of that turn; checking
+                                            # her words now could dispatch the same task again.
+                                            logger.debug(f"[{lanlan_name}] turn check skipped (acted through a tool before session end)")
+                                        elif recent and has_user and cut_off_mid_turn:
+                                            sent = await _publish_turn_check_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
                                                 language=_current_analyze_language(),
-                                                # session_end is terminal — never treated as proactive
-                                                # (had_user_input defaults True), so it always takes the
-                                                # ordinary user-turn path.
                                             )
                                             if sent:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")
-                                            else:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch failed (session_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] turn check sent (session_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求超时 (session end)")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过轮次核对请求")
                                         else:
-                                            logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                            logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e} (session end)")
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e} (session end)")
                                     finally:
                                         pending_user_images = []
                                 
@@ -1481,54 +1677,20 @@ async def run_sync_connector(
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过 session end 收尾")
                                     chat_history.clear()
+                                    turn_checked_history_len = 0
                                     last_synced_index = 0
                                     break
                                 
-                                # Ordinary-session settlement: /process with new messages, otherwise /settle.
-                                # The language-switch barrier authoritatively clears recent.json afterward, so skip
-                                # summaries destined for deletion; write only unsynced tails through lightweight /cache into
-                                # the time index/outbox. Without a tail, proceed directly to cleanup callbacks.
                                 remaining = chat_history[last_synced_index:]
                                 logger.info(f"[{lanlan_name}] 会话结束：聊天历史 {len(chat_history)} 条，增量 {len(remaining)} 条")
-                                if is_context_reset_barrier:
-                                    _settle_endpoint = "cache" if remaining else None
-                                else:
-                                    _settle_endpoint = "process" if remaining else "settle"
-                                _settle_payload = remaining if remaining else []
-                                if _settle_endpoint is not None and not shutdown_event.is_set():
-                                    _memory_language, _memory_render_language = (
-                                        _current_memory_languages()
-                                    )
-                                    try:
-                                        ok, err_detail, _ = await _post_memory_server(
-                                            _settle_endpoint,
-                                            lanlan_name,
-                                            _settle_payload,
-                                            timeout_s=(
-                                                10.0
-                                                if is_context_reset_barrier
-                                                else 30.0
-                                            ),
-                                            language=_memory_language,
-                                            render_language=_memory_render_language,
-                                        )
-                                        if not ok:
-                                            logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({_settle_endpoint}): {err_detail}")
-                                            if status_callback:
-                                                try:
-                                                    status_callback(f"⚠️ 记忆摘要失败: {err_detail}")
-                                                except Exception:
-                                                    pass
-                                        else:
-                                            logger.info(f"[{lanlan_name}] session end 记忆结算完成（{_settle_endpoint}），{len(_settle_payload)} 条消息")
-                                    except Exception as e:
-                                        logger.warning(f"[{lanlan_name}] session end 记忆结算失败 ({_settle_endpoint}): {e}")
-                                        if status_callback:
-                                            try:
-                                                status_callback(f"⚠️ 记忆结算异常: {type(e).__name__}")
-                                            except Exception:
-                                                pass
+                                _enqueue_memory_write(functools.partial(
+                                    _settle_session_end,
+                                    remaining,
+                                    is_context_reset_barrier,
+                                    *_current_memory_languages(),
+                                ))
                                 chat_history.clear()
+                                turn_checked_history_len = 0
                                 last_synced_index = 0
                         except Exception as e:
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
@@ -1554,25 +1716,44 @@ async def run_sync_connector(
                         # ends already clear these fields in their success path;
                         # repeating the reset here makes the barrier fail closed.
                         chat_history.clear()
+                        turn_checked_history_len = 0
                         last_synced_index = 0
                         user_input_cache = ''
                         user_input_sources.clear()
                         text_output_cache = ''
                         text_output_request_id = None
+                        text_output_proof = None
                         current_turn = 'user'
                         had_user_input_this_turn = False
                         current_turn_start_index = 0
                         pending_user_images = []
-                        await _complete_session_end_memory_barrier(
+                        # Behind the settlement on the memory lane, so the callback still follows
+                        # the terminal memory-server write without the loop waiting for it.
+                        _enqueue_memory_write(functools.partial(
+                            _complete_session_end_memory_barrier,
                             message,
                             lanlan_name,
-                        )
+                        ))
 
             # WS maintenance lives in independent _slot_maintainer tasks; the main loop no longer inspects it.
 
     except asyncio.CancelledError:
         raise
     finally:
+        # Give queued writes (a session-end settlement, say) a bounded chance to go out. The
+        # character stop path waits 3 s for this task, so leave room for the cleanup below; what
+        # is still queued after that is dropped, and a pending barrier falls back to its caller's
+        # timeout (_wait_for_session_end_memory_barrier).
+        try:
+            await asyncio.wait_for(memory_lane.join(), timeout=MEMORY_LANE_DRAIN_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{lanlan_name}] 连接器退出时记忆写入未完成，已放弃："
+                f"执行中 {len(memory_lane_running)} 个，排队中 {memory_lane.qsize()} 个"
+            )
+        finally:
+            memory_lane_task.cancel()
+            await asyncio.gather(memory_lane_task, return_exceptions=True)
         # Completed replies may still wait out their late-transcript grace.
         try:
             await original_output.flush_terminated()

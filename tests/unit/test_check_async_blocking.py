@@ -282,7 +282,537 @@ def test_noqa_suppresses_the_call_site():
     assert out == []
 
 
+# ── Awaitable-argument slots (queue/thread/socket name heuristics) ──────
+
+
+def test_an_unawaited_socket_recv_is_still_flagged():
+    out = _violations('''
+    async def handler(socket):
+        data = socket.recv(1024)
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_a_directly_awaited_recv_is_not_flagged():
+    out = _violations('''
+    async def handler(socket):
+        raw = await socket.recv()
+    ''')
+    assert out == []
+
+
+def test_recv_inside_wait_for_is_not_flagged():
+    # services/chat_sync/runtime.py shape: a websockets connection named `socket`.
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket):
+        reply = await asyncio.wait_for(socket.recv(), timeout=10)
+        other = await asyncio.wait_for(fut=socket.recv(), timeout=10)
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("wrapped", [
+    "asyncio.shield(socket.recv())",
+    "asyncio.ensure_future(request_queue.get())",
+    "asyncio.create_task(coro=socket.recv())",
+    "self.tg.create_task(socket.recv())",
+    "self.event_loop.create_task(socket.recv())",
+    "self._loop.create_task(socket.recv())",
+    "asyncio.get_running_loop().create_task(socket.recv())",
+    "asyncio.gather(socket.recv(), request_queue.get())",
+    "asyncio.gather(*(socket.recv() for socket in sockets))",
+    "asyncio.gather(*[q.get() for q in queues])",
+    "asyncio.gather(*(socket.recv(), request_queue.get()))",
+])
+def test_other_awaitable_slots_are_not_flagged(wrapped):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(self, socket, sockets, request_queue, queues, tg, loop):
+        await {wrapped}
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("call", [
+    # Only asyncio's own entry points are trusted; a bare or repo helper is not.
+    "await wait_for(socket.recv(), 10)",
+    "await relay(socket.recv())",
+    # create_task is trusted only on event loops / TaskGroups.
+    "scheduler.create_task(socket.recv())",
+    # A plain-name receiver is trusted only through scope analysis, never by its spelling.
+    "loop.create_task(socket.recv())",
+    "tg.create_task(socket.recv())",
+    # Positions other than the awaitable slot keep the normal checks.
+    "await asyncio.wait_for(fut, timeout=socket.recv())",
+])
+def test_non_slot_arguments_are_still_flagged(call):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, fut, loop, tg):
+        {call}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("wrapped", [
+    "asyncio.wait_for(socket.recv() if use_socket else request_queue.get(), 10)",
+    "asyncio.gather(*(socket.recv() if use_socket else q.get() for q in queues))",
+])
+def test_both_branches_of_a_conditional_slot_are_not_flagged(wrapped):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, request_queue, queues, use_socket):
+        await {wrapped}
+    ''')
+    assert out == []
+
+
+def test_the_condition_of_a_conditional_slot_is_still_flagged():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, fut, other):
+        await asyncio.wait_for(fut if socket.recv() else other, 10)
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_constructor_bound_task_owners_are_trusted_under_any_name():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket):
+        runner = asyncio.get_running_loop()
+        runner.create_task(socket.recv())
+        async with asyncio.TaskGroup() as group:
+            group.create_task(socket.recv())
+
+            async def nested():
+                group.create_task(socket.recv())
+    ''')
+    assert out == []
+
+
+def test_a_task_owner_binding_does_not_leak_into_a_sibling_function():
+    out = _violations('''
+    import asyncio
+
+    async def first(socket):
+        async with asyncio.TaskGroup() as group:
+            group.create_task(socket.recv())
+
+    async def second(socket, group):
+        group.create_task(socket.recv())
+    ''')
+    assert [lineno for lineno, _, _ in out] == [9]
+
+
+@pytest.mark.parametrize("body", [
+    # Rebinding to something else, in either order, revokes trust.
+    "runner = asyncio.get_running_loop()\n        runner = scheduler\n        runner.create_task(socket.recv())",
+    "runner = scheduler\n        runner = asyncio.get_running_loop()\n        runner.create_task(socket.recv())",
+    "for group in groups:\n            group.create_task(socket.recv())",
+])
+def test_a_rebound_task_owner_name_is_not_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, scheduler, groups):
+        {body}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("inner", [
+    "async def inner(runner):\n            runner.create_task(socket.recv())",
+    "async def inner():\n            runner = make_scheduler()\n            runner.create_task(socket.recv())",
+])
+def test_an_inner_scope_shadowing_a_task_owner_is_not_trusted(inner):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket):
+        runner = asyncio.get_running_loop()
+        runner.create_task(socket.recv())
+
+        {inner}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+    assert out[0][0] > 6
+
+
+@pytest.mark.parametrize("body", [
+    # A comprehension target is local to the comprehension.
+    "runner = asyncio.get_running_loop()\n        names = [runner for runner in runners]\n        runner.create_task(socket.recv())",
+    # A bare annotation binds nothing; an annotated constructor binding counts.
+    "runner: asyncio.AbstractEventLoop\n        runner = asyncio.get_running_loop()\n        runner.create_task(socket.recv())",
+    "runner: asyncio.AbstractEventLoop = asyncio.get_running_loop()\n        runner.create_task(socket.recv())",
+])
+def test_bindings_outside_this_scope_keep_a_task_owner_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, runners):
+        {body}
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("body", [
+    # The comprehension's own `group` shadows the outer TaskGroup.
+    "async with asyncio.TaskGroup() as group:\n            [group.create_task(socket.recv()) for group in groups]",
+    # A walrus inside a comprehension does rebind the enclosing name.
+    "runner = asyncio.get_running_loop()\n        [(runner := s) for s in groups]\n        runner.create_task(socket.recv())",
+    "runner: asyncio.AbstractEventLoop = scheduler\n        runner.create_task(socket.recv())",
+])
+def test_comprehension_and_annotation_rebinding_is_not_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, groups, scheduler):
+        {body}
+    ''')
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("body", [
+    # The value of an assignment expression is what fills the slot.
+    "await asyncio.wait_for((coro := socket.recv()), 10)",
+    # The outermost iterable runs in the enclosing scope, before targets bind.
+    "runner = asyncio.get_running_loop()\n        [x for runner in wrap(runner.create_task(socket.recv()))]",
+    # A name only read inside a target expression is not rebound.
+    "runner = asyncio.get_running_loop()\n        [runner.create_task(socket.recv()) for cache[runner] in items]",
+])
+def test_slot_and_scope_edge_cases_that_stay_trusted(body):
+    out = _violations(f'''
+    import asyncio
+
+    async def handler(socket, wrap, cache, items):
+        {body}
+    ''')
+    assert out == []
+
+
+@pytest.mark.parametrize("source", [
+    '''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        def swap():
+            nonlocal runner
+            runner = scheduler
+
+        swap()
+        runner.create_task(socket.recv())
+    ''',
+    '''
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    def swap(scheduler):
+        global loop
+        loop = scheduler
+
+    async def handler(socket):
+        loop.create_task(socket.recv())
+    ''',
+])
+def test_a_nested_nonlocal_or_global_rebinding_revokes_trust(source):
+    out = _violations(source)
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("source", [
+    # A default is evaluated in the enclosing scope, where runner is a scheduler.
+    '''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = scheduler
+
+        async def child(x=runner.create_task(socket.recv())):
+            runner = asyncio.get_running_loop()
+    ''',
+    # A walrus in a default rebinds the enclosing name.
+    '''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        def child(x=(runner := scheduler)):
+            return x
+
+        runner.create_task(socket.recv())
+    ''',
+    # A wildcard import may rebind asyncio.
+    '''
+    import asyncio
+    from fake_asyncio import *
+
+    async def handler(socket):
+        await asyncio.wait_for(socket.recv(), 10)
+    ''',
+    # A chained constructor on a shadowed asyncio is not trusted either.
+    '''
+    async def handler(socket, asyncio):
+        asyncio.get_running_loop().create_task(socket.recv())
+    ''',
+    # Only the last boolean operand is guaranteed to be the slot value.
+    '''
+    import asyncio
+
+    async def handler(socket, fallback):
+        await asyncio.wait_for(socket.recv() or fallback, 10)
+    ''',
+])
+def test_definition_time_wildcard_chain_and_boolop_cases_still_flag(source):
+    out = _violations(source)
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+@pytest.mark.parametrize("future, expected", [("", 1), ("from __future__ import annotations\n    ", 0)])
+def test_nested_annotations_are_checked_only_when_they_run(future, expected):
+    out = _violations(f'''
+    {future}import time
+
+    async def handler():
+        def helper(x: time.sleep(1)) -> None:
+            return x
+    ''')
+    assert len(out) == expected
+
+
+@pytest.mark.parametrize("source", [
+    # Starred arguments of a single-slot API.
+    '''
+    import asyncio
+
+    async def handler(socket):
+        await asyncio.wait_for(*[socket.recv(), 10])
+        asyncio.create_task(*(socket.recv(),))
+    ''',
+    # as_completed takes an iterable of awaitables.
+    '''
+    import asyncio
+
+    async def handler(socket, request_queue):
+        for finished in asyncio.as_completed([socket.recv(), request_queue.get()]):
+            await finished
+        for finished in asyncio.as_completed(fs=(socket.recv() for _ in range(2))):
+            await finished
+    ''',
+    # A walrus constructor binding is a task owner.
+    '''
+    import asyncio
+
+    async def handler(socket):
+        if (runner := asyncio.get_running_loop()):
+            runner.create_task(socket.recv())
+    ''',
+    # Read-only global / nonlocal declarations resolve outward.
+    '''
+    import asyncio
+
+    runner = asyncio.get_event_loop()
+
+    async def handler(socket):
+        global runner
+        runner.create_task(socket.recv())
+
+    async def outer(socket):
+        group = asyncio.get_running_loop()
+
+        async def inner():
+            nonlocal group
+            group.create_task(socket.recv())
+    ''',
+    # A constructor write through a declaration keeps the target trusted.
+    '''
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    def reset():
+        global loop
+        loop = asyncio.new_event_loop()
+
+    async def handler(socket):
+        loop.create_task(socket.recv())
+    ''',
+])
+def test_more_awaitable_forms_and_declarations_stay_trusted(source):
+    assert _violations(source) == []
+
+
+def test_a_starred_comprehension_also_fills_later_arguments():
+    # Its element runs for every yielded argument, so the `timeout` here is a
+    # blocking queue read; nothing in it may be exempted.
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, timeout_queue):
+        await asyncio.wait_for(*(socket.recv() if i == 0 else timeout_queue.get() for i in range(2)))
+    ''')
+    assert any("queue.Queue.get" in msg for _, _, msg in out)
+
+
+@pytest.mark.parametrize("source", [
+    '''
+    import asyncio
+
+    async def handler(socket, other_loop):
+        asyncio.run_coroutine_threadsafe(socket.recv(), other_loop)
+    ''',
+    # A module name bound only through a nested `global` constructor write.
+    '''
+    import asyncio
+
+    def init():
+        global loop
+        loop = asyncio.new_event_loop()
+
+    async def handler(socket):
+        loop.create_task(socket.recv())
+    ''',
+])
+def test_threadsafe_slot_and_global_only_owner_stay_trusted(source):
+    assert _violations(source) == []
+
+
+def test_a_class_body_read_before_its_assignment_is_not_trusted():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = scheduler
+
+        class Local:
+            runner.create_task(socket.recv())
+            runner = asyncio.get_running_loop()
+    ''')
+    assert [lineno for lineno, _, _ in out] == [8]
+
+
+def test_the_last_boolean_operand_fills_the_slot():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, existing):
+        await asyncio.wait_for(existing or socket.recv(), 10)
+    ''')
+    assert out == []
+
+
+def test_a_nested_global_does_not_touch_a_function_local_of_the_same_name():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        def swap_module_runner():
+            global runner
+            runner = scheduler
+
+        runner.create_task(socket.recv())
+    ''')
+    assert out == []
+
+
+def test_a_class_body_has_its_own_namespace_hidden_from_its_methods():
+    out = _violations('''
+    import asyncio
+
+    async def handler(socket, scheduler):
+        runner = asyncio.get_running_loop()
+
+        class Local:
+            runner = scheduler
+            runner.create_task(socket.recv())
+
+            async def method(self):
+                runner.create_task(socket.recv())
+    ''')
+    assert [lineno for lineno, _, _ in out] == [9]
+
+
+@pytest.mark.parametrize("source", [
+    '''
+    async def handler(socket, asyncio):
+        await asyncio.wait_for(socket.recv(), 10)
+    ''',
+    '''
+    import asyncio
+    import fake_asyncio as asyncio
+
+    async def handler(socket):
+        runner = asyncio.get_running_loop()
+        runner.create_task(socket.recv())
+    ''',
+])
+def test_a_shadowed_asyncio_name_lifts_no_trust(source):
+    out = _violations(source)
+    assert len(out) == 1
+    assert "socket.recv" in out[0][2]
+
+
+def test_a_slot_does_not_skip_the_ambiguous_name_depth1_check():
+    # An awaited ambiguous name is skipped (it may bind the async twin); a
+    # slot argument keeps the pre-slot behaviour and is still reported.
+    out = _violations('''
+    import asyncio
+    import time
+
+    def load_cookies_from_file(path):
+        time.sleep(1)
+
+    class Store:
+        async def load_cookies_from_file(self, path):
+            return path
+
+    async def handler(path):
+        await load_cookies_from_file(path)
+        await asyncio.gather(load_cookies_from_file(path))
+    ''')
+    assert [lineno for lineno, _, _ in out] == [14]
+    assert "load_cookies_from_file" in out[0][2]
+
+
+def test_a_direct_blocking_call_in_a_slot_is_still_flagged():
+    # The slot only lifts the name-based type guess; requests.get still runs
+    # synchronously before gather ever sees its result.
+    out = _violations('''
+    import asyncio
+
+    async def handler(url):
+        await asyncio.gather(requests.get(url))
+    ''')
+    assert len(out) == 1
+    assert "requests.get" in out[0][2]
+
+
 # ── Real repository: this rule must pass ─────────────────────────────────
+
+
+def test_services_is_in_the_default_scope():
+    assert "services" in MOD.DEFAULT_PATHS
 
 
 def test_the_repo_itself_has_no_on_loop_atomic_writes():

@@ -176,24 +176,29 @@
         };
         var postStandaloneChatStateRequests = function () {
             postAvatarRequest();
+            I.requestVoiceChatComposerHiddenState();
             scheduleGoodbyeComposerRequest(0);
         };
-        if (I.nekoBroadcastChannel || I.getGoodbyeChatComposerHiddenElectronBridge()) {
+        if (I.nekoBroadcastChannel || I.getGoodbyeChatComposerHiddenElectronBridge()
+            || I.getVoiceChatComposerHiddenElectronBridge()) {
             postAvatarRequest();
+            I.requestVoiceChatComposerHiddenState();
             postGoodbyeComposerRequest();
             I.postYuiGuideMessageToPet('request_tutorial_chat_identity');
             I.postYuiGuideMessageToPet('yui_guide_chat_ready');
             I.yuiGuideInterpageResources.setTimeout(I.drainPendingYuiGuideChatBridgeQueue, 0);
-            // 配置注入后统一重新请求状态（postStandaloneChatStateRequests 内部已含头像与 goodbye composer 隐藏状态请求，避免重复补发）
+            // 配置注入后重新请求头像、语音与 goodbye 输入栏状态。
             I.yuiGuideInterpageResources.addEventListener(window, 'neko:config-injected', postStandaloneChatStateRequests);
             I.yuiGuideInterpageResources.addEventListener(window, 'neko:request-goodbye-chat-composer-hidden-state', function () {
                 scheduleGoodbyeComposerRequest(0);
             });
             I.yuiGuideInterpageResources.addEventListener(window, 'focus', function () {
+                I.requestVoiceChatComposerHiddenState();
                 scheduleGoodbyeComposerRequest(0);
             });
             I.yuiGuideInterpageResources.addEventListener(document, 'visibilitychange', function () {
                 if (!document.hidden) {
+                    I.requestVoiceChatComposerHiddenState();
                     scheduleGoodbyeComposerRequest(0);
                 }
             });
@@ -482,6 +487,7 @@
     I.mod.applyVoiceComposerHiddenFromActive = I.applyVoiceComposerHiddenFromActive;
     I.mod.postVoiceChatComposerHiddenElectron = I.postVoiceChatComposerHiddenElectron;
     I.mod.handleVoiceChatComposerHiddenMessage = I.handleVoiceChatComposerHiddenMessage;
+    I.mod.requestVoiceChatComposerHiddenState = I.requestVoiceChatComposerHiddenState;
     I.mod.consumePendingVoiceChatComposerHiddenMessage = I.consumePendingVoiceChatComposerHiddenMessage;
     I.mod.applyGoodbyeChatComposerHidden = I.applyGoodbyeChatComposerHidden;
     I.mod.postGoodbyeChatComposerHiddenElectron = I.postGoodbyeChatComposerHiddenElectron;

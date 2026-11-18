@@ -1,3 +1,4 @@
+import { ClearChatScreenButton } from './ChatScreenVisibility';
 /**
  * Full-window chat surface. Its history, composer and responsive layout remain
  * independent from Compact Chat, while avatar-tool selection delegates to the
@@ -15,6 +16,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
+import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   isCompactExportMessageSelectable,
@@ -3055,7 +3057,7 @@ export default function FullChatSurface({
           </div>
         </div>
       ) : null}
-      {choicePromptHasOptions ? (
+      {choicePromptHasOptions && choicePrompt.source !== 'mini_game_invite' ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
@@ -3064,9 +3066,7 @@ export default function FullChatSurface({
           <div
             className="composer-galgame-options composer-choice-options"
             role="group"
-            aria-label={choicePrompt.source === 'mini_game_invite'
-              ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
-              : choicePrompt.source === 'new_user_icebreaker'
+            aria-label={choicePrompt.source === 'new_user_icebreaker'
                 ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
               : galgameToggleButtonLabel}
           >
@@ -3110,6 +3110,19 @@ export default function FullChatSurface({
       failedStatusLabel={failedStatusLabel}
       thinking={focusThinking}
       onAction={onMessageAction}
+      footerKey={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? choicePrompt.sessionId || 'mini-game-invite' : undefined}
+      footer={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? (
+        <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="card"
+          disabled={composerInteractionsDisabled} onSelect={(option) => {
+            if (submittingRef.current) return;
+            submittingRef.current = true;
+            try {
+              onChoiceSelect?.(option, 'mini_game_invite');
+            } finally {
+              requestAnimationFrame(() => { submittingRef.current = false; });
+            }
+          }} />
+      ) : null}
     />
   );
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
@@ -3133,6 +3146,7 @@ export default function FullChatSurface({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
+      onAction={onMessageAction}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
@@ -3162,6 +3176,9 @@ export default function FullChatSurface({
     </section>
   ) : (
     <section className="chat-body">
+      <div className="chat-clear-screen-tools full-chat-clear-screen-tools">
+        {theaterPresentation?.active !== true ? <ClearChatScreenButton /> : null}
+      </div>
       {messageListNode}
     </section>
   );

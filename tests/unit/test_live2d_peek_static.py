@@ -145,6 +145,8 @@ def test_live2d_widget_mode_edge_peek_prefers_head_anchor_and_preserves_vertical
     assert "const useWaistFallback = !verticalEdge &&" in edge_peek_source
     assert "!useSideHeadAnchor" in edge_peek_source
     assert "const minimumHeadInset = 36;" in edge_peek_source
+    assert "function getLive2DPeekEdgeFlushShift(bounds, viewport, anchor)" in edge_peek_source
+    assert "const flushShift = getLive2DPeekEdgeFlushShift(" in edge_peek_source
     assert "? viewport.bottom - desiredHeadInsetY" in edge_peek_source
     assert ": viewport.top + desiredHeadInsetY;" in edge_peek_source
     assert "offsetY = desiredHeadYAtEdge - transformedHeadAnchor.y;" in edge_peek_source

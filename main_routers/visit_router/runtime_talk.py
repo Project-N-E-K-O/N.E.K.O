@@ -90,6 +90,27 @@ _HOME_TURN_START_S = 3.0
 _LLM_SETTLE_S = 2.0
 
 
+def _without_repeated_speaker_prefix(text: str, *names: str) -> str:
+    """Remove visit speaker/addressee labels that are redundant in a normal assistant bubble."""
+    raw = str(text or "")
+    candidate = raw.lstrip()
+    clean_names = tuple(dict.fromkeys(str(name or "").strip() for name in names if str(name or "").strip()))
+    for name in clean_names:
+        for prefix in (f"[{name}]", f"【{name}】"):
+            if candidate.startswith(prefix):
+                rest = candidate[len(prefix):]
+                if not rest:
+                    return ""
+                stripped = rest.lstrip(" \t:：-—")
+                if len(stripped) != len(rest):
+                    return stripped
+                return f"{name}{rest}"
+    normalized = raw
+    for name in clean_names:
+        normalized = normalized.replace(f"[{name}]", name).replace(f"【{name}】", name)
+    return normalized
+
+
 @dataclass(eq=False)
 class _LineRun:
     """One own cat line in progress."""
@@ -171,6 +192,10 @@ class TalkMixin:
         self.journal.note_usage(delta)
 
     def _note_journal_anomaly(self) -> None:
+        if self.cat_scene_requested:
+            # Cat visits never open an upload journal. The anomaly is already
+            # counted by _count_anomaly; buffering it here could never flush.
+            return
         if self._journal_buffering():
             self._journal_backlog.append({"kind": "anomaly", "ts": self.wall()})
             return
@@ -293,6 +318,8 @@ class TalkMixin:
                 elif why == "busy":
                     await asyncio.sleep(_BUSY_RETRY_S)
                 else:
+                    if plan is not None:
+                        self.room.drop_reply(plan)
                     return
             if self._reply_task is me:
                 # Once speaking starts, this is no longer unsaid inference: pending-reply cancellation leaves it alone; interruption uses abort.
@@ -555,6 +582,24 @@ class TalkMixin:
         payload = line.payload
         if payload is None:
             return
+        peer_name = self.peer.display if self.peer is not None else ""
+        text = _without_repeated_speaker_prefix(
+            str(payload.get("txt") or ""), self.lanlan_name, peer_name,
+        ).strip()
+        if text:
+            try:
+                # TTS was already streamed while the isolated visit turn ran.
+                # Publish the released text through the ordinary assistant path
+                # once, so the standard bubble, lifecycle, cross-window relay,
+                # transcript and automatic window behaviour all stay unified.
+                await self.host.mirror_assistant_output(
+                    text,
+                    metadata=self._mirror_meta("visit_line"),
+                    request_id=f"visit-line:{self.visit_id}:{line.ref.line_id}",
+                    finalize_turn=True,
+                )
+            except Exception as exc:  # noqa: BLE001 - The visit wire/transcript must still finish.
+                logger.warning("visit %s: own cat line not mirrored: %s", self.visit_id[:6], type(exc).__name__)
         await self.book_line(line)
         await self._add_own_cat_history(line, payload)
         if line.llm_error is not None:
@@ -719,6 +764,12 @@ class TalkMixin:
             # Finalizing while takeover remains held: ordinary chat output is suppressed; this line must not leak through.
             await self.status("VISIT_INPUT_REFUSED_WRAPUP", request_id=request_id)
             return True
+        if self.cat_scene_active:
+            # Stage-one cat visits are action-only.  Refuse ordinary text at
+            # the route boundary instead of relying on the absence of a
+            # VisitRoom, which could accidentally become permissive later.
+            await self.status("VISIT_INPUT_REFUSED_SOURCE", request_id=request_id)
+            return True
         room = self.room
         if room is None or not self.activated or not self.ready_exchanged or self.phase in WAITING_PHASES:
             # Lines sent before ready is enqueued get earlier sequence numbers and are accepted then discarded by the inactive peer.
@@ -800,7 +851,10 @@ class TalkMixin:
         def reply() -> None:
             if to_own and not self.finalizing and self.room is not None and self.room.phase == "active":
                 lo, hi = self.deps.reply_gap_s
-                self.schedule_reply(ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi)))
+                plan = ReplyPlan(reply_to=ref, not_before=self.clock() + self.deps.rng.uniform(lo, hi))
+                # Book it in the room too, so a late peer pick-up cannot replace this answer to the human.
+                self.room.hold_reply(plan)
+                self.schedule_reply(plan)
 
         async def commit() -> None:
             try:
@@ -1001,7 +1055,9 @@ class TalkMixin:
                 # Display only (voice disabled, fallback active, or startup failed): handback waits estimated display duration, never assumes playback completed.
                 handoff.mark_queued(name, est)
         try:
-            await self.host.mirror_assistant_output(text, metadata=meta, request_id=request_id)
+            await self.host.mirror_assistant_output(
+                text, metadata=meta, request_id=request_id, finalize_turn=True,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("visit %s: home-coming line not shown: %s", self.visit_id[:6], type(exc).__name__)
 

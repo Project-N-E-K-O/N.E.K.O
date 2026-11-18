@@ -152,6 +152,132 @@ test('日志 tab 的内层滚动条仍然可用', async ({ page }) => {
   expect(m.panelScrollable, '日志列表不再可滚（固定高度被 flex 吃掉？）').toBe(true)
 })
 
+test('断连横幅出现后，多 surface 与长日志仍贴合剩余容器', async ({ page }) => {
+  await page.clock.install()
+  await page.setViewportSize({ width: 1000, height: 768 })
+  await stubLayoutPluginApis(page)
+  await page.route('**/health', (route) => route.fulfill({ status: 503, json: { status: 'offline' } }))
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`, { waitUntil: 'load' })
+  await expect(page.locator('[data-yui-guide-id="plugin-detail-tabs"]')).toBeVisible()
+  // Successful initial API reads reset the health failure count. Allow three
+  // subsequent failed checks, letting each fetch settle before the next one.
+  for (let check = 0; check < 3; check += 1) {
+    const healthResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/health')
+    await page.clock.runFor(10_100)
+    await (await healthResponse).finished()
+  }
+  await expect(page.locator('.connection-banner')).toBeVisible()
+
+  for (const tab of ['panel', 'guide', 'logs']) {
+    await page.locator(`#tab-${tab}`).click()
+    await page.clock.runFor(400)
+    const m = await measure(page)
+    expect(m.outerOverflow, `${tab}: banner introduced an outer scrollbar`).toBe(0)
+    expect(m.panel).not.toBeNull()
+    expect(m.panel!.bottom).toBeLessThanOrEqual(m.main.bottom)
+    expect(m.panelHost!.bottom - m.panel!.bottom, `${tab}: frame stopped filling its host`).toBeLessThanOrEqual(1)
+    if (tab === 'logs') expect(m.panelScrollable).toBe(true)
+  }
+})
+
+test('surface 运行时告警占用自己的高度，iframe 底部不会被裁切', async ({ page }) => {
+  await openDetail(page, 768)
+  await openTab(page, 'panel')
+  const frame = page.locator('#pane-panel .hosted-surface-frame').first()
+  await frame.locator('iframe').contentFrame().locator('body').evaluate(() => {
+    parent.postMessage({
+      type: 'neko-hosted-surface-error',
+      payload: { message: 'A recoverable control error; the surface remains usable.', fatal: false },
+    }, location.origin)
+  })
+  const alert = frame.locator('.hosted-surface-frame__runtime-alert')
+  await expect(alert).toBeVisible()
+  const geometry = await frame.evaluate((element) => {
+    const host = element.getBoundingClientRect()
+    const iframe = element.querySelector('iframe')!.getBoundingClientRect()
+    const alert = element.querySelector('.hosted-surface-frame__runtime-alert')!.getBoundingClientRect()
+    return { bottomGap: host.bottom - iframe.bottom, overlaps: alert.bottom > iframe.top, height: iframe.height }
+  })
+  expect(geometry.bottomGap, 'alert pushed the iframe below the clipped surface').toBeGreaterThanOrEqual(0)
+  expect(geometry.bottomGap).toBeLessThanOrEqual(2)
+  expect(geometry.overlaps).toBe(false)
+  expect(geometry.height).toBeGreaterThan(200)
+
+  await alert.locator('.el-alert__close-btn').click()
+  await expect(alert).toHaveCount(0)
+  const gap = await frame.evaluate((element) => element.getBoundingClientRect().bottom - element.querySelector('iframe')!.getBoundingClientRect().bottom)
+  expect(gap).toBeLessThanOrEqual(2)
+})
+
+// ── surfaces 加载提示：出现和消失都不能让标签页上下跳 ─────────────────────────
+// 提示以前是标签页上方的一行文字，surfaces 返回前把整个标签区推低一行，返回后又弹回去。
+// 用相对卡片的偏移量比较：.app-main 自身的滚动不属于这里的布局。
+for (const width of [1000, 375]) {
+  test(`[w=${width}] surfaces 加载提示不改变标签页位置，也不盖住操作按钮`, async ({ page }) => {
+    let release = () => {}
+    const surfaces = new Promise<void>((resolve) => { release = resolve })
+    await stubLayoutPluginApis(page)
+    await page.route(`**/plugin/${PLUGIN_ID}/surfaces*`, async (route) => {
+      await surfaces
+      await route.fulfill({ json: { surfaces: SURFACES, warnings: [] } })
+    })
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setViewportSize({ width, height: 800 })
+    await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`)
+    const hint = page.getByTestId('surfaces-loading')
+    await expect(hint).toBeAttached()
+    const tabsOffset = () =>
+      page.evaluate(() => {
+        const top = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().top
+        return top('[data-yui-guide-id="plugin-detail-tabs"]') - top('.plugin-detail')
+      })
+    const loadingOffset = await tabsOffset()
+    const gap = (await page.locator('.header-status').boundingBox())!
+    const actions = (await page.locator('[data-yui-guide-id="plugin-detail-actions"]').boundingBox())!
+    // 窄屏下操作按钮会换到下一行，只比 x 会误报；按矩形是否相交判断。
+    const overlaps = gap.x < actions.x + actions.width && actions.x < gap.x + gap.width
+      && gap.y < actions.y + actions.height && actions.y < gap.y + gap.height
+    expect(overlaps, '提示区盖住了操作按钮').toBe(false)
+
+    release()
+    await expect(hint).toHaveCount(0)
+    await expect(page.locator('#tab-panel')).toBeVisible()
+    expect(await tabsOffset(), '提示消失后标签页移动了').toBe(loadingOffset)
+  })
+}
+
+// ── 窄屏操作按钮：带“打开界面”时整组排不下一行，必须换行而不是伸出卡片被裁 ──────
+test('[w=375] 带打开界面的操作按钮组在窄屏换行，每个按钮都在卡片内', async ({ page }) => {
+  await stubLayoutPluginApis(page)
+  await page.route('**/plugins?*', (route) =>
+    route.fulfill({
+      json: {
+        plugins: [
+          {
+            id: PLUGIN_ID,
+            name: '布局样本',
+            description: '用于布局回归的样本插件。',
+            version: '1.0.0',
+            type: 'plugin',
+            status: 'running',
+            entries: MANY_ENTRIES,
+            list_actions: [{ id: 'open_ui', kind: 'ui', label: 'Open the plugin control panel', target: '/ui/stub' }],
+          },
+        ],
+        message: '',
+      },
+    }),
+  )
+  await page.setViewportSize({ width: 375, height: 800 })
+  await page.goto(`${PREVIEW_ORIGIN}/ui/plugins/${PLUGIN_ID}`)
+  const buttons = page.locator('[data-yui-guide-id="plugin-detail-actions"] .el-button')
+  await expect(buttons).toHaveCount(3)
+  const card = (await page.locator('[data-yui-guide-id="plugin-detail-card"]').boundingBox())!
+  for (const box of await buttons.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()))) {
+    expect(box.right, '操作按钮伸出了卡片').toBeLessThanOrEqual(card.x + card.width)
+  }
+})
+
 // ── 长内容 tab：必须继续由 .app-main 滚动，不能被压到一屏后被裁 ──────────────
 test('长内容 tab（入口点）仍由外层滚动，内容没有被裁', async ({ page }) => {
   await openDetail(page, 1340)

@@ -117,6 +117,33 @@ class SdkContext:
         self._models_ctx: PluginModelsProtocol | None = None
         self._reply_tail_ctx: ReplyTailProtocol | None = None
 
+    async def _send_request_and_wait_async(
+        self,
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, Any],
+        timeout: float,
+        wrap_result: bool = True,
+    ) -> object:
+        """Borrow the host request lifetime without making it a required capability."""
+        from plugin.sdk.shared.models.exceptions import TransportError
+
+        request = getattr(self._host_ctx, "_send_request_and_wait_async", None)
+        if not callable(request):
+            raise TransportError(
+                "The host does not provide asynchronous control requests",
+                code="CAPABILITY_UNAVAILABLE",
+                op_name=method_name,
+            )
+        return await request(
+            method_name=method_name,
+            request_type=request_type,
+            request_data=request_data,
+            timeout=timeout,
+            wrap_result=wrap_result,
+        )
+
     @staticmethod
     def _normalize_export_metadata(
         metadata: dict[str, object] | None,
@@ -418,7 +445,7 @@ class SdkContext:
         right name itself — visibility filtering decides which session
         receives the text, so substitution has to happen host-side. Prefer
         the placeholders over hardcoded ``\"用户\"`` / ``\"master\"`` /
-        ``\"主人\"``. See PLUGIN_DEVELOPMENT_GUIDE.md (\"Writing role-aware
+        ``\"主人\"``. See docs/plugins/push-message.md (\"Role-aware
         text\") for details.
         """
         normalized_data = normalize_structured_data(data)
@@ -482,7 +509,7 @@ class SdkContext:
         the injection boundary. Plugin code can't pick the right name
         itself — visibility filtering happens host-side. Prefer the
         placeholders over hardcoded ``\"用户\"`` / ``\"master\"`` / ``\"主人\"``.
-        See PLUGIN_DEVELOPMENT_GUIDE.md (\"Writing role-aware text\") for
+        See docs/plugins/push-message.md (\"Role-aware text\") for
         details.
 
         All other parameters are deprecated and emit ``DeprecationWarning``;

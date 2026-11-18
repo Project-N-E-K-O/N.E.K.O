@@ -112,6 +112,138 @@ function _getNekoIdleReturnDragContinuousVirtualPoint(
     };
 }
 
+// Formal manual context-menu adapter. These user-requested presentation-only
+// actions are independent weighted samples and deliberately bypass Cat Mind's
+// autonomous scoring/cooldown state.
+const _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS = Object.freeze([
+    'requestCat1Cosplay1',
+    'requestCat1Change',
+    'requestCat1Cosplay2',
+    'requestCat1LionDance',
+    'requestCat1Wave'
+]);
+const _NEKO_IDLE_CAT1_VISUAL_ACTION_PRIMARY_REQUEST = 'requestCat1Stroke';
+
+function _pickNekoIdleCat1VisualActionContextMenuRequest() {
+    const roll = Math.random();
+    if (roll < 0.5) return _NEKO_IDLE_CAT1_VISUAL_ACTION_PRIMARY_REQUEST;
+    const otherCount = _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS.length;
+    const otherIndex = Math.floor(roll * otherCount * 2) - otherCount;
+    return _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS[otherIndex];
+}
+
+function _handleNekoIdleSleepTierScaredContextMenu(button, event) {
+    if (!button || !event || event.button !== 2) return false;
+    if (_isNekoIdleThoughtBubbleEventHit(button, event)) return false;
+    if (_isNekoGoodbyeIdleBallButton(button)) return false;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier !== _NEKO_IDLE_TIER_CAT2 && tier !== _NEKO_IDLE_TIER_CAT3) return false;
+    if (_isNekoCatMindTransitionActive(button)) return false;
+
+    const presentation = window.NekoCatIdlePresentation;
+    const request = presentation && presentation.requestCat1Scared;
+    const autoGoodbye = window.nekoAutoGoodbye;
+    if (typeof request !== 'function' || !autoGoodbye ||
+        typeof autoGoodbye.demoteVisualTierToCat1 !== 'function') return false;
+
+    const started = request.call(presentation, {
+        animateEntry: true,
+        button,
+        userInitiated: true,
+        prepareCat1: () => autoGoodbye.demoteVisualTierToCat1(
+            'cat-contextmenu-demotion',
+            'cat1-scared-action'
+        ) === true
+    }) === true;
+    if (!started) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+}
+
+function _handleNekoIdleCat1VisualActionRandomContextMenu(button, event) {
+    if (!button || !event || event.button !== 2) return false;
+    if (_isNekoIdleThoughtBubbleEventHit(button, event)) return false;
+    if (_isNekoGoodbyeIdleBallButton(button)) return false;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier !== _NEKO_IDLE_TIER_CAT1) return false;
+
+    const presentation = window.NekoCatIdlePresentation;
+    const requestName = _pickNekoIdleCat1VisualActionContextMenuRequest();
+    const request = presentation && presentation[requestName];
+    if (typeof request !== 'function') return false;
+
+    const started = request.call(presentation, { button, userInitiated: true }) === true;
+    if (!started) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+}
+
+const _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS = Object.freeze([500, 1500, 4000]);
+
+// The return button art is reassigned from many places and most of them do not
+// watch for load failures. One failed load (a dropped connection, a truncated
+// multi-MB animation) would otherwise leave Chromium's broken-image icon with
+// the alt text until some later action happens to change the source. Retry the
+// same source a few times; give up as soon as anything else changes it.
+function _installNekoIdleReturnArtLoadRetry(art) {
+    if (!art || typeof art.addEventListener !== 'function' || art.__nekoIdleReturnArtRetryInstalled) return;
+    art.__nekoIdleReturnArtRetryInstalled = true;
+    art.__nekoIdleReturnArtRetrySrc = '';
+    art.__nekoIdleReturnArtRetryCount = 0;
+    art.__nekoIdleReturnArtRetryTimer = 0;
+    art.addEventListener('load', () => {
+        // Something else may have re-assigned the failed source and it loaded
+        // fine; a still-queued retry would then reload a healthy image and
+        // restart its animation.
+        if (art.__nekoIdleReturnArtRetryTimer) {
+            clearTimeout(art.__nekoIdleReturnArtRetryTimer);
+            art.__nekoIdleReturnArtRetryTimer = 0;
+        }
+        art.__nekoIdleReturnArtRetrySrc = '';
+        art.__nekoIdleReturnArtRetryCount = 0;
+    });
+    art.addEventListener('error', () => {
+        const failedSrc = art.getAttribute('src') || '';
+        if (!failedSrc) return;
+        if (art.__nekoIdleReturnArtRetrySrc !== failedSrc) {
+            art.__nekoIdleReturnArtRetrySrc = failedSrc;
+            art.__nekoIdleReturnArtRetryCount = 0;
+        }
+        const attempt = art.__nekoIdleReturnArtRetryCount;
+        const maxAttempts = _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS.length;
+        if (attempt >= maxAttempts) {
+            console.warn('[NekoIdle] return button art still fails to load after retries:', failedSrc);
+            return;
+        }
+        art.__nekoIdleReturnArtRetryCount = attempt + 1;
+        console.warn(`[NekoIdle] return button art failed to load, retry ${attempt + 1}/${maxAttempts}:`, failedSrc);
+        if (art.__nekoIdleReturnArtRetryTimer) {
+            clearTimeout(art.__nekoIdleReturnArtRetryTimer);
+        }
+        art.__nekoIdleReturnArtRetryTimer = setTimeout(() => {
+            art.__nekoIdleReturnArtRetryTimer = 0;
+            if ((art.getAttribute('src') || '') !== failedSrc) return;
+            // The button was torn down meanwhile; do not download for a
+            // detached image.
+            if (art.isConnected === false) return;
+            // The same source was re-assigned meanwhile and is still loading
+            // (a broken image reports complete === true); do not interrupt that
+            // download. If it fails too, its error event schedules the next try,
+            // so give back the attempt this skipped retry did not use.
+            if (art.complete === false) {
+                art.__nekoIdleReturnArtRetryCount = Math.max(0, art.__nekoIdleReturnArtRetryCount - 1);
+                return;
+            }
+            // Re-assigning an identical value is not guaranteed to restart the
+            // fetch, so drop the attribute first.
+            art.removeAttribute('src');
+            art.src = failedSrc;
+        }, _NEKO_IDLE_RETURN_ART_RETRY_DELAYS_MS[attempt]);
+    });
+}
+
 Object.assign(AvatarButtonMixin.methods, {
     returnButton(ManagerPrototype, prefix, options) {
         ManagerPrototype.createReturnButton = function() {
@@ -141,6 +273,7 @@ Object.assign(AvatarButtonMixin.methods, {
 
             const returnArt = document.createElement('img');
             returnArt.className = 'neko-idle-return-art';
+            _installNekoIdleReturnArtLoadRetry(returnArt);
             const initialReturnArtUrl = _getNekoIdleReturnAssetUrl(currentTier);
             if (initialReturnArtUrl) returnArt.src = initialReturnArtUrl;
             returnArt.alt = window.t ? window.t('buttons.return') : '请她回来';
@@ -185,6 +318,11 @@ Object.assign(AvatarButtonMixin.methods, {
                 }
             });
 
+            returnBtn.addEventListener('contextmenu', (event) => {
+                if (_handleNekoIdleSleepTierScaredContextMenu(returnBtn, event)) return;
+                _handleNekoIdleCat1VisualActionRandomContextMenu(returnBtn, event);
+            });
+
             returnBtn.addEventListener('click', (e) => {
                 if (_isNekoIdleThoughtBubbleEventHit(returnBtn, e)) {
                     e.preventDefault();
@@ -206,30 +344,36 @@ Object.assign(AvatarButtonMixin.methods, {
                     return;
                 }
                 e.stopPropagation();
-                const desktopInteractions = window.NekoDesktopWindowInteractions;
-                if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
-                    desktopInteractions.cancel(returnBtn, {
-                        reason: 'return-click',
-                        restoreArt: false
-                    });
-                } else {
-                    [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
-                        if (runner && typeof runner.cancel === 'function') {
-                            runner.cancel(returnBtn, {
-                                reason: 'return-click',
-                                restoreArt: false
-                            });
-                        }
-                    });
+                const commitReturn = () => {
+                    const desktopInteractions = window.NekoDesktopWindowInteractions;
+                    if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
+                        desktopInteractions.cancel(returnBtn, {
+                            reason: 'return-click',
+                            restoreArt: false
+                        });
+                    } else {
+                        [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
+                            if (runner && typeof runner.cancel === 'function') {
+                                runner.cancel(returnBtn, {
+                                    reason: 'return-click',
+                                    restoreArt: false
+                                });
+                            }
+                        });
+                    }
+                    window.NekoDesktopWindowGravity?.cancel(returnBtn);
+                    _clearNekoIdleCat1QuestionMark(returnBtn);
+                    _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1VisualAction(returnBtn, { restoreArt: false, reason: 'return-click' });
+                    _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
+                    _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1Journey(returnBtn);
+                    _dispatchNekoIdleReturnClickFromButton(returnBtn);
+                };
+                if (!_guardNekoVisitCatReturn(commitReturn)) {
+                    commitReturn();
                 }
-                window.NekoDesktopWindowGravity?.cancel(returnBtn);
-                _clearNekoIdleCat1QuestionMark(returnBtn);
-                _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
-                _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1Journey(returnBtn);
-                _dispatchNekoIdleReturnClickFromButton(returnBtn);
             });
 
             const thoughtBubble = document.createElement('span');
@@ -283,13 +427,11 @@ Object.assign(AvatarButtonMixin.methods, {
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
             _applyNekoIdleReturnPresentation(returnBtn, currentTier);
-            // Windows cats can switch to continuous DOM dragging after creation
-            // (including a ball -> cat appearance change). Register that path up
-            // front; the native capture listener still owns ordinary ball drags.
-            if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()
-                || window.__NEKO_DESKTOP_RUNTIME__?.platform === 'win32') {
-                this._setupReturnButtonDrag(returnButtonContainer);
-            }
+            // Keep the DOM drag owner available on every platform. The native
+            // capture listener still stops ordinary multi-window drags before
+            // they reach it; cat visits deliberately release that capture so
+            // only the local cat moves inside the shared Pet window.
+            this._setupReturnButtonDrag(returnButtonContainer);
 
             return returnButtonContainer;
         };

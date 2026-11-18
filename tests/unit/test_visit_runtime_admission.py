@@ -33,6 +33,7 @@ from tests.unit.visit_runtime_harness import (
     HOST_VID,
     INVITE,
     NOW,
+    VISIT_ID,
     FakeClock,
     Wire,
     bring_up,
@@ -95,6 +96,88 @@ async def _host_joined(tmp_path, monkeypatch, clocks):
 async def _finished(rt):
     assert rt.exit_task is not None
     await finish(rt, rt.clock)
+
+
+async def _start_runtime_pair(
+    tmp_path,
+    monkeypatch,
+    *,
+    host_cat: bool,
+    guest_cat: bool,
+    host_asset: str = "dev_neko",
+    guest_asset: str = "dev_neko",
+):
+    """Start two runtimes through joined/hello, freezing each side's release flag independently."""
+    patch_admission(monkeypatch)
+    clock = FakeClock(1000.0)
+    wall = FakeClock(NOW)
+    host = make_side(tmp_path, "host", clock=clock, wall=wall)
+    guest = make_side(tmp_path, "guest", clock=clock, wall=wall)
+
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", host_cat)
+    hrt = await rtm.start_visit(
+        host.name,
+        host.role,
+        visit_id=VISIT_ID,
+        cat_asset=host_asset,
+        cat_scene=host_cat,
+        host=host.host,
+        deps=host.deps,
+        clock=clock,
+        wall=wall,
+    )
+    host.rt = hrt
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", guest_cat)
+    grt = await rtm.start_visit(
+        guest.name,
+        guest.role,
+        visit_id=VISIT_ID,
+        invite_code=INVITE,
+        cat_asset=guest_asset,
+        cat_scene=guest_cat,
+        host=guest.host,
+        deps=guest.deps,
+        clock=clock,
+        wall=wall,
+    )
+    guest.rt = grt
+
+    wire = Wire()
+    wire.attach(hrt, grt, HOST_VID)
+    wire.attach(grt, hrt, GUEST_VID)
+    await through_gate(hrt)
+    await hrt.on_transport_state({"state": "joined", "peer_present": False})
+    await through_gate(grt)
+    await grt.on_transport_state({"state": "joined", "peer_present": True})
+    await hrt.on_transport_state({"state": "connected", "peer_present": True})
+    await settle(60)
+    return host, guest, wire, clock, wall
+
+
+async def _bring_up_cat_pair(
+    tmp_path,
+    monkeypatch,
+    *,
+    accept: bool = True,
+    host_asset: str = "dev_neko",
+    guest_asset: str = "dev_neko",
+):
+    host, guest, wire, clock, wall = await _start_runtime_pair(
+        tmp_path,
+        monkeypatch,
+        host_cat=True,
+        guest_cat=True,
+        host_asset=host_asset,
+        guest_asset=guest_asset,
+    )
+    await wait_for(lambda: host.rt.peer is not None and guest.rt.peer is not None)
+    if accept:
+        status, body = await host.rt.accept(True)
+        assert (status, body) == (200, {"ok": True})
+        await wait_for(lambda: host.rt.activated and guest.rt.activated)
+        # The guest activates before the host's ready arrives; cat requests wait for ready.
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
+    return host, guest, wire, clock, wall
 
 
 # ── Admission ─────────────────────────────────────────────────────────────
@@ -168,6 +251,29 @@ async def test_preconditions_after_the_slot_release_it(tmp_path, monkeypatch, cl
     assert err.value.body == {"reason": failure}
     assert visit_route_state.get_visit_route_state("Host") is None
     assert rtm.get_runtime("Host") is None
+
+
+async def test_cat_admission_allows_existing_cat_silence(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
+    clock, wall = clocks
+    side = make_side(tmp_path, "host", clock=clock, wall=wall)
+    side.host.precondition = "goodbye_silent"
+    try:
+        side.rt = await rtm.start_visit(
+            side.name,
+            side.role,
+            visit_id=VISIT_ID,
+            cat_scene=True,
+            host=side.host,
+            deps=side.deps,
+            clock=clock,
+            wall=wall,
+        )
+        assert side.rt.cat_scene_requested is True
+        assert side.host.precondition_allow_goodbye_silent == [True, True]
+    finally:
+        await teardown(side, clock=clock)
 
 
 async def test_no_local_login_is_a_synchronous_409(tmp_path, monkeypatch, clocks):
@@ -286,6 +392,7 @@ async def test_servers_unreachable_releases_the_slot_without_takeover(tmp_path, 
     (cr.VisitLoginRequired("unauthenticated"), "VISIT_LOGIN_REQUIRED"),
     (cr.VisitBanned("banned"), "VISIT_BANNED"),
     (cr.VisitQuotaExceeded("quota_exceeded", retry_after_s=60), "VISIT_QUOTA_EXCEEDED"),
+    (cr.VisitConcurrencyLimit("concurrency_limit", retry_after_s=60), "VISIT_CONCURRENCY_LIMIT"),
     (cr.VisitCrossRegionUnsupported("cross_region_unsupported"), "VISIT_CROSS_REGION_UNSUPPORTED"),
     (cr.VisitInviteInvalid("invite_expiring"), "VISIT_INVITE_INVALID"),
     (cr.VisitRoomEnded("room_ended"), "VISIT_KICKED"),
@@ -302,6 +409,21 @@ async def test_servers_errors_map_to_their_status(tmp_path, monkeypatch, clocks,
     await _finished(rt)
     assert code in side.host.status_codes()
     assert side.host.takeovers == []
+
+
+async def test_pre_activation_quota_failure_toasts_without_an_ending_phase(tmp_path, monkeypatch, clocks):
+    patch_admission(monkeypatch)
+    clock, wall = clocks
+    side = make_side(tmp_path, "guest", clock=clock, wall=wall)
+    side.creds_error = cr.VisitQuotaExceeded("quota_exceeded", retry_after_s=60)
+    rt = await start_side(side, invite_code=INVITE, clock=clock, wall=wall)
+    Wire().attach(rt, None, GUEST_VID)
+    await rt.on_preflight({"stage": "preflight", "preflight_ok": True})
+    await rt.issue_credentials()
+    await wait_for(lambda: "VISIT_QUOTA_EXCEEDED" in side.host.status_codes())
+    assert side.host.frames_of("visit_state_change", "ending") == []
+    await _finished(rt)
+    assert side.host.status_codes().count("VISIT_QUOTA_EXCEEDED") == 1
 
 
 async def test_invite_code_only_after_joined_and_never_in_the_state(tmp_path, monkeypatch, clocks):
@@ -409,6 +531,55 @@ async def test_verified_hello_invites_the_family_and_fills_peer_vid(tmp_path, mo
         media = [m for m in wire.downlinks["host"] if m.get("type") == "media"]
         assert media[-1]["subscribe"] is False and media[-1]["peer_vid"] == GUEST_VID
         assert side.clients == []                  # No isolated session before reception.
+    finally:
+        await teardown(side, wire=wire, clock=clocks[0])
+
+
+async def test_direct_host_auto_accept_does_not_block_the_receive_pipeline(tmp_path, monkeypatch, clocks):
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+    release = asyncio.Event()
+    activation_started = asyncio.Event()
+
+    async def slow_activation():
+        activation_started.set()
+        await release.wait()
+
+    rt.direct = True
+    rt.target_user_id = "22222222-2222-4222-8222-222222222222"
+    rt.activate = slow_activation
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        await asyncio.wait_for(
+            rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(), nbytes=900),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(activation_started.wait(), timeout=0.5)
+        assert rt.accepted is True
+        assert rt.phase == "awaiting_accept"
+    finally:
+        release.set()
+        await settle()
+        await teardown(side, wire=wire, clock=clocks[0])
+
+
+async def test_peer_card_name_installed_as_another_local_card_stays_visible(tmp_path, monkeypatch, clocks):
+    from main_routers.visit_router.local_context import CharacterContext
+
+    side, rt, wire = await _host_joined(tmp_path, monkeypatch, clocks)
+
+    async def context():
+        return CharacterContext(family_names=("小明",), cards={"Host": "card", "Mimi": "card"})
+
+    side.deps.character_context = context
+    try:
+        await rt.on_transport_state({"state": "connected", "peer_present": True})
+        await rt.on_recv(from_vid=GUEST_VID, cmd=1, payload=_guest_hello(display_name="Mimi"), nbytes=900)
+        await settle()
+        invite = side.host.frames_of("visit_invite")
+        assert len(invite) == 1 and invite[0]["peer_name"] == "Mimi"
+        status, body = await rt.accept(True)
+        assert status == 200 and body == {"ok": True}
+        assert rt.peer is not None and rt.peer.display == "Mimi"
     finally:
         await teardown(side, wire=wire, clock=clocks[0])
 
@@ -612,6 +783,502 @@ async def test_video_unavailable_keeps_media_off_after_ready(tmp_path, monkeypat
         assert guest.rt.media_snapshot()["publish"] is False
         host.rt.peer.video = False
         assert host.rt.media_snapshot()["subscribe"] is False
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+# ── Cat-scene lightweight runtime ─────────────────────────────────────────────
+
+
+async def test_cat_scene_negotiates_distinct_assets_without_dialogue_runtime_or_media(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(
+        tmp_path, monkeypatch, host_asset="dev_neko", guest_asset="yui_neko",
+    )
+    try:
+        await settle(60)
+        assert host.rt.peer.cat_asset == "yui_neko"
+        assert guest.rt.peer.cat_asset == "dev_neko"
+        for side, own_asset, peer_asset in (
+            (host, "dev_neko", "yui_neko"),
+            (guest, "yui_neko", "dev_neko"),
+        ):
+            rt = side.rt
+            assert rt.cat_scene_active and rt.activated and rt.ready_exchanged
+            assert rt.room is None and rt.session is None and rt.spool is None
+            assert rt.memory_enabled is False and side.clients == [] and side.commits == []
+            assert rt._journal_opening is None and not rt.journal.is_open and not rt.journal.sealed
+            anomalies_before = rt.pre_room_anomalies
+            rt._count_anomaly("malformed")
+            assert rt.pre_room_anomalies == anomalies_before + 1
+            assert rt._journal_backlog == []
+            assert not rt.journal.stream_path.exists() and not rt.journal.sealed_path.exists()
+            assert side.host.streams == [] and side.host.outputs == []
+            assert rt.snapshot()["self_cat_asset"] == own_asset
+            assert rt.snapshot()["peer_cat_asset"] == peer_asset
+            snap = rt.media_snapshot()
+            assert snap["publish"] is False and snap["subscribe"] is False
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+
+            started = side.host.frames_of("visit_state_change", "started")
+            assert started and started[-1]["cat_scene"] == 2
+            assert started[-1]["self_cat_asset"] == own_asset
+            assert started[-1]["peer_cat_asset"] == peer_asset
+
+        media = [m for role in ("host", "guest") for m in wire.downlinks[role]
+                 if m.get("type") == "media"]
+        assert media
+        assert all(m.get("publish") is False and m.get("subscribe") is False
+                   and m.get("audio_publish") is False and m.get("audio_subscribe") is False
+                   for m in media)
+        assert all(t not in ("text", "line_delta", "wrap_up")
+                   for role in ("host", "guest") for t in wire.sent_types(role))
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_cat_actions_keep_each_sender_independent_and_retransmits_do_not_replay(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+
+    async def assert_action(sender, receiver, *, kind: str, from_vid: str):
+        status, body = await sender.rt.request_cat_action(kind)
+        assert status == 202 and body["ok"] is True
+        seq = body["seq"]
+        await wait_for(lambda: any(
+            frame.get("type") == "visit_cat_scene" and frame.get("actor") == "self"
+            and frame.get("kind") == kind and frame.get("seq") == seq
+            for frame in sender.host.frames
+        ))
+        await wait_for(lambda: any(
+            frame.get("type") == "visit_cat_scene" and frame.get("actor") == "peer"
+            and frame.get("kind") == kind and frame.get("seq") == seq
+            for frame in receiver.host.frames
+        ))
+        local = next(frame for frame in sender.host.frames
+                     if frame.get("type") == "visit_cat_scene" and frame.get("actor") == "self"
+                     and frame.get("seq") == seq)
+        remote = next(frame for frame in receiver.host.frames
+                      if frame.get("type") == "visit_cat_scene" and frame.get("actor") == "peer"
+                      and frame.get("seq") == seq)
+        assert (local["kind"], local["seed"]) == (remote["kind"], remote["seed"])
+        assert "actor_side" not in local and "actor_side" not in remote
+
+        payload = next(msg for msg in wire.sent[sender.role]
+                       if msg.get("t") == "cat_action" and msg.get("seq") == seq)
+        assert (payload["kind"], payload["seed"]) == (kind, local["seed"])
+        before = len([frame for frame in receiver.host.frames
+                      if frame.get("type") == "visit_cat_scene" and frame.get("actor") == "peer"
+                      and frame.get("seq") == seq])
+        await receiver.rt.on_recv(
+            from_vid=from_vid,
+            cmd=1,
+            payload=dict(payload),
+            nbytes=len(json.dumps(payload).encode()),
+        )
+        await settle(20)
+        after = len([frame for frame in receiver.host.frames
+                     if frame.get("type") == "visit_cat_scene" and frame.get("actor") == "peer"
+                     and frame.get("seq") == seq])
+        assert (before, after) == (1, 1)
+
+    try:
+        await assert_action(host, guest, kind="greet", from_vid=HOST_VID)
+        await assert_action(guest, host, kind="play", from_vid=GUEST_VID)
+        await assert_action(host, guest, kind="move", from_vid=HOST_VID)
+        host_self = [f for f in host.host.frames if f.get("type") == "visit_cat_scene"
+                     and f.get("actor") == "self"]
+        guest_self = [f for f in guest.host.frames if f.get("type") == "visit_cat_scene"
+                      and f.get("actor") == "self"]
+        assert [f["kind"] for f in host_self] == ["greet", "move"]
+        assert [f["kind"] for f in guest_self] == ["play"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+def _cat_pose(motion_id, sample_seq, **overrides):
+    pose = {
+        "motion_id": motion_id, "sample_seq": sample_seq,
+        "x_q16": 1000 + sample_seq, "y_q16": 2000 + sample_seq,
+        "mode": "walk", "facing": "right", "tier": "cat1",
+        "slot": "movement.cat1.walking",
+    }
+    pose.update(overrides)
+    return pose
+
+
+def _cat_world(world_seq, **overrides):
+    state = {
+        "world_seq": world_seq, "yarn_active": True,
+        "yarn_x_q16": 1000 + world_seq, "yarn_y_q16": 2000 + world_seq,
+        "yarn_vx_q12": 3, "yarn_vy_q12": -4, "yarn_holder": "guest",
+        "question_active": False, "question_x_q16": 3000,
+        "question_y_q16": 4000, "collision_seq": 0,
+    }
+    state.update(overrides)
+    return state
+
+
+@pytest.mark.parametrize(("validator", "payload"), [
+    (rtm.VisitRuntime._valid_cat_pose, _cat_pose(1, 1, mode=[])),
+    (rtm.VisitRuntime._valid_cat_pose, _cat_pose(1, 1, facing=[])),
+    (rtm.VisitRuntime._valid_cat_pose, _cat_pose(1, 1, slot=[])),
+    (rtm.VisitRuntime._valid_cat_world_intent,
+     {"intent_id": 1, "kind": [], "x_q16": 1, "y_q16": 2}),
+    (rtm.VisitRuntime._valid_cat_world_state, _cat_world(1, yarn_holder=[])),
+])
+def test_cat_runtime_validators_reject_unhashable_enum_fields(validator, payload):
+    assert validator(payload) is False
+
+
+async def test_cat_world_is_host_authoritative_directional_and_commit_recovers(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    try:
+        intent = {"intent_id": 1, "kind": "yarn_grab", "x_q16": 111, "y_q16": 222}
+        status, body = await guest.rt.request_cat_world_intent(intent)
+        assert status == 202 and body["seq"] > 0
+        await wait_for(lambda: any(
+            frame.get("type") == "visit_cat_world_intent"
+            and frame.get("actor") == "peer" and frame.get("intent_id") == 1
+            for frame in host.host.frames
+        ))
+        assert any(frame.get("type") == "visit_cat_world_intent"
+                   and frame.get("actor") == "self" and frame.get("intent_id") == 1
+                   for frame in guest.host.frames)
+
+        host_wire_intents = len([msg for msg in wire.sent["host"]
+                                 if msg.get("t") == "cat_world_intent"])
+        status, body = await host.rt.request_cat_world_intent({
+            "intent_id": 1, "kind": "question_tap", "x_q16": 333, "y_q16": 444,
+        })
+        assert status == 202 and body["seq"] == 0
+        assert len([msg for msg in wire.sent["host"]
+                    if msg.get("t") == "cat_world_intent"]) == host_wire_intents
+
+        denied, denied_body = await guest.rt.request_cat_world_state("frame", _cat_world(1))
+        assert denied == 409 and denied_body["code"] == "VISIT_CAT_WORLD_HOST_ONLY"
+
+        status, body = await host.rt.request_cat_world_state("frame", _cat_world(1))
+        assert status == 202 and body["world_seq"] == 1
+        await wait_for(lambda: any(frame.get("type") == "visit_cat_world"
+                                   and frame.get("phase") == "frame"
+                                   and frame.get("world_seq") == 1
+                                   for frame in guest.host.frames))
+
+        commit = _cat_world(
+            2, yarn_active=False, yarn_holder="none", yarn_vx_q12=0, yarn_vy_q12=0,
+            question_active=True, collision_seq=1,
+        )
+        status, body = await host.rt.request_cat_world_state("commit", commit)
+        assert status == 202 and body["seq"] > 0
+        seq = body["seq"]
+        await wait_for(lambda: guest.rt.snapshot()["cat_world"] == {**commit, "seq": seq})
+        assert host.rt.snapshot()["cat_world"] == {**commit, "seq": seq}
+        assert any(frame.get("type") == "visit_cat_world"
+                   and frame.get("phase") == "commit" and frame.get("seq") == seq
+                   for frame in guest.rt.bind_replay_frames())
+
+        host_anomalies = host.rt.anomaly_count()
+        guest_anomalies = guest.rt.anomaly_count()
+        await host.rt._rx_cat_world_frame({"t": "cat_world_frame", "v": 1, **_cat_world(3)},
+                                           GUEST_VID, clock())
+        await guest.rt._rx_cat_world_intent({
+            "t": "cat_world_intent", "v": 1, "seq": seq + 1,
+            "intent_id": 2, "kind": "yarn_spawn", "x_q16": 1, "y_q16": 2,
+        }, HOST_VID, clock())
+        assert host.rt.anomaly_count() == host_anomalies + 1
+        assert guest.rt.anomaly_count() == guest_anomalies + 1
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_cat_world_refuses_while_the_host_page_cannot_take_it(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    try:
+        intent = {"intent_id": 1, "kind": "question_tap", "x_q16": 1, "y_q16": 2}
+        host.host.bound = False                  # The host page runs the world simulation.
+        status, body = await host.rt.request_cat_world_intent(intent)
+        assert status == 409 and body["code"] == "VISIT_DISPLAY_UNBOUND"
+        status, body = await guest.rt.request_cat_world_intent(intent)
+        assert status == 202                     # A guest intent goes to the host, not its own page.
+        host.host.bound = True
+        status, body = await host.rt.request_cat_world_intent(intent)
+        assert status == 202                     # The refused intent did not advance the cursor.
+
+        monkeypatch.setattr(host.rt, "_display_backlogged", lambda: True)
+        status, body = await host.rt.request_cat_world_intent({**intent, "intent_id": 2})
+        assert status == 429 and body["code"] == "VISIT_E_BUSY"
+        status, body = await host.rt.request_cat_world_state("commit", _cat_world(1))
+        assert status == 429 and body["code"] == "VISIT_E_BUSY"
+        status, body = await host.rt.request_cat_world_state("frame", _cat_world(1))
+        assert status == 202                     # Frames stay droppable.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_cat_pose_is_owner_projected_latest_wins_and_commit_recovers(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    try:
+        sample = _cat_pose(1, 1)
+        status, body = await host.rt.request_cat_pose("sample", sample)
+        assert status == 202 and body == {
+            "ok": True, "phase": "sample", "motion_id": 1, "sample_seq": 1,
+        }
+        await wait_for(lambda: any(
+            f.get("type") == "visit_cat_pose" and f.get("actor") == "peer"
+            and f.get("phase") == "sample" and f.get("sample_seq") == 1
+            for f in guest.host.frames
+        ))
+        local = next(f for f in host.host.frames
+                     if f.get("type") == "visit_cat_pose" and f.get("actor") == "self")
+        remote = next(f for f in guest.host.frames
+                      if f.get("type") == "visit_cat_pose" and f.get("actor") == "peer")
+        for field in sample:
+            assert local[field] == remote[field] == sample[field]
+        assert not ({"actor_side", "url", "x", "y"} & set(
+            next(m for m in wire.sent["host"] if m.get("t") == "cat_motion")
+        ))
+
+        before = len([f for f in guest.host.frames if f.get("type") == "visit_cat_pose"])
+        stale_status, stale_body = await host.rt.request_cat_pose("sample", dict(sample))
+        assert stale_status == 409 and stale_body["code"] == "VISIT_CAT_POSE_STALE"
+        assert stale_body["cursor"] == {"motion_id": 1, "sample_seq": 1}
+        await settle(10)
+        assert len([f for f in guest.host.frames if f.get("type") == "visit_cat_pose"]) == before
+
+        commit = _cat_pose(
+            1, 2, x_q16=3000, y_q16=4000, mode="idle", tier="cat2", slot="idle.cat2",
+        )
+        status, body = await host.rt.request_cat_pose("commit", commit)
+        assert status == 202 and body["phase"] == "commit" and body["seq"] > 0
+        seq = body["seq"]
+        await wait_for(lambda: any(
+            f.get("type") == "visit_cat_pose" and f.get("actor") == "peer"
+            and f.get("phase") == "commit" and f.get("seq") == seq
+            for f in guest.host.frames
+        ))
+        assert host.rt.snapshot()["cat_poses"]["self"] == {**commit, "seq": seq}
+        assert guest.rt.snapshot()["cat_poses"]["peer"] == {**commit, "seq": seq}
+        assert any(f.get("type") == "visit_cat_pose" and f.get("actor") == "self"
+                   and f.get("phase") == "commit" and f.get("seq") == seq
+                   for f in host.rt.bind_replay_frames())
+        assert any(f.get("type") == "visit_cat_pose" and f.get("actor") == "peer"
+                   and f.get("phase") == "commit" and f.get("seq") == seq
+                   for f in guest.rt.bind_replay_frames())
+
+        commit_payload = next(m for m in wire.sent["host"]
+                              if m.get("t") == "cat_pose_commit" and m.get("seq") == seq)
+        commit_frames = len([f for f in guest.host.frames
+                             if f.get("type") == "visit_cat_pose" and f.get("seq") == seq])
+        await guest.rt.on_recv(
+            from_vid=HOST_VID, cmd=1, payload=dict(commit_payload),
+            nbytes=len(json.dumps(commit_payload).encode()),
+        )
+        await guest.rt.on_recv(
+            from_vid=HOST_VID, cmd=3, payload={"t": "cat_motion", "v": 1, **sample},
+            nbytes=160,
+        )
+        await settle(20)
+        assert len([f for f in guest.host.frames
+                    if f.get("type") == "visit_cat_pose" and f.get("seq") == seq]) == commit_frames
+        assert guest.rt.snapshot()["cat_poses"]["peer"] == {**commit, "seq": seq}
+
+        overtaking_sample = _cat_pose(3, 1, x_q16=5000)
+        await guest.rt._rx_cat_motion(
+            {"t": "cat_motion", "v": 1, **overtaking_sample}, HOST_VID, clock(),
+        )
+        await settle(10)
+        projected = len([f for f in guest.host.frames if f.get("type") == "visit_cat_pose"])
+        delayed_commit = _cat_pose(2, 9, x_q16=4500, mode="idle", slot="idle.cat1")
+        await guest.rt._rx_cat_pose_commit(
+            {"t": "cat_pose_commit", "v": 1, "seq": seq + 100, **delayed_commit},
+            HOST_VID, clock(),
+        )
+        await settle(10)
+        assert len([f for f in guest.host.frames if f.get("type") == "visit_cat_pose"]) == projected
+        assert guest.rt.snapshot()["cat_poses"]["peer"] == {**delayed_commit, "seq": seq + 100}
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_local_cat_motion_has_an_independent_burst_gate(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    try:
+        for sample_seq in range(1, 5):
+            status, _body = await host.rt.request_cat_pose("sample", _cat_pose(1, sample_seq))
+            assert status == 202
+        status, body = await host.rt.request_cat_pose("sample", _cat_pose(1, 5))
+        assert status == 429 and body["code"] == "VISIT_CAT_MOTION_RATE"
+        assert host.rt._cat_pose_cursor["self"] == (1, 4)
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_cat_actions_require_ready_and_reject_once_finalization_starts(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch, accept=False)
+    try:
+        for rt in (host.rt, guest.rt):
+            status, body = await rt.request_cat_action([])
+            assert status == 400 and body["code"] == "invalid_kind"
+            status, body = await rt.request_cat_action("rest")
+            assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"
+            status, body = await rt.request_cat_pose("sample", _cat_pose(1, 1))
+            assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"
+        assert not [m for role in ("host", "guest") for m in wire.sent[role]
+                    if m.get("t") == "cat_action"]
+
+        assert (await host.rt.accept(True))[0] == 200
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
+        host.host.bound = False                  # An unbound page would drop the local echo.
+        status, body = await host.rt.request_cat_action("rest")
+        assert status == 409 and body["code"] == "VISIT_DISPLAY_UNBOUND"
+        assert not [m for m in wire.sent["host"] if m.get("t") == "cat_action"]
+        host.host.bound = True
+        host.rt._display_backlogged = lambda: True
+        status, body = await host.rt.request_cat_action("rest")
+        assert status == 429 and body["code"] == "VISIT_E_BUSY"
+        del host.rt._display_backlogged
+        assert host.rt.request_finalize("route_end")
+        status, body = await host.rt.request_cat_action("rest")
+        assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"
+        status, body = await host.rt.request_cat_pose("sample", _cat_pose(1, 1))
+        assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"
+        assert not [f for f in host.host.frames if f.get("type") == "visit_cat_scene"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_legacy_runtime_rejects_cat_actions(tmp_path, monkeypatch):
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", False)
+    host, guest, wire, clock, _wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        status, body = await host.rt.request_cat_action("greet")
+        assert status == 409 and body["code"] == "VISIT_CAT_SCENE_NOT_ACTIVE"
+        assert host.rt.room is not None and not host.rt.cat_scene_active
+        assert not [m for m in wire.sent["host"] if m.get("t") == "cat_action"]
+        assert not [f for f in host.host.frames if f.get("type") == "visit_cat_scene"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_mixed_cat_and_legacy_peers_end_unsupported_without_falling_back(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _start_runtime_pair(
+        tmp_path, monkeypatch, host_cat=True, guest_cat=False,
+    )
+    try:
+        await wait_for(lambda: host.rt.exit_task is not None and guest.rt.exit_task is not None)
+        await asyncio.gather(finish(host.rt, clock), finish(guest.rt, clock))
+        assert host.rt.finalize_reason == guest.rt.finalize_reason == "unsupported"
+        assert host.rt.status_details["reason"] == "peer_cat_scene_unsupported"
+        assert guest.rt.status_details["reason"] == "local_cat_scene_disabled"
+        for side in (host, guest):
+            assert not side.rt.activated and not side.rt.cat_scene_active
+            assert side.clients == [] and side.host.frames_of("visit_state_change", "started") == []
+            assert "VISIT_UNSUPPORTED_ON_THIS_MACHINE" in side.host.status_codes()
+        assert all(t not in ("ready", "text", "line_delta")
+                   for role in ("host", "guest") for t in wire.sent_types(role))
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_cat_scene_ignores_text_idle_but_keeps_the_visit_hard_cap(tmp_path, monkeypatch):
+    from config.visit_settings import VISIT_IDLE_TIMEOUT_S, VISIT_MAX_DURATION_S
+
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    try:
+        host.rt.started_at_mono = clock() - VISIT_IDLE_TIMEOUT_S - 1
+        await host.rt.tick()
+        assert host.rt.exit_task is None and host.rt.finalize_reason is None
+
+        host.rt.started_at_mono = clock() - VISIT_MAX_DURATION_S
+        await host.rt.tick()
+        assert host.rt.finalize_reason == "max_duration"
+        await _finished(host.rt)
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_cat_scene_exit_skips_dialogue_archival_but_preserves_ordered_release(tmp_path, monkeypatch):
+    from main_routers.visit_router import debrief
+
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    forbidden: list[str] = []
+
+    async def ritual(*_args, **_kwargs):
+        forbidden.append("ritual")
+
+    async def debrief_run(*_args, **_kwargs):
+        forbidden.append("debrief")
+
+    async def seal(*_args, **_kwargs):
+        forbidden.append("seal")
+        return True
+
+    def memory_commit():
+        forbidden.append("memory")
+
+    monkeypatch.setattr(host.rt, "say_ritual", ritual)
+    monkeypatch.setattr(debrief, "run_debrief", debrief_run)
+    monkeypatch.setattr(host.rt, "seal_and_finalize", seal)
+    monkeypatch.setattr(host.rt, "_spawn_memory_commits", memory_commit)
+    try:
+        assert host.rt.request_finalize("route_end")
+        await _finished(host.rt)
+        assert forbidden == []
+        actions = [frame.get("action") for frame in host.host.frames
+                   if frame.get("type") == "visit_state_change"]
+        assert "ending" in actions and "ended" in actions
+        assert actions.index("ending") < actions.index("ended")
+        assert host.host.released == host.host.takeovers != []
+        assert host.host.streams == [] and host.host.outputs == [] and host.commits == []
+        assert not host.rt.journal.is_open and not host.rt.journal.sealed
+        assert not host.rt.journal.stream_path.exists() and not host.rt.journal.sealed_path.exists()
+        assert [m["reason"] for m in wire.sent["host"] if m.get("t") == "leave"] == ["ended"]
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_active_cat_scene_shutdown_skips_archival_and_closes_runtime_resources(tmp_path, monkeypatch):
+    host, guest, wire, clock, _wall = await _bring_up_cat_pair(tmp_path, monkeypatch)
+    rt = host.rt
+    forbidden: list[str] = []
+
+    def forbidden_sync(name):
+        def call(*_args, **_kwargs):
+            forbidden.append(name)
+
+        return call
+
+    def forbidden_async(name):
+        async def call(*_args, **_kwargs):
+            forbidden.append(name)
+
+        return call
+
+    monkeypatch.setattr(rt, "_start_journal_for_backlog", forbidden_sync("journal_start"))
+    monkeypatch.setattr(rt, "_settle_journal_open", forbidden_async("journal_settle"))
+    monkeypatch.setattr(rt, "_flush_journal_backlog", forbidden_sync("journal_flush"))
+    monkeypatch.setattr(rt.journal, "open", forbidden_async("journal_open"))
+    monkeypatch.setattr(rt, "_start_seal", forbidden_sync("seal"))
+    monkeypatch.setattr(rt.journal, "seal", forbidden_async("journal_seal"))
+    monkeypatch.setattr(rt, "_finalize_spool_at_shutdown", forbidden_async("spool"))
+    monkeypatch.setattr(rt, "_spawn_memory_commits", forbidden_sync("memory"))
+    try:
+        assert host.host.takeovers and host.host.released == []
+        assert transport_ws.get_transport_session(rt.visit_id, rt.side) is rt.transport
+        assert not rt.outbox.closed
+
+        await asyncio.wait_for(rt.shutdown(), 3)
+
+        assert forbidden == []
+        assert rt.spool is None and host.commits == [] and host.uploads == []
+        assert not rt.journal.is_open and not rt.journal.sealed
+        assert not rt.journal.stream_path.exists() and not rt.journal.sealed_path.exists()
+        assert not list((host.config_dir / "visit_spool").glob(f"{rt.visit_id}.upload.json*"))
+        assert host.host.released == host.host.takeovers != [] and rt.takeover_token is None
+        assert rt.outbox.closed and rt.outbox._executor is None
+        assert rt.outbox.close_task is not None and rt.outbox.close_task.done()
+        assert not rt.outbox.path.exists()
+        assert transport_ws.get_transport_session(rt.visit_id, rt.side) is None
+        assert rtm.get_runtime(host.name) is None
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -1029,7 +1696,7 @@ async def test_shutdown_with_a_header_still_writing_does_not_finalize_the_spool(
         await teardown(host, guest, wire=wire, clock=clock)
 
 
-async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_path, monkeypatch):
+async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(rtm, "_DISPLAY_FLUSH_S", 0.2)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
@@ -1043,6 +1710,8 @@ async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_p
         if payload.get("type") == "visit_state_change" and payload.get("action") == rtm.PHASE_ENDED:
             task = rt._display_task
             queued_at_end.append((len(rt._display), task is None or task.done()))   # Remaining queue frames and sender stopped status.
+            await real_send(payload)
+            return False                                     # Closed display sockets reject without raising.
         return await real_send(payload)
 
     host.host.send_frame = send_frame
@@ -1059,6 +1728,7 @@ async def test_ended_is_not_sent_while_the_display_queue_is_still_draining(tmp_p
         late = [f for f in frames[ended[0]:] if f.get("line_id") in ("slow1", "slow2")]
         assert not late                                       # Stop undeliverable frames first: no whole sentences after ended.
         assert queued_at_end == [(0, True)]                   # Stop/clear display queues before ended; no concurrent writes.
+        assert "ended not sent: display channel unavailable" in caplog.text
     finally:
         host.host.send_frame = real_send
         await teardown(host, guest, wire=wire, clock=clock)
@@ -1541,6 +2211,42 @@ async def test_non_finite_transport_stats_are_not_kept(tmp_path, monkeypatch):
                                "loss_pct": 0.0, "rx_w": 640, "rx_h": 480})
         assert "rtt_ms" not in rt.stats and "rx_fps" not in rt.stats and rt.stats["tx_fps"] == 30
         json.dumps(rt.snapshot(), allow_nan=False)            # /state still serializes.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+@pytest.mark.parametrize("side_name,flag", [
+    ("host", "video_rx_overrun"),
+    ("host", "audio_rx_overrun"),
+    ("guest", "audio_rx_overrun"),
+])
+async def test_receiver_bitrate_overrun_ends_the_visit_as_a_protocol_violation(tmp_path, monkeypatch, side_name, flag):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt if side_name == "host" else guest.rt
+    try:
+        await wait_for(lambda: host.rt.ready_exchanged and guest.rt.ready_exchanged)
+        before = rt.anomaly_count()
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, "dc_queue": 0})
+        assert rt.exit_task is None                           # Plain stats (even high ones) are only forwarded.
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, flag: "true"})
+        assert rt.exit_task is None                           # Only a literal true counts.
+        rt.on_transport_stats({"rx_kbps": 900, "rtt_ms": 40, "loss_pct": 0.0, flag: True})
+        await finish(rt, clock)
+        assert rt.finalize_reason == "peer_protocol_violation"
+        assert rt.anomaly_count() == before + 1               # Recorded as a local anomaly only (never a ban signal).
+        leaves = [p for p in wire.sent[side_name] if p.get("t") == "leave"]
+        assert leaves and leaves[0]["reason"] == "peer_protocol_violation"
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_receiver_bitrate_overrun_before_ready_is_ignored(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False)
+    try:
+        assert not host.rt.ready_exchanged                    # Nothing is subscribed before ready.
+        host.rt.on_transport_stats({"video_rx_overrun": True, "audio_rx_overrun": "yes"})
+        guest.rt.on_transport_stats({"audio_rx_overrun": True})
+        assert host.rt.exit_task is None and guest.rt.exit_task is None
     finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
@@ -2364,6 +3070,29 @@ async def test_ended_is_still_sent_when_the_display_write_never_retires(tmp_path
         assert order.index("ended") < order.index("status:VISIT_KICKED")  # status follows ended.
     finally:
         release.set()
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_final_status_retries_when_the_host_reports_delivery_failure(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    rt = host.rt
+    attempts = 0
+
+    async def send_status(code, details):
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    host.host.send_status = send_status
+    try:
+        rt.status_code = "VISIT_KICKED"
+        rt.status_details = {"reason": "kicked"}
+        await rt._publish_final_status()
+        assert rt._status_published is True
+        await rt._publish_final_status()
+        assert rt._status_published is True
+        assert attempts == 2
+    finally:
         await teardown(host, guest, wire=wire, clock=clock)
 
 
@@ -3807,7 +4536,7 @@ async def test_late_text_whose_speaker_changed_since_its_first_piece_is_not_reco
         lp = rt.room.max_lp_seen + 1
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:96", "i": 0, "lp": lp, "txt": "猫", "sp": "c", "ad": "hc",
-            "rt": "", "wu": False}, nbytes=200)                # Starts as catgirl line.
+            "rt": "", "wu": False}, nbytes=200)                # Starts as neko line.
         await rt.on_recv(from_vid=GUEST_VID, cmd=2, payload={
             "t": "line_delta", "v": 1, "ln": "g:97", "i": 0, "lp": lp + 1, "txt": "猫", "sp": "c", "ad": "hc",
             "rt": "", "wu": False}, nbytes=200)                # Starts without farewell status.
@@ -4186,3 +4915,192 @@ async def test_peer_blocked_while_its_name_is_read_is_not_installed(tmp_path, mo
     await _finished(rt)
     assert rt.finalize_reason == "peer_blocked" and rt.peer is None
     assert side.host.frames_of("visit_invite") == []
+
+
+# ── Neko voice tracks (OD-15 v4) ───────────────────────────────────────────────
+
+
+def test_voice_setting_skips_cat_scenes_and_finalizing_runtimes(monkeypatch):
+    class Voice:
+        enabled = True
+
+    class StubRuntime:
+        def __init__(self, *, cat_scene=False, finalizing=False):
+            self.voice = Voice()
+            self.ready_exchanged = True
+            self.cat_scene_requested = cat_scene
+            self._finalizing = finalizing
+            self.media_calls = 0
+            self.spawn_calls = 0
+
+        @property
+        def finalizing(self):
+            return self._finalizing
+
+        def send_media(self):
+            self.media_calls += 1
+            return object()
+
+        def spawn(self, _awaitable, *, name):
+            assert name == "voice-media"
+            self.spawn_calls += 1
+
+    model = StubRuntime()
+    cat = StubRuntime(cat_scene=True)
+    ending = StubRuntime(finalizing=True)
+    monkeypatch.setattr(rtm, "live_runtimes", lambda: [model, cat, ending])
+
+    assert rtm.apply_voice_setting(False) == 3
+    assert all(rt.voice.enabled is False for rt in (model, cat, ending))
+    assert (model.media_calls, model.spawn_calls) == (1, 1)
+    assert (cat.media_calls, cat.spawn_calls) == (0, 0)
+    assert (ending.media_calls, ending.spawn_calls) == (0, 0)
+
+
+async def test_voice_tracks_stay_off_before_ready(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, accept=False, audio=True)
+    try:
+        await settle()
+        for side in ("host", "guest"):
+            snaps = [m for m in wire.downlinks[side] if m.get("type") == "media"]
+            assert all(m["audio_publish"] is False and m["audio_subscribe"] is False for m in snaps)
+        for rt in (host.rt, guest.rt):
+            snap = rt.media_snapshot()
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_tracks_are_symmetric_after_ready_and_independent_of_video(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+    try:
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: [m for m in wire.downlinks[s] if m.get("type") == "media" and m["audio_publish"]])
+            snaps = [m for m in wire.downlinks[side] if m.get("type") == "media"]
+            assert snaps[-1]["audio_publish"] is True and snaps[-1]["audio_subscribe"] is True
+        # No encoder / decoder only drops video: the voices still flow both ways.
+        guest.rt.video_ok = False
+        host.rt.peer.video = False
+        for rt in (host.rt, guest.rt):
+            snap = rt.media_snapshot()
+            assert snap["audio_publish"] is True and snap["audio_subscribe"] is True
+        # A TTS fallback keeps the track published (it simply goes silent).
+        guest.rt.voice.fallen_back = True
+        assert guest.rt.media_snapshot()["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_turning_voice_off_mutes_both_directions_at_once(tmp_path, monkeypatch):
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: [m for m in media(s) if m["audio_publish"]])
+        before = {side: len(media(side)) for side in ("host", "guest")}
+        assert rtm.apply_voice_setting(False) == 2
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: len(media(s)) > before[s])
+            assert media(side)[-1]["audio_publish"] is False and media(side)[-1]["audio_subscribe"] is False
+        count = {side: len(media(side)) for side in ("host", "guest")}
+        rtm.apply_voice_setting(False)                     # Unchanged: no extra snapshot.
+        await settle()
+        assert {side: len(media(side)) for side in ("host", "guest")} == count
+        rtm.apply_voice_setting(True)
+        for side in ("host", "guest"):
+            await wait_for(lambda s=side: len(media(s)) > count[s])
+            assert media(side)[-1]["audio_publish"] is True
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_stays_off_while_servers_gives_no_audio_gate(tmp_path, monkeypatch):
+    # Plan A gate: credentials without Servers' literal ``audio: true`` (older Servers) keep exactly the old
+    # behaviour -- no voice in either direction even after ready, whatever visitVoiceEnabled says.
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
+    try:
+        for side in (host, guest):
+            assert side.rt.creds.audio is False
+            snap = side.rt.media_snapshot()
+            assert snap["audio_publish"] is False and snap["audio_subscribe"] is False
+        for side in ("host", "guest"):
+            assert all(not m["audio_publish"] and not m["audio_subscribe"]
+                       for m in wire.downlinks[side] if m.get("type") == "media")
+        rtm.apply_voice_setting(False)
+        rtm.apply_voice_setting(True)
+        await settle()
+        assert host.rt.media_snapshot()["audio_publish"] is False
+        assert guest.rt.media_snapshot()["audio_subscribe"] is False
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_renewal_turning_voice_off_stops_it_for_the_rest_of_the_visit(tmp_path, monkeypatch):
+    # Servers' emergency stop: a renewal with publish.audio false stops both directions now and for good;
+    # a later renewal back to true is ignored (next visit).
+    import dataclasses
+
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        await wait_for(lambda: [m for m in media("host") if m["audio_publish"]])
+        rt = host.rt
+        renewed_to = {"audio": False}
+
+        async def renew(*, wall_now=None):
+            rt.grant._current = dataclasses.replace(rt.grant.current, audio=renewed_to["audio"])
+            return True
+
+        rt.grant.ensure_fresh = renew
+        before = len(media("host"))
+        await rt._renew_grant()
+        await wait_for(lambda: len(media("host")) > before)
+        assert media("host")[-1]["audio_publish"] is False and media("host")[-1]["audio_subscribe"] is False
+        refresh = [m for m in wire.downlinks["host"] if m.get("type") == "credentials" and m.get("refresh")]
+        assert refresh and refresh[-1]["publish"]["audio"] is False
+        renewed_to["audio"] = True                         # Back on: ignored for this visit.
+        await rt._renew_grant()
+        await settle()
+        assert rt.media_snapshot()["audio_publish"] is False
+        refresh = [m for m in wire.downlinks["host"] if m.get("type") == "credentials" and m.get("refresh")]
+        assert refresh[-1]["publish"]["audio"] is False
+        assert guest.rt.media_snapshot()["audio_publish"] is True   # The other side decides for itself.
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)
+
+
+async def test_voice_is_off_before_private_chat_gets_the_tts_chain_back(tmp_path, monkeypatch):
+    # The page taps the shared assistant TTS output: the voice-off snapshot must already be written when the takeover
+    # is released, or private replies spoken during the leave / grace window would reach the peer.
+    host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch, audio=True)
+
+    def media(side):
+        return [m for m in wire.downlinks[side] if m.get("type") == "media"]
+
+    try:
+        await wait_for(lambda: [m for m in media("host") if m["audio_publish"]])
+        seen = {}
+        real_release = host.host.release_takeover
+
+        def spy(token):
+            seen["last_media"] = dict(media("host")[-1])
+            seen["voice_off_frames"] = [f for f in host.host.frames
+                                        if f.get("type") == "visit_state_change" and f.get("action") == "voice_off"]
+            return real_release(token)
+
+        host.host.release_takeover = spy
+        host.rt.request_finalize("route_end")
+        assert host.rt.media_snapshot()["audio_publish"] is False      # Off as soon as the visit starts ending.
+        await wait_for(lambda: "last_media" in seen, timeout=10)
+        assert seen["last_media"]["audio_publish"] is False and seen["last_media"]["audio_subscribe"] is False
+        # The page-side voice_off frame was written on the display socket before the release, too.
+        assert len(seen["voice_off_frames"]) == 1 and seen["voice_off_frames"][0]["visit_id"] == host.rt.visit_id
+        await finish(host.rt, clock)
+    finally:
+        await teardown(host, guest, wire=wire, clock=clock)

@@ -1,8 +1,8 @@
 """Every install path withholds autostart until explicit auto-start approval.
 
-The gate exists because ``plugin_runtime.auto_start`` defaults to true and is
-declared by the plugin itself: without it, a freshly installed plugin runs its
-own module-level code at the next greeting without ever having been started.
+A package may declare ``plugin_runtime.auto_start = true``. A fresh local
+install still persists the auto-start preference as off and withholds launch
+until the user turns that switch on. An omitted ``auto_start`` is already off.
 
 The guard here is on ``install()`` rather than on any one source-recording
 helper. Hanging it off ``_record_requested_install_source`` looked equivalent
@@ -221,6 +221,46 @@ def test_the_gate_records_the_manifest_id_not_the_directory_name(
     assert calls == ["real_plugin_id"], (
         f"登记的是目录名而不是 manifest 里的 id，这道闸对该插件完全不生效：{calls}"
     )
+
+
+def test_a_fresh_install_persists_auto_start_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _isolate_runtime_overrides: dict
+) -> None:
+    """The switch must be off the first time a plugin lands on disk.
+
+    Mutation: stop calling ``_persist_first_install_autostart_off`` from
+    ``_mark_new_install_awaiting_autostart``. A package that declares
+    ``auto_start = true`` would then show the switch on.
+    """
+    target = tmp_path / "shipped_on"
+    target.mkdir()
+    (target / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'shipped_on'",
+                "",
+                "[plugin_runtime]",
+                "auto_start = true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    from plugin.server.infrastructure.runtime_overrides import (
+        get_runtime_auto_start_override,
+    )
+
+    monkeypatch.setattr(
+        "plugin.server.infrastructure.autostart_approvals.mark_autostart_pending",
+        lambda _plugin_id: True,
+    )
+    unrecorded = cli_service._mark_new_install_awaiting_autostart(
+        {"installed_plugins": [{"target_plugin_id": "shipped_on", "target_dir": str(target)}]}
+    )
+
+    assert unrecorded == []
+    assert get_runtime_auto_start_override("shipped_on") is False
+    assert _isolate_runtime_overrides["shipped_on"]["auto_start"] is False
 
 
 def test_packaging_probes_the_tree_it_ships(
@@ -833,6 +873,136 @@ async def test_every_plugin_in_a_bundle_is_gated_before_promotion(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "previous",
+    [{"enabled": False, "auto_start": True}, None, True, False],
+    ids=["explicit-preference", "no-preference", "legacy-enabled", "legacy-disabled"],
+)
+async def test_bundle_gate_failure_restores_exact_runtime_preferences(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_runtime_overrides: dict,
+    previous: object,
+) -> None:
+    """A later gate failure must undo preferences written before promotion."""
+    from copy import deepcopy
+
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.infrastructure import runtime_overrides
+
+    initial = {"beta": {"auto_start": True}}
+    if previous is not None:
+        initial["alpha"] = previous
+    _isolate_runtime_overrides.update(deepcopy(initial))
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+    monkeypatch.setattr(cli_service, "is_autostart_approved", lambda plugin_id: True)
+    monkeypatch.setattr(
+        cli_service, "mark_autostart_pending", lambda plugin_id: plugin_id != "gamma"
+    )
+    restored_approvals: list[str] = []
+
+    def _restore_approval(plugin_id: str) -> bool:
+        restored_approvals.append(plugin_id)
+        return True
+
+    monkeypatch.setattr(cli_service, "clear_autostart_pending", _restore_approval)
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {
+            "action": "install",
+            "plugin_id": "bundle",
+            "bundle_plugin_ids": ["alpha", "beta", "gamma"],
+        }
+
+    installed: list[bool] = []
+
+    def _install_sync(**_kwargs):
+        installed.append(True)
+        return {"installed_plugins": []}
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", _install_sync)
+
+    with pytest.raises(ServerDomainError) as excinfo:
+        await service.install(package="bundle.neko-bundle")
+
+    assert excinfo.value.code == "PLUGIN_AUTOSTART_GATE_UNAVAILABLE"
+    assert excinfo.value.details["plugin_id"] == "gamma"
+    assert installed == []
+    assert restored_approvals == ["alpha", "beta", "gamma"]
+    assert _isolate_runtime_overrides == initial
+    runtime_overrides.reset_cache_for_testing()
+    assert runtime_overrides.load_runtime_overrides() == initial
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["gate", "preference"])
+async def test_bundle_preference_restore_failure_preserves_install_error_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    _isolate_runtime_overrides: dict,
+    failure_stage: str,
+) -> None:
+    """One failed rollback write must not prevent restoring later bundle entries."""
+    from copy import deepcopy
+
+    from plugin.server.domain.errors import ServerDomainError
+    from plugin.server.infrastructure import runtime_overrides
+
+    initial = {"alpha": {"enabled": True, "auto_start": True}, "beta": False}
+    _isolate_runtime_overrides.update(deepcopy(initial))
+    save_to_disk = runtime_overrides._save_to_disk
+
+    def _save(overrides):
+        if "gamma" in overrides:
+            raise runtime_overrides.RuntimeOverrideWriteError("gamma preference failed")
+        if overrides.get("alpha") == initial["alpha"]:
+            raise runtime_overrides.RuntimeOverrideWriteError("alpha restore failed")
+        save_to_disk(overrides)
+
+    monkeypatch.setattr(runtime_overrides, "_save_to_disk", _save)
+    monkeypatch.setattr(cli_service, "get_install_source_manager", lambda: None)
+    monkeypatch.setattr(cli_service, "is_autostart_approved", lambda plugin_id: True)
+    monkeypatch.setattr(
+        cli_service,
+        "mark_autostart_pending",
+        lambda plugin_id: failure_stage != "gate" or plugin_id != "gamma",
+    )
+    monkeypatch.setattr(cli_service, "clear_autostart_pending", lambda plugin_id: True)
+    service = cli_service.PluginCliService()
+
+    async def _plan_install(**_kwargs):
+        return {
+            "action": "install",
+            "plugin_id": "bundle",
+            "bundle_plugin_ids": ["alpha", "beta", "gamma"],
+        }
+
+    installed: list[bool] = []
+
+    def _install_sync(**_kwargs):
+        installed.append(True)
+        return {"installed_plugins": []}
+
+    monkeypatch.setattr(service, "plan_install", _plan_install)
+    monkeypatch.setattr(service, "_install_sync", _install_sync)
+
+    with pytest.raises(ServerDomainError) as excinfo:
+        await service.install(package="bundle.neko-bundle")
+
+    assert excinfo.value.code == (
+        "PLUGIN_AUTOSTART_GATE_UNAVAILABLE"
+        if failure_stage == "gate"
+        else "PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED"
+    )
+    assert excinfo.value.details["plugin_id"] == "gamma"
+    assert installed == []
+    assert _isolate_runtime_overrides == {
+        "alpha": {"enabled": True, "auto_start": False},
+        "beta": False,
+    }
+
+
 def test_a_leftover_install_directory_is_found_by_its_manifest_id(
     tmp_path: Path,
 ) -> None:
@@ -1175,7 +1345,6 @@ async def _drive_failed_uninstall(
     monkeypatch.setattr(uninstall, "_registry_refresh_target", _noop)
     monkeypatch.setattr(uninstall, "_plugin_is_running_sync", lambda _pid: False)
     monkeypatch.setattr(uninstall, "_snapshot_runtime_preference", _noop)
-    monkeypatch.setattr(uninstall, "_stage_orphaned_package_profile_sync", _noop)
     monkeypatch.setattr(uninstall, "_stage_plugin_code_sync", _noop)
     monkeypatch.setattr(uninstall, "_remove_runtime_metadata_sync", _noop)
     monkeypatch.setattr(uninstall, "_refresh_registry", _anoop)

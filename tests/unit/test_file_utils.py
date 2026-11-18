@@ -77,6 +77,20 @@ def test_atomic_write_text_creates_missing_parents(tmp_path):
     assert target.read_text(encoding="utf-8") == "hello"
 
 
+def test_atomic_write_text_can_refuse_to_recreate_a_missing_parent(tmp_path):
+    """For writers that must not resurrect a directory deleted under them."""
+    target = tmp_path / "gone" / "state.txt"
+
+    with pytest.raises(FileNotFoundError):
+        atomic_write_text(target, "hello", create_parents=False)
+
+    assert not target.parent.exists()
+
+    target.parent.mkdir()
+    atomic_write_text(target, "hello", create_parents=False)
+    assert target.read_text(encoding="utf-8") == "hello"
+
+
 def test_atomic_write_json_roundtrips_unicode_without_escaping(tmp_path):
     target = tmp_path / "state.json"
 

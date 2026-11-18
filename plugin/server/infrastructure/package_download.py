@@ -1,20 +1,88 @@
-"""Bounded package downloads with cancellation-safe file ownership."""
+"""Shared package download infrastructure: HTTP client, file ownership and errors."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import tempfile
-from typing import BinaryIO, Literal
+from types import ModuleType
+from typing import Any, BinaryIO, Literal, TypeVar
 
 from plugin.logging_config import get_logger
 from plugin.utils.asyncio_utils import await_cancellation_safe
 from plugin.utils.http_imports import ensure_httpx
 
+T = TypeVar("T")
 logger = get_logger("server.infrastructure.package_download")
+PACKAGE_CONNECTION_LIMIT = 16
+# Long enough to span a catalogue lookup or a batch of updates; servers that
+# close idle connections sooner only cost the reconnect they would anyway.
+PACKAGE_KEEPALIVE_SECONDS = 90.0
+# Also bounds a silent connection: no byte for this long fails the request.
+REQUEST_TIMEOUT = 10.0
+CONNECT_TIMEOUT = 5.0
+WARMUP_TIMEOUT = 5.0
+_shared_client: tuple[asyncio.AbstractEventLoop, ModuleType, Any] | None = None
+
+
+async def package_http_client() -> Any:
+    """Return the keep-alive client every package request shares.
+
+    TLS setup and GitHub's redirect dominate typical (sub-megabyte) packages,
+    so connections outlive one download. Requests beyond the pool limit wait
+    for a free connection rather than fail. A client belongs to one loop and
+    HTTP backend.
+    """
+    global _shared_client
+    httpx = await ensure_httpx()
+    loop = asyncio.get_running_loop()
+    if _shared_client is not None:
+        owner, backend, client = _shared_client
+        if owner is loop and backend is httpx and not client.is_closed:
+            return client
+    client = httpx.AsyncClient(
+        timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=CONNECT_TIMEOUT, pool=None),
+        follow_redirects=True, max_redirects=5,
+        limits=httpx.Limits(
+            max_connections=PACKAGE_CONNECTION_LIMIT, max_keepalive_connections=PACKAGE_CONNECTION_LIMIT,
+            keepalive_expiry=PACKAGE_KEEPALIVE_SECONDS,
+        ),
+    )
+    _shared_client = (loop, httpx, client)
+    return client
+
+
+async def aclose_package_http_client() -> None:
+    global _shared_client
+    if _shared_client is None:
+        return
+    owner, _, client = _shared_client
+    _shared_client = None
+    if owner is asyncio.get_running_loop():
+        await client.aclose()
+
+
+async def warm_package_connections(urls: Iterable[str]) -> None:
+    """Open keep-alive connections to these URLs' origins for a following download.
+
+    Only the origin root is requested, which answers quickly and does not ask
+    a proxy to fetch the package. Best effort by design: a route that cannot
+    be reached here is raced and reported by the download itself.
+    """
+    httpx = await ensure_httpx()
+    client = await package_http_client()
+    origins = dict.fromkeys(str(httpx.URL(url).copy_with(path="/", query=None, fragment=None)) for url in urls)
+
+    async def warm(origin: str) -> None:
+        try:
+            await client.head(origin, follow_redirects=False, timeout=WARMUP_TIMEOUT)
+        except httpx.HTTPError as exc:
+            logger.debug("package connection warm-up failed origin={} error={}", origin, type(exc).__name__)
+
+    await asyncio.gather(*(warm(origin) for origin in origins))
 
 
 class PackageDownloadDeadline(TimeoutError):
@@ -64,7 +132,8 @@ def cleanup_download_file(path: Path | None) -> None:
 
 
 @asynccontextmanager
-async def _open_download_file(path: Path) -> AsyncIterator[BinaryIO]:
+async def open_download_file(path: Path) -> AsyncIterator[BinaryIO]:
+    """Open a package file for writing; a close failure is a write error."""
     opening = asyncio.create_task(asyncio.to_thread(path.open, "wb"))
     failed = False
     try:
@@ -79,98 +148,39 @@ async def _open_download_file(path: Path) -> AsyncIterator[BinaryIO]:
     finally:
         if opening.done() and not opening.cancelled() and opening.exception() is None:
             try:
-                await await_cancellation_safe(
-                    asyncio.create_task(asyncio.to_thread(opening.result().close))
-                )
+                await run_file_operation(opening.result().close)
             except OSError as exc:
                 if not failed:
                     raise PackageDownloadWriteError(exc) from exc
                 logger.warning("failed to close package while propagating another exception: {}", exc)
 
 
-async def download_package_file(
-    url: str,
-    directory: Path,
-    *,
-    maximum_bytes: int,
-    phase_timeout: float,
-    total_timeout: float,
-    flush_bytes: int,
-    report_progress: Callable[[int, int | None], None],
-    check_cancelled: Callable[[], None],
-) -> Path:
-    check_cancelled()
-    httpx = await ensure_httpx()
-    check_cancelled()
+@asynccontextmanager
+async def owned_download_file(directory: Path) -> AsyncIterator[Path]:
+    """Create a package file in ``directory``; remove it unless the block completes."""
     creation = asyncio.create_task(asyncio.to_thread(_create_download_file, directory))
     completed = False
-    deadline: asyncio.Timeout | None = None
     try:
-        path = await await_cancellation_safe(creation)
-        async with asyncio.timeout(total_timeout) as deadline:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(phase_timeout),
-                follow_redirects=True,
-                max_redirects=5,
-            ) as client:
-                async with client.stream("GET", url) as response:
-                    response.raise_for_status()
-                    length = response.headers.get("content-length")
-                    try:
-                        total = int(length) if length else None
-                    except ValueError:
-                        total = None
-                    if total is not None and total < 0:
-                        total = None
-                    received = 0
-                    report_progress(received, total)
-                    if total is not None and total > maximum_bytes:
-                        raise PackageSizeExceeded(total, maximum_bytes, source="content_length")
-                    async with _open_download_file(path) as handle:
-                        pending: list[bytes] = []
-                        pending_bytes = 0
-
-                        async def flush() -> None:
-                            nonlocal pending_bytes
-                            if pending:
-                                try:
-                                    await await_cancellation_safe(
-                                        asyncio.create_task(
-                                            asyncio.to_thread(handle.writelines, pending)
-                                        )
-                                    )
-                                except OSError as exc:
-                                    raise PackageDownloadWriteError(exc) from exc
-                                pending.clear()
-                                pending_bytes = 0
-
-                        async for chunk in response.aiter_bytes(chunk_size=65536):
-                            check_cancelled()
-                            pending.append(chunk)
-                            pending_bytes += len(chunk)
-                            received += len(chunk)
-                            if received > maximum_bytes:
-                                report_progress(received, total)
-                                raise PackageSizeExceeded(received, maximum_bytes)
-                            if pending_bytes >= flush_bytes:
-                                await flush()
-                            report_progress(received, total)
-                        await flush()
+        yield await await_cancellation_safe(creation)
         completed = True
-        return path
+    finally:
+        if not completed and creation.done() and not creation.cancelled() and creation.exception() is None:
+            await run_file_operation(cleanup_download_file, creation.result())
+
+
+@asynccontextmanager
+async def package_download_deadline(total_timeout: float) -> AsyncIterator[None]:
+    """Bound a download; its own expiry, unlike a file timeout, is a deadline error."""
+    deadline = asyncio.timeout(total_timeout)
+    try:
+        async with deadline:
+            yield
     except TimeoutError as exc:
-        if deadline is not None and deadline.expired():
+        if deadline.expired():
             raise PackageDownloadDeadline("Package download total deadline expired") from exc
         raise
-    finally:
-        if (
-            not completed
-            and creation.done()
-            and not creation.cancelled()
-            and creation.exception() is None
-        ):
-            await await_cancellation_safe(
-                asyncio.create_task(
-                    asyncio.to_thread(cleanup_download_file, creation.result())
-                )
-            )
+
+
+async def run_file_operation(operation: Callable[..., T], *args: Any) -> T:
+    """Run blocking file work off the loop; it finishes even if the caller is cancelled."""
+    return await await_cancellation_safe(asyncio.create_task(asyncio.to_thread(operation, *args)))

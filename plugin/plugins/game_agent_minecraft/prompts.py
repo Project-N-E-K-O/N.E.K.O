@@ -591,7 +591,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         # Used when the late frame's status is NOT a genuine completion
         # (interrupted / superseded / failed / timeout). The plain
         # RETROACTIVE_HEADER asserts "actually finished", which would
-        # contradict the status and re-tell the catgirl a completion that never
+        # contradict the status and re-tell the neko a completion that never
         # happened. {task_text} = the earlier task, {status} = final status.
         "zh": "你之前派出去的「{task_text}」已经结束了，但没真正跑完（结果 {status}）。",
         "zh-TW": "你之前派出去的「{task_text}」已經結束了，但沒真正跑完（結果 {status}）。",

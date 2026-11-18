@@ -34,13 +34,22 @@ get routed to cosyvoice_vc_tts_worker — a routing regression sneakier than
 Voice list reference: https://ai.google.dev/gemini-api/docs/speech-generation
 """
 
+import base64
+import io
+import wave
+
 from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.tts.native_voice_registry import (
     NativeVoiceProvider,
     register_provider,
 )
 
-GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+# gemini-2.5-flash-preview-tts shuts down on 2026-11-17; Google's listed replacement.
+# 3.8 TTS reads `text` verbatim (delivery hints go in speechMetadata.style) and
+# returns a WAV container by default, so the payload below asks for raw L16.
+GEMINI_TTS_MODEL = "gemini-3.8-flash-lite-tts"
+GEMINI_TTS_SAMPLE_RATE = 24000
+_GEMINI_TTS_STYLE = "natural, with a tone that fits the content"
 
 FALLBACK_GEMINI_TTS_DEFAULT_VOICE = "Leda"
 FALLBACK_GEMINI_TTS_DEFAULT_MALE_VOICE = "Puck"
@@ -232,3 +241,55 @@ def normalize_gemini_tts_voice(voice_id: str | None) -> tuple[str, bool]:
 
 def is_gemini_tts_voice(voice_id: str | None) -> bool:
     return GEMINI_PROVIDER.is_voice(voice_id)
+
+
+def build_gemini_tts_payload(text: str, voice_id: str) -> dict:
+    """generateContent body shared by the TTS worker and the voice preview."""
+    return {
+        "contents": [{
+            "parts": [{
+                "text": text,
+                "speechMetadata": {"style": _GEMINI_TTS_STYLE},
+            }],
+        }],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "responseFormat": {
+                "audio": {
+                    "mimeType": "AUDIO_L16",
+                    "sampleRate": GEMINI_TTS_SAMPLE_RATE,
+                },
+            },
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice_id}
+                }
+            },
+        },
+    }
+
+
+def extract_gemini_tts_pcm(data: dict) -> bytes | None:
+    """Return 16-bit mono PCM from a generateContent response, or None.
+
+    Strips a RIFF header if one comes back anyway (WAV is 3.8 TTS's unary
+    default), so the header is never played as samples. Callers play the
+    result as mono 16-bit at GEMINI_TTS_SAMPLE_RATE, so any other WAV format
+    raises ValueError instead of playing back sped up or garbled."""
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return None
+    parts = candidates[0].get("content", {}).get("parts") or []
+    if not parts:
+        return None
+    audio_b64 = parts[0].get("inlineData", {}).get("data")
+    if not audio_b64:
+        return None
+    audio = base64.b64decode(audio_b64)
+    if audio[:4] == b"RIFF":
+        with wave.open(io.BytesIO(audio), "rb") as wav:
+            fmt = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
+            if fmt != (1, 2, GEMINI_TTS_SAMPLE_RATE):
+                raise ValueError(f"unexpected Gemini TTS WAV format {fmt}")
+            audio = wav.readframes(wav.getnframes())
+    return audio or None

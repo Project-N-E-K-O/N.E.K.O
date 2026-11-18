@@ -14,10 +14,14 @@
 # limitations under the License.
 
 import asyncio
+from dataclasses import replace
 from typing import Sequence
+from uuid import uuid4
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
+from utils.image_history import image_count, without_image_pixels
 from main_logic.agent_event_bus import (
+    conversation_reply_observation,
     publish_provider_frame_observed_best_effort,
     spawn_bounded_frame_copy,
 )
@@ -83,20 +87,31 @@ class _MediaMixin:
     ) -> None:
         """Run one externally transcribed turn under cancellable task ownership."""
 
-        task = asyncio.create_task(
-            self.stream_text(
-                text,
-                turn_images=turn_images,
-                turn_source=turn_source,
-                turn_source_count=turn_source_count,
-                turn_id=turn_id,
-                on_turn_committed=on_turn_committed,
-                turn_context=turn_context,
-                input_transcript_callback=(
-                    self._ignore_already_recorded_external_transcript
-                ),
+        observation = {
+            "reply_id": uuid4().hex,
+            "origin": {"kind": "user_interaction", "is_proactive": False, "plugin_id": None, "task_id": None},
+            "started": False,
+            "closed": False,
+            "lifecycle": "external_voice",
+        }
+        token = conversation_reply_observation.set(observation)
+        try:
+            task = asyncio.create_task(
+                self.stream_text(
+                    text,
+                    turn_images=turn_images,
+                    turn_source=turn_source,
+                    turn_source_count=turn_source_count,
+                    turn_id=turn_id,
+                    on_turn_committed=on_turn_committed,
+                    turn_context=turn_context,
+                    input_transcript_callback=(
+                        self._ignore_already_recorded_external_transcript
+                    ),
+                )
             )
-        )
+        finally:
+            conversation_reply_observation.reset(token)
         self._external_voice_submit_task = task
         try:
             try:
@@ -536,30 +551,21 @@ class _MediaMixin:
             self._proactive_image_history_len = 0
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
-        # Retain images only in the most recent keep_turns image-bearing HumanMessages; remove image_url
-        # from older ones, keeping text. Base64 images cost roughly 1.5k–3k vision tokens each,
-        # so accumulated turns can push input beyond 128k.
+        keep_turns = max(0, keep_turns)
+        # Bound retained image turns; older turns keep text and attachment provenance.
+        # Images consume vision tokens even though text token counters skip their bytes.
         image_turn_indices = [
             idx for idx, msg in enumerate(self._conversation_history)
-            if isinstance(msg, HumanMessage) and isinstance(msg.content, list)
-            and any(isinstance(item, dict) and item.get("type") == "image_url" for item in msg.content)
+            if isinstance(msg, HumanMessage) and image_count(msg.content)
         ]
         if len(image_turn_indices) <= keep_turns:
             return
 
         evicted_imgs = 0
-        for idx in image_turn_indices[:-keep_turns]:
+        for idx in image_turn_indices[:len(image_turn_indices) - keep_turns]:
             old = self._conversation_history[idx]
-            kept_parts = []
-            for item in old.content:
-                if isinstance(item, dict) and item.get("type") == "image_url":
-                    evicted_imgs += 1
-                else:
-                    kept_parts.append(item)
-            if len(kept_parts) == 1 and isinstance(kept_parts[0], dict) and kept_parts[0].get("type") == "text":
-                replacement = HumanMessage(content=kept_parts[0].get("text", ""))
-            else:
-                replacement = HumanMessage(content=kept_parts)
+            evicted_imgs += image_count(old.content)
+            replacement = replace(old, content=without_image_pixels(old.content))
             self._conversation_history[idx] = replacement
             # This turn's resident knowledge block follows the replaced message.
             self._rebind_resident_anchor(old, replacement)

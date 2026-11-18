@@ -1,5 +1,8 @@
 <template>
-  <div class="hosted-surface-frame" :style="frameStyle">
+  <div ref="displayTarget" class="hosted-surface-frame" :style="frameStyle">
+    <div v-if="display.owned.value" class="plugin-display-exit">
+      <el-button data-testid="display-exit" @click="display.exit">{{ t('plugins.display.exit') }}</el-button>
+    </div>
     <el-alert
       v-if="runtimeError"
       class="hosted-surface-frame__runtime-alert"
@@ -25,6 +28,7 @@
       :title="surfaceTitle"
       class="hosted-surface-frame__iframe"
       sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals"
+      allow="fullscreen"
       @load="handleLoad"
       @error="handleError"
     />
@@ -78,10 +82,11 @@ import { Document, Loading, WarningFilled } from '@element-plus/icons-vue'
 import { callPluginHostedSurfaceAction, getPluginHostedSurfaceContext, getPluginHostedSurfaceSource, parseHostedDocument } from '@/api/plugins'
 import { loadTsxRenderer, loadMarkdownRenderer } from '@/components/plugin/hosted/rendererModules'
 import { openExternalUrl, openLocalPath } from '@/utils/openExternal'
-import { PANEL_FILL_HEIGHT, PANEL_MAX_HEIGHT } from '@/utils/constants'
+import { PANEL_FILL_HEIGHT } from '@/utils/constants'
 import type { PluginUiSurface } from '@/types/api'
 import { OptionalModuleError } from '@/utils/retryableModule'
 import { ElMessageBox } from 'element-plus'
+import { usePluginDisplayFrame } from '@/composables/usePluginDisplay'
 
 const props = withDefaults(defineProps<{
   pluginId: string
@@ -104,6 +109,21 @@ const emit = defineEmits<{
 
 const { locale, t } = useI18n()
 const iframeRef = ref<HTMLIFrameElement | null>(null)
+const displayTarget = ref<HTMLElement | null>(null)
+const display = usePluginDisplayFrame({
+  target: displayTarget,
+  active: () => props.active && props.surface.kind === 'panel' && props.surface.available !== false,
+  identity: () => `${props.pluginId}:${props.surface.kind}:${props.surface.id}:${props.surface.mode}:${props.surface.entry}:${props.surface.url}`,
+  name: () => props.pluginId,
+  connect: (connectionId) => {
+    const origin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+    iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-connect', connectionId }, origin)
+  },
+  notify: (state, documentId, connectionId) => {
+    const origin = trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value
+    iframeRef.value?.contentWindow?.postMessage({ type: 'neko-plugin-display-state', documentId, connectionId, state }, origin)
+  },
+})
 const iframeKey = ref(0)
 const staticSurfaceReady = ref(false)
 const pendingStaticSurfaceMessages: unknown[] = []
@@ -176,7 +196,6 @@ type HostedBridgeError = {
 
 const frameStyle = computed(() => ({
   height: props.height,
-  maxHeight: PANEL_MAX_HEIGHT,
 }))
 
 const surfaceTitle = computed(() => {
@@ -305,6 +324,7 @@ function normalizeHostedBridgeError(caught: any): HostedBridgeError {
 }
 
 function handleLoad() {
+  display.connectDocument()
   if (props.surface.mode === 'static') {
     staticSurfaceReady.value = true
     flushStaticSurfaceMessages()
@@ -383,6 +403,7 @@ function enterLoadPhase(phase: Exclude<HostedLoadPhase, 'idle'>, loadId: number)
 }
 
 function invalidateSurfaceLoad() {
+  display.invalidateDocument()
   clearLoadDelay()
   loadPhase.value = 'idle'
   sourceController?.abort('surface-replaced')
@@ -471,6 +492,9 @@ function handleMessage(event: MessageEvent) {
   if (event.source !== iframeRef.value?.contentWindow) return
   if (event.origin !== trustedIframeOrigin.value) return
   const data = event.data
+  if (data && typeof data === 'object' && display.handleMessage(data, message => {
+    iframeRef.value?.contentWindow?.postMessage(message, trustedIframeOrigin.value === 'null' ? '*' : trustedIframeOrigin.value)
+  })) return
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-error') {
     const message = typeof data.payload?.message === 'string' ? data.payload.message : t('plugins.ui.loadError')
     const fatal = data.payload?.fatal !== false
@@ -754,6 +778,7 @@ watch(
     // only lives on the iframe attribute, so a title change needs no reload.
     if (props.surface.mode === 'static') {
       if (!localeChanged) return
+      display.invalidateDocument()
       staticSurfaceReady.value = false
       pendingStaticSurfaceMessages.length = 0
       iframeKey.value += 1
@@ -790,30 +815,39 @@ defineExpose({
 <style scoped>
 .hosted-surface-frame {
   position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  min-height: 0;
   border: 1px solid color-mix(in srgb, var(--el-border-color) 72%, transparent);
   border-radius: 16px;
   background: color-mix(in srgb, var(--el-bg-color) 92%, transparent);
   overflow: hidden;
 }
 
+.hosted-surface-frame:fullscreen { height: 100% !important; background: var(--el-bg-color); }
+.plugin-display-exit { flex: none; padding: 6px 10px; text-align: right; background: var(--el-bg-color); }
+
 .hosted-surface-frame__locale-notice { position: absolute; bottom: 8px; right: 8px; z-index: 1; max-width: calc(100% - 16px); padding: 8px; border: 1px solid var(--el-border-color); border-radius: 8px; background: var(--el-bg-color-overlay); color: var(--el-text-color-primary); font-size: 12px; }
 
 .hosted-surface-frame__runtime-alert {
+  flex-shrink: 0;
   margin: 12px;
 }
 
 .hosted-surface-frame__iframe {
+  flex: 1;
   width: 100%;
   height: 100%;
-  min-height: inherit;
+  min-height: 0;
   border: none;
   display: block;
 }
 
 .hosted-surface-frame__placeholder {
+  flex: 1;
   height: 100%;
-  min-height: inherit;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;

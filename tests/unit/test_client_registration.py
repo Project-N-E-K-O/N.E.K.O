@@ -86,6 +86,7 @@ def test_proof_transport_allowed_blocks_plaintext_off_loopback(cloud_url, allowe
         (404, "client_not_found", True),
         (401, "client_not_registered", True),
         (403, "client_already_bound_to_other_user", False),
+        (403, "legacy_client_rebind_required", False),
         (409, "client_not_registered", False),
         (200, "", False),
     ],

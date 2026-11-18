@@ -1603,6 +1603,148 @@ class VRMCore {
     }
 
     /**
+     * 文件里没有描边通道时，按滑块给衣服和脸补一条细的屏幕空间描边。
+     * 眼睛、牙齿、头发片和身体内层会挤出毛刺或叠成双线，保持关闭。
+     */
+    _skipSyntheticOutline(mesh, mat) {
+        const name = `${mesh?.name || ''} ${mat?.name || ''}`.toLowerCase();
+        return /eye|hitomi|sirome|eyeline|eyelash|brow|mayuge|tooth|teeth|tongue|noseline|highlight|hair|cm_m_body/.test(name);
+    }
+
+    _syntheticOutlineUnitFactor() {
+        const canvas = this.manager.renderer?.domElement;
+        const height = canvas?.clientHeight || canvas?.height || 0;
+        // 滑块 1 约 0.8px，滑块 3 约 2.4px。
+        if (height > 0) return 1.6 / height;
+        return 0.0011;
+    }
+
+    _outlineHiddenByQuality() {
+        const quality = window.renderQuality || 'medium';
+        return quality === 'low' || quality === 'medium';
+    }
+
+    _sceneHasNativeOutline(scene) {
+        let found = false;
+        scene.traverse((object) => {
+            if (found || (!object.isMesh && !object.isSkinnedMesh)) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            if (mats.some((mat) => mat && (mat.isOutline || mat._isOutline) && !mat._nekoSyntheticOutline)) {
+                found = true;
+            }
+        });
+        return found;
+    }
+
+    _applySyntheticOutlineVisible(mat, scale) {
+        const wantVisible = scale > 0;
+        if (this._outlineHiddenByQuality()) {
+            mat._savedVisible = wantVisible;
+            mat.visible = false;
+            return;
+        }
+        mat.visible = wantVisible;
+        if (mat._savedVisible !== undefined) delete mat._savedVisible;
+    }
+
+    _attachSyntheticOutline(mesh, scale) {
+        if (!mesh?.isMesh && !mesh?.isSkinnedMesh) return 0;
+        if (!(scale > 0)) return 0;
+        const current = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        if (current.some((mat) => mat && (mat.isOutline || mat._isOutline))) return 0;
+        if (current.length !== 1) return 0;
+        const base = current[0];
+        if (!base?.isMToonMaterial || this._skipSyntheticOutline(mesh, base)) return 0;
+        const sourceGeometry = mesh.geometry;
+        const position = sourceGeometry?.getAttribute?.('position');
+        const drawCount = sourceGeometry?.index ? sourceGeometry.index.count : (position ? position.count : 0);
+        if (!drawCount) return 0;
+
+        let geometry = sourceGeometry;
+        if (geometry.userData._nekoOutlineOwner && geometry.userData._nekoOutlineOwner !== mesh.uuid) {
+            geometry = geometry.clone();
+            mesh.geometry = geometry;
+        }
+
+        const unitFactor = this._syntheticOutlineUnitFactor();
+        const outline = base.clone();
+        outline.name = `${base.name || 'MToon'} (Outline)`;
+        outline.isOutline = true;
+        outline.side = THREE.BackSide;
+        outline.outlineWidthMode = 'screenCoordinates';
+        outline.outlineWidthFactor = unitFactor;
+        outline._originalOutlineWidthFactor = unitFactor;
+        outline.outlineLightingMixFactor = 0;
+        if (outline.outlineColorFactor?.isColor) {
+            outline.outlineColorFactor.setRGB(0.1, 0.08, 0.09);
+        }
+        outline._nekoSyntheticOutline = true;
+        if ('outlineWidthMultiplyTexture' in outline) {
+            outline.outlineWidthMultiplyTexture = null;
+        }
+        outline.visible = false;
+        if (typeof outline.update === 'function') outline.update(0);
+        mesh.material = [base, outline];
+
+        if (geometry.groups.length === 0) {
+            geometry.addGroup(0, drawCount, 0);
+        }
+        const ranges = geometry.groups.filter((group) => group.materialIndex === 0 && group.count > 0);
+        const sources = ranges.length ? ranges : [{ start: 0, count: drawCount }];
+        sources.forEach((range) => geometry.addGroup(range.start, range.count, 1));
+        geometry.userData._nekoOutlineOwner = mesh.uuid;
+        return 1;
+    }
+
+    applyOutlineWidth(scale) {
+        const parsedScale = Number(scale);
+        const safeScale = Number.isFinite(parsedScale) && parsedScale >= 0 ? parsedScale : 1;
+        const scene = this.manager.currentModel?.vrm?.scene;
+        if (!scene) return;
+        this._appliedOutlineScale = safeScale;
+        if (!this._sceneHasNativeOutline(scene)) {
+            scene.traverse((object) => {
+                this._attachSyntheticOutline(object, safeScale);
+            });
+        }
+        const unitFactor = this._syntheticOutlineUnitFactor();
+        scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach((mat) => {
+                if (!mat || !(mat._isOutline || mat.isOutline)) return;
+                if (mat._nekoSyntheticOutline) {
+                    mat._originalOutlineWidthFactor = unitFactor;
+                    mat.outlineLightingMixFactor = 0;
+                } else if (mat._originalOutlineWidthFactor === undefined) {
+                    mat._originalOutlineWidthFactor = mat.outlineWidthFactor !== undefined ? mat.outlineWidthFactor : 0.002;
+                }
+                if (mat.outlineWidthFactor !== undefined) {
+                    mat.outlineWidthFactor = mat._originalOutlineWidthFactor * safeScale;
+                    if (mat._nekoSyntheticOutline) this._applySyntheticOutlineVisible(mat, safeScale);
+                    mat.needsUpdate = true;
+                }
+            });
+        });
+    }
+
+    refreshSyntheticOutlineWidth() {
+        if (this._appliedOutlineScale == null) return;
+        const scene = this.manager.currentModel?.vrm?.scene;
+        if (!scene) return;
+        const unitFactor = this._syntheticOutlineUnitFactor();
+        scene.traverse((object) => {
+            if (!object.isMesh && !object.isSkinnedMesh) return;
+            const mats = Array.isArray(object.material) ? object.material : [object.material];
+            mats.forEach((mat) => {
+                if (!mat?._nekoSyntheticOutline || mat.outlineWidthFactor === undefined) return;
+                mat._originalOutlineWidthFactor = unitFactor;
+                mat.outlineWidthFactor = unitFactor * this._appliedOutlineScale;
+            });
+        });
+    }
+
+    /**
      * 根据画质设置应用渲染优化（纯性能分级，不改变视觉风格）
      * Low:    pixelRatio 0.8、无物理（render loop 控制）、禁描边
      * Medium: pixelRatio 1.0、有物理（跳帧）、禁描边

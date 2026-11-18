@@ -51,6 +51,7 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
+from utils.recent_file import RecentFileLockTimeout
 from utils.llm_tool_leak_filter import (
     strip_tool_call_leaks,
     strip_tool_call_leaks_from_parts,
@@ -77,6 +78,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
+from memory.pinned_facts import due_date as pinned_due_date
 from utils.natural_expression_candidates import (
     CandidateMinerError,
     SourceMessage,
@@ -84,7 +86,7 @@ from utils.natural_expression_candidates import (
     normalize_language,
 )
 
-from . import gates, locale_state, outbox_infra, post_turn, review, runtime
+from . import gates, habitual_phrase_loop, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
@@ -581,6 +583,28 @@ class ExternalMemoryImportRequest(BaseModel):
     render_language: str | None = None
 
 
+# ── External import progress registry (polled by the Molili frontend progress bar) ──────────
+# character → {stage, persona_total/done, daily_total/done, finished, ...}.
+# Written by _import_external_markdown (register / fuse / finish) and by
+# aimport_external_daily's on_progress callback (once per batch). One small entry per character, no eviction;
+# read and written on the single-threaded event loop, so no lock is needed. Each import owns its own entry
+# object and only edits that one: an overlapping request for the same character (a retry after a frontend
+# timeout) re-registers over it, and the older request finishing first never marks the newer entry finished or writes counts into it.
+_IMPORT_PROGRESS: dict[str, dict] = {}
+
+
+@app.get("/internal/memory/import_progress/{character_name}")
+async def get_import_progress(character_name: str):
+    """External import progress for the Molili import progress bar.
+
+    Pure in-memory counter read: no IO."""
+    name = validate_lanlan_name(character_name)
+    entry = _IMPORT_PROGRESS.get(name)
+    if entry is None:
+        return {'success': True, 'active': False}
+    return {'success': True, 'active': not bool(entry.get('finished')), **entry}
+
+
 @app.post("/internal/memory/import_external_markdown")
 async def import_external_markdown(request: ExternalMemoryImportRequest):
     """Join the per-character admission ledger, then run the import.
@@ -598,13 +622,18 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             {"status": "cancelled", "message": "character release in progress"},
             status_code=409,
         )
+    progress: dict = {}
     try:
-        return await _import_external_markdown(request)
+        return await _import_external_markdown(request, progress)
     finally:
         runtime._end_character_request(name, context_token)
+        progress['finished'] = True
 
 
-async def _import_external_markdown(request: ExternalMemoryImportRequest):
+async def _import_external_markdown(
+    request: ExternalMemoryImportRequest,
+    progress: dict | None = None,
+):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
     The persona and facts persistence paths are **asymmetric**, because their
@@ -629,7 +658,7 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     batch / changed -> replace-then-fuse).
     """
     name = validate_lanlan_name(request.character_name)
-    if request.source_format not in {"openclaw", "hermes"}:
+    if request.source_format not in {"openclaw", "hermes", "molili"}:
         raise HTTPException(status_code=400, detail="Invalid source_format")
     if not request.candidates or len(request.candidates) > MAX_ENTRIES:
         raise HTTPException(status_code=400, detail="Invalid candidate count")
@@ -725,6 +754,20 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     # each entity rewrites only its own section (CAS also checks only that entity's fingerprint set).
     # Slow Phase 2 (LLM) is unlocked: only LLM round trips run concurrently; persistence is mutually exclusive.
     persona_entities = list(persona_candidates_by_entity.items())
+
+    # Progress registry: persona counts per entity; daily counts come from the on_progress callback
+    if progress is None:
+        progress = {}
+    _IMPORT_PROGRESS[name] = progress
+    progress.update({
+        'stage': 'persona',
+        'persona_total': len(persona_entities),
+        'persona_done': 0,
+        'daily_total': 0,
+        'daily_done': 0,
+        'finished': False,
+        'started_at': imported_at,
+    })
     # Browser imports deliberately omit ``language``. Resolve the durable
     # character preference at execution time so a preference changed while the
     # user was reading/confirming the preview cannot be overwritten by a stale
@@ -736,11 +779,16 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
         render_language=request.render_language,
     )
     with language_context(memory_language):
+        async def _fuse_and_mark(entity: str, entity_candidates: list[dict]):
+            outcome = await runtime.persona_manager.afuse_external_facts(
+                name, entity, entity_candidates, request.source_format,
+            )
+            progress['persona_done'] = progress.get('persona_done', 0) + 1
+            return outcome
+
         fusion_outcomes = await asyncio.gather(
             *(
-                runtime.persona_manager.afuse_external_facts(
-                    name, entity, entity_candidates, request.source_format,
-                )
+                _fuse_and_mark(entity, entity_candidates)
                 for entity, entity_candidates in persona_entities
             ),
             return_exceptions=True,
@@ -829,12 +877,18 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
     if daily_candidates:
         try:
             with language_context(memory_language):
+                def _on_daily_progress(update: dict) -> None:
+                    progress.update(update)
+                    progress['stage'] = 'daily'
+
                 daily_result = await runtime.fact_store.aimport_external_daily(
                     name, daily_candidates, request.source_format, imported_at,
+                    on_progress=_on_daily_progress,
                 )
         except ExternalMemoryImportTooLargeError as exc:
-            # Deterministic excess (diary days actually requiring extraction exceed cap): identical retries must exceed again;
-            # return too_large to guide splitting. Daily fingerprints skip imported days, avoiding duplicate costs.
+            # Deterministic excess (a single day alone exceeds the per-import call cap): identical
+            # retries must exceed again, so return too_large to guide splitting. Many days that each
+            # fit do not land here; they resume in segments instead (see deferred_days below).
             logger.warning(
                 "External Markdown import: daily too large: character=%s detail=%s",
                 name, exc,
@@ -870,27 +924,63 @@ async def _import_external_markdown(request: ExternalMemoryImportRequest):
                 },
             )
         daily_added = daily_result["added"]
-        if daily_result["failed_days"]:
-            # Any failed diary-day extraction forbids success (client would treat import complete, permanently
-            # losing failed days with no retry signal, Greptile P1); return retryable partial. Retries converge:
-            # persona skips idempotently by fingerprint; SHA/FTS5 deduplication blocks MEMORY.md and
-            # already extracted daily facts; only failed days actually re-extract.
+        failed_days = daily_result["failed_days"]
+        deferred_days = daily_result.get("deferred_days", 0)
+        oversized_days = daily_result.get("oversized_days", 0)
+        if failed_days or deferred_days:
+            # Failed or deferred (segmented resume) diary days forbid success (the client would treat
+            # the import as complete, permanently losing the remaining days with no retry signal,
+            # Greptile P1); return a retryable partial. Retries converge: persona skips idempotently by
+            # fingerprint; SHA/FTS5 deduplication blocks MEMORY.md and already extracted daily facts;
+            # finished days skip by daily fingerprint; only failed and deferred days actually extract.
             logger.warning(
-                "External Markdown import: %s daily journal(s) failed extraction: character=%s",
-                daily_result["failed_days"], name,
+                "External Markdown import: daily journals incomplete: character=%s "
+                "failed=%s deferred=%s",
+                name, failed_days, deferred_days,
             )
+            detail_parts = []
+            if failed_days:
+                detail_parts.append(f"{failed_days} daily journal(s) failed extraction")
+            if deferred_days:
+                detail_parts.append(
+                    f"{deferred_days} daily journal(s) deferred to the next import"
+                )
             return JSONResponse(
                 status_code=500,
                 content={
-                    "detail": (
-                        f"{daily_result['failed_days']} daily journal(s) failed "
-                        "extraction; retry to finish"
-                    ),
+                    "detail": "; ".join(detail_parts) + "; retry to finish",
                     "error_code": "external_import_partial",
                     "partial_import": {
                         "character_name": name,
                         "added_persona": added_persona,
                         "added_facts": memory_added + daily_added,
+                        "failed_days": failed_days,
+                        "remaining_days": deferred_days,
+                        "oversized_days": oversized_days,
+                    },
+                },
+            )
+        if oversized_days:
+            # Every other day is imported and only days that alone exceed the cap remain: retrying cannot progress -> too_large
+            # guides splitting, carrying the counts persisted by this import (the frontend broadcasts memory_edited from them).
+            logger.warning(
+                "External Markdown import: %s daily journal(s) alone exceed the call cap: "
+                "character=%s",
+                oversized_days, name,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": (
+                        f"{oversized_days} daily journal(s) each need more extraction "
+                        "calls than one import allows; split those days"
+                    ),
+                    "error_code": "external_import_too_large",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added + daily_added,
+                        "oversized_days": oversized_days,
                     },
                 },
             )
@@ -1047,31 +1137,98 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
 
+async def _due_commitment_topic(lanlan_name: str) -> dict | None:
+    """The open promise proactive chat may lead with, ``{id, text, due}``; None if none.
+
+    At most one: due soon and not offered lately (see
+    PinnedFactStore.get_due_commitment). Like the pinned section itself it
+    is private-chat content, and proactive chat speaks in the private chat.
+    """
+    store = runtime.pinned_fact_store
+    if store is None:
+        return None
+    try:
+        entry = await store.aget_due_commitment(lanlan_name)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺读取失败: {type(e).__name__}")
+        return None
+    if entry is None:
+        return None
+    return {"id": entry["id"], "text": entry["text"], "due": pinned_due_date(entry)}
+
+
+async def _record_surfaced_commitments(lanlan_name: str, pinned_ids: list[str]) -> bool:
+    """Start the offer cooldown of the promises proactive chat was given; True once written."""
+    store = runtime.pinned_fact_store
+    if store is None or not pinned_ids:
+        return False
+    try:
+        written = await store.amark_surfaced(lanlan_name, pinned_ids)
+    except Exception as e:
+        logger.debug(f"[ReflectAPI] {lanlan_name}: 承诺 surfaced 记录失败: {type(e).__name__}")
+        return False
+    return bool(written)
+
+
 @app.get("/followup_topics/{lanlan_name}")
 async def api_followup_topics(lanlan_name: str):
-    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards)."""
+    """Get follow-up topic candidates (does not mark them surfaced; the caller must call /record_surfaced afterwards).
+
+    ``commitment`` is the open promise due soonest, offered ahead of the
+    reflection topics; its id comes back through /record_surfaced like theirs.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     try:
         topics = await runtime.reflection_engine.aget_followup_topics(lanlan_name)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: get_followup_topics 失败: {e}")
         topics = []
-    return {"topics": topics}
+    return {"topics": topics, "commitment": await _due_commitment_topic(lanlan_name)}
 
 
 @app.post("/record_surfaced/{lanlan_name}")
 async def api_record_surfaced(request: Request, lanlan_name: str):
-    """Record which reflections this proactive chat mentioned, refreshing the cooldown."""
+    """Record which reflections this proactive chat mentioned, refreshing the cooldown.
+
+    ``commitment_ids`` (the promise from /followup_topics, when it was
+    offered) start that promise's own offer cooldown in the pinned section;
+    ``commitments_recorded`` tells the caller whether that write landed, so
+    a failed one is retried with the delivery record.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     body = await request.json()
+    result: dict[str, object] = {"ok": True}
+    commitment_ids = body.get("commitment_ids") or []
+    if commitment_ids:
+        result["commitments_recorded"] = isinstance(commitment_ids, list) and await _record_surfaced_commitments(
+            lanlan_name, commitment_ids,
+        )
     reflection_ids = body.get("reflection_ids", [])
     if not reflection_ids:
-        return {"ok": True}
+        return result
     try:
         await runtime.reflection_engine.arecord_surfaced(lanlan_name, reflection_ids)
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: record_surfaced 失败: {e}")
-    return {"ok": True}
+    return result
+
+
+@app.post("/internal/memory/{lanlan_name}/legacy_dedup/restore")
+async def api_restore_legacy_dedup(request: Request, lanlan_name: str):
+    """Bring back the facts the one-time duplicate cleanup folded away.
+
+    They come back under new ids, so a peer that still holds the archived rows
+    cannot fold them away again; the folded rows stay archived. A device that
+    syncs should look at the result after its next sync.
+    """
+    from . import legacy_dedup
+    # Loopback skips credentials, so a page in a browser could post here; only
+    # the app's own services may (same rule as the knowledge routes).
+    if any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    restored = await legacy_dedup.restore(lanlan_name)
+    return {"ok": True, "restored": restored, "restored_as_new_ids": True}
 
 
 @app.post("/cache/{lanlan_name}")
@@ -1252,7 +1409,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             return {"status": "error", "message": str(e)}
 
 
-# ── keyed private /cache and visit facts (catgirl visit "keep as diary", OD-16 v4) ──
+# ── keyed private /cache and visit facts (neko visit "keep as diary", OD-16 v4) ──
 
 from utils.recent_file import VISIT_DIARY_KEY_RE as _KEYED_CACHE_KEY_RE  # noqa: E402
 
@@ -1472,7 +1629,9 @@ async def write_visit_facts(lanlan_name: str, req: VisitFactsRequest):
             return {"ok": True, "written": written_n, "deduped": deduped_n, "duplicate": True}
         # Missing content hash or malformed counts: infer from this visit's fact-pool rows as for absent records, filling only gaps.
         try:
-            rows = await runtime.fact_store.aload_facts_strict(lanlan_name, include_archive=True)
+            rows = await runtime.fact_store.aload_facts_strict(
+                lanlan_name, include_archive=True, include_cold_stubs=True,
+            )
         except RuntimeError as exc:
             # Never guess on read failure: permissive active-pool loading caches an empty list, whose writeback would erase existing facts.
             logger.warning(f"[MemoryServer] visit_facts {lanlan_name}: fact pool unreadable: {exc}")
@@ -1480,8 +1639,12 @@ async def write_visit_facts(lanlan_name: str, req: VisitFactsRequest):
         mine = [row for row in rows if row.get("origin") == "neko_visit" and row.get("visit_id") == req.visit_id]
         already = len(mine)
         known_effects = {row.get("effect_key") for row in mine}
-        expected = {idempotency.effect_key_for(key, i): text for i, text in enumerate(texts)}
-        if any(expected.get(row.get("effect_key")) != row.get("text") for row in mine):
+        # Compared by wording hash: a cold row is only a stub, without its text.
+        from memory.cold_store import text_sha256
+        expected = {idempotency.effect_key_for(key, i): text_sha256(text) for i, text in enumerate(texts)}
+        if any(expected.get(row.get("effect_key"))
+               != (row["text_sha256"] if "text_sha256" in row else text_sha256(row.get("text")))
+               for row in mine):
             # Reach fact-pool recovery only for missing/malformed key records: if this visit's rows differ from current request text,
             # current content cannot be reported written (same handling as content_hash mismatch).
             raise HTTPException(status_code=422, detail="visit_id reused with different facts")
@@ -1773,11 +1936,15 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             if _has_human_messages(input_history):
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
-            await runtime.recent_history_manager.update_history(
-                input_history,
-                lanlan_name,
-                on_compress_done=review._on_compress_done,
-            )
+            # Not under the settle lock, but a starting session waits for this request to come
+            # back (its memory writes are flushed first), so its summary is preemptible too.
+            with runtime._summary_preemption(lanlan_name) as preempted:
+                await runtime.recent_history_manager.update_history(
+                    input_history,
+                    lanlan_name,
+                    on_compress_done=review._on_compress_done,
+                    preempted=preempted,
+                )
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Asynchronous fact extraction (nonblocking response, silently skip failures).
@@ -1832,13 +1999,16 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
                 await gates._aclear_review_clean(lanlan_name)
             logger.info(f"[MemoryServer] renew: 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
             # Lock first-turn summary, blocking /new_dialog until summary and timestamp persist.
+            # A cold-start /new_dialog preempts the summary instead (see runtime._preempting_summaries).
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.update_history(
-                    input_history,
-                    lanlan_name,
-                    detailed=True,
-                    on_compress_done=review._on_compress_done,
-                )
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        detailed=True,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
                 await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Run the following outside lock, without blocking /new_dialog.
@@ -1889,12 +2059,14 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             async with runtime._get_settle_lock(lanlan_name):
                 if input_history:
                     await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
-                await runtime.recent_history_manager.update_history(
-                    [],
-                    lanlan_name,
-                    detailed=True,
-                    on_compress_done=review._on_compress_done,
-                )
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        [],
+                        lanlan_name,
+                        detailed=True,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
 
             if input_history or is_supported_language_code(request.language):
                 await post_turn._spawn_outbox_post_turn_signals(
@@ -1985,10 +2157,38 @@ def _without_tool_call_leaks(history) -> list:
     return cleaned
 
 
+# Below the game pregame caller's 5s HTTP timeout.
+_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS = 4.0
+
+
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
+    # The only caller (game pregame) gives up after 5s and falls back to empty history.
+    # One deadline covers every step that can queue on the default executor or the recent
+    # lock, and the worker thread's own lock wait ends at it too instead of outliving the 503.
+    deadline = time.monotonic() + _RECENT_HISTORY_LOCK_TIMEOUT_SECONDS
+    try:
+        async with asyncio.timeout(_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS):
+            return await _render_recent_history(lanlan_name, _lang, deadline)
+    except RecentFileLockTimeout:
+        # Already reported by the lock or the manager; one stuck wait counts once.
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+    except TimeoutError:
+        from utils.stall_report import report_stall
+        report_stall(
+            f"/get_recent_history {lanlan_name} {_RECENT_HISTORY_LOCK_TIMEOUT_SECONDS}s 内未完成，返回 503",
+            loop=asyncio.get_running_loop(),
+        )
+        return JSONResponse(
+            {"status": "error", "message": "recent history is busy"}, status_code=503,
+        )
+
+
+async def _render_recent_history(lanlan_name: str, _lang: str, deadline: float):
     # Check whether character exists in configuration.
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -2000,9 +2200,10 @@ async def get_recent_history(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return _loc(NO_RECENT_HISTORY, _lang)
 
-    history = _screen_guarded_recent_history(
-        await runtime.recent_history_manager.aget_recent_history(lanlan_name)
+    raw_history = await runtime.recent_history_manager.aget_recent_history(
+        lanlan_name, lock_timeout=max(0.0, deadline - time.monotonic()),
     )
+    history = _screen_guarded_recent_history(raw_history)
     master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
     result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
@@ -2333,7 +2534,7 @@ async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
             # the operator's only cue that ``scoped_forget`` is still needed.
             # The loader already collapses rows present in both files and
             # degrades to active-only on a corrupt archive.
-            rows = await runtime.fact_store.aload_facts_full(name)
+            rows = await runtime.fact_store.aload_facts_full(name, include_cold_stubs=True)
         except Exception as exc:  # noqa: BLE001 - same
             logger.warning(f"[Identity] stranded_rows 读取 {name} 失败: {exc}")
             return None
@@ -2921,6 +3122,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 "speaker_provenance": speaker_provenance,
                 "speaker_label": speaker_label,
                 "messages": input_history,
+                "label_own_words": FactStore.group_history_has_own_words(
+                    input_history, subject,
+                ),
                 "trust_state": trust_state,
             }],
         )
@@ -2975,6 +3179,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_label=speaker_label,
             speaker_provenance=speaker_provenance,
             reconciled_facts=reconciled_facts,
+            label_own_words=FactStore.group_history_has_own_words(
+                input_history, subject,
+            ),
         )
     except FactExtractionFailed as exc:
         raise HTTPException(
@@ -4064,6 +4271,7 @@ async def _generate_keyed_facts(
             context["messages"],
             treat_malformed_as_failure=True,
             speaker_label=context.get("speaker_label"),
+            label_own_words=bool(context.get("label_own_words")),
         )
         if extracted is None:
             raise failure
@@ -5966,30 +6174,16 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     # holds. Authorization uses the flattened expansion, while rendering gets
     # the participant groups so budget, heading and id stay one-per-person.
     groups, subjects = _fold_request_subjects(req.subjects)
-    # Suppression expiry only occurs in aupdate_suppressions, previously called only by
-    # legacy /get_settings and /new_dialog. Group-only deployments never reach
-    # them, making scoped reflections permanently invisible after their first suppression.
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as exc:
-        logger.warning(f"[scoped] 刷新 reflection suppression 失败: {exc}")
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
-        lanlan_name,
-        subjects=subjects,
-        include_legacy_private=False,
-    )
-    rendered = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name,
-        pending_reflections,
-        confirmed_reflections,
-        subjects=subjects,
-        include_legacy_private=False,
-        participant_groups=groups,
+    # The render the weekly scoped review reads too (one definition, so the
+    # two cannot drift). It refreshes suppressions first: their expiry only
+    # happens there, and group-only deployments never reach /new_dialog, so
+    # without it a scoped reflection stays invisible after its first
+    # suppression.
+    from memory.introspection import arender_scoped_injected_memory
+
+    rendered = await arender_scoped_injected_memory(
+        runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+        subjects, participant_groups=groups,
     )
     return PlainTextResponse(rendered)
 
@@ -6102,6 +6296,15 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
         )
     subject = req.subject.to_domain()
     _validate_target_epochs(req, subject)
+    # A pending snapshot journal restores its before-image when recovered, which
+    # would bring back whatever this erase removes. Settle it first or refuse;
+    # the erase checks again once it holds the lock snapshot commits take.
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired, require_consistent_views
+    from .long_term_sync import recover_pending_snapshot
+    try:
+        await recover_pending_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as error:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from error
     from memory import trust_store as _trust_store
     if not _trust_store.trust_snapshot().loaded:
         # FAIL CLOSED. With the pool unreadable the fan-out set is unknown, and
@@ -6228,6 +6431,10 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
     # arguments ("delete canonical last") are not enough.
     await runtime._reload_lock.acquire()
     try:
+        await asyncio.to_thread(
+            require_consistent_views,
+            os.path.join(runtime._config_manager.memory_dir, lanlan_name),
+        )
         for target in erase_targets:
             lock = runtime.fact_store._get_subject_forget_transaction_lock(
                 lanlan_name, target,
@@ -6328,6 +6535,8 @@ async def _forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest, *, 
             )
     except _ForgetAlreadyErased:
         raise
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(
@@ -6852,6 +7061,12 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     archived_facts = await asyncio.to_thread(
         _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
     )
+    # Cold facts count too (archived subjects live there), as stubs without text.
+    from memory import cold_store
+    try:
+        archived_facts = list(archived_facts) + await cold_store.astatus(character_dir)
+    except cold_store.ColdStoreUnreadable as exc:
+        logger.warning(f"[MemoryServer] list_scoped_subjects {lanlan_name}: cold facts unreadable: {exc}")
     def _fact_id(fact: dict):
         # Old/manual files may have unhashable list/object IDs: accept strings/integers only;
         # treat others as no ID, preventing one corrupt row from making the entire listing return 500.
@@ -7558,11 +7773,55 @@ async def get_settings(lanlan_name: str):
     )
 
 
+@app.get("/internal/memory/{lanlan_name}/persona")
+async def get_private_persona_snapshot(lanlan_name: str):
+    """Return the native retained private persona projection."""
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    manager = runtime.persona_manager
+    if manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    from memory.long_term_sync import LongTermMemoryRecoveryRequired
+    try:
+        return await manager.aget_private_persona_snapshot(lanlan_name)
+    except LongTermMemoryRecoveryRequired as exc:
+        raise HTTPException(status_code=503, detail="long_term_memory_recovery_required") from exc
+    except OverflowError as exc:
+        raise HTTPException(status_code=413, detail={
+            "code": "MEMORY_RESPONSE_TOO_LARGE",
+            "message": "Persona snapshot exceeds internal limit",
+        }) from exc
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise HTTPException(status_code=500, detail={
+            "code": "MEMORY_PROTOCOL_ERROR", "message": "Malformed persona data",
+        }) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Persona storage unavailable") from exc
+
+
 @app.get("/get_persona/{lanlan_name}")
 async def get_persona(lanlan_name: str):
     """Return the full persona JSON (for the UI / memory_browser)."""
     lanlan_name = validate_lanlan_name(lanlan_name)
+    from .long_term_sync import consume_for_name
+    await consume_for_name(lanlan_name)
     return await runtime.persona_manager.aget_persona(lanlan_name)
+
+
+@app.post("/internal/chat-sync/long-term-memory/{uid}")
+async def apply_synced_long_term_memory(uid: str, request: Request):
+    """Wake the native owner to consume its durable, locally authorized inbox."""
+    from ipaddress import ip_address
+    from utils.deployment import has_forwarding_metadata
+    try:
+        local = request.client is not None and ip_address(request.client.host).is_loopback
+    except ValueError:
+        local = False
+    if not local or has_forwarding_metadata(request.headers):
+        raise HTTPException(status_code=403, detail='local_request_required')
+    if not re.fullmatch(r'[0-9a-f]{32}', uid):
+        raise HTTPException(status_code=400, detail='invalid_character_uid')
+    from .long_term_sync import consume
+    return {'applied': await consume(uid)}
 
 
 @app.get("/api/memory/funnel/{lanlan_name}")
@@ -7704,15 +7963,41 @@ async def set_prompt_locale_preference(
     }
 
 
+# How long POST /preempt_summary keeps preempting summaries that start after it; the
+# cold-start /new_dialog that follows closes the window sooner.
+PREEMPT_SUMMARY_WINDOW_S = 10.0
+
+
+@app.post("/preempt_summary/{lanlan_name}")
+async def preempt_summary(lanlan_name: str):
+    """Abandon ``lanlan_name``'s summary LLM calls to background compression (#3601).
+
+    The main server calls this before a cold start: it then waits for its own queued memory
+    writes, which may be stuck behind a summary, and only then sends
+    ``/new_dialog?preempt_summary=true``.
+    """
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    runtime._open_summary_preemption_window(lanlan_name, PREEMPT_SUMMARY_WINDOW_S)
+    return {"status": "ok"}
+
+
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(
     lanlan_name: str,
     language: str | None = None,
     render_language: str | None = None,
+    preempt_summary: bool = False,
 ):
+    """``preempt_summary``: the caller is starting a conversation and waits for this response
+    (#3601), so a summary LLM call holding the settle lock is abandoned to background
+    compression instead of being waited for. Hot-swap preparation leaves it off: the old
+    session is still serving, and the new one should start from the finished summary."""
     request_language = language if is_supported_language_code(language) else render_language
     with language_context(_activate_request_language(request_language)):
-        return await _new_dialog(lanlan_name, language, render_language)
+        if not preempt_summary:
+            return await _new_dialog(lanlan_name, language, render_language)
+        with runtime._preempting_summaries(validate_lanlan_name(lanlan_name)):
+            return await _new_dialog(lanlan_name, language, render_language)
 
 
 async def _write_new_dialog_locale(
@@ -7825,12 +8110,32 @@ outbox_infra.register_outbox_handler(
 )
 
 
+async def _arender_behavior_notes(name: str, lang: str) -> str:
+    """The behavior-note block, under the user's "natural expression" switch.
+
+    A read of one small file; nothing is computed on the session-start path, and
+    a failure costs only this block.
+    """
+    from memory.behavior_notes import get_behavior_note_store
+    from utils.slop_filter import is_slop_filter_enabled
+
+    try:
+        if not await asyncio.to_thread(is_slop_filter_enabled):
+            return ""
+        return await get_behavior_note_store().aprompt_block(name, lang)
+    except Exception as e:
+        logger.warning(f"[BehaviorNotes] {name}: 提醒注入跳过: {type(e).__name__}")
+        return ""
+
+
 async def _new_dialog(
     lanlan_name: str,
     language: str | None = None,
     render_language: str | None = None,
 ):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    from .long_term_sync import consume_for_name
+    await consume_for_name(lanlan_name)
     gates._touch_activity()
     has_explicit_language = is_supported_language_code(language)
     locale_admission_order = None
@@ -7851,6 +8156,9 @@ async def _new_dialog(
         return PlainTextResponse("")
 
     if not has_explicit_language:
+        # This session speaks its request (UI) language; the habitual-phrase
+        # miner follows it. Noted in memory only, never persisted.
+        habitual_phrase_loop.note_session_render_language(lanlan_name, render_language)
         try:
             durable_language = await asyncio.to_thread(
                 locale_state.get_character_prompt_locale,
@@ -7954,7 +8262,7 @@ async def _new_dialog(
     # without racing these reads. Phase C makes review a background task concurrent with /process;
     # /new_dialog no longer cancels running reviews (old cancellation was Phase A
     # residue, making reviews almost never finish in active sessions).
-    async with runtime._get_settle_lock(lanlan_name):
+    async with runtime._hold_settle_lock_reporting_stalls(lanlan_name, "/new_dialog"):
         # Regex removes all bracket types and contents (including [], (), {}, <>, 【】, （）, etc.).
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
@@ -7966,19 +8274,21 @@ async def _new_dialog(
         # is read after entry, so reenter context before nested renderers that may read
         # global language; explicit _lang still serves table-driven strings in this function.
         with language_context(_activate_request_language(language)):
-            # Inject pending + confirmed reflections into context too (labeled sections).
-            try:
-                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-            except Exception as e:
-                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            # Pinned important facts (their own section, ahead of the persona
+            # sections; private chat only, no scoped renderer reads them) and
+            # persona + pending/confirmed reflections (labeled sections).
+            # Shared with weekly introspection, which must review exactly
+            # this block. Read on every call, so a session start or a hot-swap
+            # prompt rebuild picks up entries admitted since the previous one.
+            from memory.introspection import arender_injected_memory
             result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-            persona_md = await runtime.persona_manager.arender_persona_markdown(
-                lanlan_name, pending_reflections, confirmed_reflections,
+            injected = await arender_injected_memory(
+                runtime.persona_manager, runtime.reflection_engine, lanlan_name,
+                pinned_fact_store=runtime.pinned_fact_store, lang=_lang,
             )
-        if persona_md:
-            result += persona_md
+        result += injected.pinned_prefix
+        if injected.persona:
+            result += injected.persona
         else:
             # Compatibility fallback: old settings (natural-language format).
             # get_settings uses open() + json.load(); offload to avoid blocking (cold fallback, but multi-file IO when triggered).
@@ -8044,6 +8354,14 @@ async def _new_dialog(
                 result += _loc(CHAT_HOLIDAY_CONTEXT, _lang).format(holiday=holiday_name)
         except Exception as e:
             logger.debug(f"Holiday context injection skipped: {e}")
+
+        # Reminders from the weekly behavior review. In this text rather than the
+        # session prompt so that every way she starts talking reads them: a session
+        # start, a hot swap and voice as well as proactive chat. Last, after the
+        # conversation: measured on real reopenings, the same note placed before
+        # the history barely changed anything, since the history right after it
+        # shows her doing the very thing and she follows that instead.
+        result += await _arender_behavior_notes(lanlan_name, _lang)
 
         return PlainTextResponse(result)
 

@@ -146,7 +146,7 @@ def select_digest_lines(
     cats = [line for line in ordered if line["from"] in _CAT_SPEAKERS]
     humans = [line for line in ordered if line["from"] not in _CAT_SPEAKERS]
     if len(cats) > limit:
-        # Protocol permits at most 80 catgirl lines per visit; excess means corrupt data. Still bound total count and keep the latest.
+        # Protocol permits at most 80 neko lines per visit; excess means corrupt data. Still bound total count and keep the latest.
         cats = cats[-limit:]
     room = max(0, limit - len(cats))
     kept_humans = humans[-room:] if room else []

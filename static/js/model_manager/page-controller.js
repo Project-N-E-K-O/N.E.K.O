@@ -4646,7 +4646,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const sizeKB = model.size ? `${(model.size / 1024).toFixed(0)} KB` : '';
                 label.textContent = `${model.name} (${model.filename}) ${sizeKB}`;
                 if (isBound) {
-                    label.style.opacity = '0.5';
                     label.textContent += ' [使用中]';
                 }
 
@@ -5632,6 +5631,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     function applyVrmOutlineWidth(scale) {
         const label = document.getElementById('vrm-outline-width-value');
         if (label) label.textContent = scale.toFixed(2);
+        if (vrmManager?.core?.applyOutlineWidth) {
+            vrmManager.core.applyOutlineWidth(scale);
+            return;
+        }
         if (!vrmManager?.currentModel?.vrm?.scene) return;
         vrmManager.currentModel.vrm.scene.traverse((object) => {
             if (!object.isMesh && !object.isSkinnedMesh) return;
@@ -8895,7 +8898,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     boundBadge.style.fontWeight = 'bold';
                     boundBadge.textContent = t('live2d.modelInUse', '使用中');
                     item.appendChild(boundBadge);
-                    item.style.opacity = '0.6';
                 }
 
                 checkbox.addEventListener('change', (e) => {
