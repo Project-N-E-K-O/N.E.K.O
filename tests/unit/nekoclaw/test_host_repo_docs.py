@@ -794,7 +794,7 @@ async def test_a_look_for_the_list_that_does_not_come_back_does_not_keep_a_task_
     def unanswered(workdir: Any, **how: Any) -> str:
         # A folder on a share that does not answer.
         looks.append(str(workdir))
-        answered.wait(10)
+        answered.wait(120)
         return real(workdir, **how)
 
     monkeypatch.setattr(repo_docs, "listing", unanswered)

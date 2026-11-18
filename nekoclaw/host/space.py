@@ -270,6 +270,24 @@ class _Document:
 
 
 @dataclass(frozen=True, slots=True)
+class _Rested:
+    """An entry that rests on files, as it was read when those files are looked at (``check_evidence``).
+
+    ``place`` is where it stands among the entries of that call;
+    ``outside`` are the files that lie outside the working directories;
+    ``listed`` is whether one that says it expired still has its line.
+    """
+
+    place: int
+    scope: str | None
+    id: str
+    evidence: tuple[str, ...]
+    outside: tuple[str, ...]
+    expired: bool
+    listed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Known:
     """What is known of a note beyond its words, as an entry keeps it."""
 
@@ -1336,9 +1354,10 @@ class TaskAgentSpace:
         # How far the last look at what the entries rest on got, among
         # all their files; the next one goes on from there.
         self._evidence_looked_until = 0
-        # The look that is under way, or was given up on and has not come
-        # back (``check_evidence``).
+        # The last look at those files, and the entries a look that was
+        # given up on is still at (``check_evidence``).
         self._evidence_look: asyncio.Future[Any] | None = None
+        self._evidence_unanswered: set[tuple[str | None, str]] = set()
 
     # -- plumbing ---------------------------------------------------------
 
@@ -2038,17 +2057,21 @@ class TaskAgentSpace:
         heading of the host's that may be the user's own line. A text is
         no longer than ``SPACE_ENTRY_CONTENT_MAX_TOKENS``; a longer one
         would be cut off where it is filed, and the rest lost with the
-        file it came from. Then there is no way to file it whole.
+        file it came from. Then there is no way to file it whole. A text
+        that says nothing is none: an entry that was emptied in the
+        console keeps the mark of nothing, and has nothing to file.
         """
         from config.nekoclaw_settings import SPACE_ENTRY_CONTENT_MAX_TOKENS
+        from utils.tokenize import count_tokens
 
         def whole(text: str) -> bool:
-            return _cut(redact(text), SPACE_ENTRY_CONTENT_MAX_TOKENS) == _cut(redact(text), 1000 * SPACE_ENTRY_CONTENT_MAX_TOKENS)
+            # As ``_file_entry`` keeps a text, before it cuts it.
+            return count_tokens(_plain_lines(redact(text)).strip()) <= SPACE_ENTRY_CONTENT_MAX_TOKENS
 
         texts = _texts_of(document.body, _listed(document, "texts"))
         if texts is None:
-            said = document.body.strip()
-            texts = [said] if _normal(said) else []
+            texts = [document.body.strip()]
+        texts = [text for text in texts if _normal(text)]
         return texts if all(whole(text) for text in texts) else None
 
     def _pending_as_read(
@@ -2220,13 +2243,20 @@ class TaskAgentSpace:
         it is in the other entry, and what they saved is still pending.
         And one that holds a text longer than a text may be (written so
         in an editor) is not put into the other entry at all: cut to
-        fit, the end of it would be lost with the file.
+        fit, the end of it would be lost with the file. Nor is one the
+        user gave another title since it was found to be the same note.
         """
         path = self._paths().memory_dir(project) / f"{pending.id}.md"
         read = self._pending_as_read(path, project)
         if read is None:
             return into, False, None
-        before, said, pending = read
+        before, said, as_read = read
+        if _normal(as_read.title) != _normal(pending.title):
+            # The user gave it another title since it was found to be
+            # the same note: it is about something else now, and waits
+            # under that title.
+            return into, False, None
+        pending = as_read
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
         carried = _Known(
@@ -2405,12 +2435,14 @@ class TaskAgentSpace:
             # go, never the one just filed. One that was brought along was
             # filed some time ago, and goes like any other.
             self._crowd_out(directory, project, None if note.waited else entry.id)
-            # A text that waited when it was looked at, and was taken out
-            # of its file before this was written (the user, in an
-            # editor), was added again: that uses a place like any text
-            # put on file, unless the commission used one for it before.
+            # A place is used by what was put on file, as it turned out
+            # when it was written: a new pending entry, or a text added
+            # to one, unless the commission used a place for that text
+            # before. The user may have saved the file between the look
+            # and the writing: a text that waited and was taken out is
+            # added again, and one that was not there may be by then.
             return _Taken(
-                entry, _HELD, confidence=known.confidence, charged=own is None or (how == _ADDED and not paid)
+                entry, _HELD, confidence=known.confidence, charged=how == _CREATED or (how == _ADDED and not paid)
             )
         charged = not paid and not there
         if charged and not may_use_place:
@@ -3314,14 +3346,31 @@ class TaskAgentSpace:
         in one call; the next call goes on after them.
 
         The files may be on a share that does not answer, and a look at
-        one of those never comes back. It is made in a thread of its own
-        and waited for no longer than ``SPACE_EVIDENCE_LOOK_SECONDS``;
-        past that nothing is known and nothing is changed, and no other
-        look is started while that one is out.
+        one of those never comes back. So the entries are read first,
+        which touches the space's own files only, and the pending ones
+        that waited long enough are removed whatever becomes of the
+        rest. Then the files are looked at in a thread of its own, entry
+        by entry, for no longer than ``SPACE_EVIDENCE_LOOK_SECONDS``.
+        What was found by then is used, and the next call begins at the
+        entry the look was at: a disk that answers slowly is got through
+        a few entries a call. A look that was given up on ends once the
+        entry it is at answers; until then that entry is passed over,
+        and with
+        ``SPACE_EVIDENCE_LOOKS_AT_ONCE`` of them out none is started:
+        the entries that rest on files are passed over, and the pending
+        ones are still seen to.
+
+        No file is looked at under the lock on the space's writes. An
+        entry is changed when it still rests on the files that were
+        looked at (``_set_standing``), and when task agents may read
+        outside the working directories as they might at the look.
         """
+        import threading
+
         from config.nekoclaw_settings import (
             SPACE_EVIDENCE_ENTRIES_PER_UPKEEP,
             SPACE_EVIDENCE_LOOK_SECONDS,
+            SPACE_EVIDENCE_LOOKS_AT_ONCE,
             SPACE_HELD_KEPT_SECONDS,
         )
         from nekoclaw.host.detached import run_detached
@@ -3329,8 +3378,10 @@ class TaskAgentSpace:
         allowed = await self._outside_allowed()
         # A pending entry last filed before this day has waited long enough.
         oldest = _date(self._clock() - SPACE_HELD_KEPT_SECONDS)
+        # The entries a look that was given up on is still at.
+        unanswered = frozenset(self._evidence_unanswered)
 
-        def look() -> tuple[list[tuple[str | None, str, bool | None]], list[tuple[str | None, str]], int | None]:
+        def read() -> tuple[list[_Rested], list[tuple[str | None, str]], int, int, int]:
             paths = self._paths()
             scopes: list[str | None] = [None, *(project.name for project in self._active_projects())]
             files: list[tuple[str | None, Path]] = []
@@ -3344,17 +3395,15 @@ class TaskAgentSpace:
                 except (OSError, ValueError):
                     continue
             if not files:
-                return [], [], None
+                return [], [], 0, 0, 0
             start = self._evidence_looked_until % len(files)
-            # What is to become of an entry: True to expire, False to be in
-            # effect again, None for its line alone to go.
-            due: list[tuple[str | None, str, bool | None]] = []
-            # The pending entries that have waited long enough.
+            turn = [*files[start:], *files[:start]][:SPACE_EVIDENCE_ENTRIES_PER_UPKEEP]
+            # The entries of this turn that rest on files, and the pending
+            # ones that have waited long enough.
+            rested: list[_Rested] = []
             old: list[tuple[str | None, str]] = []
             indexes: dict[str | None, str] = {}
-            taken = 0
-            for scope, path in [*files[start:], *files[:start]][:SPACE_EVIDENCE_ENTRIES_PER_UPKEEP]:
-                taken += 1
+            for place, (scope, path) in enumerate(turn):
                 text = self._read_text(path)
                 if text is None:
                     continue
@@ -3364,12 +3413,11 @@ class TaskAgentSpace:
                         old.append((scope, path.stem))
                     continue
                 evidence = _evidence_in(document)
-                if not evidence or not _listed(document, "texts"):
+                if not evidence or not _listed(document, "texts") or (scope, path.stem) in unanswered:
                     continue
                 expired = document.get("status").strip().lower() == ENTRY_EXPIRED
-                gone = _gone(evidence, _outside_in(document), allowed)
                 listed = False
-                if expired and gone is not False:
+                if expired:
                     # One that says it expired and still has its line: the
                     # index could not be written when it expired, or it
                     # could not be brought back and the line put there for
@@ -3377,62 +3425,107 @@ class TaskAgentSpace:
                     if scope not in indexes:
                         indexes[scope] = self._read_text(paths.index(scope)) or ""
                     listed = self._index_line_in(indexes[scope], f"{paths.MEMORY_DIR}/{path.stem}.md") is not None
-                if gone is True:
-                    if not expired or listed:
-                        due.append((scope, path.stem, True))
-                elif gone is False and expired:
-                    due.append((scope, path.stem, False))
-                elif gone is None and listed:
-                    # Whether its files are there cannot be told, so what
-                    # it says stays. But it says it expired, and an entry
-                    # that expired is handed to no task agent.
-                    due.append((scope, path.stem, None))
-            # How far it got: the next look goes on from there, once
-            # what this one found was used.
-            return due, old, (start + taken) % len(files)
-
-        outcome = {"expired": 0, "restored": 0, "dropped": 0}
-        if self._evidence_look is not None and not self._evidence_look.done():
-            logger.warning("the last look at the files the entries rest on has not come back; none is started")
-            return outcome
-        try:
-            looking = run_detached(look, name="nekoclaw-space-evidence")
-        except RuntimeError:
-            logger.warning("no thread could be started to look at the files the entries rest on")
-            return outcome
-        self._evidence_look = looking
-        # Looked at here when nobody waits for it any more.
-        looking.add_done_callback(lambda done: done.cancelled() or done.exception())
-        try:
-            due, old, until = await asyncio.wait_for(asyncio.shield(looking), SPACE_EVIDENCE_LOOK_SECONDS)
-        except asyncio.TimeoutError:
-            # What it finds when it does come back is not used: the same
-            # entries are looked at again the next time.
-            logger.warning("looking at the files the entries rest on took too long; nothing is changed this time")
-            return outcome
-        if until is not None:
-            self._evidence_looked_until = until
-        for scope, entry_id, expire in due:
-            try:
-                if expire is None:
-                    await self._write(self._unlist_expired, scope, entry_id)
-                    continue
-                changed = await self._write_judged(
-                    lambda may, scope=scope, entry_id=entry_id, expire=expire: self._set_standing(
-                        scope, entry_id, expire, may
-                    )
+                rested.append(
+                    _Rested(place, scope, path.stem, tuple(evidence), tuple(_outside_in(document)), expired, listed)
                 )
-            except (OSError, ValueError):
-                logger.warning("an entry of the task agent space could not be marked as expired or in effect", exc_info=True)
-                continue
-            if changed:
-                outcome["expired" if expire else "restored"] += 1
+            return rested, old, start, len(turn), len(files)
+
+        rested, old, start, taken, total = await self._read(read)
+        outcome = {"expired": 0, "restored": 0, "dropped": 0}
         for scope, entry_id in old:
             try:
                 if await self._write(self._drop_pending, scope, entry_id, oldest):
                     outcome["dropped"] += 1
             except (OSError, ValueError):
                 logger.warning("a pending entry that has waited long enough could not be removed", exc_info=True)
+
+        # Whether the files of each entry are gone, in the order of
+        # ``rested``: added to by the look, read here.
+        found: list[bool | None] = []
+        stop = threading.Event()
+
+        def look() -> None:
+            for item in rested:
+                if stop.is_set():
+                    return
+                try:
+                    gone = _gone(item.evidence, item.outside, allowed)
+                except Exception:  # noqa: BLE001 - nothing is told of this entry; the others are looked at
+                    logger.warning("the files an entry rests on could not be looked at", exc_info=True)
+                    gone = None
+                found.append(gone)
+
+        # How many of ``rested`` were looked at, and how far among the
+        # entries of this turn that is.
+        got, reached = 0, taken
+        looking: asyncio.Future[None] | None = None
+        if rested and len(self._evidence_unanswered) >= SPACE_EVIDENCE_LOOKS_AT_ONCE:
+            logger.warning("looks at the files the entries rest on have not come back; none is started")
+        elif rested:
+            try:
+                looking = run_detached(look, name="nekoclaw-space-evidence")
+            except RuntimeError:
+                logger.warning("no thread could be started to look at the files the entries rest on")
+        if looking is not None:
+            self._evidence_look = looking
+            try:
+                await asyncio.wait_for(asyncio.shield(looking), SPACE_EVIDENCE_LOOK_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("looking at the files the entries rest on took too long; the rest is left for later")
+            except asyncio.CancelledError:
+                stop.set()
+                raise
+            # It looks at no further entry, and ends once the one it is at
+            # answers.
+            stop.set()
+            got = len(found)
+            if got < len(rested):
+                at = rested[got]
+                # Where the next call begins. While this look is out, the
+                # entry is passed over.
+                reached = at.place
+                if not looking.done():
+                    key = (at.scope, at.id)
+                    self._evidence_unanswered.add(key)
+
+                    def back(done: asyncio.Future[None], key: tuple[str | None, str] = key) -> None:
+                        self._evidence_unanswered.discard(key)
+                        # Looked at here, as nobody waits for it any more.
+                        if not done.cancelled():
+                            done.exception()
+
+                    looking.add_done_callback(back)
+        if total:
+            self._evidence_looked_until = (start + reached) % total
+
+        for item, gone in zip(rested, found[:got]):
+            # What is to become of the entry: True to expire, False to be
+            # in effect again, None for its line alone to go.
+            expire: bool | None
+            if gone is True and (not item.expired or item.listed):
+                expire = True
+            elif gone is False and item.expired:
+                expire = False
+            elif gone is None and item.listed:
+                # Whether its files are there cannot be told, so what it
+                # says stays. But it says it expired, and an entry that
+                # expired is handed to no task agent.
+                expire = None
+            else:
+                continue
+            try:
+                if expire is None:
+                    await self._write(self._unlist_expired, item.scope, item.id)
+                    continue
+                changed = await self._write_judged(
+                    lambda may, item=item, expire=expire: may == allowed
+                    and self._set_standing(item.scope, item.id, expire, (item.evidence, item.outside))
+                )
+            except (OSError, ValueError):
+                logger.warning("an entry of the task agent space could not be marked as expired or in effect", exc_info=True)
+                continue
+            if changed:
+                outcome["expired" if expire else "restored"] += 1
         return outcome
 
     def _drop_pending(self, project: str | None, entry_id: str, oldest: str) -> bool:
@@ -3469,13 +3562,19 @@ class TaskAgentSpace:
         self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{path.stem}.md")
         return True
 
-    def _set_standing(self, project: str | None, entry_id: str, expire: bool, allowed: bool = True) -> bool:
+    def _set_standing(
+        self, project: str | None, entry_id: str, expire: bool, found: tuple[tuple[str, ...], tuple[str, ...]]
+    ) -> bool:
         """Mark an entry as expired, or as in effect again, and see to its line in the index. Returns whether it changed.
 
-        Looked at once more under the lock: it is changed only when the
-        files it rests on are, at this moment, as they were found.
-        ``allowed`` is whether the ones outside the working directories
-        may be looked at (``_gone``). A pending entry is left as it is.
+        ``found`` is what the entry rested on when its files were looked
+        at: the files, and which of them lie outside the working
+        directories. No file is looked at here, under the lock on the
+        space's writes: a share that does not answer would hold up every
+        write. The entry is changed when it is still what was looked at:
+        one the host made, not pending, that rests on those very files.
+        One that was filed again with another file since, or that the
+        user took over, is left for the next look.
         """
         paths = self._paths()
         path = paths.memory_dir(project) / f"{safe_segment(entry_id)}.md"
@@ -3483,15 +3582,18 @@ class TaskAgentSpace:
         today = _date(self._clock())
         still: list[bool] = []
 
+        def as_found(document: _Document) -> bool:
+            return (
+                document.has_meta
+                and bool(found[0])
+                and bool(_listed(document, "texts"))
+                and _status_of(document) != ENTRY_PENDING
+                and (tuple(_evidence_in(document)), tuple(_outside_in(document))) == found
+            )
+
         def change(text: str) -> str:
             document = _parse_document(text)
-            evidence = _evidence_in(document)
-            if (
-                not document.has_meta
-                or not evidence
-                or _status_of(document) == ENTRY_PENDING
-                or _gone(evidence, _outside_in(document), allowed) is not expire
-            ):
+            if not as_found(document):
                 still[:] = [False]
                 return text
             still[:] = [True]
@@ -3522,12 +3624,7 @@ class TaskAgentSpace:
         # has its line and still says it expired is tried again.
         text = self._read_text(path)
         document = _parse_document(text) if text is not None else None
-        if (
-            document is None
-            or not document.has_meta
-            or document.get("status").strip().lower() != ENTRY_EXPIRED
-            or _gone(_evidence_in(document), _outside_in(document), allowed) is not False
-        ):
+        if document is None or document.get("status").strip().lower() != ENTRY_EXPIRED or not as_found(document):
             return False
         line = _index_line(document.get("name") or path.stem, target, document.get("description"))
         self._index_add(paths.index(project), line, target)
@@ -3539,10 +3636,9 @@ class TaskAgentSpace:
             failed = exc
         if failed is not None or not (still and still[0]):
             # Not brought back, as far as can be told: the entry could not
-            # be written, or its files could not be seen to be there after
-            # all (the disk they are on went at this very moment). An entry
-            # that expired has no line, and while its files cannot be
-            # looked at nothing else would take the line out again. Whether
+            # be written, or is not what was looked at any more (the user
+            # saved it at this very moment). An entry that expired has no
+            # line, and nothing else would take the line out again. Whether
             # it still says it expired is told by its file as it is now,
             # not by how the writing ended: the writing may have gone
             # through before it failed, and an entry that is in effect

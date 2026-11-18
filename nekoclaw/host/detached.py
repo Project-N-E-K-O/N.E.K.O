@@ -40,14 +40,19 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
     no worker of the default executor. Whoever waits for the future
     decides how long (``asyncio.wait_for`` around ``asyncio.shield``);
     the work goes on in its thread whether or not anybody still waits,
-    and the future is done when it comes back.
+    and the future is done when it comes back, however it ended. What
+    the work raises is raised for whoever waits. For ``StopIteration``,
+    which a future does not take, that is a RuntimeError that names it;
+    and when the work was ended by something that is no ``Exception``
+    (``SystemExit``), a RuntimeError that says it ended without a
+    result, while that goes on its way in the thread.
 
     Raises RuntimeError when no thread can be started.
     """
     loop = asyncio.get_running_loop()
     done: asyncio.Future[T] = loop.create_future()
 
-    def hand_over(result: T | None, error: BaseException | None) -> None:
+    def hand_over(result: T | None, error: Exception | None) -> None:
         if done.done():
             return
         if error is None:
@@ -56,15 +61,25 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
             done.set_exception(error)
 
     def run() -> None:
+        result: T | None = None
+        # What whoever waits is told when the work is ended by something
+        # that is no ``Exception``: that is not raised in the event loop.
+        error: Exception | None = RuntimeError("the work ended without a result")
         try:
-            result, error = work(), None
-        except BaseException as exc:  # noqa: BLE001 - handed to whoever waits for it
-            result, error = None, exc
-        try:
-            loop.call_soon_threadsafe(hand_over, result, error)
-        except RuntimeError:
-            # The loop is closed: nobody waits for it any more.
-            pass
+            result = work()
+            error = None
+        except StopIteration as exc:
+            # A future takes no ``StopIteration``.
+            error = RuntimeError("the work ended with StopIteration")
+            error.__cause__ = exc
+        except Exception as exc:  # noqa: BLE001 - handed to whoever waits for it
+            error = exc
+        finally:
+            try:
+                loop.call_soon_threadsafe(hand_over, result, error)
+            except RuntimeError:
+                # The loop is closed: nobody waits for it any more.
+                pass
 
     threading.Thread(target=run, name=name, daemon=True).start()
     return done

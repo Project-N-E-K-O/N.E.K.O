@@ -286,11 +286,17 @@ goes on in its thread until the folder answers; with so many out, a task
 agent starts without the list at once instead of taking another thread."""
 
 SPACE_EVIDENCE_LOOK_SECONDS = 30.0
-"""How long tidying waits for the look at the files the entries rest on. It
-reads a few hundred small files and asks whether some others exist, which
-takes well under a second on a disk; on a share that does not answer it
-never ends. Past this, nothing is known of those files and no entry is
-changed this time, and the rest of the tidying goes on."""
+"""How long tidying waits for the look at the files the entries rest on:
+whether a few hundred files exist, which takes well under a second on a
+disk, and never ends on a share that does not answer. Past this, what was
+found so far is used, the entry the look is at is left out this time, and
+the rest of the tidying goes on."""
+
+SPACE_EVIDENCE_LOOKS_AT_ONCE = 4
+"""Most looks that were given up on and have not come back. Each is at one
+entry, in a thread of its own, until the files of that entry answer; such
+an entry is not looked at again meanwhile. With so many out no look is
+started, and the entries that rest on files are passed over."""
 
 REPO_DOCUMENT_PATH_MAX_TOKENS = 60
 """Cap on one path of that list as it is written out. A file may be called

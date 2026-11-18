@@ -33,7 +33,7 @@ async def test_what_the_work_returns_is_handed_back():
         ran_in.append((thread.name, thread.daemon))
         return 7
 
-    assert await run_detached(work, name="nekoclaw-test") == 7
+    assert await asyncio.wait_for(run_detached(work, name="nekoclaw-test"), 30) == 7
     # In a thread of its own, one the process does not wait for when it exits.
     assert ran_in == [("nekoclaw-test", True)]
     assert threading.current_thread().name != "nekoclaw-test"
@@ -44,14 +44,43 @@ async def test_what_the_work_raises_is_raised_for_whoever_waits():
         raise ValueError("no such folder")
 
     with pytest.raises(ValueError, match="no such folder"):
-        await run_detached(work, name="nekoclaw-test")
+        await asyncio.wait_for(run_detached(work, name="nekoclaw-test"), 30)
+
+
+async def test_work_that_is_ended_by_something_that_is_no_exception_is_told_without_raising_that(monkeypatch):
+    ended: list[Any] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: ended.append(args.exc_type))
+
+    def work() -> None:
+        raise SystemExit(3)
+
+    # Not ``SystemExit`` in the event loop; and the future is done, so nobody takes the work to be under way.
+    future = run_detached(work, name="nekoclaw-test-exit")
+    with pytest.raises(RuntimeError, match="the work ended without a result"):
+        await asyncio.wait_for(future, 30)
+    for thread in threading.enumerate():
+        if thread.name == "nekoclaw-test-exit":
+            await asyncio.to_thread(thread.join, 30)
+    # What ended the work went on its way in the thread.
+    assert ended == [SystemExit]
+
+
+async def test_work_that_ends_with_what_a_future_does_not_take_is_told_all_the_same():
+    def work() -> None:
+        next(iter(()))
+
+    # ``StopIteration`` cannot be set on a future; left so, nobody would ever be told the work is over.
+    future = run_detached(work, name="nekoclaw-test")
+    with pytest.raises(RuntimeError, match="the work ended with StopIteration") as raised:
+        await asyncio.wait_for(future, 30)
+    assert isinstance(raised.value.__cause__, StopIteration)
 
 
 async def test_work_nobody_waits_for_any_more_goes_on_and_is_done_when_it_comes_back():
     release = threading.Event()
 
     def work() -> str:
-        release.wait(60)
+        release.wait(120)
         return "late"
 
     future = run_detached(work, name="nekoclaw-test")
@@ -88,7 +117,7 @@ def test_work_that_comes_back_after_the_loop_was_closed_is_dropped_quietly(monke
     monkeypatch.setattr(threading, "excepthook", failed.append)
 
     def work() -> int:
-        release.wait(60)
+        release.wait(120)
         return 1
 
     async def started() -> None:

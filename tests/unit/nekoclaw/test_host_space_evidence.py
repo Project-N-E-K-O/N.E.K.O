@@ -233,6 +233,42 @@ def _pending_file(
     return path
 
 
+def _rests_on(path: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """What an entry rests on, as its file says: the files, and which of them lie outside the working directories."""
+    head = _head(path)
+    return tuple(json.loads(head.get("evidence", "[]"))), tuple(json.loads(head.get("evidence_outside", "[]")))
+
+
+_A_LONG_TIME = 12345.0
+
+
+def _given_up_when(monkeypatch: Any, reached: threading.Event) -> None:
+    """Have the next wait for a look at the files end, as if its time were up, the moment ``reached`` is set.
+
+    No time is measured: the look is given up on exactly when its thread is where the test wants it.
+    """
+    waiting = asyncio.wait_for
+    armed = [True]
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", _A_LONG_TIME)
+
+    async def wait_for(awaitable: Any, timeout: Any) -> Any:
+        if timeout != _A_LONG_TIME or not armed:
+            return await waiting(awaitable, timeout)
+        armed.clear()
+        assert await asyncio.to_thread(reached.wait, 30), "the look never got there"
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", wait_for)
+
+
+async def _until(condition: Any, seconds: float = 30.0) -> None:
+    """Wait until something that happens in another thread has happened."""
+    end = asyncio.get_running_loop().time() + seconds
+    while not condition():
+        assert asyncio.get_running_loop().time() < end, "it did not happen"
+        await asyncio.sleep(0.01)
+
+
 def _removed(root: Path, records: list[dict[str, Any]], project: str = DEFAULT_PROJECT) -> None:
     """Write what the user removed from a project, as it may be found."""
     path = root / "projects" / project / "notes.json"
@@ -1666,7 +1702,9 @@ async def test_an_entry_that_cannot_be_written_when_it_comes_back_gets_no_line_a
     assert "(memory/entry-point.md)" not in _index(root)
     # That it could not be written is told to whoever asked, with the line gone again all the same.
     with pytest.raises(PermissionError):
-        await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False)
+        await space._write(
+            space._set_standing, DEFAULT_PROJECT, "entry-point", False, _rests_on(_memory(root) / "entry-point.md")
+        )
     assert "(memory/entry-point.md)" not in _index(root)
 
     monkeypatch.setattr(TaskAgentSpace, "_edit_text", editing)
@@ -1918,9 +1956,9 @@ async def test_an_entry_does_not_expire_while_it_cannot_be_told_whether_its_file
     touched: list[str] = []
     setting = TaskAgentSpace._set_standing
 
-    def watched(self: TaskAgentSpace, project: Any, entry_id: str, expire: bool) -> bool:
+    def watched(self: TaskAgentSpace, project: Any, entry_id: str, expire: bool, found: Any) -> bool:
         touched.append(entry_id)
-        return setting(self, project, entry_id, expire)
+        return setting(self, project, entry_id, expire, found)
 
     monkeypatch.setattr(TaskAgentSpace, "_set_standing", watched)
 
@@ -1930,27 +1968,48 @@ async def test_an_entry_does_not_expire_while_it_cannot_be_told_whether_its_file
     assert touched == []
 
 
-async def test_an_entry_is_changed_only_while_its_files_are_as_they_were_found(space, root, workdir):
-    await _filed_with_a_file(space, workdir)
-    # Found gone a moment ago and back by the time the entry is to be changed: it is looked at once more, and left.
-    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True)
-    assert "status" not in _head(_memory(root) / "entry-point.md") and "(memory/entry-point.md)" in _index(root)
+async def test_an_entry_is_changed_only_while_it_rests_on_the_files_that_were_looked_at(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
 
-    (workdir / "src" / "app.py").unlink()
-    (workdir / "README.md").unlink()
-    await space.check_evidence()
-    # And the other way round: found back, and gone again.
-    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False)
-    assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and _index(root) == ""
+    await _filed_with_a_file(space, workdir)
+    path = _memory(root) / "entry-point.md"
+    found = _rests_on(path)
+
+    def looked_at(*args: Any) -> Any:
+        raise AssertionError("a file is looked at under the lock on the space's writes")
+
+    # The files were looked at before; none is while the entry is changed.
+    monkeypatch.setattr(module, "_gone", looked_at)
+    monkeypatch.setattr(module, "_stands", looked_at)
+    # Found gone, and by the time the entry is to be changed it rests on something else (filed again with
+    # another file, or changed by the user): what was looked at is not what it rests on, and it is left.
+    other = ((workdir / "notes.txt").as_posix(),)
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True, (other, ()))
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True, (found[0][:1], ()))
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True, (found[0], found[0][:1]))
+    assert "status" not in _head(path) and "(memory/entry-point.md)" in _index(root)
+    # As it was looked at, it expires.
+    assert await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True, found)
+    assert _head(path)["status"] == "expired" and _index(root) == ""
+    # And the other way round.
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False, (other, ()))
+    assert _head(path)["status"] == "expired" and _index(root) == ""
+    assert await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False, found)
+    assert "status" not in _head(path) and "(memory/entry-point.md)" in _index(root)
     # One that is not there any more is nothing to change.
-    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "no-such-entry", True)
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "no-such-entry", True, found)
     # Nor is one that is in effect brought back: its line, which the user took out, is not put in again.
-    (workdir / "notes.txt").write_text("notes\n", encoding="utf-8")
-    await space.submit(_commission(workdir, id="c2"), _lesson("Notes", "They are in notes.txt.", "observed", ["notes.txt"]))
     index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    kept = index.read_text(encoding="utf-8")
     index.write_text("", encoding="utf-8")
-    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "notes", False)
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False, found)
     assert _index(root) == ""
+    index.write_text(kept, encoding="utf-8")
+    # One the user took over since it was looked at (the line of marks is gone) is theirs: it is not
+    # marked, and keeps its line.
+    path.write_text(_without_marks(path.read_text(encoding="utf-8")), encoding="utf-8", newline="\n")
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True, found)
+    assert "status" not in _head(path) and "(memory/entry-point.md)" in _index(root)
 
 
 def test_whether_a_file_is_there_cannot_be_told_while_its_disk_is_not(tmp_path, monkeypatch):
@@ -2716,32 +2775,39 @@ async def test_what_nobody_is_named_for_is_no_second_sighting_of_a_note_that_wai
 # ---------------------------------------------------------------------------
 
 
-async def test_an_entry_that_cannot_be_brought_back_after_all_keeps_no_line(space, root, workdir, monkeypatch):
-    from nekoclaw.host import space as module
+def _saved_as_the_line_is_added(monkeypatch: Any, path: Path) -> None:
+    """Have the user save an entry, resting on another file, at the moment its line is put into the index."""
+    adding = TaskAgentSpace._index_add
+    saved: list[bool] = []
 
+    def then_saved(self: TaskAgentSpace, *args: Any) -> None:
+        adding(self, *args)
+        if not saved:
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8").replace("README.md", "CHANGES.md"), encoding="utf-8", newline="\n")
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", then_saved)
+
+
+async def test_an_entry_that_cannot_be_brought_back_after_all_keeps_no_line(space, root, workdir, monkeypatch):
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
     (workdir / "README.md").unlink()
     await space.check_evidence()
     (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
-    real = module._gone
-    looks: list[Any] = []
-
-    def then_unplugged(evidence: Any, *rest: Any) -> Any:
-        # There at the two looks before the entry is written, and not to be told when it is: the disk went.
-        looks.append(real(evidence, *rest))
-        return None if len(looks) > 2 else looks[-1]
-
-    monkeypatch.setattr(module, "_gone", then_unplugged)
+    path = _memory(root) / "entry-point.md"
+    # Found back; and saved from an editor, resting on another file, right after its line was put back.
+    _saved_as_the_line_is_added(monkeypatch, path)
 
     assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
 
-    # It still says it expired, and the line that was put there for it is gone again.
-    assert len(looks) == 3 and looks[:2] == [False, False]
-    assert _head(_memory(root) / "entry-point.md")["status"] == "expired"
+    # It is not what was looked at: it still says it expired, and the line that was put there for it is
+    # gone again.
+    assert _head(path)["status"] == "expired"
     assert "(memory/entry-point.md)" not in _index(root)
-    # Once the files can be looked at again it comes back.
-    monkeypatch.setattr(module, "_gone", real)
+    # At the next look it is looked at as what it is by then, and comes back when a file it rests on is there.
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    (workdir / "CHANGES.md").write_text("changes\n", encoding="utf-8")
     assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
     assert _index(root).count("(memory/entry-point.md)") == 1
 
@@ -2967,31 +3033,25 @@ async def test_an_entry_too_long_to_look_through_is_told_by_the_marks_of_what_it
 
 
 async def test_that_the_line_of_an_entry_that_did_not_come_back_cannot_be_taken_out_is_told(space, root, workdir, monkeypatch):
-    from nekoclaw.host import space as module
-
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
     (workdir / "README.md").unlink()
     await space.check_evidence()
     (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
-    real = module._gone
-    looks: list[Any] = []
-
-    def then_unplugged(evidence: Any, *rest: Any) -> Any:
-        # There when the entry is looked at, and not to be told when it is written: the disk went.
-        looks.append(real(evidence, *rest))
-        return None if len(looks) > 1 else looks[-1]
+    path = _memory(root) / "entry-point.md"
+    found = _rests_on(path)
 
     def held(self: TaskAgentSpace, *args: Any, **kwargs: Any) -> None:
         raise PermissionError(13, "in use")
 
-    monkeypatch.setattr(module, "_gone", then_unplugged)
+    # Its line is put back, and it is not what was looked at by then (saved from an editor at that moment).
+    _saved_as_the_line_is_added(monkeypatch, path)
     monkeypatch.setattr(TaskAgentSpace, "_index_remove", held)
 
     # Nothing else went wrong, so this is what whoever asked is told: the line is still there.
     with pytest.raises(PermissionError):
-        await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False)
-    assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and "(memory/entry-point.md)" in _index(root)
+        await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False, found)
+    assert _head(path)["status"] == "expired" and "(memory/entry-point.md)" in _index(root)
 
 
 async def test_entries_go_with_their_commission_though_what_was_removed_there_cannot_be_read(space, root, workdir):
@@ -3159,7 +3219,9 @@ async def test_a_pending_entry_does_not_expire(space, root, workdir):
     head = _head(_memory(root) / "entry-point.md")
     assert head["status"] == "pending" and "expired" not in head
     # Nor when it is asked for by name.
-    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True)
+    assert not await space._write(
+        space._set_standing, DEFAULT_PROJECT, "entry-point", True, _rests_on(_memory(root) / "entry-point.md")
+    )
     assert _head(_memory(root) / "entry-point.md")["status"] == "pending"
 
 
@@ -3362,7 +3424,6 @@ async def test_an_entry_does_not_expire_over_a_file_outside_once_reading_there_i
     # Whether it is there is not looked at any more, so it cannot be told: the entry is left as it is.
     assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
     assert "status" not in _head(_memory(root) / "camera-drive.md") and "(memory/camera-drive.md)" in _index(root)
-    assert not await open_space._write(open_space._set_standing, DEFAULT_PROJECT, "camera-drive", True, False)
     assert "status" not in _head(_memory(root) / "camera-drive.md")
 
     # Allowed again, it is looked at, and found gone.
@@ -3373,7 +3434,6 @@ async def test_an_entry_does_not_expire_over_a_file_outside_once_reading_there_i
     outside.write_text("drive=E\n", encoding="utf-8")
     setting.allowed = False
     assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
-    assert not await open_space._write(open_space._set_standing, DEFAULT_PROJECT, "camera-drive", False, False)
     assert _head(_memory(root) / "camera-drive.md")["status"] == "expired" and _index(root) == ""
     setting.allowed = True
     assert await open_space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
@@ -4043,71 +4103,176 @@ async def test_a_look_at_the_files_that_does_not_come_back_does_not_hold_up_tidy
     import nekoclaw.host.space as space_module
 
     await _filed_with_a_file(space, workdir)
+    # A guess that has waited longer than a guess is kept.
+    waited = _pending_file(root, "Zz guess", "A guess.", ["c9"], created="2026-01-01")
     (workdir / "src" / "app.py").unlink()
     (workdir / "README.md").unlink()
-    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 0.05)
     answered, under_way = threading.Event(), threading.Event()
-    looks: list[str] = []
+    looks: list[tuple[str, bool]] = []
     real = space_module._gone
 
     def unanswered(*args: Any) -> Any:
         # A file on a share that does not answer.
-        looks.append(threading.current_thread().name)
+        thread = threading.current_thread()
+        looks.append((thread.name, thread.daemon))
         under_way.set()
-        answered.wait(60)
+        answered.wait(120)
         return real(*args)
 
     monkeypatch.setattr(space_module, "_gone", unanswered)
+    _given_up_when(monkeypatch, under_way)
     nothing = {"expired": 0, "restored": 0, "dropped": 0}
     try:
-        # Nothing is known of the files, so nothing is changed; and whoever tidies up goes on.
-        assert await space.check_evidence() == nothing
-        assert await asyncio.to_thread(under_way.wait, 30)
-        # In a thread of its own, which the process does not wait for when it exits.
-        assert looks == ["nekoclaw-space-evidence"] and space._evidence_look is not None and not space._evidence_look.done()
-        # While that look is out, no other is started.
+        # Nothing is known of the files, so nothing is changed in the entry, and whoever tidies up goes
+        # on. The guess that waited long enough is removed whatever becomes of the files.
+        assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 1}
+        assert not waited.exists() and "status" not in _head(_memory(root) / "entry-point.md")
+        # The look was made in a thread of its own, which the process does not wait for when it exits.
+        assert looks == [("nekoclaw-space-evidence", True)]
+        assert space._evidence_look is not None and not space._evidence_look.done()
+        assert space._evidence_unanswered == {(DEFAULT_PROJECT, "entry-point")}
+        # While that look is out, the entry it is at is not looked at again.
         assert await space.check_evidence() == nothing and len(looks) == 1
         assert "status" not in _head(_memory(root) / "entry-point.md")
     finally:
         answered.set()
-    # Once the share answers the look comes back. What it found is not used any more; the next one is.
-    await asyncio.wait_for(space._evidence_look, 30)
+    # Once the share answers that look ends. What it found is not used; the entry is looked at again.
+    await _until(lambda: not space._evidence_unanswered)
     assert "status" not in _head(_memory(root) / "entry-point.md")
     monkeypatch.setattr(space_module, "_gone", real)
-    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 30.0)
     assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
 
 
-async def test_a_look_that_was_given_up_on_does_not_move_on_past_the_entries_it_looked_at(space, root, workdir, monkeypatch):
+async def _three_that_rest_on_a_file_that_is_gone(space: TaskAgentSpace, workdir: Path) -> None:
+    """File "A drive", "B drive" and "C drive", each resting on a file of its own (a.txt, b.txt, c.txt) that is gone."""
+    for name in ("a", "b", "c"):
+        (workdir / f"{name}.txt").write_text(name, encoding="utf-8")
+        reply = await space.submit(
+            _commission(workdir), _lesson(f"{name.upper()} drive", f"See {name}.txt.", "observed", [f"{name}.txt"])
+        )
+        assert reply.startswith("kept in ")
+        (workdir / f"{name}.txt").unlink()
+
+
+def _expired(root: Path) -> list[str]:
+    return sorted(path.stem for path in _memory(root).glob("*.md") if _head(path).get("status") == "expired")
+
+
+async def test_what_a_look_found_before_it_was_given_up_on_is_used_and_the_next_begins_at_the_entry_it_was_at(space, root, workdir, monkeypatch):
     import nekoclaw.host.space as space_module
 
-    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_ENTRIES_PER_UPKEEP", 1)
-    await _filed_with_a_file(space, workdir)
-    await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E: here.", "verified"))
-    (workdir / "src" / "app.py").unlink()
-    (workdir / "README.md").unlink()
-    # One entry a look, and the next look goes on after it. The first is "camera-drive", which rests on nothing.
-    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
-    answered = threading.Event()
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_ENTRIES_PER_UPKEEP", 3)
+    await _three_that_rest_on_a_file_that_is_gone(space, workdir)
+    # A guess that has waited longer than a guess is kept; its file is the last, and not among the first three.
+    waited = _pending_file(root, "Zz guess", "A guess.", ["c9"], created="2026-01-01")
+    answered, at_b = threading.Event(), threading.Event()
     real = space_module._gone
 
-    def unanswered(*args: Any) -> Any:
-        answered.wait(60)
-        return real(*args)
+    def slow(evidence: Any, *rest: Any) -> Any:
+        # The file of the second entry is on a share that does not answer (or answers after a long while).
+        if any(path.endswith("b.txt") for path in evidence):
+            at_b.set()
+            answered.wait(120)
+        return real(evidence, *rest)
 
-    monkeypatch.setattr(space_module, "_gone", unanswered)
-    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 0.05)
+    monkeypatch.setattr(space_module, "_gone", slow)
+    _given_up_when(monkeypatch, at_b)
     try:
-        # The look at "entry-point" is given up on.
-        assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+        # The first entry was looked at before the look was given up on: that is used, and it expires.
+        assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+        assert _expired(root) == ["a-drive"] and waited.exists()
+        assert space._evidence_unanswered == {(DEFAULT_PROJECT, "b-drive")}
+        # The next call begins at the entry the look was at, which is passed over while that look is out:
+        # the third expires, and the guess that waited long enough is removed. Every call gets on,
+        # whatever one entry does.
+        assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 1}
+        assert _expired(root) == ["a-drive", "c-drive"] and not waited.exists()
     finally:
         answered.set()
-    await asyncio.wait_for(space._evidence_look, 30)
-    monkeypatch.setattr(space_module, "_gone", real)
-    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOK_SECONDS", 30.0)
-
-    # The next look is at that entry again, not at the one after it.
+    await _until(lambda: not space._evidence_unanswered)
+    # Once its file answers, that entry is looked at in its turn.
+    assert _expired(root) == ["a-drive", "c-drive"]
     assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+    assert _expired(root) == ["a-drive", "b-drive", "c-drive"]
+
+
+async def test_an_entry_whose_files_cannot_be_looked_at_is_left_and_the_others_are_seen_to(space, root, workdir, monkeypatch):
+    import nekoclaw.host.space as space_module
+
+    await _three_that_rest_on_a_file_that_is_gone(space, workdir)
+    real = space_module._gone
+
+    def failing(evidence: Any, *rest: Any) -> Any:
+        if evidence[0].endswith("b.txt"):
+            raise RuntimeError("no such device")
+        return real(evidence, *rest)
+
+    monkeypatch.setattr(space_module, "_gone", failing)
+
+    # Nothing is told of that entry, so it is left as it is; the look goes on to the ones after it.
+    assert await space.check_evidence() == {"expired": 2, "restored": 0, "dropped": 0}
+    assert _expired(root) == ["a-drive", "c-drive"]
+
+
+async def test_no_look_is_started_while_as_many_as_may_be_out_have_not_come_back(space, root, workdir, monkeypatch):
+    import nekoclaw.host.space as space_module
+
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_EVIDENCE_LOOKS_AT_ONCE", 1)
+    await _three_that_rest_on_a_file_that_is_gone(space, workdir)
+    answered, at_a = threading.Event(), threading.Event()
+    looks: list[str] = []
+    real = space_module._gone
+
+    def unanswered(evidence: Any, *rest: Any) -> Any:
+        looks.append(evidence[0].rsplit("/", 1)[-1])
+        if evidence[0].endswith("a.txt"):
+            at_a.set()
+            answered.wait(120)
+        return real(evidence, *rest)
+
+    monkeypatch.setattr(space_module, "_gone", unanswered)
+    _given_up_when(monkeypatch, at_a)
+    try:
+        assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+        assert space._evidence_unanswered == {(DEFAULT_PROJECT, "a-drive")}
+        waited = _pending_file(root, "Zz guess", "A guess.", ["c9"], created="2026-01-01")
+        # One look is out, and that is as many as may be: none is started, and the entries that rest on
+        # files are passed over. The guess that waited long enough is removed all the same.
+        assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 1}
+        assert looks == ["a.txt"] and not waited.exists() and _expired(root) == []
+    finally:
+        answered.set()
+    await _until(lambda: not space._evidence_unanswered)
+    # Given up on, the look ended with the entry it was at: it looked at no other.
+    assert looks == ["a.txt"]
+    # Once it is back, looks are made again.
+    assert await space.check_evidence() == {"expired": 3, "restored": 0, "dropped": 0}
+
+
+async def test_an_entry_is_left_when_reading_outside_was_taken_back_while_its_files_were_looked_at(
+    open_space, setting, root, workdir, outside, monkeypatch
+):
+    import nekoclaw.host.space as space_module
+
+    setting.allowed = True
+    await open_space.submit(_commission(workdir), _lesson("Camera drive", "It is E:.", "observed", [str(outside)]))
+    outside.unlink()
+    real = space_module._gone
+
+    def then_taken_back(*args: Any) -> Any:
+        gone = real(*args)
+        # Found gone while it might be looked at; the user takes that back before the entry is changed.
+        setting.allowed = False
+        return gone
+
+    monkeypatch.setattr(space_module, "_gone", then_taken_back)
+
+    # What was found is from a look that may not be made any more: the entry is left as it is.
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert "status" not in _head(_memory(root) / "camera-drive.md") and "(memory/camera-drive.md)" in _index(root)
+    monkeypatch.setattr(space_module, "_gone", real)
+    setting.allowed = True
+    assert await open_space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
 
 
 async def test_tidying_goes_on_when_no_thread_can_be_started_to_look_at_the_files(space, root, workdir, monkeypatch):
@@ -4155,3 +4320,73 @@ async def test_a_pending_entry_is_put_into_an_entry_as_what_it_says_when_it_is_r
 
     # What it says of itself goes along as it was read with its text, not as it was listed before.
     assert _head(_memory(root) / "photo-dates.md")["confidence"] == "verified" and not waiting.exists()
+
+
+# ---------------------------------------------------------------------------
+# Review round 14
+# ---------------------------------------------------------------------------
+
+
+async def test_a_pending_entry_given_another_title_before_it_is_read_is_not_put_into_the_entry_of_the_old_one(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none."))
+    waiting = _memory(root) / "photo-dates-2.md"
+    # It was found to be the same note by its title, and the user calls it something else by the time it is read.
+    _saved_before_it_is_read(
+        space, monkeypatch, waiting, lambda text: text.replace("name: Photo dates", "name: Video dates")
+    )
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Scans have none either."))
+
+    assert reply == "added to photo-dates.md in project _daily"
+    assert "Videos may have none." not in (_memory(root) / "photo-dates.md").read_text(encoding="utf-8")
+    # It waits under its new title.
+    assert [(held["id"], held["title"], held["content"]) for held in _pending(root)] == [
+        ("photo-dates-2", "Video dates", "Videos may have none.")
+    ]
+
+
+async def test_a_pending_entry_that_was_emptied_has_nothing_to_file_and_is_removed(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none."))
+    waiting = _memory(root) / "photo-dates-2.md"
+    # Emptied in the console: it keeps the mark of a text that says nothing.
+    await space.edit_entry("photo-dates-2", DEFAULT_PROJECT, content="")
+    assert _head(waiting)["status"] == "pending"
+
+    # Another commission files under its title: the note is kept, and there is nothing of the empty one to add.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Scans have none either."))
+
+    assert reply == "added to photo-dates.md in project _daily" and not waiting.exists()
+
+    # Nor is there anything of such an entry to take along with its commission.
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir, id="c5"), _lesson("Own guess", "A guess of c5."))
+    await space.edit_entry("own-guess", DEFAULT_PROJECT, content="")
+    assert await space.refile_entries("c5", DEFAULT_PROJECT, "Budget app") == []
+    assert not (_memory(root) / "own-guess.md").exists() and _pending(root, "Budget app") == []
+
+
+async def test_a_note_whose_text_the_user_put_into_the_pending_entry_meanwhile_uses_no_place(space, root, workdir, monkeypatch):
+    from nekoclaw.host.space import INFERRED, _Known, _Note
+
+    # A guess of the commission waits under the title; it files another text under that title.
+    path = _pending_file(root, "Camera drive", "It is E: here.", ["c1"])
+    real = space._same_note
+
+    def then_saved(*args: Any) -> Any:
+        found = real(*args)
+        # Right after the entry was looked at, the user makes it say what is being filed.
+        path.write_text(path.read_text(encoding="utf-8").replace("It is E: here.", "It is F: here."), encoding="utf-8", newline="\n")
+        return found
+
+    monkeypatch.setattr(space, "_same_note", then_saved)
+    note = _Note(
+        title="Camera drive", content="It is F: here.", kind="lesson", source="c1", known=_Known(confidence=INFERRED, observer="c1")
+    )
+
+    taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note))
+
+    # Nothing was put on file: the entry says it already. That uses no place.
+    assert (taken.how, taken.charged) == ("held", False)
+    assert _said(path) == "It is F: here."
