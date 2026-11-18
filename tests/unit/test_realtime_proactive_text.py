@@ -2411,3 +2411,29 @@ async def test_text_only_turn_does_not_add_a_queue_gate():
 
     assert "admission_check" not in seen
     await client.close()
+
+
+@pytest.mark.unit
+async def test_live_frame_captured_before_revocation_is_not_streamed_late():
+    """Native route: a frame validated after the revocation keeps its old ingress time."""
+    client = _make_client()
+    captured_before_revoke = time.monotonic()
+    client.discard_cached_visual_context()
+
+    late = await client.stream_image(
+        DUMMY_IMAGE_B64, source="screen", captured_at=captured_before_revoke,
+    )
+
+    assert late.accepted is False
+    assert late.rejection_reason == "stale_frame"
+    assert client._latest_image_b64 is None
+    assert not any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+
+    await client.stream_image(
+        DUMMY_IMAGE_B64, source="screen", captured_at=time.monotonic() + 1.0,
+    )
+    assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    await client.close()

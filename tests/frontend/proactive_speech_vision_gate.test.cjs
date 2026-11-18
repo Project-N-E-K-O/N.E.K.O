@@ -35,7 +35,7 @@ function settingsStorage(settings) {
 
 // ── app-proactive.js, loaded for real ──────────────────────────────────────
 
-function loadProactive({ privacyAllowsVision }) {
+function loadProactive({ privacyAllowsVision, appScreen = {} }) {
     const settings = { proactiveVisionEnabled: privacyAllowsVision };
     const intervals = new Map();
     let nextId = 1;
@@ -75,12 +75,12 @@ function loadProactive({ privacyAllowsVision }) {
         },
         clearInterval(id) { intervals.delete(id); },
         fetch: () => Promise.resolve({ ok: true, json: async () => ({}) }),
-        appScreen: {
+        appScreen: Object.assign({
             acquireOrReuseCachedStream: async () => ({ fake: 'stream' }),
             captureFrameFromStream: async () => ({ dataUrl: 'data:image/jpeg;base64,AAAA' }),
             buildStreamDataMessage: (data, inputType) => ({ action: 'stream_data', input_type: inputType, data }),
             fetchBackendScreenshot: async () => ({ dataUrl: null }),
-        },
+        }, appScreen),
         detectScreenshotCaptureType: () => 'screen',
     };
     window.window = window;
@@ -470,19 +470,14 @@ test('user scenario, privacy mode on: stopping the share releases the stream and
     assert.equal(h.frames(), 0);
 });
 
-test('user scenario: what happens after stopping the share follows the single gate', async () => {
+// Current rule (part 1): only privacy mode decides. Update together with the
+// todo case below when the gate changes.
+test('user scenario, privacy mode off: the heartbeat takes over the kept stream', async () => {
     const h = loadUserScenario({ privacyAllowsVision: true });
-    const allowed = h.window.canProactiveVisionRunDuringSpeech();
     await stopSharingThenTick(h, 6);
-    if (allowed) {
-        assert.equal(h.trackStops(), 0);
-        assert.ok(h.heartbeat(), 'heartbeat resumes on the kept stream');
-        assert.equal(h.frames(), 6);
-    } else {
-        assert.equal(h.trackStops(), 1);
-        assert.equal(h.heartbeat(), undefined);
-        assert.equal(h.frames(), 0);
-    }
+    assert.equal(h.trackStops(), 0);
+    assert.ok(h.heartbeat(), 'heartbeat resumes on the kept stream');
+    assert.equal(h.frames(), 6);
 });
 
 // Pending product decision (part 2): the screen sub-switch is off here, so
@@ -495,3 +490,94 @@ test('user scenario, privacy mode off but screen sub-switch off: no frames after
         assert.equal(h.trackStops(), 1);
         assert.equal(h.frames(), 0);
     });
+
+// ── races between capture and a revocation ─────────────────────────────────
+
+test('the gate stays closed when only this window revoked (save failed)', () => {
+    const h = loadProactive({ privacyAllowsVision: true });
+    h.S.proactiveVisionEnabled = false; // storage still says true
+    assert.equal(h.window.canProactiveVisionRunDuringSpeech(), false);
+});
+
+test('a frame captured across revoke-then-regrant is not sent', async () => {
+    let h;
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            captureFrameFromStream: async () => {
+                h.window.appProactive.noteProactiveVisionConsent(false);
+                h.window.appProactive.noteProactiveVisionConsent(true);
+                return { dataUrl: 'data:image/jpeg;base64,OLD' };
+            },
+        },
+    });
+    h.window.startProactiveVisionDuringSpeech();
+    await h.heartbeat().fn();
+    assert.equal(h.frames(), 0);
+    assert.equal(h.window.canProactiveVisionRunDuringSpeech(), true, 'consent is back on');
+});
+
+test('no desktop screenshot is started after a revocation during capture', async () => {
+    let backendCalls = 0;
+    let h;
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            acquireOrReuseCachedStream: async () => {
+                h.settings.proactiveVisionEnabled = false;
+                return null;
+            },
+            fetchBackendScreenshot: async () => { backendCalls += 1; return { dataUrl: 'data:image/jpeg;base64,DESK' }; },
+        },
+    });
+    h.window.startProactiveVisionDuringSpeech();
+    await h.heartbeat().fn();
+    assert.equal(backendCalls, 0);
+    assert.equal(h.frames(), 0);
+});
+
+test('a stream obtained after consent was revoked is released, not kept', async () => {
+    let h;
+    const stream = fakeStream();
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            acquireOrReuseCachedStream: async () => {
+                h.settings.proactiveVisionEnabled = false; // revoked while the picker was open
+                h.S.screenCaptureStream = stream;
+                return stream;
+            },
+        },
+    });
+    h.S.proactiveVisionChatEnabled = false;
+
+    const ok = await h.window.acquireProactiveVisionStream();
+
+    assert.equal(ok, false);
+    assert.equal(stream.stopped, 1);
+    assert.equal(h.S.screenCaptureStream, null);
+});
+
+test('text-chat vision does not keep the stream after another window revoked', async () => {
+    const h = loadScreen({ gate: { value: false } });
+    h.S.isRecording = false;
+    h.S.proactiveVisionChatEnabled = true;
+    h.S.proactiveChatEnabled = true;
+    h.window.appProactive = { isProactiveVisionEnabledNow: () => false };
+    const stream = fakeStream();
+    h.S.screenCaptureStream = stream;
+
+    await h.window.stopScreenSharing();
+
+    assert.equal(stream.stopped, 1);
+
+    const kept = loadScreen({ gate: { value: false } });
+    kept.S.isRecording = false;
+    kept.S.proactiveVisionChatEnabled = true;
+    kept.S.proactiveChatEnabled = true;
+    kept.window.appProactive = { isProactiveVisionEnabledNow: () => true };
+    const keptStream = fakeStream();
+    kept.S.screenCaptureStream = keptStream;
+    await kept.window.stopScreenSharing();
+    assert.equal(keptStream.stopped, 0, 'text vision still holds the stream while allowed');
+});

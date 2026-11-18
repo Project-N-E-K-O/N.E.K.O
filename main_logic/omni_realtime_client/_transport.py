@@ -1531,8 +1531,10 @@ class _TransportMixin:
         )
         self._latest_image_b64 = None
         # Frames still validating when consent was revoked carry an earlier
-        # ingress time; this floor makes stage_multimodal_frame drop them.
-        self._latest_image_captured_at = time.monotonic()
+        # ingress time; this floor makes stage_multimodal_frame and
+        # stream_image drop them.
+        self._visual_context_discard_at = time.monotonic()
+        self._latest_image_captured_at = self._visual_context_discard_at
         self._latest_image_source = "unknown"
         self._latest_image_request_id = None
         self._proactive_image_consumed = True
@@ -1835,6 +1837,19 @@ class _TransportMixin:
                     mode=delivery_mode.value,
                     generation=getattr(self, "_latest_image_generation", 0),
                     rejection_reason="raw_visual_delivery_blocked",
+                )
+            if (
+                cache_latest
+                and isinstance(captured_at, (int, float))
+                and float(captured_at)
+                <= getattr(self, "_visual_context_discard_at", 0.0)
+            ):
+                # Captured before the last consent revocation, delivered late.
+                return ImageStageResult(
+                    accepted=False,
+                    mode=delivery_mode.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason="stale_frame",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 if proactive_cue_image:

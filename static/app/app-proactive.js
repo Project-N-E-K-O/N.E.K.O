@@ -130,9 +130,14 @@
     // Whether the speech-time vision heartbeat may look at the screen right now.
     // Every heartbeat start entry, the per-tick re-check and every "keep the
     // screen stream during a call" decision use this one function; change the
-    // rule here only. Today it follows privacy mode alone (unchanged behavior).
+    // rule here only. Today it follows privacy mode alone. A revocation wins
+    // from either side: the latest saved setting (another window may have
+    // revoked first) or this window's own value (the save may have failed).
     function canProactiveVisionRunDuringSpeech() {
-        return isProactiveVisionEnabledNow();
+        var ownValue = typeof window.proactiveVisionEnabled !== 'undefined'
+            ? !!window.proactiveVisionEnabled
+            : !!S.proactiveVisionEnabled;
+        return ownValue && isProactiveVisionEnabledNow();
     }
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
@@ -2006,6 +2011,13 @@
                 return;
             }
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
+            // A revocation during this capture voids the frame, even if
+            // consent is granted again before it would be sent.
+            var revocationSeqAtStart = proactiveVisionRevocationSeq;
+            var stillAllowed = function () {
+                return revocationSeqAtStart === proactiveVisionRevocationSeq
+                    && canProactiveVisionRunDuringSpeech();
+            };
 
             var rememberedWindowCapture = { required: false, allowed: true };
             if (typeof window.prepareRememberedWindowCapture === 'function') {
@@ -2094,6 +2106,13 @@
                 return;
             }
 
+            // Do not start a desktop screenshot once consent is gone.
+            if (!dataUrl && !stillAllowed()) {
+                stopProactiveVisionDuringSpeech();
+                releaseProactiveVisionStream();
+                return;
+            }
+
             // 后端 pyautogui 兜底
             if (!dataUrl) {
                 var backendResult = await fetchBackendScreenshot();
@@ -2120,7 +2139,7 @@
             // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
             // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
             var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
-            var visionDisabled = !canProactiveVisionRunDuringSpeech();
+            var visionDisabled = !stillAllowed();
             if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
                 if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
@@ -2539,6 +2558,11 @@
             return false;
         }
         if (stream) {
+            // Consent revoked while the picker was open: do not keep the stream.
+            if (!isProactiveVisionEnabledNow()) {
+                releaseProactiveVisionStream();
+                return false;
+            }
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && typeof rememberedWindowCapture.isCurrent === 'function'
                 && !rememberedWindowCapture.isCurrent()) {
