@@ -70,7 +70,7 @@ async def process(self, data: str, **_):
 
 `output_schema` is independent of `llm_result_fields` / `llm_result_model`: those decide what a model reads, `output_schema` describes the whole return value. The two can be combined.
 
-An explicit `output_schema` is checked with a built-in subset of JSON Schema. Supported keywords: `type`, `enum`, `const`, `properties`, `patternProperties`, `required`, `additionalProperties`, `items`, `prefixItems`, `additionalItems` (only with the array form of `items`), `minItems`, `maxItems`, `minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum`, `anyOf`, `oneOf`, `allOf`, `not`, local `$ref` (`$defs` and `definitions` only serve as its targets). Any other keyword is ignored and takes no part in the check, so `strict_output=True` only enforces these keywords. A `$ref` that cannot be resolved (a missing pointer, an external URL) is ignored too. A contract inferred from a Pydantic return annotation is the model's serialization-mode schema and is checked the same way; see [Output contract](./entries#output-contract).
+An explicit `output_schema` is checked with `jsonschema`; a contract inferred from a Pydantic return annotation is checked by the model itself. See [Output contract](./entries#output-contract).
 
 ::: tip
 Use `**_` only when the handler intentionally accepts extra host-supplied fields. The runtime filters unsupported keyword arguments for handlers with explicit signatures, so it is not mandatory.

@@ -1360,6 +1360,7 @@ dependencies = [
     { name = "imagehash" },
     { name = "jinja2" },
     { name = "jmespath" },
+    { name = "jsonschema" },
     { name = "markdownify" },
     { name = "mss" },
     { name = "numpy" },
@@ -1415,7 +1416,6 @@ local-asr = [
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
-    { name = "jsonschema" },
     { name = "nest-asyncio" },
     { name = "playwright" },
     { name = "pyinstaller" },
@@ -1453,6 +1453,7 @@ requires-dist = [
     { name = "imagehash", specifier = ">=4.3.2" },
     { name = "jinja2" },
     { name = "jmespath", specifier = ">=1.1.0" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "markdownify", specifier = ">=1.2.2" },
     { name = "mss" },
     { name = "numpy", specifier = "~=1.26.4" },
@@ -1503,7 +1504,6 @@ provides-extras = ["local-asr", "wake-word"]
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = ">=6.100" },
-    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
     { name = "playwright", specifier = ">=1.58.0" },
     { name = "pyinstaller", specifier = "==6.22.3" },

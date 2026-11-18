@@ -112,6 +112,9 @@ dependencies = [
   # receivers (VSeeFace / waidayo / iFacialMocap / Unity with EVMC / Warudo). Default
   # 127.0.0.1:39539.
   "python-osc>=1.9.0",
+  # Plugin entry output contracts: validates explicit output_schema mappings
+  # (imported lazily, only when an entry declares one).
+  "jsonschema>=4.26.0",
 ]
 
 [project.optional-dependencies]
@@ -244,9 +247,6 @@ required-environments = [
 [dependency-groups]
 dev = [
     "hypothesis>=6.100",
-    # Schema validation in tests of the minigame manifest and the theater's
-    # structured output. Nothing at runtime imports it.
-    "jsonschema>=4.26.0",
     "nest-asyncio>=1.6.0",
     "pyinstaller==6.22.3",
     "pytest>=9.0.2",

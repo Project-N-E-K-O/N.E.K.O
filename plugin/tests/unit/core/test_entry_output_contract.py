@@ -1,62 +1,100 @@
 """``output_schema`` / ``strict_output``: declaration, inference and the runtime check.
 
-The check lives in one place, ``EntryExecutor.invoke``, after an ``Ok`` is
-unwrapped. By default a mismatch is a warning and the result is returned as
-it is; ``strict_output=True`` turns it into a failure with a stable code.
-Logs and errors carry field paths and error types only, never returned data.
+The check lives in ``EntryExecutor.invoke``: after the handler returns and
+before the automatic state snapshot. By default a mismatch is a warning and
+the result is returned as it is; ``strict_output=True`` fails the call with a
+stable code. Logs and errors carry field paths and error types only.
 """
 
 from __future__ import annotations
 
+import asyncio
+import datetime
+import enum
 import inspect
 import logging
 from contextlib import nullcontext
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from plugin._types.exceptions import (
     OUTPUT_SCHEMA_VIOLATION_CODE,
     PluginExecutionError,
     PluginOutputSchemaError,
 )
+from plugin.core import entry_executor as entry_executor_module
 from plugin.core.entry_executor import EntryExecutor, execute_entry_command
 from plugin.sdk.plugin import decorators as plugin_decorators
 from plugin.sdk.shared.constants import EVENT_META_ATTR
-from plugin.sdk.shared.core import output_contract
 from plugin.sdk.shared.core.decorators import neko_plugin
 from plugin.sdk.shared.core.events import EventMeta
+from plugin.sdk.shared.core.finish import build_finish_envelope
 from plugin.sdk.shared.core.output_contract import build_output_check, output_payload
 from plugin.sdk.shared.models import Err, Ok
+from tests.fake_clock import patch_module_clock
 
 SECRET = "s3cret-user-text"
 SECRET_KEY = "private-key-name"
 
 
-class Weather(BaseModel):
+class Color(str, enum.Enum):
+    RED = "red"
+    BLUE = "blue"
+
+
+class Address(BaseModel):
     city: str
-    temperature: int
+    zip_code: str = Field(alias="zipCode")
 
 
-class Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class Profile(BaseModel):
     name: str
+    homepage: HttpUrl
+    joined: datetime.datetime
+    balance: Decimal
+    color: Color
+    nickname: str | None = None
+    address: Address
+    history: list[Address] = []
+
+    @field_validator("name")
+    @classmethod
+    def not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("blank")
+        return value
 
 
-class Scores(BaseModel):
-    scores: dict[str, int]
+def _profile(**overrides: object) -> Profile:
+    values: dict[str, object] = {
+        "name": "Ann",
+        "homepage": "https://example.com",
+        "joined": datetime.datetime(2026, 1, 1, 12, 0),
+        "balance": Decimal("1.50"),
+        "color": Color.RED,
+        "address": {"city": "Kyoto", "zipCode": "600"},
+        "history": [{"city": "Osaka", "zipCode": "530"}],
+    }
+    values.update(overrides)
+    return Profile.model_validate(values)
 
 
 EXPLICIT = {
     "type": "object",
-    "properties": {"count": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}},
+    "properties": {"count": {"type": "integer", "minimum": 0}, "tags": {"type": "array", "items": {"type": "string"}}},
     "required": ["count"],
     "additionalProperties": False,
 }
 
 
-def _executor(entries, metadata):
+def _executor(entries, metadata, *, persisted=None):
+    async def persist(_reason):
+        if persisted is not None:
+            persisted.append(_reason)
+
     return EntryExecutor(
         plugin_id="demo",
         context=SimpleNamespace(
@@ -70,8 +108,8 @@ def _executor(entries, metadata):
         events={},
         default_timeout=5,
         refresh=lambda: None,
-        should_persist=lambda _: False,
-        persist=None,
+        should_persist=lambda _: persisted is not None,
+        persist=persist,
         logger=logging.getLogger("test.output_contract"),
     )
 
@@ -80,20 +118,24 @@ def _meta_of(fn) -> EventMeta:
     return getattr(fn, EVENT_META_ATTR)
 
 
-def _runtime_for(result, **decorator_kwargs):
+def _runtime_for(result, *, persisted=None, **decorator_kwargs):
     @plugin_decorators.plugin_entry(id="entry", **decorator_kwargs)
     async def entry():
         return result
 
-    return _executor({"entry": entry}, {"entry": _meta_of(entry)})
+    return _executor({"entry": entry}, {"entry": _meta_of(entry)}, persisted=persisted)
 
 
-def _runtime_for_model(result, *, strict: bool = False):
+def _profile_runtime(result, *, strict=True, persisted=None):
     @plugin_decorators.plugin_entry(id="entry", strict_output=strict)
-    async def entry() -> Weather:
+    async def entry() -> Profile:
         return result  # type: ignore[return-value]
 
-    return _executor({"entry": entry}, {"entry": _meta_of(entry)})
+    return _executor({"entry": entry}, {"entry": _meta_of(entry)}, persisted=persisted)
+
+
+def _issues(check, value):
+    return [(issue.path, issue.type) for issue in check(value)]
 
 
 # ---------------------------------------------------------------------------
@@ -107,27 +149,29 @@ def test_nothing_declared_means_no_contract():
         return {}
 
     meta = _meta_of(plain)
-    assert meta.output_schema is None
-    assert meta.output_model is None
-    assert meta.strict_output is False
+    assert (meta.output_schema, meta.output_model, meta.strict_output) == (None, None, False)
 
 
-def test_pydantic_return_annotation_infers_output_schema():
-    @plugin_decorators.plugin_entry(id="weather")
-    async def weather() -> Weather:
-        return Weather(city="x", temperature=1)
+def test_pydantic_return_annotation_infers_the_contract():
+    @plugin_decorators.plugin_entry(id="profile")
+    async def profile() -> Profile:
+        return _profile()
 
-    meta = _meta_of(weather)
-    assert meta.output_model is Weather
-    assert meta.output_schema == Weather.model_json_schema()
+    meta = _meta_of(profile)
+    assert meta.output_model is Profile
+    # Validation mode, keys as finish()/model_dump() emit them (field names).
+    assert meta.output_schema == Profile.model_json_schema(by_alias=False)
 
 
-def test_optional_model_annotation_is_inferred_like_llm_result():
-    @plugin_decorators.plugin_entry(id="weather")
-    async def weather() -> Weather | None:
+def test_optional_model_annotation_publishes_a_nullable_contract():
+    @plugin_decorators.plugin_entry(id="maybe")
+    async def maybe() -> Profile | None:
         return None
 
-    assert _meta_of(weather).output_model is Weather
+    meta = _meta_of(maybe)
+    assert meta.output_model is Profile
+    assert {"type": "null"} in meta.output_schema["anyOf"]
+    assert "$defs" in meta.output_schema
 
 
 def test_forward_reference_is_resolved_against_the_owner_class():
@@ -136,67 +180,37 @@ def test_forward_reference_is_resolved_against_the_owner_class():
         async def forward(self) -> "Reply":
             return self.Reply(ok=True)
 
-        # Declared after the method: unresolvable when the decorator runs.
         class Reply(BaseModel):
             ok: bool
 
     assert _meta_of(Demo.forward).output_schema is None
     neko_plugin(Demo)
-    meta = _meta_of(Demo.forward)
-    assert meta.output_model is Demo.Reply
-    assert meta.output_schema == Demo.Reply.model_json_schema()
+    assert _meta_of(Demo.forward).output_model is Demo.Reply
 
 
-def test_non_pydantic_classes_are_not_inferred_as_output_contracts():
-    class SchemaOnly:
-        @classmethod
-        def schema(cls):
-            return {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+def test_explicit_output_schema_wins_and_is_detached():
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
 
-    @plugin_decorators.plugin_entry(id="legacy")
-    async def legacy() -> SchemaOnly:
-        return SchemaOnly()
-
-    meta = _meta_of(legacy)
-    # llm_result inference keeps accepting it; the output contract does not.
-    assert meta.llm_result_model is SchemaOnly
-    assert meta.output_schema is None
-    assert meta.output_model is None
-
-
-def test_explicit_output_schema_wins_over_annotation():
-    @plugin_decorators.plugin_entry(id="explicit", output_schema=EXPLICIT)
-    async def explicit() -> Weather:
-        return Weather(city="x", temperature=1)
+    @plugin_decorators.plugin_entry(id="explicit", output_schema=schema)
+    async def explicit() -> Profile:
+        return _profile()
 
     meta = _meta_of(explicit)
-    assert meta.output_schema == EXPLICIT
-    assert meta.output_schema is not EXPLICIT
     assert meta.output_model is None
+    schema["properties"]["count"]["type"] = "string"
+    assert meta.output_schema["properties"]["count"]["type"] == "integer"
 
 
 def test_output_contract_is_independent_of_llm_result_fields():
-    @plugin_decorators.plugin_entry(id="split", llm_result_fields=["city"])
-    async def split() -> Weather:
-        return Weather(city="x", temperature=1)
+    @plugin_decorators.plugin_entry(id="split", llm_result_fields=["name"])
+    async def split() -> Profile:
+        return _profile()
 
     meta = _meta_of(split)
-    assert meta.llm_result_fields == ["city"]
-    assert meta.output_model is Weather
-
-    @plugin_decorators.plugin_entry(id="explicit_llm", llm_result_model=Strict)
-    async def explicit_llm() -> Weather:
-        return Weather(city="x", temperature=1)
-
-    meta = _meta_of(explicit_llm)
-    assert meta.llm_result_model is Strict
-    assert meta.output_model is Weather
-
-
-def test_output_schema_may_combine_with_any_llm_result_option():
+    assert meta.llm_result_fields == ["name"]
+    assert meta.output_model is Profile
     # Not part of the llm_result_* mutual exclusion group.
-    for kwargs in ({"llm_result_fields": ["a"]}, {"llm_result_model": Weather}, {"fields": Weather}):
-        plugin_decorators.plugin_entry(id="x", output_schema={"type": "object"}, **kwargs)
+    plugin_decorators.plugin_entry(id="x", output_schema={"type": "object"}, llm_result_model=Profile)
 
 
 def test_output_schema_must_be_a_mapping():
@@ -213,80 +227,127 @@ def test_both_plugin_facing_entry_decorators_have_the_same_signature():
         assert (param.annotation, param.default) == (method_params[name].annotation, method_params[name].default), name
 
 
-def test_plugin_entry_method_facade_forwards_output_contract():
-    @plugin_decorators.plugin.entry(id="via_facade", output_schema=EXPLICIT, strict_output=True)
-    async def via_facade():
-        return {}
-
-    meta = _meta_of(via_facade)
-    assert meta.output_schema == EXPLICIT
-    assert meta.strict_output is True
-
-
 # ---------------------------------------------------------------------------
-# Runtime: default warns, result unchanged
+# Pydantic contracts: the model validates the output
 # ---------------------------------------------------------------------------
 
 
-async def test_matching_result_passes_without_warning(caplog):
-    runtime = _runtime_for({"count": 2, "tags": ["a"]}, output_schema=EXPLICIT)
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) == {"count": 2, "tags": ["a"]}
-    assert "output_schema" not in caplog.text
+@pytest.mark.parametrize(
+    "returned",
+    [
+        pytest.param(_profile(), id="instance"),
+        pytest.param(build_finish_envelope(data=_profile(), delivery="silent"), id="finish-data"),
+        pytest.param(_profile().model_dump(), id="dict-by-name"),
+        pytest.param(_profile().model_dump(by_alias=True), id="dict-by-alias"),
+        pytest.param(_profile().model_dump(mode="json"), id="dict-json-mode"),
+        pytest.param(Ok(_profile().model_dump()), id="ok-dict"),
+    ],
+)
+async def test_mainstream_model_outputs_pass_strict(returned):
+    runtime = _profile_runtime(returned)
+    assert await runtime.invoke("plugin_entry", "entry", {}) is (returned.value if isinstance(returned, Ok) else returned)
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        pytest.param({"homepage": "not a url"}, ("$.homepage", "url_parsing"), id="HttpUrl"),
+        pytest.param({"name": "  "}, ("$.name", "value_error"), id="field-validator"),
+        pytest.param({"color": "green"}, ("$.color", "enum"), id="Enum"),
+        pytest.param({"balance": "abc"}, ("$.balance", "decimal_parsing"), id="Decimal"),
+        pytest.param({"joined": "yesterday"}, ("$.joined", "datetime_from_date_parsing"), id="datetime"),
+        pytest.param({"address": {"city": "Kyoto"}}, ("$.address.zipCode", "missing"), id="nested-model-alias"),
+        pytest.param({"history": [{"city": "Osaka"}]}, ("$.history[0].zipCode", "missing"), id="list-of-models"),
+    ],
+)
+async def test_model_validators_and_formats_apply_to_dict_output(change, expected):
+    returned = {**_profile().model_dump(), **change}
+    check = build_output_check(_meta_of(_profile_runtime(None)._entries["entry"]))
+    assert _issues(check, returned) == [expected]
+
+
+async def test_optional_model_accepts_none_and_plain_model_rejects_it():
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def maybe() -> Profile | None:
+        return None
+
+    assert await _executor({"entry": maybe}, {"entry": _meta_of(maybe)}).invoke("plugin_entry", "entry", {}) is None
+    with pytest.raises(PluginOutputSchemaError):
+        await _profile_runtime(None).invoke("plugin_entry", "entry", {})
+
+
+def test_serialize_by_alias_models_publish_and_accept_alias_keys():
+    class Out(BaseModel):
+        model_config = ConfigDict(serialize_by_alias=True)
+        user_id: int = Field(alias="userId")
+
+    @plugin_decorators.plugin_entry(id="entry")
+    async def entry() -> Out:
+        return Out(userId=1)
+
+    meta = _meta_of(entry)
+    assert set(meta.output_schema["properties"]) == {"userId"}
+    check = build_output_check(meta)
+    assert check(Out(userId=3).model_dump()) == [] == check({"user_id": 3})
+
+
+# ---------------------------------------------------------------------------
+# Explicit contracts: jsonschema
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ({"count": 1, "tags": ["a"]}, []),
+        ({"count": 1, "tags": ("a",)}, []),
+        ({"tags": []}, [("$", "required")]),
+        ({"count": -1}, [("$.count", "minimum")]),
+        ({"count": 1, "tags": [1]}, [("$.tags[0]", "type")]),
+        ({"count": 1, SECRET_KEY: 1}, [("$", "additionalProperties")]),
+    ],
+)
+def test_explicit_schema_is_checked_with_jsonschema(value, expected):
+    check = build_output_check(SimpleNamespace(output_schema=EXPLICIT, output_model=None))
+    assert _issues(check, value) == expected
+
+
+def test_jsonschema_format_and_multiple_of_need_no_custom_code():
+    check = build_output_check(SimpleNamespace(
+        output_schema={"type": "object", "properties": {"n": {"type": "number", "multipleOf": 0.5}}},
+        output_model=None,
+    ))
+    assert _issues(check, {"n": 1.25}) == [("$.n", "multipleOf")]
+
+
+def test_model_and_jsonschema_agree_on_the_published_schema():
+    """Same schema and data: the model check and a JSON Schema check reach the same verdict."""
+    model_check = build_output_check(SimpleNamespace(output_schema=Address.model_json_schema(), output_model=Address))
+    schema_check = build_output_check(SimpleNamespace(output_schema=Address.model_json_schema(), output_model=None))
+    cases = [
+        {"city": "Kyoto", "zipCode": "600"},
+        {"city": "Kyoto"},
+        {"city": 1, "zipCode": "600"},
+        {"zipCode": "600"},
+    ]
+    for value in cases:
+        assert bool(model_check(value)) == bool(schema_check(value)), value
+    # Known, explained difference: the model also accepts field names (by_name).
+    assert model_check({"city": "Kyoto", "zip_code": "600"}) == []
+    assert schema_check({"city": "Kyoto", "zip_code": "600"}) != []
+
+
+# ---------------------------------------------------------------------------
+# Runtime: warn, strict, Ok/Err/bare/finish, persistence, rate limit
+# ---------------------------------------------------------------------------
 
 
 async def test_mismatch_warns_and_returns_the_result_unchanged(caplog):
-    returned = {"count": "two", "tags": [1]}
+    returned = {"count": "two"}
     runtime = _runtime_for(returned, output_schema=EXPLICIT)
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        result = await runtime.invoke("plugin_entry", "entry", {})
-    assert result is returned
-    assert "entry=plugin_entry.entry" in caplog.text
-    assert "strict=False" in caplog.text
-    assert "$.count (type)" in caplog.text
-    assert "$.tags[0] (type)" in caplog.text
-
-
-async def test_model_annotation_warns_on_mismatch(caplog):
-    runtime = _runtime_for_model({"city": "x"})
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) == {"city": "x"}
-    assert "$.temperature (required)" in caplog.text
-
-
-async def test_model_instance_and_matching_dict_pass(caplog):
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        instance = Weather(city="x", temperature=3)
-        assert await _runtime_for_model(instance).invoke("plugin_entry", "entry", {}) is instance
-        assert await _runtime_for_model({"city": "x", "temperature": 3}).invoke("plugin_entry", "entry", {})
-    assert "output_schema" not in caplog.text
-
-
-async def test_entry_without_contract_is_not_checked(monkeypatch):
-    calls = []
-    monkeypatch.setattr(output_contract, "_JsonSchemaCheck", lambda *a: calls.append(a))
-    runtime = _runtime_for({"anything": object()})
-    await runtime.invoke("plugin_entry", "entry", {})
-    assert calls == []
-
-
-# ---------------------------------------------------------------------------
-# Runtime: strict_output
-# ---------------------------------------------------------------------------
-
-
-async def test_strict_mismatch_fails_with_output_schema_error():
-    runtime = _runtime_for({"tags": []}, output_schema=EXPLICIT, strict_output=True)
-    with pytest.raises(PluginOutputSchemaError) as caught:
-        await runtime.invoke("plugin_entry", "entry", {})
-    assert isinstance(caught.value, PluginExecutionError)
-    assert caught.value.code == OUTPUT_SCHEMA_VIOLATION_CODE
-    assert caught.value.issues == [{"path": "$.count", "type": "required"}]
-
-
-async def test_strict_match_passes():
-    runtime = _runtime_for({"count": 1}, output_schema=EXPLICIT, strict_output=True)
-    assert await runtime.invoke("plugin_entry", "entry", {}) == {"count": 1}
+        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
+    assert "strict=False" in caplog.text and "$.count (type)" in caplog.text
 
 
 async def test_strict_failure_reply_carries_code_and_issues():
@@ -295,521 +356,65 @@ async def test_strict_failure_reply_carries_code_and_issues():
     assert reply["success"] is False
     assert reply["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
     assert reply["error"]["details"]["issues"] == [{"path": "$.count", "type": "type"}]
-    assert reply["error"]["details"]["event_id"] == "entry"
 
 
-async def test_strict_without_any_contract_changes_nothing():
-    runtime = _runtime_for({"anything": 1}, strict_output=True)
-    assert await runtime.invoke("plugin_entry", "entry", {}) == {"anything": 1}
-
-
-# ---------------------------------------------------------------------------
-# Ok / Err / bare / finish envelope
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("wrap", [lambda v: v, Ok], ids=["bare", "ok"])
-async def test_ok_and_bare_results_are_checked_alike(wrap):
+@pytest.mark.parametrize("wrap", [lambda v: v, Ok, lambda v: build_finish_envelope(data=v, delivery="silent")],
+                         ids=["bare", "ok", "finish"])
+async def test_ok_bare_and_finish_results_are_checked_alike(wrap):
     good = _runtime_for(wrap({"count": 1}), output_schema=EXPLICIT, strict_output=True)
-    assert await good.invoke("plugin_entry", "entry", {}) == {"count": 1}
+    await good.invoke("plugin_entry", "entry", {})
     bad = _runtime_for(wrap({"count": "x"}), output_schema=EXPLICIT, strict_output=True)
     with pytest.raises(PluginOutputSchemaError):
         await bad.invoke("plugin_entry", "entry", {})
 
 
-async def test_err_result_keeps_its_own_failure_and_is_not_checked(caplog):
+async def test_err_result_keeps_its_own_failure_and_is_not_checked():
     runtime = _runtime_for(Err(ValueError("plugin said no")), output_schema=EXPLICIT, strict_output=True)
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        with pytest.raises(PluginExecutionError, match="plugin said no") as caught:
-            await runtime.invoke("plugin_entry", "entry", {})
+    with pytest.raises(PluginExecutionError, match="plugin said no") as caught:
+        await runtime.invoke("plugin_entry", "entry", {})
     assert not isinstance(caught.value, PluginOutputSchemaError)
-    assert "output_schema" not in caplog.text
 
 
-@pytest.mark.parametrize("wrap", [lambda v: v, Ok], ids=["bare", "ok"])
-async def test_finish_envelope_is_checked_on_its_data(wrap):
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    good = build_finish_envelope(data={"count": 1}, delivery="silent")
-    runtime = _runtime_for(wrap(good), output_schema=EXPLICIT, strict_output=True)
-    assert await runtime.invoke("plugin_entry", "entry", {}) == good
-
-    bad = build_finish_envelope(data={"tags": []}, delivery="silent")
-    runtime = _runtime_for(wrap(bad), output_schema=EXPLICIT, strict_output=True)
+async def test_strict_failure_skips_the_state_snapshot():
+    persisted: list[str] = []
     with pytest.raises(PluginOutputSchemaError):
-        await runtime.invoke("plugin_entry", "entry", {})
-
-
-def test_plain_dict_with_some_envelope_keys_is_not_unwrapped():
-    value = {"success": True, "data": {"x": 1}}
-    assert output_payload(value) is value
-
-
-# ---------------------------------------------------------------------------
-# The check is built once per entry
-# ---------------------------------------------------------------------------
-
-
-async def test_check_is_built_once_per_entry(monkeypatch):
-    built = []
-    real = output_contract.build_output_check
-
-    def counting(meta):
-        built.append(meta)
-        return real(meta)
-
-    monkeypatch.setattr("plugin.core.entry_executor.build_output_check", counting)
-    runtime = _runtime_for({"count": 1}, output_schema=EXPLICIT)
-    for _ in range(3):
-        await runtime.invoke("plugin_entry", "entry", {})
-    assert len(built) == 1
-
-
-async def test_check_is_rebuilt_when_the_entry_meta_is_replaced(monkeypatch):
-    built = []
-    real = output_contract.build_output_check
-    monkeypatch.setattr(
-        "plugin.core.entry_executor.build_output_check", lambda meta: built.append(meta) or real(meta)
+        await _runtime_for({"count": "x"}, output_schema=EXPLICIT, strict_output=True, persisted=persisted).invoke(
+            "plugin_entry", "entry", {}
+        )
+    assert persisted == []
+    await _runtime_for({"count": 1}, output_schema=EXPLICIT, strict_output=True, persisted=persisted).invoke(
+        "plugin_entry", "entry", {}
     )
-
-    async def entry():
-        return {"count": 1}
-
-    metadata = {"entry": EventMeta(event_type="plugin_entry", id="entry", output_schema=EXPLICIT)}
-    runtime = _executor({"entry": entry}, metadata)
-    await runtime.invoke("plugin_entry", "entry", {})
-    metadata["entry"] = EventMeta(event_type="plugin_entry", id="entry", output_schema={"type": "string"}, strict_output=True)
-    with pytest.raises(PluginOutputSchemaError):
-        await runtime.invoke("plugin_entry", "entry", {})
-    assert len(built) == 2
+    assert persisted == ["auto"]
 
 
-# ---------------------------------------------------------------------------
-# Privacy: neither logs nor errors quote returned data
-# ---------------------------------------------------------------------------
-
-
-def _privacy_cases():
-    return [
-        pytest.param({"output_schema": EXPLICIT}, {"count": SECRET, "tags": [SECRET]}, id="explicit-type"),
-        pytest.param(
-            {"output_schema": EXPLICIT},
-            {"count": 1, SECRET_KEY: SECRET},
-            id="explicit-extra-key",
-        ),
-        pytest.param(
-            {"output_schema": {"type": "object", "properties": {"mode": {"enum": ["a", "b"]}}}},
-            {"mode": SECRET},
-            id="explicit-enum",
-        ),
-        pytest.param(
-            {"output_schema": {"type": "object", "additionalProperties": {"type": "integer"}}},
-            {SECRET_KEY: SECRET},
-            id="explicit-additional-schema",
-        ),
-    ]
-
-
-@pytest.mark.parametrize(("decl", "returned"), _privacy_cases())
-async def test_logs_and_errors_never_contain_returned_values(caplog, decl, returned):
-    runtime = _runtime_for(returned, strict_output=True, **decl)
-    with caplog.at_level(logging.DEBUG):
-        reply = await execute_entry_command(runtime, {"req_id": "r", "entry_id": "entry", "args": {}})
-    assert reply["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
-    rendered = repr(reply) + caplog.text
-    assert SECRET not in rendered
-    assert SECRET_KEY not in rendered
-
-
-@pytest.mark.parametrize(
-    ("model", "returned"),
-    [
-        pytest.param(Weather, {"city": SECRET, "temperature": SECRET}, id="model-type"),
-        pytest.param(Strict, {"name": "n", SECRET_KEY: SECRET}, id="model-extra-forbid"),
-        pytest.param(Scores, {"scores": {SECRET_KEY: SECRET}}, id="model-dict-key"),
-    ],
-)
-async def test_model_checks_never_quote_returned_values(caplog, model, returned):
-    meta = EventMeta(
-        event_type="plugin_entry",
-        id="entry",
-        output_schema=model.model_json_schema(),
-        output_model=model,
-        strict_output=True,
-    )
-
-    async def entry():
-        return returned
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    with caplog.at_level(logging.DEBUG):
-        reply = await execute_entry_command(runtime, {"req_id": "r", "entry_id": "entry", "args": {}})
-    assert reply["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
-    rendered = repr(reply) + caplog.text
-    assert SECRET not in rendered
-    assert SECRET_KEY not in rendered
-    assert reply["error"]["details"]["issues"]
-
-
-# ---------------------------------------------------------------------------
-# JSON Schema subset
-# ---------------------------------------------------------------------------
-
-
-def _issues(schema, value):
-    check = build_output_check(SimpleNamespace(output_schema=schema, output_model=None))
-    assert check is not None
-    return [(issue.path, issue.type) for issue in check(value)]
-
-
-@pytest.mark.parametrize(
-    ("schema", "value", "expected"),
-    [
-        ({"type": "integer"}, True, [("$", "type")]),
-        ({"type": "integer"}, 2.0, []),
-        ({"type": "number"}, 1, []),
-        ({"type": ["string", "null"]}, None, []),
-        ({"type": "array", "items": {"type": "string"}}, ("a", 1), [("$[1]", "type")]),
-        ({"enum": [1, 2]}, True, [("$", "enum")]),
-        ({"const": False}, 0, [("$", "const")]),
-        ({"type": "string", "minLength": 2, "pattern": "^a"}, "b", [("$", "minLength"), ("$", "pattern")]),
-        ({"type": "number", "minimum": 0, "exclusiveMaximum": 10}, 10, [("$", "exclusiveMaximum")]),
-        ({"anyOf": [{"type": "string"}, {"type": "integer"}]}, 1.5, [("$", "anyOf")]),
-        ({"oneOf": [{"type": "number"}, {"type": "integer"}]}, 1, [("$", "oneOf")]),
-        ({"not": {"type": "null"}}, None, [("$", "not")]),
-        (
-            {"$defs": {"Item": {"type": "object", "required": ["id"]}}, "type": "array", "items": {"$ref": "#/$defs/Item"}},
-            [{"id": 1}, {}],
-            [("$[1].id", "required")],
-        ),
-        ({"type": "object", "properties": {"a": {"type": "string"}}, "x-unknown": 1}, {"a": "b"}, []),
-        ({"$ref": "#"}, 1, [("$", "check_error:ref_depth")]),
-    ],
-)
-def test_json_schema_subset(schema, value, expected):
-    assert _issues(schema, value) == expected
-
-
-def test_json_schema_subset_reports_a_bounded_number_of_issues():
-    schema = {"type": "array", "items": {"type": "string"}}
-    assert len(_issues(schema, list(range(500)))) == output_contract.MAX_REPORTED_ISSUES + 1
-
-
-def test_serialized_output_of_an_inferred_model_is_checked_against_the_published_schema():
-    schema = Weather.model_json_schema(mode="serialization")
-    check = build_output_check(SimpleNamespace(output_schema=schema, output_model=Weather))
-    assert check is not None
-    # Output rules, not input coercion: "3" is not an integer on the wire.
-    assert [(i.path, i.type) for i in check({"city": "x", "temperature": "3"})] == [("$.temperature", "type")]
-    assert [(i.path, i.type) for i in check({"city": "x"})] == [("$.temperature", "required")]
-    assert check({"city": "x", "temperature": 3}) == []
-
-
-# ---------------------------------------------------------------------------
-# No false positives in strict mode
-# ---------------------------------------------------------------------------
-
-
-class Inner(BaseModel):
-    v: int
-
-
-class Outer(BaseModel):
-    inner: Inner
-
-
-async def test_optional_model_annotation_accepts_none_in_strict_mode():
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> Outer | None:
-        return None
-
-    meta = _meta_of(entry)
-    # Nullable published schema, with $defs kept at the root so refs resolve.
-    assert meta.output_schema["anyOf"][1] == {"type": "null"}
-    assert "Inner" in meta.output_schema["$defs"]
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    assert await runtime.invoke("plugin_entry", "entry", {}) is None
-    check = build_output_check(meta)
-    assert check is not None
-    # Serialized output is checked against the published (nullable) schema.
-    assert [(i.path, i.type) for i in check({"inner": {"v": "x"}})] == [("$", "anyOf")]
-
-
-async def test_plain_model_annotation_still_rejects_none():
-    runtime = _runtime_for_model(None, strict=True)
-    with pytest.raises(PluginOutputSchemaError):
-        await runtime.invoke("plugin_entry", "entry", {})
-
-
-def test_explicit_schema_checks_values_in_their_json_form():
-    import datetime
-    import enum
-    import uuid
-    from decimal import Decimal
-
-    class Color(enum.Enum):
-        RED = "red"
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "when": {"type": "string"},
-            "id": {"type": "string"},
-            "color": {"type": "string"},
-            "price": {"type": "number"},
-            "tags": {"type": "array", "items": {"type": "string"}},
-            "raw": {"type": "string"},
-        },
-    }
-    value = {
-        "when": datetime.datetime(2026, 1, 1),
-        "id": uuid.uuid4(),
-        "color": Color.RED,
-        "price": Decimal("1.5"),
-        "tags": {"a"},
-        "raw": b"x",
-    }
-    assert _issues(schema, value) == []
-
-
-def test_recursive_schema_accepts_deep_data():
-    schema = {"type": "object", "properties": {"kids": {"type": "array", "items": {"$ref": "#"}}}}
-    tree: dict[str, object] = {"kids": []}
-    for _ in range(60):
-        tree = {"kids": [tree]}
-    assert _issues(schema, tree) == []
-    bad: dict[str, object] = {"kids": ["leaf"]}
-    for _ in range(40):
-        bad = {"kids": [bad]}
-    assert [kind for _path, kind in _issues(schema, bad)] == ["type"]
-
-
-async def test_checker_failure_is_logged_but_not_a_strict_failure(caplog):
-    deep: list[object] = []
-    for _ in range(5000):
-        deep = [deep]
-    runtime = _runtime_for(deep, output_schema={"type": "array", "items": {"$ref": "#"}}, strict_output=True)
+async def test_warnings_are_rate_limited_per_entry(caplog, monkeypatch):
+    clock = [100.0]
+    patch_module_clock(monkeypatch, entry_executor_module, monotonic=lambda: clock[0])
+    runtime = _runtime_for({"count": "x"}, output_schema=EXPLICIT)
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) is deep
-    assert "check_error:" in caplog.text
+        for _ in range(5):
+            await runtime.invoke("plugin_entry", "entry", {})
+        assert caplog.text.count("does not match output_schema") == 1
+        clock[0] += entry_executor_module._WARN_INTERVAL + 1
+        await runtime.invoke("plugin_entry", "entry", {})
+    assert caplog.text.count("does not match output_schema") == 2
+    assert "suppressed=4" in caplog.text
 
 
-# ---------------------------------------------------------------------------
-# Review round 1: the check never touches the returned value; data keys stay out
-# ---------------------------------------------------------------------------
+async def test_checker_failure_never_fails_the_call(caplog):
+    class Hostile(dict):
+        def get(self, *args, **kwargs):
+            raise RuntimeError("hostile mapping")
 
-
-class Counted(BaseModel):
-    n: int = 0
-
-    @model_validator(mode="after")
-    def bump(self):
-        self.n += 1
-        return self
-
-
-class Mutating(BaseModel):
-    items: list[int]
-
-    @model_validator(mode="before")
-    @classmethod
-    def eat(cls, data):
-        if isinstance(data, dict):
-            data["items"].append(99)
-        return data
-
-
-async def test_returned_model_instance_is_not_revalidated():
-    returned = Counted()
-    assert returned.n == 1
-    meta = EventMeta(event_type="plugin_entry", id="entry", output_schema=Counted.model_json_schema(), output_model=Counted)
-
-    async def entry():
-        return returned
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    assert await runtime.invoke("plugin_entry", "entry", {}) is returned
-    assert returned.n == 1
-
-
-async def test_validators_never_mutate_the_returned_data():
-    returned = {"items": [1]}
-    meta = EventMeta(event_type="plugin_entry", id="entry", output_schema=Mutating.model_json_schema(), output_model=Mutating)
-
-    async def entry():
-        return returned
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    assert await runtime.invoke("plugin_entry", "entry", {}) == {"items": [1]}
-
-
-class IntKeys(BaseModel):
-    scores: dict[int, int]
-    rows: list[int]
-
-
-def test_integer_mapping_keys_are_not_put_in_paths():
-    check = build_output_check(SimpleNamespace(output_schema=IntKeys.model_json_schema(), output_model=IntKeys))
-    issues = [(i.path, i.type) for i in check({"scores": {123456789: "x"}, "rows": [1, "y"]})]
-    assert ("$.scores.*", "type") in issues
-    assert ("$.rows[1]", "type") in issues
-    assert all("123456789" not in path for path, _kind in issues)
-
-
-class Exploding(BaseModel):
-    n: int
-
-    @model_validator(mode="after")
-    def boom(self):
-        raise TypeError("not a validation error")
-
-
-async def test_model_validators_take_no_part_in_checking_serialized_output(caplog):
-    meta = EventMeta(
-        event_type="plugin_entry", id="entry",
-        output_schema=Exploding.model_json_schema(mode="serialization"), output_model=Exploding, strict_output=True,
-    )
-
-    async def entry():
-        return {"n": 1}
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) == {"n": 1}
-    # The validator (an input rule that would raise) never ran.
-    assert "output" not in caplog.text
-
-
-async def test_a_crashing_validator_while_revalidating_an_instance_warns_only(caplog):
-    class Revalidated(BaseModel):
-        model_config = ConfigDict(revalidate_instances="always")
-        n: int
-
-        @model_validator(mode="after")
-        def boom(self):
-            if self.n == 7:
-                raise TypeError("not a validation error")
-            return self
-
-    returned = Revalidated(n=1)
-    returned.n = 7
-    meta = EventMeta(
-        event_type="plugin_entry", id="entry",
-        output_schema=Revalidated.model_json_schema(mode="serialization"), output_model=Revalidated, strict_output=True,
-    )
-
-    async def entry():
-        return returned
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
+    returned = Hostile(success=True)
+    runtime = _runtime_for(returned, output_schema=EXPLICIT, strict_output=True)
     with caplog.at_level(logging.WARNING, logger="test.output_contract"):
         assert await runtime.invoke("plugin_entry", "entry", {}) is returned
-    assert "check_error:TypeError" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("schema", "value", "expected"),
-    [
-        ({"$defs": {"deny": False}, "$ref": "#/$defs/deny"}, 1, [("$", "false")]),
-        ({"$defs": {"allow": True}, "$ref": "#/$defs/allow"}, 1, []),
-        ({"$ref": "#/$defs/missing"}, 1, []),
-        ({"$ref": "https://example.com/schema.json"}, 1, []),
-        ({"type": "object", "patternProperties": {}, "additionalProperties": False}, {"unexpected": 1}, [("$.*", "additionalProperties")]),
-        (
-            {"type": "object", "patternProperties": {"^x_": {"type": "integer"}}, "additionalProperties": False},
-            {"x_a": 1, "x_b": "no", "y": 1},
-            [("$.*", "type"), ("$.*", "additionalProperties")],
-        ),
-    ],
-)
-def test_review_round_one_schema_cases(schema, value, expected):
-    assert _issues(schema, value) == expected
-
-
-# ---------------------------------------------------------------------------
-# Review round 2
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("schema", "value", "expected"),
-    [
-        ({"$defs": {"": {"type": "integer"}}, "$ref": "#/$defs/"}, "x", [("$", "type")]),
-        ({"$defs": {"a b": {"type": "integer"}}, "$ref": "#/$defs/a%20b"}, "x", [("$", "type")]),
-        ({"$defs": {"a/b": {"type": "integer"}}, "$ref": "#/$defs/a~1b"}, "x", [("$", "type")]),
-        ({"type": "integer", "$ref": "#"}, 1, [("$", "check_error:ref_depth")]),
-        ({"anyOf": [{"$ref": "#"}]}, 1, [("$", "check_error:ref_depth")]),
-        ({"type": "integer", "maximum": -(10**400)}, 0, [("$", "maximum")]),
-        (
-            {"type": "object", "properties": {"count": {"type": "integer"}}, "patternProperties": {"^count$": {"minimum": 10}}},
-            {"count": 1},
-            [("$.count", "minimum")],
-        ),
-    ],
-)
-def test_review_round_two_schema_cases(schema, value, expected):
-    assert _issues(schema, value) == expected
-
-
-def test_ref_chains_shorter_than_the_budget_resolve():
-    defs = {f"d{i}": {"$ref": f"#/$defs/d{i + 1}"} for i in range(20)}
-    defs["d20"] = {"type": "integer"}
-    assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, 1) == []
-    # The end of the chain is really reached: a string is rejected there.
-    assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, "x") == [("$", "type")]
-
-
-def test_runaway_combinators_give_up_as_a_checker_failure():
-    schema: dict[str, object] = {"type": "integer"}
-    for _ in range(25):
-        # oneOf evaluates every branch: 2**25 walks without a budget.
-        schema = {"oneOf": [schema, schema]}
-    result = _issues(schema, 1.5)
-    assert result == [("$", "check_error:budget")]
-
-
-async def test_path_rendering_never_reads_attributes(caplog):
-    class Boom:
-        @property
-        def n(self):
-            raise RuntimeError("attribute access")
-
-    class FromAttrs(BaseModel):
-        model_config = ConfigDict(from_attributes=True)
-        n: int
-
-    meta = EventMeta(
-        event_type="plugin_entry", id="entry",
-        output_schema=FromAttrs.model_json_schema(), output_model=FromAttrs, strict_output=False,
-    )
-    returned = Boom()
-
-    async def entry():
-        return returned
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
-
-
-def test_loc_path_never_touches_attributes():
-    from plugin.sdk.shared.core.output_contract import _loc_path
-
-    reads: list[str] = []
-
-    class Opaque:
-        def __getattr__(self, name):
-            reads.append(name)
-            raise RuntimeError("attribute access")
-
-    path = _loc_path(("inner", "n", 0), frozenset({"inner", "n"}), {"inner": Opaque()})
-    assert path == "$.inner.n.*"
-    assert reads == []
+    assert "could not be checked" in caplog.text
 
 
 async def test_contract_is_the_one_resolved_when_the_call_started():
-    import asyncio
-
     release = asyncio.Event()
 
     async def entry():
@@ -820,437 +425,83 @@ async def test_contract_is_the_one_resolved_when_the_call_started():
     runtime = _executor({"entry": entry}, metadata)
     call = asyncio.create_task(runtime.invoke("plugin_entry", "entry", {}))
     await asyncio.sleep(0)
-    # Re-registered with an incompatible strict contract while the call runs.
     metadata["entry"] = EventMeta(event_type="plugin_entry", id="entry", output_schema={"type": "string"}, strict_output=True)
     release.set()
     assert await call == {"count": 1}
 
 
-async def test_cache_drops_entries_that_are_gone():
-    async def entry():
-        return {"count": 1}
+async def test_check_is_built_once_per_entry(monkeypatch):
+    built = []
+    real = entry_executor_module.build_output_check
+    monkeypatch.setattr(entry_executor_module, "build_output_check", lambda meta: built.append(meta) or real(meta))
+    runtime = _runtime_for({"count": 1}, output_schema=EXPLICIT)
+    for _ in range(3):
+        await runtime.invoke("plugin_entry", "entry", {})
+    assert len(built) == 1
 
-    metadata = {
-        "a": EventMeta(event_type="plugin_entry", id="a", output_schema=EXPLICIT),
-        "b": EventMeta(event_type="plugin_entry", id="b", output_schema=EXPLICIT),
-    }
-    runtime = _executor({"a": entry, "b": entry}, metadata)
-    await runtime.invoke("plugin_entry", "a", {})
-    del metadata["a"]
-    await runtime.invoke("plugin_entry", "b", {})
-    assert set(runtime._output_checks) == {"b"}
+
+def test_plain_dict_with_some_envelope_keys_is_not_unwrapped():
+    value = {"success": True, "data": {"x": 1}}
+    assert output_payload(value) is value
 
 
 # ---------------------------------------------------------------------------
-# Review round 3
+# Privacy: neither logs nor errors quote returned data or data-derived keys
 # ---------------------------------------------------------------------------
 
 
-class AlwaysRevalidate(BaseModel):
-    model_config = ConfigDict(revalidate_instances="always")
-    n: int
-
-
-def test_models_that_ask_for_instance_revalidation_are_revalidated_on_a_copy():
-    check = build_output_check(
-        SimpleNamespace(output_schema=AlwaysRevalidate.model_json_schema(), output_model=AlwaysRevalidate)
-    )
-    returned = AlwaysRevalidate(n=1)
-    returned.n = "bad"  # type: ignore[assignment]
-    assert [(i.path, i.type) for i in check(returned)] == [("$.n", "int_parsing")]
-    assert returned.n == "bad"
+class Scores(BaseModel):
+    scores: dict[str, int]
+    ids: dict[int, int]
 
 
 @pytest.mark.parametrize(
-    ("schema", "value", "expected"),
+    ("decl", "returned"),
     [
-        # A plain-name anchor is not supported: unresolved, not the root key.
-        ({"$ref": "#deny", "deny": False}, 1, []),
-        ({"items": [{"type": "integer"}], "additionalItems": False}, [1, 2], [("$[1]", "false")]),
+        pytest.param({"output_schema": EXPLICIT}, {"count": SECRET, "tags": [SECRET]}, id="jsonschema-type"),
+        pytest.param({"output_schema": EXPLICIT}, {"count": 1, SECRET_KEY: SECRET}, id="jsonschema-extra-key"),
+        pytest.param(
+            {"output_schema": {"type": "object", "additionalProperties": {"type": "integer"}}},
+            {SECRET_KEY: SECRET},
+            id="jsonschema-additional-schema",
+        ),
+        pytest.param(
+            {"output_schema": {"type": "object", "properties": {"m": {"enum": ["a"]}}}}, {"m": SECRET}, id="jsonschema-enum"
+        ),
     ],
 )
-def test_review_round_three_schema_cases(schema, value, expected):
-    assert _issues(schema, value) == expected
+async def test_jsonschema_issues_never_contain_returned_values(caplog, decl, returned):
+    runtime = _runtime_for(returned, strict_output=True, **decl)
+    with caplog.at_level(logging.DEBUG):
+        reply = await execute_entry_command(runtime, {"req_id": "r", "entry_id": "entry", "args": {}})
+    assert reply["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
+    rendered = repr(reply) + caplog.text
+    assert SECRET not in rendered and SECRET_KEY not in rendered
 
 
-async def test_cache_drops_gone_entries_on_a_cache_hit_too():
-    async def entry():
-        return {"count": 1}
+async def test_model_issues_never_contain_returned_values_or_keys(caplog):
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> Scores:
+        return {"scores": {SECRET_KEY: SECRET}, "ids": {123456789: SECRET}}  # type: ignore[return-value]
 
-    metadata = {
-        "a": EventMeta(event_type="plugin_entry", id="a", output_schema=EXPLICIT),
-        "b": EventMeta(event_type="plugin_entry", id="b", output_schema=EXPLICIT),
-    }
-    runtime = _executor({"a": entry, "b": entry}, metadata)
-    await runtime.invoke("plugin_entry", "a", {})
-    await runtime.invoke("plugin_entry", "b", {})
-    del metadata["a"]
-    await runtime.invoke("plugin_entry", "b", {})  # cache hit
-    assert set(runtime._output_checks) == {"b"}
-
-
-# ---------------------------------------------------------------------------
-# Review round 4
-# ---------------------------------------------------------------------------
+    runtime = _executor({"entry": entry}, {"entry": _meta_of(entry)})
+    with caplog.at_level(logging.DEBUG):
+        reply = await execute_entry_command(runtime, {"req_id": "r", "entry_id": "entry", "args": {}})
+    rendered = repr(reply) + caplog.text
+    assert SECRET not in rendered and SECRET_KEY not in rendered and "123456789" not in rendered
+    assert {"path": "$.scores.*", "type": "int_parsing"} in reply["error"]["details"]["issues"]
 
 
 def test_custom_error_types_are_replaced_by_a_fixed_code():
-    from pydantic import field_validator
     from pydantic_core import PydanticCustomError
 
     class Custom(BaseModel):
-        model_config = ConfigDict(revalidate_instances="always")
         n: int
 
         @field_validator("n")
         @classmethod
         def leak(cls, value):
-            if value == 7:
-                raise PydanticCustomError(f"bad_{value}_{SECRET}", "nope")
-            return value
+            raise PydanticCustomError(f"bad_{value}_{SECRET}", "nope")
 
     check = build_output_check(SimpleNamespace(output_schema=Custom.model_json_schema(), output_model=Custom))
-    returned = Custom(n=1)
-    returned.n = 7
-    issues = check(returned)
-    assert [(i.path, i.type) for i in issues] == [("$.n", "custom_error")]
-    assert output_contract.is_violation(issues)
-
-
-@pytest.mark.parametrize(
-    ("schema", "value", "expected"),
-    [
-        ({"$ref": "#/x/00", "x": [False]}, 1, []),
-        ({"$ref": "#/x/0", "x": [False]}, 1, [("$", "false")]),
-    ],
-)
-def test_review_round_four_pointer_cases(schema, value, expected):
-    assert _issues(schema, value) == expected
-
-
-def test_unresolvable_ref_at_the_end_of_a_long_chain_still_checks_its_siblings():
-    defs: dict[str, object] = {f"d{i}": {"$ref": f"#/$defs/d{i + 1}"} for i in range(31)}
-    defs["d31"] = {"$ref": "https://example.com/external.json", "type": "integer"}
-    assert _issues({"$defs": defs, "$ref": "#/$defs/d0"}, "x") == [("$", "type")]
-
-
-async def test_an_old_call_does_not_overwrite_the_current_entry_cache():
-    import asyncio
-
-    release = asyncio.Event()
-
-    async def slow():
-        await release.wait()
-        return {"count": 1}
-
-    async def fast():
-        return "ok"
-
-    old_meta = EventMeta(event_type="plugin_entry", id="entry", output_schema=EXPLICIT)
-    metadata = {"entry": old_meta}
-    entries = {"entry": slow}
-    runtime = _executor(entries, metadata)
-    call = asyncio.create_task(runtime.invoke("plugin_entry", "entry", {}))
-    await asyncio.sleep(0)
-    new_meta = EventMeta(event_type="plugin_entry", id="entry", output_schema={"type": "string"})
-    metadata["entry"] = new_meta
-    entries["entry"] = fast
-    await runtime.invoke("plugin_entry", "entry", {})
-    assert runtime._output_checks["entry"][0] is new_meta
-    release.set()
-    await call
-    assert runtime._output_checks["entry"][0] is new_meta
-
-
-# ---------------------------------------------------------------------------
-# Review round 5 (maintainer + bots)
-# ---------------------------------------------------------------------------
-
-
-class Aliased(BaseModel):
-    user_id: int = Field(alias="userId")
-
-
-async def test_aliased_model_returned_through_finish_passes_strict():
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> Aliased:
-        return build_finish_envelope(data=Aliased(userId=3), delivery="silent")  # type: ignore[return-value]
-
-    meta = _meta_of(entry)
-    # Published by field name, which is what finish()/model_dump() emit.
-    assert set(meta.output_schema["properties"]) == {"user_id"}
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    result = await runtime.invoke("plugin_entry", "entry", {})
-    assert result["data"] == {"user_id": 3}
-
-    check = build_output_check(meta)
-    # Looked up by the published key rule (field names here).
-    assert check({"user_id": 3}) == []
-    assert [i.type for i in check({"userId": 3})] == ["required"]
-
-
-def test_one_of_stops_at_the_second_match():
-    expensive: dict[str, object] = {"type": "integer"}
-    for _ in range(25):
-        expensive = {"oneOf": [expensive, expensive]}
-    # Two cheap matches decide it before the budget-eating third branch runs.
-    schema = {"oneOf": [{"type": "integer"}, {"type": "number"}, expensive]}
-    assert _issues(schema, 1) == [("$", "oneOf")]
-
-
-async def test_envelope_extraction_failure_is_logged_not_raised(caplog):
-    class Hostile(dict):
-        def get(self, *args, **kwargs):
-            raise RuntimeError("hostile mapping")
-
-    returned = Hostile(success=True)
-    runtime = _runtime_for(returned, output_schema=EXPLICIT, strict_output=True)
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
-    assert "could not be checked" in caplog.text
-    assert "error_type=RuntimeError" in caplog.text
-
-
-class AliasOut(BaseModel):
-    model_config = ConfigDict(serialize_by_alias=True)
-    user_id: int = Field(alias="userId")
-
-
-async def test_model_serializing_by_alias_publishes_alias_keys():
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> AliasOut:
-        return build_finish_envelope(data=AliasOut(userId=3), delivery="silent")  # type: ignore[return-value]
-
-    meta = _meta_of(entry)
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    result = await runtime.invoke("plugin_entry", "entry", {})
-    # The published contract names exactly the keys the data carries.
-    assert set(result["data"]) == set(meta.output_schema["properties"]) == {"userId"}
-
-
-# ---------------------------------------------------------------------------
-# Review round 7 (last round for this PR)
-# ---------------------------------------------------------------------------
-
-
-class Shadowed(BaseModel):
-    a: int = Field(validation_alias="b")
-    b: str
-
-
-def test_one_fields_alias_cannot_shadow_another_fields_value():
-    check = build_output_check(SimpleNamespace(output_schema=Shadowed.model_json_schema(by_alias=False), output_model=Shadowed))
-    # What model_dump()/finish() emits for a valid instance.
-    assert check({"a": 1, "b": "text"}) == []
-
-
-def test_huge_pointer_index_is_unresolved_not_a_checker_failure():
-    schema = {"$ref": "#/x/" + "9" * 5000, "x": [False], "type": "integer"}
-    assert _issues(schema, "x") == [("$", "type")]
-
-
-async def test_a_raising_isinstance_never_loses_the_result(caplog):
-    class Meta(type(BaseModel)):
-        def __instancecheck__(cls, instance):
-            raise RuntimeError("metaclass")
-
-    class Weird(BaseModel, metaclass=Meta):
-        n: int
-
-    meta = EventMeta(
-        event_type="plugin_entry", id="entry",
-        output_schema=Weird.model_json_schema(), output_model=Weird, strict_output=True,
-    )
-    returned = {"n": 1}
-
-    async def entry():
-        return returned
-
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
-        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
-    assert "could not be checked" in caplog.text
-
-
-def test_registered_schema_is_detached_from_the_callers_dict():
-    schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
-
-    @plugin_decorators.plugin_entry(id="entry", output_schema=schema)
-    async def entry():
-        return {}
-
-    schema["properties"]["count"]["type"] = "string"
-    assert _meta_of(entry).output_schema["properties"]["count"]["type"] == "integer"
-
-
-class SplitAliases(BaseModel):
-    model_config = ConfigDict(serialize_by_alias=True)
-    count: int = Field(validation_alias="incoming")
-    total: int = Field(validation_alias="inTotal", serialization_alias="outTotal")
-
-
-async def test_validation_and_serialization_aliases_that_differ_pass_strict():
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> SplitAliases:
-        return build_finish_envelope(  # type: ignore[return-value]
-            data=SplitAliases(incoming=3, inTotal=5), delivery="silent"
-        )
-
-    meta = _meta_of(entry)
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    result = await runtime.invoke("plugin_entry", "entry", {})
-    # Published keys == emitted keys, and the strict check accepts them.
-    assert set(result["data"]) == set(meta.output_schema["properties"]) == {"count", "outTotal"}
-    check = build_output_check(meta)
-    # The other direction: validation-alias keys are not what the contract
-    # publishes, so they do not satisfy it.
-    assert [i.type for i in check({"incoming": 3, "inTotal": 5})] == ["required", "required"]
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf")])
-def test_non_finite_numbers_are_not_json_numbers(value):
-    assert _issues({"type": "number", "minimum": 0}, value) == [("$", "type")]
-    assert _issues({"type": "integer"}, value) == [("$", "type")]
-
-
-
-class Serialized(BaseModel):
-    n: int
-
-    @field_serializer("n")
-    def as_id(self, value: int) -> str:
-        return f"ID-{value}"
-
-
-async def test_field_serializer_output_matches_the_published_contract():
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> Serialized:
-        return build_finish_envelope(data=Serialized(n=3), delivery="silent")  # type: ignore[return-value]
-
-    meta = _meta_of(entry)
-    assert meta.output_schema["properties"]["n"]["type"] == "string"
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    result = await runtime.invoke("plugin_entry", "entry", {})
-    assert result["data"] == {"n": "ID-3"}
-    # Returning the instance itself passes too.
-    assert build_output_check(meta)(Serialized(n=3)) == []
-
-
-class NestedInner(BaseModel):
-    model_config = ConfigDict(serialize_by_alias=True)
-    user_id: int = Field(alias="userId")
-
-
-class NestedOuter(BaseModel):
-    model_config = ConfigDict(serialize_by_alias=True)
-    child: NestedInner
-    items: list[NestedInner]
-
-
-async def test_nested_models_with_aliases_pass_strict_through_finish():
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> NestedOuter:
-        value = NestedOuter(child=NestedInner(userId=1), items=[NestedInner(userId=2)])
-        return build_finish_envelope(data=value, delivery="silent")  # type: ignore[return-value]
-
-    meta = _meta_of(entry)
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    result = await runtime.invoke("plugin_entry", "entry", {})
-    assert result["data"] == {"child": {"userId": 1}, "items": [{"userId": 2}]}
-
-
-def test_alias_and_field_name_cannot_overwrite_each_other():
-    check = build_output_check(
-        SimpleNamespace(output_schema=AliasOut.model_json_schema(by_alias=True, mode="serialization"), output_model=AliasOut)
-    )
-    # The published key carries a wrong value; the field-name key is not part of the contract.
-    assert [(i.path, i.type) for i in check({"userId": "bad", "user_id": 3})] == [("$.userId", "type")]
-
-
-class Color(str, __import__("enum").Enum):
-    RED = "red"
-
-
-class Rich(BaseModel):
-    model_config = ConfigDict(ser_json_timedelta="float")
-    when: __import__("datetime").datetime
-    day: __import__("datetime").date
-    price: __import__("decimal").Decimal
-    color: Color
-    wait: __import__("datetime").timedelta
-    tags: set[str]
-    maybe: int | None = None
-
-    @__import__("pydantic").computed_field  # type: ignore[misc]
-    @property
-    def label(self) -> str:
-        return f"{self.color.value}"
-
-
-async def test_inferred_model_output_through_finish_passes_strict_for_common_types():
-    import datetime
-    from decimal import Decimal
-
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> Rich:
-        value = Rich(
-            when=datetime.datetime(2026, 1, 1, 12, 0),
-            day=datetime.date(2026, 1, 1),
-            price=Decimal("1.50"),
-            color=Color.RED,
-            wait=datetime.timedelta(seconds=3),
-            tags={"a"},
-        )
-        return build_finish_envelope(data=value, delivery="silent")  # type: ignore[return-value]
-
-    meta = _meta_of(entry)
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    await runtime.invoke("plugin_entry", "entry", {})
-    # The same data as a plain dict (what model_dump() emits) passes too, and
-    # a wrong type is still a confirmed mismatch.
-    check = build_output_check(meta)
-    dumped = Rich(
-        when=datetime.datetime(2026, 1, 1), day=datetime.date(2026, 1, 1), price=Decimal("2"),
-        color=Color.RED, wait=datetime.timedelta(seconds=1), tags=set(),
-    ).model_dump(mode="python")
-    assert check(dumped) == []
-    assert [(i.path, i.type) for i in check({**dumped, "color": "blue"})] == [("$.color", "enum")]
-
-
-def test_field_name_keys_cannot_stand_in_for_published_output_keys():
-    check = build_output_check(SimpleNamespace(
-        output_schema=SplitAliases.model_json_schema(by_alias=True, mode="serialization"), output_model=SplitAliases,
-    ))
-    assert [(i.path, i.type) for i in check({"count": 3, "total": 5})] == [("$.outTotal", "required")]
-    assert [(i.path, i.type) for i in check({"count": 3, "outTotal": "bad", "total": 5})] == [("$.outTotal", "type")]
-    assert check({"count": 3, "outTotal": 5}) == []
-
-
-class EmptyAlias(BaseModel):
-    model_config = ConfigDict(serialize_by_alias=True)
-    n: int = Field(serialization_alias="")
-
-
-async def test_empty_string_serialization_alias_passes_strict_through_finish():
-    from plugin.sdk.shared.core.finish import build_finish_envelope
-
-    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
-    async def entry() -> EmptyAlias:
-        return build_finish_envelope(data=EmptyAlias(n=3), delivery="silent")  # type: ignore[return-value]
-
-    meta = _meta_of(entry)
-    runtime = _executor({"entry": entry}, {"entry": meta})
-    result = await runtime.invoke("plugin_entry", "entry", {})
-    assert result["data"] == {"": 3}
+    assert _issues(check, {"n": 7}) == [("$.n", "custom_error")]

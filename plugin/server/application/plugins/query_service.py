@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import math
+import json
 import dataclasses
 from collections.abc import Mapping
 
@@ -333,49 +333,6 @@ def _build_entries_from_handlers(
 
 
 
-def _require_string_keys(value: object, *, context: str) -> None:
-    """Raise unless ``value`` is JSON-encodable as nested containers.
-
-    Non-string keys and reference cycles (checked along the current path, so
-    shared acyclic sub-dicts are fine) both make the listing unencodable.
-    """
-    def invalid(reason: str, key_type: str | None = None) -> ServerDomainError:
-        details: dict[str, object] = {"reason": reason}
-        if key_type is not None:
-            details["key_type"] = key_type
-        return ServerDomainError(
-            code="INVALID_DATA_SHAPE",
-            message=f"{context} contains {reason}",
-            status_code=500,
-            details=details,
-        )
-
-    # Iterative DFS with an explicit ancestor set: no recursion limit to hit.
-    ancestors: set[int] = set()
-    stack: list[tuple[object, bool]] = [(value, False)]
-    while stack:
-        node, leaving = stack.pop()
-        if leaving:
-            ancestors.discard(id(node))
-            continue
-        if isinstance(node, float) and not math.isfinite(node):
-            # JSONResponse uses allow_nan=False: NaN/Infinity cannot be listed.
-            raise invalid("a non-finite number")
-        if not isinstance(node, (Mapping, list, tuple)):
-            continue
-        if id(node) in ancestors:
-            raise invalid("a reference cycle")
-        ancestors.add(id(node))
-        stack.append((node, True))
-        if isinstance(node, Mapping):
-            for key, item in node.items():
-                if not isinstance(key, str):
-                    raise invalid("non-string key", type(key).__name__)
-                stack.append((item, False))
-        else:
-            stack.extend((item, False) for item in node)
-
-
 def _localized_entry(entry: dict[str, object], plugin_i18n: object, locale: str) -> dict[str, object]:
     """Resolve i18n refs in an entry, leaving its output contract verbatim.
 
@@ -385,12 +342,10 @@ def _localized_entry(entry: dict[str, object], plugin_i18n: object, locale: str)
     """
     if "output_schema" not in entry:
         return resolve_i18n_refs(entry, plugin_i18n, locale=locale)  # type: ignore[arg-type,return-value]
-    contract = entry["output_schema"]
     rest = {key: value for key, value in entry.items() if key != "output_schema"}
     localized = resolve_i18n_refs(rest, plugin_i18n, locale=locale)  # type: ignore[arg-type]
     result = dict(localized) if isinstance(localized, Mapping) else rest
-    result["output_schema"] = contract
-    # Keep the original key order.
+    result["output_schema"] = entry["output_schema"]
     return {key: result[key] for key in entry if key in result}
 
 
@@ -398,11 +353,12 @@ def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, con
     for name, value in unhandled_entry_contract_fields(source, ENTRY_PROJECTION_SHAPED_FIELDS).items():
         if isinstance(value, Mapping):
             try:
-                _require_string_keys(value, context=f"{context}.{name}")
+                # The listing is a JSONResponse (allow_nan=False): a field it
+                # cannot encode (non-string keys, cycles, NaN) drops only
+                # itself instead of failing the whole plugin list.
+                json.dumps(value, allow_nan=False)
                 value = _normalize_mapping(value, context=f"{context}.{name}")
-            except ServerDomainError:
-                # A malformed opt-in field (e.g. non-string schema keys) drops
-                # only itself; it must not degrade the plugin's whole listing.
+            except (TypeError, ValueError, ServerDomainError):
                 logger.warning("dropping malformed entry field: {}.{}", context, name)
                 continue
         entry_dict[name] = value

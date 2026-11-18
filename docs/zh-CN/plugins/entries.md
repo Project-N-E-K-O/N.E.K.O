@@ -182,16 +182,16 @@ async def search(self, query: str):
     return Ok({"summary": "...", "count": 3})
 ```
 
-推导出的 schema 使用 `model_dump()`、`finish()` 实际输出的键（默认是字段名；model 设了 `serialize_by_alias` 时是序列化别名）；发布出去的契约描述的始终是序列化之后的输出。显式的 `output_schema` 优先于返回注解。两者都没有的入口没有输出契约，行为和以前完全一样；只写 `strict_output=True` 不起作用。注解是 `Model | None` 时，返回 `None` 也符合契约。
+显式的 `output_schema` 优先于返回注解。两者都没有的入口没有输出契约，行为和以前完全一样；只写 `strict_output=True` 不起作用。
 
-**检查什么。** 每次调用成功后，用契约检查返回值：`Ok(...)` 里的值、直接返回的值，或 `self.finish(...)` 的 `data`。`Err(...)` 本身就是失败，不检查。
+**检查什么。** 每次调用成功后、自动保存状态之前，检查返回值：`Ok(...)` 里的值、直接返回的值，或 `self.finish(...)` 的 `data`。`Err(...)` 本身就是失败，不检查。
 
-- 默认只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (type)`），不记录返回的内容。
-- 设 `strict_output=True` 时，不符合契约会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表。`/runs` 和 `call_entry` 的调用方都能拿到这个错误码。
-  对显式 schema，只有下面列出的支持关键字才会被强制校验；用其他关键字写的约束不会被检查，strict 模式下也一样。strict 只在确认不符合时才让调用失败：检查没能完成（引用成环、超出工作量上限、检查器自身出错）时只记一条 `check_error:…` 告警，不会让调用失败。如果返回值连交给检查器都做不到（比如读取时会抛异常的映射），或者检查器自身意外抛出异常，会改记另一条告警 `Plugin entry output could not be checked`（附异常类型），同样不会让调用失败。
-- 每次不符合都会记一条告警，不限频。高频调用的入口如果返回结构一直不对，会刷满插件日志，请修正返回值或契约。
+- 从返回注解推导的契约，由 model 自己（Pydantic）校验，所以 field / model validator 和 `HttpUrl` 这类类型都会生效。字段名和别名都接受：`finish(data=model)` 默认输出字段名，model 设了 `serialize_by_alias` 时输出别名。发布出去的 schema 是 model 的 validation 模式 schema，键名规则相同。直接返回 model 实例时视为已校验（构造时已经校验过）。注解是 `Model | None` 时，返回 `None` 也能通过。
+- 显式的 `output_schema` 用 [`jsonschema`](https://python-jsonschema.readthedocs.io/) 检查，检查的是返回的 Python 值本身（`datetime` 不算 JSON 字符串）。
+- 默认不符合时只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (type)`），不记录返回的内容。同一个入口的同一种不符合，一分钟内最多记一次，下一条会写明期间被抑制了多少条。
+- 设 `strict_output=True` 时，不符合会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表，`/runs` 和 `call_entry` 的调用方都能拿到这个错误码。这时会跳过自动保存状态，但 handler 已经做过的事不会回滚。检查本身没法进行时（schema 写坏、validator 崩溃）只记告警，不会让调用失败。
 
-已经序列化的输出（普通字典，或 `finish()` 的 `data`）一律按发布出去的 schema 检查，不论 schema 是显式写的还是从 model 推导的；model 里自定义的 validator 属于输入规则，不参与输出检查。直接返回 model 实例时视为已校验（构造时已经校验过；只有 model 设了 `revalidate_instances` 时才会重新校验）。已知局限：内外层 model 的 `serialize_by_alias` 设置不一致时，生成的 schema 对每一层都按外层的设置。schema 用内置的 JSON Schema 子集校验，支持 `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（仅配合数组形式的 `items`）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not` 和本文档内的 `$ref`（`$defs`、`definitions` 只作为它的引用目标）。其他关键字会被忽略、不参与校验。引用不到的 `$ref`（不存在的指针、外部 URL）同样忽略、不参与校验。
+已知局限：model 用 `@field_serializer` 改变了字段形状时（例如 `int` 输出成 `"ID-3"`），没法用 model 校验它自己经 `finish()` 输出的数据，这种情况请显式写 `output_schema`，或直接返回实例。内外层 model 的 `serialize_by_alias` 设置不一致时，发布的 schema 按外层的设置。
 
 插件的入口列表里会带上 `output_schema`（和 `strict_output`）。任务 Agent 的能力网关暂不对外发布它，任务 Agent 的模型看不到。
 

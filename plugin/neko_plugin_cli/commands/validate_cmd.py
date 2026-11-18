@@ -1049,6 +1049,7 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
                     _check_schema_keyword(decorator, "input_schema", f"{relative}:{node.lineno}", issues)
                     # An entry may return a non-object (a list, a string), so no type='object' hint here.
                     _check_schema_keyword(decorator, "output_schema", f"{relative}:{node.lineno}", issues, expect_object=False)
+                    _check_output_schema_literal(decorator, f"{relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"input_schema", "params"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"llm_result_fields", "llm_result_model", "fields"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     previous = seen_ids.get(entry_id)
@@ -1238,6 +1239,22 @@ def _check_schema_keyword(
     required = value.get("required")
     if required is not None and not isinstance(required, list):
         issues.append(("error", f"{keyword}.required in {label} must be a list"))
+
+
+def _check_output_schema_literal(decorator: ast.expr, label: str, issues: list[tuple[str, str]]) -> None:
+    """A literal output_schema must be a valid JSON Schema (the runtime checks with jsonschema)."""
+    value = _decorator_keyword_literal(decorator, "output_schema")
+    if not isinstance(value, dict):
+        return
+    try:
+        from jsonschema import exceptions, validators
+    except ImportError:
+        return
+    try:
+        validators.validator_for(value).check_schema(value)
+    except exceptions.SchemaError as exc:
+        where = "/".join(str(part) for part in exc.absolute_path) or "<root>"
+        issues.append(("error", f"output_schema in {label} is not a valid JSON Schema ({exc.validator} at {where})"))
 
 
 def _check_mutually_exclusive(decorator: ast.expr, names: set[str], label: str, issues: list[tuple[str, str]]) -> None:

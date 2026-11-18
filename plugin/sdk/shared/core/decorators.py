@@ -282,14 +282,12 @@ def _output_contract_from_signature(
         # which can validate themselves, are inferred.
         return None, None
     try:
-        # Published with the keys model_dump() (and so finish()) actually
-        # emits: field names, unless the model serializes by alias
-        # (llm_result_schema keeps its own spelling).
+        # Validation mode, matching the check (the model validates output).
+        # Keys follow what finish()/model_dump() emits: field names unless
+        # the model serializes by alias. The check accepts both spellings.
         config = getattr(model, "model_config", None)
         by_alias = bool(config.get("serialize_by_alias", False)) if isinstance(config, Mapping) else False
-        # Serialization mode: with by_alias it names serialization aliases,
-        # which can differ from validation aliases.
-        schema = dict(model.model_json_schema(by_alias=by_alias, mode="serialization"))  # type: ignore[attr-defined]
+        schema = dict(model.model_json_schema(by_alias=by_alias))  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001 - keep the inferred schema
         schema = dict(schema)
     if _hint_allows_none(hints.get("return", signature.return_annotation)):

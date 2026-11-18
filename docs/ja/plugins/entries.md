@@ -184,16 +184,16 @@ async def search(self, query: str):
     return Ok({"summary": "...", "count": 3})
 ```
 
-推論された schema は `model_dump()` や `finish()` が実際に出力するキーを使います（通常はフィールド名、モデルが `serialize_by_alias` を設定している場合はシリアライズ用エイリアス）。公開される契約は常にシリアライズ後の出力を表します。明示した `output_schema` は型注釈より優先されます。どちらもないエントリーには出力契約がなく、動作は以前と変わりません。`strict_output=True` だけを書いても効果はありません。`Model | None` の場合、`None` を返しても契約に合致します。
+明示した `output_schema` は型注釈より優先されます。どちらもないエントリーには出力契約がなく、動作は以前と変わりません。`strict_output=True` だけを書いても効果はありません。
 
-**何を検査するか。** 呼び出しが成功するたびに、戻り値を契約で検査します。対象は `Ok(...)` の中の値、そのまま返した値、または `self.finish(...)` の `data` です。`Err(...)` はそれ自体が失敗なので検査しません。
+**何を検査するか。** 呼び出しが成功するたびに、状態の自動保存より前に戻り値を検査します。対象は `Ok(...)` の中の値、そのまま返した値、または `self.finish(...)` の `data` です。`Err(...)` はそれ自体が失敗なので検査しません。
 
-- デフォルトでは、合わない場合はプラグインログに警告を 1 件書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (type)`）だけが含まれ、戻り値の内容は記録されません。
-- `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗し、`details.issues` に同じ `{"path", "type"}` の一覧が入ります。`/runs` と `call_entry` の呼び出し側はこのコードを受け取ります。
-  明示した schema では、下記の対応キーワードだけが強制されます。それ以外のキーワードで書いた制約は、strict モードでも検査されません。strict モードで呼び出しが失敗するのは不一致が確定した場合だけです。検査を完了できなかった場合（参照の循環、作業量の上限、チェッカー自体のエラー）は `check_error:…` の警告を記録するだけで、呼び出しは失敗しません。戻り値をチェッカーに渡すことすらできない場合（読み取り時に例外を出すマッピングなど）や、チェッカー自体が予期せず例外を出した場合は、代わりに別の警告 `Plugin entry output could not be checked`（例外の種類付き）を記録します。この場合も呼び出しは失敗しません。
-- 警告は合わない呼び出しのたびに書かれ、頻度制限はありません。高頻度で呼ばれるエントリーの戻り値がずっと合わないと、プラグインログが警告で埋まります。戻り値か契約を直してください。
+- 型注釈から推論した契約はモデル自身（Pydantic）で検証するため、field / model validator や `HttpUrl` などの型が効きます。フィールド名とエイリアスの両方を受け付けます。`finish(data=model)` は通常フィールド名を出力し、モデルが `serialize_by_alias` を設定している場合はエイリアスを出力します。公開される schema はモデルの validation モードの schema で、キーの規則も同じです。モデルのインスタンスをそのまま返した場合は検証済みとして扱います（構築時に検証済み）。`Model | None` の場合、`None` を返しても通ります。
+- 明示した `output_schema` は [`jsonschema`](https://python-jsonschema.readthedocs.io/) で、返した Python の値そのものを検査します（`datetime` は JSON の文字列とはみなされません）。
+- デフォルトでは、合わない場合はプラグインログに警告を書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (type)`）だけが含まれ、戻り値の内容は記録されません。同じエントリーの同じ不一致は 1 分に 1 回まで記録され、次の警告に抑制された件数が付きます。
+- `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗し、`details.issues` に同じ `{"path", "type"}` の一覧が入ります。`/runs` と `call_entry` の呼び出し側はこのコードを受け取ります。このとき状態の自動保存はスキップされますが、ハンドラーがすでに行った処理は元に戻りません。検査そのものを実行できない場合（schema の誤り、validator のクラッシュ）は警告を記録するだけで、呼び出しは失敗しません。
 
-シリアライズ済みの出力（普通の dict、または `finish()` の `data`）は、明示した schema かモデルから推論した schema かに関係なく、常に公開された schema で検査します。モデル独自の validator は入力のルールなので、出力の検査には使われません。モデルのインスタンスをそのまま返した場合は検証済みとして扱います（構築時に検証済みのため。モデルが `revalidate_instances` を設定している場合だけ再検証します）。既知の制限: ネストしたモデル同士で `serialize_by_alias` の設定が異なる場合、生成される schema はすべての階層で外側のモデルの設定を使います。schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（配列形式の `items` と組み合わせた場合のみ）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref`（`$defs` と `definitions` はその参照先としてのみ使われます） で、それ以外のキーワードは無視され、検証に関与しません。解決できない `$ref`（存在しないポインター、外部 URL）も同様に無視され、検証に関与しません。
+既知の制限: `@field_serializer` でフィールドの形を変えるモデル（例: `int` を `"ID-3"` として出力）は、`finish()` 経由の自分の出力をモデルで検証できません。その場合は `output_schema` を明示するか、インスタンスを返してください。ネストしたモデル同士で `serialize_by_alias` の設定が異なる場合、公開される schema は外側のモデルの設定を使います。
 
 プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。タスク Agent の capability gateway はまだこれを公開しないため、タスク Agent のモデルからは見えません。
 

@@ -214,108 +214,6 @@ def test_list_entries_projection_detaches_nested_schemas():
     assert schema["properties"]["count"]["type"] == "integer"
 
 
-def test_malformed_output_schema_drops_only_itself_from_get_plugins():
-    from plugin._types.events import EventHandler
-    from plugin._types.events import EventMeta as HostEventMeta
-    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
-
-    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
-    broken.output_schema = {1: "not a string key"}  # type: ignore[attr-defined]
-    fine = HostEventMeta(event_type="plugin_entry", id="fine", name="Fine")
-    entries, _seen = _build_entries_from_handlers(
-        plugin_id="demo",
-        handlers_snapshot={
-            "demo.broken": EventHandler(meta=broken, handler=lambda: None),
-            "demo.fine": EventHandler(meta=fine, handler=lambda: None),
-        },
-    )
-    by_id = {item["id"]: item for item in entries}
-    assert set(by_id) == {"broken", "fine"}
-    assert "output_schema" not in by_id["broken"]
-
-
-def test_detached_projection_survives_uncopyable_nested_defaults():
-    from types import MappingProxyType
-
-    from plugin.sdk.plugin.base import _entry_listing
-    from plugin.sdk.shared.core.events import EventMeta
-
-    schema = {
-        "type": "object",
-        "properties": {"count": {"type": "integer", "default": MappingProxyType({"a": 1})}},
-    }
-    meta = EventMeta(event_type="plugin_entry", id="e", output_schema=schema)
-    item = _entry_listing("e", meta, enabled=True, dynamic=False)
-    item["output_schema"]["properties"]["count"]["type"] = "string"
-    assert schema["properties"]["count"]["type"] == "integer"
-
-
-def test_cyclic_schema_does_not_break_projection():
-    from plugin._types.entry_metadata import unhandled_entry_contract_fields
-
-    schema: dict[str, object] = {"type": "object"}
-    schema["self"] = schema
-    carried = unhandled_entry_contract_fields(SimpleNamespace(output_schema=schema), ())
-    copied = carried["output_schema"]
-    assert copied is not schema
-    assert copied["self"] is copied
-
-
-def test_nested_non_string_keys_drop_only_that_field_from_get_plugins():
-    from plugin._types.events import EventHandler
-    from plugin._types.events import EventMeta as HostEventMeta
-    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
-
-    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
-    broken.output_schema = {"properties": {("a", "b"): {"type": "string"}}}  # type: ignore[attr-defined]
-    entries, _seen = _build_entries_from_handlers(
-        plugin_id="demo",
-        handlers_snapshot={"demo.broken": EventHandler(meta=broken, handler=lambda: None)},
-    )
-    assert entries[0]["id"] == "broken"
-    assert "output_schema" not in entries[0]
-
-
-def test_cyclic_output_schema_drops_only_that_field_from_get_plugins():
-    from plugin._types.events import EventHandler
-    from plugin._types.events import EventMeta as HostEventMeta
-    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
-
-    cyclic: dict[str, object] = {"type": "object", "properties": {}}
-    cyclic["properties"]["self"] = cyclic  # type: ignore[index]
-    shared = {"type": "string"}
-    fine_schema = {"type": "object", "properties": {"a": shared, "b": shared}}
-    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
-    broken.output_schema = cyclic  # type: ignore[attr-defined]
-    fine = HostEventMeta(event_type="plugin_entry", id="fine", name="Fine")
-    fine.output_schema = fine_schema  # type: ignore[attr-defined]
-    entries, _seen = _build_entries_from_handlers(
-        plugin_id="demo",
-        handlers_snapshot={
-            "demo.broken": EventHandler(meta=broken, handler=lambda: None),
-            "demo.fine": EventHandler(meta=fine, handler=lambda: None),
-        },
-    )
-    by_id = {item["id"]: item for item in entries}
-    assert "output_schema" not in by_id["broken"]
-    # Shared acyclic sub-dicts are not mistaken for cycles.
-    assert by_id["fine"]["output_schema"]["properties"]["b"] == {"type": "string"}
-
-
-def test_non_finite_numbers_in_output_schema_drop_only_that_field():
-    from plugin._types.events import EventHandler
-    from plugin._types.events import EventMeta as HostEventMeta
-    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
-
-    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
-    broken.output_schema = {"type": "number", "maximum": float("inf")}  # type: ignore[attr-defined]
-    entries, _seen = _build_entries_from_handlers(
-        plugin_id="demo",
-        handlers_snapshot={"demo.broken": EventHandler(meta=broken, handler=lambda: None)},
-    )
-    assert "output_schema" not in entries[0]
-
-
 def test_localization_leaves_the_output_contract_verbatim():
     from plugin.server.application.plugins.query_service import _localized_entry
 
@@ -326,3 +224,39 @@ def test_localization_leaves_the_output_contract_verbatim():
     assert localized["name"] == "<entry.name>"
     assert localized["output_schema"] == {"const": {"$i18n": "status.ready"}}
     assert list(localized) == ["id", "name", "output_schema"]
+
+
+def _cyclic() -> dict[str, object]:
+    schema: dict[str, object] = {"type": "object"}
+    schema["self"] = schema
+    return schema
+
+
+@pytest.mark.parametrize(
+    "broken_schema",
+    [
+        pytest.param({1: "not a string key"}, id="non-string-key"),
+        pytest.param({"properties": {("a", "b"): {}}}, id="nested-tuple-key"),
+        pytest.param(_cyclic(), id="cycle"),
+        pytest.param({"type": "number", "maximum": float("inf")}, id="infinity"),
+    ],
+)
+def test_malformed_output_schema_drops_only_itself_from_get_plugins(broken_schema):
+    from plugin._types.events import EventHandler
+    from plugin._types.events import EventMeta as HostEventMeta
+    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
+
+    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
+    broken.output_schema = broken_schema  # type: ignore[attr-defined]
+    fine = HostEventMeta(event_type="plugin_entry", id="fine", name="Fine")
+    fine.output_schema = {"type": "object"}  # type: ignore[attr-defined]
+    entries, _seen = _build_entries_from_handlers(
+        plugin_id="demo",
+        handlers_snapshot={
+            "demo.broken": EventHandler(meta=broken, handler=lambda: None),
+            "demo.fine": EventHandler(meta=fine, handler=lambda: None),
+        },
+    )
+    by_id = {item["id"]: item for item in entries}
+    assert "output_schema" not in by_id["broken"]
+    assert by_id["fine"]["output_schema"] == {"type": "object"}

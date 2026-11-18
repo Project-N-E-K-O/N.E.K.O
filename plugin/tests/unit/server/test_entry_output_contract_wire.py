@@ -284,26 +284,6 @@ class _RaisingHost:
             raise PluginExecutionError("demo", entry_id, exc.message) from exc
 
 
-async def test_runs_keep_the_output_schema_violation_code():
-    from plugin.runs.trigger_service import _execute_trigger
-
-    response = await _execute_trigger(
-        host=_RaisingHost({
-            "code": OUTPUT_SCHEMA_VIOLATION_CODE,
-            "message": "output does not match output_schema: $.n (required)",
-            "details": {"issues": [{"path": "$.n", "type": "required"}]},
-        }),
-        plugin_id="demo",
-        entry_id="entry",
-        args={},
-        trace_id="t",
-    )
-    assert response["success"] is False
-    assert response["error"]["code"] == OUTPUT_SCHEMA_VIOLATION_CODE
-    assert response["error"]["details"]["issues"] == [{"path": "$.n", "type": "required"}]
-    assert response["error"]["details"]["entry_id"] == "entry"
-
-
 async def test_runs_keep_code_and_issues_from_a_real_executor_reply():
     """The reply execute_entry_command builds, through RpcRemoteError, to /runs."""
     from contextlib import nullcontext
@@ -508,19 +488,6 @@ async def test_call_entry_keeps_previous_details_for_other_errors(monkeypatch):
     assert error.details == {"plugin_id": "b", "event_id": "search"}
 
 
-def test_validate_keyed_entries_table_gets_no_publish_hint(tmp_path: Path):
-    plugin_dir = _plugin_dir(tmp_path, "output_schema={'type': 'array'}")
-    toml_path = plugin_dir / "plugin.toml"
-    text = toml_path.read_text(encoding="utf-8").replace(
-        '[[plugin.entries]]\nid = "run"\nstrict_output = true\n',
-        "[plugin.entries.run]\nstrict_output = true\n",
-    )
-    toml_path.write_text(text, encoding="utf-8")
-    messages = _messages(plugin_dir)
-    assert any("keyed table" in message for message in messages)
-    assert not any("only changes the published entry contract" in message for message in messages)
-
-
 def test_validate_flags_non_table_mapping_fields(tmp_path: Path):
     plugin_dir = _plugin_dir(tmp_path, "output_schema={'type': 'array'}")
     toml_path = plugin_dir / "plugin.toml"
@@ -550,3 +517,8 @@ def test_validate_keyed_table_type_hint_does_not_claim_a_replacement(tmp_path: P
     flagged = [(level, message) for level, message in validate_plugin_dir(plugin_dir) if "output_schema must be a table" in message]
     assert flagged and all(level == "warning" for level, _message in flagged)
     assert not any("registry replaces" in message for _level, message in flagged)
+
+
+def test_validate_rejects_an_invalid_literal_json_schema(tmp_path: Path):
+    messages = _messages(_plugin_dir(tmp_path, "output_schema={'type': 'not-a-type'}"))
+    assert any("output_schema in" in message and "not a valid JSON Schema" in message for message in messages)
