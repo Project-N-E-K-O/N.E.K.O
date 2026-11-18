@@ -330,7 +330,7 @@ def maintain(config):
         return {}  # Availability still isolates every trusted unfinished path.
 
 
-def require_url(config, value: str) -> None:
+def require_url(config, value: str, *, for_binding: bool = False) -> None:
     state = snapshot(config)
     if state.paths is not None:
         path = local_path(
@@ -338,7 +338,23 @@ def require_url(config, value: str) -> None:
             value,
             readable_live2d=getattr(config, "readable_live2d_dir", None),
         )
+        if for_binding and path is None:
+            # Failed safe mapping is not proof of an external source. Browsers
+            # normalize encoded dot segments before fetching a local URL.
+            parsed = urlsplit(value)
+            raw = unquote(parsed.path, errors="strict").replace("\\", "/")
+            local_origin = not parsed.scheme or parsed.hostname in ("localhost", "127.0.0.1", "::1")
+            relative = not parsed.scheme and not parsed.netloc and not raw.startswith("/")
+            if local_origin and (relative or raw.startswith((
+                "/user_live2d/", "/user_live2d_local/", "/user_vrm/", "/user_mmd/",
+            ))):
+                raise WorkshopError("model_workshop_unsafe_path")
         if path is not None:
+            # A new local binding needs known ownership. Existing reads remain
+            # tolerant of damaged metadata; unrelated builtin/Steam paths keep
+            # their original behavior, including a separate readable CFA root.
+            if for_binding and state.errors and state.relative(path) is not None:
+                raise WorkshopError("model_workshop_unavailable")
             state.require(path)
 
 

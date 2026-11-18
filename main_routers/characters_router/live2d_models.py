@@ -295,11 +295,12 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
 
     resolved_source = "steam_workshop" if normalized_item_id else (_derive_live2d_asset_source(normalized_model) or "local_imported")
     resolved_source_id = normalized_item_id
+    binding_model_path = normalized_model or resolved_model_path
 
     # Keep external links bound to their original locations; do not rebind them to local or Workshop directories.
     if resolved_source == "manual_external":
         # Absolute loopback URLs still refer to protected local resources.
-        require_url(get_config_manager(), normalized_model)
+        require_url(get_config_manager(), normalized_model, for_binding=True)
         return normalized_model or resolved_model_path, resolved_source_id, resolved_source
 
     try:
@@ -313,6 +314,7 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
         )
         if matching_model is not None:
             matched_path = str(matching_model.get("path") or "").strip().replace("\\", "/")
+            binding_model_path = matched_path or binding_model_path
             resolved_model_path = _normalize_live2d_catalog_path(matched_path) or resolved_model_path
             resolved_source = _derive_live2d_asset_source(matched_path) or resolved_source
             resolved_source_id = normalized_item_id or str(matching_model.get("item_id") or "").strip()
@@ -323,7 +325,13 @@ def _resolve_live2d_model_binding(model_identifier: str, *, item_id: str = "") -
 
     # Keep unavailable results outside the catalog compatibility fallback.
     require_url(get_config_manager(), normalized_model)
-    require_url(get_config_manager(), resolved_model_path)
+    # Apply ownership checks to the resolved target: a bare name may have
+    # resolved to an unrelated builtin/Steam model in the existing catalog.
+    # The persisted spelling drops URL prefixes; retain the source-qualified
+    # identity for this check, including legacy Steam name + item_id bindings.
+    if resolved_source == "steam_workshop" and resolved_source_id:
+        binding_model_path = f"/workshop/{resolved_source_id}/{resolved_model_path}"
+    require_url(get_config_manager(), binding_model_path, for_binding=True)
     return resolved_model_path, resolved_source_id, resolved_source
 
 
@@ -848,7 +856,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         _config_manager = get_config_manager()
         for model_ref in (vrm_model, mmd_model):
             if model_ref:
-                await _drain_sync(lambda: require_url(_config_manager, str(model_ref)))
+                await _drain_sync(lambda: require_url(_config_manager, str(model_ref), for_binding=True))
         async with character_config_mutation_lock:
             characters = await _config_manager.aload_characters()
 

@@ -1,6 +1,6 @@
 """Render repository avatars through the full manager and real isolated save APIs.
 
-Only chat/runtime startup and Steam discovery are absent. Model renderers,
+Full app/provider startup and Steam discovery are absent. Model renderers,
 page scripts, package import, resource reads, character persistence and reload
 remain real; all writes stay in the temporary ConfigManager root/project.
 """
@@ -14,6 +14,7 @@ import shutil
 import socket
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -28,6 +29,8 @@ from main_routers.pages_router import _static_assets_ctx, _vrm_defaults_ctx
 from services.model_workshop import catalog
 from tests.unit.test_model_workshop_formats import make_native_bundle
 from tests.unit.test_model_workshop_migration import owner as owner
+from tests.model_workshop_main_runtime import main_character_runtime
+from utils.config_manager import get_reserved
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = '工坊 测试'
@@ -57,7 +60,7 @@ MODEL_READY = '''data => {
 
 
 @pytest.fixture
-def full_manager_app(owner, monkeypatch, tmp_path):
+def full_manager_app(owner, monkeypatch, tmp_path, request):
     cfg = owner.config
     original = cfg.load_characters()
     character = copy.deepcopy(next(iter(original['猫娘'].values())))
@@ -76,12 +79,24 @@ def full_manager_app(owner, monkeypatch, tmp_path):
     (project / 'static/vrm/configs').mkdir(parents=True)
     monkeypatch.setattr(cfg, '_get_project_root', lambda: project)
     monkeypatch.setattr(shared_state, '_state', shared_state._state.copy())
+    # Import Main before rebinding config lookups, retaining the normal
+    # process-isolated singleton for its unrelated startup-only consumers.
+    from app import main_server
+    runtime_state = {}
     applied = []
     async def apply(name, **kwargs):
+        await main_server.init_one_catgirl(name, **kwargs)
+        state = runtime_state['main']
+        assert get_reserved(state.module.lanlan_basic_config[name], 'avatar') == get_reserved(cfg.load_characters()['猫娘'][name], 'avatar')
+        assert state.facade.lanlan_basic_config is state.module.lanlan_basic_config
+        original = state.initial[name]
+        role = state.module.role_state[name]
+        assert role.session_manager is original.manager
+        assert role.session_manager.session is original.session
+        assert role.session_manager.websocket is original.websocket
+        assert role.sync_task is original.connector and not role.sync_task.done()
         applied.append(name)
     templates = Jinja2Templates(directory=str(ROOT))
-    shared_state.init_shared_state(role_state={}, steamworks=None, templates=templates,
-                                   config_manager=cfg, init_one_catgirl=apply)
     monkeypatch.setattr(api, 'get_config_manager', lambda: cfg)
     monkeypatch.setattr(catalog, 'get_config_manager', lambda: cfg)
     for module in (live2d_router, mmd_router, vrm_router):
@@ -89,7 +104,18 @@ def full_manager_app(owner, monkeypatch, tmp_path):
     from utils import frontend_utils, config_manager
     monkeypatch.setattr(config_manager, "get_config_manager", lambda *_, **__: cfg)
     monkeypatch.setattr(frontend_utils, '_resolve_workshop_search_dir', lambda: None)
-    app = FastAPI()
+    @asynccontextmanager
+    async def lifespan(app):
+        # The actual save callback now refreshes Main. Lifecycle states are
+        # local test state; no provider session or sync network is started.
+        async with main_character_runtime(cfg, {NAME: 'active'},
+                                          input_mode=getattr(request, 'param', 'text')) as state:
+            runtime_state['main'] = state
+            shared_state.init_shared_state(role_state=state.module.role_state,
+                                           steamworks=None, templates=templates,
+                                           config_manager=cfg, init_one_catgirl=apply)
+            yield
+    app = FastAPI(lifespan=lifespan)
     for router in (api.router, config_router.router, characters_router.router,
                    live2d_router.router, vrm_router.router, mmd_router.router):
         app.include_router(router)
@@ -240,5 +266,41 @@ def test_full_manager_renders_imported_model_and_reopens_saved_binding(full_mana
 
         finally:
             (tmp_path / 'browser-log.txt').write_text('\n'.join(logs), encoding='utf-8')
-            page.screenshot(path=str(tmp_path / 'last-page.png'))
+            # A failed diagnostic capture must still release the browser.
+            try:
+                page.screenshot(path=str(tmp_path / 'last-page.png'), timeout=10000)
+            finally:
+                browser.close()
+
+
+@pytest.mark.parametrize('full_manager_app', ['audio'], indirect=True)
+@pytest.mark.parametrize('kind', ['live2d', 'vrm'])
+def test_imported_preview_obeys_existing_audio_mode_lock(full_manager_app, tmp_path, kind):
+    from playwright.sync_api import sync_playwright
+
+    url, cfg, applied = full_manager_app
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(channel='chromium')
+        page = browser.new_page(locale='zh-CN', viewport={'width': 1280, 'height': 900})
+        try:
+            page.goto(url + '/model_manager?lanlan_name=' + NAME)
+            page.wait_for_function("document.querySelector('#model-workshop-panel')?.dataset.mounted === 'true'", timeout=90000)
+            skip = page.locator('#neko-page-tutorial-skip-btn')
+            if skip.is_visible():
+                skip.click()
+            # Use the real voice-status route and real marked-active manager;
+            # neither the page guard nor model-preview receiver is replaced.
+            status = page.request.get(url + '/api/characters/catgirl/' + NAME + '/voice_mode_status').json()
+            assert status['is_voice_mode'] is True
+            page.locator('#model-workshop-panel summary').click()
+            page.locator('[data-workshop=file]').set_input_files(real_package(tmp_path, kind))
+            page.locator('[data-workshop=start]').click()
+            page.wait_for_function("!document.querySelector('[data-workshop=view]').hidden", timeout=60000)
+            page.locator('[data-workshop=view]').click()
+            page.wait_for_function("document.querySelector('#status-text')?.textContent === window.t('live2d.cannotChangeModelInVoiceMode')")
+            assert page.evaluate('window.live2dManager._lastLoadedModelPath') == '/static/mao_pro/mao_pro.model3.json'
+            assert cfg.load_characters()['猫娘'][NAME]['_reserved']['avatar']['asset_source'] == 'builtin'
+            assert applied == []
+            page.screenshot(path=str(tmp_path / ('audio-locked-' + kind + '.png')), timeout=10000)
+        finally:
             browser.close()
