@@ -225,15 +225,25 @@ def test_work_waited_for_in_a_thread_that_is_ended_by_something_that_is_no_excep
 
 def test_what_ends_another_thread_is_reported_as_ever_and_not_taken_for_the_one_that_is_watched(monkeypatch):
     reported: list[Any] = []
-    monkeypatch.setattr(threading, "excepthook", lambda args: reported.append((args.thread.name, args.exc_type)))
-    ended, noted = _ended_threads(monkeypatch, "nekoclaw-test-watched")
+    as_ever = threading.excepthook
 
     def failing() -> None:
         raise ValueError("another thread")
 
     other = threading.Thread(target=failing, name="nekoclaw-test-other", daemon=True)
+
+    def reporting(args: Any) -> None:
+        # Only what ends the thread of this test is noted here; whatever else ends meanwhile goes its way.
+        if args.thread is other:
+            reported.append(args.exc_type)
+        else:
+            as_ever(args)
+
+    monkeypatch.setattr(threading, "excepthook", reporting)
+    ended, noted = _ended_threads(monkeypatch, "nekoclaw-test-watched")
+
     other.start()
     other.join(30)
 
-    assert reported == [("nekoclaw-test-other", ValueError)]
+    assert reported == [ValueError]
     assert ended == [] and not noted.is_set()

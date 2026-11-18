@@ -1263,7 +1263,9 @@ def _removed_there(removed: tuple[set[str], set[str]], text: str, title: str) ->
     return bool(_standing_marks(document.body, wanted))
 
 
-def _keep_known(document: _Document, known: _Known | None, allowed: bool = True, *, pending: bool = False) -> bool:
+def _keep_known(
+    document: _Document, known: _Known | None, allowed: bool = True, *, pending: bool = False, judged: bool = False
+) -> bool:
     """Write into an entry what a filing adds to what is known of it. Returns whether anything changed.
 
     Whatever is filed into an entry that had expired has it in effect
@@ -1276,6 +1278,13 @@ def _keep_known(document: _Document, known: _Known | None, allowed: bool = True,
     ``allowed`` is whether the user lets task agents read outside the
     working directories unasked: only then are the files an entry rests
     on there looked at.
+
+    ``judged`` says that a note takes effect by this entry as what
+    ``known`` tells of it, asked a moment before. Asked about once more
+    here, a file that spoke for the note may be gone, or nothing may be
+    told of it: of two answers the later one counts. Raises
+    ``_Rewritten`` then, with nothing changed, and the note is judged
+    anew (``_take_note``).
     """
     from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_SEEN_BY_KEPT
 
@@ -1290,7 +1299,14 @@ def _keep_known(document: _Document, known: _Known | None, allowed: bool = True,
         rested = _evidence_in(document)
         # Asked under the lock on the space's writes, so only for so long;
         # one of which nothing is told stays, like one that cannot be told.
-        there = _stood([path for path in rested if allowed or path not in apart])
+        asked = [path for path in rested if allowed or path not in apart]
+        there = _stood(asked)
+        if (
+            judged
+            and known is not None
+            and any(path in asked and not there.get(path) and path not in known.untold for path in known.evidence)
+        ):
+            raise _Rewritten("a file the note was judged with does not speak for it by now")
         _set_evidence(document, [path for path in rested if there.get(path) is not False], apart)
         changed = True
     if known is None:
@@ -2259,7 +2275,7 @@ class TaskAgentSpace:
                 # What is known of it beyond its words is kept on the same
                 # terms: only in an entry the host made. One the user wrote
                 # is theirs; it is given no evidence, no count and no state.
-                noted = bool(marks) and _keep_known(document, known, allowed, pending=pending)
+                noted = bool(marks) and _keep_known(document, known, allowed, pending=pending, judged=must_say)
                 redated = False
                 if dated is not None:
                     # Brought along: it was not filed today, and has not
@@ -2629,11 +2645,10 @@ class TaskAgentSpace:
             # was written: nothing else would give it its line. Removed
             # since (the user, in a file manager), it gets none: the line
             # would point at nothing, and no look would take it out.
-            try:
-                there = path.is_file()
-            except OSError:
-                there = True
-            if there:
+            # Gone only when the file system says there is no such
+            # file, on a drive that is there: a volume that is away for
+            # a moment says nothing of the file.
+            if not _gone_for_good(path):
                 entry = self._entry_of(took[0], path.stem, project, self._clock(), with_content=True)
         if entry is None or entry.status != ENTRY_ACTIVE:
             return entry or pending, None
@@ -2699,11 +2714,14 @@ class TaskAgentSpace:
         # What it says of itself goes along: how it is known, and of the
         # files it rested on the ones that are still there.
         rested, untold = _recorded(pending.evidence, pending.evidence_outside, allowed)
-        if by_text is not None and any(path in known.evidence and path not in rested for path in pending.evidence):
-            # Asked about once more, a file the note was judged with is
-            # gone: of two answers the later one counts, and the note is
-            # judged anew, without it.
-            raise _Rewritten("a file the note was judged with is gone by now")
+        if by_text is not None and any(
+            path in known.evidence and path not in known.untold and (path not in rested or path in untold)
+            for path in pending.evidence
+        ):
+            # Asked about once more, a file that spoke for the note is
+            # gone, or nothing is told of it: of two answers the later
+            # one counts, and the note is judged anew, without it.
+            raise _Rewritten("a file the note was judged with does not speak for it by now")
         carried = _Known(
             confidence=pending.confidence or INFERRED,
             evidence=tuple(rested),

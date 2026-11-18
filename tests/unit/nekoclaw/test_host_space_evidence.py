@@ -5654,28 +5654,52 @@ async def test_a_file_that_is_gone_as_the_note_is_judged_is_not_put_on_the_recor
     assert payload["kept"] is True and "evidence_counted" not in payload
 
 
+class _WatchedLock(asyncio.Lock):
+    """A lock that tells when somebody has begun to wait for it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waited_for = asyncio.Event()
+
+    async def acquire(self) -> bool:
+        self.waited_for.set()
+        return await super().acquire()
+
+
 async def test_whether_files_outside_may_be_looked_for_is_asked_once_the_turn_at_their_place_has_come(
     open_space, setting, root, workdir, outside, monkeypatch
 ):
     from nekoclaw.host import space as module
 
     setting.allowed = True
-    real_place, real_look = module._place_of, module.evidence_of
+    real_look = module.evidence_of
     looked: list[bool] = []
-
-    def taken_back(path: Any) -> str:
-        # While the note waits for its turn at the place, the user takes it back.
-        setting.allowed = False
-        return real_place(path)
 
     def look(raw: Any, *rest: Any, **how: Any) -> Any:
         looked.append(bool(how.get("outside")))
         return real_look(raw, *rest, **how)
 
-    monkeypatch.setattr(module, "_place_of", taken_back)
     monkeypatch.setattr(module, "evidence_of", look)
+    # Another note is asking about the places this one names: its turn has not come.
+    held = {place: _WatchedLock() for place in {module._place_of(str(workdir)), module._place_of(str(outside))}}
+    for place, lock in held.items():
+        open_space._asking_about[place] = lock
+        await lock.acquire()
+        lock.waited_for.clear()
 
-    reply = await open_space.submit(_commission(workdir), _lesson("Drive", "It is drive E.", "observed", [str(outside)]))
+    filing = asyncio.ensure_future(
+        open_space.submit(_commission(workdir), _lesson("Drive", "It is drive E.", "observed", [str(outside)]))
+    )
+    try:
+        # It waits for its turn. While it does, the user takes back that files outside may be read unasked.
+        # (For the first of them, in the order they are taken in.)
+        await asyncio.wait_for(held[sorted(held)[0]].waited_for.wait(), 30)
+        assert not filing.done() and looked == []
+        setting.allowed = False
+    finally:
+        for lock in held.values():
+            lock.release()
+    reply = await asyncio.wait_for(filing, 30)
 
     # Not looked for out there: nothing is asked of the file system that the user no longer lets be asked.
     assert looked and not any(looked)
@@ -5735,13 +5759,15 @@ async def test_a_file_that_is_gone_as_a_note_that_goes_on_waiting_is_judged_is_s
 async def test_a_pending_entry_that_took_effect_and_of_which_nothing_can_be_told_just_then_gets_its_line(
     space, root, workdir, monkeypatch
 ):
+    import errno
+
     await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
     await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none."))
     waiting = _memory(root) / "video-dates.md"
-    editing, reading, is_file = space._edit_text, space._entry_from, Path.is_file
+    editing, reading, stat = space._edit_text, space._entry_from, os.stat
     written: list[bool] = []
 
-    def then_held(path: Path, change: Any) -> bool:
+    def then_away(path: Path, change: Any) -> bool:
         changed = editing(path, change)
         if path == waiting and changed:
             written.append(True)
@@ -5752,20 +5778,21 @@ async def test_a_pending_entry_that_took_effect_and_of_which_nothing_can_be_told
             return None
         return reading(path, project, with_content=with_content)
 
-    def untold(path: Path) -> bool:
-        if path == waiting and written:
-            # Held so that not even whether it is there can be asked.
+    def not_ready(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if written and isinstance(path, (str, os.PathLike)) and Path(path) == waiting:
+            # The volume is away for a moment: not an answer that there is no such file. (``Path.is_file``
+            # takes this one for a file that is not there.)
             written.clear()
-            raise PermissionError("held by another program")
-        return is_file(path)
+            raise OSError(errno.EBADF, "the device is not ready")
+        return stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(space, "_edit_text", then_held)
+    monkeypatch.setattr(space, "_edit_text", then_away)
     monkeypatch.setattr(space, "_entry_from", unreadable)
-    monkeypatch.setattr(Path, "is_file", untold)
+    monkeypatch.setattr(os, "stat", not_ready)
 
     reply = await space.submit(_commission(workdir, id="c2"), _lesson("Video dates", "Use the EXIF date.", "verified"))
 
-    # Held is not gone: it was written, and has its line.
+    # Away is not gone: it was written, and has its line.
     assert reply is not None and "status" not in _head(waiting)
     assert "- [Video dates](memory/video-dates.md)" in _index(root)
 
@@ -5811,3 +5838,129 @@ async def test_a_file_that_is_gone_once_the_turn_of_the_write_has_come_is_told_b
     )
 
     assert reply.startswith("not in effect yet") and "notes.txt (not found)" in reply
+
+
+async def test_a_note_judged_with_a_file_that_is_gone_as_its_pending_entry_takes_effect_where_it_is_is_judged_anew(
+    space, root, workdir, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    real = module._recorded
+    asked: list[int] = []
+
+    def then_removed(*args: Any) -> Any:
+        found = real(*args)
+        if not asked:
+            # There as the note is judged; removed right after.
+            (workdir / "src" / "app.py").unlink()
+        asked.append(1)
+        return found
+
+    monkeypatch.setattr(module, "_recorded", then_removed)
+
+    # Filed again as observed with no file named: the file on record with the guess speaks for it.
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    # Asked about once more as the guess was to take effect, the file is gone. Of two answers the later
+    # one counts: judged anew, nothing speaks for the note, and it waits. No line was given to it.
+    assert len(asked) == 2 and reply.startswith("not in effect yet")
+    assert _in_effect(root) == [] and "entry-point.md" not in _index(root)
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [])]
+
+
+async def test_a_note_judged_with_a_file_of_which_nothing_is_told_as_its_pending_entry_goes_into_an_entry_is_judged_anew(
+    space, root, workdir, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+    real = module._recorded
+    asked: list[int] = []
+
+    def then_unanswered(evidence: Any, *rest: Any) -> Any:
+        asked.append(1)
+        if len(asked) == 1:
+            # There as the note is judged.
+            return real(evidence, *rest)
+        # From then on the disk does not answer: on record still, and nothing is told of it.
+        return list(evidence), list(evidence)
+
+    monkeypatch.setattr(module, "_recorded", then_unanswered)
+
+    reply = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "observed"))
+
+    # Not gone, so it stays on record; not told of, so it does not speak for the note this time: it waits.
+    assert len(asked) >= 3 and reply.startswith("not in effect yet")
+    assert "Videos may have none." not in entry.read_text(encoding="utf-8") and _rests_on(entry)[0] == ()
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("photo-dates-2", [app])]
+
+
+def _nothing_told(monkeypatch: Any) -> None:
+    """Have the disk say nothing of any file an entry rests on: neither there nor gone."""
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_stood", lambda paths: {path: None for path in paths})
+
+
+async def test_a_pending_entry_checked_by_hand_takes_effect_where_it_is_though_nothing_is_told_of_the_file_on_record(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    _nothing_told(monkeypatch)
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "verified"))
+
+    # The file never spoke for it this time, so nothing changed between the two answers: it takes effect
+    # by having been checked, and the file stays on record.
+    assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert _rests_on(_memory(root) / "entry-point.md")[0] == (app,)
+
+
+async def test_a_pending_entry_checked_by_hand_goes_into_the_entry_of_its_title_though_nothing_is_told_of_the_file_on_record(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+    _nothing_told(monkeypatch)
+
+    reply = await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "verified"))
+
+    assert reply.startswith("added to photo-dates.md") and _pending(root) == []
+    assert "Videos may have none." in entry.read_text(encoding="utf-8")
+    # Not gone: it goes along onto the record of the entry.
+    assert _rests_on(entry)[0] == (app,)
+
+
+async def test_a_note_judged_with_a_file_of_which_nothing_is_told_as_its_pending_entry_takes_effect_where_it_is_is_judged_anew(
+    space, root, workdir, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    real = module._stood
+    told: list[int] = []
+
+    def then_silent(paths: Any) -> Any:
+        paths = list(paths)
+        if app not in paths:
+            return real(paths)
+        told.append(1)
+        # There as the note is judged; from then on the disk says nothing of it.
+        return real(paths) if len(told) == 1 else {path: None for path in paths}
+
+    monkeypatch.setattr(module, "_stood", then_silent)
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    # Not gone, so it stays on record; not told of, so it does not speak for the note this time: it waits.
+    assert len(told) >= 3 and reply.startswith("not in effect yet")
+    assert _in_effect(root) == [] and "entry-point.md" not in _index(root)
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [app])]
