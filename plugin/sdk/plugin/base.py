@@ -10,7 +10,11 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin._types.entry_metadata import ENTRY_PROJECTION_SHAPED_FIELDS, unhandled_entry_contract_fields
+from plugin._types.entry_metadata import (
+    ENTRY_PROJECTION_SHAPED_FIELDS,
+    detached_copy,
+    unhandled_entry_contract_fields,
+)
 from plugin.sdk.shared.constants import EVENT_META_ATTR, NEKO_PLUGIN_META_ATTR, NEKO_PLUGIN_TAG
 from plugin.sdk.shared.core.base import DEFAULT_PLUGIN_VERSION as _DEFAULT_PLUGIN_VERSION
 from plugin.sdk.shared.core.base import NekoPluginBase as _SharedNekoPluginBase
@@ -447,7 +451,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
             auto_start=auto_start,
             timeout=timeout,
             llm_result_fields=llm_result_fields,
-            output_schema=dict(output_schema) if output_schema is not None else None,
+            # Nested levels too: a caller reusing its dict cannot change the contract.
+            output_schema=detached_copy(output_schema) if output_schema is not None else None,
             strict_output=bool(strict_output),
             metadata={"dynamic": True, "enabled": True},
         )

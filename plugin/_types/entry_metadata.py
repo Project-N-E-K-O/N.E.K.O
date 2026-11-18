@@ -118,12 +118,12 @@ def unhandled_entry_contract_fields(
         if name in handled or value is None or value is False:
             continue
         if isinstance(value, (Mapping, list)):
-            value = _detached(value)
+            value = detached_copy(value)
         carried[name] = value
     return carried
 
 
-def _detached(value: object, _memo: dict[int, object] | None = None) -> object:
+def detached_copy(value: object, _memo: dict[int, object] | None = None) -> object:
     """Copy every Mapping and list level; leaves are deep-copied when possible.
 
     Containers are rebuilt by hand so an uncopyable leaf (a MappingProxyType
@@ -138,11 +138,11 @@ def _detached(value: object, _memo: dict[int, object] | None = None) -> object:
             copied_map: dict[object, object] = {}
             memo[id(value)] = copied_map
             for key, item in value.items():
-                copied_map[key] = _detached(item, memo)
+                copied_map[key] = detached_copy(item, memo)
             return copied_map
         copied_list: list[object] = []
         memo[id(value)] = copied_list
-        copied_list.extend(_detached(item, memo) for item in value)
+        copied_list.extend(detached_copy(item, memo) for item in value)
         return copied_list
     try:
         return copy.deepcopy(value)

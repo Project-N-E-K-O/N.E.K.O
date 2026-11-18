@@ -70,7 +70,7 @@ async def process(self, data: str, **_):
 
 `output_schema` は `llm_result_fields` / `llm_result_model` とは独立しています。後者はモデルが読むフィールドを決め、`output_schema` は戻り値全体を記述します。両方を同時に使えます。
 
-明示した `output_schema` は組み込みの JSON Schema サブセットで検証します。対応キーワード: `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（配列形式の `items` と組み合わせた場合のみ）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref`。それ以外のキーワードは無視され、検証に関与しません。そのため `strict_output=True` でも強制されるのはこれらのキーワードだけです。解決できない `$ref`（存在しないポインター、外部 URL）も同様に無視され、検証に関与しません。Pydantic の戻り値型注釈から推論した契約はモデル自身が検証します。
+明示した `output_schema` は組み込みの JSON Schema サブセットで検証します。対応キーワード: `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（配列形式の `items` と組み合わせた場合のみ）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref`（`$defs` と `definitions` はその参照先としてのみ使われます）。それ以外のキーワードは無視され、検証に関与しません。そのため `strict_output=True` でも強制されるのはこれらのキーワードだけです。解決できない `$ref`（存在しないポインター、外部 URL）も同様に無視され、検証に関与しません。Pydantic の戻り値型注釈から推論した契約はモデル自身が検証します。
 
 ::: tip
 handler が host からの追加 field を意図的に受け取る場合だけ `**_` を使います。明示的な signature では runtime が未対応 keyword を filter するため、必須ではありません。

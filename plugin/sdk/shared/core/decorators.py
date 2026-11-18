@@ -19,6 +19,8 @@ from plugin.sdk.shared.constants import (
     PERSIST_ATTR,
 )
 from .events import EventMeta, QuickActionConfig
+from plugin._types.entry_metadata import detached_copy
+
 from .output_contract import is_pydantic_model
 from .result_contract import (
     fields_from_schema,
@@ -516,7 +518,7 @@ def plugin_entry(
         # explicit llm_result_model does not become the output contract).
         output_model: type | None = None
         effective_output_schema: dict[str, object] | None = (
-            dict(output_schema) if output_schema is not None else None
+            cast(dict[str, object], detached_copy(output_schema)) if output_schema is not None else None
         )
         if effective_output_schema is None:
             output_model, effective_output_schema = _infer_output_contract_from_func(

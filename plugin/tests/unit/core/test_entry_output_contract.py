@@ -950,8 +950,9 @@ async def test_aliased_model_returned_through_finish_passes_strict():
     assert result["data"] == {"user_id": 3}
 
     check = build_output_check(meta)
-    assert check({"userId": 3}) == []
-    assert [(i.path, i.type) for i in check({})] == [("$.userId", "missing")]
+    # Looked up by the published key rule (field names here).
+    assert check({"user_id": 3}) == []
+    assert [i.type for i in check({"userId": 3})] == ["missing"]
 
 
 def test_one_of_stops_at_the_second_match():
@@ -993,3 +994,58 @@ async def test_model_serializing_by_alias_publishes_alias_keys():
     result = await runtime.invoke("plugin_entry", "entry", {})
     # The published contract names exactly the keys the data carries.
     assert set(result["data"]) == set(meta.output_schema["properties"]) == {"userId"}
+
+
+# ---------------------------------------------------------------------------
+# Review round 7 (last round for this PR)
+# ---------------------------------------------------------------------------
+
+
+class Shadowed(BaseModel):
+    a: int = Field(validation_alias="b")
+    b: str
+
+
+def test_one_fields_alias_cannot_shadow_another_fields_value():
+    check = build_output_check(SimpleNamespace(output_schema=Shadowed.model_json_schema(by_alias=False), output_model=Shadowed))
+    # What model_dump()/finish() emits for a valid instance.
+    assert check({"a": 1, "b": "text"}) == []
+
+
+def test_huge_pointer_index_is_unresolved_not_a_checker_failure():
+    schema = {"$ref": "#/x/" + "9" * 5000, "x": [False], "type": "integer"}
+    assert _issues(schema, "x") == [("$", "type")]
+
+
+async def test_a_raising_isinstance_never_loses_the_result(caplog):
+    class Meta(type(BaseModel)):
+        def __instancecheck__(cls, instance):
+            raise RuntimeError("metaclass")
+
+    class Weird(BaseModel, metaclass=Meta):
+        n: int
+
+    meta = EventMeta(
+        event_type="plugin_entry", id="entry",
+        output_schema=Weird.model_json_schema(), output_model=Weird, strict_output=True,
+    )
+    returned = {"n": 1}
+
+    async def entry():
+        return returned
+
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        assert await runtime.invoke("plugin_entry", "entry", {}) is returned
+    assert "could not be checked" in caplog.text
+
+
+def test_registered_schema_is_detached_from_the_callers_dict():
+    schema = {"type": "object", "properties": {"count": {"type": "integer"}}}
+
+    @plugin_decorators.plugin_entry(id="entry", output_schema=schema)
+    async def entry():
+        return {}
+
+    schema["properties"]["count"]["type"] = "string"
+    assert _meta_of(entry).output_schema["properties"]["count"]["type"] == "integer"

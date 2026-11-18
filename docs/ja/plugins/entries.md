@@ -184,7 +184,7 @@ async def search(self, query: str):
     return Ok({"summary": "...", "count": 3})
 ```
 
-推論された schema は `model_dump()` や `finish()` が実際に出力するキーを使います（通常はフィールド名、モデルが `serialize_by_alias` を設定している場合はエイリアス）。検証ではフィールド名とエイリアスの両方を受け付けます。明示した `output_schema` は型注釈より優先されます。どちらもないエントリーには出力契約がなく、動作は以前と変わりません。`strict_output=True` だけを書いても効果はありません。`Model | None` の場合、`None` を返しても契約に合致します。
+推論された schema は `model_dump()` や `finish()` が実際に出力するキーを使います（通常はフィールド名、モデルが `serialize_by_alias` を設定している場合はエイリアス）。検証も同じキーで値を取り出します。明示した `output_schema` は型注釈より優先されます。どちらもないエントリーには出力契約がなく、動作は以前と変わりません。`strict_output=True` だけを書いても効果はありません。`Model | None` の場合、`None` を返しても契約に合致します。
 
 **何を検査するか。** 呼び出しが成功するたびに、戻り値を契約で検査します。対象は `Ok(...)` の中の値、そのまま返した値、または `self.finish(...)` の `data` です。`Err(...)` はそれ自体が失敗なので検査しません。
 
@@ -193,7 +193,7 @@ async def search(self, query: str):
   明示した schema では、下記の対応キーワードだけが強制されます。それ以外のキーワードで書いた制約は、strict モードでも検査されません。
 - 警告は合わない呼び出しのたびに書かれ、頻度制限はありません。高頻度で呼ばれるエントリーの戻り値がずっと合わないと、プラグインログが警告で埋まります。戻り値か契約を直してください。
 
-型注釈から推論したモデルは、モデル自身で検証します。明示した schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（配列形式の `items` と組み合わせた場合のみ）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref` で、それ以外のキーワードは無視され、検証に関与しません。解決できない `$ref`（存在しないポインター、外部 URL）も同様に無視され、検証に関与しません。
+型注釈から推論したモデルは、モデル自身で検証します。明示した schema は組み込みの JSON Schema サブセットで検証します。対応するキーワードは `type`、`enum`、`const`、`properties`、`patternProperties`、`required`、`additionalProperties`、`items`、`prefixItems`、`additionalItems`（配列形式の `items` と組み合わせた場合のみ）、`minItems`、`maxItems`、`minLength`、`maxLength`、`pattern`、`minimum`、`maximum`、`exclusiveMinimum`、`exclusiveMaximum`、`anyOf`、`oneOf`、`allOf`、`not`、文書内の `$ref`（`$defs` と `definitions` はその参照先としてのみ使われます） で、それ以外のキーワードは無視され、検証に関与しません。解決できない `$ref`（存在しないポインター、外部 URL）も同様に無視され、検証に関与しません。
 
 プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。タスク Agent の capability gateway はまだこれを公開しないため、タスク Agent のモデルからは見えません。
 

@@ -333,26 +333,43 @@ def _build_entries_from_handlers(
 
 
 def _require_string_keys(value: object, *, context: str) -> None:
-    """Raise when any nested mapping has a non-string key (not JSON-encodable)."""
-    stack: list[object] = [value]
-    seen: set[int] = set()
+    """Raise unless ``value`` is JSON-encodable as nested containers.
+
+    Non-string keys and reference cycles (checked along the current path, so
+    shared acyclic sub-dicts are fine) both make the listing unencodable.
+    """
+    def invalid(reason: str, key_type: str | None = None) -> ServerDomainError:
+        details: dict[str, object] = {"reason": reason}
+        if key_type is not None:
+            details["key_type"] = key_type
+        return ServerDomainError(
+            code="INVALID_DATA_SHAPE",
+            message=f"{context} contains {reason}",
+            status_code=500,
+            details=details,
+        )
+
+    # Iterative DFS with an explicit ancestor set: no recursion limit to hit.
+    ancestors: set[int] = set()
+    stack: list[tuple[object, bool]] = [(value, False)]
     while stack:
-        node = stack.pop()
-        if id(node) in seen:
+        node, leaving = stack.pop()
+        if leaving:
+            ancestors.discard(id(node))
             continue
-        seen.add(id(node))
+        if not isinstance(node, (Mapping, list, tuple)):
+            continue
+        if id(node) in ancestors:
+            raise invalid("a reference cycle")
+        ancestors.add(id(node))
+        stack.append((node, True))
         if isinstance(node, Mapping):
             for key, item in node.items():
                 if not isinstance(key, str):
-                    raise ServerDomainError(
-                        code="INVALID_DATA_SHAPE",
-                        message=f"{context} contains non-string key",
-                        status_code=500,
-                        details={"key_type": type(key).__name__},
-                    )
-                stack.append(item)
-        elif isinstance(node, (list, tuple)):
-            stack.extend(node)
+                    raise invalid("non-string key", type(key).__name__)
+                stack.append((item, False))
+        else:
+            stack.extend((item, False) for item in node)
 
 
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:

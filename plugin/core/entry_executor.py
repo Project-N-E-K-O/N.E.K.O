@@ -118,7 +118,16 @@ class EntryExecutor:
                 f"Plugin entry output could not be checked: entry={label}, error_type={type(exc).__name__}"
             )
             return
-        issues = check(payload)
+        try:
+            issues = check(payload)
+        except Exception as exc:
+            # The checkers catch their own failures; anything that still gets
+            # here (e.g. a model metaclass raising in isinstance) is a checker
+            # failure, never a reason to lose the handler's result.
+            self._logger.warning(
+                f"Plugin entry output could not be checked: entry={label}, error_type={type(exc).__name__}"
+            )
+            return
         if not issues:
             return
         summary = format_issues(issues)

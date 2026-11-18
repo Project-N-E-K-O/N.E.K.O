@@ -506,3 +506,16 @@ async def test_call_entry_keeps_previous_details_for_other_errors(monkeypatch):
     })
     assert error.code == "PLUGIN_EXECUTION_FAILED"
     assert error.details == {"plugin_id": "b", "event_id": "search"}
+
+
+def test_validate_keyed_entries_table_gets_no_publish_hint(tmp_path: Path):
+    plugin_dir = _plugin_dir(tmp_path, "output_schema={'type': 'array'}")
+    toml_path = plugin_dir / "plugin.toml"
+    text = toml_path.read_text(encoding="utf-8").replace(
+        '[[plugin.entries]]\nid = "run"\nstrict_output = true\n',
+        "[plugin.entries.run]\nstrict_output = true\n",
+    )
+    toml_path.write_text(text, encoding="utf-8")
+    messages = _messages(plugin_dir)
+    assert any("keyed table" in message for message in messages)
+    assert not any("only changes the published entry contract" in message for message in messages)

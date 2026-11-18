@@ -274,3 +274,29 @@ def test_nested_non_string_keys_drop_only_that_field_from_get_plugins():
     )
     assert entries[0]["id"] == "broken"
     assert "output_schema" not in entries[0]
+
+
+def test_cyclic_output_schema_drops_only_that_field_from_get_plugins():
+    from plugin._types.events import EventHandler
+    from plugin._types.events import EventMeta as HostEventMeta
+    from plugin.server.application.plugins.query_service import _build_entries_from_handlers
+
+    cyclic: dict[str, object] = {"type": "object", "properties": {}}
+    cyclic["properties"]["self"] = cyclic  # type: ignore[index]
+    shared = {"type": "string"}
+    fine_schema = {"type": "object", "properties": {"a": shared, "b": shared}}
+    broken = HostEventMeta(event_type="plugin_entry", id="broken", name="Broken")
+    broken.output_schema = cyclic  # type: ignore[attr-defined]
+    fine = HostEventMeta(event_type="plugin_entry", id="fine", name="Fine")
+    fine.output_schema = fine_schema  # type: ignore[attr-defined]
+    entries, _seen = _build_entries_from_handlers(
+        plugin_id="demo",
+        handlers_snapshot={
+            "demo.broken": EventHandler(meta=broken, handler=lambda: None),
+            "demo.fine": EventHandler(meta=fine, handler=lambda: None),
+        },
+    )
+    by_id = {item["id"]: item for item in entries}
+    assert "output_schema" not in by_id["broken"]
+    # Shared acyclic sub-dicts are not mistaken for cycles.
+    assert by_id["fine"]["output_schema"]["properties"]["b"] == {"type": "string"}

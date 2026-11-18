@@ -757,7 +757,7 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
                 ))
                 continue
             _warn_unknown_keys(item, allowed, label, issues)
-            _check_entry_field_types(item, label, issues)
+            _check_entry_field_types(item, label, issues, applied=False)
         return
     issues.append((
         "error",
@@ -767,11 +767,18 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
     ))
 
 
-def _check_entry_field_types(item: dict[str, object], label: str, issues: list[tuple[str, str]]) -> None:
+def _check_entry_field_types(
+    item: dict[str, object],
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    applied: bool = True,
+) -> None:
     for key in _PLUGIN_ENTRY_BOOL_FIELDS:
         _check_entry_bool(item.get(key), f"{label}.{key}", issues)
     _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
-    for key in ("output_schema", "strict_output"):
+    # A keyed table is not applied at all (warned separately): no publish hint.
+    for key in ("output_schema", "strict_output") if applied else ():
         if key in item:
             # The registry publishes it, but the output check runs in the
             # plugin process against the decorator's contract only.

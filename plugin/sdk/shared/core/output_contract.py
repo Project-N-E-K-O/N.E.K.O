@@ -133,6 +133,7 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
     from pydantic import TypeAdapter, ValidationError
 
     adapter = TypeAdapter(model)
+    lookup = _key_rule(model)
     # Field names (what model_dump()/finish() put on the wire, and what the
     # published schema uses) plus aliases (what Pydantic puts in a loc).
     declared = _declared_names(schema) if schema is not None else frozenset()
@@ -158,9 +159,7 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
         except Exception as exc:  # noqa: BLE001 - uncopyable data cannot be checked safely
             return [OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}")]
         try:
-            # Results arrive by field name (model_dump() in finish(), transport
-            # of returned models); accept aliases too.
-            adapter.validate_python(probe, **_BY_NAME_AND_ALIAS)
+            adapter.validate_python(probe, **lookup)
         except ValidationError as exc:
             # include_input/include_context off: only loc and type are read,
             # but nothing that quotes the data is even materialized.
@@ -191,17 +190,32 @@ def _builtin_error_types() -> frozenset[str]:
 _BUILTIN_ERROR_TYPES = _builtin_error_types()
 
 
-def _by_name_and_alias() -> dict[str, bool]:
-    """``validate_python`` options accepting field names and aliases (Pydantic >= 2.11)."""
+def _supports_lookup_options() -> bool:
+    """Whether ``validate_python`` takes ``by_alias`` / ``by_name`` (Pydantic >= 2.11)."""
     try:
         from pydantic import VERSION
     except ImportError:  # pragma: no cover
-        return {}
+        return False
     major, minor = (int(part) for part in VERSION.split(".")[:2])
-    return {"by_alias": True, "by_name": True} if (major, minor) >= (2, 11) else {}
+    return (major, minor) >= (2, 11)
 
 
-_BY_NAME_AND_ALIAS = _by_name_and_alias()
+_LOOKUP_OPTIONS_SUPPORTED = _supports_lookup_options()
+
+
+def _key_rule(model: type) -> dict[str, bool]:
+    """Validate with the key rule the contract is published with.
+
+    model_dump() (and so finish()) emits field names, or aliases when the
+    model sets ``serialize_by_alias``; the inferred schema uses the same keys.
+    Accepting both spellings at once lets one field's alias shadow another
+    field's real value, so only the published spelling is looked up.
+    """
+    if not _LOOKUP_OPTIONS_SUPPORTED:
+        return {}
+    config = getattr(model, "model_config", None)
+    by_alias = bool(config.get("serialize_by_alias", False)) if isinstance(config, Mapping) else False
+    return {"by_alias": by_alias, "by_name": not by_alias}
 _CUSTOM_ERROR_TYPE = "custom_error"
 
 
@@ -318,7 +332,13 @@ class _JsonSchemaCheck:
                 token = token.replace("~1", "/").replace("~0", "~")
                 if isinstance(node, Mapping) and token in node:
                     node = node[token]
-                elif isinstance(node, list) and _ARRAY_INDEX.fullmatch(token) and int(token) < len(node):
+                elif (
+                    isinstance(node, list)
+                    and _ARRAY_INDEX.fullmatch(token)
+                    # Length first: a huge digit string must not reach int().
+                    and len(token) <= len(str(len(node)))
+                    and int(token) < len(node)
+                ):
                     node = node[int(token)]
                 else:
                     return _UNRESOLVED
