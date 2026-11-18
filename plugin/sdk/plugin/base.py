@@ -433,9 +433,13 @@ class NekoPluginBase(_SharedNekoPluginBase):
         auto_start: bool = False,
         timeout: float | None = None,
         llm_result_fields: list[str] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        strict_output: bool = False,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
+        if output_schema is not None and not isinstance(output_schema, Mapping):
+            raise TypeError("output_schema must be a JSON schema mapping or None")
         if not isinstance(entry_id, str) or not entry_id.strip():
             raise ValueError("entry_id must be a non-empty string")
         if timeout is not None:
@@ -456,6 +460,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
             auto_start=auto_start,
             timeout=timeout,
             llm_result_fields=llm_result_fields,
+            output_schema=dict(output_schema) if output_schema is not None else None,
+            strict_output=bool(strict_output),
             metadata={"dynamic": True, "enabled": True},
         )
         if timeout is not None:

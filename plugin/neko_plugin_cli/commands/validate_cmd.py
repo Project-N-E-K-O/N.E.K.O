@@ -1009,6 +1009,8 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name
                     _check_identifier(entry_id, f"@plugin_entry id in {relative}:{node.lineno}", issues)
                     _check_schema_keyword(decorator, "input_schema", f"{relative}:{node.lineno}", issues)
+                    # An entry may return a non-object (a list, a string), so no type='object' hint here.
+                    _check_schema_keyword(decorator, "output_schema", f"{relative}:{node.lineno}", issues, expect_object=False)
                     _check_mutually_exclusive(decorator, {"input_schema", "params"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"llm_result_fields", "llm_result_model", "fields"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     previous = seen_ids.get(entry_id)
@@ -1176,14 +1178,21 @@ def _check_identifier(value: str, label: str, issues: list[tuple[str, str]]) -> 
         issues.append(("warning", f"{label} should contain only A-Z, a-z, 0-9, _, -"))
 
 
-def _check_schema_keyword(decorator: ast.expr, keyword: str, label: str, issues: list[tuple[str, str]]) -> None:
+def _check_schema_keyword(
+    decorator: ast.expr,
+    keyword: str,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    expect_object: bool = True,
+) -> None:
     value = _decorator_keyword_literal(decorator, keyword)
     if value is None:
         return
     if not isinstance(value, dict):
         issues.append(("error", f"{keyword} in {label} must be a dict literal when statically declared"))
         return
-    if value.get("type") != "object":
+    if expect_object and value.get("type") != "object":
         issues.append(("warning", f"{keyword} in {label} should declare type='object'"))
     properties = value.get("properties")
     if properties is not None and not isinstance(properties, dict):

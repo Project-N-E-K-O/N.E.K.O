@@ -25,6 +25,8 @@ ENTRY_CONTRACT_FIELDS = (
     "extra",
     "quick_action",
     "quick_action_config",
+    "output_schema",
+    "strict_output",
 )
 
 # Wire shapes of the contract fields, for code that coerces declared values
@@ -38,12 +40,14 @@ ENTRY_CONTRACT_BOOL_FIELDS = (
     "dynamic",
     "model_validate",
     "quick_action",
+    "strict_output",
 )
 ENTRY_CONTRACT_MAPPING_FIELDS = (
     "llm_result_schema",
     "metadata",
     "extra",
     "quick_action_config",
+    "output_schema",
 )
 
 

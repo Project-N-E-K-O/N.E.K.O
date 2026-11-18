@@ -403,7 +403,13 @@ def _group_text(group: str, tools: list[Capability]) -> str:
     return cut
 
 
-def _definition(capability: Capability) -> dict[str, Any]:
+def _definition(capability: Capability, *, with_output: bool = True) -> dict[str, Any]:
+    """The tool definition of a capability.
+
+    ``with_output=False`` leaves out ``outputSchema``: the runtime hands a
+    model only name, description and ``inputSchema``, so model-visible text
+    and the token budgets of listings are worked out without it.
+    """
     from config.nekoclaw_settings import GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS
     from utils.tokenize import truncate_to_tokens
 
@@ -415,11 +421,16 @@ def _definition(capability: Capability) -> dict[str, Any]:
             "inputSchema": capability.input_schema,
         }
     description = capability.description or capability.title
-    return {
+    definition = {
         "name": capability.tool_name,
         "description": truncate_to_tokens(f"{capability.title}. {description}", GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS),
         "inputSchema": capability.input_schema,
     }
+    # Only entries that declare an output contract carry it (MCP name), so
+    # every other definition stays as it was.
+    if with_output and capability.output_schema is not None:
+        definition["outputSchema"] = capability.output_schema
+    return definition
 
 
 class CapabilityGateway:
@@ -767,7 +778,7 @@ class CapabilityGateway:
             if capability.plugin_id not in candidates:
                 continue
             definition = _definition(capability)
-            cost = count_tokens(json.dumps(definition, ensure_ascii=False))
+            cost = count_tokens(json.dumps(_definition(capability, with_output=False), ensure_ascii=False))
             if used + cost > GATEWAY_TOOL_LIST_MAX_TOKENS:
                 continue
             listed.append(definition)
@@ -947,7 +958,7 @@ class CapabilityGateway:
                 name=_group_name(item), summary=BUILTIN_GROUP_SUMMARIES[item], search_tool=SEARCH_TOOL
             )
             if isinstance(item, str)
-            else json.dumps(_definition(item), ensure_ascii=False)
+            else json.dumps(_definition(item, with_output=False), ensure_ascii=False)
             for item in matches
         ]
         return truncate_to_tokens("\n".join(blocks), GATEWAY_RESULT_MAX_TOKENS)

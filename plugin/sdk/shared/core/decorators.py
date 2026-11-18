@@ -33,6 +33,7 @@ _SKIP_PARAMS = frozenset({"self", "cls", "kwargs", "_ctx", "args"})
 _PARAMS_MODEL_ATTR = "_neko_params_model"
 _AUTO_INFER_PARAMS_ATTR = "_neko_auto_infer_params"
 _AUTO_INFER_LLM_RESULT_ATTR = "_neko_auto_infer_llm_result"
+_AUTO_INFER_OUTPUT_ATTR = "_neko_auto_infer_output"
 _QUICK_ACTION_CONFIG_ATTR = "_neko_quick_action_config"
 _TYPE_HINT_ERRORS = (NameError, TypeError, AttributeError, ValueError)
 _PY_TYPE_TO_JSON: dict[type, str] = {
@@ -306,6 +307,14 @@ def _finalize_plugin_entry_inference(owner: type) -> None:
                 fields = fields_from_schema(inferred_llm_schema)
                 meta.llm_result_fields = fields if fields else None
 
+        if getattr(member, _AUTO_INFER_OUTPUT_ATTR, False):
+            # Same return-annotation inference as llm_result_*, resolved
+            # against the owner class for forward references.
+            inferred_output_model, inferred_output_schema = _infer_llm_result_model_from_owner(member, owner)
+            if inferred_output_model is not None and inferred_output_schema is not None:
+                meta.output_model = inferred_output_model
+                meta.output_schema = cast(InputSchema, inferred_output_schema)
+
 
 def on_event(
     *,
@@ -369,8 +378,12 @@ def plugin_entry(
     fields: type | None = None,
     metadata: dict[str, object] | None = None,
     quick_action: bool = False,
+    output_schema: Mapping[str, object] | None = None,
+    strict_output: bool = False,
     _localns: Mapping[str, object] | None = None,
 ) -> Callable[[F], F]:
+    if output_schema is not None and not isinstance(output_schema, Mapping):
+        raise ValueError("output_schema must be a JSON schema mapping")
     if input_schema is not None and params is not None:
         raise ValueError("input_schema and params are mutually exclusive")
     if sum(
@@ -435,6 +448,20 @@ def plugin_entry(
             llm_schema = schema_from_fields(normalized_llm_fields)
         if normalized_llm_fields is None and llm_schema is not None:
             normalized_llm_fields = fields_from_schema(llm_schema)
+        # Output contract: an explicit schema wins; otherwise a Pydantic return
+        # annotation is inferred exactly like llm_result_* (its own lookup, so
+        # an explicit llm_result_model does not become the output contract).
+        output_model: type | None = None
+        effective_output_schema: dict[str, object] | None = (
+            dict(output_schema) if output_schema is not None else None
+        )
+        if effective_output_schema is None:
+            output_model, effective_output_schema = _infer_llm_result_model_from_func(
+                fn,
+                localns=declaration_locals,
+            )
+            if output_model is None or effective_output_schema is None:
+                output_model, effective_output_schema = None, None
         meta = EventMeta(
             event_type="plugin_entry",
             id=event_id,
@@ -450,6 +477,9 @@ def plugin_entry(
             llm_result_fields=list(normalized_llm_fields) if normalized_llm_fields else None,
             llm_result_schema=cast(InputSchema | None, llm_schema),
             llm_result_model=llm_model,
+            output_schema=cast(InputSchema | None, effective_output_schema),
+            output_model=output_model,
+            strict_output=bool(strict_output),
             metadata=_json_compatible_mapping(metadata),
         )
         wrapped = _attach_event_meta(fn, meta)
@@ -461,6 +491,7 @@ def plugin_entry(
                 meta.quick_action_config = qa_cfg
         setattr(wrapped, _AUTO_INFER_PARAMS_ATTR, params is None and input_schema is None)
         setattr(wrapped, _AUTO_INFER_LLM_RESULT_ATTR, llm_model is None and normalized_llm_fields is None)
+        setattr(wrapped, _AUTO_INFER_OUTPUT_ATTR, output_schema is None and output_model is None)
         if effective_params_model is not None:
             setattr(wrapped, _PARAMS_MODEL_ATTR, effective_params_model)
         return wrapped

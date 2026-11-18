@@ -9,7 +9,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ExitStack
 from typing import Any
 
-from plugin._types.exceptions import PluginEntryNotFoundError, PluginExecutionError
+from plugin._types.exceptions import (
+    OUTPUT_SCHEMA_VIOLATION_CODE,
+    PluginEntryNotFoundError,
+    PluginExecutionError,
+    PluginOutputSchemaError,
+)
 from plugin.core.rpc import (
     RpcDeadlineExceededError,
     log_rpc_failure,
@@ -20,6 +25,12 @@ from plugin.core.rpc import (
 from plugin.sdk.shared.core.entry_runtime import (
     prepare_entry_kwargs,
     resolve_entry_timeout,
+)
+from plugin.sdk.shared.core.output_contract import (
+    OutputCheck,
+    build_output_check,
+    format_issues,
+    output_payload,
 )
 
 UNSET_TIMEOUT = object()
@@ -53,6 +64,51 @@ class EntryExecutor:
             persist,
         )
         self._logger = logger
+        # entry id -> (the meta the check was built from, the check). Rebuilt
+        # only when the entry's meta object changes (dynamic re-registration).
+        self._output_checks: dict[str, tuple[object, OutputCheck | None]] = {}
+
+    def _output_check(self, event_id: str, meta: object) -> OutputCheck | None:
+        cached = self._output_checks.get(event_id)
+        if cached is not None and cached[0] is meta:
+            return cached[1]
+        try:
+            check = build_output_check(meta)
+        except Exception as exc:
+            # A contract that cannot be compiled must not break the entry.
+            check = None
+            self._logger.warning(
+                f"Plugin entry output_schema could not be prepared: entry={event_id}, error_type={type(exc).__name__}"
+            )
+        self._output_checks[event_id] = (meta, check)
+        return check
+
+    def _check_output(self, event_id: str, label: str, result: object) -> None:
+        """Validate a successful result against the entry's output contract.
+
+        Logs and errors carry field paths and error types only, never the data.
+        """
+        meta = self._metadata.get(event_id)
+        if meta is None:
+            return
+        check = self._output_check(event_id, meta)
+        if check is None:
+            return
+        issues = check(output_payload(result))
+        if not issues:
+            return
+        summary = format_issues(issues)
+        strict = bool(getattr(meta, "strict_output", False))
+        self._logger.warning(
+            f"Plugin entry output does not match output_schema: entry={label}, strict={strict}, issues={summary}"
+        )
+        if strict:
+            raise PluginOutputSchemaError(
+                self.plugin_id,
+                event_id,
+                [issue.as_dict() for issue in issues],
+                summary,
+            )
 
     def _resolve(self, event_type: str, event_id: str, *, registered_only: bool):
         # Custom-event calls (including cross-plugin ones) reach only handlers
@@ -172,6 +228,8 @@ class EntryExecutor:
                         self.plugin_id, event_id, str(result.error)
                     )
                 result = result.value
+            if event_type == "plugin_entry":
+                self._check_output(event_id, label, result)
             return result
 
 
@@ -217,6 +275,18 @@ async def execute_entry_command(
         executor._logger.warning(
             f"Plugin entry operation timed out: entry={event_type}.{event_id}, req_id={reply['req_id']}"
         )
+    except PluginOutputSchemaError as exc:
+        # Already logged (paths and types only) where it was detected.
+        reply["error"] = {
+            "code": OUTPUT_SCHEMA_VIOLATION_CODE,
+            "message": str(exc),
+            "details": {
+                "plugin_id": executor.plugin_id,
+                "event_id": event_id,
+                "error_type": type(exc).__name__,
+                "issues": list(exc.issues),
+            },
+        }
     except Exception as exc:
         reply["error"] = {
             "code": "PLUGIN_EXECUTION_FAILED",

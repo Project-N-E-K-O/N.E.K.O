@@ -31,6 +31,14 @@ class EventMeta:
     llm_result_fields: list[str] | None = None
     llm_result_schema: InputSchema | None = None
     llm_result_model: type | None = None
+    # Output contract, independent of the AI-visible llm_result_* fields.
+    # ``output_schema`` is the published JSON schema; ``output_model`` is the
+    # Pydantic model it was derived from (validated with the model itself,
+    # stays in the plugin process). ``strict_output`` turns a mismatch into
+    # an execution failure instead of a warning.
+    output_schema: InputSchema | None = None
+    output_model: type | None = None
+    strict_output: bool = False
     quick_action: bool = False
     quick_action_config: QuickActionConfig = field(default_factory=QuickActionConfig)
     extra: dict[str, JsonValue] = field(default_factory=dict)
