@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import ExitStack
@@ -71,8 +72,8 @@ class EntryExecutor:
         # entry id -> (the meta the check was built from, the check). Rebuilt
         # only when the entry's meta object changes (dynamic re-registration).
         self._output_checks: dict[str, tuple[object, OutputCheck | None]] = {}
-        # entry id -> (last warning time, warning key, warnings suppressed since).
-        self._warned: dict[str, tuple[float, str, int]] = {}
+        # (entry id, warning key) -> (last warning time, warnings suppressed since).
+        self._warned: dict[tuple[str, str], tuple[float, int]] = {}
 
     def _output_check(self, event_id: str, meta: object) -> OutputCheck | None:
         if len(self._output_checks) > len(self._metadata):
@@ -102,17 +103,18 @@ class EntryExecutor:
     def _prune_output_checks(self) -> None:
         for stale in [key for key in self._output_checks if key not in self._metadata]:
             del self._output_checks[stale]
+        for gone in [key for key in self._warned if key[0] not in self._metadata]:
+            del self._warned[gone]
 
     def _warn_limited(self, event_id: str, key: str, message: str) -> None:
         """Log ``message`` at most once per ``_WARN_INTERVAL`` for the same entry and ``key``."""
         now = time.monotonic()
-        last = self._warned.get(event_id)
-        if last is not None and last[1] == key and now - last[0] < _WARN_INTERVAL:
-            self._warned[event_id] = (last[0], key, last[2] + 1)
+        last = self._warned.get((event_id, key))
+        if last is not None and now - last[0] < _WARN_INTERVAL:
+            self._warned[(event_id, key)] = (last[0], last[1] + 1)
             return
-        suppressed = last[2] if last is not None and last[1] == key else 0
-        self._warned[event_id] = (now, key, 0)
-        suffix = f", suppressed={suppressed}" if suppressed else ""
+        self._warned[(event_id, key)] = (now, 0)
+        suffix = f", suppressed={last[1]}" if last is not None and last[1] else ""
         self._logger.warning(f"{message}{suffix}")
 
     def _check_output(self, event_id: str, label: str, result: object, meta: object) -> None:
@@ -145,7 +147,8 @@ class EntryExecutor:
         strict = bool(getattr(meta, "strict_output", False)) and is_violation(issues)
         self._warn_limited(
             event_id,
-            summary,
+            # Indexes vary with the data; the kind of mismatch does not.
+            re.sub(r"\[\d+\]", "[]", summary),
             f"Plugin entry output does not match output_schema: entry={label}, strict={strict}, issues={summary}",
         )
         if strict:

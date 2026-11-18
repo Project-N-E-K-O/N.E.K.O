@@ -189,7 +189,7 @@ async def search(self, query: str):
 **何を検査するか。** 呼び出しが成功するたびに、状態の自動保存より前に戻り値を検査します。対象は `Ok(...)` の中の値、そのまま返した値、または `self.finish(...)` の `data` です。`Err(...)` はそれ自体が失敗なので検査しません。
 
 - 型注釈から推論した契約はモデル自身（Pydantic）で検証するため、field / model validator や `HttpUrl` などの型が効きます。フィールド名とエイリアスの両方を受け付けます。`finish(data=model)` は通常フィールド名を出力し、モデルが `serialize_by_alias` を設定している場合はエイリアスを出力します。公開される schema はモデルの validation モードの schema で、キーの規則も同じです。モデルのインスタンスをそのまま返した場合は検証済みとして扱います（構築時に検証済み）。`Model | None` の場合、`None` を返しても通ります。
-- 明示した `output_schema` は [`jsonschema`](https://python-jsonschema.readthedocs.io/) で、返した Python の値そのものを検査します（`datetime` は JSON の文字列とはみなされません）。
+- 明示した `output_schema` は [`jsonschema`](https://python-jsonschema.readthedocs.io/) で、返した Python の値そのものを検査します（`datetime` は JSON の文字列とはみなされず、直接返したモデルのインスタンスや dataclass も JSON のオブジェクトとはみなされません。`finish()` の data はすでに普通のデータです）。`$ref` は schema の中だけで解決され、リモートやファイルへの参照は取得しません。その場合は警告を記録するだけです。
 - デフォルトでは、合わない場合はプラグインログに警告を書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (type)`）だけが含まれ、戻り値の内容は記録されません。同じエントリーの同じ不一致は 1 分に 1 回まで記録され、次の警告に抑制された件数が付きます。
 - `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗し、`details.issues` に同じ `{"path", "type"}` の一覧が入ります。`/runs` と `call_entry` の呼び出し側はこのコードを受け取ります。このとき状態の自動保存はスキップされますが、ハンドラーがすでに行った処理は元に戻りません。検査そのものを実行できない場合（schema の誤り、validator のクラッシュ）は警告を記録するだけで、呼び出しは失敗しません。
 

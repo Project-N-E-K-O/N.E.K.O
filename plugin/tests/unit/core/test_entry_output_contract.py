@@ -320,6 +320,20 @@ def test_jsonschema_format_and_multiple_of_need_no_custom_code():
     assert _issues(check, {"n": 1.25}) == [("$.n", "multipleOf")]
 
 
+def test_remote_refs_are_never_fetched(monkeypatch):
+    import urllib.request
+
+    fetched: list[object] = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: fetched.append(args) or None)
+    check = build_output_check(SimpleNamespace(
+        output_schema={"properties": {"a": {"$ref": "http://127.0.0.1:9/remote.json"}}},
+        output_model=None,
+    ))
+    issues = check({"a": 1})
+    assert fetched == []
+    assert [issue.type.startswith("check_error:") for issue in issues] == [True]
+
+
 def test_model_and_jsonschema_agree_on_the_published_schema():
     """Same schema and data: the model check and a JSON Schema check reach the same verdict."""
     model_check = build_output_check(SimpleNamespace(output_schema=Address.model_json_schema(), output_model=Address))
@@ -400,6 +414,21 @@ async def test_warnings_are_rate_limited_per_entry(caplog, monkeypatch):
         await runtime.invoke("plugin_entry", "entry", {})
     assert caplog.text.count("does not match output_schema") == 2
     assert "suppressed=4" in caplog.text
+
+
+async def test_rate_limit_is_per_kind_of_mismatch(caplog):
+    values = iter([{"count": "x"}, {"tags": []}, {"count": "y"}, {"tags": []}])
+
+    @plugin_decorators.plugin_entry(id="entry", output_schema=EXPLICIT)
+    async def entry():
+        return next(values)
+
+    runtime = _executor({"entry": entry}, {"entry": _meta_of(entry)})
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        for _ in range(4):
+            await runtime.invoke("plugin_entry", "entry", {})
+    # Two kinds of mismatch, alternating: each is logged once.
+    assert caplog.text.count("does not match output_schema") == 2
 
 
 async def test_checker_failure_never_fails_the_call(caplog):

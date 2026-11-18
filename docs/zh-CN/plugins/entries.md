@@ -187,7 +187,7 @@ async def search(self, query: str):
 **检查什么。** 每次调用成功后、自动保存状态之前，检查返回值：`Ok(...)` 里的值、直接返回的值，或 `self.finish(...)` 的 `data`。`Err(...)` 本身就是失败，不检查。
 
 - 从返回注解推导的契约，由 model 自己（Pydantic）校验，所以 field / model validator 和 `HttpUrl` 这类类型都会生效。字段名和别名都接受：`finish(data=model)` 默认输出字段名，model 设了 `serialize_by_alias` 时输出别名。发布出去的 schema 是 model 的 validation 模式 schema，键名规则相同。直接返回 model 实例时视为已校验（构造时已经校验过）。注解是 `Model | None` 时，返回 `None` 也能通过。
-- 显式的 `output_schema` 用 [`jsonschema`](https://python-jsonschema.readthedocs.io/) 检查，检查的是返回的 Python 值本身（`datetime` 不算 JSON 字符串）。
+- 显式的 `output_schema` 用 [`jsonschema`](https://python-jsonschema.readthedocs.io/) 检查，检查的是返回的 Python 值本身（`datetime` 不算 JSON 字符串，直接返回的 model 实例或 dataclass 也不算 JSON 对象；`finish()` 的 data 已经是普通数据）。`$ref` 只在 schema 内部解析：远程或文件引用一律不去获取，这种情况只记告警。
 - 默认不符合时只在插件日志里记一条告警，返回值原样返回。告警只列字段路径和错误类型（例如 `$.count (type)`），不记录返回的内容。同一个入口的同一种不符合，一分钟内最多记一次，下一条会写明期间被抑制了多少条。
 - 设 `strict_output=True` 时，不符合会让本次调用失败，错误码是 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`，`details.issues` 里是同样的 `{"path", "type"}` 列表，`/runs` 和 `call_entry` 的调用方都能拿到这个错误码。这时会跳过自动保存状态，但 handler 已经做过的事不会回滚。检查本身没法进行时（schema 写坏、validator 崩溃）只记告警，不会让调用失败。
 

@@ -168,6 +168,7 @@ def _error_type(raw: object) -> str:
 def _jsonschema_check(schema: Mapping[str, object]) -> OutputCheck:
     try:
         from jsonschema import validators
+        from referencing import Registry
     except Exception as exc:  # noqa: BLE001 - missing dependency: report, never fail calls
         failure = _check_error(exc)
         return lambda _value: failure
@@ -177,7 +178,9 @@ def _jsonschema_check(schema: Mapping[str, object]) -> OutputCheck:
     type_checker = validator_class.TYPE_CHECKER.redefine(
         "array", lambda _checker, instance: isinstance(instance, (list, tuple))
     )
-    validator = validators.extend(validator_class, type_checker=type_checker)(dict(schema))
+    # An empty registry without ``retrieve``: a remote or file ``$ref`` is
+    # unresolvable (a checker failure) instead of blocking I/O in the plugin.
+    validator = validators.extend(validator_class, type_checker=type_checker)(dict(schema), registry=Registry())
     declared = _declared_names(schema)
 
     def check(value: object) -> list[OutputIssue]:
