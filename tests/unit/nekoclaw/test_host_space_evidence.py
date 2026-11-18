@@ -6206,3 +6206,50 @@ async def test_a_note_in_effect_by_one_file_is_not_judged_anew_over_another_of_w
     # The other file speaks for it, then and now: in effect, and both stay on record.
     assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
     assert sorted(_rests_on(_memory(root) / "entry-point.md")[0]) == sorted([app, readme])
+
+
+# ---------------------------------------------------------------------------
+# Review round 22
+# ---------------------------------------------------------------------------
+
+
+def _lesson_event(events: Any, commission: str) -> dict[str, Any]:
+    """Return what was put on the record of a commission about the lesson it filed last."""
+    return [row[2] for row in events.rows if row[0] == commission and row[1] == "lesson"][-1]
+
+
+async def test_a_file_the_note_names_that_is_gone_as_its_pending_entry_goes_into_an_entry_is_not_said_to_have_counted(
+    space, root, workdir, events, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none.", "inferred", ["src/app.py"]))
+    entry = _memory(root) / "photo-dates.md"
+    asked = _removed_after_the_first(monkeypatch, workdir / "src" / "app.py")
+
+    # Checked by hand, and filed with the file it had named: there as the note is judged, gone as its
+    # text goes into the entry.
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Photo dates", "Videos may have none.", "verified", ["src/app.py"])
+    )
+
+    assert asked == [1, 1] and reply.startswith("added to photo-dates.md") and _rests_on(entry)[0] == ()
+    # Not on the record of the entry, so not on that of the commission either; and the task agent is told.
+    assert "src/app.py (not found)" in reply
+    payload = _lesson_event(events, "c2")
+    assert payload["kept"] is True and "evidence_counted" not in payload
+
+
+async def test_a_file_the_note_names_that_is_gone_as_its_pending_entry_takes_effect_is_not_said_to_have_counted(
+    space, root, workdir, events, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    asked = _removed_after_the_first(monkeypatch, workdir / "src" / "app.py")
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "verified", ["src/app.py"])
+    )
+
+    assert asked == [1] and reply.startswith("kept in") and _rests_on(_memory(root) / "entry-point.md")[0] == ()
+    assert "src/app.py (not found)" in reply
+    payload = _lesson_event(events, "c2")
+    assert payload["kept"] is True and "evidence_counted" not in payload

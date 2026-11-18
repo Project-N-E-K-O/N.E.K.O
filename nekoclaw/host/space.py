@@ -352,8 +352,9 @@ class _Taken:
     # there already uses none, nor does one of the commission's own that
     # waited and is filed again (it used its place when it began to wait).
     charged: bool = True
-    # Files that were found gone as it was judged: one of them that the
-    # note named did not count, though it was there a moment before.
+    # Files that were found gone as it was judged, or after that as it
+    # was written: one of them that the note named did not count, though
+    # it was there a moment before.
     gone: tuple[str, ...] = ()
 
 
@@ -1324,7 +1325,13 @@ def _speaks_no_more(known: _Known, told: dict[str, bool | None]) -> bool:
 
 
 def _keep_known(
-    document: _Document, known: _Known | None, allowed: bool = True, *, pending: bool = False, judged: bool = False
+    document: _Document,
+    known: _Known | None,
+    allowed: bool = True,
+    *,
+    pending: bool = False,
+    judged: bool = False,
+    found_gone: list[str] | None = None,
 ) -> bool:
     """Write into an entry what a filing adds to what is known of it. Returns whether anything changed.
 
@@ -1348,7 +1355,9 @@ def _keep_known(
     entries it confirmed by its title before that have taken effect,
     each by itself (``_judged``). A note that takes effect by
     something else (checked by hand, seen by enough commissions) is
-    not held up: it is written, without the files found gone.
+    not held up: it is written, without the files found gone. Those
+    are added to ``found_gone``, for whoever tells what became of the
+    note.
     """
     from config.nekoclaw_settings import SPACE_EVIDENCE_MAX_PATHS, SPACE_SEEN_BY_KEPT
 
@@ -1371,6 +1380,8 @@ def _keep_known(
         if judged and known is not None and _speaks_no_more(known, {path: there.get(path) for path in asked}):
             raise _Rewritten("a file the note was judged with does not speak for it by now")
         gone_now = {path for path in asked if there.get(path) is False}
+        if found_gone is not None:
+            found_gone.extend(path for path in asked if path in gone_now)
         _set_evidence(document, [path for path in rested if path not in gone_now], apart)
         changed = True
     if known is None:
@@ -2231,6 +2242,7 @@ class TaskAgentSpace:
         allowed: bool = True,
         must_say: bool = False,
         by_files: bool = False,
+        found_gone: list[str] | None = None,
     ) -> tuple[Entry, str]:
         """Keep one entry. Returns it and what became of it: a new file, added to one, or there already.
 
@@ -2341,7 +2353,7 @@ class TaskAgentSpace:
                 # terms: only in an entry the host made. One the user wrote
                 # is theirs; it is given no evidence, no count and no state.
                 noted = bool(marks) and _keep_known(
-                    document, known, allowed, pending=pending, judged=must_say and by_files
+                    document, known, allowed, pending=pending, judged=must_say and by_files, found_gone=found_gone
                 )
                 redated = False
                 if dated is not None:
@@ -3035,8 +3047,9 @@ class TaskAgentSpace:
         # with the commission that confirms it counted already, and what
         # did not is pending still.
         unlisted: OSError | None = None
-        # Files the pending entry rested on that were found gone as it
-        # went into another entry: asked about after the note was judged.
+        # Files the pending entry rested on that were found gone after
+        # the note was judged: as it went into another entry, or as it
+        # took effect where it is.
         later_gone: list[str] = []
         # Whether its text went from a pending entry into one that is not.
         moved = False
@@ -3106,6 +3119,9 @@ class TaskAgentSpace:
                 # It takes effect by having this text: see ``_take_note``.
                 must_say=own is not None and home is own,
                 by_files=by_files,
+                # Where it takes effect where it is, the files it rested
+                # on are asked about once more as it is written.
+                found_gone=later_gone,
             )
         except _LineNotAdded as exc:
             entry, how, unlisted = exc.entry, exc.how, exc
@@ -3121,12 +3137,15 @@ class TaskAgentSpace:
         if became:
             # It was a guess that waited, and is an entry from now on.
             how = _CREATED
+        # All that was found gone: as the note was judged, and since, as
+        # it was written. None of it counted.
+        told_gone = tuple(dict.fromkeys((*gone, *later_gone)))
         if unlisted is not None:
-            raise _LineNotAdded(entry, how, charged=charged, gone=tuple(gone)) from unlisted
+            raise _LineNotAdded(entry, how, charged=charged, gone=told_gone) from unlisted
         return _Taken(
             entry,
             how,
-            gone=tuple(gone),
+            gone=told_gone,
             # Counted in the entry itself: one the user wrote keeps no count.
             counted=entry.seen > (was.seen if was is not None else 1),
             revived=was is not None and was.status == ENTRY_EXPIRED,
