@@ -257,9 +257,18 @@ class _RecentFileLock:
     def _new_file_lock(self):
         return FileLock(self._file_path, thread_local=False)
 
-    def _reset_file_lock_after_fork(self):
-        """Give a fork child its own FileLock; filelock 4 rejects instances inherited across fork."""
+    def _reset_after_fork(self):
+        """Give a fork child its own FileLock and, unless the forking thread holds it, a fresh gate.
+
+        filelock 4 rejects instances inherited across fork. A gate another parent
+        thread held at fork time would stay locked forever: that thread does not
+        exist in the child. A gate the forking thread holds is kept so its release works.
+        """
         self._file = self._new_file_lock()
+        holder = self._holder
+        if not (holder is not None and holder[0] == threading.get_ident()):
+            self._thread = threading.Lock()
+            self._holder = None
 
 
 # Every _RecentFileLock, including any a caller still references outside _LOCKS.
@@ -281,13 +290,18 @@ def _reset_file_locks_after_fork() -> None:
 
     The launcher may populate this registry (cloudsave import at startup) before it
     forks the servers. Since filelock 4 an inherited FileLock raises on use, so each
-    cached entry gets a fresh one. The parent's on-disk lock state is unaffected: a
-    lock it still holds keeps excluding the child through the new descriptor. The
-    child runs only the forking thread, so the set is iterated without the guard.
+    lock gets a fresh one (see ``_RecentFileLock._reset_after_fork``). The parent's
+    on-disk lock state is unaffected: a lock it still holds keeps excluding the child
+    through the new descriptor. The child runs only the forking thread, so the set is
+    iterated without the guard.
     Spawn children (Windows, macOS) re-import this module and never run the hook.
     """
+    # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
     for lock in list(_FORK_RESET_LOCKS):
-        lock._reset_file_lock_after_fork()
+        try:
+            lock._reset_after_fork()
+        except Exception as exc:
+            print(f'[recent_file] fork 子进程重建 recent 锁失败: {type(exc).__name__}: {exc}', flush=True)
 
 
 if hasattr(os, 'register_at_fork'):

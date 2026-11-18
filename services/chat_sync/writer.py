@@ -28,14 +28,18 @@ def _reset_file_locks_after_fork():
     """Rebuild registered writers' cross-process locks in a fork child (Linux ``multiprocessing`` default).
 
     Writers constructed before a fork stay in the child's registry. Since filelock 4 an
-    inherited FileLock raises on use, so each writer gets a fresh one. The
-    parent's on-disk lock state is unaffected: a lock it still holds keeps excluding the
-    child through the new descriptor. The child runs only the forking thread, so the
-    set is iterated without the guard. Spawn children (Windows, macOS) re-import
-    this module and never run the hook.
+    inherited FileLock raises on use, so each writer gets a fresh one (see
+    ``ChatSyncWriter._reset_after_fork``). The parent's on-disk lock state is unaffected:
+    a lock it still holds keeps excluding the child through the new descriptor. The
+    child runs only the forking thread, so the set is iterated without the guard.
+    Spawn children (Windows, macOS) re-import this module and never run the hook.
     """
+    # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
     for writer in list(_FORK_RESET_WRITERS):
-        writer._reset_file_lock_after_fork()
+        try:
+            writer._reset_after_fork()
+        except Exception as exc:
+            print(f'[chat_sync] fork 子进程重建 writer 锁失败: {type(exc).__name__}: {exc}', flush=True)
 
 
 if hasattr(os, 'register_at_fork'):
@@ -84,9 +88,17 @@ class ChatSyncWriter:
     def _new_file_lock(self):
         return FileLock(str(self.path) + '.lock', timeout=10) if self.path else None
 
-    def _reset_file_lock_after_fork(self):
-        """Give a fork child its own FileLock; filelock 4 rejects instances inherited across fork."""
+    def _reset_after_fork(self):
+        """Give a fork child its own FileLock and, unless the forking thread holds it, a fresh mutex.
+
+        filelock 4 rejects instances inherited across fork. A mutex another parent
+        thread held at fork time would stay locked forever: that thread does not
+        exist in the child. A mutex the forking thread holds is kept so its release works.
+        """
         self._file_lock = self._new_file_lock()
+        # RLock._is_owned is private but present in CPython's C and Python RLocks (project pins 3.11).
+        if not self._mutex._is_owned():
+            self._mutex = threading.RLock()
 
     @contextmanager
     def locked(self):
