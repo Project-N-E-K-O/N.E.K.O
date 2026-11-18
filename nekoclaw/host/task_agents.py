@@ -368,6 +368,9 @@ class TaskAgentManager:
         # start with nothing from earlier commissions and lessons stay in
         # the ledger.
         self._space = space
+        # How many looks for the files a repository keeps for agents have
+        # not come back yet (``_repository_documents``).
+        self._document_scans = 0
         # ``nekoclaw.host.leases.BuiltinLeases``: who occupies the desktop and
         # the browser. A commission lets go of them when its run is over.
         self._leases = leases
@@ -865,9 +868,19 @@ class TaskAgentManager:
         where they were (``_session_dir_of``). A task agent started by
         another works inside that one's directory, among the same
         sessions.
+
+        Waited for no longer than ``REPO_DOCUMENTS_SCAN_SECONDS``: a folder
+        on a network share that does not answer would keep the commission
+        from starting, at work by its status and with nothing done. Past
+        that the task agent starts without the list. The look itself
+        cannot be stopped and holds its thread until the folder answers,
+        so no more than ``REPO_DOCUMENTS_SCANS_AT_ONCE`` are under way:
+        with that many out, the next task agent starts without the list
+        at once.
         """
         from pathlib import Path
 
+        from config.nekoclaw_settings import REPO_DOCUMENTS_SCAN_SECONDS, REPO_DOCUMENTS_SCANS_AT_ONCE
         from nekoclaw.host import repo_docs
         from nekoclaw.runtime.permissions import is_inside
 
@@ -884,12 +897,31 @@ class TaskAgentManager:
                     continue
             return repo_docs.listing(workdir, upward=not own)
 
+        if self._document_scans >= REPO_DOCUMENTS_SCANS_AT_ONCE:
+            logger.warning("looks for the files a repository keeps for agents have not come back; none is started")
+            return ""
+
+        def back(done: asyncio.Future[str]) -> None:
+            self._document_scans -= 1
+            if not done.cancelled() and done.exception() is not None:
+                # Told here when nobody waits for it any more.
+                logger.warning(
+                    "listing the files a repository keeps for agents failed (%s)", type(done.exception()).__name__
+                )
+
+        self._document_scans += 1
+        scan = asyncio.get_running_loop().run_in_executor(None, look)
+        scan.add_done_callback(back)
         try:
-            return await asyncio.to_thread(look)
+            # Shielded: the look goes on in its thread whoever stops waiting
+            # for it, and is counted until it comes back.
+            return await asyncio.wait_for(asyncio.shield(scan), REPO_DOCUMENTS_SCAN_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("listing the files a repository keeps for agents took too long; it starts without the list")
+            return ""
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it starts without the list
-            logger.warning("listing the files a repository keeps for agents failed", exc_info=True)
             return ""
 
     async def _use_project(self, commission: Commission) -> None:

@@ -1196,7 +1196,7 @@ Claude Code 和 dsh 也是这个形态：Claude Code 的键鼠、浏览器各是
 │   ├─ AGENTS.md              全局守则，用户写
 │   ├─ MEMORY.md              全局索引，一行一条，开工必带；项目和已归档的项目也各占一行
 │   ├─ memory/*.md            跨项目的经验与反思，一条一个文件
-│   ├─ notes.json             还没生效的经验（在等第二次被观察到），和用户删掉、不再收的记录
+│   ├─ notes.json             用户删掉、不再收的记录（还没生效的经验是 memory/ 下标着待定的条目文件，不进索引）
 │   ├─ state.json             上次整理的时间
 │   ├─ projects/
 │   │   ├─ _daily/            零散委托的默认去处

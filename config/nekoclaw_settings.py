@@ -274,6 +274,17 @@ is part of what was said in the session, and paid with every request until
 that is summed up. Fifteen lines of ordinary paths are some 330 tokens; the
 cap leaves room for long ones."""
 
+REPO_DOCUMENTS_SCAN_SECONDS = 3.0
+"""How long a task agent's start waits for that list to be made. Looking at
+the names in a few directories takes milliseconds on a disk; a folder on a
+network share that does not answer takes for ever, and the commission is
+at work by its status meanwhile. Past this it starts without the list."""
+
+REPO_DOCUMENTS_SCANS_AT_ONCE = 4
+"""Most looks for that list that may be under way. One that was given up on
+goes on in its thread until the folder answers; with so many out, a task
+agent starts without the list at once instead of taking another thread."""
+
 REPO_DOCUMENT_PATH_MAX_TOKENS = 60
 """Cap on one path of that list as it is written out. A file may be called
 anything, and what it is called goes into a task agent's instructions. A

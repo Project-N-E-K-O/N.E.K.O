@@ -3187,3 +3187,24 @@ async def test_the_system_prompt_a_session_was_opened_with_goes_with_what_was_sa
 
     assert not (directory / SYSTEM_FILE).exists() and not (directory / "transcript.jsonl").exists()
     assert (directory / "work" / "sub" / "result.txt").is_file()
+async def test_how_many_of_what_a_review_made_wait_is_told_as_it_stands_at_the_end(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [
+                # The same note twice: first with nothing that speaks for it, then with a file.
+                {"title": "Photo dates", "content": "EXIF first, then the file date."},
+                {"title": "Photo dates", "content": "EXIF first, then the file date.", "evidence": ["src/dates.py"]},
+            ],
+        }
+    ]
+
+    commission = await world.finished(workdir=str(folder))
+
+    # The second had the pending entry of the first take effect: nothing of this review waits.
+    (entry,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status) == ("photo-dates", "active")
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
+    ]

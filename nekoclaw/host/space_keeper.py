@@ -722,7 +722,8 @@ class SpaceKeeper:
             except (SpaceError, OSError) as exc:
                 logger.warning("what a commission filed could not be moved to its project (%s)", type(exc).__name__)
         kept: list[str] = []
-        waiting = 0
+        # The pending entries what it made went into, by where they are.
+        pending: list[tuple[str | None, str]] = []
         entries = data.get("entries")
         bases = await self._space.evidence_bases(commission.workdir, project)
         for item in (entries if isinstance(entries, list) else [])[: self._entries_allowed(commission)]:
@@ -730,6 +731,7 @@ class SpaceKeeper:
                 continue
             kind = str(item.get("type") or "").strip().lower()
             everywhere = str(item.get("scope") or "").strip().lower() == "global" and kind != "progress"
+            waits: list[str] = []
             try:
                 # Judged like a note of a task agent: the model read an
                 # account and checked nothing, so what it made takes effect
@@ -746,14 +748,25 @@ class SpaceKeeper:
                     observer=commission.parent_id or commission.id,
                     bases=bases,
                     evidence=item.get("evidence") or (),
+                    waits=waits,
                 )
             except (SpaceError, OSError) as exc:
                 logger.warning("an entry of a review could not be kept (%s)", type(exc).__name__)
                 continue
             if entry is None:
-                waiting += 1
+                pending.extend((None if everywhere else project, name) for name in waits)
                 continue
             kept.append(entry.id if everywhere else f"{project}/{entry.id}")
+        # As it stands now: a later entry of the same review may have had
+        # an earlier one take effect (the same note, with a file this time).
+        in_effect = set(kept)
+        waiting = len(
+            {
+                (layer, name)
+                for layer, name in pending
+                if (name if layer is None else f"{layer}/{name}") not in in_effect
+            }
+        )
         await self._space.write_review(project, commission, text, entries=tuple(kept))
         outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
         if waiting:

@@ -66,6 +66,10 @@ class Document:
     # the least it can be (it has more files than are counted, or was
     # not looked at to its end).
     more: bool = False
+    # Of a file: its directory was not looked at to its end. Nothing is
+    # known to be left out by that; but a number of files that are left
+    # out for another reason is then the least it can be.
+    cut: bool = False
 
 
 def repository_root(workdir: Path, *, upward: bool = True) -> Path:
@@ -105,13 +109,28 @@ def repository_root(workdir: Path, *, upward: bool = True) -> Path:
     return start
 
 
-def _files_of(directory: Path) -> tuple[list[Path], bool, bool]:
+def _inside(path: Path | str, root: Path) -> bool:
+    """Whether a path is in the repository once links are resolved. False when that cannot be told."""
+    from nekoclaw.runtime.permissions import is_inside
+
+    try:
+        return is_inside(Path(path), root)
+    except (OSError, ValueError):
+        return False
+
+
+def _files_of(directory: Path, root: Path | None = None) -> tuple[list[Path], bool, bool]:
     """Return the first files directly in a directory, by name; whether it has more; whether it was not looked at to its end.
 
     The second says that more files were seen than are returned. The
-    third says only that not every name was looked at: what was left may
-    be files or may be none, so it is no proof of a file that is not
-    listed.
+    third says only that not every name was looked at, or that one could
+    not be told to be a file or not: what was left may be files or may
+    be none, so it is no proof of a file that is not listed.
+
+    With ``root``, a link that leads out of that directory is no file of
+    the repository and is left out: its name and size would be those of
+    something the repository's author pointed at, not of something they
+    wrote.
 
     Empty when it cannot be read. The first
     ``REPO_DOCUMENT_DIRECTORY_MAX_FILES`` by name: a directory fuller than
@@ -132,10 +151,15 @@ def _files_of(directory: Path) -> tuple[list[Path], bool, bool]:
                     cut = True
                     break
                 try:
-                    if item.is_file():
-                        names.append(item.name)
+                    if not item.is_file():
+                        continue
+                    if root is not None and item.is_symlink() and not _inside(item.path, root):
+                        continue
+                    names.append(item.name)
                 except OSError:
-                    continue
+                    # Not known to be a file or not: the directory was
+                    # not looked at whole.
+                    cut = True
     except OSError:
         return [], False, False
     names.sort()
@@ -151,13 +175,21 @@ def _size(path: Path) -> int | None:
 
 
 def documents(root: Path) -> list[Document]:
-    """Return what a repository keeps for agents, in the order of ``REPO_DOCUMENTS``. Reads names and sizes only."""
+    """Return what a repository keeps for agents, in the order of ``REPO_DOCUMENTS``. Reads names and sizes only.
+
+    Only what is in the repository: a file or a directory of these names
+    that is a link out of it (a repository that was cloned may have
+    ``.agent/rules`` point at any directory of the machine) is not
+    listed, and neither is a link in such a directory that leads out.
+    """
     from config.nekoclaw_settings import REPO_DOCUMENTS
 
     found: list[Document] = []
     for kind, name in REPO_DOCUMENTS:
         path = root.joinpath(*name.split("/"))
         try:
+            if not _inside(path, root):
+                continue
             if kind == FILE:
                 if path.is_file():
                     found.append(Document(name, size=_size(path)))
@@ -165,10 +197,10 @@ def documents(root: Path) -> list[Document]:
                 # Only files that were seen and are not taken: where the
                 # directory was merely not looked at to its end, nothing is
                 # known to be left out.
-                files, more, _cut = _files_of(path)
-                found.extend(Document(f"{name}/{item.name}", size=_size(item), more=more) for item in files)
+                files, more, cut = _files_of(path, root)
+                found.extend(Document(f"{name}/{item.name}", size=_size(item), more=more, cut=cut) for item in files)
             elif kind == COUNT:
-                files, more, cut = _files_of(path)
+                files, more, cut = _files_of(path, root)
                 if files:
                     found.append(Document(f"{name}/", files=len(files), more=more or cut))
         except OSError:
@@ -265,10 +297,15 @@ def render(root: Path, found: list[Document]) -> str:
     # Directories whose files are listed one by one and were not looked at
     # to the end: each has one file more at the least.
     unseen = len({item.path.rsplit("/", 1)[0] for item in found if item.more and item.files is None})
+    # A directory that was not looked at to its end adds none to those
+    # left out, since what was not seen may be no file at all. But when
+    # some are left out anyway, how many is then the least it can be.
+    open_ended = any(item.cut for item in found if item.files is None)
 
     def whole() -> str:
         left_out = len(lines) - len(shown) + unseen + unwritten
-        said = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE_AT_LEAST if unseen else texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE
+        at_least = bool(unseen) or open_ended
+        said = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE_AT_LEAST if at_least else texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE
         more = [said.format(count=left_out)] if left_out else []
         return "\n".join([note, *shown, *more])
 

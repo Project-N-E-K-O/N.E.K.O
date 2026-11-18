@@ -52,7 +52,7 @@ def _held(entry: str, why: str = "it was filed as inferred") -> str:
     return (
         f"not in effect yet: {why}. It is kept as {entry}.md, marked pending and in no index. It takes effect "
         "when another commission files the same, or when you file it again under the same title as verified, "
-        "or as observed with a file that exists. Until then, do not report it as kept."
+        "or the same text again as observed with a file that exists. Until then, do not report it as kept."
     )
 
 
@@ -987,7 +987,7 @@ async def test_a_note_that_no_longer_waits_is_not_let_past_the_places_of_its_com
     commission = _commission(workdir)
     await space.submit(commission, _lesson("First", "The first note.", "verified"))
     # It looked like one of its own that waits when it was let through; by the time it is judged it is not.
-    monkeypatch.setattr(TaskAgentSpace, "_own_pending", lambda self, *args: True)
+    monkeypatch.setattr(TaskAgentSpace, "_uses_no_place", lambda self, *args: True)
 
     waiting = await space.submit(commission, _lesson("Guess", "A new guess."))
     kept = await space.submit(commission, _lesson("Checked", "A new note that was checked.", "verified"))
@@ -1001,11 +1001,11 @@ async def test_a_note_that_no_longer_waits_is_not_let_past_the_places_of_its_com
     assert _pending(root) == [] and [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["first"]
 
 
-async def test_only_a_note_of_its_own_that_waits_is_let_through_without_a_place(space, root, workdir):
+async def test_only_a_note_that_uses_no_place_is_let_through_without_one(space, root, workdir):
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
 
     def waits(observer: str, title: str, content: str, project: str | None = DEFAULT_PROJECT) -> bool:
-        return space._own_pending(project, observer, title, content)
+        return space._uses_no_place(project, observer, title, content)
 
     # The very text, however it is spaced, whatever it is called: told by its mark.
     assert waits("c1", "Camera drive", "It is probably E: here.")
@@ -1016,9 +1016,11 @@ async def test_only_a_note_of_its_own_that_waits_is_let_through_without_a_place(
     assert not waits("c1", "Camera drive", "It is probably E: here.", None)
     assert not waits("c1", "Camera drive", "")
     assert not waits("c1", "Camera drive", "...")
-    # Nor one that took effect meanwhile, or is gone.
+    # Once it took effect its text is in an entry: filed again by anyone, nothing of it is added.
     await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here.", "verified"))
-    assert not waits("c1", "Camera drive", "It is probably E: here.")
+    assert waits("c1", "Camera drive", "It is probably E: here.") and waits("c2", "Other title", "it is probably e here")
+    # Another text under that title would be added, and one that is gone is nowhere.
+    assert not waits("c1", "Camera drive", "It is drive F.")
     (_memory(root) / "camera-drive.md").unlink()
     assert not waits("c1", "Camera drive", "It is probably E: here.")
 
@@ -1039,21 +1041,38 @@ async def test_a_note_judged_without_a_place_gives_back_no_place_that_another_no
         return taking(self, project, note, **kwargs)
 
     monkeypatch.setattr(TaskAgentSpace, "_take_note", slow)
+    judging = space._write_judged
+    in_line: list[int] = []
+
+    async def watched(work: Any) -> Any:
+        in_line.append(1)
+        return await judging(work)
+
+    async def queued(count: int) -> None:
+        # Until so many notes wait for their turn: each has looked at what it had to look at by then.
+        for _try in range(1000):
+            if len(in_line) >= count:
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("a note did not get as far as waiting for its turn")
+
+    monkeypatch.setattr(space, "_write_judged", watched)
     try:
         # The space is busy, and the commission's last place is held by a note that is on its way.
         async with space._lock:
             refused = asyncio.create_task(space.submit(commission, _lesson("", "A note without a title.", "verified")))
-            await asyncio.sleep(0.05)
+            await queued(1)
             assert space._adding == {"c1": 1}
-            # No place is left: its guess, filed again, is judged without one.
+            # No place is left: its guess, filed again, is judged without one. That is settled before the
+            # space is free again: once the first gave its place back, the guess would take it.
             again = asyncio.create_task(space.submit(commission, _lesson("Guess", "A guess.")))
-            await asyncio.sleep(0.05)
+            await queued(2)
         # The first is turned down for what it is and gives its place back, while the guess is being judged.
         assert (await refused) == "not kept: an entry needs a title and a text"
         assert await asyncio.to_thread(gates["A guess."][0].wait, 10)
         # Another note takes the place that came free, and waits for its turn.
         third = asyncio.create_task(space.submit(commission, _lesson("Third", "A note that was checked.", "verified")))
-        await asyncio.sleep(0.05)
+        await queued(3)
         assert space._adding == {"c1": 1}
         # The guess, which had no place, is done: the place the third holds is still held.
         gates["A guess."][1].set()
@@ -3176,6 +3195,14 @@ def test_the_texts_of_an_entry_are_told_apart_by_their_dated_headings():
         "Second text.\n\n## Notes\n\nNot a day: part of the second.",
     ]
     assert _texts_of("") == [] and _texts_of("\n\n## 2027-01-16\n\n") == []
+    # With the marks the entry keeps of its texts, a dated heading sets two texts apart only where one
+    # of those texts ends: a text may begin with such a heading, or have one inside it.
+    first, second = "## 2027-01-10\n\nWhat was found that day.", "Before.\n\n## 2027-01-12\n\nAfter."
+    body = f"{first}\n\n## 2027-01-16\n\n{second}\n"
+    assert _texts_of(body, [_digest(first), _digest(second)]) == [first, second]
+    assert _texts_of(body) == ["What was found that day.", "Before.", "After."]
+    # A text the user rewrote in an editor has no mark: it is not taken apart, and nothing of it is lost.
+    assert _texts_of(body, [_digest("something else")]) == [body.strip()]
 
 
 async def test_a_pending_entry_with_more_than_one_text_goes_with_its_commission_text_by_text(space, root, workdir, clock):
@@ -3566,3 +3593,199 @@ def test_a_link_out_of_the_working_directory_counts_while_task_agents_may_read_w
     # Where it leads is what is kept, and what is marked as outside.
     assert evidence_of(["README.md"], [str(workdir)], outside=True) == ([_where(outside)], [])
     assert evidence_of(["README.md"], [str(workdir)]) == ([], [("README.md", "outside the working directory")])
+
+
+# ---------------------------------------------------------------------------
+# A pending entry the user saves while its texts are filed elsewhere
+# ---------------------------------------------------------------------------
+
+
+def _saved_while_filed(monkeypatch: Any, path: Path, added: str) -> None:
+    """Have the user save a pending entry, with a sentence more, at the moment its text is filed somewhere else."""
+    filing = TaskAgentSpace._file_entry
+    saved: list[bool] = []
+
+    def then_saved(self: TaskAgentSpace, project: Any, **kwargs: Any) -> Any:
+        if not saved and path.exists():
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8") + chr(10) + added + chr(10), encoding="utf-8", newline=chr(10))
+        return filing(self, project, **kwargs)
+
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", then_saved)
+
+
+async def test_a_pending_entry_saved_while_it_goes_with_its_commission_stays_where_it_was(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
+    await space.touch_project("Budget app")
+    source = _memory(root) / "own-guess.md"
+    _saved_while_filed(monkeypatch, source, "And what I think of it.")
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # What was read of it went along; what the user saved meanwhile is not in that, and is not removed with the file.
+    assert [held["content"] for held in _pending(root, "Budget app")] == ["A guess of c1."]
+    assert source.exists() and "And what I think of it." in source.read_text(encoding="utf-8")
+    assert [held["id"] for held in _pending(root)] == ["own-guess"]
+
+
+async def test_a_pending_entry_saved_while_it_is_put_into_an_entry_stays(space, root, workdir, monkeypatch):
+    # An entry, and a guess of the same commission that waits under its title.
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Videos may have none."))
+    waiting = _memory(root) / "photo-dates-2.md"
+    _saved_while_filed(monkeypatch, waiting, "Checked on two videos so far.")
+
+    # Another commission files under that title: the guess goes into the entry of that title.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Scans have none either."))
+
+    assert reply == "added to photo-dates.md in project _daily"
+    said = (_memory(root) / "photo-dates.md").read_text(encoding="utf-8")
+    assert "Videos may have none." in said and "Checked on two videos so far." not in said
+    # What the user saved while that was done is still there, pending as it was.
+    assert waiting.exists() and "Checked on two videos so far." in waiting.read_text(encoding="utf-8")
+    assert [held["id"] for held in _pending(root)] == ["photo-dates-2"]
+# ---------------------------------------------------------------------------
+# Review round 12
+# ---------------------------------------------------------------------------
+
+
+async def test_a_text_that_begins_with_a_dated_heading_keeps_it_when_it_goes_with_its_commission(space, root, workdir):
+    text = "## 2027-01-10\n\nThe export broke on that day's data."
+    assert await space.submit(_commission(workdir), _lesson("Export", text)) == _held("export")
+    await space.touch_project("Budget app")
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # The heading is what the note says, not where the host set two texts apart.
+    assert [held["content"] for held in _pending(root, "Budget app")] == [text]
+
+
+def test_a_path_is_looked_for_as_it_was_written(workdir):
+    (workdir / "Q1  report.csv").write_text("a,b\n", encoding="utf-8")
+
+    # Two spaces in a row are part of the name: with one it is another file, or none.
+    assert evidence_of(["Q1  report.csv"], [str(workdir)]) == ([(workdir / "Q1  report.csv").as_posix()], [])
+    assert evidence_of(["Q1 report.csv"], [str(workdir)]) == ([], [("Q1 report.csv", "not found")])
+    # What is on more than one line is no path; it is said on one.
+    assert evidence_of(["src/\napp.py"], [str(workdir)]) == ([], [("src/ app.py", "not a usable path")])
+
+
+async def test_a_pending_entry_nobody_is_named_for_counts_the_commissions_that_file_it_from_the_first(space, root, workdir):
+    # As the summary of a project leaves one: a guess, seen by nobody that counts.
+    entry, _created = await space.propose_entry(None, title="Camera drive", content="It is probably E: here.")
+    assert entry is None and "seen" not in _head(_memory(root, None) / "camera-drive.md")
+
+    first = await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here.", scope="global"))
+    head = _head(_memory(root, None) / "camera-drive.md")
+    assert first == _held("camera-drive") and (head["seen"], head["seen_by"]) == ("1", "c1")
+    second = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Camera drive", "It is probably E: here.", scope="global")
+    )
+
+    # Two commissions have seen it, and that is what it says.
+    head = _head(_memory(root, None) / "camera-drive.md")
+    assert second == "kept in the space of every project as camera-drive.md"
+    assert (head["seen"], head["seen_by"]) == ("2", "c1, c2")
+
+
+async def test_whether_files_outside_count_is_asked_when_the_note_has_its_turn(open_space, setting, root, workdir, outside):
+    setting.allowed = True
+    lesson = _lesson("Camera drive", "The camera is drive E.", "observed", [str(outside)])
+    # The space is busy; the note waits for its turn, and the user takes back that task agents may read outside.
+    open_space._lock = asyncio.Lock()
+    async with open_space._lock:
+        filing = asyncio.create_task(open_space.submit(_commission(workdir), lesson))
+        await asyncio.sleep(0.05)
+        setting.allowed = False
+
+    reply = await filing
+
+    # What held when it was filed is not what counts: the file out there is not looked at.
+    assert reply.startswith(_held("camera-drive", NO_FILE)) and reply.endswith(" (outside the working directory).")
+    assert _pending(root)[0]["evidence"] == []
+
+
+async def test_an_entry_that_came_back_into_effect_before_it_was_copied_is_listed_where_it_goes(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    await space.touch_project("Budget app")
+    path = _memory(root) / "entry-point.md"
+    listing = TaskAgentSpace._entries
+
+    def then_saved(self: TaskAgentSpace, directory: Path, project: Any, **how: Any) -> Any:
+        found = listing(self, directory, project, **how)
+        if directory == path.parent and "status: expired" in path.read_text(encoding="utf-8"):
+            # Looked through as expired; the user takes the mark out before it is copied.
+            kept = [line for line in path.read_text(encoding="utf-8").split(chr(10)) if not line.startswith(("status:", "expired:"))]
+            path.write_text(chr(10).join(kept), encoding="utf-8", newline=chr(10))
+        return found
+
+    monkeypatch.setattr(TaskAgentSpace, "_entries", then_saved)
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == ["entry-point"]
+
+    # What was copied says it is in effect: it has its line where it went.
+    assert "status" not in _head(_memory(root, "Budget app") / "entry-point.md")
+    assert "(memory/entry-point.md)" in _index(root, "Budget app")
+
+
+async def test_an_entry_that_comes_back_is_listed_as_it_is_called_by_then(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
+    path = _memory(root) / "entry-point.md"
+    adding = TaskAgentSpace._index_add
+
+    def then_retitled(self: TaskAgentSpace, index: Path, line: str, target: str) -> None:
+        adding(self, index, line, target)
+        # The line is there; the user gives the entry another title before it is written.
+        path.write_text(path.read_text(encoding="utf-8").replace("name: Entry point", "name: Where it starts"), encoding="utf-8", newline=chr(10))
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", then_retitled)
+
+    assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
+
+    head = _head(path)
+    assert "status" not in head and head["name"] == "Where it starts"
+    assert "- [Where it starts](memory/entry-point.md)" in _index(root) and "[Entry point]" not in _index(root)
+
+
+async def test_a_commission_with_no_place_left_can_file_again_what_is_in_an_entry_to_have_it_listed(space, root, workdir, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 1)
+    commission = _commission(workdir)
+    assert await space.submit(commission, _lesson("Camera drive", "It is probably E: here.")) == _held("camera-drive")
+    adding = TaskAgentSpace._index_add
+
+    def held(self: TaskAgentSpace, index: Path, line: str, target: str) -> None:
+        raise PermissionError(13, "in use")
+
+    # It checks its guess and files it as verified, as it was told it could; the index is held by another program.
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", held)
+    kept = await space.submit(commission, _lesson("Camera drive", "It is probably E: here.", "verified"))
+    assert kept.startswith("kept in project _daily as camera-drive.md; the index could not be read or written")
+    assert "status" not in _head(_memory(root) / "camera-drive.md") and _index(root) == ""
+
+    # Filed once more when the index can be written: nothing is added, no place is needed, and it gets its line.
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", adding)
+    again = await space.submit(commission, _lesson("Camera drive", "It is probably E: here.", "verified"))
+
+    assert again == "already in camera-drive.md in project _daily; nothing was added"
+    assert _index(root).count("(memory/camera-drive.md)") == 1
+    assert space._added_by == {"c1": 1} and space._adding == {}
+    # A note that would add something is still one too many.
+    assert (await space.submit(commission, _lesson("Backups", "Copied first.", "verified"))).startswith("not kept: this commission")
+async def test_a_text_that_begins_with_a_dated_heading_keeps_it_when_it_is_put_into_an_entry(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Export", "It writes a CSV file.", "verified"))
+    guess = "## 2027-01-10\n\nThe export may have broken on that day's data."
+    assert await space.submit(_commission(workdir), _lesson("Export", guess)) == _held("export-2")
+
+    # Another commission files under that title: the guess goes into the entry, as it was written.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Export", "It needs the output folder to exist."))
+
+    assert reply == "added to export.md in project _daily"
+    said = (_memory(root) / "export.md").read_text(encoding="utf-8")
+    assert guess in said and _pending(root) == []

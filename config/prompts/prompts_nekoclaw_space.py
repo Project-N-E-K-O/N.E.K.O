@@ -79,7 +79,8 @@ SPACE_LESSONS_CAP_REACHED = (
 SPACE_NOTE_HELD = (
     "not in effect yet: {why}. It is kept as {entry}.md, marked pending and in no index. It takes "
     "effect when another commission files the same, or when you file it again under the same title "
-    "as verified, or as observed with a file that exists. Until then, do not report it as kept."
+    "as verified, or the same text again as observed with a file that exists. Until then, do not "
+    "report it as kept."
 )
 SPACE_NOTE_HELD_INFERRED = "it was filed as inferred"
 SPACE_NOTE_HELD_NO_EVIDENCE = "it was filed as observed, and none of the files given as evidence was found"

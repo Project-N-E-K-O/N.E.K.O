@@ -659,10 +659,19 @@ def evidence_of(
     for item in items[: looked_at or SPACE_EVIDENCE_MAX_PATHS]:
         if len(counted) >= SPACE_EVIDENCE_MAX_PATHS:
             break
-        text = _one_line(item) if isinstance(item, str) else ""
+        # Looked for as it was written: a name may have two spaces in a
+        # row, and with one it is another file. On one line only for
+        # what is said of it.
+        named = item.strip() if isinstance(item, str) else ""
+        text = _one_line(named)
         if not text:
             continue
-        if "\x00" in text or count_tokens(text) > SPACE_EVIDENCE_PATH_MAX_TOKENS:
+        if (
+            "\x00" in named
+            or "\n" in named
+            or "\r" in named
+            or count_tokens(text) > SPACE_EVIDENCE_PATH_MAX_TOKENS
+        ):
             others.append((_cut(text, 24), "not a usable path"))
             continue
         found: str | None = None
@@ -670,7 +679,7 @@ def evidence_of(
         # Where it leads, when that is out of a base.
         beyond: list[str] = []
         for root, real_root in roots:
-            candidate = os.path.normpath(os.path.join(root, text))
+            candidate = os.path.normpath(os.path.join(root, named))
             if not _lexically_inside(candidate, root) and not _lexically_inside(candidate, real_root):
                 beyond.append(candidate)
                 continue
@@ -687,8 +696,8 @@ def evidence_of(
                 continue
         if found is None and outside:
             # The user lets task agents read out there unasked.
-            if not roots and os.path.isabs(text):
-                beyond.append(os.path.normpath(text))
+            if not roots and os.path.isabs(named):
+                beyond.append(os.path.normpath(named))
             for candidate in beyond:
                 try:
                     if os.path.isfile(candidate):
@@ -836,18 +845,23 @@ def _outside_of(paths: Iterable[str], bases: Iterable[str]) -> list[str]:
 _ADDITION = re.compile(r"## \d{4}-\d{2}-\d{2}")
 
 
-def _texts_of(body: str) -> list[str]:
+def _texts_of(body: str, marks: Iterable[str] = ()) -> list[str]:
     """Return the texts an entry was given, one after another, as its dated headings set them apart.
 
     For an entry the host made whose texts are filed somewhere else one
-    by one. A text that has such a heading inside it comes out as two;
-    nothing of it is lost by that. A part that says nothing (marks of a
-    sentence alone) is none.
+    by one. ``marks`` are the marks it keeps of the texts it was given
+    (``texts`` in its front matter). A dated heading is one the host
+    put there when what stands before it is such a text; a text may
+    begin with a heading like that, or have one inside it, and then the
+    line is part of what it says and stays in it. With no marks every
+    dated heading sets two texts apart. A part that says nothing (marks
+    of a sentence alone) is none.
     """
+    known = set(marks)
     texts: list[str] = []
     lines: list[str] = []
     for line in body.split("\n"):
-        if _ADDITION.fullmatch(line.strip()):
+        if _ADDITION.fullmatch(line.strip()) and (not known or _digest("\n".join(lines)) in known):
             texts.append("\n".join(lines))
             lines = []
         else:
@@ -1016,6 +1030,7 @@ def _keep_known(document: _Document, known: _Known | None, allowed: bool = True,
 
     changed = False
     status = _status_of(document)
+    waited = status == ENTRY_PENDING
     if status == ENTRY_EXPIRED or (status == ENTRY_PENDING and not pending):
         apart = _outside_in(document)
         document.drop("status")
@@ -1046,8 +1061,14 @@ def _keep_known(document: _Document, known: _Known | None, allowed: bool = True,
     # An entry that names nobody who has seen it was filed from the
     # console, or before this was kept: the commissions it came from are
     # the ones that have seen it.
+    # A pending entry nobody is named for (made by the summary of a
+    # project, which is no sighting) was seen by none that counts: the
+    # commissions that file it are counted from the first.
     seen_by = _listed(document, "seen_by") or _listed(document, "sources")
-    seen = _seen_in(document) if document.get("seen") else max(len(seen_by), 1)
+    if document.get("seen"):
+        seen = _seen_in(document)
+    else:
+        seen = len(seen_by) if waited else max(len(seen_by), 1)
     counted = False
     for observer in (*known.seen_before, known.observer):
         if observer and observer not in seen_by:
@@ -1323,6 +1344,22 @@ class TaskAgentSpace:
             self._lock = asyncio.Lock()
         async with self._lock:
             return await to_thread_through_cancellation(work, *args)
+
+    async def _write_judged(self, work: Callable[[bool], T]) -> T:
+        """Run blocking work that judges notes, told whether files outside the working directories may be looked at.
+
+        Like ``_write``. Whether they may is asked once its turn has
+        come, not before: the user can change that setting while a write
+        waits for the ones before it, and what they took back is not
+        used.
+        """
+        from utils.asyncio_executor import to_thread_through_cancellation
+
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            allowed = await self._outside_allowed()
+            return await to_thread_through_cancellation(work, allowed)
 
     async def _outside_allowed(self) -> bool:
         """Whether the user lets task agents read outside the working directories without being asked.
@@ -1975,6 +2012,21 @@ class TaskAgentSpace:
         except OSError:
             logger.warning("a pending entry that is not kept any longer could not be removed", exc_info=True)
 
+    def _discard_as_read(self, path: Path, before: tuple[int, int] | None) -> bool:
+        """Remove a pending entry whose texts were taken somewhere else, unless it was saved since they were read.
+
+        The lock of the space does not hold off an editor. What the user
+        saved meanwhile is not in what was taken along, and would be gone
+        with the file: so the file stays, a pending entry that says what
+        they made it say. ``before`` is what the file was when it was
+        read (``_signature``). Returns whether it was removed.
+        """
+        if self._signature(path) != before:
+            logger.warning("a pending entry was saved while its texts were filed elsewhere; it is left where it is")
+            return False
+        self._discard(path)
+        return True
+
     def _crowd_out(self, directory: Path, project: str | None, keep: str | None) -> None:
         """Remove the pending entries of a layer beyond ``SPACE_HELD_MAX_NOTES``: the ones filed longest ago.
 
@@ -2031,19 +2083,27 @@ class TaskAgentSpace:
             _cut(redact(str(content or "")), SPACE_ENTRY_CONTENT_MAX_TOKENS),
         )
 
-    def _own_pending(self, project: str | None, observer: str, title: Any, content: Any) -> bool:
-        """Whether a note is one of a commission's own that waits to take effect. Reads only; blocking.
+    def _uses_no_place(self, project: str | None, observer: str, title: Any, content: Any) -> bool:
+        """Whether a note looks like one that uses none of its commission's places. Reads only; blocking.
 
-        Such a note may be filed again when the commission has no place
-        left: it used its place when it began to wait.
+        One of the commission's own that waits to take effect: it used
+        its place when it began to wait. Or one whose text is in an
+        entry already: nothing of it is added. Such a note may be filed
+        when the commission has no place left. The second kind matters
+        when an entry took effect and its index could not be given the
+        line: filed again, the same text adds the line, and no other
+        filing would. Whether it does use none is told when it is judged
+        (``_take_note``, with ``may_use_place`` False).
         """
         try:
             name, text = self._kept_words(title, content)
             if not _normal(text):
                 return False
-            _same, _has_text, waits = self._same_note(self._paths().memory_dir(project), project, name, text)
+            same, has_text, waits = self._same_note(self._paths().memory_dir(project), project, name, text)
         except (OSError, ValueError):
             return False
+        if same is not None and has_text:
+            return True
         return any(has and observer in entry.seen_by for entry, has in waits)
 
     def _confirm(
@@ -2088,9 +2148,13 @@ class TaskAgentSpace:
         out of the index if anything did.
 
         ``may_add`` is as for ``_file_entry``: False when nothing may be
-        added. Raises ``_NoPlace`` then, and the pending entry stays.
+        added. Raises ``_NoPlace`` then, and the pending entry stays. So
+        it does when the user saved it while its texts were added (in an
+        editor, which no lock of the space holds off): what was read of
+        it is in the other entry, and what they saved is still pending.
         """
         path = self._paths().memory_dir(project) / f"{pending.id}.md"
+        before = self._signature(path)
         text = self._read_text(path)
         if text is None:
             return into, False, None
@@ -2107,7 +2171,8 @@ class TaskAgentSpace:
         target: Entry = into
         added = False
         unlisted: OSError | None = None
-        for part in _texts_of(_parse_document(text).body):
+        said = _parse_document(text)
+        for part in _texts_of(said.body, _listed(said, "texts")):
             try:
                 target, how = self._file_entry(
                     project,
@@ -2124,7 +2189,7 @@ class TaskAgentSpace:
                 # In its file all the same; the rest is still filed.
                 target, how, unlisted = exc.entry, exc.how, exc
             added = added or how == _ADDED
-        self._discard(path)
+        self._discard_as_read(path, before)
         return target, added, unlisted
 
     def _take_note(
@@ -2357,9 +2422,6 @@ class TaskAgentSpace:
         from config.prompts import prompts_nekoclaw_space as texts
         from config.prompts.prompts_nekoclaw_space import SPACE_LESSONS_CAP_REACHED
 
-        # Asked first: nothing is waited for between counting the places
-        # a commission has and taking one.
-        allowed = await self._outside_allowed()
         scope = str(lesson.get("scope") or "project").strip().lower()
         kind = str(lesson.get("category") or "")
         # How a project stands is the project's own, whatever scope came with it.
@@ -2388,11 +2450,12 @@ class TaskAgentSpace:
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
 
         if added >= SPACE_LESSONS_PER_COMMISSION:
-            # No place is left. One note still gets through: one of its own
-            # that waits to take effect, filed again with more that speaks
-            # for it, as it was told it could. That used its place when it
-            # began to wait, and is judged without one.
-            waits = await self._read(self._own_pending, project, counted, lesson.get("title"), lesson.get("content"))
+            # No place is left. A note that uses none still gets through:
+            # one of its own that waits to take effect, filed again with
+            # more that speaks for it, as it was told it could (that used
+            # its place when it began to wait); or one whose text is in an
+            # entry already. It is judged without a place.
+            waits = await self._read(self._uses_no_place, project, counted, lesson.get("title"), lesson.get("content"))
             # As it is by now: a place may have come free meanwhile.
             added = self._added_by.get(counted, 0) + self._adding.get(counted, 0)
             if added >= SPACE_LESSONS_PER_COMMISSION:
@@ -2438,7 +2501,7 @@ class TaskAgentSpace:
         counted_files: list[str] = []
         other_files: list[tuple[str, str]] = []
 
-        def work() -> _Taken:
+        def work(allowed: bool) -> _Taken:
             # Looked for in here, off the event loop: it reads the file system.
             bases = self._bases(getattr(commission, "workdir", None), getattr(commission, "project", None))
             evidence, others = evidence_of(lesson.get("evidence"), bases, outside=allowed)
@@ -2470,7 +2533,7 @@ class TaskAgentSpace:
         newly_seen = revived = False
         try:
             try:
-                taken = await self._write(work)
+                taken = await self._write_judged(work)
             finally:
                 # However it ended, the place is settled here and nowhere
                 # else, and before anything else is waited for: refused,
@@ -2620,6 +2683,7 @@ class TaskAgentSpace:
         observer: str | None = None,
         bases: Iterable[str] = (),
         evidence: Iterable[Any] = (),
+        waits: list[str] | None = None,
     ) -> tuple[Entry | None, bool]:
         """Keep an entry a model made of what it read, if it takes effect: for a review, a summary for the archive.
 
@@ -2631,7 +2695,10 @@ class TaskAgentSpace:
         seen again, like a note of a task agent (``_take_note``).
 
         Returns the entry, None for one that waits, and whether it is a
-        new file. Raises ``SpaceError`` for one that cannot be kept, among
+        new file. For one that waits, the name of the pending entry it is
+        in is added to ``waits`` when a list is given: whoever made
+        several can tell at the end which of them still wait. Raises
+        ``SpaceError`` for one that cannot be kept, among
         them one the user removed (``NoteRemoved``); an entry whose index
         could not be given a line is returned like any other, as by
         ``file_entry``.
@@ -2654,9 +2721,8 @@ class TaskAgentSpace:
             and item.strip()
             and count_tokens(item.strip()) <= TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS
         ][:TASK_AGENT_REVIEW_ENTRY_EVIDENCE_MAX_PATHS]
-        allowed = await self._outside_allowed()
 
-        def work() -> _Taken:
+        def work(allowed: bool) -> _Taken:
             # The ones it gave first, then what its words name: a model
             # does not always fill in what it was asked for.
             named = list(dict.fromkeys([*given, *paths_named_in(f"{title}\n{description}\n{content}")]))
@@ -2677,13 +2743,15 @@ class TaskAgentSpace:
             return self._take_note(project, note, allowed=allowed)
 
         try:
-            taken = await self._write(work)
+            taken = await self._write_judged(work)
         except ValueError as exc:
             raise SpaceError(str(exc)) from exc
         except _LineNotAdded as exc:
             logger.warning("an entry is kept, and the index could not be given a line for it", exc_info=True)
             return exc.entry, exc.how == _CREATED
         if taken.how == _HELD:
+            if waits is not None:
+                waits.append(taken.entry.id)
             return None, False
         return taken.entry, taken.how == _CREATED
 
@@ -2707,9 +2775,8 @@ class TaskAgentSpace:
         A pending entry of theirs goes along too. It is not moved as it
         is, but judged anew where it goes (``_refile_pending``).
         """
-        allowed = await self._outside_allowed()
 
-        def work() -> list[str]:
+        def work(allowed: bool) -> list[str]:
             paths = self._paths()
             self._revive(target)
             origin, destination = paths.memory_dir(source), paths.memory_dir(target)
@@ -2822,8 +2889,10 @@ class TaskAgentSpace:
                         line = line.replace(mark, f"]({_link(link)})")
                 try:
                     # One that has expired has no line where it was, and
-                    # gets none where it goes.
-                    if entry.status != ENTRY_EXPIRED:
+                    # gets none where it goes. Told by the text that was
+                    # copied: it may have come back into effect since the
+                    # entries were looked through.
+                    if _status_of(_parse_document(text)) == ENTRY_ACTIVE:
                         self._index_add(paths.index(target), line, link)
                 except OSError:
                     # The index of where it goes cannot be written: the
@@ -2862,7 +2931,7 @@ class TaskAgentSpace:
                         moved.append(name)
             return moved
 
-        return await self._write(work)
+        return await self._write_judged(work)
 
     def _refile_pending(self, target: str, path: Path, entry: Entry, allowed: bool) -> list[str]:
         """Take a pending entry of a commission along to the project the commission goes to.
@@ -2873,15 +2942,19 @@ class TaskAgentSpace:
         that project filed as well is seen twice and takes effect, with
         what both said of it; one the user removed there is not kept; and
         no more wait there than may. One that cannot be kept there just
-        now stays where it was. Returns the ids of the entries in effect
-        there that it went into.
+        now stays where it was, and so does one the user saved while it
+        was taken along (what was read of it is there; what they saved
+        is here). Returns the ids of the entries in effect there that it
+        went into.
         """
+        before = self._signature(path)
         text = self._read_text(path)
         if text is None:
             return []
         went: list[str] = []
         seen_by, sources = list(entry.seen_by), list(entry.sources)
-        for part in _texts_of(_parse_document(text).body):
+        said = _parse_document(text)
+        for part in _texts_of(said.body, _listed(said, "texts")):
             note = _Note(
                 title=entry.title,
                 content=part,
@@ -2915,7 +2988,7 @@ class TaskAgentSpace:
             else:
                 if taken.how != _HELD:
                     went.append(taken.entry.id)
-        self._discard(path)
+        self._discard_as_read(path, before)
         return list(dict.fromkeys(went))
 
     # -- for the console: entries -----------------------------------------
@@ -3228,7 +3301,11 @@ class TaskAgentSpace:
                 if expire is None:
                     await self._write(self._unlist_expired, scope, entry_id)
                     continue
-                changed = await self._write(self._set_standing, scope, entry_id, expire, allowed)
+                changed = await self._write_judged(
+                    lambda may, scope=scope, entry_id=entry_id, expire=expire: self._set_standing(
+                        scope, entry_id, expire, may
+                    )
+                )
             except (OSError, ValueError):
                 logger.warning("an entry of the task agent space could not be marked as expired or in effect", exc_info=True)
                 continue
@@ -3375,6 +3452,16 @@ class TaskAgentSpace:
                     )
         if failed is not None:
             raise failed
+        if changed:
+            # Listed as it is called now: the line was made before the
+            # entry was written, and the user may have given it another
+            # title or description in between (in an editor).
+            now = self._read_text(path)
+            said = _parse_document(now) if now is not None else None
+            if said is not None and said.has_meta:
+                fresh = _index_line(said.get("name") or path.stem, target, said.get("description"))
+                if fresh != line:
+                    self._index_set(paths.index(project), fresh, target)
         return changed
 
     # -- for the console: rules and indexes -------------------------------
