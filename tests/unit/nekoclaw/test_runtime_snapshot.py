@@ -41,7 +41,7 @@ from nekoclaw.runtime.snapshot import (
     read_snapshot,
     write_snapshot,
 )
-from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, make_spec, open_session, say
+from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, make_spec, open_session, say, usage
 from utils.tokenize import count_tokens
 
 
@@ -504,7 +504,9 @@ async def test_a_session_is_managed_for_the_smaller_window_its_provider_states(t
         assert session.context.policy.threshold < 32_768
 
         # What the session tells of its window from then on is the one it is managed for.
-        assert session._window == 32_768
+        llm.add(say("Noted."), finish(), usage(900, 5))
+        await _ask(session, events, "And this.")
+        assert events.of("usage")[-1]["context_window"] == 32_768
 
         # Stated once more, the same number teaches nothing new.
         await _seed(session, events, llm)

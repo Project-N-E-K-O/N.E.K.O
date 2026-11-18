@@ -399,10 +399,11 @@ async def test_an_addition_about_nothing_under_way_goes_on_with_what_is_over():
         ("照片里的截图单独放一个文件夹", [("c1", "整理下载文件夹里的照片", {})], "new"),
         # About something else.
         ("另外把台灯关掉", [("c1", "整理下载文件夹里的照片", {})], "new"),
-        # Only a commission a task agent worked on, of her own, in a session, can be gone on with.
-        ("另外照片按月份分", [("c1", "整理下载文件夹里的照片", {"route": "plugin"})], "new"),
-        ("另外照片按月份分", [("c1", "整理下载文件夹里的照片", {"parent_id": "c0"})], "new"),
-        ("另外照片按月份分", [("c1", "整理下载文件夹里的照片", {"session_id": None})], "new"),
+        # Only a commission a task agent worked on, of her own, in a session, can be gone on with
+        # (the same sentence goes on with one that is all three: see the newest-of-several test).
+        ("另外照片按月份分文件夹", [("c1", "整理下载文件夹里的照片", {"route": "plugin"})], "new"),
+        ("另外照片按月份分文件夹", [("c1", "整理下载文件夹里的照片", {"parent_id": "c0"})], "new"),
+        ("另外照片按月份分文件夹", [("c1", "整理下载文件夹里的照片", {"session_id": None})], "new"),
         # Nothing to go on with.
         ("另外照片按月份分", [], "new"),
         # One word in common is not enough, nor are words every request has.

@@ -226,6 +226,39 @@ async def test_a_commission_waiting_for_the_user_keeps_its_session_and_the_next_
     assert later.index("commas") < len(later) - 1 and later[-1].startswith(_opens(second.commission_id, "add a chart"))
 
 
+async def test_stopping_a_commission_that_waits_without_a_place_lets_the_next_one_of_its_session_go_on(
+    hosts, tmp_path
+):
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("waiting", "Which separator?")]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "waiting_user")
+    second = await _dispatch(host, "add a chart to the budget app")
+    await host.brain.settle()
+    await wait_until(
+        lambda: host.task_agents._sessions[first.commission_id].run_ended, what="the asking run ending"
+    )
+    # The runtime closes the idle session, as one with nothing to do does: the commission
+    # goes on waiting, and holding its session, with no place in a runtime.
+    await host.task_agents._runtime.close(first.commission_id)
+    await _released(host, first.commission_id)
+    assert host.task_agents._held_by == {first.commission_id: first.commission_id}
+    assert (await host.ledger.get(second.commission_id)).status == "queued"
+
+    # No runtime has its session open, so none will say that it is over: the ledger does.
+    await host.abort(first.commission_id)
+
+    done = await wait_status(host, second.commission_id, "done")
+    assert done.session_id == first.commission_id
+    assert (await host.ledger.get(first.commission_id)).status == "cancelled"
+    await _released(host, second.commission_id)
+    await _let_go(host)
+
+
 @pytest.mark.parametrize("ending", ["blocked", "failed", "stopped"])
 async def test_a_commission_that_is_over_without_being_done_lets_the_next_one_of_its_session_go_on(
     hosts, tmp_path, ending
@@ -784,3 +817,95 @@ async def test_the_files_of_a_session_nobody_has_in_hand_are_claimed_whatever_it
     # A session this process has never heard of is in nobody's hands either.
     assert host.task_agents.hold_files("some-old-session") is True
     host.task_agents.release_files("some-old-session")
+
+
+async def test_the_files_of_a_session_whose_commission_waits_for_an_answer_without_a_place_are_not_claimed(
+    hosts, tmp_path
+):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("waiting", "Which separator?")]))
+    receipt = await _dispatch(host, "add a CSV export")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(
+        lambda: host.task_agents._sessions[receipt.commission_id].run_ended, what="the asking run ending"
+    )
+    await host.task_agents._runtime.close(receipt.commission_id)
+    await _released(host, receipt.commission_id)
+
+    # Nothing of it is in a runtime or waits for a place: that it holds the session is all
+    # that says the session is in use.
+    assert host.task_agents._held_by == {receipt.commission_id: receipt.commission_id}
+    assert host.task_agents.hold_files(receipt.commission_id) is False
+
+
+async def test_the_files_of_a_session_whose_commission_waits_for_a_place_are_not_claimed(hosts, tmp_path):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([[wait, *_report()]]),
+        "rename the notes": ScriptedLLM([_report()]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), max_task_agents=1)
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    second = await _dispatch(host, "rename the notes")
+    await host.brain.settle()
+    assert (await host.ledger.get(second.commission_id)).status == "queued"
+
+    # No commission holds its session yet (the one place is taken by another session): that
+    # one waits to be started in it is all that says the session is in use.
+    assert second.commission_id not in host.task_agents._held_by
+    assert host.task_agents.hold_files(second.commission_id) is False
+
+    release.set()
+    await wait_status(host, second.commission_id, "done")
+
+
+async def test_commissions_filed_under_the_project_of_those_that_belong_to_none_do_not_share_a_session(
+    hosts, tmp_path
+):
+    from nekoclaw.host.paths import DEFAULT_PROJECT
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report(), _report()]))
+    kinds = []
+    for text in ("sort the photos", "rename the notes"):
+        commission, _created = await host.ledger.create(
+            lanlan_name="Lan",
+            title=text,
+            dispatch_text=text,
+            user_text=text,
+            source="dispatch",
+            lang="en",
+            project=DEFAULT_PROJECT,
+        )
+        await host.task_agents.submit(commission)
+        done = await wait_status(host, commission.id, "done")
+        await _released(host, commission.id)
+        await _let_go(host)
+        # A session of its own, under its own id.
+        assert done.session_id == commission.id
+        kinds.append((await host.ledger.get_session(done.session_id)).kind)
+
+    assert kinds == ["single", "single"]
+
+
+async def test_every_commission_says_in_which_language_to_answer(hosts, tmp_path):
+    scripts = {
+        "add a CSV export": ScriptedLLM([_report("ready", "export added")]),
+        "add a chart": ScriptedLLM([_report("ready", "chart added")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    await host.space.touch_project("Budget app")
+    first = await _dispatch(host, "add a CSV export to the budget app")
+    await wait_status(host, first.commission_id, "done")
+    await _released(host, first.commission_id)
+    await _let_go(host)
+    second = await _dispatch(host, "add a chart to the budget app", lang="ja")
+    done = await wait_status(host, second.commission_id, "done")
+    assert done.session_id == first.commission_id
+
+    # The system prompt of the session names the language of the commission it was first
+    # opened for, and stays as it is; the message that opens a commission names its own.
+    said = _user_messages(scripts["add a chart"].requests[0])
+    opened_first = next(text for text in said if text.startswith(f"Commission {first.commission_id}\n"))
+    opened_second = next(text for text in said if text.startswith(f"Commission {second.commission_id}\n"))
+    assert opened_first.endswith("in English.")
+    assert opened_second.endswith("in Japanese.")

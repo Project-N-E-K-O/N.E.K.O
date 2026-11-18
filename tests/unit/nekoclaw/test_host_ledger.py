@@ -958,6 +958,13 @@ async def test_a_commission_is_given_a_session_once_and_a_session_made_for_it_ha
     _given, child_session = await ledger.give_session(child.id, kind="child", name="sort the photos/agent-1", parent_id=session.id)
     assert (child_session.id, child_session.kind, child_session.parent_id) == (child.id, "child", first.id)
 
+    # A commission that was filed into a session another one opened keeps that session:
+    # none is made under its own id.
+    follow = await _file(ledger, title="also rename them", route="task_agent", session_id=first.id, continues=first.id)
+    joined, kept = await ledger.give_session(follow.id, kind="single", name="also rename them")
+    assert kept == session and joined.session_id == first.id
+    assert await ledger.get_session(follow.id) is None
+
     with pytest.raises(ValueError):
         await ledger.give_session("no-such-commission", kind="single", name="x")
     with pytest.raises(ValueError):
