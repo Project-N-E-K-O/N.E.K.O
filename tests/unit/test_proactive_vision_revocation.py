@@ -196,6 +196,23 @@ async def test_voice_nudge_gate_reads_consent_live():
     assert vision_allowed() is False
 
 
+@pytest.mark.unit
+async def test_voice_nudge_gate_stays_closed_after_revoke_and_regrant():
+    """A quick off/on must not restore vision for the nudge already in flight."""
+    session = _voice_session()
+    mgr = _voice_manager(session)
+    mgr._proactive_vision_revocation_epoch = 0
+
+    await LLMSessionManager.trigger_voice_proactive_nudge(mgr)
+    vision_allowed = session.prompt_ephemeral.await_args.kwargs["vision_allowed"]
+
+    LLMSessionManager.update_proactive_vision_consent(mgr, False)
+    LLMSessionManager.update_proactive_vision_consent(mgr, True)
+
+    assert mgr._proactive_vision_enabled is True
+    assert vision_allowed() is False
+
+
 # ── service voice fast path: enabled_modes decides allow_vision ─────────────
 
 

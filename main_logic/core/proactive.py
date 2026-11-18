@@ -255,6 +255,10 @@ class ProactiveMixin:
                 language or self.user_language,
                 format='full',
             ) or 'en'
+            # Same rule as the text path's consent checker: a revocation
+            # during this nudge ends its vision for good, even if consent is
+            # granted again before the frame would be sent.
+            vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
             delivered = await session.prompt_ephemeral(
                 language=_lang,
                 user_turn_active=self._independent_asr_user_turn_active,
@@ -262,6 +266,7 @@ class ProactiveMixin:
                 vision_allowed=lambda: (
                     allow_vision
                     and getattr(self, "_proactive_vision_enabled", None) is not False
+                    and getattr(self, "_proactive_vision_revocation_epoch", 0) == vision_epoch
                 ),
             )
         if delivered:

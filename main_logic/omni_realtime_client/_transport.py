@@ -1412,6 +1412,7 @@ class _TransportMixin:
         description is delivered in the callback's exact arbiter ticket. They
         must not overwrite or consume the ambient screen/camera snapshot state.
         """
+        discard_epoch = getattr(self, "_visual_context_discard_epoch", 0)
         try:
             # Use the shared visual-analysis helper.
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -1420,6 +1421,15 @@ class _TransportMixin:
                 image_b64=image_b64,
                 max_completion_tokens=VISION_ANALYSIS_MAX_TOKENS
             )
+
+            if (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            ):
+                # The frame was discarded (consent revoked) while it was being
+                # analyzed; its description must not come back.
+                logger.info("Image analysis result dropped: visual context was discarded")
+                return ""
 
             if description:
                 if update_turn_state:
@@ -1513,6 +1523,9 @@ class _TransportMixin:
         rejection can no longer re-arm the discarded frame.
         """
 
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
         self._latest_image_generation = (
             getattr(self, "_latest_image_generation", 0) + 1
         )

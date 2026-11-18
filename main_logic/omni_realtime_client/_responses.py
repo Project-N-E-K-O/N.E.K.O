@@ -1424,8 +1424,13 @@ class _ResponseMixin:
         events_before_text: tuple[Dict[str, Any], ...] = (),
         on_rejected: Optional[Callable[[str], None]] = None,
         on_completed: Optional[Callable[[], None]] = None,
+        admission_check: Optional[Callable[[], bool]] = None,
     ) -> Optional[ResponseTicket]:
         """Inject a user-role text item and explicitly trigger a response.
+
+        ``admission_check`` is evaluated again right before the queued events
+        are written (Gemini: right before the SDK send); when it returns False
+        nothing is sent and the call fails.
 
         Used by the voice-mode proactive path (agent task callbacks /
         plugin push_message ai_behavior="respond") to surface a rendered
@@ -1507,6 +1512,8 @@ class _ResponseMixin:
                 # The settle is an await: a teardown OR a replacement session
                 # can land inside it, and this inject belongs to neither.
                 raise RuntimeError("Gemini session not available for proactive inject")
+            if admission_check is not None and not admission_check():
+                raise RuntimeError("Gemini proactive inject admission rejected")
             if proactive_scope != getattr(self, "_tool_scope_generation", 0):
                 # A real user turn began while we waited. Sending now would put
                 # this notification inside their turn, and Gemini treats client
@@ -1773,6 +1780,7 @@ class _ResponseMixin:
                 expected_item_id=expected_item_id,
                 expected_item_role="user",
                 priority=20,
+                admission_check=admission_check,
             )
             await asyncio.shield(ticket.sent)
             if self._fatal_error_occurred or self.ws is None:
@@ -2788,6 +2796,10 @@ class _ResponseMixin:
             }
             if events_before_text:
                 inject_kwargs["events_before_text"] = events_before_text
+            if has_vision and vision_allowed is not None:
+                # The visual context and screen-aware text can wait in the
+                # response queue; re-check consent when they are dispatched.
+                inject_kwargs["admission_check"] = _vision_permitted
             proactive_ticket = await self.inject_text_and_request_response(
                 text,
                 **inject_kwargs,

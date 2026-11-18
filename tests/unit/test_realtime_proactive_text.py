@@ -2294,3 +2294,120 @@ async def test_revocation_during_native_image_send_skips_the_text_turn():
     # The frame already reached provider context: do not offer it again.
     assert client._proactive_image_consumed is True
     await client.close()
+
+
+@pytest.mark.unit
+async def test_stepfun_analysis_finishing_after_discard_does_not_restore_description(monkeypatch):
+    import utils.screenshot_utils as screenshot_utils
+
+    client = _make_client(api_type="step", model="step-realtime")
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    async def analyze_while_revoked(**_kwargs):
+        client.discard_cached_visual_context()  # consent revoked mid-analysis
+        return "画面里有一只猫。"
+
+    monkeypatch.setattr(screenshot_utils, "analyze_image_with_vision_model", analyze_while_revoked)
+
+    description = await client._analyze_image_with_vision_model(DUMMY_IMAGE_B64)
+
+    assert description == ""
+    assert client._image_recognized_this_turn is False
+    assert client._image_description == responses_module._IMAGE_ANALYSIS_PENDING_DESCRIPTION
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_stepfun_analysis_without_discard_still_records_description(monkeypatch):
+    import utils.screenshot_utils as screenshot_utils
+
+    client = _make_client(api_type="step", model="step-realtime")
+
+    async def analyze(**_kwargs):
+        return "画面里有一只猫。"
+
+    monkeypatch.setattr(screenshot_utils, "analyze_image_with_vision_model", analyze)
+
+    assert await client._analyze_image_with_vision_model(DUMMY_IMAGE_B64) == "画面里有一只猫。"
+    assert client._image_recognized_this_turn is True
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_inject_admission_rejection_sends_nothing():
+    client = _make_client()
+
+    with pytest.raises(Exception):
+        await client.inject_text_and_request_response(
+            "screen-aware text",
+            events_before_text=({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "当前画面：游戏菜单"}],
+                },
+            },),
+            admission_check=lambda: False,
+        )
+
+    assert _sent_events(client) == []
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_inject_admission_rejection_sends_nothing():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    with pytest.raises(RuntimeError):
+        await client.inject_text_and_request_response(
+            "screen-aware text", admission_check=lambda: False,
+        )
+
+    client._gemini_session.send_client_content.assert_not_awaited()
+    assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_visual_turn_passes_consent_gate_to_the_response_queue():
+    client = _make_client(api_type="step", model="step-realtime")
+    client._image_recognized_this_turn = True
+    client._image_description = "画面里有一只猫。"
+    consent = {"granted": True}
+    seen = {}
+
+    async def capture_inject(text, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    client.inject_text_and_request_response = capture_inject
+
+    await client.prompt_ephemeral(
+        "start a conversation", vision_allowed=lambda: consent["granted"],
+    )
+
+    check = seen["admission_check"]
+    assert check() is True
+    consent["granted"] = False  # revoked while queued
+    assert check() is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_text_only_turn_does_not_add_a_queue_gate():
+    client = _make_client()
+    seen = {}
+
+    async def capture_inject(text, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    client.inject_text_and_request_response = capture_inject
+
+    await client.prompt_ephemeral("plain", vision_allowed=lambda: True)
+
+    assert "admission_check" not in seen
+    await client.close()

@@ -365,6 +365,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._latest_image_source = "unknown"
         self._latest_image_request_id = None
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
+        self._visual_context_discard_epoch = 0  # Bumped by discard_cached_visual_context
         # Native is the backwards-compatible session default. Independent ASR
         # explicitly switches this to EXTERNAL_DESCRIPTION through the neutral
         # session API; provider capability remains a separate concern.
