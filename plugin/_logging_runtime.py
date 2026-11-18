@@ -5,8 +5,22 @@ invoke this module or change its historical replacement policy.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import os
+import sys
+
+# Standard streams replaced after fork. They stay referenced so their finalizers
+# never flush a buffer whose lock a vanished parent thread may hold.
+_ABANDONED_STD_STREAMS: list = []
+
+
+def is_inherited_handler(handler) -> bool:
+    """A project handler constructed in another process and copied over fork."""
+    return (getattr(handler, "_neko_owned", False)
+            and getattr(handler, "_neko_pid", None) != os.getpid())
+
 
 def all_loggers():
     yield logging.getLogger()
@@ -41,14 +55,45 @@ def _abandon_inherited_stream(handler):
     child's copy of the raw descriptor is closed; that takes no buffer lock and
     also stops any later finalizer of the buffer from flushing.
     """
-    if getattr(handler, "_neko_pid", None) in (None, os.getpid()):
-        return
-    if not isinstance(handler, logging.FileHandler):
-        return  # Console streams are shared process-wide and never closed here.
+    if not isinstance(handler, logging.FileHandler) or not is_inherited_handler(handler):
+        return  # Standard streams are replaced at fork by reopen_inherited_std_streams.
     stream, handler.stream = handler.stream, None
     raw = getattr(getattr(stream, "buffer", stream), "raw", None)
     if raw is not None:
-        raw.close()
+        with contextlib.suppress(OSError):
+            raw.close()
+
+
+def reopen_inherited_std_streams():
+    """Fork hook: give the child its own stdout/stderr objects on the same descriptors.
+
+    The inherited objects share the file-buffer hazard above, and the child keeps
+    writing to them. They are never flushed or closed: their raw descriptors are
+    the child's real fd 1/2, so only the Python objects are replaced. Inherited
+    console handlers follow the replacement.
+    """
+    replaced = {}
+    for name in ("stdout", "stderr"):
+        old = getattr(sys, name)
+        if not isinstance(old, io.TextIOWrapper):
+            continue
+        new = replaced.get(old)
+        if new is None:
+            try:
+                new = open(old.fileno(), "w", buffering=1 if old.line_buffering else -1,
+                           encoding=old.encoding, errors=old.errors, closefd=False)
+            except (OSError, ValueError):
+                continue
+            replaced[old] = new
+            _ABANDONED_STD_STREAMS.append(old)
+        setattr(sys, name, new)
+        if getattr(sys, f"__{name}__", None) is old:
+            setattr(sys, f"__{name}__", new)
+    for logger in all_loggers() if replaced else ():
+        for handler in logger.handlers:
+            for old, new in replaced.items():
+                if isinstance(handler, logging.StreamHandler) and handler.stream is old:
+                    handler.stream = new  # setStream would flush the inherited buffer.
 
 
 def close_unbound_handlers(handlers):
