@@ -6181,3 +6181,28 @@ async def test_a_file_outside_that_may_no_longer_be_read_once_the_turn_of_the_wr
     )
 
     assert reply.startswith("not in effect yet") and "kept/camera.ini (outside the working directory)" in reply
+
+
+async def test_a_note_in_effect_by_one_file_is_not_judged_anew_over_another_of_which_nothing_was_told_all_along(
+    space, root, workdir, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    app, readme = _where(workdir / "src" / "app.py"), _where(workdir / "README.md")
+    await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py", "README.md"])
+    )
+    real = module._stood
+
+    def silent_of_one(paths: Any) -> Any:
+        # Of one of the two the disk says nothing, as the note is judged and as the entry is written.
+        told = real([path for path in paths if path != app])
+        return {path: None if path == app else told.get(path) for path in paths}
+
+    monkeypatch.setattr(module, "_stood", silent_of_one)
+
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed"))
+
+    # The other file speaks for it, then and now: in effect, and both stay on record.
+    assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert sorted(_rests_on(_memory(root) / "entry-point.md")[0]) == sorted([app, readme])
