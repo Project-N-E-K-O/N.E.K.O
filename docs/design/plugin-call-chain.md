@@ -166,7 +166,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 - **路径**：`resolve_plugin_log_directory(log_subdir="plugin_call_audit") / "call_audit.jsonl"`，和插件服务日志同一个根。
 - **写入**：专用 logger（`propagate=False`，只写一行一个 JSON）挂 `QueueHandler`，由 `QueueListener` 在它自己的守护线程里交给 `RotatingFileHandler`（4 MiB 轮转，保留 3 个，总量约 16 MiB）。队列 2048 条，满了丢弃并计数（`dropped`），不阻塞宿主 loop。环形缓冲是 `deque(maxlen=1000)`，接口直接读它。
   - 隐私规则禁止的是「用 logger 记隐私内容」。审计记录里只有 id、能力名和结果码，没有任何内容原文，所以用专用 logger 写不违规；模块说明里写了这一点，并有测试断言审计不含隐私内容。
-- **退出**：插件服务关停时（`plugin/server/lifecycle.py` 的 `_shutdown_internal`，宿主都停下之后）调 `QueueListener.stop()` 把队列写完，外面套 1 秒时限，超时就不等了，不阻塞关停。监听线程是守护线程，解释器退出不等它；`os._exit` 或外部强制结束时没写完的记录会丢，这是尽力而为。
+- **退出**：插件服务关停时（`plugin/server/lifecycle.py` 的 `_shutdown_internal`，宿主都停下之后）放入停止标记并等监听线程把队列写完，最多 1 秒，超时就不等了，不阻塞关停（没用 `QueueListener.stop()`：它等待没有时限，队列满时还会直接报错）。关停之后的记录只进环形缓冲；同一进程里服务重启时重新打开。监听线程是守护线程，解释器退出不等它；`os._exit` 或外部强制结束时没写完的记录会丢，这是尽力而为。
 - **去重**：同一 `(plugin, capability, verdict, reason, blocked_by, flags)` 的判定记录 60 秒内只写第一条（一个 dict 存上次写的时间）。没确认过 consent 的插件（例如从没手动启动过的内置插件）每次用能力都会 `would_deny self_not_approved`，不去重会刷屏。
 
 记录种类和字段：

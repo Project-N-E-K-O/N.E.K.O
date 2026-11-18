@@ -14,6 +14,8 @@ import json
 import logging
 import logging.handlers
 import queue
+import threading
+import time
 from collections import deque
 from datetime import datetime, timezone
 
@@ -23,7 +25,9 @@ BACKUP_COUNT = 3
 
 _ring: deque[dict] = deque(maxlen=1000)
 _listener: logging.handlers.QueueListener | None = None
-dropped = 0
+_lock = threading.Lock()
+_closed = False
+dropped = 0  # diagnostic only; increments from several threads may race
 
 
 class _DroppingQueueHandler(logging.handlers.QueueHandler):
@@ -39,10 +43,14 @@ def audit_directory():
     return resolve_plugin_log_directory(log_subdir="plugin_call_audit")
 
 
-def _audit_logger() -> logging.Logger:
+def _audit_logger() -> logging.Logger | None:
     global _listener
     log = logging.getLogger(_LOGGER_NAME)
-    if _listener is None:
+    with _lock:
+        if _closed:
+            return None
+        if _listener is not None:
+            return log
         directory = audit_directory()
         directory.mkdir(parents=True, exist_ok=True)
         file_handler = logging.handlers.RotatingFileHandler(
@@ -55,7 +63,7 @@ def _audit_logger() -> logging.Logger:
         log.propagate = False
         _listener = logging.handlers.QueueListener(records, file_handler)
         _listener.start()
-    return log
+        return log
 
 
 def record(entry: dict) -> None:
@@ -63,8 +71,10 @@ def record(entry: dict) -> None:
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     _ring.append(item)
     try:
-        # A full queue makes QueueHandler drop the record (handleError).
-        _audit_logger().info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+        log = _audit_logger()
+        if log is not None:
+            # A full queue makes QueueHandler drop the record (handleError).
+            log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
     except Exception:
         pass
 
@@ -74,11 +84,34 @@ def entries() -> list[dict]:
     return list(reversed(_ring))
 
 
-def close() -> None:
-    """Flush what is queued and stop the writer (called once at shutdown)."""
-    global _listener
-    listener, _listener = _listener, None
-    if listener is not None:
-        listener.stop()
-        for handler in listener.handlers:
-            handler.close()
+def close(timeout: float = 1.0) -> bool:
+    """Flush what is queued within ``timeout`` and stop writing to the file.
+
+    Bounded on purpose (``QueueListener.stop`` waits without a limit and
+    fails on a full queue): a stuck disk is abandoned to the daemon thread.
+    Later records stay in the ring only. Returns whether the flush finished.
+    """
+    global _listener, _closed
+    with _lock:
+        _closed = True
+        listener, _listener = _listener, None
+    if listener is None:
+        return True
+    deadline = time.monotonic() + timeout
+    try:
+        listener.queue.put(None, timeout=timeout)  # QueueListener's stop sentinel
+        listener._thread.join(max(0.0, deadline - time.monotonic()))
+    except queue.Full:
+        return False
+    if listener._thread.is_alive():
+        return False
+    for handler in listener.handlers:
+        handler.close()
+    return True
+
+
+def reopen() -> None:
+    """Accept file writes again after a shutdown (the server can restart in-process)."""
+    global _closed
+    with _lock:
+        _closed = False

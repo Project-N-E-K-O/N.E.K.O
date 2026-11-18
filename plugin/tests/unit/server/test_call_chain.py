@@ -39,8 +39,10 @@ def gate(monkeypatch, tmp_path):
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path)
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
     call_audit.close()
+    call_audit.reopen()
     yield tmp_path
     call_audit.close()
+    call_audit.reopen()
 
 
 def test_decide():
@@ -116,6 +118,9 @@ async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken)
     dispatcher = RpcDispatcher({"MEMORY_SEARCH": capability_gate.capability_checked("memory.read", inner)})
     reply = await dispatcher.dispatch({"type": "MEMORY_SEARCH", "from_plugin": "a", "request_id": "q"})
     assert (reply["result"], reply["error"]) == ("ok", None)
+    if broken == "consent":  # the check ran and recorded the failed read
+        (entry,) = call_audit.entries()
+        assert "consent_unavailable" in entry["flags"]
 
 
 async def test_off_calls_nothing(gate, monkeypatch):
@@ -165,9 +170,26 @@ def test_audit_uses_the_stdlib_rotating_writer_and_writes_json_lines(gate):
     assert isinstance(handler, logging.handlers.RotatingFileHandler)
     assert (handler.maxBytes, handler.backupCount) == (4 * 1024 * 1024, 3)
     assert logging.getLogger("neko.plugin_call_audit").propagate is False
-    call_audit.close()
+    assert call_audit.close() is True
     (line,) = (gate / "call_audit.jsonl").read_text(encoding="utf-8").splitlines()
     assert json.loads(line)["target"] == "a"
+    call_audit.record({"kind": "forward", "target": "late"})  # after close: ring only
+    assert call_audit._listener is None and call_audit.entries()[0]["target"] == "late"
+
+
+def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
+    import threading
+    import time
+
+    stuck = threading.Event()
+    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit", lambda self, record: stuck.wait(5))
+    for index in range(3000):  # more than the queue holds
+        call_audit.record({"kind": "forward", "n": index})
+    assert call_audit.dropped > 0
+    started = time.monotonic()
+    assert call_audit.close(0.3) is False
+    assert time.monotonic() - started < 1.5
+    stuck.set()
 
 
 @pytest.mark.parametrize(

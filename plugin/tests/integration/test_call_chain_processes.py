@@ -49,6 +49,7 @@ async def _world(monkeypatch, tmp_path, mode):
     monkeypatch.setattr(call_audit, "audit_directory", lambda: tmp_path / "audit")
     monkeypatch.setattr(call_audit, "_ring", call_audit.deque(maxlen=1000))
     call_audit.close()
+    call_audit.reopen()
     forwarded: list[dict] = []
 
     async def forward(self, msg):
@@ -86,6 +87,7 @@ async def world(monkeypatch, tmp_path):
         for host in world.hosts.values():
             await host.shutdown(timeout=1)
         call_audit.close()
+        call_audit.reopen()
 
 
 @pytest.mark.parametrize("entry", ["chain", "routed_chain", "dynamic_chain"])

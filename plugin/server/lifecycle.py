@@ -585,6 +585,8 @@ class ServerLifecycleService:
         # so it must be released after restart or every plugin startup returns 409.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = False
+        from plugin.server.application.plugins import call_audit
+        call_audit.reopen()
 
         try:
             emit_lifecycle_event({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
@@ -1028,9 +1030,10 @@ class ServerLifecycleService:
         try:
             from plugin.server.application.plugins import call_audit
 
-            await asyncio.wait_for(asyncio.to_thread(call_audit.close), timeout=1.0)
+            if not await asyncio.to_thread(call_audit.close, 1.0):
+                logger.warning("plugin call audit flush did not finish before shutdown")
         except Exception as exc:
-            logger.warning("plugin call audit flush did not finish: error_type={}", type(exc).__name__)
+            logger.warning("plugin call audit flush failed: error_type={}", type(exc).__name__)
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:
