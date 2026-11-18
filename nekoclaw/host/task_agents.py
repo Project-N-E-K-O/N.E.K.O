@@ -4905,15 +4905,25 @@ class TaskAgentManager:
     def _owe_what_is_left(self) -> None:
         """Keep, as the host shuts down, what the senders of notes are still to be told of.
 
-        Whoever handles the events is stopped by now. What it did not get
-        to is looked at for this alone, in the order it came: that a text
-        was taken, and what a run ended on. Then every session: one whose
-        end was being acted on when that stopped (the ledger did not
-        answer), and one whose run was never seen to end, took what it
-        took all the same. All of it is kept where ``_settle_at_close``
-        writes it; a note that was taken is not handed over again by the
-        next process, so its sender would otherwise hear nothing.
+        Whoever handles the events is stopped by now. In the order it
+        all came: first the end of a run that was being acted on when
+        that stopped (the ledger did not answer), which is earlier than
+        anything still in the queue; then what was not got to, looked at
+        for this alone: that a text was taken, and what a run ended on;
+        last every session whose run was never seen to end, which took
+        what it took all the same. Out of that order, what the runtime
+        said as it closed a session (an end with no words, of all the
+        session took) would be told in place of what its run came to.
+        All of it is kept where ``_settle_at_close`` writes it; a note
+        that was taken is not handed over again by the next process, so
+        its sender would otherwise hear nothing.
         """
+        for session in list(self._sessions.values()):
+            ending, session.ending = session.ending, None
+            if ending is not None:
+                number = ending.get("inputs")
+                counted = isinstance(number, int) and not isinstance(number, bool)
+                self._owe_turn(session, str(ending.get("text") or ""), number if counted else None)
         while True:
             try:
                 event = self._events.get_nowait()
@@ -4933,13 +4943,8 @@ class TaskAgentManager:
             elif event.get("type") == "ended":
                 self._owe_turn(session, str(event.get("text") or ""), number if counted else None)
         for session in list(self._sessions.values()):
-            ending, session.ending = session.ending, None
-            if ending is not None:
-                number = ending.get("inputs")
-                counted = isinstance(number, int) and not isinstance(number, bool)
-                self._owe_turn(session, str(ending.get("text") or ""), number if counted else None)
-            # And what it took in a run that was not seen to end: told with
-            # how the commission stands.
+            # What it took in a run that was not seen to end: told with how
+            # the commission stands.
             self._owe_turn(session, "", None)
 
     async def _settle_at_close(self, within: float) -> None:

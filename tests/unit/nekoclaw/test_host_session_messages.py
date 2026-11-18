@@ -5698,10 +5698,20 @@ async def test_the_end_of_a_run_that_was_being_acted_on_as_the_host_shut_down_is
     # senders were told (the event could not be put on record).
     session.ending = {"type": "ended", "session_id": "cut-off", "reason": "completed", "inputs": 1, "text": "Cut off here."}
     agents._sessions[commission.id] = session
+    agents._held_by["cut-off"] = commission.id
     try:
+        # And the runtime said, as it closed the session after that, that the session is over:
+        # with no words, and of all the session took. It came later, and is looked at later.
+        agents._events.put_nowait({"type": "ended", "session_id": "cut-off", "reason": "closed"})
+        pump, agents._pump = agents._pump, None
+        if pump is not None:
+            pump.cancel()
+            await asyncio.gather(pump, return_exceptions=True)
+
         agents._owe_what_is_left()
     finally:
         agents._sessions.pop(commission.id, None)
+        agents._held_by.pop("cut-off", None)
 
     # Kept with what that run ended on, once.
     assert [(words_told, took) for _of, words_told, _state, took, _taken in agents._turns_owed] == [
