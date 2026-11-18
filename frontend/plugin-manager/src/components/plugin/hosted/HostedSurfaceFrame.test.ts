@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"settings":{"enableIframePageLoading":true}}
+// happy-dom 21 默认不加载 iframe 页面（SSRF 修复），iframe.contentWindow 为空；这里测的就是
+// 宿主与插件 iframe 的通信，只在本文件恢复 <=20.x 的行为。本文件的 iframe 都是 data: URL 或宿主生成的内容，不访问网络。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
