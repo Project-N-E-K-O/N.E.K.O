@@ -1124,15 +1124,13 @@ class TaskAgentManager:
             # With each of them, what the repository it works in keeps for
             # agents: looked for once, where the session works.
             documents = await self._repository_documents(workdir, session_path)
-            onward = await self._opening(commission, cleared=False, documents=documents)
-            anew = (
-                await self._opening(commission, cleared=True, documents=documents) if commission.continues else onward
-            )
-            back_at_it = (
-                await self._opening(commission, cleared=False, back=True, documents=documents)
-                if opened and not at_it
-                else onward
-            )
+
+            async def worded(*, cleared: bool, back: bool = False) -> str:
+                return await self._opening(commission, cleared=cleared, back=back, documents=documents)
+
+            onward = await worded(cleared=False)
+            anew = await worded(cleared=True) if commission.continues else onward
+            back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
 
             def first_message(runtime_name: str) -> tuple[str, bool]:
                 # The commission is opened when it starts, and again when it
