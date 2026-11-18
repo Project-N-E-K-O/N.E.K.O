@@ -15,6 +15,13 @@ name: Random Order Tests
 #      PR CI 里本来就用 `-n 0` 单进程跑，这里也单进程跑，不在多 worker 下互相抢
 #      端口和进程。
 # 两步用同一个 seed；第一步红了第二步照样跑，两步任一红则整个 job 红。
+# 这份 marker 划分抄自 unit-test-shards.yml：那边新增或调整需要 `-n 0` 的 marker 时，
+# 这里的两个 -m 表达式要同步改。
+#
+# 两步各有 step 级时限：某个 seed 下用例卡死时，超时的那一步记为 failure 而不是
+# 整个 job 被 cancelled，另一步照样跑完、产出结果。`-o faulthandler_timeout` 让单条
+# 用例跑过 10 分钟时打印所有线程的调用栈，方便定位卡在哪（xdist worker 的 stderr
+# 不保证都能回到日志里，所以兜底的是 step 时限）。
 #
 # 并行时 seed 的语义：pytest-randomly 让 controller 把 seed 下发给每个 worker，
 # 所有 worker 洗出同一份顺序（xdist 也要求各 worker 收集结果一致）。loadfile 把
@@ -28,11 +35,16 @@ name: Random Order Tests
 # `-q` 时不打印 `Using --randomly-seed=<N>` 那行表头，所以以这一行为准）。复现：
 #   1. 先单跑出错的文件——文件内顺序只取决于 seed 和用例 id，单跑也一样：
 #        uv run pytest tests/unit/<出错文件>.py -q --randomly-seed=<N>
-#      串行步（integration_serial / frontend_contract）红了，用这条单文件命令就够。
-#   2. 单跑不红，说明是别的文件写脏了状态，跑全量串行（文件间顺序与 CI 相同，
-#      只是不再分 worker），或照 CI 的命令并行跑：
-#        uv run pytest tests/unit -q --randomly-seed=<N>
+#   2. 单跑不红，说明是同一步里别的文件写脏了状态。用和出错那一步完全相同的 -m
+#      表达式复现（两步是两个独立进程，不要把两组混在一起跑）：
+#      并行步红了——先串行跑同一组（同一进程里按 seed 的文件顺序依次跑，比 CI 上
+#      分 worker 的相邻关系更苛刻，可能多暴露问题），还不红再照 CI 原样并行跑：
+#        uv run pytest tests/unit -q --randomly-seed=<N> -m "not integration_serial and not frontend_contract"
 #        uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=<N> -m "not integration_serial and not frontend_contract"
+#      串行步红了——这条和 CI 完全一致：
+#        uv run pytest tests/unit -q --randomly-seed=<N> -m "integration_serial or frontend_contract"
+#   不要用不带 -m 的全量串行命令复现：它把两组放进同一进程按 seed 交错跑，文件先后
+#   和状态隔离都和 CI 不同。
 # 顺序依赖的典型形态是"产品代码里的进程级可变全局被前一条用例写脏"，修法通常是给
 # 那个模块加一条 autouse fixture 做前后清理（见 tests/unit/test_music_router.py 的
 # _reset_music_proxy_cache）。
@@ -85,6 +97,11 @@ jobs:
         # deps/rapidocr_pillow 的四条用例 skip 掉，这边同样需要它们真的跑。
         run: uv pip install pyclipper==1.4.0
 
+      - name: Install CAM++ frontend parity oracle
+        # 与 unit-tests.yml 同一个 pin：不装的话 CAM++ 前端对齐测试会 importorskip，
+        # 每晚都静默跳过。
+        run: uv pip install kaldi-native-fbank==1.22.3
+
       - name: Pick seed
         id: seed
         shell: pwsh
@@ -110,19 +127,23 @@ jobs:
       # seed 已在上一步校验过是纯数字，这里仍经 env 传入，不在 run: 里插值。
 
       - name: Run unit test suite in a random order (parallel)
+        # Linux 4 worker 实测约 8 分钟；PR CI 同一批用例在 Windows 上合计约 30–40 分钟（含装依赖）。
+        timeout-minutes: 60
         shell: pwsh
         env:
           SEED: ${{ steps.seed.outputs.value }}
         run: |
           Write-Host "randomly-seed = $env:SEED"
-          uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=$env:SEED -m "not integration_serial and not frontend_contract"
+          uv run pytest tests/unit -q -n auto --dist loadfile --no-loadscope-reorder --randomly-seed=$env:SEED -o faulthandler_timeout=600 -m "not integration_serial and not frontend_contract"
 
       - name: Run serial-only markers in a random order
         # 上一步红了也要跑：两步合起来才是完整的 tests/unit。
         if: ${{ !cancelled() && steps.seed.outcome == 'success' }}
+        # PR CI 里这两类分别约 10 / 6 分钟（含装依赖）。
+        timeout-minutes: 20
         shell: pwsh
         env:
           SEED: ${{ steps.seed.outputs.value }}
         run: |
           Write-Host "randomly-seed = $env:SEED"
-          uv run pytest tests/unit -q --randomly-seed=$env:SEED -m "integration_serial or frontend_contract"
+          uv run pytest tests/unit -q --randomly-seed=$env:SEED -o faulthandler_timeout=600 -m "integration_serial or frontend_contract"
