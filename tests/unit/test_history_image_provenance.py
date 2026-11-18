@@ -241,3 +241,47 @@ async def test_declined_proactive_turn_leaves_the_live_turn_untouched(monkeypatc
     assert await client.prompt_ephemeral("callback") is False
     assert len(calls) >= 2
     assert any(image_count(m.content) for m in client._conversation_history)
+
+
+@pytest.mark.asyncio
+async def test_revocation_mid_turn_strips_the_unsent_proactive_screenshot_synchronously():
+    """Turn A is in history and parked on its transcript callback when consent is revoked.
+
+    The strip happens inside the consent update with no await: a concurrent
+    reader of history (turn B) and turn A's own request, sent after the
+    callback, both carry only the user's photo, not the proactive screenshot.
+    """
+    import asyncio
+
+    client = _client()
+    client.set_proactive_screenshot(_png_b64(40, 40, (1, 2, 3)))
+    photo = _png_b64(41, 41, (4, 5, 6))
+    client._pending_images = [photo]
+    parked = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def transcript_callback(_text):
+        parked.set()
+        await resume.wait()
+
+    client.script = [[_text("ok"), _text("", "stop")]]
+    turn_a = asyncio.create_task(
+        client.stream_text("reply with my photo", input_transcript_callback=transcript_callback)
+    )
+    await parked.wait()
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    assert message.metadata["image_kinds"] == ["auto_screenshot", "user"]
+    assert image_count(message.content) == 2
+
+    manager = SimpleNamespace(_proactive_vision_enabled=True, session=client, lanlan_name="T")
+    LLMSessionManager.update_proactive_vision_consent(manager, False)
+    # No await since the revocation: what turn B would read right now.
+    assert image_count(message.content) == 1
+    assert message.metadata["image_kinds"] == ["user"]
+    kept_url = next(p["image_url"]["url"] for p in message.content if p.get("type") == "image_url")
+
+    resume.set()
+    await turn_a
+    urls = _urls(client.requests[-1])
+    # Turn A's own request: only the user's photo.
+    assert urls == [kept_url]
