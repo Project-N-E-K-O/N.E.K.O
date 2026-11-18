@@ -42,7 +42,7 @@ function loadProactive({ privacyAllowsVision }) {
     const sent = [];
     const S = {
         isRecording: true,
-        proactiveVisionInterval: 15,
+        proactiveVisionInterval: 10, // code default (app-state.js)
         proactiveVisionEnabled: privacyAllowsVision,
         proactiveChatEnabled: true,
         proactiveVisionChatEnabled: true,
@@ -386,3 +386,112 @@ test('a missing gate function counts as "may not see the screen"', async () => {
     assert.equal(stream.stopped, 1, 'app-screen must release without the gate');
     assert.deepEqual(screen.started, []);
 });
+
+// ── user scenario: app-proactive.js + app-screen.js loaded together ────────
+// Voice call, proactive chat on with only music recommendations, screen
+// sub-switch off, manual screen share running; the user stops sharing.
+
+function loadUserScenario({ privacyAllowsVision }) {
+    const intervals = [];
+    const sent = [];
+    let trackStops = 0;
+    const settings = {
+        proactiveVisionEnabled: privacyAllowsVision,
+        proactiveChatEnabled: true,
+        proactiveVisionChatEnabled: false,
+        proactiveMusicEnabled: true,
+    };
+    const S = Object.assign({
+        isRecording: true,
+        proactiveVisionInterval: 10, // code default (app-state.js)
+        proactiveChatInterval: 15,
+        socket: { readyState: 1, send: (message) => sent.push(JSON.parse(message)) },
+    }, settings);
+    const track = { readyState: 'live', stop() { trackStops += 1; this.readyState = 'ended'; } };
+    S.screenCaptureStream = { active: true, getTracks: () => [track], getVideoTracks: () => [track] };
+    S.screenCaptureStreamLastUsed = Date.now();
+    const elements = {};
+    const element = (id) => {
+        const classes = new Set(id === 'screenButton' ? ['active'] : []);
+        return {
+            id, disabled: false, style: {}, dataset: {},
+            classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c), toggle() {} },
+            addEventListener() {}, removeEventListener() {}, setAttribute() {}, getAttribute: () => null,
+            appendChild() {}, querySelector: () => null, querySelectorAll: () => [],
+        };
+    };
+    const document = {
+        body: element('body'), documentElement: element('html'), addEventListener() {}, hasFocus: () => true,
+        getElementById: (id) => (elements[id] = elements[id] || element(id)),
+        querySelector: () => null, querySelectorAll: () => [], createElement: (tag) => element(tag),
+    };
+    const noop = () => {};
+    const window = {
+        console: quietConsole,
+        location: { pathname: '/', origin: 'http://local.test', search: '' },
+        appState: S,
+        appConst: { MAX_SCREENSHOT_WIDTH: 1280, MAX_SCREENSHOT_HEIGHT: 720 },
+        appUtils: { isMobile: () => false },
+        safeT: (key, fallback) => fallback, t: (key) => key,
+        document, navigator: { userAgent: 'node', mediaDevices: {} }, WebSocket: { OPEN: 1 },
+        localStorage: settingsStorage(settings),
+        sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
+        addEventListener: noop, dispatchEvent: noop, CustomEvent: function CustomEvent() {},
+        setTimeout: () => 0, clearTimeout: noop, clearInterval: noop,
+        setInterval(fn, ms) { intervals.push({ fn, ms }); return intervals.length; },
+        fetch: () => Promise.resolve({ ok: false, status: 501, json: async () => ({ success: false }) }),
+        showStatusToast: noop, detectScreenshotCaptureType: () => 'window',
+    };
+    window.window = window;
+    vm.createContext(window);
+    vm.runInContext(proactiveSource, window, { filename: 'app-proactive.js' });
+    vm.runInContext(screenSource, window, { filename: 'app-screen.js' });
+    window.appScreen.captureFrameFromStream = async () => ({ dataUrl: 'data:image/jpeg;base64,FRAME' });
+    return {
+        window, S,
+        trackStops: () => trackStops,
+        frames: () => sent.filter((message) => message.action === 'stream_data').length,
+        heartbeat: () => intervals.find((timer) => timer.ms === S.proactiveVisionInterval * 1000),
+    };
+}
+
+async function stopSharingThenTick(h, ticks) {
+    await h.window.stopScreenSharing();
+    const timer = h.heartbeat();
+    if (timer) for (let i = 0; i < ticks; i += 1) await timer.fn();
+}
+
+test('user scenario, privacy mode on: stopping the share releases the stream and sends nothing', async () => {
+    const h = loadUserScenario({ privacyAllowsVision: false });
+    await stopSharingThenTick(h, 6);
+    assert.equal(h.trackStops(), 1);
+    assert.equal(h.S.screenCaptureStream, null);
+    assert.equal(h.heartbeat(), undefined);
+    assert.equal(h.frames(), 0);
+});
+
+test('user scenario: what happens after stopping the share follows the single gate', async () => {
+    const h = loadUserScenario({ privacyAllowsVision: true });
+    const allowed = h.window.canProactiveVisionRunDuringSpeech();
+    await stopSharingThenTick(h, 6);
+    if (allowed) {
+        assert.equal(h.trackStops(), 0);
+        assert.ok(h.heartbeat(), 'heartbeat resumes on the kept stream');
+        assert.equal(h.frames(), 6);
+    } else {
+        assert.equal(h.trackStops(), 1);
+        assert.equal(h.heartbeat(), undefined);
+        assert.equal(h.frames(), 0);
+    }
+});
+
+// Pending product decision (part 2): the screen sub-switch is off here, so
+// the heartbeat should not take over after the share stops.
+test('user scenario, privacy mode off but screen sub-switch off: no frames after stopping the share',
+    { todo: 'part 2: gate also requires proactive chat + screen sub-switch' },
+    async () => {
+        const h = loadUserScenario({ privacyAllowsVision: true });
+        await stopSharingThenTick(h, 6);
+        assert.equal(h.trackStops(), 1);
+        assert.equal(h.frames(), 0);
+    });
