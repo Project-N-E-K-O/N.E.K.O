@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import contextvars
 import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from plugin.core.rpc import bounded_parent_request_id
@@ -98,10 +100,15 @@ class CallRegistry:
     """Live deliveries, shared by the router loop and every owner loop."""
 
     MAX_LIVE = 4096
+    # A push travels on its own uplink and can arrive after the call's reply;
+    # finished records stay findable (lookup only) for this long.
+    RECENT_SECONDS = 10.0
+    MAX_RECENT = 1024
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._records: dict[tuple[str, str], CallRecord] = {}
+        self._recent: OrderedDict[tuple[str, str], tuple[float, CallRecord]] = OrderedDict()
         self._callee_counts: dict[str, int] = {}
         self.registry_full = 0
 
@@ -138,6 +145,9 @@ class CallRegistry:
         with self._lock:
             if self._records.pop((record.target, record.call_id), None) is not record:
                 return {}
+            self._recent[(record.target, record.call_id)] = (time.monotonic() + self.RECENT_SECONDS, record)
+            if len(self._recent) > self.MAX_RECENT:
+                self._recent.popitem(last=False)
             if len(record.chain) > 1:
                 count = self._callee_counts.pop(record.target, 0) - 1
                 if count > 0:
@@ -146,12 +156,24 @@ class CallRegistry:
 
     def lookup(self, plugin_id: str, request_id: object) -> CallRecord | None:
         parent = bounded_parent_request_id(request_id)
-        return None if parent is None else self._records.get((plugin_id, parent))
+        if parent is None:
+            return None
+        key = (plugin_id, parent)
+        with self._lock:
+            record = self._records.get(key)
+            if record is None and key in self._recent:
+                expires, record = self._recent[key]
+                if expires < time.monotonic():
+                    del self._recent[key]
+                    record = None
+            return record
 
     def has_live_chain(self, plugin_id: str) -> bool:
         """Whether another plugin is calling this one right now."""
         return self._callee_counts.get(plugin_id, 0) > 0
 
     def note_use(self, record: CallRecord, capability: str) -> None:
+        # Uses after the call ended are allowed and not summarized.
         with self._lock:
-            record.uses[capability] = record.uses.get(capability, 0) + 1
+            if self._records.get((record.target, record.call_id)) is record:
+                record.uses[capability] = record.uses.get(capability, 0) + 1

@@ -211,3 +211,16 @@ async def test_audit_route_is_local_only(gate, client, base, headers, status):
     assert response.status_code == status
     if status == 200:
         assert response.json()["mode"] == "observe"
+
+
+def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch):
+    # A push rides its own uplink and may be routed after the call's reply.
+    monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: ({"a": frozenset({"messages.push"})}.get(p, frozenset()), True))
+    root = capability_gate.begin_call("b", "r1", "plugin_entry", "call", CallLink(Origin("run")))
+    child = capability_gate.begin_call("a", "r2", "plugin_entry", "push", capability_gate.link_for_plugin_call("b", "r1"))
+    capability_gate.end_call(child, "ok", 0)
+    capability_gate.check("a", "r2", "messages.push", "MESSAGE_PUSH")
+    capability_gate.end_call(root, "ok", 0)
+    (decision,) = [e for e in call_audit.entries() if e["kind"] == "decision"]
+    assert decision["chain"] == ["b", "a"] and decision["reason"] == "caller_chain"
+    assert len(capability_gate.registry) == 0
