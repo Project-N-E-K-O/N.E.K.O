@@ -5771,16 +5771,20 @@ async def test_the_end_of_a_run_that_was_being_acted_on_as_the_host_shut_down_is
     assert (await host.ledger.message_get(first.id)).notified_at is not None
 
 
-async def test_the_end_of_a_run_is_in_hand_from_where_it_is_taken_up(hosts, tmp_path, monkeypatch):
+@pytest.mark.parametrize("stuck_at", ["ended", "opened"])
+async def test_the_end_of_a_run_is_in_hand_from_where_it_is_taken_up(hosts, tmp_path, monkeypatch, stuck_at):
     host, _llm, _writer, building, _release = await _a_run_under_way(hosts, tmp_path)
     agents = host.task_agents
     session = agents._sessions[building.id]
     await agents.settle()
     append_event = host.ledger.append_event
     under_way = asyncio.Event()
+    # Which write does not answer: that of the event itself, or, where the end of the run is
+    # the first that shows the run at work, the one before it (that its opening message is in).
+    session.opening_sent = stuck_at == "opened"
 
     async def never(commission_id: str, kind: str, payload: Any) -> Any:
-        if kind != "ended":
+        if kind != stuck_at:
             return await append_event(commission_id, kind, payload)
         under_way.set()
         await asyncio.Event().wait()

@@ -2003,6 +2003,11 @@ class TaskAgentManager:
         if session is None:
             # Process-level messages, and events of sessions already released.
             return
+        if kind == "ended":
+            # In hand from here on, before anything is awaited (the first
+            # of the writes below may be the one that does not answer):
+            # see ``_Session.ending``.
+            session.ending = event
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
         if kind == "taken":
@@ -2027,8 +2032,6 @@ class TaskAgentManager:
             session.updates.setdefault(call_id, []).append(str(event.get("text") or ""))
             session.update_names[call_id] = str(event.get("tool_name") or "")
             return
-        if kind == "ended":
-            session.ending = event
         try:
             await self._flush(session)
             await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
