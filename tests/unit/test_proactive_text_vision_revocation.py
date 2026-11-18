@@ -325,6 +325,7 @@ async def test_committed_screenshot_not_sent_after_revoke_and_regrant():
         vision_consent_epoch=mgr._proactive_vision_revocation_epoch,
     ) is True
     assert isinstance(c._conversation_history[-1], AIMessage)
+    assert c._proactive_image_to_inject == "SHOT_B64"
 
     async def revoke_and_regrant(*_args, **_kwargs):
         _revoke(mgr)
@@ -334,6 +335,8 @@ async def test_committed_screenshot_not_sent_after_revoke_and_regrant():
 
     await c.stream_text("这是什么呀")
 
+    # The revocation really landed inside the turn that carried the screenshot.
+    c.switch_model.assert_awaited_once()
     _assert_sent_without_screenshot(captured, user_attachment=False)
 
 
@@ -374,3 +377,5 @@ def test_service_commits_under_the_epoch_the_round_started_with():
     commit = source.index("delivery_commit = await _commit_proactive_delivery(")
     call = source[commit:source.index("\n        )\n", commit)]
     assert "vision_consent_epoch=vision_consent_epoch" in call
+    # Bound once at entry, so the commit sees the epoch the round started under.
+    assert source.count("vision_consent_epoch =") == 1

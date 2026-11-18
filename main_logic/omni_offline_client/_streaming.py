@@ -887,10 +887,7 @@ class _StreamingMixin:
                     "Proactive screenshot dropped (expired=%s superseded=%s revoked=%s)",
                     _expired, _superseded, _revoked,
                 )
-                self._proactive_image_to_inject = None
-                self._proactive_image_staged_at = 0.0
-                self._proactive_image_history_len = 0
-                self._proactive_image_consent_check = None
+                self.set_proactive_screenshot(None)
                 proactive_image = None
         # Plugin `read` frames sit in their own quota-bounded list. Instances
         # built via __new__ (tests, legacy callers) never ran __init__, so read
@@ -1117,10 +1114,7 @@ class _StreamingMixin:
             # Clear the one-shot proactive screenshot here too, unless a newer
             # round staged another one during the awaits above.
             if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
-                self._proactive_image_to_inject = None
-                self._proactive_image_staged_at = 0.0
-                self._proactive_image_history_len = 0
-                self._proactive_image_consent_check = None
+                self.set_proactive_screenshot(None)
         else:
             # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
