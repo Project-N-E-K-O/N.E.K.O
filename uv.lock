@@ -13,8 +13,11 @@ required-markers = [
 
 [manifest]
 constraints = [
+    { name = "brotli", specifier = ">=1.2.1" },
     { name = "fsspec", specifier = ">=2026.6.0" },
     { name = "oauthlib", specifier = ">=4.0.0" },
+    { name = "pyasn1", specifier = ">=0.6.5" },
+    { name = "soupsieve", marker = "python_full_version >= '3.11.5'", specifier = ">=4.1.1" },
 ]
 overrides = [{ name = "python3-xlib", marker = "sys_platform == 'never'" }]
 
@@ -1502,7 +1505,7 @@ requires-dist = [
     { name = "toml" },
     { name = "tomli", specifier = ">=2.3.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
-    { name = "tornado", specifier = ">=6.6.1" },
+    { name = "tornado", specifier = ">=6.6.1,<7" },
     { name = "translatepy" },
     { name = "twitchio", specifier = "==3.3.2" },
     { name = "uvicorn" },

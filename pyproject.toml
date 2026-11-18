@@ -82,13 +82,14 @@ dependencies = [
   "filelock>=3.16",
   "pyncm-async==1.8.1",
   # Never imported by name, but required at runtime: pyzmq's zmq.asyncio (used by
-  # plugin/core/zmq_transport.py and message_plane_transport.py) borrows
+  # plugin/core/zmq_transport.py, plugin/core/message_plane_transport.py and
+  # plugin/sdk/shared/transport/message_plane.py) borrows
   # tornado's AddThreadSelectorEventLoop whenever the running loop is a Windows
   # ProactorEventLoop -- the default for the embedded plugin server thread
   # (app/agent_server/plugin_host.py) and for asyncio.run() in plugin child
   # processes. Without it zmq.asyncio raises RuntimeError there. The floor is a
   # security floor (6.6.1 fixes the 6.5.x CVEs).
-  "tornado>=6.6.1",
+  "tornado>=6.6.1,<7",
   "jmespath>=1.1.0",
   "orjson>=3.11.8",
   # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
@@ -234,6 +235,10 @@ rapidocr-pillow = { path = "./deps/rapidocr_pillow" }
 constraint-dependencies = [
     "oauthlib>=4.0.0",
     "fsspec>=2026.6.0",
+    "brotli>=1.2.1",
+    "pyasn1>=0.6.5",
+    # Fixed soupsieve releases require Python >=3.11.5; 3.11.0-3.11.4 stay on 2.10.
+    "soupsieve>=4.1.1 ; python_full_version >= '3.11.5'",
 ]
 override-dependencies = [
     "python3-xlib ; sys_platform == 'never'",
