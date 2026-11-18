@@ -1933,6 +1933,19 @@ class TaskAgentManager:
             session.updates.setdefault(call_id, []).append(str(event.get("text") or ""))
             session.update_names[call_id] = str(event.get("tool_name") or "")
             return
+        if kind == "usage":
+            # Counted whether or not it can be noted among the commission's
+            # events: a ledger that does not take the note may take what
+            # was used a moment later, and what it does not take is owed.
+            # Left out when the note fails, the request would be missing
+            # from the account, and from what the limit goes by. What the
+            # noting failed with is raised as before, once it is counted.
+            try:
+                await self._flush(session)
+                await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
+            finally:
+                await self._on_usage(session, event)
+            return
         await self._flush(session)
         await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
         if kind == "report":
@@ -1941,8 +1954,6 @@ class TaskAgentManager:
             await self._on_ended(session, event)
         elif kind == "error":
             await self._on_error(session, event)
-        elif kind == "usage":
-            await self._on_usage(session, event)
         elif kind == "model_capability":
             await self._on_model_capability(session, event)
         elif kind == "compacted":

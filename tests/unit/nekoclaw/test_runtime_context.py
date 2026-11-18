@@ -536,7 +536,8 @@ def test_what_the_summarizer_is_handed_is_cut_block_by_block_too() -> None:
     page = "PAGE-START " + _words(6_000) + " PAGE-END"
     region = _old_result(TextContent(text=group), TextContent(text=page))[1:3]
 
-    _call, handed = _shrink_for_summary(region, policy, 100_000)
+    (_call, handed), size = _shrink_for_summary(region, policy, 100_000)
+    assert 0 < size <= 100_000
 
     # The summary is written from the group as it was handed over; only the
     # long block next to it is cut for the summarizer.
@@ -1104,10 +1105,22 @@ async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_t
 
     # The request fails: as it was, the tool results that were cut for it included.
     asked: list = []
-    manager = _manager(tmp_path, policy, asked, fail=True)
+    cut: list[bool] = []
+
+    async def failing(prepared: list, max_tokens: int):  # noqa: ANN202
+        asked.append((list(prepared), max_tokens))
+        # (In the conversation itself, when the summary is asked for: cut, and then put back.)
+        cut.append(
+            any(texts.PRUNED_MIDDLE_MARKER in (getattr(message, "text", None) or str(message.content)) for message in messages)
+        )
+        raise RuntimeError("model unavailable")
+
+    manager = ContextManager(
+        policy=policy, spill=SpillStore(tmp_path / "outputs"), summarize=failing, new_entry_id=_counter()
+    )
     transcript = Transcript(messages, _counter())
     assert await manager.fit(transcript, force=True, tight=False, or_drop=False) == []
-    assert len(asked) == 1
+    assert len(asked) == 1 and cut == [True]
     assert [getattr(message, "text", None) or str(message.content) for message in messages] == whole
     assert not any(texts.PRUNED_MIDDLE_MARKER in text for text in whole)
 
@@ -1210,3 +1223,34 @@ async def test_a_conversation_that_could_stay_is_whole_again_when_its_summing_up
         await later[0]
     assert any(texts.SUMMARY_OPEN_TAG in text for text in said(messages))
     assert len(messages) < len(whole)
+
+
+async def test_a_conversation_that_could_stay_is_not_summed_up_from_a_part_too_long_for_one_request(tmp_path: Path) -> None:
+    # The older part is one message, which is never left out of what the summary is asked for from,
+    # and it is longer than the request has room for: the request would be refused. Where the
+    # conversation could stay as it is, none is made.
+    narrow = ContextPolicy(window=8_000, max_output=1_000)
+    long_reply = AssistantMessage(content=[TextContent(text=_words(4_000, "long"))])
+
+    def conversation() -> list:
+        return [
+            UserMessage(content="go"),
+            long_reply,
+            UserMessage(content="and now?"),
+            AssistantMessage(content=[TextContent(text="done")]),
+        ]
+
+    room = narrow.window - narrow.summary_cap - 2_000
+    assert count_tokens(long_reply.content[0].text) > room
+
+    asked: list = []
+    messages = conversation()
+    before = [getattr(message, "text", None) or str(message.content) for message in messages]
+    assert await _manager(tmp_path, narrow, asked).fit(Transcript(messages, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == before
+
+    # (Where it has to get shorter the request is made all the same, as before: this is the last resort.)
+    asked = []
+    assert await _manager(tmp_path, narrow, asked).fit(Transcript(conversation(), _counter()), force=True)
+    assert len(asked) >= 1 and long_reply in asked[0][0]

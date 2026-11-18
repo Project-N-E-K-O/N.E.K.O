@@ -2396,8 +2396,6 @@ async def test_nothing_is_summed_up_when_nekoclaw_is_switched_off_while_the_sess
 async def test_what_was_said_before_a_commission_is_kept_when_it_is_filed_whatever_is_said_while_it_is_routed(
     hosts, tmp_path
 ):
-    import time
-
     scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
     said = RecentConversation()
     host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
@@ -2410,8 +2408,10 @@ async def test_what_was_said_before_a_commission_is_kept_when_it_is_filed_whatev
     async def much_is_said_meanwhile(*args: Any, **kwargs: Any) -> Any:
         # While it is chosen who does it: more than is kept of the main dialogue.
         kept_meanwhile.append(len(manager._excerpts))
+        # (A moment after it was filed, whatever the clock's step is.)
+        await asyncio.sleep(0.05)
         for index in range(settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES):
-            said.note("Lan", ROLE_USER, f"something else {index}", at=time.time() + 1 + index)
+            said.note("Lan", ROLE_USER, f"something else {index}")
         return await select(*args, **kwargs)
 
     decision.select = much_is_said_meanwhile
@@ -2521,3 +2521,70 @@ async def test_what_the_ledger_did_not_take_of_the_request_that_summed_a_session
     after = await host.ledger.get_session(first.id)
     assert len(refused) == 1
     assert (after.requests - before.requests, after.tokens - before.tokens) == (1, 7_060)
+
+
+# ---------------------------------------------------------------------------
+# What stood in the bodies of the reviews (the sixth batch)
+# ---------------------------------------------------------------------------
+
+
+async def test_what_a_request_used_is_counted_though_it_could_not_be_noted_among_the_events(hosts, tmp_path):
+    script = ScriptedLLM([[call("report", {"status": "ready", "summary": "sorted"}, "call-r"), _used(900, 30), finish("tool_calls")]])
+    host = _host(hosts, tmp_path, script)
+    manager = host.task_agents
+    append = host.ledger.append_event
+    refused: list[str] = []
+
+    async def not_the_usage_at_first(commission_id: str, kind: str, payload: dict[str, Any] | None = None) -> int:
+        if kind == "usage" and not refused:
+            refused.append(commission_id)
+            raise RuntimeError("the ledger is locked")
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = not_the_usage_at_first
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        host.ledger.append_event = append
+    # The note of it among the commission's events was not taken; what it used is on the account
+    # all the same, once, which is what the limit goes by.
+    assert refused == [first.id] and await _events(host, first.id, "usage") == []
+    after, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+    assert (after.requests, after.tokens) == (1, 930) and (session.requests, session.tokens) == (1, 930)
+    assert manager._usage_owed == {}
+
+
+async def test_usage_the_ledger_took_in_part_is_taken_back_whole_and_written_once_with_the_next(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    manager = host.task_agents
+    commission, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+
+    # The session's row is written first, then the commission's: which cannot be, for now.
+    await host.ledger.run(
+        lambda conn: conn.execute(
+            "CREATE TRIGGER locked BEFORE UPDATE ON commissions BEGIN SELECT RAISE(ABORT, 'the commissions are locked'); END"
+        )
+        and None
+    )
+    try:
+        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10})
+    finally:
+        await host.ledger.run(lambda conn: conn.execute("DROP TRIGGER locked") and None)
+    # All of it was taken back: the session does not hold what the commission does not.
+    now = await host.ledger.get_session(first.id)
+    assert (now.requests, now.tokens) == (session.requests, session.tokens)
+    assert manager._usage_owed == {(first.id, first.id): (1, 100, 10, 0, 0, None)}
+
+    await manager._note_usage(first.id, first.id, {"input": 7, "output": 3})
+
+    # Each of the two once, with the session and with the commission.
+    after, held = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+    assert (held.requests - session.requests, held.tokens - session.tokens) == (2, 120)
+    assert (after.requests - commission.requests, after.tokens - commission.tokens) == (2, 120)
+    assert manager._usage_owed == {}

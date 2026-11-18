@@ -707,7 +707,10 @@ async def test_without_a_whole_summary_a_conversation_told_to_sum_itself_up_stay
         # The request fails; it comes back empty; it ends at its length limit; the model calls a tool
         # (the request offers them, as every request of the session does) instead of going on.
         cut_short = [say("## Primary Request and Intent\n- the four st"), usage(2_400, 900), finish("length")]
-        a_call = [say("## Primary Request and Intent\n- let me look"), call("glob", {"pattern": "*"}), finish("tool_calls")]
+        a_call = [
+            say("## Primary Request and Intent\n- let me look"), call("glob", {"pattern": "*"}), usage(2_000, 50),
+            finish("tool_calls"),
+        ]
         for answer in ([fails], [finish()], cut_short, a_call):
             llm.add(*answer)
             mark, told = len(events.events), len(events.of("usage"))
@@ -718,9 +721,10 @@ async def test_without_a_whole_summary_a_conversation_told_to_sum_itself_up_stay
             assert not events.of("compacted")
             assert len(session.harness.message_list) == length
             assert (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8") == record
-            # What a request that came back used is told all the same.
+            # What a request that came back used is told all the same: the request was made, and
+            # its summary was not taken.
             assert [(event["summary"], event["input"], event["output"]) for event in events.of("usage")[told:]] == (
-                [(True, 2_400, 900)] if answer is cut_short else []
+                [(True, 2_400, 900)] if answer is cut_short else [(True, 2_000, 50)] if answer is a_call else []
             )
         assert any(getattr(message, "text", "").startswith("Finished step 0.") for message in session.harness.message_list)
     finally:
@@ -1116,3 +1120,88 @@ async def test_nothing_is_left_of_a_copy_whose_record_could_not_be_put_in_its_pl
     (source / SYSTEM_FILE).unlink()
     assert fork_record(source, target).entries > 0
     assert read_snapshot(target) is None and not (target / SYSTEM_FILE).exists()
+
+
+# ---------------------------------------------------------------------------
+# What stood in the bodies of the reviews (the sixth batch)
+# ---------------------------------------------------------------------------
+
+
+async def test_the_request_that_sums_a_conversation_up_does_not_carry_what_the_host_said_about_usage(tmp_path: Path) -> None:
+    answers: list[Any] = []
+
+    async def budget(session_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        del session_id, payload
+        return answers.pop(0) if answers else None
+
+    llm = ScriptedLLM()
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm, HostCallbacks(budget=budget))
+    try:
+        # Enough was said for a summary to be asked for.
+        await _seed(session, events, llm)
+        answers.append({"notice": "No more may be used. Hand over what you have."})
+        llm.add(say("Handing over: half is done."), finish())
+        await _ask(session, events, "Sort the photos.")
+        assert _said(llm.requests[-1])[-1] == "user: No more may be used. Hand over what you have."
+
+        llm.add(say("## Current Work\n- half is done"), usage(2_500, 40), finish())
+        mark, before = len(events.events), len(llm.requests)
+        session.compact()
+        await events.wait_ended(start=mark)
+
+        # The request was made, and its summary taken ...
+        assert len(llm.requests) == before + 1 and len(events.of("compacted")) == 1
+        asked = _said(llm.requests[-1])
+        assert asked[-1] == f"user: {texts.COMPACTION_INSTRUCTION}" and any("Finished step 0." in line for line in asked)
+        # ... and what the host said about usage in the run that is over was not in it.
+        assert not any("No more may be used" in line for line in asked)
+    finally:
+        await session.close()
+
+
+async def test_what_the_host_answers_about_usage_is_not_said_to_a_run_that_was_stopped_meanwhile(tmp_path: Path) -> None:
+    holder: list[Any] = []
+
+    async def budget(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        del session_id, payload
+        # The stop and the answer come together: the run is stopped by the time the answer is looked at.
+        holder[0].abort()
+        return {"notice": "No more may be used. Hand over what you have."}
+
+    llm = ScriptedLLM([[say("Never said."), finish()]])
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, llm, HostCallbacks(budget=budget))
+    holder.append(session)
+    try:
+        ended = await _ask(session, events, "Sort the photos.")
+        assert ended["reason"] == "aborted" and llm.requests == []
+        # Nothing more was said to the session, in its conversation or on its record.
+        assert not any(getattr(message, "custom_type", None) == "notice:usage" for message in session.harness.message_list)
+    finally:
+        await session.close()
+    assert "No more may be used" not in (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+
+
+async def test_a_session_with_a_background_command_still_running_is_not_summed_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm = ScriptedLLM()
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm)
+    try:
+        await _seed(session, events, llm)
+        before = len(llm.requests)
+        # What it says when it ends would come while the conversation is summed up, and reach no run.
+        monkeypatch.setattr(type(session.jobs), "running", lambda self: ["a job"])
+        assert session.busy and not session.running
+        with pytest.raises(SessionError, match="background command"):
+            session.compact()
+        assert not session.running and len(llm.requests) == before
+        monkeypatch.undo()
+        # With none it is summed up as before.
+        llm.add(say("## Current Work\n- the four steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        await events.wait_ended(start=mark)
+        assert len(events.of("compacted")) == 1
+    finally:
+        await session.close()

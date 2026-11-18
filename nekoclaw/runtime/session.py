@@ -1109,6 +1109,11 @@ class TaskAgentSession(SessionInbox):
         except Exception:  # noqa: BLE001 - counting must not stop the work
             logger.warning("session %s: the host could not say whether more may be used", self.session_id, exc_info=True)
             return False
+        if signal is not None and signal.is_cancelled():
+            # Stopped by the time the answer is looked at: the run is over,
+            # and nothing more is said to its session. The request that
+            # follows says so itself.
+            return False
         notice = verdict.get("notice")
         if isinstance(notice, str) and notice.strip():
             message = CustomMessage(custom_type="notice:usage", content=notice, display=False)
@@ -1551,15 +1556,20 @@ class TaskAgentSession(SessionInbox):
     def compact(self) -> None:
         """Sum the conversation up now, whatever its length; its end is told like that of a run.
 
-        For a session nothing is at work in: what was said is replaced by
-        a summary and the newest part of it, as before a request that
-        would not fit. A ``compacted`` event follows when a summary was
+        For a session nothing is at work in, a background command
+        included: what was said is replaced by a summary and the newest
+        part of it, as before a request that would not fit. A ``compacted`` event follows when a summary was
         made, and an ``ended`` event either way.
         """
         if self._closing:
             raise SessionError("the session is closed")
         if self.running:
             raise SessionError("a run is in progress")
+        if self.jobs.running():
+            # What a background command says when it ends would come while
+            # the conversation is summed up: it would reach no run, and
+            # wait for whatever is said to the session next.
+            raise SessionError("a background command is still running")
         self._abort_requested = False
         self._compacting = True
         task = asyncio.ensure_future(self._compact())

@@ -841,10 +841,12 @@ class ContextManager:
         # The request must fit the window itself: shrink tool results first,
         # then drop the oldest messages of the part being condensed.
         room = policy.window - policy.summary_cap - self.fixed_tokens - 2_000
-        prepared = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
-        if not or_drop and len(prepared) < len(region):
-            # The oldest messages do not fit into the request: a summary
-            # would stand for a part it was never shown.
+        prepared, size = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
+        if not or_drop and (len(prepared) < len(region) or size > room):
+            # The oldest messages do not fit into the request, so a summary
+            # would stand for a part it was never shown; or what is left
+            # (one message, which is never left out) is too long for the
+            # request by itself, and the request would be refused.
             logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
             return None, None
         try:
@@ -870,8 +872,12 @@ class ContextManager:
         return summary, usage
 
 
-def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> list[AgentMessage]:
-    """Return the messages handed to the summarizer, cut to fit ``room`` tokens."""
+def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> tuple[list[AgentMessage], int]:
+    """Return the messages handed to the summarizer, cut to fit ``room`` tokens, and how long they are.
+
+    The last message is never left out, whatever its length: the
+    length returned says whether what is handed over fits.
+    """
     messages: list[AgentMessage] = []
     for row in region:
         message = row.message
@@ -887,5 +893,5 @@ def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> 
     # Do not open with a tool result whose call was dropped.
     while start < len(messages) - 1 and isinstance(messages[start], ToolResultMessage):
         start += 1
-    return messages[start:]
+    return messages[start:], sum(sizes[start:])
 
