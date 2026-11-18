@@ -76,6 +76,7 @@ from nekoclaw.host.short_descriptions import ShortDescriptions
 from nekoclaw.host.space import TaskAgentSpace
 from nekoclaw.host.space_keeper import SpaceKeeper
 from nekoclaw.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
+from nekoclaw.host.wakes import SessionWakes
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,11 @@ class NekoClawHost:
             dsh=self.dsh,
             dsh_runtime_factory=dsh_runtime_factory,
         )
+        # Hands sessions what waits for them: a note another session wrote,
+        # a time a task agent set for itself. Started by the first call that
+        # does work, never at startup.
+        self.wakes = SessionWakes(self.ledger, self.task_agents)
+        self.task_agents.set_waker(self.wakes)
         # Reviews of finished commissions and the tidying of the space, in
         # the background; started by a commission ending, never at startup.
         self.space_keeper = SpaceKeeper(
@@ -292,11 +298,17 @@ class NekoClawHost:
         Building the host does no work, so a sender given to the constructor
         is only started here, by the first call that does work. Reports
         written later start it themselves.
+
+        Likewise what an earlier run left to be handed to sessions: the
+        times task agents set for themselves that have not come, and the
+        notes that were not handed over. Looked for here, in the
+        background, and not at startup.
         """
         if self._used or self._shut_down:
             return
         self._used = True
         self.outbox.kick()
+        self.wakes.kick()
 
     # -- what the main dialogue uses --------------------------------------
 
@@ -345,6 +357,16 @@ class NekoClawHost:
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
         return await self.brain.complete_deferred(commission_id)
+
+    async def stop_waiting(self) -> int:
+        """Drop what waits to be handed to sessions; returns how many. Part of a stop of everything.
+
+        The notes sessions wrote to one another that were not handed over:
+        after a stop none of them starts a turn. What a commission set for
+        itself (a time to be woken at) goes with that commission as the
+        stop ends it. See ``SessionWakes.stop_all``.
+        """
+        return await self.wakes.stop_all()
 
     # -- dsh --------------------------------------------------------------
     #
@@ -449,6 +471,9 @@ class NekoClawHost:
             # by that would start work for the space that is then cut off.
             ("task agent space, no new work", self.space_keeper.stand_down),
             ("task brain", self.brain.close),
+            # Before the task agents: nothing is woken into a host that is
+            # shutting down. What waits stays on record for the next run.
+            ("wakes", self.wakes.close),
             ("task_agents", self.task_agents.shutdown),
             ("built-in tools", self._release_builtins),
             ("gateway", self.gateway.stop),

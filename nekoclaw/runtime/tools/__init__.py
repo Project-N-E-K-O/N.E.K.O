@@ -35,7 +35,7 @@ from nekoclaw.runtime.tools.base import ToolContext
 
 # Tools the loop may run side by side when the model asks for several at once.
 PARALLEL_TOOLS: frozenset[str] = frozenset(
-    {"read", "glob", "grep", "read_image", "web_fetch", "web_search"}
+    {"read", "glob", "grep", "read_image", "web_fetch", "web_search", "list_sessions", "read_session"}
 )
 
 

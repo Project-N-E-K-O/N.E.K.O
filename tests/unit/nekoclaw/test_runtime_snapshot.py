@@ -37,6 +37,7 @@ from nekoclaw.runtime.snapshot import (
     REASON_MOVED,
     REASON_OPENED,
     SYSTEM_FILE,
+    _VERSION,
     SystemSnapshot,
     ToolDefinition,
     read_snapshot,
@@ -119,15 +120,18 @@ def test_a_snapshot_is_read_back_as_it_was_written(tmp_path: Path) -> None:
     [
         "{not json",
         "[]",
-        json.dumps({"version": 2, "system": "s", "tools": []}),
-        json.dumps({"version": 1, "system": "", "tools": []}),
-        json.dumps({"version": 1, "system": "s", "tools": "read"}),
-        json.dumps({"version": 1, "system": "s", "tools": ["read"]}),
-        json.dumps({"version": 1, "system": "s", "tools": [{"name": "read", "description": "d"}]}),
-        json.dumps({"version": 1, "system": "s", "tools": [{"name": "", "description": "d", "parameters": {}}]}),
+        # Of a version before this one, or after it: a session takes up what
+        # its version brought when it is next opened.
+        json.dumps({"version": _VERSION - 1, "system": "s", "tools": []}),
+        json.dumps({"version": _VERSION + 1, "system": "s", "tools": []}),
+        json.dumps({"version": _VERSION, "system": "", "tools": []}),
+        json.dumps({"version": _VERSION, "system": "s", "tools": "read"}),
+        json.dumps({"version": _VERSION, "system": "s", "tools": ["read"]}),
+        json.dumps({"version": _VERSION, "system": "s", "tools": [{"name": "read", "description": "d"}]}),
+        json.dumps({"version": _VERSION, "system": "s", "tools": [{"name": "", "description": "d", "parameters": {}}]}),
         json.dumps(
             {
-                "version": 1,
+                "version": _VERSION,
                 "system": "s",
                 "tools": [{"name": "a", "description": "d", "parameters": {}}] * 2,
             }
@@ -137,6 +141,13 @@ def test_a_snapshot_is_read_back_as_it_was_written(tmp_path: Path) -> None:
 def test_a_file_that_is_not_a_snapshot_counts_as_none(tmp_path: Path, content: str) -> None:
     (tmp_path / SYSTEM_FILE).write_text(content, encoding="utf-8")
     assert read_snapshot(tmp_path) is None
+
+
+def test_a_file_of_this_version_is_a_snapshot(tmp_path: Path) -> None:
+    # What the cases above leave out, one thing each, is all here: it is
+    # for what they leave out that they count as none.
+    (tmp_path / SYSTEM_FILE).write_text(json.dumps({"version": _VERSION, "system": "s", "tools": []}), encoding="utf-8")
+    assert read_snapshot(tmp_path) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +165,7 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
 
     spec = make_spec(tmp_path, instructions="Space index: three entries by now.", reply_language="Japanese")
     saved = _saved(spec)
-    assert saved["version"] == 1 and saved["reason"] == REASON_OPENED
+    assert saved["version"] == _VERSION and saved["reason"] == REASON_OPENED
     assert saved["system"] == _system_of(first_llm.requests[0])
     assert "Space index: nothing yet." in saved["system"]
     assert [tool["name"] for tool in saved["tools"]] == _tool_names(first_llm.overrides[0])

@@ -1116,9 +1116,15 @@ class TaskBrain:
                 recent = sorted(recent, key=relevance, reverse=True)
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
+        waiting = {item.id: await self._waiting_words(item, lang, now) for item in active}
 
         def line(commission: Commission) -> str:
-            parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
+            head = f"- {commission.title} ({status_word(commission.status, lang)})"
+            if waiting.get(commission.id):
+                # What it waits for by its own asking, and what waits for it:
+                # right after its status, where a cut does not reach it.
+                head += f" [{waiting[commission.id]}]"
+            parts = [head]
             asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
             if asking:
                 return asking
@@ -1156,6 +1162,43 @@ class TaskBrain:
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
         )
+
+    async def _waiting_words(self, commission: Commission, lang: str, now: float) -> str:
+        """Say, for a row of a query's answer, what a commission under way waits for and what waits for it; empty for neither.
+
+        That it rests and when it goes on; else the times its task agent
+        set for itself that have not come; and the notes other sessions
+        wrote to its session that were not handed over. Read from the
+        ledger; no model is asked.
+        """
+        from datetime import datetime
+
+        from config.prompts.prompts_nekoclaw_sessions import SESSION_QUERY_TEXTS
+
+        if commission.route != "task_agent" or not commission.session_id:
+            return ""
+        words = _texts(SESSION_QUERY_TEXTS, lang)
+
+        def at(moment: float) -> str:
+            then, today = datetime.fromtimestamp(moment), datetime.fromtimestamp(now)
+            return then.strftime("%H:%M" if then.date() == today.date() else "%m-%d %H:%M")
+
+        parts: list[str] = []
+        own = await self._ledger.wakes_pending(commission_id=commission.id)
+        if own and commission.resting:
+            parts.append(words["resting"].format(time=at(own[0].due_at)))
+        else:
+            timers = [wake for wake in own if wake.reason == "timer"]
+            if timers:
+                parts.append(words["wakes"].format(count=len(timers), time=at(timers[0].due_at)))
+        notes = [
+            wake
+            for wake in await self._ledger.wakes_pending(session_id=commission.session_id)
+            if wake.commission_id is None and wake.reason == "message"
+        ]
+        if notes:
+            parts.append(words["notes"].format(count=len(notes)))
+        return "; ".join(parts)
 
     # -- what a new session is told ---------------------------------------
 

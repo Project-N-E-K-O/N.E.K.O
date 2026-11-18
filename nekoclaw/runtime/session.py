@@ -1500,5 +1500,6 @@ class TaskAgentSession(SessionInbox):
                 text=last.text if last is not None else "",
                 error=error,
                 inputs=self._inputs,
+                jobs=len(self.jobs.running()),
             )
         )

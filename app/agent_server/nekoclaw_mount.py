@@ -452,6 +452,13 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
     # A dispatch still in its first round has no commission yet and would be
     # missed below; it is told not to file one.
     host.brain.drop_pending_dispatches()
+    # Likewise a note one task agent session wrote to another that was not
+    # handed over yet: handed over after the stop, it would start a turn.
+    # (A time a task agent set for itself goes with its commission below.)
+    try:
+        await host.stop_waiting()
+    except Exception as e:
+        logger.warning("[Agent] dropping the notes that waited for sessions failed: %s", e)
     to_stop = [
         commission
         for commission in await host.ledger.select(statuses=ACTIVE_STATUSES)

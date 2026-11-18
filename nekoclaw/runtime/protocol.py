@@ -371,6 +371,10 @@ class EndedEvent(_SessionEvent):
     error: str | None = None
     # Texts the session had taken when the run finished; None for ``closed``.
     inputs: int | None = None
+    # Background jobs of the session still running when the run finished.
+    # Closing the session ends them, so a driver that would close an idle
+    # session to let it rest leaves one with jobs open.
+    jobs: int = 0
 
 
 class ErrorEvent(_SessionEvent):

@@ -261,6 +261,121 @@ DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""
 
 # ---------------------------------------------------------------------------
+# Sessions writing to one another, and being woken
+# ---------------------------------------------------------------------------
+
+SESSION_MESSAGE_MAX_TOKENS = 1500
+"""Cap on one note a task agent writes to another session. A longer one is
+refused, not cut: what does not fit is written to a file and its path sent."""
+
+SESSION_MESSAGE_MAX_DEPTH = 2
+"""How far notes may carry work away from what the user asked for. A
+commission she dispatched is at depth 0 and writes notes of depth 1; a
+commission that is filed for a note has that note's depth and writes one
+deeper. A note deeper than this is refused: a commission filed for a note
+may itself have one filed, and that one writes to nobody."""
+
+SESSION_MESSAGE_TARGET_INTERVAL_SECONDS = 60.0
+"""Shortest time between two notes of one session to the same other session."""
+
+SESSION_MESSAGES_PER_HOUR = 20
+"""Notes one session may write within an hour, to whomever."""
+
+SESSION_MESSAGE_QUEUE_MAX = 50
+"""Notes that may wait to be handed to one session at a time; with that many
+waiting, a further one is refused."""
+
+SESSION_MESSAGE_DEDUP_SECONDS = 600.0
+"""Within this time the same words from one session to the same other one are
+sent once; the second time the sender is told they went out already."""
+
+SESSION_NOTICE_WAIT_SECONDS = 12 * 3600.0
+"""How long the sender of a note that asked to be told when it was dealt with
+waits for that word. After it, the sender is told it waited in vain."""
+
+SESSION_NOTICE_TEXT_MAX_TOKENS = 300
+"""Cap on what the sender of a note is told of how the turn it began ended:
+the last words of that turn."""
+
+SESSION_WAKE_BATCH_ROWS = 10
+"""How many waiting things (notes, times that came) are handed to a session
+in one go. What is left over follows with the next."""
+
+SESSION_LIST_ROWS = 10
+"""Sessions on one page of ``list_sessions``."""
+
+SESSION_LIST_ROW_MAX_TOKENS = 80
+"""Cap on one row of ``list_sessions``: name, character, project, where it
+stands, its latest commission, when it was last in use."""
+
+SESSION_LIST_LOOKED_AT = 300
+"""How many sessions, the ones last in use, ``list_sessions`` looks through
+for the words it is given."""
+
+SESSION_LIST_COMMISSIONS = 3
+"""How many of a session's latest commissions are looked through for those
+words, by their titles."""
+
+SESSION_RESULTS_MAX_TOKENS = 3000
+"""Cap on what ``read_session`` hands back of a session's results and
+reviews; each of them is short already (``TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS``,
+``TASK_AGENT_REVIEW_TEXT_MAX_TOKENS``)."""
+
+SESSION_RESULTS_COMMISSIONS = 8
+"""How many of a session's latest commissions ``read_session`` tells the
+results of."""
+
+SESSION_SEARCH_HITS = 20
+"""Places ``read_session`` names for one search of a session's record."""
+
+SESSION_SEARCH_EXCERPT_MAX_TOKENS = 50
+"""Cap on the one line shown of each such place."""
+
+SESSION_READ_SEGMENT_MAX_TOKENS = 2000
+"""Cap on one stretch of a session's record handed back by ``read_session``.
+More is read by asking for the stretch that follows."""
+
+SESSION_READ_ENTRY_MAX_TOKENS = 600
+"""Cap on one entry within such a stretch (one message, one tool result): its
+beginning and its end are kept, so one long tool result does not take the
+whole stretch."""
+
+SESSION_RECORD_MAX_BYTES = 64 * 1024 * 1024
+"""A session's record larger than this is not read by ``read_session``; the
+task agent is told so and reads the results instead."""
+
+WAKE_MIN_DELAY_SECONDS = 600.0
+"""Shortest time a task agent may ask to be woken after. A shorter one is
+moved to this, and the task agent is told."""
+
+WAKE_MAX_DELAY_SECONDS = 30 * 24 * 3600.0
+"""Longest such time."""
+
+WAKE_PENDING_MAX = 10
+"""How many times a session may have set for itself and not yet come to."""
+
+WAKE_DAILY_MAX = 300
+"""How often within a day a session may be woken at its own asking."""
+
+WAKE_NOTE_MAX_TOKENS = 200
+"""Cap on what a task agent notes for itself with a time it sets."""
+
+WAKE_COALESCE_SECONDS = 2.0
+"""How long what is due for a session waits for more of the same, so that
+several things that come together start one turn, not one each."""
+
+WAKE_COALESCE_MAX_SECONDS = 10.0
+"""The longest that waiting gets when more keeps coming."""
+
+WAKE_HELD_RETRY_SECONDS = 300.0
+"""After how long something that could not be handed over is tried again:
+NekoClaw was switched off, or the session's commission waits for the user."""
+
+WAKE_FAILED_RETRY_MAX_SECONDS = 3600.0
+"""The longest pause between two tries to hand over something that failed
+for a reason of the host's own (it doubles from ``OUTBOX_RETRY_BASE_SECONDS``)."""
+
+# ---------------------------------------------------------------------------
 # Task agent space (design section 12.1; ``nekoclaw/host/space.py``)
 #
 # Everything about it that is likely to be tuned is here: what is added to a

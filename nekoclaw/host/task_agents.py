@@ -66,7 +66,17 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from nekoclaw.host.capabilities import CapabilityRegistry
-from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger
+from nekoclaw.host.ledger import (
+    ACTIVE_STATUSES,
+    COMMISSION_OVER_REASON,
+    ENDED_STATUSES,
+    Commission,
+    Ledger,
+    MessageLimits,
+    Session,
+    SessionRow,
+    WakeRequest,
+)
 from nekoclaw.host.paths import DEFAULT_PROJECT, DSH_SESSION_NAME, TRANSCRIPT_NAME, HostPaths
 from nekoclaw.host.permissions import (
     CHOICES,
@@ -91,6 +101,14 @@ _SHUTDOWN_START_WAIT_SECONDS = 5.0
 _SHUT_DOWN_REASON = "the host was shut down"
 _QUOTA_REASON = "the free daily quota of the agent model is used up"
 _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
+_WOKEN_REASON = "it rested; what it waited for takes it up again"
+# Tools a task agent that another task agent started is not offered: it
+# starts none itself, writes to its own team only, and hands its result back
+# when its part is done instead of waiting to be woken.
+_CHILD_DISABLED_TOOLS = ("subagent", "message_session", "schedule_wake")
+# How long what is to be handed to a session waits for that session's
+# runtime to have closed it, when it is closing this moment.
+_CLOSING_RETRY_SECONDS = 1.0
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -149,6 +167,36 @@ class LessonSink(Protocol):
 
     async def submit(self, commission: Commission, lesson: dict[str, Any]) -> str | None:
         """Store one lesson; the returned text is told to the model."""
+
+
+@dataclass(frozen=True, slots=True)
+class Handover:
+    """What came of handing a session what waited for it (``TaskAgentManager.hand_over``).
+
+    ``handed``: it is with a commission, on record. ``dropped``: it never
+    will be, on record with the reason. ``held``: not now; it stays as it
+    was and is tried again after ``retry_in`` seconds, or sooner when
+    something changes that the caller is told of.
+    """
+
+    outcome: str
+    retry_in: float = 0.0
+
+
+def _clock_time(timestamp: float) -> str:
+    """Return a time as a task agent, or a person, is told it: local, to the minute."""
+    from datetime import datetime
+
+    return datetime.fromtimestamp(float(timestamp)).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _until_tomorrow(now: float) -> float:
+    """Return the seconds from ``now`` to a minute past the next local midnight."""
+    from datetime import datetime, timedelta
+
+    moment = datetime.fromtimestamp(float(now))
+    tomorrow = (moment + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+    return max(60.0, (tomorrow - moment).total_seconds())
 
 
 class LedgerLessonSink:
@@ -440,6 +488,19 @@ class TaskAgentManager:
         # (``hold_files``); a commission is started in one of them once that
         # is done.
         self._clearing: dict[str, asyncio.Event] = {}
+        # Commissions whose next start has its first model request counted
+        # already: counted before they were woken, so that one whose quota
+        # is used up is left to rest instead of failing on the way up.
+        self._prepaid_starts: set[str] = set()
+        # The last count against the quota was refused. Cleared by the next
+        # one that is not, which has what waits for the quota tried again.
+        self._quota_out = False
+        # While it is: when the quota is next asked on behalf of something
+        # that waits to be woken (ledger clock).
+        self._quota_asked_again_at = 0.0
+        # ``nekoclaw.host.wakes.SessionWakes``, or None: told when there is
+        # something new to hand over, or when what was held may go now.
+        self._waker: Any = None
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -541,7 +602,19 @@ class TaskAgentManager:
             subagent_list=self._cb_subagent_list,
             subagent_send=self._cb_subagent_send,
             subagent_interrupt=self._cb_subagent_interrupt,
+            session_list=self._cb_session_list,
+            session_read=self._cb_session_read,
+            session_send=self._cb_session_send,
+            wake_schedule=self._cb_wake_schedule,
         )
+
+    def set_waker(self, waker: Any) -> None:
+        """Set what is told that something waits to be handed to a session (``wakes.SessionWakes``)."""
+        self._waker = waker
+
+    def _kick_waker(self) -> None:
+        if self._waker is not None:
+            self._waker.kick()
 
     async def _choose_runtime(
         self, commission: Commission, model: Any, begun_in: str | None
@@ -769,6 +842,12 @@ class TaskAgentManager:
                 description=commission.title, dispatch_text=commission.dispatch_text
             )
             parts = []
+        elif commission.source == "session":
+            # Filed for what another session wrote: that, framed, is what
+            # the commission is. Not cut either: a frame cut short would
+            # leave what follows it looking like part of the note.
+            whole = await self._opening_of_notes(commission)
+            parts = []
         else:
             parts = [
                 texts.TASK_AGENT_COMMISSION_TEMPLATE.format(
@@ -804,6 +883,23 @@ class TaskAgentManager:
             # the language of the commission it was first opened for.
             opening += "\n\n" + REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", language)
         return opening
+
+    async def _opening_of_notes(self, commission: Commission) -> str:
+        """Return what opens a commission that was filed for notes from other sessions: what it is, and the notes, framed.
+
+        Put together anew whenever the commission is opened (each time
+        with frames of their own): the notes are on record with the
+        commission they were handed to.
+        """
+        from config.prompts import prompts_nekoclaw_sessions as words
+
+        head = words.SESSION_COMMISSION_TEMPLATE.format(commission_id=commission.id, lanlan_name=commission.lanlan_name)
+        notes = await self._ledger.messages_opening(commission.id)
+        if not notes:
+            # Its notes are gone from the record; what was filed says what they were.
+            return f"{head}\n\n{commission.dispatch_text}"
+        framed = [await self._framed_note(note, commission.lanlan_name, answerable=True) for note in notes]
+        return "\n\n".join([head, *framed])
 
     async def _picked_entries(self, commission: Commission) -> str:
         """Return the part of a commission's opening message that tells of the entries picked for it; empty for none."""
@@ -1012,8 +1108,10 @@ class TaskAgentManager:
                 instructions=await self._instructions(commission, with_gateway=gateway_spec is not None),
                 reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
                 top_level=commission.parent_id is None,
-                # A task agent started by a task agent starts none itself.
-                disabled_tools=["subagent"] if commission.parent_id is not None else [],
+                # A task agent started by a task agent starts none itself,
+                # and neither writes to sessions outside its team nor asks
+                # to be woken (``_CHILD_DISABLED_TOOLS``).
+                disabled_tools=list(_CHILD_DISABLED_TOOLS) if commission.parent_id is not None else [],
                 image_retention=image_retention,
                 image_pools=image_pools,
                 gateway=gateway_spec,
@@ -1333,9 +1431,15 @@ class TaskAgentManager:
     async def _pay_first_request(self, session: _Session) -> bool:
         """Count a session's first model request before it is made; False when the quota is used up.
 
-        A meter that cannot count does not stop the work.
+        A meter that cannot count does not stop the work. One that was
+        counted before the commission was woken (``_count_ahead``) is not
+        counted again.
         """
         if self._meter is None:
+            return True
+        if session.commission_id in self._prepaid_starts:
+            self._prepaid_starts.discard(session.commission_id)
+            session.prepaid_requests += 1
             return True
         try:
             allowed = await self._meter(session.commission_id)
@@ -1344,9 +1448,22 @@ class TaskAgentManager:
         except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
             logger.warning("counting a task agent's model request failed", exc_info=True)
             return True
+        self._note_quota(bool(allowed))
         if allowed:
             session.prepaid_requests += 1
         return bool(allowed)
+
+    def _note_quota(self, allowed: bool) -> None:
+        """Remember whether the quota had a request left; what waited for it is tried again when it has."""
+        if allowed and self._quota_out:
+            self._quota_out = False
+            self._kick_waker()
+        elif not allowed and not self._quota_out:
+            self._quota_out = True
+            # The quota is for a day: asked again after the next midnight,
+            # and not on every occasion until then.
+            now = self._ledger._clock()
+            self._quota_asked_again_at = now + _until_tomorrow(now)
 
     @staticmethod
     async def _send_text(runtime: Any, session: _Session, command: str, text: str, *, opening: bool = False) -> None:
@@ -1441,12 +1558,18 @@ class TaskAgentManager:
         # Looked at again: it may have been taken up, or let go, meanwhile.
         if self._held_by.get(session_id) != commission_id or self._closed or self._in_hand(commission_id):
             return
-        if commission is not None and commission.status not in ENDED_STATUSES:
+        if commission is not None and commission.status not in ENDED_STATUSES and not commission.resting:
             # It waits for the user, or for task agents it started.
             return
+        # (One that rests lets its session go like one that is over: nobody
+        # is at work on it until what it waits for comes, which may be
+        # hours, and other commissions of the session are worked on
+        # meanwhile. Woken, it waits for its session like any other.)
         del self._held_by[session_id]
         if self._queue:
             self._spawn(self._start_next())
+        # A note that waited because this commission was in the way may go now.
+        self._kick_waker()
 
     def _settle_hold_of(self, commission_id: str) -> None:
         """Have the hold on a commission's session looked at again, if it holds one.
@@ -1463,7 +1586,9 @@ class TaskAgentManager:
 
     def _on_commission_change(self, commission: Commission, previous: str | None) -> None:
         """A ledger listener: a commission that held its session without a place in a runtime is over."""
-        del previous
+        if previous == "waiting_user" and not self._closed:
+            # What was kept back while it waited for the user may go now.
+            self._kick_waker()
         session_id = commission.session_id
         if (
             not self._closed
@@ -1776,6 +1901,9 @@ class TaskAgentManager:
         # gone, ends what lasted for the run.
         if not (reason == "completed" and isinstance(inputs, int) and inputs < session.sent):
             self._run_over(commission_id)
+            # Whoever wrote to this session and asked to hear back is told
+            # that the turn is over: once, by the host, with no model asked.
+            await self._turn_over(commission_id, str(event.get("text") or ""))
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -1823,6 +1951,10 @@ class TaskAgentManager:
                     # Task agents it started are still at work. Their results
                     # arrive as messages and start its next run; it is not done.
                     return
+                if await self._rests(session, commission, event):
+                    # It asked to be woken (a time it set, word of a note it
+                    # sent) and that is still to come: it is not done either.
+                    return
                 # The run ended without a closing report: its last words are the result.
                 text = str(event.get("text") or "")
                 await self._end(
@@ -1857,6 +1989,64 @@ class TaskAgentManager:
             await self.abort(child.id)
         await self._close_session(session)
 
+    async def _rests(self, session: _Session, commission: Commission, event: dict[str, Any]) -> bool:
+        """Let a commission whose run ended rest, if something it asked to be woken for is still to come.
+
+        Returns whether it is left ``working``. Its session is closed in
+        the runtime, which gives its place back and lets go of the session
+        (``_settle_hold``); what it waits for takes it up again from what
+        was said (``hand_over``). With background jobs of the session
+        still running, the session stays open instead, idle, and keeps
+        its place: closing it would end them, and the one that finishes
+        starts the next run by itself. Never a task agent another one
+        started: its result is what the other waits for.
+        """
+        if commission.parent_id is not None:
+            return False
+        try:
+            pending = await self._ledger.wakes_pending(commission_id=commission.id)
+            if not pending:
+                return False
+            jobs = event.get("jobs")
+            if isinstance(jobs, int) and not isinstance(jobs, bool) and jobs > 0:
+                return True
+            if await self._ledger.rest(commission.id) is None:
+                # What it waited for came, or was dropped, this moment.
+                return False
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it ends as a run without a report does
+            logger.warning("looking whether a commission rests failed", exc_info=True)
+            return False
+        await self._close_session(session)
+        return True
+
+    async def _turn_over(self, commission_id: str, said: str) -> None:
+        """Tell the sessions that wrote to a commission and asked to hear back that its turn is over.
+
+        With what the turn ended on: its last words, or, where it ended
+        with a report and no words after it, what was reported. Written
+        to the ledger and handed over like any note; nothing waits for it
+        here, and a failure tells nobody and costs the turn nothing.
+        """
+        from config.nekoclaw_settings import SESSION_NOTICE_TEXT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        try:
+            text = said.strip()
+            if not text:
+                commission = await self._ledger.get(commission_id)
+                text = (commission.result_summary or "").strip() if commission is not None else ""
+            text = truncate_to_tokens(text, SESSION_NOTICE_TEXT_MAX_TOKENS)
+            written = await self._ledger.turn_over(commission_id, word=lambda _note: text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the sender is told it waited in vain when its time is up
+            logger.warning("telling the senders of notes that a turn is over failed", exc_info=True)
+            return
+        if written:
+            self._kick_waker()
+
     async def _on_usage(self, session: _Session) -> None:
         """Count one model request; a commission whose quota is used up fails.
 
@@ -1877,6 +2067,7 @@ class TaskAgentManager:
         except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
             logger.warning("counting a task agent's model request failed", exc_info=True)
             return
+        self._note_quota(bool(allowed))
         if allowed:
             return
         await self._fail(commission_id, _QUOTA_REASON)
@@ -1971,8 +2162,12 @@ class TaskAgentManager:
         if commission.parent_id is None and target != "cancelled":
             # Whoever stopped it knows; the task brain reports a stop when one is due.
             # The commission's own setting decides; the task agent's wish is the fallback.
+            # One that nobody dispatched (it was filed for a note from
+            # another session) is told with her next turn unless its task
+            # agent asks otherwise: nobody is waiting to hear of it.
+            unasked = "passive" if commission.source == "session" else "proactive"
             delivery = commission.delivery or (
-                suggested_delivery if suggested_delivery in ("proactive", "passive", "silent") else "proactive"
+                suggested_delivery if suggested_delivery in ("proactive", "passive", "silent") else unasked
             )
             report = self._reporter.task_result_report(
                 commission,
@@ -2028,45 +2223,58 @@ class TaskAgentManager:
         idle runtime closes idle sessions after a while. The result then
         queues it to be started again where its transcript ends.
         """
+        await self._wake_working(
+            parent_id, message, reason="its idle session was closed; a result takes it up again"
+        )
+
+    async def _wake_working(self, parent_id: str, message: str, *, reason: str) -> bool:
+        """Take up again a commission that is ``working`` with no session open in a runtime, ``message`` its next work.
+
+        Such a commission waits for something: for task agents it started
+        (``_wake_closed_parent``), or, resting, for what it asked to be
+        woken for (``hand_over``). It is queued and started where its
+        transcript ends, as soon as a place and its session are free.
+        Returns whether the message is on its way to it: handed over, or
+        going along with the work it is about to be given.
+        """
         if self._closed:
-            return
+            return False
         if parent_id in self._queue or parent_id in self._requeueing or parent_id in self._taking_up:
             # Already on its way back: this result goes along with it.
             self._notes.setdefault(parent_id, []).append(message)
-            return
+            return True
         parent = await self._ledger.get(parent_id)
         if parent is None or parent.route != "task_agent" or parent.status != "working":
-            return
+            return False
         if not await self._know_session(parent_id):
-            return
+            return False
         session = self._sessions.get(parent_id)
         if session is not None and session.ready and self._runtime_of(session) is not None:
             # It came back, and was given its work, while the ledger was read.
             await self._send_text(self._runtime_of(session), session, "steer", message)
-            return
+            return True
         if session is not None or parent_id in self._queue or parent_id in self._requeueing:
             # It is on its way back: this goes along with its work.
             self._notes.setdefault(parent_id, []).append(message)
-            return
+            return True
         self._requeueing.add(parent_id)
         try:
-            moved = await self._ledger.transition(
-                parent_id, "queued", reason="its idle session was closed; a result takes it up again"
-            )
+            moved = await self._ledger.transition(parent_id, "queued", reason=reason)
         finally:
             self._requeueing.discard(parent_id)
         if not moved.applied:
             # Not queued after all (it was stopped meanwhile, say).
             self._settle_hold_of(parent_id)
-            return
+            return False
         if self._closed:
             await self._ledger.transition(parent_id, "failed", reason=_SHUT_DOWN_REASON)
-            return
+            return False
         self._resume[parent_id] = message
         if parent_id not in self._queue:
             self._queue.append(parent_id)
         if len(self._sessions) < self.limit:
             self._spawn(self._start_next())
+        return True
 
     # -- driving ----------------------------------------------------------
 
@@ -2083,6 +2291,7 @@ class TaskAgentManager:
         self._notes.pop(commission_id, None)
         self._carried.pop(commission_id, None)
         self._resume.pop(commission_id, None)
+        self._prepaid_starts.discard(commission_id)
         session = self._sessions.get(commission_id)
         if session is None:
             # It may have held its session without a place in a runtime (it
@@ -2122,6 +2331,15 @@ class TaskAgentManager:
                 return False
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
             return await self._take_up_again(commission_id, text, still_wanted=still_wanted)
+        if session is None and commission.resting:
+            # It rests, waiting for something it asked to be woken for: the
+            # user's words wake it instead, and are its next work. It is
+            # under way all along, so a stop of everything finds it; what is
+            # asked here is whether that stop came before this sentence did.
+            if still_wanted is not None and not still_wanted():
+                return False
+            await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
+            return await self._wake_working(commission_id, text, reason=_WOKEN_REASON)
         if commission.status == "queued" or (session is not None and not session.ready and not session.closing):
             called_off = self._called_off(commission_id)
             if called_off is not None:
@@ -2486,6 +2704,14 @@ class TaskAgentManager:
             # What was kept for task agents is read like the files a task
             # agent works on: nobody is asked.
             category = "workdir_files"
+        if category in ("outside_read", "outside_write") and isinstance(path, str) and path:
+            # What another session left is read without asking, and its own
+            # directory is never written (``_rule_on_other_session``).
+            ruled = await self._rule_on_other_session(
+                session_id, path, writes=writes or category == "outside_write"
+            )
+            if ruled is not None:
+                return ruled
         if self._space is not None and category == "run_command":
             command, cwd = payload.get("command"), payload.get("cwd")
             if (isinstance(command, str) and await self._space.named_in(command)) or (
@@ -2902,6 +3128,604 @@ class TaskAgentManager:
         await self.abort(target.id)
         return None
 
+    # -- other sessions and wakes -----------------------------------------
+    #
+    # Sessions write to one another, look into what another left, and ask
+    # to be woken later. Every turn is some commission's all the same: a
+    # place, the quota, permissions, the gateway token, reports and events
+    # are a commission's, and nothing here runs a session outside one.
+    #
+    # * What a commission asked for itself (a time it set, word of a note
+    #   it sent) is that commission's: handed to it alone, and dropped when
+    #   it is over. While it waits for that with its run ended it rests
+    #   (``_rests``), and is woken through ``_wake_working``.
+    # * What is for a session (a note another session wrote) goes to the
+    #   commission the session is at: steered into the one at work, waking
+    #   the one that rests, kept back while one waits for the user. With no
+    #   commission under way, one is filed for it in that session
+    #   (``_file_for_notes``), which follows up the session's last.
+
+    async def hand_over(
+        self,
+        session_id: str,
+        owner: str | None,
+        wakes: list[WakeRequest],
+        *,
+        still_wanted: Callable[[], bool] | None = None,
+    ) -> Handover:
+        """Hand a session what waits for it: the wake requests of one owner, due now. See ``Handover``.
+
+        ``owner`` is the commission that asked for them, or None for what
+        is for the session, whatever it is at. Called by ``SessionWakes``,
+        one call at a time. ``still_wanted`` says whether a stop of
+        everything has come since these were read: a commission is not
+        filed after one.
+        """
+        from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
+
+        ids = [wake.id for wake in wakes]
+        if self._closed or not ids:
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
+        target = await self._ledger.get_session(session_id)
+        if target is None:
+            await self._ledger.wakes_void(ids, "its session is not on record")
+            return Handover("dropped")
+        if owner is not None:
+            commission = await self._ledger.get(owner)
+            if commission is None or commission.status in ENDED_STATUSES:
+                # Dropped with the commission as a rule; these were written
+                # as it ended.
+                await self._ledger.wakes_void(ids, COMMISSION_OVER_REASON)
+                return Handover("dropped")
+            return await self._hand_to(commission, target, wakes)
+        holder = self._held_by.get(session_id)
+        commission = await self._ledger.get(holder) if holder is not None else None
+        if commission is None or commission.status in ENDED_STATUSES:
+            # Nobody holds the session, or one that is over and on its way
+            # out: what the session is at is then the commission that rests
+            # in it, or the one that waits for a place to start in it.
+            waiting = next((item for item in self._queue if self._session_of.get(item) == session_id), None)
+            commission = await self._ledger.get(waiting) if waiting is not None else None
+            if commission is None or commission.status in ENDED_STATUSES:
+                commission = await self._ledger.resting_in(session_id)
+        if commission is not None:
+            return await self._hand_to(commission, target, wakes)
+        return await self._file_for_notes(target, wakes, still_wanted)
+
+    async def _hand_to(self, commission: Commission, target: Session, wakes: list[WakeRequest]) -> Handover:
+        """Hand what waits for a session to the commission that is under way in it."""
+        from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
+
+        ids = [wake.id for wake in wakes]
+        commission_id = commission.id
+        if commission.status == "waiting_user":
+            # Not in between its question and the answer, and not so that
+            # it gets to work with its question open. It goes once the
+            # commission no longer waits (``_on_commission_change``).
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
+        session = self._sessions.get(commission_id)
+        if session is not None and session.closing:
+            # Its runtime session is on its way out (it came to rest this
+            # moment): what is sent now would be lost with it.
+            return Handover("held", _CLOSING_RETRY_SECONDS)
+        text = await self._wake_text(target, wakes, answerable=commission.parent_id is None)
+        if not text:
+            await self._ledger.wakes_void(ids, "nothing was left of it to hand over")
+            return Handover("dropped")
+        if session is not None and session.ready and self._runtime_of(session) is not None:
+            if commission.status != "working":
+                return Handover("held", _CLOSING_RETRY_SECONDS)
+            # Before its next model request; an idle session is started by it.
+            await self._send_text(self._runtime_of(session), session, "steer", text)
+        elif self._in_hand(commission_id):
+            # Being started, or waiting for a place: it goes along with the
+            # work it is about to be given.
+            self._notes.setdefault(commission_id, []).append(text)
+        elif commission.status == "working":
+            # It rests, or waits for task agents it started with its
+            # session closed: taken up again, with this as its next work.
+            held = await self._may_start(commission_id)
+            if held is not None:
+                return held
+            if not await self._wake_working(commission_id, text, reason=_WOKEN_REASON):
+                self._prepaid_starts.discard(commission_id)
+                return Handover("held", WAKE_HELD_RETRY_SECONDS)
+        else:
+            # Queued in the ledger and in nobody's hands here: not this
+            # process's to start.
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
+        await self._ledger.wakes_fire(ids, into=commission_id)
+        return Handover("handed")
+
+    async def _may_start(self, key: str) -> Handover | None:
+        """Say why a turn must not be started for what waits right now, or None when it may.
+
+        NekoClaw switched off, or no model to work with: it stays where it
+        is and is tried again later. Otherwise the first model request of
+        the turn is counted here, ahead of it: with the quota used up
+        nothing is woken (the commission would fail on its way up, and
+        what it waited for would be lost), and it is tried again when the
+        quota has a request left, at the latest after the next midnight.
+        """
+        from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
+
+        available, _reason = await self.available()
+        if not available:
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
+        if self._meter is None or key in self._prepaid_starts:
+            return None
+        now = self._ledger._clock()
+        if self._quota_out and now < self._quota_asked_again_at:
+            # Known to be used up, and nothing was counted since.
+            return Handover("held", self._quota_asked_again_at - now)
+        try:
+            allowed = await self._meter(key)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
+            logger.warning("counting a task agent's model request failed", exc_info=True)
+            return None
+        if not allowed:
+            # Asked and refused again: the next asking is a day on.
+            self._quota_out = False
+        self._note_quota(bool(allowed))
+        if not allowed:
+            return Handover("held", self._quota_asked_again_at - now)
+        self._prepaid_starts.add(key)
+        return None
+
+    async def _file_for_notes(
+        self, target: Session, wakes: list[WakeRequest], still_wanted: Callable[[], bool] | None
+    ) -> Handover:
+        """File a commission in a session for the notes that wait for it, nothing being under way there.
+
+        The commission follows up the last one of the session, is the
+        character's the session works for, and is about the notes: it
+        takes a place, counts against the quota, asks the user where it
+        has to, and reports to that character like any other. Nothing of
+        what the user allowed an earlier commission "for this session"
+        comes with it: a note carries nobody's permissions.
+        """
+        from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS, DISPATCH_TEXT_MAX_TOKENS, WAKE_HELD_RETRY_SECONDS
+        from config.prompts.prompts_nekoclaw_sessions import SESSION_COMMISSION_TITLE
+        from nekoclaw.host.task_brain import _texts
+        from utils.tokenize import truncate_to_tokens
+
+        ids = [wake.id for wake in wakes]
+        messages = await self._ledger.messages_of(ids)
+        notes = [messages[wake.id] for wake in wakes if wake.id in messages and messages[wake.id].kind == "note"]
+        if not notes:
+            # Only a note has a commission filed for it.
+            await self._ledger.wakes_void(ids, COMMISSION_OVER_REASON)
+            return Handover("dropped")
+        if target.kind == "child" or target.status == "cleared":
+            reason = "its session was another task agent's helper" if target.kind == "child" else "its session's record was removed"
+            await self._ledger.wakes_void(ids, reason)
+            return Handover("dropped")
+
+        def stopped() -> bool:
+            return still_wanted is not None and not still_wanted()
+
+        if stopped():
+            # A stop of everything is dropping these this moment.
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
+        held = await self._may_start(target.id)
+        if held is not None:
+            return held
+        self._prepaid_starts.discard(target.id)
+        last = await self._ledger.last_commission(target.id)
+        sender = await self._ledger.get_session(notes[0].from_session)
+        lang = (last.lang if last is not None else None) or "en"
+        title = _texts(SESSION_COMMISSION_TITLE, lang).format(name=sender.name if sender is not None else "?")
+        commission, _created = await self._ledger.create(
+            lanlan_name=target.lanlan_name,
+            title=truncate_to_tokens(title, COMMISSION_TITLE_MAX_TOKENS),
+            dispatch_text=truncate_to_tokens(notes[0].body, DISPATCH_TEXT_MAX_TOKENS),
+            source="session",
+            route="task_agent",
+            session_id=target.id,
+            continues=last.id if last is not None else None,
+            project=target.project,
+            workdir=target.workdir,
+            conversation_id=last.conversation_id if last is not None else None,
+            lang=last.lang if last is not None else None,
+            chain_depth=max(note.depth for note in notes),
+        )
+        fired = await self._ledger.wakes_fire(ids, into=commission.id)
+        if not fired or stopped():
+            # Everything was stopped while it was being filed: the stop
+            # dropped the notes, or looked for commissions before this one
+            # was there. It is stopped here, as it would have been there.
+            await self._ledger.transition(commission.id, "cancelled", reason=_STOPPED_MEANWHILE_REASON)
+            return Handover("dropped")
+        # Counted above, for the session; it is this commission's first request.
+        if self._meter is not None:
+            self._prepaid_starts.add(commission.id)
+        await self.submit(commission)
+        return Handover("handed")
+
+    async def _whose(self, other: Session | None, lanlan_name: str) -> str:
+        """Say whom a session works for, as a frame says it to a task agent that works for ``lanlan_name``."""
+        from config.prompts import prompts_nekoclaw_sessions as words
+
+        if other is None:
+            return words.SESSION_WHOSE.format(lanlan_name="?")
+        template = words.SESSION_WHOSE if other.lanlan_name == lanlan_name else words.SESSION_WHOSE_OTHER
+        return template.format(lanlan_name=other.lanlan_name)
+
+    async def _framed_note(self, note: Any, lanlan_name: str, *, answerable: bool) -> str:
+        """Return a note from another session as its receiver reads it: framed, with a marker made for this once."""
+        import secrets
+
+        from config.prompts import prompts_nekoclaw_sessions as words
+
+        nonce = secrets.token_hex(8)
+        sender = await self._ledger.get_session(note.from_session)
+        intro = (words.SESSION_NOTE_FRAME if answerable else words.SESSION_NOTE_FRAME_NO_ANSWER).format(
+            name=sender.name if sender is not None else note.from_session,
+            whose=await self._whose(sender, lanlan_name),
+            address=note.from_session[:8],
+            nonce=nonce,
+        )
+        return words.frame(intro, note.body, nonce)
+
+    async def _wake_text(self, target: Session, wakes: list[WakeRequest], *, answerable: bool) -> str:
+        """Return what a session is told for the wake requests handed to it now, each thing in a frame of its own."""
+        import secrets
+
+        from config.nekoclaw_settings import SESSION_NOTICE_WAIT_SECONDS
+        from config.prompts import prompts_nekoclaw_sessions as words
+
+        messages = await self._ledger.messages_of([wake.id for wake in wakes])
+        parts: list[str] = []
+        for wake in wakes:
+            nonce = secrets.token_hex(8)
+            message = messages.get(wake.id)
+            if wake.reason == "timer":
+                intro = words.WAKE_TIMER_NOTICE.format(set_at=_clock_time(wake.created_at), nonce=nonce)
+                parts.append(words.frame(intro, wake.note, nonce))
+            elif wake.reason == "notice_expiry" and message is not None:
+                other = await self._ledger.get_session(message.to_session)
+                parts.append(
+                    words.SESSION_EXPIRED_NOTICE.format(
+                        name=other.name if other is not None else message.to_session,
+                        hours=round(SESSION_NOTICE_WAIT_SECONDS / 3600),
+                    )
+                )
+            elif wake.reason == "message" and message is not None and message.kind == "note":
+                parts.append(await self._framed_note(message, target.lanlan_name, answerable=answerable))
+            elif wake.reason == "message" and message is not None and message.kind == "done":
+                other = await self._ledger.get_session(message.from_session)
+                at = await self._ledger.get(message.from_commission) if message.from_commission else None
+                state = "resting" if at is not None and at.resting else at.status if at is not None else "over"
+                intro = words.SESSION_DONE_FRAME.format(
+                    name=other.name if other is not None else message.from_session, state=state, nonce=nonce
+                )
+                parts.append(words.frame(intro, message.body or words.SESSION_DONE_NOTHING_SAID, nonce))
+        return "\n\n".join(parts)
+
+    async def _caller(self, session_id: str) -> Commission:
+        """Return the commission a callback comes from; raises when there is none."""
+        commission = await self._ledger.get(self._at_work_in(session_id))
+        if commission is None or not commission.session_id:
+            raise RuntimeError("unknown commission")
+        return commission
+
+    async def _session_named(self, name: str) -> Session:
+        """Return the one session a task agent means by a name or an id; raises with what to do otherwise."""
+        from config.prompts.prompts_nekoclaw_sessions import MESSAGE_REFUSALS
+
+        found = await self._ledger.sessions_named(name)
+        if not found:
+            raise RuntimeError(MESSAGE_REFUSALS["unknown"].format(name=name))
+        if len(found) > 1:
+            ids = ", ".join(f"[{item.id[:8]}] of {item.lanlan_name}" for item in found[:5])
+            raise RuntimeError(MESSAGE_REFUSALS["ambiguous"].format(name=name, ids=ids))
+        return found[0]
+
+    async def _state_of(self, session: Session) -> str:
+        """Say where a session stands right now, as ``list_sessions`` tells it. No runtime is asked."""
+        from config.prompts.prompts_nekoclaw_sessions import SESSION_STATE_WORDS as words
+
+        holder = self._held_by.get(session.id)
+        if holder is not None:
+            commission = await self._ledger.get(holder)
+            if commission is not None and commission.status == "waiting_user":
+                return words["waiting"]
+            if commission is not None and commission.status not in ENDED_STATUSES:
+                live = self._sessions.get(holder)
+                return words["at_work"] if live is None or live.ready else words["starting"]
+        resting = await self._ledger.resting_in(session.id)
+        if resting is not None:
+            pending = await self._ledger.wakes_pending(commission_id=resting.id)
+            if pending:
+                return words["resting"].format(time=_clock_time(pending[0].due_at))
+        return words["cleared"] if session.status == "cleared" else words["closed"]
+
+    async def _cb_session_list(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from config.nekoclaw_settings import (
+            SESSION_LIST_COMMISSIONS,
+            SESSION_LIST_LOOKED_AT,
+            SESSION_LIST_ROW_MAX_TOKENS,
+            SESSION_LIST_ROWS,
+        )
+        from config.prompts import prompts_nekoclaw_sessions as words
+        from nekoclaw.host.selection import similarity
+        from utils.tokenize import truncate_to_tokens
+
+        caller = await self._caller(session_id)
+        project = payload.get("project")
+        rows = await self._ledger.find_sessions(
+            project=str(project) if project else None,
+            limit=SESSION_LIST_LOOKED_AT,
+            commissions_each=SESSION_LIST_COMMISSIONS,
+        )
+        # A task agent another one started is that one's business, as it is
+        # in every list she is shown: it is reached through its lead.
+        rows = [row for row in rows if row.session.kind != "child"]
+        query = " ".join(str(payload.get("query") or "").split())
+        if query:
+            folded = query.casefold()
+
+            def score(row: SessionRow) -> float:
+                texts = [row.session.name, row.session.project or "", *(item.title for item in row.commissions)]
+                if any(folded in text.casefold() for text in texts):
+                    return 1.0
+                return max((similarity(query, text) for text in texts if text), default=0.0)
+
+            scored = [(score(row), index, row) for index, row in enumerate(rows)]
+            # The best match first; among equals, the one last in use.
+            rows = [row for value, _index, row in sorted(scored, key=lambda item: (-item[0], item[1])) if value > 0]
+        if not rows:
+            return {"text": words.SESSION_LIST_NONE}
+        pages = (len(rows) + SESSION_LIST_ROWS - 1) // SESSION_LIST_ROWS
+        try:
+            page = min(max(int(payload.get("page") or 1), 1), pages)
+        except (TypeError, ValueError):
+            page = 1
+        lines = [words.SESSION_LIST_HEADER.format(page=page, pages=pages, total=len(rows))]
+        for row in rows[(page - 1) * SESSION_LIST_ROWS : page * SESSION_LIST_ROWS]:
+            session = row.session
+            line = words.SESSION_LIST_ROW.format(
+                name=session.name,
+                id=session.id[:8],
+                whose=await self._whose(session, caller.lanlan_name),
+                project=session.project or words.SESSION_LIST_NO_PROJECT,
+                state=await self._state_of(session),
+                title=row.commissions[0].title if row.commissions else words.SESSION_LIST_NO_COMMISSION,
+                active=_clock_time(session.last_active_at),
+            )
+            line = truncate_to_tokens(line, SESSION_LIST_ROW_MAX_TOKENS)
+            lines.append(line + (words.SESSION_LIST_THIS if session.id == caller.session_id else ""))
+        return {"text": "\n".join(lines)}
+
+    async def _cb_session_read(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import secrets
+
+        from config import nekoclaw_settings as settings
+        from config.prompts import prompts_nekoclaw_sessions as words
+        from nekoclaw.host import records
+        from utils.tokenize import truncate_to_tokens
+
+        caller = await self._caller(session_id)
+        target = await self._session_named(str(payload.get("session") or ""))
+        what = str(payload.get("what") or "results")
+        nonce = secrets.token_hex(8)
+
+        async def framed(of: str, body: str) -> str:
+            intro = words.SESSION_RECORD_FRAME.format(
+                name=target.name, whose=await self._whose(target, caller.lanlan_name), what=of, nonce=nonce
+            )
+            return words.frame(intro, body, nonce)
+
+        if what == "results":
+            blocks: list[str] = []
+            for item in await self._ledger.select(session_id=target.id, limit=settings.SESSION_RESULTS_COMMISSIONS):
+                standing = "resting" if item.resting else item.status
+                lines = [f'"{item.title}" ({standing}, last changed {_clock_time(item.updated_at)})']
+                outcome = item.result_summary or item.status_reason
+                if outcome:
+                    lines.append(f"Outcome: {outcome}")
+                review = None
+                if self._space is not None:
+                    try:
+                        review = await self._space.read_review(item.id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - told without its review
+                        logger.warning("reading the review of a commission for another session failed", exc_info=True)
+                if review is not None and review.content.strip():
+                    lines.append(f"Review: {review.content.strip()}")
+                blocks.append("\n".join(lines))
+            body = truncate_to_tokens("\n\n".join(blocks), settings.SESSION_RESULTS_MAX_TOKENS)
+            return {"text": await framed(words.RECORD_WHAT_RESULTS, body or "(no commission was worked on in it)")}
+
+        def place() -> Any:
+            # Where what was said is, and whether the built-in runtime keeps it there.
+            session_dir = self._session_dir_of(target)
+            return session_dir / TRANSCRIPT_NAME, _in_builtin(session_dir), _in_dsh(session_dir)
+
+        path, in_builtin, in_dsh = await asyncio.to_thread(place)
+        if not in_builtin and in_dsh:
+            return {"text": words.RECORD_IN_DSH}
+        try:
+            if what == "search":
+                query = str(payload.get("query") or "")
+                hits, total = await asyncio.to_thread(
+                    records.search_record,
+                    path,
+                    query,
+                    hits=settings.SESSION_SEARCH_HITS,
+                    excerpt_tokens=settings.SESSION_SEARCH_EXCERPT_MAX_TOKENS,
+                    max_bytes=settings.SESSION_RECORD_MAX_BYTES,
+                )
+                if not hits:
+                    return {"text": words.RECORD_SEARCH_NONE}
+                body = "\n".join(f"#{hit.position} {hit.label}: {hit.excerpt}" for hit in hits)
+                of = words.RECORD_WHAT_SEARCH.format(query=" ".join(query.split()), shown=len(hits), total=total)
+                tail = words.RECORD_SEARCH_NEXT + (" " + words.RECORD_SEARCH_MORE if total > len(hits) else "")
+                return {"text": await framed(of, body) + "\n" + tail}
+            at = payload.get("at")
+            stretch = await asyncio.to_thread(
+                records.read_record,
+                path,
+                int(at) if at is not None else None,
+                segment_tokens=settings.SESSION_READ_SEGMENT_MAX_TOKENS,
+                entry_tokens=settings.SESSION_READ_ENTRY_MAX_TOKENS,
+                max_bytes=settings.SESSION_RECORD_MAX_BYTES,
+            )
+        except records.RecordError as exc:
+            raise RuntimeError(str(exc)) from exc
+        of = words.RECORD_WHAT_STRETCH.format(first=stretch.first, last=stretch.last, entries=stretch.entries)
+        tail = (
+            words.RECORD_NEXT.format(following=stretch.following) if stretch.following is not None else words.RECORD_END
+        )
+        return {"text": await framed(of, stretch.text) + "\n" + tail}
+
+    async def _cb_session_send(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        import math
+
+        from config import nekoclaw_settings as settings
+        from config.prompts import prompts_nekoclaw_sessions as words
+        from utils.tokenize import acount_tokens
+
+        refusals = words.MESSAGE_REFUSALS
+        caller = await self._caller(session_id)
+        if caller.parent_id is not None:
+            raise RuntimeError(refusals["from_child"])
+        available, _reason = await self.available()
+        if not available:
+            raise RuntimeError(refusals["switched_off"])
+        target = await self._session_named(str(payload.get("to") or ""))
+        if target.id == caller.session_id:
+            raise RuntimeError(refusals["self"])
+        if target.kind == "child":
+            raise RuntimeError(refusals["child"].format(name=target.name))
+        if target.status == "cleared":
+            raise RuntimeError(refusals["cleared"].format(name=target.name))
+        body = str(payload.get("message") or "").strip()
+        tokens = await acount_tokens(body)
+        if tokens > settings.SESSION_MESSAGE_MAX_TOKENS:
+            raise RuntimeError(refusals["too_long"].format(tokens=tokens, limit=settings.SESSION_MESSAGE_MAX_TOKENS))
+        depth = int(caller.chain_depth or 0) + 1
+        if depth > settings.SESSION_MESSAGE_MAX_DEPTH:
+            raise RuntimeError(refusals["too_deep"])
+        notify = bool(payload.get("notify_when_done"))
+        message, refusal, wait = await self._ledger.message_add(
+            from_session=str(caller.session_id),
+            from_commission=caller.id,
+            to_session=target.id,
+            body=body,
+            depth=depth,
+            notify_when_done=notify,
+            notice_after=settings.SESSION_NOTICE_WAIT_SECONDS,
+            limits=MessageLimits(
+                target_interval=settings.SESSION_MESSAGE_TARGET_INTERVAL_SECONDS,
+                per_hour=settings.SESSION_MESSAGES_PER_HOUR,
+                queue_max=settings.SESSION_MESSAGE_QUEUE_MAX,
+                dedup_seconds=settings.SESSION_MESSAGE_DEDUP_SECONDS,
+            ),
+        )
+        if message is None:
+            raise RuntimeError(
+                refusals[refusal].format(
+                    name=target.name,
+                    wait=math.ceil(wait),
+                    interval=round(settings.SESSION_MESSAGE_TARGET_INTERVAL_SECONDS),
+                    limit=settings.SESSION_MESSAGES_PER_HOUR,
+                )
+            )
+        self._kick_waker()
+        holder = self._held_by.get(target.id)
+        at = await self._ledger.get(holder) if holder is not None else None
+        waiting = at is not None and at.status == "waiting_user"
+        said = (words.MESSAGE_QUEUED_WAITING if waiting else words.MESSAGE_QUEUED).format(name=target.name)
+        if notify:
+            said += words.MESSAGE_QUEUED_NOTIFY.format(hours=round(settings.SESSION_NOTICE_WAIT_SECONDS / 3600))
+        return {"message": said}
+
+    async def _cb_wake_schedule(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from config import nekoclaw_settings as settings
+        from config.prompts import prompts_nekoclaw_sessions as words
+        from utils.tokenize import truncate_to_tokens
+
+        caller = await self._caller(session_id)
+        if caller.parent_id is not None:
+            raise RuntimeError(words.WAKE_REFUSALS["from_child"])
+        try:
+            asked = float(payload.get("delay_seconds") or 0)
+        except (TypeError, ValueError):
+            asked = 0.0
+        delay = min(max(asked, settings.WAKE_MIN_DELAY_SECONDS), settings.WAKE_MAX_DELAY_SECONDS)
+        note = truncate_to_tokens(" ".join(str(payload.get("note") or "").split()), settings.WAKE_NOTE_MAX_TOKENS)
+        due_at = self._ledger._clock() + delay
+        wake, refusal = await self._ledger.wake_add(
+            session_id=str(caller.session_id),
+            commission_id=caller.id,
+            note=note,
+            due_at=due_at,
+            depth=int(caller.chain_depth or 0),
+            pending_max=settings.WAKE_PENDING_MAX,
+            daily_max=settings.WAKE_DAILY_MAX,
+        )
+        if wake is None:
+            limit = settings.WAKE_PENDING_MAX if refusal == "too_many_pending" else settings.WAKE_DAILY_MAX
+            raise RuntimeError(words.WAKE_REFUSALS[refusal].format(limit=limit))
+        self._kick_waker()
+        said = words.WAKE_SET.format(at=_clock_time(due_at), minutes=round(delay / 60))
+        if asked < delay:
+            said += words.WAKE_SET_MOVED.format(seconds=round(settings.WAKE_MIN_DELAY_SECONDS))
+        elif asked > delay:
+            said += words.WAKE_SET_CAPPED.format(days=round(settings.WAKE_MAX_DELAY_SECONDS / 86400))
+        return {"message": said}
+
+    async def _rule_on_other_session(self, commission_id: str, path: str, *, writes: bool) -> dict[str, Any] | None:
+        """Rule on a path outside a task agent's working directory that lies in a place of another session; None when it does not.
+
+        What another session left is read without asking: the files in
+        its working directory, and what it kept in its own directory (the
+        output of its tools). Only places the ledger has on record for a
+        session count, so this opens no path the host does not know as a
+        session's. Its record itself is not read as a file: it is long,
+        and ``read_session`` hands it over a stretch at a time. Reading
+        outside working directories that the settings forbid stays
+        forbidden.
+
+        Nothing is written into another session's own directory, whatever
+        the settings allow: a session's record is its own. A working
+        directory that lies elsewhere (a project folder of the user's) is
+        ruled on as any path outside the working directory is.
+        """
+        from pathlib import Path
+
+        from config.prompts.prompts_nekoclaw_sessions import SESSION_RECORD_READ_REFUSED, SESSION_WRITE_REFUSED
+        from nekoclaw.runtime.permissions import is_inside
+        from nekoclaw.runtime.snapshot import SYSTEM_FILE
+
+        own = self._session_of.get(commission_id)
+        places = [item for item in await self._ledger.session_places() if item[0] != own]
+        if not places:
+            return None
+
+        def look() -> tuple[bool, bool]:
+            # Whether the path is in another session's own directory, and
+            # whether it is in another session's working directory.
+            target = Path(path)
+            in_own = any(session_dir and is_inside(target, Path(session_dir)) for _id, _workdir, session_dir in places)
+            in_work = any(workdir and is_inside(target, Path(workdir)) for _id, workdir, _session_dir in places)
+            return in_own, in_work
+
+        in_own, in_work = await asyncio.to_thread(look)
+        if writes:
+            return {"allow": False, "reason": SESSION_WRITE_REFUSED} if in_own else None
+        if not in_own and not in_work:
+            return None
+        if await self._permissions.forbidden("outside_read"):
+            return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
+        if in_own and Path(path).name in (TRANSCRIPT_NAME, SYSTEM_FILE, DSH_SESSION_NAME):
+            return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED}
+        return PermissionDecision(True).to_json()
+
     # -- shutdown ---------------------------------------------------------
 
     async def shutdown(self) -> None:
@@ -2933,6 +3757,9 @@ class TaskAgentManager:
                     item.route == "task_agent"
                     and item.host_instance == self._ledger.instance
                     and item.id not in self._sessions
+                    # One that rests is not under way in this process: what
+                    # it waits for is on record and wakes it in the next.
+                    and not item.resting
                 ):
                     await self._ledger.transition(item.id, "failed", reason=_SHUT_DOWN_REASON)
         for _name, runtime in self._runtimes.take_all():

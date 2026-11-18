@@ -2211,7 +2211,7 @@ async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hos
     assert sub.lanlan_name == "Lan"
     # The child got its part as its work and may not start task agents itself.
     child_spec = next(spec for spec in specs if not spec.top_level)
-    assert child_spec.disabled_tools == ["subagent"]
+    assert child_spec.disabled_tools == ["subagent", "message_session", "schedule_wake"]
     assert child.requests[0][-1]["content"].startswith("Your part: count the files\nCount the files in the folder.")
     assert "another task agent" in child.requests[0][0]["content"]
     assert "You work for Lan" not in child.requests[0][0]["content"]
