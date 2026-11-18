@@ -97,6 +97,8 @@ class ChatSyncWriter:
         works; replacing one also drops the state that thread guarded with it.
         """
         self._file_lock = self._new_file_lock()
+        # local_visibility_trusted() vouches only for heads this process verified itself.
+        self._trusted_heads = None
         # RLock._is_owned is private but present in CPython's C and Python RLocks (project pins 3.11).
         if not self._mutex._is_owned():
             self._mutex = threading.RLock()
