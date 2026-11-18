@@ -21,7 +21,7 @@ const messageActionSchema = z.object({
   action: z.string().min(1),
   variant: z.enum(['primary', 'secondary', 'danger']).optional(),
   disabled: z.boolean().optional(),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
 });
 
 const textBlockSchema = z.object({
@@ -67,9 +67,9 @@ export const htmlCardBlockSchema = z.object({
   html: z.string(),
   css: z.string().default(''),
   summary: z.string(),
-  actions: z.record(z.object({
+  actions: z.record(z.string(), z.object({
     entry: z.string().min(1),
-    args: z.record(z.unknown()).optional(),
+    args: z.record(z.string(), z.unknown()).optional(),
   })).default({}),
 });
 export type HtmlCard = z.infer<typeof htmlCardBlockSchema>;
@@ -319,12 +319,12 @@ export const chatWindowPropsSchema = z.object({
   compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
   onCompactChatStateChange: z.function()
-    .args(compactChatStateSchema)
-    .returns(z.void())
+    .input([compactChatStateSchema], z.unknown())
+    .output(z.void())
     .optional(),
   onCompactMinimizeRequest: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
@@ -342,86 +342,86 @@ export const chatWindowPropsSchema = z.object({
   compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
   compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
   onMessageAction: z.function()
-    .args(chatMessageSchema, messageActionSchema)
-    .returns(z.void())
+    .input([chatMessageSchema, messageActionSchema], z.unknown())
+    .output(z.void())
     .optional(),
   onComposerImportImage: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   onComposerScreenshot: z.function()
-    .args()
+    .input([], z.unknown())
     // 宿主的 handleComposerScreenshot 结尾是 return handled（布尔）——PC 主进程按 F4 时
     // 走 resize-drag-and-api.js 暴露的 triggerComposerScreenshot 读这个返回值，决定要不要
     // 回落到旧的 Pet 截图路径，所以返回值不能去掉。声明成 z.void() 会让 zod 的校验壳在
     // 宿主函数跑完之后抛 invalid_return_type，从聊天面板每点一次截图就往 window 抛一个
     // 未捕获错误（debug-health.js 的全局 error 计数会跟着涨）。
-    .returns(z.unknown())
+    .output(z.unknown())
     .optional(),
   onComposerRemoveAttachment: z.function()
-    .args(z.string())
-    .returns(z.void())
+    .input([z.string()], z.unknown())
+    .output(z.void())
     .optional(),
   onComposerSubmit: z.function()
-    .args(composerSubmitSchema)
-    .returns(z.void())
+    .input([composerSubmitSchema], z.unknown())
+    .output(z.void())
     .optional(),
   onAvatarInteraction: z.function()
-    .args(avatarInteractionPayloadSchema)
-    .returns(z.void())
+    .input([avatarInteractionPayloadSchema], z.unknown())
+    .output(z.void())
     .optional(),
   onAvatarToolStateChange: z.function()
-    .args(avatarToolStatePayloadSchema)
-    .returns(z.void())
+    .input([avatarToolStatePayloadSchema], z.unknown())
+    .output(z.void())
     .optional(),
   onJukeboxClick: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   onAvatarGeneratorClick: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   onExportConversationClick: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   onTranslateToggle: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   onGalgameModeToggle: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   onGalgameOptionSelect: z.function()
-    .args(galgameOptionSchema)
-    .returns(z.void())
+    .input([galgameOptionSchema], z.unknown())
+    .output(z.void())
     .optional(),
   onTheaterSubmit: z.function()
-    .args(z.string())
-    .returns(z.void())
+    .input([z.string()], z.unknown())
+    .output(z.void())
     .optional(),
   onTheaterSuggestedInputSelect: z.function()
-    .args(z.string())
-    .returns(z.void())
+    .input([z.string()], z.unknown())
+    .output(z.void())
     .optional(),
   onTheaterEnd: z.function()
-    .args()
-    .returns(z.void())
+    .input([], z.unknown())
+    .output(z.void())
     .optional(),
   visitBar: visitBarSchema.optional(),
   onVisitBarAction: z.function()
-    .args(z.string())
-    .returns(z.void())
+    .input([z.string()], z.unknown())
+    .output(z.void())
     .optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
   onChoiceSelect: z.function()
     // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
     // 任意 z.string() 会让 zod 验证变松。
-    .args(choiceOptionSchema, choicePromptSourceSchema)
-    .returns(z.void())
+    .input([choiceOptionSchema, choicePromptSourceSchema], z.unknown())
+    .output(z.void())
     .optional(),
 });
 

@@ -1,4 +1,8 @@
-import { ZodError } from 'zod';
+import { ZodError, z } from 'zod';
+
+// zod 4 的函数包装器（z.function().implement）在调用时用核心层 parse，抛的是
+// z.core.$ZodError（classic ZodError 的父类），不是 ZodError 本身。
+const ZodCallbackError = z.core.$ZodError;
 import { parseChatMessage, parseChatWindowProps } from './message-schema';
 
 describe('message-schema', () => {
@@ -160,7 +164,7 @@ describe('message-schema', () => {
       intensity: 'normal',
       touchZone: 'head',
       timestamp: Date.now(),
-    } as never)).toThrow(ZodError);
+    } as never)).toThrow(ZodCallbackError);
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
   });
 
@@ -185,7 +189,20 @@ describe('message-schema', () => {
     });
     const props = parseChatWindowProps({ onComposerImportImage });
 
-    expect(() => props.onComposerImportImage?.()).toThrow(ZodError);
+    expect(() => props.onComposerImportImage?.()).toThrow(ZodCallbackError);
+  });
+
+  it('tolerates extra trailing arguments on validated host callbacks like zod 3 did', () => {
+    // zod 3 的 .args(...) 自带 rest(z.unknown())，多传的参数不会被拒；zod 4 的 .input([...])
+    // 默认不带 rest，所以 schema 里显式补了 z.unknown() rest。这里钉住这个兼容行为。
+    const onJukeboxClick = vi.fn();
+    const onTheaterSubmit = vi.fn();
+    const props = parseChatWindowProps({ onJukeboxClick, onTheaterSubmit });
+
+    expect(() => (props.onJukeboxClick as (...args: unknown[]) => void)({ type: 'click' })).not.toThrow();
+    expect(() => (props.onTheaterSubmit as (...args: unknown[]) => void)('hi', { extra: true })).not.toThrow();
+    expect(onTheaterSubmit).toHaveBeenCalledWith('hi', { extra: true });
+    expect(() => (props.onTheaterSubmit as (...args: unknown[]) => void)(42)).toThrow(ZodCallbackError);
   });
 
   it('keeps validated host callback identities stable across repeated prop parsing', () => {
@@ -195,7 +212,7 @@ describe('message-schema', () => {
 
     expect(firstProps.onAvatarToolStateChange).toBe(secondProps.onAvatarToolStateChange);
     expect(firstProps.onAvatarToolStateChange).not.toBe(onAvatarToolStateChange);
-    expect(() => secondProps.onAvatarToolStateChange?.({ active: 'yes' } as never)).toThrow(ZodError);
+    expect(() => secondProps.onAvatarToolStateChange?.({ active: 'yes' } as never)).toThrow(ZodCallbackError);
   });
 
   it('preserves an optional character reaction without changing legacy messages', () => {
