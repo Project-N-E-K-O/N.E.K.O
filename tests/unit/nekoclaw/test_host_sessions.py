@@ -1756,6 +1756,9 @@ async def test_every_commission_says_in_which_language_to_answer(hosts, tmp_path
     opened_second = next(text for text in said if text.startswith(f"Commission {second.commission_id}\n"))
     assert opened_first.endswith(runtime_texts.REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
     assert opened_second.endswith(runtime_texts.REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "Japanese"))
+    # Named there whatever the sentence says around it.
+    assert "English" in opened_first.rsplit("\n\n", 1)[-1]
+    assert "Japanese" in opened_second.rsplit("\n\n", 1)[-1]
     (system,) = [str(message["content"]) for message in request if message.get("role") == "system"]
     assert runtime_texts.USER_LANGUAGE_GUIDANCE in system
     assert "English" not in system and "Japanese" not in system
