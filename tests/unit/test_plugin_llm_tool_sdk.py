@@ -685,3 +685,19 @@ async def test_callback_route_handles_timeout():
 
     assert out["is_error"] is True
     assert out["error"] == "TOOL_TIMEOUT"
+
+
+def test_positional_third_argument_is_still_parameters():
+    """Third-party code constructs this positionally; risk must not steal the slot.
+
+    ``LlmToolMeta("legacy", "desc", schema)`` used to put the schema in ``risk``,
+    which made ``to_ipc_payload`` ship a dict as a risk class, the host reject the
+    registration, and a previously working tool disappear. ``risk`` is keyword-only.
+    """
+    from plugin.sdk.plugin.llm_tool import LlmToolMeta
+
+    schema = {"type": "object", "properties": {"q": {"type": "string"}}}
+    meta = LlmToolMeta("legacy", "desc", schema)
+    assert meta.parameters is schema
+    assert meta.risk is None
+    assert meta.to_ipc_payload(plugin_id="p")["risk"] is None

@@ -47,6 +47,7 @@ from PIL import Image
 
 from main_logic import tool_permissions
 from utils.logger_config import get_module_logger
+from utils.provenance import current_provenance, provenance_scope
 
 logger = get_module_logger(__name__, "Main")
 
@@ -651,11 +652,21 @@ class ToolRegistry:
 
     # ---- execution ------------------------------------------------------
 
-    async def execute(self, call: ToolCall) -> ToolResult:
+    async def execute(self, call: ToolCall, *,
+                      provenance: Any = None) -> ToolResult:
         """Execute a tool call. Never raises — wraps errors into a
         ``ToolResult(is_error=True)`` so the calling client can still feed
         a structured response back to the model (model sees the error as
-        a normal tool result string, often recoverable)."""
+        a normal tool result string, often recoverable).
+
+        ``provenance`` is the turn's single carrier (``utils/provenance.py``): the
+        speaker, the trace id and the plugin chain. It is passed explicitly from
+        the session because the client loop that produces the call is long-lived
+        and predates the turn, so a task-local scope set at ingress never reaches
+        it. The gate reads the same object, and the execution below re-binds it so
+        the remote dispatcher can forward the trace to the plugin side without
+        threading another parameter through every dispatcher implementation.
+        """
         tool = self._tools.get(call.name)
         if tool is None:
             msg = f"tool '{call.name}' is not registered"
@@ -683,11 +694,22 @@ class ToolRegistry:
         # decision is recorded and the call runs, so the switch changes behaviour
         # without changing what the table concluded.
         decision = await tool_permissions.enforce(
-            call.name, tool.risk, tool_permissions.actor_for_call(call),
+            call.name, tool.risk,
+            tool_permissions.actor_for_call(call, session_provenance=provenance),
+            provenance=provenance,
         )
         if decision.blocks:
             return tool_permissions.permission_denied_result(call, decision)
 
+        with provenance_scope(provenance if provenance is not None else current_provenance()):
+            return await self._execute_allowed(call, tool)
+
+    async def _execute_allowed(self, call: ToolCall, tool: ToolDefinition) -> ToolResult:
+        """Run an allowed call: local handler or remote dispatcher, errors folded.
+
+        Split out of ``execute`` only so the provenance scope above covers every
+        return path; the body is unchanged.
+        """
         start = time.time()
         try:
             if tool.handler is not None:

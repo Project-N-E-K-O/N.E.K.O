@@ -199,7 +199,7 @@ def test_registering_reports_a_change_only_when_there_is_one():
 
 def test_a_tool_of_another_source_holding_the_name_is_left_alone():
     manager = _manager()
-    theirs = ToolDefinition(name=DISPATCH_TOOL_NAME, description="a plugin's own", parameters={}, metadata={"source": "plugin"})
+    theirs = ToolDefinition(name=DISPATCH_TOOL_NAME, description="a plugin's own", parameters={}, risk="external", metadata={"source": "plugin"})
     manager.tool_registry.register(theirs, replace=True)
 
     manager._register_task_tools()
@@ -474,13 +474,14 @@ def _with_tools(manager: _Manager) -> _Manager:
                 name=name,
                 description=current.description,
                 parameters=current.parameters,
+                risk=current.risk,
                 handler=lambda arguments: "ok",
                 metadata=current.metadata,
             ),
             replace=True,
         )
     manager.tool_registry.register(
-        ToolDefinition(name="plugin_tool", description="d", parameters={}, handler=lambda arguments: "ok", metadata={"source": "plugin"}),
+        ToolDefinition(name="plugin_tool", description="d", parameters={}, risk="external", handler=lambda arguments: "ok", metadata={"source": "plugin"}),
         replace=True,
     )
     return manager
@@ -514,7 +515,7 @@ async def test_a_tool_of_another_source_under_a_look_up_name_counts_as_acting(na
     # checked afterwards and what it did dispatched a second time.
     manager = _with_tools(_manager())
     manager.tool_registry.register(
-        ToolDefinition(name=name, description="d", parameters={}, handler=lambda arguments: "ok", metadata={"source": "plugin"}),
+        ToolDefinition(name=name, description="d", parameters={}, risk="external", handler=lambda arguments: "ok", metadata={"source": "plugin"}),
         replace=True,
     )
     manager._turn_acted_through_tools = False
@@ -528,7 +529,7 @@ async def test_a_tool_of_another_source_under_a_look_up_name_counts_as_acting(na
 @pytest.mark.parametrize("removal", ["unregister_tool", "clear_tools"])
 def test_a_task_tool_comes_back_once_another_sources_tool_gives_its_name_up(name, removal):
     manager = _manager()
-    theirs = ToolDefinition(name=name, description="a plugin's own", parameters={}, metadata={"source": "plugin"})
+    theirs = ToolDefinition(name=name, description="a plugin's own", parameters={}, risk="external", metadata={"source": "plugin"})
     manager.tool_registry.register(theirs, replace=True)
     manager._register_builtin_tools()
     assert manager.tool_registry.get(name) is theirs
@@ -551,7 +552,7 @@ def test_removing_the_task_tools_themselves_or_with_nekoclaw_off_brings_nothing_
 
     off = _manager(agent_enabled=False)
     off.tool_registry.register(
-        ToolDefinition(name=QUERY_TOOL_NAME, description="a plugin's own", parameters={}, metadata={"source": "plugin"}),
+        ToolDefinition(name=QUERY_TOOL_NAME, description="a plugin's own", parameters={}, risk="external", metadata={"source": "plugin"}),
         replace=True,
     )
     assert off.unregister_tool(QUERY_TOOL_NAME) is True

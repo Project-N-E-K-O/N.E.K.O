@@ -89,11 +89,13 @@ def _bands(blocked=(), trusted=(), owners=()):
 
 @contextlib.contextmanager
 def _captured_logs():
-    # The module logs through get_module_logger, so the name is the service path,
-    # not "main_logic.tool_permissions". Capture whatever the module actually
-    # holds, or this suite would read a logger nobody writes to and pass on
+    # Two loggers since the audit writer moved: the gate records, and
+    # ``utils.provenance`` renders the record when no audit sink is installed.
+    # Capture both, or this suite reads a logger nobody writes to and passes on
     # an empty list.
-    logger = gate.logger
+    import utils.provenance as provenance
+
+    loggers = (gate.logger, provenance.logger)
     records: list[str] = []
 
     class _Handler(logging.Handler):
@@ -101,11 +103,13 @@ def _captured_logs():
             records.append(record.getMessage())
 
     handler = _Handler()
-    logger.addHandler(handler)
+    for logger in loggers:
+        logger.addHandler(handler)
     try:
         yield records
     finally:
-        logger.removeHandler(handler)
+        for logger in loggers:
+            logger.removeHandler(handler)
 
 
 def _actor(account="qq:A1", group=None, kind="private"):
@@ -259,7 +263,7 @@ def test_denied_call_never_reaches_the_handler():
     assert result.output["error"] == "permission_denied"
     assert result.output["band"] == "stranger"
     assert result.output["risk"] == "write"
-    assert any(" deny " in line for line in records), records
+    assert any("action=deny" in line for line in records), records
 
 
 def test_allowed_call_runs_the_handler():
@@ -857,7 +861,155 @@ def test_a_parked_request_logs_the_id_needed_to_answer_it(monkeypatch):
         with _captured_logs() as records:
             asyncio.run(gate.enforce("external_tool", "external", _actor("qq:FRIEND")))
     assert any("confirm" in line for line in records), records
-    ids = [part for line in records for part in line.split() if part.startswith("(request")]
+    # The record is key=value now (outcome=(request <id>)), so match the whole
+    # parenthesised token rather than requiring it to start a whitespace field.
+    import re
+
+    ids = [m.group(1) for line in records for m in re.finditer(r"\(request ([0-9a-f]+)\)", line)]
     assert ids, records
     # The parked row is gone by now, so the id in the log is the only trace left of it.
     assert gate.approvals.pending_count() == 0
+
+
+# --------------------------------------------------- review round 1 regressions
+
+
+def test_blocked_wins_when_a_name_is_in_both_rosters():
+    """A blocked owner must stay blocked.
+
+    The rosters are deployment data, and nothing stops the same id from ending up in
+    both (an owner blocked during an incident, a copy-paste). OWNER-first made that
+    account all-powerful, which contradicts the one documented promise of
+    ``PERMISSION_BLOCKED_ACCOUNTS``: it never gets an exception.
+    """
+    with _bands(owners=("qq:A1",), blocked=("qq:A1",)):
+        assert ps.band_for_account("qq:A1") is TrustBand.BLOCKED
+        band, _, _ = gate.resolve_band(_actor("qq:A1"))
+    assert band is TrustBand.BLOCKED
+
+
+def test_a_group_message_without_a_group_id_still_takes_the_group_floor():
+    """Dropping ``group_id`` must not restore the speaker's own band.
+
+    ``actor_from_inbound`` accepts a group message with an empty group id. The old
+    early-return treated that as a private chat, so a TRUSTED speaker kept TRUSTED
+    where an unknown group should have floored them at STRANGER.
+    """
+    with _bands(trusted=("qq:FRIEND",)):
+        band, account, _ = gate.resolve_band(_actor("qq:FRIEND", kind="group"))
+    assert band is TrustBand.STRANGER
+    assert account == "qq:FRIEND"
+
+
+def test_unlabelled_tool_denial_keeps_the_real_speaker():
+    """The refusal is right; the attribution must be right too.
+
+    Observe mode's only product is the log. Reporting "(unknown)/stranger" for a
+    TRUSTED caller makes it impossible to answer "who reaches unlabelled tools",
+    which is the question that log exists for.
+    """
+    with _bands(trusted=("qq:FRIEND",)):
+        with _captured_logs() as records:
+            decision = asyncio.run(gate.enforce("legacy_tool", None, _actor("qq:FRIEND")))
+    assert decision.action is PermissionAction.DENY
+    assert decision.risk is None
+    assert decision.account_id == "qq:FRIEND"
+    assert decision.band is TrustBand.TRUSTED
+    assert any("account=qq:FRIEND" in line and "band=trusted" in line for line in records), records
+
+
+def test_a_voice_turn_does_not_park_a_confirm(monkeypatch):
+    """No wait, no hang, and the model is told what to say.
+
+    A realtime voice turn that parks for the confirm timeout freezes the conversation
+    and the TTS turn with it. The call is stopped (it does not run unnoticed), the
+    table's answer stays CONFIRM, and the result tells the model to ask for one click.
+
+    The webui source is pinned to TRUSTED for this test: with the shipped map it is
+    OWNER, and an owner is allowed ``external`` outright, so the confirm branch would
+    never be reached. Pinning it is also the realistic case -- an operator who decides
+    the local surface should not be full owner.
+    """
+    from utils.provenance import ORIGIN_LOCAL_VOICE, local_owner_provenance
+
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 30.0)
+    saved = ps.PERMISSION_SOURCE_BANDS["webui"]
+    ps.PERMISSION_SOURCE_BANDS["webui"] = TrustBand.TRUSTED
+    try:
+        with _mode(PermissionMode.ENFORCE):
+            with _captured_logs() as records:
+                decision = asyncio.run(gate.enforce(
+                    "external_tool", "external", None,
+                    provenance=local_owner_provenance(ORIGIN_LOCAL_VOICE),
+                ))
+    finally:
+        ps.PERMISSION_SOURCE_BANDS["webui"] = saved
+    assert decision.action is PermissionAction.CONFIRM
+    assert decision.deferred is True
+    assert decision.blocks is True
+    assert decision.band is TrustBand.TRUSTED
+    assert gate.approvals.pending_count() == 0, "nothing may be left waiting"
+    assert any("not-waited" in line for line in records), records
+
+
+def test_a_local_ui_text_turn_is_owner_by_default():
+    """The shipped map: the loopback UI socket is the owner's own machine."""
+    from utils.provenance import ORIGIN_LOCAL_UI, local_owner_provenance
+
+    with _mode(PermissionMode.ENFORCE):
+        decision = asyncio.run(gate.enforce(
+            "external_tool", "external", None,
+            provenance=local_owner_provenance(ORIGIN_LOCAL_UI),
+        ))
+    assert decision.band is TrustBand.OWNER
+    assert decision.action is PermissionAction.ALLOW
+
+
+def test_a_task_scope_beats_the_session_anchor():
+    """A connector stamp must override the local anchor, not merge with it.
+
+    The anchor exists because the client loop predates the turn. If a task-local
+    scope lost to it, a QQ stranger arriving while the owner was typing would inherit
+    OWNER -- the exact escalation the anchor must not create.
+    """
+    from utils.provenance import ORIGIN_CONNECTOR, Provenance, provenance_scope
+    from utils.turn_actor import TurnActor
+
+    anchor = Provenance(trace_id="anchor", origin="local_ui",
+                        actor=TurnActor(user_id="owner", channel="webui"))
+    remote = Provenance(trace_id="remote", origin=ORIGIN_CONNECTOR,
+                        actor=TurnActor(user_id="X9", channel="open"))
+    with provenance_scope(remote):
+        chosen = gate.provenance_for_call(object(), session_provenance=anchor)
+    assert chosen is remote
+    with provenance_scope(None):
+        chosen = gate.provenance_for_call(object(), session_provenance=anchor)
+    assert chosen is anchor
+
+
+def test_the_audit_record_carries_one_trace_for_both_trails():
+    """The line a plugin call-chain record can be joined to: same trace id."""
+    from utils.provenance import (
+        Provenance,
+        emit_audit,
+        set_audit_sink,
+    )
+    from utils.turn_actor import TurnActor
+
+    seen = []
+    previous = set_audit_sink(seen.append)
+    try:
+        prov = Provenance(trace_id="t-1", origin="connector",
+                          actor=TurnActor(user_id="A1", channel="open"),
+                          chain=("plugin:a", "plugin:b"))
+        with _mode(PermissionMode.ENFORCE), _bands(blocked=("qq:A1",)):
+            asyncio.run(gate.enforce("write_tool", "write", None, provenance=prov))
+    finally:
+        set_audit_sink(previous)
+    assert seen, "the sink must receive the record instead of the fallback logger"
+    record = seen[-1]
+    assert record["kind"] == "tool_permission"
+    assert record["trace_id"] == "t-1"
+    assert record["chain"] == ["plugin:a", "plugin:b"]
+    assert record["action"] == "deny"

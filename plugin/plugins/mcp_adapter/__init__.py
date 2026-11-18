@@ -2427,6 +2427,31 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         finally:
             self._reconnect_tasks.pop(server_name, None)
     
+    async def _pin_connected_server_config(
+        self, server_name: str, server_cfg: Dict[str, object]
+    ) -> bool:
+        """Make ``_servers_config`` describe the connection that is being opened.
+
+        ``connect_server`` builds the connection from a fresh ``config.dump()``
+        snapshot, but ``_server_tool_risk`` reads ``_servers_config``. The two only
+        agreed at process start: after a reconnect they could disagree, so a newly
+        saved ``tool_risk`` was ignored until restart -- and a server whose risk was
+        lowered would keep the looser class while its URL was already the new one.
+
+        Run under the same lock every other writer takes (add / remove /
+        set_chat_injection), so a concurrent removal is not resurrected by this
+        write and the assignment is never torn. Returns False when the server was
+        removed while the connect task waited, which is the caller's signal to stop.
+        """
+        async with self._servers_config_lock:
+            if server_name not in self._servers_config:
+                self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
+                return False
+            self._servers_config[server_name] = (
+                dict(server_cfg) if isinstance(server_cfg, dict) else server_cfg
+            )
+        return True
+
     async def _connect_server(
         self,
         server_name: str,
@@ -2438,6 +2463,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         try:
             if server_name not in self._servers_config:
                 self.ctx.logger.info(f"Skip connecting removed MCP server '{server_name}'")
+                return False
+            # Pin the config this connection is built from before any tool is
+            # registered. See ``_pin_connected_server_config`` for why.
+            if not await self._pin_connected_server_config(server_name, server_cfg):
                 return False
             timeout = self._coerce_timeout(timeout, 30.0)
             # Extract configuration fields and convert their types.

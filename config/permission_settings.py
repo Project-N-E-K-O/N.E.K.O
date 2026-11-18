@@ -121,11 +121,11 @@ PERMISSION_SOURCE_BANDS: dict[str, TrustBand] = {
     # as an owner account is a stranger, including a platform that was once mapped and
     # then removed.
     #
-    # Not reachable yet, and stated rather than implied: no code stamps a turn with the
-    # "webui" channel today, so this row decides nothing until the UI entry point is
-    # stamped (step 2, main_logic/core/streaming.py). It is kept because the maintainer
-    # ruled that the local UI counts as the owner, and a row with that ruling written
-    # down is easier to review than a sentence in a PR.
+    # Reachable since the local entry points were stamped: ``stream_data`` (the
+    # loopback UI socket) and ``handle_input_transcript`` (the local microphone)
+    # write ``webui:owner`` into the turn provenance. The stamp is a fact about the
+    # transport, not a field in the client payload, so a remote message cannot
+    # claim it by sending ``channel: "webui"``.
     "webui": TrustBand.OWNER,
 }
 """Per-source default. A per-account entry in PERMISSION_OWNER/TRUSTED maps wins."""
@@ -223,9 +223,10 @@ PERMISSION_GATE_MODE: PermissionMode = _mode_from_env()
 """Decide and log, or decide and stop.
 
 OBSERVE is the default on purpose, and it is a rollout rule rather than a soft policy:
-no host entry point stamps the speaker on every turn yet, so an enforcing gate would
-read the owner's own chat as a stranger and deny every ``write`` and ``external`` tool.
-That turns a permission feature into an outage. Run observe, read the
+the local UI and microphone turns now resolve to OWNER, but no remote ingress stamps
+its speaker in the process that executes tools yet -- the connectors have no consumer
+in main, so a QQ turn would still read as a stranger. Running enforce before that
+lands would deny every remote ``write`` and ``external`` tool. Run observe, read the
 ``[permission] would-deny`` lines, and switch to enforce once the entry points that
 matter are covered and the operator signs off on the default.
 
@@ -236,17 +237,26 @@ on a deployment that means enforce.
 # ------------------------------------------------------------------ id grammar
 
 
-PERMISSION_CHANNEL_PLATFORMS: dict[str, str] = {
-    # The transport label an inbound message carries (``InboundMessage.channel``,
+PERMISSION_LOCAL_CHANNEL = "webui"
+"""The transport label reserved for the host's own UI and microphone.
+
+Reserved, not merely mapped: an inbound message that claims this channel is
+refused an actor (``utils.turn_actor.actor_from_inbound``), because the band it
+would resolve to is OWNER. A connector may spell its channel however its
+platform does; only host code in this process may stamp the local surface.
+"""
+
+PERMISSION_CHANNEL_PLATFORMS: dict[str, str] = {    # The transport label an inbound message carries (``InboundMessage.channel``,
     # stamped by the connectors: "open" for the QQ Official Open Platform, "onebot" for
     # a OneBot v11 implementation) mapped to the account-grammar prefix
     # (``memory/speaker_trust.stable_speaker_id``: ``platform:actor``).
     "open": "qq",
     "onebot": "qq",
-    # The local UI. No writer produces this channel yet, so this row is the shape step 2
-    # will stamp into, not a live path. Without it a stamped UI turn would build no
-    # account id and would land on STRANGER even though PERMISSION_SOURCE_BANDS calls
-    # "webui" the owner: the two maps have to agree or the ruling is dead config.
+    # The local UI. Written by ``utils.provenance.local_owner_provenance`` only,
+    # from the loopback socket and the microphone path. Without this row a stamped
+    # UI turn would build no account id and would land on STRANGER even though
+    # PERMISSION_SOURCE_BANDS calls "webui" the owner: the two maps have to agree
+    # or the ruling is dead config.
     "webui": "webui",
 }
 """Channel -> platform prefix. A channel missing here produces no account id.
@@ -337,10 +347,16 @@ def band_for_account(account_id: object) -> TrustBand:
     text = str(account_id or "").strip()
     if not text:
         return DEFAULT_BAND
-    if text in PERMISSION_OWNER_ACCOUNTS:
-        return OWNER_BAND
+    # BLOCKED is checked first, before OWNER. An account that appears in both
+    # rosters is a configuration conflict, and the only safe resolution is the
+    # one that cannot hand out an exception: "blocked" is the single band with no
+    # allow cell. Checking OWNER first made a blocked owner silently all-powerful,
+    # which broke the documented promise that PERMISSION_BLOCKED_ACCOUNTS never
+    # gets an exception.
     if text in PERMISSION_BLOCKED_ACCOUNTS:
         return TrustBand.BLOCKED
+    if text in PERMISSION_OWNER_ACCOUNTS:
+        return OWNER_BAND
     if text in PERMISSION_TRUSTED_ACCOUNTS:
         return TrustBand.TRUSTED
     if text in PERMISSION_NORMAL_ACCOUNTS:

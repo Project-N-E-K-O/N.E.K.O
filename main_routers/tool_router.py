@@ -78,6 +78,7 @@ import asyncio
 import ipaddress
 
 from main_logic import tool_permissions
+from utils.provenance import current_provenance
 from urllib.parse import urlparse
 
 import httpx
@@ -453,6 +454,13 @@ async def _remote_dispatch(call: ToolCall, metadata: Dict[str, Any]) -> ToolResu
         "call_id": call.call_id,
         "raw_arguments": call.raw_arguments,
     }
+    # One provenance record travels with the call: trace id, speaker and the
+    # plugin chain so far. The plugin side puts it in the reserved ``_ctx`` and
+    # extends the chain with its own hop (#3780). Without this, "who spoke" ends
+    # at the process boundary and the two audit trails cannot be joined.
+    _prov = current_provenance()
+    if _prov is not None:
+        payload["provenance"] = _prov.to_wire()
     if call.host_reply is not None:
         payload["host_reply"] = call.host_reply
     try:
@@ -989,6 +997,12 @@ async def list_tools(role: Optional[str] = Query(None)) -> Dict[str, Any]:
                 "source": t.metadata.get("source", ""),
                 "callback_url": t.metadata.get("callback_url"),
                 "is_remote": t.handler is None,
+                # The declaration the gate actually uses. PR section 5 named
+                # "/api/tools shows the declared class" as one of the two control
+                # points for an author-declared risk; without this key that control
+                # point did not exist. None means "registered without a label",
+                # which is the row an operator wants to find.
+                "risk": getattr(t.risk, "value", t.risk) if t.risk is not None else None,
             }
             for t in registry.all()
         ]

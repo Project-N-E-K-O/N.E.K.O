@@ -350,9 +350,10 @@ async def test_registration_with_no_manager_is_not_ledgered(monkeypatch):
 @pytest.mark.asyncio
 async def test_registration_that_fails_to_sync_is_still_ledgered(monkeypatch):
     class _SyncFails(_Mgr):
-        async def register_tool_and_sync(self, tool, *, replace=True):
-            # The real mixin writes the registry before the wire sync raises.
-            self.tool_registry.register(tool, replace=replace)
+        async def register_tool_and_sync(self, tool, *, replace=True, risk_required=True):
+            # The real mixin writes the registry before the wire sync raises,
+            # and it forwards the caller's registration channel verbatim.
+            self.tool_registry.register(tool, replace=replace, risk_required=risk_required)
             raise RuntimeError("session.update failed")
 
     broken = _SyncFails("Alpha")
@@ -597,8 +598,8 @@ async def test_concurrent_foreign_registration_cannot_replace_reserved_owner(mon
     resume = asyncio.Event()
 
     class _Slow(_Mgr):
-        async def register_tool_and_sync(self, tool, *, replace=True):
-            self.tool_registry.register(tool, replace=replace)
+        async def register_tool_and_sync(self, tool, *, replace=True, risk_required=True):
+            self.tool_registry.register(tool, replace=replace, risk_required=risk_required)
             entered.set()
             await resume.wait()
 

@@ -59,6 +59,64 @@ def _entry_id_for_tool(tool_name: str) -> str:
     return f"__llm_tool__{tool_name}"
 
 
+def _arguments_with_reserved_ctx(arguments: Any, body: Dict[str, Any],
+                                 plugin_id: str) -> Dict[str, Any]:
+    """Attach the host-owned ``_ctx`` to a tool call's arguments.
+
+    ``arguments`` is model-controlled; ``_ctx`` is host-owned. The two reserved
+    keys are handled the same way: ``host_reply`` and ``provenance`` are only
+    honoured when they arrive in the dispatcher body, and any copy found inside
+    the model's arguments is dropped. Without that, a model could forge the
+    speaker of its own call and the plugin's ``ctx.call_chain`` would report it.
+
+    ``provenance`` is the one carrier from the host (``utils/provenance.py``):
+    trace id, canonical speaker and the plugin chain so far. #3780's
+    ``CallOrigin(kind, ref, speaker)`` decodes the ``origin`` object and the
+    ``speaker`` string directly, which is what makes "who spoke" and "which
+    plugin called" one chain instead of two.
+    """
+    if not isinstance(arguments, dict):
+        # Defensive: the LLM might emit an empty arguments object as a
+        # JSON array or string; coerce or reject explicitly so the
+        # plugin never receives a non-dict.
+        arguments = {}
+    else:
+        arguments = dict(arguments)
+
+    host_reply = body.get("host_reply")
+    if isinstance(host_reply, dict) and host_reply.get("source") == "plugin:" + plugin_id:
+        # This reserved context comes from the host, never from model arguments.
+        arguments["_ctx"] = {
+            "host_reply": dict(host_reply), "lanlan_name": host_reply.get("role"),
+        }
+    elif isinstance(arguments.get("_ctx"), dict) and "host_reply" in arguments["_ctx"]:
+        arguments["_ctx"] = dict(arguments["_ctx"])
+        arguments["_ctx"].pop("host_reply", None)
+
+    provenance = body.get("provenance")
+    ctx = arguments.get("_ctx")
+    ctx = dict(ctx) if isinstance(ctx, dict) else {}
+    if isinstance(provenance, dict) and str(provenance.get("trace_id") or "").strip():
+        origin = provenance.get("origin")
+        ctx["provenance"] = {
+            "trace_id": str(provenance["trace_id"])[:64],
+            "speaker": provenance.get("speaker") or None,
+            "channel": str(provenance.get("channel") or ""),
+            "origin": origin if isinstance(origin, dict) else None,
+            "chain": [str(hop)[:128] for hop in (provenance.get("chain") or [])][:64],
+        }
+    elif "provenance" in ctx:
+        ctx.pop("provenance", None)
+    else:
+        return arguments
+
+    if ctx:
+        arguments["_ctx"] = ctx
+    else:
+        arguments.pop("_ctx", None)
+    return arguments
+
+
 @router.post("/reply-completed/{plugin_id}/{entry_id}")
 async def reply_completed_callback(
     plugin_id: str, entry_id: str, body: Dict[str, Any] = Body(...),
@@ -116,23 +174,9 @@ async def llm_tool_callback(
     because a 5xx makes the model see a dispatcher failure rather than a
     tool-level failure.
     """
-    arguments = body.get("arguments")
-    if not isinstance(arguments, dict):
-        # Defensive: the LLM might emit an empty arguments object as a
-        # JSON array or string; coerce or reject explicitly so the
-        # plugin never receives a non-dict.
-        arguments = {}
-    host_reply = body.get("host_reply")
-    if isinstance(host_reply, dict) and host_reply.get("source") == "plugin:" + plugin_id:
-        arguments = dict(arguments)
-        # This reserved context comes from the host, never from model arguments.
-        arguments["_ctx"] = {
-            "host_reply": dict(host_reply), "lanlan_name": host_reply.get("role"),
-        }
-    elif isinstance(arguments.get("_ctx"), dict) and "host_reply" in arguments["_ctx"]:
-        arguments = dict(arguments)
-        arguments["_ctx"] = dict(arguments["_ctx"])
-        arguments["_ctx"].pop("host_reply", None)
+    arguments = _arguments_with_reserved_ctx(
+        body.get("arguments"), body, plugin_id,
+    )
     call_id = body.get("call_id") or ""
 
     # First sanity check: do we even know about this tool? Without this,

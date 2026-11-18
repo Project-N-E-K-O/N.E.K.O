@@ -55,10 +55,41 @@ from config.prompts.prompts_memory import (
     _normalize_memory_prompt_lang,
 )
 from ._shared import logger
+from utils.provenance import (
+    Provenance,
+    current_provenance as current_task_provenance,
+    local_owner_provenance,
+)
 
 
 class ToolCallingMixin:
     """Tool-calling surface methods (see module docstring)."""
+
+    # ---- turn provenance -------------------------------------------------
+    #
+    # The session anchor. The conversational clients' receive loop is long-lived
+    # and started before any message arrived, so ``asyncio.create_task`` context
+    # does not carry a per-turn scope into it. Local UI and microphone entry
+    # points therefore write the anchor here, and the gate reads it at tool-call
+    # time. Remote ingress must set the task-local scope instead -- the scope
+    # wins over the anchor, so a connector turn can never inherit the owner's
+    # band by arriving while the anchor is set.
+
+    def begin_local_turn(self, origin: str) -> Provenance:
+        """Mark the current turn as belonging to the person at this machine.
+
+        Callable only from the local UI socket dispatch and the local voice
+        transcript path. It is deliberately not reachable from an HTTP or
+        plugin route: those carry a speaker from the transport, not an owner
+        claim about the machine.
+        """
+        provenance = local_owner_provenance(origin)
+        self._session_provenance = provenance
+        return provenance
+
+    def turn_provenance(self) -> Provenance | None:
+        """Task-local provenance first, then the local session anchor."""
+        return current_task_provenance() or getattr(self, "_session_provenance", None)
 
     def _only_looks_up(self, tool_name: str) -> bool:
         """Whether a tool is one of the built-in ones that only look something up.
@@ -186,7 +217,9 @@ class ToolCallingMixin:
                 call.host_reply = reply_tail_registry.tool_context(
                     self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
                 )
-        result = await self.tool_registry.execute(call)
+        result = await self.tool_registry.execute(
+            call, provenance=self.turn_provenance(),
+        )
         if result.images:
             await self._route_tool_images(
                 result, invoking_session=invoking_session,

@@ -33,6 +33,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from utils.game_route_state import get_active_game_route_generation_identity
 from utils.external_route_registry import is_route_slot_taken
+from utils.provenance import ORIGIN_LOCAL_VOICE
 from main_logic.session_state import SessionEvent, TurnOwner
 from services.chat_sync.source import is_chat_input_source, mark_turn_origin, save_original
 from main_logic.agent_event_bus import (
@@ -2578,6 +2579,12 @@ class TurnMixin:
         if admission.disposition is TranscriptDisposition.REJECT:
             logger.info("[voice-admission] decision=reject reason=%s", admission.reason)
             return False
+        if is_voice_source:
+            # The microphone is the owner's. Text-mode callers of this function
+            # (is_voice_source=False) reuse it for display/cache and are covered by
+            # the ``stream_data`` stamp instead; stamping again here would relabel a
+            # text turn as a voice one and change how a CONFIRM is handled.
+            self.begin_local_turn(ORIGIN_LOCAL_VOICE)
         record_transcript_text = transcript_text
         voice_rms_recorded = False
         source_identity_was_explicit = (

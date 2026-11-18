@@ -30,6 +30,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
 from services.chat_sync.source import is_chat_input_source, mark_turn_origin
 from utils.external_route_registry import RouteClaim
+from utils.provenance import ORIGIN_LOCAL_UI
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -240,6 +241,12 @@ class StreamingMixin:
         return input_type in _LIVE_VISION_STREAM_INPUT_TYPES and self.is_goodbye_silent()
 
     async def stream_data(self, message: dict):  # Send media data to Core API.
+        # The local UI socket is the only caller of this method. Stamping here,
+        # rather than reading a field from ``message``, is deliberate: the payload
+        # is client-controlled, while the fact that it arrived on the loopback UI
+        # socket is not. This anchor is what makes the owner's own text and
+        # microphone turns resolve to OWNER instead of STRANGER.
+        self.begin_local_turn(ORIGIN_LOCAL_UI)
         input_type = message.get("input_type")
         if self._should_drop_live_vision_stream(input_type):
             return

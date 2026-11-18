@@ -90,7 +90,13 @@ class LlmToolMeta:
     #: The declared risk class, or None when the author declared none. See ``llm_tool``'s
     #: risk entry: a wrong value is refused here, a missing one travels to the host, where
     #: it is logged and then refused at call time.
-    risk: str | None = None
+    #:
+    #: Keyword-only. Third-party code constructs this positionally --
+    #: ``LlmToolMeta("legacy", "desc", {"type": "object"})`` -- and a plain field here
+    #: would take that schema dict as the risk value, which then fails registration and
+    #: silently removes a working tool. Keeping the old third position for
+    #: ``parameters`` is the compatibility contract.
+    risk: str | None = field(default=None, kw_only=True)
     parameters: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
     timeout_seconds: float = 30.0
     role: str | None = None

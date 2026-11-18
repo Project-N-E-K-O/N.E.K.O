@@ -19,6 +19,12 @@ One carrier, one writer per entry point, one reader. The permission gate
 (``main_logic/tool_permissions.py``) is the only consumer, and it reads nothing else,
 so "who asked?" has exactly one answer per turn instead of one per call site.
 
+The carrier itself is :class:`utils.provenance.Provenance`, which holds this actor
+together with the trace id and the plugin call chain. This module only builds the
+actor half and keeps the historical ``turn_scope`` / ``current_turn_actor`` names
+working: a second context variable for the same fact would be the parallel trail
+the carrier exists to prevent.
+
 Why a context variable and not a field on the tool call. ``ToolCall`` objects are built
 inside the LLM client (four sites, in two clients), from provider stream data. The
 sender id lives in the inbound message, which the client never sees. Threading it
@@ -35,23 +41,26 @@ It does not cross a process boundary or an event loop. The connectors run wherev
 consumer runs, and nothing in main imports them, so the sink stamp reaches no tool call
 in this repo yet. It does not reach a task that started earlier: the dialog clients'
 ``handle_messages`` loop is long-lived and was born before any message arrived, so a
-scope opened after that does not cover it. Both are step 2 work -- stamp the actor where
-the turn is consumed, in the process that executes tools. Until that lands, every gated
-call resolves to DEFAULT_BAND, which is exactly why the gate ships in observe mode.
+scope opened after that does not cover it. The session anchor
+(``utils/provenance.local_owner_provenance`` plus the manager's ``_session_provenance``)
+is what covers the local UI and voice paths; the connector path still needs its own
+stamp in the process that executes tools.
 """
 
 from __future__ import annotations
 
 import contextlib
-import contextvars
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping, Optional
 
-from config.permission_settings import PERMISSION_CHANNEL_PLATFORMS
+from config.permission_settings import (
+    PERMISSION_CHANNEL_PLATFORMS,
+    PERMISSION_LOCAL_CHANNEL,
+)
 
-# Who stamped this turn. ``SOURCE_CONNECTOR`` is the only value this module can
-# produce, because the only writer here is the connection layer handing a real inbound
-# message to its sink. A future entry point adds a constant and a call, not a policy.
+# How a stamped turn is labelled. ``SOURCE_CONNECTOR`` is the default this module
+# writes when the caller did not say; a local entry point passes its own origin
+# through ``TurnActor.source`` so the record names the surface honestly.
 SOURCE_CONNECTOR = "connector"
 
 #: Private chat, as the connectors spell it in ``InboundMessage.message_type``.
@@ -121,11 +130,6 @@ class TurnActor:
         }
 
 
-_turn_actor: contextvars.ContextVar[Optional[TurnActor]] = contextvars.ContextVar(
-    "neko_turn_actor", default=None
-)
-
-
 def actor_from_inbound(message: Any) -> Optional[TurnActor]:
     """Stamp one normalized inbound message, or return None when it has no speaker.
 
@@ -140,12 +144,20 @@ def actor_from_inbound(message: Any) -> Optional[TurnActor]:
     user_id = str(message.get("user_id") or "").strip()
     if not user_id:
         return None
+    channel = str(message.get("channel") or "").strip()
+    if channel == PERMISSION_LOCAL_CHANNEL:
+        # Reserved for the host's own UI and microphone, which stamp through
+        # ``utils.provenance.local_owner_provenance`` instead. A message arriving
+        # through a connector that claims this channel would otherwise resolve to
+        # OWNER -- a stranger writing one field. Refuse the actor and let the turn
+        # fall to DEFAULT_BAND rather than trusting the label.
+        return None
     group_id = str(message.get("group_id") or "").strip()
     return TurnActor(
         user_id=user_id,
         group_id=group_id,
         message_type=str(message.get("message_type") or ""),
-        channel=str(message.get("channel") or ""),
+        channel=channel,
     )
 
 
@@ -153,23 +165,35 @@ def actor_from_inbound(message: Any) -> Optional[TurnActor]:
 def turn_scope(actor: Optional[TurnActor]) -> Iterator[Optional[TurnActor]]:
     """Bind ``actor`` for the duration of this block, then put the old value back.
 
-    The only writer in this module. Nesting is safe (a turn inside a turn restores the
+    Thin wrapper over ``utils.provenance.provenance_scope``: one carrier, so a
+    connector stamp and a local-owner stamp cannot end up in two different
+    variables that the gate reads in a fixed order.
+
+    The only writer at this level. Nesting is safe (a turn inside a turn restores the
     outer actor on exit), and ``reset`` in ``finally`` is what stops one speaker's band
     from leaking into the next speaker's turn when a task is reused.
 
     Passing None is meaningful: it clears the carrier for the block, so a path that
     deliberately drops identity does not inherit an old one.
     """
-    token = _turn_actor.set(actor)
-    try:
-        yield actor
-    finally:
-        _turn_actor.reset(token)
+    from utils.provenance import ORIGIN_CONNECTOR, provenance_for_actor, provenance_scope
+
+    if actor is None:
+        with provenance_scope(None) as none_prov:
+            yield None if none_prov is None else none_prov.actor
+        return
+    with provenance_scope(
+        provenance_for_actor(actor, origin=actor.source or ORIGIN_CONNECTOR)
+    ) as prov:
+        yield prov.actor if prov is not None else None
 
 
 def current_turn_actor() -> Optional[TurnActor]:
     """The speaker of this turn, or None when no host entry point declared one."""
-    return _turn_actor.get()
+    from utils.provenance import current_provenance
+
+    prov = current_provenance()
+    return prov.actor if prov is not None else None
 
 
 @contextlib.contextmanager
@@ -185,11 +209,15 @@ def turn_for_message(message: Any) -> Iterator[Optional[TurnActor]]:
 
 
 def current_actor_payload() -> Optional[dict[str, str]]:
-    """The carrier in resolver shape, or None. What the gate reads."""
-    actor = current_turn_actor()
-    if actor is None:
-        return None
-    return actor.as_dict()
+    """The carrier in resolver shape, or None. What the gate reads.
+
+    Kept as the actor-only view of ``utils.provenance.current_provenance``; callers
+    that also need the trace id or the plugin chain should read the record directly.
+    """
+    from utils.provenance import current_provenance
+
+    prov = current_provenance()
+    return prov.actor_payload() if prov is not None else None
 
 
 def describe(actor: Optional[TurnActor]) -> str:
