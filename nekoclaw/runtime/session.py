@@ -935,96 +935,107 @@ class TaskAgentSession(SessionInbox):
             if before is not None:
                 self._window, self._max_output, self.context.policy = before
             before = None
-        while True:
-            for _again in range(2):
-                if not self._compaction_due:
-                    break
-                await self._after_compaction()
-                # What every request begins with was put together anew, and
-                # may be longer than what the conversation was just fitted
-                # next to (more to tell, more tools): fitted again, which
-                # sums up further only if it no longer fits.
-                await self._fit(force=False)
-            # How much is about to be sent, as the conversation is measured.
-            sent = await self._size()
-            history = _provider_context(self.harness.message_list)
-            # Held back until output follows, so a request that is retried after
-            # an overflow does not announce two responses.
-            held: AssistantStartEvent | None = None
-            answered = False
-            try:
-                # Said only when it is less than the model is configured
-                # for, which is what a request asks for unless told otherwise.
-                less = self._max_output < self.spec.model.max_output_tokens
-                async for event in self._model.stream_response(
-                    model=model,
-                    system=self._system,
-                    messages=history,
-                    tools=self._wire_tools,
-                    signal=signal,
-                    **({"max_tokens": self._max_output} if less else {}),
-                ):
-                    if isinstance(event, AssistantStartEvent):
-                        held = event
-                        continue
-                    if held is not None:
-                        yield held
-                        held = None
-                    answered = answered or isinstance(event, AssistantDoneEvent)
-                    yield event
-                if not answered:
-                    # The request that was sent once more ended in an error
-                    # of another kind, or was stopped (the stream ends
-                    # without raising then): the session is managed for the
-                    # window it had.
-                    back()
-                # Shorter, it went through. That does not show it was too
-                # long: summing up rewrites what was said, and a refusal
-                # for something in it (a turn the provider does not take,
-                # words it screens out) goes away with that as well. So the
-                # session keeps the smaller window for as long as it is
-                # open, which is all it needs to go on, and the host is
-                # told nothing: it would manage every session with the
-                # model for that window for a month, and tell the user
-                # that the model's window is smaller than was set.
-                return
-            except RequestRefusedError as exc:
-                if retried or sent <= TASK_AGENT_UNSURE_REFUSAL_TOKENS:
-                    # Not long enough to be about length, or refused again
-                    # after it was made shorter: reported as it came, and
-                    # the session is managed for the window it had.
-                    back()
-                    logger.warning("model request failed: %s", exc)
-                    failure = AssistantMessage(model=model, stop_reason="error", error_message=str(exc))
-                    yield AssistantErrorEvent(reason="error", error=failure)
-                    return
-                retried = True
-                logger.warning(
-                    "a request of about %d tokens was refused in words that were not recognized; "
-                    "taken for too long, summed up and sent once more: %s",
-                    sent,
-                    exc,
-                )
-                managed = (self._window, self._max_output, self.context.policy)
-                if self._assume_window(sent):
-                    before = managed
-                await self._fit(force=True)
-            except ContextOverflowError as exc:
-                self._learn_window(str(exc), sent)
-                if retried:
-                    failure = AssistantMessage(
+
+        try:
+            while True:
+                for _again in range(2):
+                    if not self._compaction_due:
+                        break
+                    await self._after_compaction()
+                    # What every request begins with was put together anew, and
+                    # may be longer than what the conversation was just fitted
+                    # next to (more to tell, more tools): fitted again, which
+                    # sums up further only if it no longer fits.
+                    await self._fit(force=False)
+                # How much is about to be sent, as the conversation is measured.
+                sent = await self._size()
+                history = _provider_context(self.harness.message_list)
+                # Held back until output follows, so a request that is retried after
+                # an overflow does not announce two responses.
+                held: AssistantStartEvent | None = None
+                answered = False
+                try:
+                    # Said only when it is less than the model is configured
+                    # for, which is what a request asks for unless told otherwise.
+                    less = self._max_output < self.spec.model.max_output_tokens
+                    async for event in self._model.stream_response(
                         model=model,
-                        stop_reason="error",
-                        error_message=(
-                            "the conversation does not fit the model's context window even "
-                            f"after compaction: {exc}"
-                        ),
-                    )
-                    yield AssistantErrorEvent(reason="error", error=failure)
+                        system=self._system,
+                        messages=history,
+                        tools=self._wire_tools,
+                        signal=signal,
+                        **({"max_tokens": self._max_output} if less else {}),
+                    ):
+                        if isinstance(event, AssistantStartEvent):
+                            held = event
+                            continue
+                        if held is not None:
+                            yield held
+                            held = None
+                        answered = answered or isinstance(event, AssistantDoneEvent)
+                        yield event
+                    if answered:
+                        # Shorter, it went through. That does not show it
+                        # was too long: summing up rewrites what was said,
+                        # and a refusal for something in it (a turn the
+                        # provider does not take, words it screens out)
+                        # goes away with that as well. So the session keeps
+                        # the smaller window for as long as it is open,
+                        # which is all it needs to go on, and the host is
+                        # told nothing: it would manage every session with
+                        # the model for that window for a month, and tell
+                        # the user that the model's window is smaller than
+                        # was set.
+                        before = None
+                    # (Not answered: the request ended in an error of
+                    # another kind, or was stopped. The stream ends without
+                    # raising then.)
                     return
-                retried = True
-                logger.warning("context overflow reported by the provider; compacting and retrying")
-                await self._fit(force=True)
+                except RequestRefusedError as exc:
+                    if retried or sent <= TASK_AGENT_UNSURE_REFUSAL_TOKENS:
+                        # Not long enough to be about length, or refused again
+                        # after it was made shorter: reported as it came.
+                        logger.warning("model request failed: %s", exc)
+                        failure = AssistantMessage(model=model, stop_reason="error", error_message=str(exc))
+                        yield AssistantErrorEvent(reason="error", error=failure)
+                        return
+                    retried = True
+                    logger.warning(
+                        "a request of about %d tokens was refused in words that were not recognized; "
+                        "taken for too long, summed up and sent once more: %s",
+                        sent,
+                        exc,
+                    )
+                    managed = (self._window, self._max_output, self.context.policy)
+                    if self._assume_window(sent):
+                        before = managed
+                    await self._fit(force=True)
+                except ContextOverflowError as exc:
+                    # What the provider says of its window now stands in the
+                    # place of one that was only assumed.
+                    back()
+                    self._learn_window(str(exc), sent)
+                    if retried:
+                        failure = AssistantMessage(
+                            model=model,
+                            stop_reason="error",
+                            error_message=(
+                                "the conversation does not fit the model's context window even "
+                                f"after compaction: {exc}"
+                            ),
+                        )
+                        yield AssistantErrorEvent(reason="error", error=failure)
+                        return
+                    retried = True
+                    logger.warning("context overflow reported by the provider; compacting and retrying")
+                    await self._fit(force=True)
+        finally:
+            # However this ended without an answer to the request that was
+            # sent once more (refused again, an error of another kind, a
+            # stop, also one while the conversation was summed up for it):
+            # the window that was assumed was not shown to be anything, and
+            # the session is managed for the one it had.
+            back()
 
     async def _fit(self, *, force: bool) -> None:
         # Each summary is saved the moment it is applied, not after fit()

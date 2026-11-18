@@ -930,6 +930,71 @@ async def test_a_long_request_refused_in_words_that_are_not_recognized_is_summed
         await session.close()
 
 
+async def test_a_window_assumed_for_a_retry_is_given_up_when_the_run_is_stopped_before_it_is_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        reached, never = asyncio.Event(), asyncio.Event()
+
+        async def hang() -> None:
+            reached.set()
+            await never.wait()
+
+        llm.add(_Refused(400, "Bad Request: the request could not be processed"))
+        # The request that sums the conversation up does not come back.
+        llm.add(hang)
+        mark = len(events.events)
+        session.prompt("Go on.")
+        await asyncio.wait_for(reached.wait(), 10)
+        # A window was assumed for the request that is to be sent once more.
+        assert session._window < 200_000
+        assert session.abort() is True
+        ended = await events.wait_ended(start=mark)
+
+        assert ended["reason"] == "aborted"
+        # It was never sent: nothing was shown, and the session is managed for the window it had.
+        assert session.context.policy.window == 200_000 and session._window == 200_000
+        assert events.of("model_capability") == []
+    finally:
+        await session.close()
+
+
+async def test_what_the_provider_states_of_its_window_stands_in_the_place_of_one_that_was_assumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_UNSURE_REFUSAL_TOKENS", 5_000)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=_small_model(200_000)), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        assert await session._size() < 150_000
+
+        llm.add(_Refused(400, "Bad Request: the request could not be processed"))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        # Sent once more, the provider says what its window is: more than what was assumed.
+        llm.add(RuntimeError("Error code: 400 - This model's maximum context length is 150000 tokens."))
+        ended = await _ask(session, events, "Go on.")
+
+        assert ended["reason"] == "error" and "even after compaction" in ended["error"]
+        # That is the model's window, and what the host is told: not the length of a request
+        # that was refused for a reason nobody knows.
+        (learned,) = events.of("model_capability")
+        assert learned["context_window"] == 150_000
+        assert session.context.policy.window == 150_000 and session._window == 150_000
+    finally:
+        await session.close()
+
+
 async def test_nothing_is_told_of_a_window_when_the_request_that_was_sent_once_more_did_not_go_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
