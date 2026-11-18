@@ -912,7 +912,13 @@ class CapabilityGateway:
 
         capabilities = self._offered(grant, await self._registry.callable_by_task_agents())
         if not capabilities:
-            return "No capabilities are available."
+            # The two tools are there whether or not anything can be called,
+            # and the session goes on after this answer: what it says holds
+            # for now only.
+            return (
+                "No capabilities are available right now. That can change while you work (a plugin gets "
+                "installed, the browser gets switched on): search again when a later commission needs one."
+            )
         # A built-in tool is not found on its own: its definition is of no
         # use without how its group is used, and the rest of the group is
         # needed with it. A group is searched as one thing, by all its tools

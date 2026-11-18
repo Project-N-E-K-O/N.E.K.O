@@ -250,7 +250,9 @@ async def test_without_any_capability_the_two_tools_are_offered_all_the_same(hos
     # The plain search tool: no group of built-in tools is told of.
     assert list(tools[0]["inputSchema"]["properties"]) == ["query"]
     found = await _call(host, grant, SEARCH_TOOL, {"query": "what the weather is"})
-    assert _text(found) == "No capabilities are available."
+    # Said for now only: the session goes on, and what can be called changes.
+    assert _text(found).startswith("No capabilities are available right now.")
+    assert "search again when a later commission needs one" in _text(found)
 
     _catalog(server)
     host.registry.invalidate()
