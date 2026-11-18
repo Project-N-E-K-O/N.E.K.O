@@ -338,7 +338,7 @@ async def test_execution_timeout_is_reported_before_late_score_finishes(monkeypa
         now[0] = 30.0 - 0.01
         patch_module_asyncio(monkeypatch, scheduler_module, wait=spy_wait)
 
-        result = await scheduler.await_result(receipt)
+        result = await asyncio.wait_for(scheduler.await_result(receipt), 10)  # Hang guard.
         assert result.status is ScoreResultStatus.TIMED_OUT
         assert result.error_code == "execution_deadline_expired"
         assert waits and all(abs(timeout - 0.01) < 1e-6 for timeout in waits)
