@@ -167,7 +167,6 @@ def test_parent_initialization_then_real_fork_rebinds_both_logger_apis(isolated_
     assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
 
 
-
 @pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "mkfifo"), reason="requires POSIX fork")
 def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(isolated_log_dir, tmp_path):
     """A child must not flush a file buffer whose lock a parent thread held at fork."""
@@ -175,6 +174,7 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
     import signal
     import threading
     import time
+    from plugin.core.host import _setup_plugin_logger
 
     plogging.setup_plugin_logging("PluginServer", own_root=True)
     logging.getLogger("runtime-test.before-fork").info("parent-marker")
@@ -195,7 +195,6 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
         pid = os.fork()
         if pid == 0:
             try:
-                from plugin.core.host import _setup_plugin_logger
                 inherited = handler.stream
                 _setup_plugin_logger("demo", Path(__file__).resolve().parents[3])
                 logging.getLogger("runtime-test.child").info("child-marker")
@@ -226,6 +225,7 @@ def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(is
     assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-marker") == 1
     plogging.logger.info("parent-after-fork-marker")
     assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
+
 
 def test_public_file_logger_and_sdk_helpers_use_host_sink(isolated_log_dir):
     from plugin.core.plugin_logger import PluginFileLogger, enable_plugin_file_logging
