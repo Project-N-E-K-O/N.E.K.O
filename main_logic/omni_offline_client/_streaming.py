@@ -1146,6 +1146,7 @@ class _StreamingMixin:
         if in_flight_messages is None:
             in_flight_messages = self._in_flight_user_messages = {}
         in_flight_messages[asyncio.current_task()] = user_message
+        _in_flight_user_messages_owner = in_flight_messages
         if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
             # Consent was revoked while this turn was being assembled: its
             # proactive screenshot must not go out (no await since append).
@@ -1437,6 +1438,12 @@ class _StreamingMixin:
                             # blocks survive in subsequent requests of this session.
                             if _resident_entry is not None and not _resident_entry.delivered:
                                 self._settle_resident_context(_resident_entry, delivered=True)
+                            # The provider has this turn's request now: its user
+                            # message is no longer heading there (an interrupted
+                            # reply's cleanup may run long after this point).
+                            if _in_flight_user_messages_owner is not None:
+                                _in_flight_user_messages_owner.pop(asyncio.current_task(), None)
+                                _in_flight_user_messages_owner = None
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None

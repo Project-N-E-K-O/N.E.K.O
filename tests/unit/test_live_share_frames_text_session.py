@@ -195,7 +195,7 @@ async def test_stop_notice_fences_a_live_frame_still_decoding(manager, monkeypat
     await asyncio.wait_for(decoding.wait(), timeout=5)
     manager.handle_screen_share_stopped()
     resume.set()
-    await old
+    await asyncio.wait_for(old, timeout=5)
     assert staged == []
 
     # A later frame (a share restarted, or the voice vision heartbeat) is fresh.

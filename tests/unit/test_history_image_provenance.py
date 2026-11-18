@@ -313,6 +313,8 @@ async def _settle(task):
     try:
         await asyncio.wait_for(task, timeout=5)
     except (asyncio.CancelledError, Exception):
+        # Cleanup only: the assertion that brought us here is the failure to
+        # report; the cancelled turn's own outcome is irrelevant.
         pass
 
 
@@ -539,3 +541,28 @@ async def test_sampled_frame_count_marks_live_frames_without_a_bus_channel():
     )
     message = next(m for m in client._conversation_history if image_count(m.content))
     assert message.metadata["image_kinds"] == ["live", "user"]
+
+
+@pytest.mark.asyncio
+async def test_turn_stops_counting_as_in_flight_once_the_provider_answers():
+    """The registration ends at the first chunk, not when the whole call returns."""
+    import asyncio
+
+    client = _client()
+    at_request = []
+    at_first_text = []
+
+    async def first_chunk_probe():
+        at_request.append(len(client._in_flight_user_messages))
+
+    async def on_text_delta(*_args, **_kwargs):
+        if not at_first_text:
+            at_first_text.append(len(client._in_flight_user_messages))
+
+    client.on_text_delta = on_text_delta
+    client.script = [[first_chunk_probe, _text("hi"), _text("", "stop")]]
+    await asyncio.wait_for(client.stream_text(
+        "look", turn_images=(_png_b64(40, 40),), turn_source="screen", turn_source_count=1,
+    ), timeout=5)
+    assert at_request == [1]     # registered while the request is on its way
+    assert at_first_text == [0]  # released as soon as the provider answered
