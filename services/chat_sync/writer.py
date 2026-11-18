@@ -32,14 +32,18 @@ def _reset_file_locks_after_fork():
     ``ChatSyncWriter._reset_after_fork``). The parent's on-disk lock state is unaffected:
     a lock it still holds keeps excluding the child through the new descriptor. The
     child runs only the forking thread, so the set is iterated without the guard.
-    Spawn children (Windows, macOS) re-import this module and never run the hook.
+    Children not created by fork (spawn/forkserver, and always on Windows) re-import
+    this module and never run the hook.
     """
     # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
     for writer in list(_FORK_RESET_WRITERS):
         try:
             writer._reset_after_fork()
         except Exception as exc:
-            print(f'[chat_sync] fork 子进程重建 writer 锁失败: {type(exc).__name__}: {exc}', flush=True)
+            try:  # A closed stdout must not stop the remaining rebuilds.
+                print(f'[chat_sync] fork 子进程重建 writer 锁失败: {type(exc).__name__}: {exc}', flush=True)
+            except Exception:
+                pass
 
 
 if hasattr(os, 'register_at_fork'):

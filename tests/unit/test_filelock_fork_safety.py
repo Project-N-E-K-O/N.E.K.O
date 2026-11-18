@@ -309,13 +309,14 @@ def test_chat_sync_writer_fork_during_other_thread_recover_stays_quarantined(tmp
         pass
     writer.check()
     staging = threading.Event()
+    child_started = []
     forked = multiprocessing.get_context('fork').Event()
 
     def stage():
         staging.set()
         # Abort only after the child exists, so it inherits _initializing=True; the
         # witness stays quarantined and the child's check (waiting on the file lock) must refuse.
-        forked.wait(_JOIN_TIMEOUT)
+        child_started.append(forked.wait(_JOIN_TIMEOUT))
         raise RuntimeError('staging aborted')
 
     def run_recover():
@@ -330,6 +331,8 @@ def test_chat_sync_writer_fork_during_other_thread_recover_stays_quarantined(tmp
     finally:
         forked.set()
         thread.join(_JOIN_TIMEOUT)
+    # A timed-out wait would abort recovery before the fork and let the child pass vacuously.
+    assert child_started == [True]
 
 
 def _writer_child_does_not_inherit_trust(writer):
