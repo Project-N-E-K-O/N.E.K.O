@@ -678,6 +678,13 @@ async def shutdown():
     # bridge it reports through are still up. Bounded: see
     # HOST_SHUTDOWN_BUDGET_SECONDS. A no-op when nothing ever built the host.
     await step(shutdown_nekoclaw_host, "Agent host cleanup")
+    # Keys can only be held by calls the host has just stopped. Release them
+    # now, local and quick, ahead of the steps that may spend the cancellation
+    # budget; like ``aclose``, keys first and the browser afterwards.
+    await step(
+        lambda: asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0),
+        "Agent held keys release",
+    )
 
     for t in list(Modules._persistent_tasks):
         if not t.done():
@@ -710,7 +717,7 @@ async def shutdown():
 
     async def close_builtin_tools():
         # The browser the tools started stays open between tasks; it is closed
-        # at service shutdown, along with keys a stopped call left held. The
+        # at service shutdown. The
         # host's shutdown above has cancelled every call that was under way.
         # The launcher ends this process a few seconds after it began to shut
         # down, and a browser that is still closing then would run on with
@@ -738,13 +745,8 @@ async def shutdown():
             except Exception as e:
                 logger.warning(f"[Agent] Killing the browser failed: {e}")
         browser_last_resort.cancel()
-        # Only the keys now. The browser has been dealt with: asked to close once
-        # more (as ``aclose`` would), a browser that was just killed would be
-        # waited for all over again.
-        try:
-            await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
-        except Exception as e:
-            logger.warning(f"[Agent] Built-in tools cleanup error: {e}")
+        # Keys were released right after the host stopped (see above). Not
+        # ``aclose``: a browser that was just killed would be waited for again.
 
     await step(close_builtin_tools, "Agent built-in tools cleanup")
 

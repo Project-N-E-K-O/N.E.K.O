@@ -1466,6 +1466,15 @@ async def shutdown_event_handler():
     if _recent_sync_wake_task is not None:
         _recent_sync_wake_task.cancel()
         await asyncio.gather(_recent_sync_wake_task, return_exceptions=True)
+    # Queue the final save before cleanup, where main saved: it runs on the
+    # save worker while the steps below go on, so a cleanup that is cancelled
+    # or killed by the launcher cannot skip it.
+    token_save = None
+    try:
+        from utils.token_tracker import TokenTracker
+        token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+    except Exception:
+        pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     # P2 vector worker: kick off stop() as a task before we touch the
     # reload lock so its bounded 2s wait overlaps with manager cleanup
     # below instead of serializing in front of it.
@@ -1517,13 +1526,13 @@ async def shutdown_event_handler():
         await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
-    # Persistence cannot delay worker stop or embedding/SQLite cleanup.
-    try:
-        from utils.token_tracker import TokenTracker
-        await TokenTracker.get_instance().asave(report_timeout=1.0)
-    except Exception:
-        # Best-effort final flush; atexit retries any unpersisted deltas.
-        pass
+    # Waited for only now, so persistence cannot delay worker stop or
+    # embedding/SQLite cleanup; it was queued before them (see above).
+    if token_save is not None:
+        try:
+            await asyncio.shield(asyncio.wrap_future(token_save))
+        except Exception:
+            pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     logger.info("Memory server已关闭")
 
 
