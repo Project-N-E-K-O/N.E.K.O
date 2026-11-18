@@ -10,6 +10,7 @@ standard QueueHandler / QueueListener pair so callers never block on disk.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -24,9 +25,10 @@ _LOGGER_NAME = "neko.plugin_call_audit"
 MAX_BYTES = 4 * 1024 * 1024
 BACKUP_COUNT = 3
 
-_ring: deque[dict] = deque(maxlen=1000)
+_ring: deque[tuple[int, dict]] = deque(maxlen=1000)
+_write_order = itertools.count()  # shared by both rings; timestamps can tie
 # Decisions get their own ring so frequent forward entries cannot evict them.
-_decision_ring: deque[dict] = deque(maxlen=500)
+_decision_ring: deque[tuple[int, dict]] = deque(maxlen=500)
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
@@ -110,7 +112,7 @@ def _audit_logger_locked() -> logging.Logger | None:
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
-    (_decision_ring if entry.get("kind") == "decision" else _ring).append(item)
+    (_decision_ring if entry.get("kind") == "decision" else _ring).append((next(_write_order), item))
     try:
         # Check and enqueue (non-blocking) under the lock close() takes, so
         # everything accepted before a close is queued ahead of its sentinel.
@@ -127,7 +129,7 @@ def record(entry: dict) -> None:
 
 def entries() -> list[dict]:
     """Newest first."""
-    return sorted([*_ring, *_decision_ring], key=lambda item: item["ts"], reverse=True)
+    return [item for _, item in sorted([*_ring, *_decision_ring], key=lambda pair: pair[0], reverse=True)]
 
 
 def close(timeout: float = 1.0) -> bool:

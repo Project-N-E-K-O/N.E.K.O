@@ -362,9 +362,19 @@ def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, m
     monkeypatch.setattr(plugin_consent.consent_store, "read",
                         lambda plugin_id: {"decision": "approved", "approved_capabilities": {"memory.read": False}})
     assert capability_gate.granted_capabilities("a") == (frozenset(), False)
+    monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: {"decision": "approved"})
+    assert capability_gate.granted_capabilities("a") == (frozenset(), False)  # field missing
 
 
-async def test_audit_route_caps_the_response(gate):
+async def test_audit_route_caps_the_response(gate, monkeypatch):
+    # Identical timestamps: order comes from write order, not the clock.
+    class Frozen:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime, timezone
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(call_audit, "datetime", Frozen)
     for index in range(1000):
         call_audit.record({"kind": "forward", "n": index})
     call_audit.record({"kind": "decision", "verdict": "would_deny"})

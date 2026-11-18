@@ -61,7 +61,7 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
     try:
         if record.get("decision") != "approved":
             return frozenset(), True
-        approved = record.get("approved_capabilities", [])
+        approved = record.get("approved_capabilities")  # missing field = malformed
         if not isinstance(approved, list) or not all(isinstance(c, str) for c in approved):
             return frozenset(), False  # malformed record: unknown, for this plugin only
         return frozenset(approved), True
