@@ -59,6 +59,10 @@ class Document:
     size: int | None = None
     # How many files a directory that is counted has.
     files: int | None = None
+    # Whether its directory has more files than were looked at: then the
+    # number is the least it can be, and so is how many are said to be
+    # left out of the list.
+    more: bool = False
 
 
 def repository_root(workdir: Path) -> Path:
@@ -68,10 +72,18 @@ def repository_root(workdir: Path) -> Path:
     a clone, a file in a worktree or a submodule). Nothing is read but
     whether that name exists, and no further up than
     ``REPO_ROOT_SEARCH_MAX_LEVELS`` directories.
+
+    Going up starts from where the directory really is: one reached
+    through a link is in the repository the link leads into, not in
+    whatever the link itself lies in.
     """
     from config.nekoclaw_settings import REPO_ROOT_SEARCH_MAX_LEVELS
 
-    current = workdir
+    try:
+        start = workdir.resolve()
+    except (OSError, RuntimeError):
+        start = workdir
+    current = start
     for _level in range(REPO_ROOT_SEARCH_MAX_LEVELS + 1):
         try:
             if (current / ".git").exists():
@@ -81,24 +93,31 @@ def repository_root(workdir: Path) -> Path:
         if current.parent == current:
             break
         current = current.parent
-    return workdir
+    return start
 
 
-def _files_of(directory: Path) -> list[Path]:
-    """Return the files directly in a directory, by name; none when it cannot be read."""
+def _files_of(directory: Path) -> tuple[list[Path], bool]:
+    """Return the files directly in a directory, by name, and whether it has more than were looked at.
+
+    None when it cannot be read. No more than
+    ``REPO_DOCUMENT_DIRECTORY_MAX_FILES`` are looked at: a directory fuller
+    than that is no set of rules, and what is listed of it is the
+    beginning.
+    """
     from config.nekoclaw_settings import REPO_DOCUMENT_DIRECTORY_MAX_FILES
 
     files: list[Path] = []
+    more = False
     try:
         for item in directory.iterdir():
             if item.is_file():
-                files.append(item)
-                if len(files) > REPO_DOCUMENT_DIRECTORY_MAX_FILES:
-                    # A directory this full is no set of rules; what is listed of it is the beginning.
+                if len(files) >= REPO_DOCUMENT_DIRECTORY_MAX_FILES:
+                    more = True
                     break
+                files.append(item)
     except OSError:
-        return []
-    return sorted(files, key=lambda item: item.name)
+        return [], False
+    return sorted(files, key=lambda item: item.name), more
 
 
 def _size(path: Path) -> int | None:
@@ -120,14 +139,44 @@ def documents(root: Path) -> list[Document]:
                 if path.is_file():
                     found.append(Document(name, size=_size(path)))
             elif kind == FILES:
-                found.extend(Document(f"{name}/{item.name}", size=_size(item)) for item in _files_of(path))
+                files, more = _files_of(path)
+                found.extend(Document(f"{name}/{item.name}", size=_size(item), more=more) for item in files)
             elif kind == COUNT:
-                count = len(_files_of(path))
-                if count:
-                    found.append(Document(f"{name}/", files=count))
+                files, more = _files_of(path)
+                if files:
+                    found.append(Document(f"{name}/", files=len(files), more=more))
         except OSError:
             continue
     return found
+
+
+# The character that begins an escape in what ``_shown`` writes.
+_ESCAPE = chr(92)
+
+
+def _shown(text: str) -> str:
+    """Return a path as one line of text that still says what the path is, no longer than a path may be.
+
+    What a file is called is the repository's author's to choose, and on
+    most file systems a name may hold line ends. Written out as it is,
+    such a name would end its line of the list and go on as text of its
+    own in a task agent's instructions. A line end, and whatever else is
+    no printable character, is written the way Python writes it inside a
+    string, and so is the character that begins such an escape. The
+    line stays one line, and the path can still be read off it.
+    """
+    from config.nekoclaw_settings import REPO_DOCUMENT_PATH_MAX_TOKENS
+    from utils.tokenize import truncate_to_tokens
+
+    written: list[str] = []
+    for char in str(text):
+        if char == _ESCAPE:
+            written.append(_ESCAPE * 2)
+        elif char.isprintable():
+            written.append(char)
+        else:
+            written.append(char.encode("unicode_escape").decode("ascii"))
+    return truncate_to_tokens("".join(written), REPO_DOCUMENT_PATH_MAX_TOKENS)
 
 
 def _size_text(size: int | None) -> str:
@@ -148,6 +197,9 @@ def render(root: Path, found: list[Document]) -> str:
     The sentence that says what the files are, then one line for each, no
     more than ``REPO_DOCUMENTS_MAX_LINES`` and no more text than
     ``REPO_DOCUMENTS_MAX_TOKENS``; a last line says how many were left out.
+    Every path is written as one line (``_shown``), whatever the file is
+    called. Of a directory that was not looked at to its end, what is said
+    is the least it can be: "at least" so many.
     """
     from config.nekoclaw_settings import REPO_DOCUMENTS_MAX_LINES, REPO_DOCUMENTS_MAX_TOKENS
     from config.prompts import prompts_nekoclaw_brain as texts
@@ -155,18 +207,27 @@ def render(root: Path, found: list[Document]) -> str:
 
     if not found:
         return ""
+    def counted(item: Document) -> str:
+        count = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT
+        if item.more:
+            # Not all of them were looked at.
+            count = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT_AT_LEAST
+        return count.format(count=item.files)
+
     lines = [
-        f"- {item.path} ({texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT.format(count=item.files)})"
-        if item.files is not None
-        else f"- {item.path} ({_size_text(item.size)})"
+        f"- {_shown(item.path)} ({counted(item) if item.files is not None else _size_text(item.size)})"
         for item in found
     ]
-    note = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_NOTE.format(root=root.as_posix())
+    note = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_NOTE.format(root=_shown(root.as_posix()))
     shown = lines[:REPO_DOCUMENTS_MAX_LINES]
+    # Directories whose files are listed one by one and were not looked at
+    # to the end: each has one file more at the least.
+    unseen = len({item.path.rsplit("/", 1)[0] for item in found if item.more and item.files is None})
 
     def whole() -> str:
-        left_out = len(lines) - len(shown)
-        more = [texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE.format(count=left_out)] if left_out else []
+        left_out = len(lines) - len(shown) + unseen
+        said = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE_AT_LEAST if unseen else texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE
+        more = [said.format(count=left_out)] if left_out else []
         return "\n".join([note, *shown, *more])
 
     # Paths can be long. What is over comes off the end of the list, a whole line at a time.

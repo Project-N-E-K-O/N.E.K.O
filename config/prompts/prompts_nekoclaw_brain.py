@@ -1147,9 +1147,14 @@ TASK_AGENT_BRIEF_REPO_DOCUMENTS_NOTE = (
     "this commission or from what the user says, the commission and the user come first. Before you "
     "change anything there, read the ones that bear on this work."
 )
-# The line of a directory of which only the number of files is told. Rendered with str.format: count.
+# The line of a directory of which only the number of files is told; the
+# second when the directory has more files than were looked at. Rendered
+# with str.format: count.
 TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT = "{count} files"
-# The last line when the list was cut. Rendered with str.format: count.
+TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT_AT_LEAST = "at least {count} files"
+# The last line when the list was cut; the second when a directory whose
+# files are listed was not looked at to its end. Rendered with str.format: count.
 TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE = "({count} more are not listed)"
+TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE_AT_LEAST = "(at least {count} more are not listed)"
 
 TASK_AGENT_CHILD_RESULT_TEMPLATE = "[child task agent {name} finished: {status}]\n{text}"
