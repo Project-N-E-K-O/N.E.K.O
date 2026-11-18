@@ -27,6 +27,7 @@ that is none of the threads the rest of the host does its file work in.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from collections.abc import Callable
 from typing import TypeVar
@@ -53,7 +54,8 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
     which a future does not take, that is a RuntimeError that names it;
     and when the work was ended by something that is no ``Exception``
     (``SystemExit``), a RuntimeError that says it ended without a
-    result, while that goes on its way in the thread.
+    result and has that as its cause, while that goes on its way in
+    the thread.
 
     Raises ``NoThread`` when no thread can be started.
     """
@@ -83,6 +85,7 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
         except Exception as exc:  # noqa: BLE001 - handed to whoever waits for it
             error = exc
         finally:
+            _ended_by(error)
             try:
                 loop.call_soon_threadsafe(hand_over, result, error)
             except RuntimeError:
@@ -91,6 +94,18 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
 
     _start(threading.Thread(target=run, name=name, daemon=True))
     return done
+
+
+def _ended_by(error: Exception | None) -> None:
+    """Note, with the error that tells of work that ended without a result, what ended it.
+
+    Called while that is on its way through the thread (in a
+    ``finally``): something that is no ``Exception``, which is told as
+    the cause and goes on its way.
+    """
+    ending = sys.exc_info()[1]
+    if error is not None and ending is not None and not isinstance(ending, Exception):
+        error.__cause__ = ending
 
 
 def _start(thread: threading.Thread) -> None:
@@ -109,7 +124,8 @@ def wait_detached(work: Callable[[], T], *, name: str, seconds: float) -> T:
     after ``seconds`` whatever the work does. Returns what the work
     returns and raises what it raises; when the work was ended by
     something that is no ``Exception`` (``SystemExit``), a RuntimeError
-    that says it ended without a result. Raises TimeoutError when it
+    that says it ended without a result, with that as its cause. Raises
+    TimeoutError when it
     has not come back by then; it goes on in its thread, a daemon
     thread like that of ``run_detached``.
 
@@ -126,6 +142,7 @@ def wait_detached(work: Callable[[], T], *, name: str, seconds: float) -> T:
         except Exception as exc:  # noqa: BLE001 - raised for whoever waits for it
             outcome = (None, exc)
         finally:
+            _ended_by(outcome[1])
             came.append(outcome)
 
     thread = threading.Thread(target=run, name=name, daemon=True)

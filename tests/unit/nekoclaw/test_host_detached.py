@@ -56,8 +56,10 @@ async def test_work_that_is_ended_by_something_that_is_no_exception_is_told_with
 
     # Not ``SystemExit`` in the event loop; and the future is done, so nobody takes the work to be under way.
     future = run_detached(work, name="nekoclaw-test-exit")
-    with pytest.raises(RuntimeError, match="the work ended without a result"):
+    with pytest.raises(RuntimeError, match="the work ended without a result") as raised:
         await asyncio.wait_for(future, 30)
+    # What ended it is told as the cause.
+    assert isinstance(raised.value.__cause__, SystemExit) and raised.value.__cause__.code == 3
     for thread in threading.enumerate():
         if thread.name == "nekoclaw-test-exit":
             await asyncio.to_thread(thread.join, 30)
@@ -197,6 +199,8 @@ def test_work_waited_for_in_a_thread_that_is_ended_by_something_that_is_no_excep
         raise SystemExit(3)
 
     # It came back, so it is not given up on as if its time were up; and what ended it is not raised here.
-    with pytest.raises(RuntimeError, match="the work ended without a result"):
+    with pytest.raises(RuntimeError, match="the work ended without a result") as raised:
         wait_detached(work, name="nekoclaw-test-wait", seconds=30)
     assert ended == [SystemExit]
+    # What ended it is told as the cause.
+    assert isinstance(raised.value.__cause__, SystemExit) and raised.value.__cause__.code == 3
