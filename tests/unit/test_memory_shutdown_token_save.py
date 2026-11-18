@@ -95,8 +95,8 @@ async def test_cancelling_the_wait_for_the_save_does_not_cancel_it(memory_shutdo
         await asyncio.sleep(.02)
         assert not task.done()
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        await asyncio.gather(task, return_exceptions=True)
+        assert task.cancelled(), "the caller's cancellation goes on up"
         assert rig.events == ["save-submitted", "long-term-close", "cleanup", "embedding-released"]
         assert not rig.saved.cancelled() and not rig.saved.done()
     finally:
@@ -117,6 +117,22 @@ async def test_waiting_for_the_save_stops_at_the_shutdown_deadline(memory_shutdo
     assert not rig.saved.cancelled() and not rig.saved.done()
     rig.saved.set_result(None)
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_save_done_by_the_deadline_is_not_reported_as_timed_out(memory_shutdown, monkeypatch):
+    rig = memory_shutdown
+    warnings = []
+    monkeypatch.setattr(rig.runtime.logger, "warning", lambda *args, **kwargs: warnings.append(args))
+    monkeypatch.setattr(rig.runtime, "_SHUTDOWN_SAVE_WAIT_DEADLINE_SECONDS", 0.0)
+
+    async def finish_save():
+        # Done in the save thread while cleanup ran past the deadline.
+        rig.saved.set_result(None)
+
+    rig.knowledge_stop = finish_save
+    await asyncio.wait_for(rig.runtime.shutdown_event_handler(), 2)
+    assert not [w for w in warnings if "最终统计保存" in str(w[0])]
 
 
 @pytest.mark.asyncio

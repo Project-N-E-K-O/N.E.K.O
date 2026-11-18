@@ -1537,12 +1537,17 @@ async def shutdown_event_handler():
     # embedding/SQLite cleanup; it was queued before them (see above). The wait
     # is bounded (a stuck fsync, or a periodic report queued ahead of it) and
     # shielded: neither its deadline nor a cancellation cancels the save.
-    if token_save is not None:
-        left = save_wait_deadline - asyncio.get_running_loop().time()
+    # ``timeout_at`` rather than ``wait_for``: on 3.11 ``wait_for`` can turn a
+    # caller's cancellation that races the result into a normal return. Done
+    # is read off the thread's own future, which the event loop learns of only
+    # a turn later.
+    if token_save is not None and not token_save.done():
         try:
-            await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(token_save)), timeout=max(left, 0))
-        except asyncio.TimeoutError:
-            logger.warning("[Memory] 最终统计保存未在关闭期限内完成，不再等待（保存线程继续执行）")
+            async with asyncio.timeout_at(save_wait_deadline):
+                await asyncio.shield(asyncio.wrap_future(token_save))
+        except TimeoutError:
+            if not token_save.done():
+                logger.warning("[Memory] 最终统计保存未在关闭期限内完成，不再等待（保存线程继续执行）")
         except Exception:
             pass  # Best-effort final flush; atexit retries any unpersisted deltas.
     logger.info("Memory server已关闭")

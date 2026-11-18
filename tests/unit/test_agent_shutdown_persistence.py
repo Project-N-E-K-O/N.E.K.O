@@ -278,6 +278,27 @@ async def test_held_keys_are_tried_again_after_the_browser_only_when_left_held(s
 
 
 @pytest.mark.asyncio
+async def test_held_keys_are_not_tried_again_past_the_retry_deadline(shutdown_fixture, monkeypatch):
+    from config import nekoclaw_settings
+
+    fixture = shutdown_fixture
+    monkeypatch.setattr(nekoclaw_settings, "KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS", 0.0)
+
+    async def release_keys():
+        fixture.events.append("keys")
+        return False
+
+    monkeypatch.setattr(fixture.api.builtin_provider, "release_keys", release_keys)
+    try:
+        await asyncio.wait_for(fixture.api.shutdown(), 2)
+        assert fixture.events.count("keys") == 1
+        assert "status" in fixture.events, "skipping the retry goes on with the rest"
+        assert fixture.tracker._storage_path.exists()
+    finally:
+        await fixture.tracker.asave()
+
+
+@pytest.mark.asyncio
 async def test_agent_submits_stats_after_cancel_budget_expires(shutdown_fixture, monkeypatch):
     from utils.shutdown_steps import ShutdownCancellationBudget
 

@@ -633,8 +633,13 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
-    from config.nekoclaw_settings import BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, BROWSER_KILL_AT_SHUTDOWN_SECONDS
+    from config.nekoclaw_settings import (
+        BROWSER_CLOSE_AT_SHUTDOWN_SECONDS,
+        BROWSER_KILL_AT_SHUTDOWN_SECONDS,
+        KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS,
+    )
 
+    keys_retry_until = asyncio.get_running_loop().time() + KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS
     # Set first: whatever the steps below take, and whether or not the event
     # loop gets round to them, the browser the tools started does not outlive
     # this process (see ``BROWSER_KILL_AT_SHUTDOWN_SECONDS``). Cancelled once
@@ -683,9 +688,9 @@ async def shutdown():
     # budget; like ``aclose``, keys first and the browser afterwards.
     keys_released = False
 
-    async def release_held_keys():
+    async def release_held_keys(timeout=2.0):
         nonlocal keys_released
-        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
+        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=timeout)
 
     await step(release_held_keys, "Agent held keys release")
 
@@ -754,9 +759,16 @@ async def shutdown():
     await step(close_builtin_tools, "Agent built-in tools cleanup")
     if not keys_released:
         # Something was still held (a key that would not come up, or a call
-        # whose thread was still at the keyboard): one more try, if the
-        # budget allows. Not when the first one let go of everything.
-        await step(release_held_keys, "Agent held keys release retry")
+        # whose thread was still at the keyboard): one more try, within what
+        # is left before ``KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS`` (the shared
+        # budget only starts once the launcher cancels, which is after it has
+        # already given up on this process) and the cancellation budget. Not when the
+        # first one let go of everything.
+        left = min(2.0, keys_retry_until - asyncio.get_running_loop().time())
+        if left > 0:
+            await step(lambda: release_held_keys(left), "Agent held keys release retry")
+        else:
+            logger.warning("[Agent] Held keys release retry skipped: no time left before the launcher ends the process")
 
     try:
         from utils.token_tracker import TokenTracker

@@ -476,6 +476,13 @@ BROWSER_CLOSE_AT_SHUTDOWN_SECONDS = 4.0
 """How long the browser is given to close by itself once the shutdown gets to
 it; less when less than that is left before it is killed (above)."""
 
+KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS = 6.0
+"""Until how long after the agent process began to shut down held keys that
+the first try after the host stopped could not let go of are tried once more
+(after the browser). Bounded by what is left before then, and skipped when
+nothing is: of the launcher's 8 seconds, the rest is for queueing the final
+stats save and the last status update."""
+
 BROWSER_CLOSE_AT_END_ALL_SECONDS = 4.0
 """How long the browser the tools started is given to close when the user
 stops every task (``end_all``); killed after that. Asking it to close has
