@@ -2642,3 +2642,42 @@ async def test_a_ledger_made_before_handed_over_was_told_from_taken_gets_the_col
         assert wake.taken_at is None
     finally:
         await second.close()
+
+
+async def test_a_text_the_runtime_refuses_brings_back_what_it_was_to_hand_over(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_HELD_RETRY_SECONDS", 0.2)
+    host, llm, writer, building, release = await _a_run_under_way(hosts, tmp_path)
+    await host.wakes.close()
+    await _note(host.ledger, writer, building.session_id, "Skip the docs folder.")
+    [wake] = await host.ledger.wakes_pending(session_id=building.session_id)
+    session = host.task_agents._sessions[building.id]
+    steer = session.runtime.steer
+    refused: list[str] = []
+
+    async def refusing(session_id: str, text: str) -> None:
+        # As a runtime that refuses the text says so: with an error event, the call itself returning.
+        refused.append(text)
+        await host.task_agents._handle(
+            {"type": "error", "session_id": session_id, "command": "steer", "message": "the session is busy elsewhere"}
+        )
+
+    monkeypatch.setattr(session.runtime, "steer", refusing)
+    handed = await host.task_agents.hand_over(building.session_id, None, [wake])
+
+    # Sent, and refused: not under the number the next text gets, and pending again.
+    assert handed.outcome == "handed" and len(refused) == 1
+    assert (session.sent, session.handed) == (1, {})
+    assert [item.id for item in await host.ledger.wakes_pending(session_id=building.session_id)] == [wake.id]
+    assert await _delivered(host) == []
+    # The session is not asked again at once.
+    assert (await host.task_agents.hand_over(building.session_id, None, [wake])).outcome == "held"
+    assert len(refused) == 1
+
+    # A while later it is, and takes it.
+    monkeypatch.setattr(session.runtime, "steer", steer)
+    await asyncio.sleep(0.25)
+    assert (await host.task_agents.hand_over(building.session_id, None, [wake])).outcome == "handed"
+    release.set()
+    await wait_status(host, building.id, "done")
+    assert "    Skip the docs folder." in _said(llm.requests[1])[1]
+    assert await _on_their_way(host) == []

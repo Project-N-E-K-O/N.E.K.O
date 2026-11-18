@@ -295,6 +295,10 @@ class _Session:
     # event has yet shown it took. Should the session close first, they are
     # put back, to be handed over again.
     handed: dict[int, list[int]] = field(default_factory=dict)
+    # Until when (the loop's clock) nothing more is handed to the session:
+    # it refused a text that brought wake requests, and is not asked again
+    # at once.
+    refused_until: float = 0.0
     # The address and the name of the model the session was started with.
     model: tuple[Any, Any] | None = None
 
@@ -2308,8 +2312,18 @@ class TaskAgentManager:
         message = str(event.get("message") or "the runtime rejected the command")
         commission_id = session.commission_id
         if command in ("prompt", "steer", "follow_up") and session.sent > 0:
-            # Refused, so the session never took it.
+            # Refused, so the session never took it. What it was to hand
+            # over is not left under its number, which the next text gets
+            # (and whose being taken would then count for this one): it is
+            # pending again, and the session is not tried again at once.
+            refused = session.handed.pop(session.sent, None)
             session.sent -= 1
+            if refused:
+                from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
+
+                session.refused_until = asyncio.get_running_loop().time() + WAKE_HELD_RETRY_SECONDS
+                if not self._closed:
+                    await self._put_back(refused)
         if command == "steer":
             held = session.held_end
             if held is not None and isinstance(held.get("inputs"), int) and held["inputs"] >= session.sent:
@@ -3491,6 +3505,8 @@ class TaskAgentManager:
                 or live.settling
                 or live.awaiting_prompt
                 or (live.question is not None and not live.question.done())
+                # It refused what it was last handed, a moment ago.
+                or live.refused_until > asyncio.get_running_loop().time()
             )
 
         def way() -> str:
