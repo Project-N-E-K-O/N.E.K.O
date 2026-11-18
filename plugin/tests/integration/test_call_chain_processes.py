@@ -215,10 +215,10 @@ async def test_audit_holds_no_arguments_results_bodies_or_error_text(world):
             await asyncio.sleep(0.01)
     await world.run("chain_b", "call", {"target": "chain_a:fail"})
     assert world.entries(kind="forward", target="chain_a", result="PLUGIN_EXECUTION_FAILED")
-    call_audit.close()
+    assert call_audit.close() is True  # the writer has exited: the file is complete
     written = (world.audit_dir / "call_audit.jsonl").read_text(encoding="utf-8")
     ring = json.dumps(call_audit.entries())
-    assert written.strip()
+    assert '"result":"PLUGIN_EXECUTION_FAILED"' in written
     for sentinel in ("SENTINEL-ARG", "SENTINEL-RESULT", "SENTINEL-PUSH", "SENTINEL-ERROR"):
         assert sentinel not in written and sentinel not in ring
 

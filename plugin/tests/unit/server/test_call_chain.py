@@ -141,9 +141,6 @@ async def test_link_crosses_the_loop_hop_as_an_argument(gate):
 
     thread = threading.Thread(target=owner.run_forever, daemon=True)
     thread.start()
-    running = threading.Event()
-    owner.call_soon_threadsafe(running.set)
-    assert running.wait(2)  # the owner loop is really running elsewhere
     sent = []
 
     class Transport:
@@ -162,6 +159,10 @@ async def test_link_crosses_the_loop_hop_as_an_argument(gate):
 
     manager._trigger_local = without_context  # type: ignore[method-assign]
     try:
+        running = threading.Event()
+        owner.call_soon_threadsafe(running.set)
+        ready = running.wait(2)
+        assert ready  # the owner loop is really running elsewhere
         with delivery_link(CallLink(Origin.of("run", "run-2"))):
             assert await manager.trigger("entry", {"x": 1}, 2) == 1
     finally:
@@ -190,14 +191,21 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
     import threading
     import time
 
-    stuck = threading.Event()
+    stuck, writing = threading.Event(), threading.Event()
     real_emit = logging.handlers.RotatingFileHandler.emit
-    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit",
-                        lambda self, record: (stuck.wait(5), real_emit(self, record)))
+
+    def blocked_emit(self, record):
+        writing.set()
+        stuck.wait(30)
+        real_emit(self, record)
+
+    monkeypatch.setattr(logging.handlers.RotatingFileHandler, "emit", blocked_emit)
     baseline = call_audit.dropped
+    stuck_writer = None
     try:
         for index in range(3000):  # more than the queue holds
             call_audit.record({"kind": "forward", "n": index})
+        assert writing.wait(5)  # the writer holds the handler inside emit
         assert call_audit.dropped > baseline
         started = time.monotonic()
         assert call_audit.close(0.3) is False
@@ -213,13 +221,12 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
         assert call_audit._listener is None and call_audit.dropped == before + 1
     finally:
         stuck.set()
-    # ... until it has actually exited.
-    deadline = time.monotonic() + 10
-    while call_audit._listener is None:  # each record re-asks the old writer to stop
-        assert time.monotonic() < deadline, "the abandoned writer never handed over"
-        call_audit.record({"kind": "forward", "n": "resumed"})
-        time.sleep(0.01)
+        if stuck_writer is not None:  # the reserved slot let close() queue its stop
+            stuck_writer._thread.join(10)
+    # ... it exits on its own once the disk recovers, and the next record takes over.
     assert not stuck_writer._thread.is_alive()
+    call_audit.record({"kind": "forward", "n": "resumed"})
+    assert call_audit._listener is not None
 
 
 def test_unwritable_audit_file_is_counted_as_dropped(gate, monkeypatch):
@@ -274,10 +281,10 @@ def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch):
     capability_gate.check("a", "r2", "memory.read", "MEMORY_SEARCH")  # control RPCs alike
     capability_gate.end_call(root, "ok", 0)
     decisions = [e for e in call_audit.entries() if e["kind"] == "decision"]
-    assert {(d["operation"], tuple(d["chain"]), d["reason"]) for d in decisions} == {
-        ("MESSAGE_PUSH", ("b", "a"), "caller_chain"),
-        ("MEMORY_SEARCH", ("b", "a"), "caller_chain"),
-    }
+    assert sorted((d["operation"], tuple(d["chain"]), d["verdict"], d["reason"]) for d in decisions) == [
+        ("MEMORY_SEARCH", ("b", "a"), "would_deny", "caller_chain"),
+        ("MESSAGE_PUSH", ("b", "a"), "would_deny", "caller_chain"),
+    ]
     assert len(capability_gate.registry) == 0
 
 
@@ -337,3 +344,28 @@ async def test_audit_route_returns_nothing_when_off(gate, monkeypatch):
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as http:
         body = (await http.get("/plugin-audit/call-chain")).json()
     assert body["mode"] == "off" and body["entries"] == []
+
+
+def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, monkeypatch):
+    from plugin.server.infrastructure import plugin_consent
+
+    record = capability_gate.begin_call("a", "r1", "plugin_entry", "user said: hello there", None)
+    capability_gate.end_call(record, "ok", 0)
+    (forward,) = call_audit.entries()
+    assert forward["event_id"] == "<invalid>" and "hello" not in json.dumps(forward)
+    monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
+    monkeypatch.setattr(plugin_consent.consent_store, "read",
+                        lambda plugin_id: {"decision": "approved", "approved_capabilities": {"memory.read": False}})
+    assert capability_gate.granted_capabilities("a") == (frozenset(), False)
+
+
+async def test_audit_route_caps_the_response(gate):
+    for index in range(1000):
+        call_audit.record({"kind": "forward", "n": index})
+    call_audit.record({"kind": "decision", "verdict": "would_deny"})
+    app = FastAPI()
+    app.include_router(audit_router)
+    transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as http:
+        body = (await http.get("/plugin-audit/call-chain")).json()
+    assert len(body["entries"]) == 1000 and body["entries"][0]["kind"] == "decision"

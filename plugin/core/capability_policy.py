@@ -46,7 +46,8 @@ def decide(capability: str, chain: Iterable[str], granted: Callable[[str], froze
     chain = tuple(chain)
     if capability not in CAPABILITIES or not chain:
         return Decision(capability, chain, judged=False)
-    missing = [capability not in granted(plugin) for plugin in chain]
+    grants = {plugin: granted(plugin) for plugin in dict.fromkeys(chain)}  # one read per plugin
+    missing = [capability not in grants[plugin] for plugin in chain]
     blocked = tuple(plugin for plugin, lacks in zip(chain, missing) if lacks)
     # By position, so in A -> B -> A the first A still counts as a caller.
     if any(missing[:-1]):

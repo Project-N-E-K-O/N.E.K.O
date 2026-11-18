@@ -34,12 +34,23 @@ _abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out c
 dropped = 0  # records not written (queue full, unwritable file, after close); may race
 
 
+_drop_lock = threading.Lock()
+
+
 def _count_drop() -> None:
     global dropped
-    dropped += 1
+    with _drop_lock:  # producers and the writer thread both count
+        dropped += 1
 
 
 class _DroppingQueueHandler(logging.handlers.QueueHandler):
+    def enqueue(self, record: logging.LogRecord) -> None:
+        # Keep the last slot free for the stop sentinel, so close() can
+        # always queue it and a recovered writer exits on its own.
+        if self.queue.qsize() >= self.queue.maxsize - 1:
+            raise queue.Full
+        self.queue.put_nowait(record)
+
     def handleError(self, record: logging.LogRecord) -> None:
         _count_drop()  # queue full: drop and count, no traceback
 
@@ -98,7 +109,6 @@ def _audit_logger_locked() -> logging.Logger | None:
 
 def record(entry: dict) -> None:
     """Keep ``entry`` in the ring and queue it for the file; never raises."""
-    global dropped
     item = {"ts": datetime.now(timezone.utc).isoformat(), **entry}
     (_decision_ring if entry.get("kind") == "decision" else _ring).append(item)
     try:
@@ -107,12 +117,12 @@ def record(entry: dict) -> None:
         with _lock:
             log = _audit_logger_locked()
             if log is None:
-                dropped += 1
+                _count_drop()
             else:
                 # A full queue makes QueueHandler drop the record (handleError).
                 log.info(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
-    except Exception:
-        pass
+    except Exception:  # e.g. the writer thread could not start
+        _count_drop()
 
 
 def entries() -> list[dict]:
@@ -143,7 +153,7 @@ def close(timeout: float = 1.0) -> bool:
     deadline = time.monotonic() + timeout
     while listener._thread.is_alive() and time.monotonic() < deadline:
         try:
-            listener.queue.put(None, timeout=0.05)
+            listener.queue.put(None, timeout=max(0.0, min(0.05, deadline - time.monotonic())))
         except queue.Full:
             pass
         listener._thread.join(min(0.05, max(0.0, deadline - time.monotonic())))

@@ -104,7 +104,7 @@ Origin 只存指针，不存原文；`speaker` 字段预留为 `None`。Origin �
 - **登记**：在 `_trigger_local` / `_trigger_custom_event_local` 生成 `req_id` 之后、发送之前登记；`finally` 里摘除（成功、失败、超时、取消都摘）。摘除时写一条「转发」审计（结果码、耗时）和一条「放行聚合」审计（按能力计数）。
 - **查找**：`lookup(plugin_id, parent_request_id)`。`plugin_id` 永远是连接绑定的身份（`RpcContext.from_plugin` 或 `_route_message` 覆写后的 `plugin_id`），`parent_request_id` 只是查表的键。插件把父 id 伪造成别的插件的 `req_id`，键里的 `plugin_id` 对不上，查不到，按「插件自发」处理：借不到别人的权限，也不能把别人卷进自己的链。
 - **存活判断**：`has_live_chain(plugin_id)`：该插件当前是否作为「被别的插件调用的一方」存在于某条**还没结束**的记录里。用于 `possible_laundering`：一次使用只归到插件自己（没带父 id，或带的是它自己一条单跳记录的 id，例如 B 同时在处理一个直接的 run 和 A 发来的调用，拿 run 的 id 读记忆，就把 A 甩掉了），而它此时正被别的插件调用，就打这个标记。两条并发的多跳链（A→B 和 C→B）之间不互相比较，这个留给 P2。并发时合法的单跳调用也可能被标出来，只记不拦。
-- **刚结束的记录**：`push_message` 走自己的上行通道，可能在调用结果之后才到宿主。记录摘除后再保留 10 秒（最多 1024 条），只供查表，让晚到的推送仍按原链判定；这期间的放行不再计入聚合，也不算「正在被调用」。这条规则对**所有**带父 id 的查表都生效（推送和控制 RPC 一样）：调用方超时或取消后，插件里还没停下的入口在 10 秒内发出的请求，仍归到原链。
+- **刚结束的记录**：`push_message` 走自己的上行通道，可能在调用结果之后才到宿主。记录摘除后最多再保留 10 秒（最多 1024 条，超出时最早的先淘汰），只供查表，让晚到的推送仍按原链判定；这期间的放行不再计入聚合，也不算「正在被调用」。这条规则对**所有**带父 id 的查表都生效（推送和控制 RPC 一样）：调用方超时或取消后，插件里还没停下的入口发出的请求，只要这条记录还没过期、也没被淘汰，就仍归到原链；10 秒是最长保留时间，不是保证。
 - **上限**：存活记录最多 4096 条，满了不登记、计数 `registry_full`（审计接口返回这个数），调用照常进行（这时候它的子调用按插件自发处理）。P2 要定满了以后怎么处理。
 - **并发**：宿主里多个 owner loop 和路由 loop 都会碰它，用 `threading.Lock`，临界区只有字典操作。
 
@@ -195,7 +195,7 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 
 - 路由：`GET /plugin-audit/call-chain`，新文件 `plugin/server/routes/plugin_audit.py`，在 `build_plugin_server_app`（`plugin/server/http_app.py:277`）里 `include_router`。
 - 不带参数，返回环形缓冲里最近的最多 1000 条（新的在前，不读盘）：`{"mode", "entries": [...], "dropped", "registry_full"}`。
-- 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。所以经主服务代理、Docker 端口映射或反代过来的请求都会被拒。带 `Origin` 或 `Sec-Fetch-*` 头的请求（浏览器页面发起的；同源 GET 不带 `Origin`，但会带 `Sec-Fetch-*`）也一律 403，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
+- 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。带转发头的代理请求会被拒；但如果反向代理把请求转成不带转发头的本机连接，应用分不出来，所以**部署时不要把这个路由暴露给非本机客户端**。带 `Origin` 或 `Sec-Fetch-*` 头的请求（浏览器页面发起的；同源 GET 不带 `Origin`，但会带 `Sec-Fetch-*`）也一律 403，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
 - 开关 `off` 时返回 `mode: "off"` 和空列表。
 
 ### 3.10 错误码 `CAPABILITY_NOT_GRANTED`

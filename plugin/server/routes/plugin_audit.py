@@ -14,6 +14,7 @@ from plugin.server.application.plugins import call_audit, capability_gate
 from plugin.server.infrastructure.mutation_auth import _local_request
 
 router = APIRouter()
+MAX_ENTRIES = 1000
 
 
 @router.get("/plugin-audit/call-chain")
@@ -24,7 +25,7 @@ async def get_call_chain_audit(request: Request) -> dict[str, object]:
     mode = current_mode()
     return {
         "mode": mode,
-        "entries": [] if mode == "off" else call_audit.entries(),
+        "entries": [] if mode == "off" else call_audit.entries()[:MAX_ENTRIES],
         "dropped": call_audit.dropped,
         "registry_full": capability_gate.registry.registry_full,
     }

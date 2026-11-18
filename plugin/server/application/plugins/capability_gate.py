@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import re
 import time
 
 from plugin.core.call_registry import CallLink, CallRecord, CallRegistry, Origin
@@ -60,7 +61,10 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
     try:
         if record.get("decision") != "approved":
             return frozenset(), True
-        return frozenset(c for c in record.get("approved_capabilities") or () if isinstance(c, str)), True
+        approved = record.get("approved_capabilities", [])
+        if not isinstance(approved, list) or not all(isinstance(c, str) for c in approved):
+            return frozenset(), False  # malformed record: unknown, for this plugin only
+        return frozenset(approved), True
     except Exception:  # only this plugin's record is malformed
         return frozenset(), False
 
@@ -135,6 +139,14 @@ def result_code(exc: BaseException | None) -> str:
     return "TIMEOUT" if isinstance(exc, TimeoutError) else "ERROR"
 
 
+_IDENTIFIER = re.compile(r"[A-Za-z0-9_.:\-]{1,128}")
+
+
+def _identifier(value: str) -> str:
+    """Event names come from the calling plugin: keep only identifier-shaped ones."""
+    return value if isinstance(value, str) and _IDENTIFIER.fullmatch(value) else "<invalid>"
+
+
 def end_call(record: CallRecord | None, code: str, started: float) -> None:
     if record is None:
         return
@@ -143,8 +155,8 @@ def end_call(record: CallRecord | None, code: str, started: float) -> None:
         base = {"mode": current_mode(), "trace_id": record.trace_id, "call_id": record.call_id,
                 "parent_call_id": record.parent_call_id, "depth": record.depth, "target": record.target}
         call_audit.record({
-            "kind": "forward", **base, "caller": record.caller, "event_type": record.event_type,
-            "event_id": record.event_id, "origin_kind": record.origin.kind, "origin_ref": record.origin.ref,
+            "kind": "forward", **base, "caller": record.caller, "event_type": _identifier(record.event_type),
+            "event_id": _identifier(record.event_id), "origin_kind": record.origin.kind, "origin_ref": record.origin.ref,
             "result": code, "duration_ms": round((time.monotonic() - started) * 1000, 1),
             "flags": sorted(record.flags),
         })
