@@ -321,6 +321,49 @@ def test_get_tts_worker_vllm_omni_clone_uses_stored_base_url(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("custom_api_before", [None, False, True], ids=["missing", "disabled", "enabled"])
+@pytest.mark.parametrize("configured_url", ["ws://127.0.0.1:8091/v1", ""], ids=["configured-url", "default-url"])
+def test_vllm_omni_clone_endpoint_survives_subscription_toggle(monkeypatch, custom_api_before, configured_url):
+    """Text-only subscription toggles must preserve the effective clone endpoint."""
+    from utils.chatgpt_subscription import disable, enable, revision
+
+    sample = (np.arange(64, dtype=np.int16)).tobytes()
+    stored_url = "ws://10.0.1.92:8091/v1"
+    raw = {"ttsModelProvider": "vllm_omni", "ttsModelUrl": configured_url}
+    if custom_api_before is not None:
+        raw["enableCustomApi"] = custom_api_before
+    original = dict(raw)
+    cm = _CMBase(
+        {"vllm-omni-clone-s": _vllm_clone_meta(sample, vllm_omni_base_url=stored_url)},
+        raw_json=raw,
+        core_config={"ENABLE_CUSTOM_API": bool(custom_api_before), "ttsModelProvider": "vllm_omni"},
+    )
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+    expected_url = (configured_url or "ws://localhost:8091/v1") if custom_api_before else stored_url
+
+    def assert_clone_endpoint():
+        worker, api_key, provider_key = tts_client.get_tts_worker(
+            core_api_type="qwen", has_custom_voice=True, voice_id="vllm-omni-clone-s",
+        )
+        assert isinstance(worker, partial)
+        assert worker.func is tts_client.vllm_omni_tts_worker
+        assert provider_key == "vllm_omni"
+        assert api_key == ""
+        assert worker.keywords["base_url"] == expected_url
+        assert worker.keywords["ref_audio"] == "data:audio/wav;base64," + base64.b64encode(sample).decode("ascii")
+        assert worker.keywords["ref_text"] == "参考音频对应的原文"
+
+    assert_clone_endpoint()
+    slots = ["conversation"]
+    enable(raw, slots, "chatgpt-model", revision(raw, slots))
+    assert raw["enableCustomApi"] is True
+    assert_clone_endpoint()
+    assert disable(raw)
+    assert raw == original
+    assert_clone_endpoint()
+
+
+@pytest.mark.unit
 def test_get_tts_worker_vllm_omni_clone_uses_current_vllm_url_over_legacy_snapshot(monkeypatch):
     """Switching to vLLM-Omni must repair clones saved while TTS followed another API."""
     sample = (np.arange(64, dtype=np.int16)).tobytes()
