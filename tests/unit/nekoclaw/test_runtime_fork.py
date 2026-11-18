@@ -698,8 +698,11 @@ async def test_without_a_whole_summary_a_conversation_told_to_sum_itself_up_stay
         async def fails() -> None:
             raise RuntimeError("the provider is away")
 
-        # The request fails; it comes back empty; it ends at its length limit.
-        for answer in ([fails], [finish()], [say("## Primary Request and Intent\n- the four st"), usage(2_400, 900), finish("length")]):
+        # The request fails; it comes back empty; it ends at its length limit; the model calls a tool
+        # (the request offers them, as every request of the session does) instead of going on.
+        cut_short = [say("## Primary Request and Intent\n- the four st"), usage(2_400, 900), finish("length")]
+        a_call = [say("## Primary Request and Intent\n- let me look"), call("glob", {"pattern": "*"}), finish("tool_calls")]
+        for answer in ([fails], [finish()], cut_short, a_call):
             llm.add(*answer)
             mark, told = len(events.events), len(events.of("usage"))
             session.compact()
@@ -711,7 +714,7 @@ async def test_without_a_whole_summary_a_conversation_told_to_sum_itself_up_stay
             assert (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8") == record
             # What a request that came back used is told all the same.
             assert [(event["summary"], event["input"], event["output"]) for event in events.of("usage")[told:]] == (
-                [(True, 2_400, 900)] if answer[-1] is not fails and len(answer) == 3 else []
+                [(True, 2_400, 900)] if answer is cut_short else []
             )
         assert any(getattr(message, "text", "").startswith("Finished step 0.") for message in session.harness.message_list)
     finally:

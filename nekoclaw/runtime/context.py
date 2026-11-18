@@ -733,6 +733,9 @@ class ContextManager:
         if not force and await self.measure(transcript.messages) <= self.policy.threshold:
             return []
 
+        # As it is before anything is cut for the summary: put back when
+        # the conversation is to stay as it is and no summary is made.
+        as_it_was = None if or_drop else transcript.rows()
         pruned = await asyncio.to_thread(
             prune_rows, transcript.rows(), self.policy, include_latest=force
         )
@@ -763,6 +766,11 @@ class ContextManager:
                 on_compaction(compaction)
             if await self.measure(transcript.messages) <= self.policy.threshold:
                 break
+        if as_it_was is not None and not done and pruned is not None:
+            # Nothing was summed up, and nothing has to go: the tool
+            # results that were cut for it are whole again.
+            transcript.rewrite(as_it_was)
+            self.invalidate()
         return done
 
     async def _compact(
@@ -823,6 +831,11 @@ class ContextManager:
         # then drop the oldest messages of the part being condensed.
         room = policy.window - policy.summary_cap - self.fixed_tokens - 2_000
         prepared = await asyncio.to_thread(_shrink_for_summary, list(region), policy, room)
+        if not or_drop and len(prepared) < len(region):
+            # The oldest messages do not fit into the request: a summary
+            # would stand for a part it was never shown.
+            logger.warning("the part to be summed up does not fit one request; the conversation is left as it is")
+            return None, None
         try:
             summary, usage = await self.summarize(prepared, policy.summary_cap)
         except asyncio.CancelledError:

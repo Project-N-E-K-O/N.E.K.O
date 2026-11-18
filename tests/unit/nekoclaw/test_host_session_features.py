@@ -875,8 +875,40 @@ async def test_the_agent_server_keeps_what_was_said_only_while_nekoclaw_is_on(mo
     await api_runtime._on_session_event({**event, "event_id": "e2", "content": "and the videos"})
     assert [turn.text for turn in kept.recent("Lan")] == ["sort the photos please", "and the videos"]
     assert conversation.recent_conversation() is kept
-    # Switched off: nothing more is kept, and what was kept goes with the next message that comes by,
-    # so that nothing from before is handed over when it is switched on again.
+    # Switched off by its master switch: what was kept goes then and there, whether or not a message
+    # comes by while it is off, so that nothing from before is handed over when it is switched on again.
+    api_runtime.forget_turns_for_task_agents()
+    assert kept.recent("Lan") == []
+    import ast
+
+    from app.agent_server import api_routes
+
+    def switches_it_off(node: ast.stmt) -> bool:
+        return (
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled" for target in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and node.value.value is False
+        )
+
+    def forgets(node: ast.stmt) -> bool:
+        call_ = node.value if isinstance(node, ast.Expr) else None
+        return isinstance(call_, ast.Call) and getattr(call_.func, "id", "") == "forget_turns_for_task_agents"
+
+    places = 0
+    for node in ast.walk(ast.parse(Path(api_routes.__file__).read_text(encoding="utf-8"))):
+        for body in (getattr(node, "body", None), getattr(node, "orelse", None)):
+            if not isinstance(body, list):
+                continue
+            for index, statement in enumerate(body):
+                if switches_it_off(statement):
+                    places += 1
+                    assert any(forgets(later) for later in body[index + 1 :]), f"line {statement.lineno}"
+    # Every place the master switch is switched off at drops what was kept.
+    assert places == 2
+    assert api_runtime._note_turn_for_task_agents({**event, "event_id": "e2b", "content": "again"}) is True
+    # Off without the master switch (no capability left on): nothing more is kept, and what was
+    # kept goes with the next message that comes by.
     monkeypatch.setattr(api_runtime, "nekoclaw_on", lambda: False)
     assert api_runtime._note_turn_for_task_agents({**event, "event_id": "e3", "content": "never mind"}) is False
     assert kept.recent("Lan") == []
@@ -1136,6 +1168,9 @@ async def test_a_commission_for_a_session_that_is_being_summed_up_cuts_that_shor
     await wait_until(lambda: len(export.requests) == 6, what="the request that sums it up")
     assert (await host.ledger.get_session(first.id)).status == "compacting"
     assert first.id in manager._compacting and manager.hold_files(first.id) is False
+    # (Not a second time in this test: once the commission below has let the session go, the time
+    # after which it is summed up starts anew, and is long.)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30.0)
 
     second = (await _dispatch(host, "add a chart to the budget app")).commissions[0]
 
@@ -1813,3 +1848,58 @@ async def test_a_commission_that_comes_while_a_summed_up_session_is_given_back_w
     assert manager._compacting == {} and manager._idle_over == {} and manager._service == {}
     assert f"session:{first.id}" not in host.gateway._by_commission
     assert len(manager._idle_compacted_at) == 1 and manager._idle_compacts_under_way == 0
+
+
+async def test_a_session_the_host_summed_up_is_not_given_back_before_the_runtime_says_it_is_closed(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host import task_agents as task_agents_module
+
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    # The runtime is slow to close the session: longer than it is given before that is noted.
+    monkeypatch.setattr(task_agents_module, "_SERVICE_CLOSE_SECONDS", 0.05)
+    runtime = manager._runtimes.builtin()
+    close = runtime.close
+    release = asyncio.Event()
+    closing = asyncio.Event()
+
+    later: list[Any] = []
+
+    async def slow(session_id: str) -> None:
+        # Told to close it, the runtime gets to it only after a while.
+        async def when_it_gets_to_it() -> None:
+            await release.wait()
+            await close(session_id)
+
+        later.append(asyncio.ensure_future(when_it_gets_to_it()))
+        closing.set()
+
+    runtime.close = slow
+    try:
+        task = manager._spawn(manager._idle_compact(first.id))
+        await asyncio.wait_for(closing.wait(), 10)
+        await asyncio.sleep(0.3)
+        # Still the host's: what the runtime says of this opening of the session, late as it is, goes
+        # to nobody else, and no commission is let into the session meanwhile.
+        assert first.id in manager._service and first.id in manager._compacting
+        assert manager.hold_files(first.id) is False and not task.done()
+        release.set()
+        assert await asyncio.wait_for(task, 10) is True
+    finally:
+        release.set()
+        runtime.close = close
+        await asyncio.gather(*later, return_exceptions=True)
+    await wait_until(lambda: manager._idle_over == {}, what="the session being given back")
+    assert manager._service == {} and manager._compacting == {}
+    assert (await host.ledger.get_session(first.id)).status == "closed"

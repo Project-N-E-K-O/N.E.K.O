@@ -407,6 +407,22 @@ def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
         return False
 
 
+def forget_turns_for_task_agents() -> None:
+    """Drop what was kept of the main dialogue for task agents: called when NekoClaw is switched off.
+
+    Without this what was kept would stay until a message comes by
+    while it is off (``_note_turn_for_task_agents``), and switched on
+    again before one did, a commission would be handed what was said
+    before it was switched off.
+    """
+    try:
+        from nekoclaw.host.conversation import recent_conversation
+
+        recent_conversation().forget()
+    except Exception:
+        logger.debug("[NekoClaw] dropping the messages kept for task agents failed")
+
+
 def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
     """Forward an observed fact; never run plugin callbacks in this receive path."""
     if not _user_plugins_enabled():

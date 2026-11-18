@@ -1089,3 +1089,44 @@ async def test_growing_context_is_compacted_before_the_request_is_sent(tmp_path:
         assert events.of("usage")[-1]["context_tokens"] == 905
     finally:
         await session.close()
+
+
+async def test_a_conversation_that_could_stay_is_left_whole_when_no_summary_is_to_be_had(tmp_path: Path) -> None:
+    # Summed up with nothing wrong with its length (a session nothing is at work in): nothing has to go.
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    messages = [UserMessage(content="go")]
+    for index in range(1, 9):
+        # About three thousand tokens each: what is cut before a summary is asked for.
+        messages.extend(_call_turn(index, _words(625, f"big{index}x")))
+    whole = [getattr(message, "text", None) or str(message.content) for message in messages]
+
+    # The request fails: as it was, the tool results that were cut for it included.
+    asked: list = []
+    manager = _manager(tmp_path, policy, asked, fail=True)
+    transcript = Transcript(messages, _counter())
+    assert await manager.fit(transcript, force=True, tight=False, or_drop=False) == []
+    assert len(asked) == 1
+    assert [getattr(message, "text", None) or str(message.content) for message in messages] == whole
+    assert not any(texts.PRUNED_MIDDLE_MARKER in text for text in whole)
+
+    # Where the conversation has to get shorter the same request has the older part dropped, as before.
+    dropped = list(messages)
+    assert await _manager(tmp_path, policy, [], fail=True).fit(Transcript(dropped, _counter()), force=True)
+    assert any(isinstance(m, UserMessage) and SUMMARY_FALLBACK in str(m.content) for m in dropped)
+
+    # What is to be summed up does not fit into one request: a summary would stand for a part it was
+    # never shown, so none is asked for, and the conversation stays.
+    narrow = ContextPolicy(window=8_000, max_output=1_000)
+    asked = []
+    manager = _manager(tmp_path, narrow, asked)
+    long = [UserMessage(content="go")]
+    for index in range(1, 9):
+        long.extend(_call_turn(index, _words(900, f"wide{index}x")))
+    before = [getattr(message, "text", None) or str(message.content) for message in long]
+    assert await manager.fit(Transcript(long, _counter()), force=True, tight=False, or_drop=False) == []
+    assert asked == []
+    assert [getattr(message, "text", None) or str(message.content) for message in long] == before
+    # (The same conversation is summed up where it has to get shorter, from as much of it as fits.)
+    asked = []
+    assert await _manager(tmp_path, narrow, asked).fit(Transcript(list(long), _counter()), force=True)
+    assert len(asked) >= 1

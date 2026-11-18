@@ -1264,8 +1264,11 @@ class TaskAgentSession(SessionInbox):
                 raise asyncio.CancelledError from None
             raise
         self._tell_summary_usage(reply.usage)
-        if reply.stop_reason == "length":
-            # Ended at its limit: the last sections are missing, or cut off.
+        if reply.stop_reason in ("length", "toolUse"):
+            # Ended at its limit: the last sections are missing, or cut
+            # off. Or it called a tool instead of going on (the request
+            # offers the tools, as every request of the session does):
+            # what it wrote before that is the beginning of a summary.
             raise SummaryCutShort(reply.text)
         return reply.text, reply.usage
 

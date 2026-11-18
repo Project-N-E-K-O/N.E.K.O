@@ -95,7 +95,8 @@ WEB_SEARCH_PLUGIN_ID = "web_search"
 WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
-# How long a runtime gets to say that a session the host had open by itself is closed.
+# How long a runtime gets to say that a session the host had open by itself
+# is closed before that is noted in the log; it is waited for all the same.
 _SERVICE_CLOSE_SECONDS = 15.0
 # The key of what is put among the runtimes' events to learn when they are
 # caught up with (``_caught_up``), and how long that is waited for.
@@ -3908,9 +3909,19 @@ class TaskAgentManager:
                         # The runtime process went away, and the session with it.
                         return
 
-            await asyncio.wait_for(gone(), _SERVICE_CLOSE_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning("the runtime did not say that session %s is closed", session_id)
+            # However long it takes. Given back before the runtime said
+            # so, the session could be taken by a commission, and what
+            # the runtime says of this opening of it afterwards (that it
+            # is closed) would be taken for that commission's.
+            waiting = asyncio.ensure_future(gone())
+            try:
+                done, _pending = await asyncio.wait({waiting}, timeout=_SERVICE_CLOSE_SECONDS)
+                if not done:
+                    logger.warning("the runtime has not said that session %s is closed; still waited for", session_id)
+                await waiting
+            finally:
+                if not waiting.done():
+                    waiting.cancel()
         except Exception:  # noqa: BLE001 - nothing more can be done for it
             logger.warning("closing a session the host had open failed", exc_info=True)
         finally:

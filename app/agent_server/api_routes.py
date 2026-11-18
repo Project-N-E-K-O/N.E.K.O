@@ -60,6 +60,7 @@ from .api_runtime import (  # noqa: F401
     _user_plugins_enabled,
     _voice_transcript_plugin_gate_reason,
     cancel_task,
+    forget_turns_for_task_agents,
     complete_deferred_task,
     get_task,
     health,
@@ -522,6 +523,8 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
+            # Nothing of the main dialogue is kept for task agents while it is off.
+            forget_turns_for_task_agents()
             # Invalidate an in-flight user-plugin enable/readiness task before
             # stopping its lifecycle.  The sub-flag intent itself remains ON.
             Modules.user_plugin_lifecycle_seq += 1
@@ -1042,6 +1045,7 @@ async def admin_control(payload: Dict[str, Any]):
     elif action == "disable_analyzer":
         Modules.analyzer_enabled = False
         Modules.analyzer_profile = {}
+        forget_turns_for_task_agents()
         # cascade end_all
         await admin_control({"action": "end_all"})
         return {"success": True, "analyzer_enabled": False}
