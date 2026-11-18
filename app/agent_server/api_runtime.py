@@ -688,9 +688,9 @@ async def shutdown():
     # budget; like ``aclose``, keys first and the browser afterwards.
     keys_released = False
 
-    async def release_held_keys(timeout=2.0):
+    async def release_held_keys():
         nonlocal keys_released
-        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=timeout)
+        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
 
     await step(release_held_keys, "Agent held keys release")
 
@@ -766,11 +766,16 @@ async def shutdown():
         # first one let go of everything. What is left is read in the retry
         # itself, when it gets to run, not when it is scheduled.
         async def retry_held_keys():
-            left = min(2.0, keys_retry_until - asyncio.get_running_loop().time())
-            if left <= 0:
+            nonlocal keys_released
+            now = asyncio.get_running_loop().time()
+            deadline = min(now + 2.0, keys_retry_until)
+            if deadline <= now:
                 logger.warning("[Agent] Held keys release retry skipped: no time left before the launcher ends the process")
                 return
-            await release_held_keys(left)
+            # Awaited in this task (no ``wait_for`` child that could start
+            # after the deadline and still hand the release to a thread).
+            async with asyncio.timeout_at(deadline):
+                keys_released = await builtin_provider.release_keys()
 
         await step(retry_held_keys, "Agent held keys release retry")
 

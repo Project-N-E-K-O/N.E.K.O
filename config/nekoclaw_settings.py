@@ -483,8 +483,12 @@ the first try after the host stopped could not let go of are tried once more
 nothing is. The launcher's 8 seconds start before this process's shutdown
 does: in merged mode connections are drained first, for up to
 ``MERGED_CONNECTION_DRAIN_TIMEOUT`` (1 second, ``launcher_core/runtime.py``).
-So this ends at most 6 seconds into the launcher's 8, and the last 2 are for
-queueing the final stats save and the last status update."""
+So, scheduling delays aside, this ends about 6 seconds into the launcher's 8.
+The last 2 are an estimate, not a guarantee, for what comes after: queueing
+the final stats save, waiting for it (bounded only by the save itself;
+``report_timeout`` bounds just its report's socket waits, not a busy save
+worker or the file lock), and then the last status update, which a slow save
+can push past the launcher's end."""
 
 BROWSER_CLOSE_AT_END_ALL_SECONDS = 4.0
 """How long the browser the tools started is given to close when the user
