@@ -490,7 +490,9 @@ def _has_second_name(path: str) -> bool:
     return stat.S_ISREG(found.st_mode) and found.st_nlink > 1
 
 
-def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, int]], limit: int) -> bool:
+def _lies_in(
+    directory: Any, files: set[tuple[int, int]], apart: dict[str, set[tuple[int, int]]], limit: int
+) -> bool:
     """Whether one of some files lies in a directory under any of its names, however deep. Blocking.
 
     The files are told by device and number, which is what a second name
@@ -498,12 +500,17 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, 
     directory reads it: through no link and no junction, and not into a
     directory a version control system keeps of itself (a file of such a
     name is a file like any other: a working tree of git has one). The
-    directories in ``apart`` (told by device and number likewise,
-    however the path to them is written) are not gone into: other
-    sessions' own directories, which are ruled on by themselves. What
-    kind of entry it is, the directory tells; the entry itself is asked
-    only where more must be known (which file it is), as that costs a
-    call each. No more than ``limit`` entries are looked at: a
+    directories in ``apart`` are not gone into: other sessions' own
+    directories, which are ruled on by themselves. They are given by
+    name (as the file system compares names), each name with which
+    directories of that name they are, by device and number: a
+    directory is told by what it is, however the path to it is written,
+    and is asked of itself only where its name is one of theirs. (What
+    the listing says of a directory's number is not gone by: at a mount
+    point it is another, and on Windows it costs the call all the same.)
+    What kind of entry it is, the directory tells; the entry itself is
+    asked only where more must be known (which file it is), as that
+    costs a call each. No more than ``limit`` entries are looked at: a
     directory that has more is taken to hold one of the files, as it
     cannot be told that it does not. So is one whose reading breaks off
     part of the way; one that cannot be opened at all is passed over, as
@@ -516,7 +523,6 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, 
     # (The search's own test of what a link is, junctions included.)
     from nekoclaw.runtime.tools.search import VCS_DIRECTORIES, _entry_is_link
 
-    numbers = {number for _device, number in apart}
     looked = 0
     pending = [os.fspath(directory)]
     while pending:
@@ -536,11 +542,12 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[tuple[int, 
                         if entry.is_dir(follow_symlinks=False):
                             if entry.name in VCS_DIRECTORIES:
                                 continue
-                            if entry.inode() in numbers:
-                                # May be one that is set apart: asked of
-                                # itself, for the device as well.
+                            named = apart.get(os.path.normcase(entry.name))
+                            if named:
+                                # Named like one that is set apart: asked
+                                # of itself which directory it is.
                                 found = os.stat(entry.path, follow_symlinks=False)
-                                if (found.st_dev, found.st_ino) in apart:
+                                if (found.st_dev, found.st_ino) in named:
                                     continue
                             pending.append(entry.path)
                             continue
@@ -4913,17 +4920,18 @@ class TaskAgentManager:
                                 record = (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
                             except OSError:
                                 pass  # The record is not there: not the same file.
+            # A directory whose files would be read. (Asked once, and so
+            # that one which is not to be reached says no, and does not
+            # raise.)
+            searched = not names_only and os.path.isdir(target)
             holds = (
                 (in_own or in_work)
-                and not names_only
-                and os.path.isdir(target)
+                and searched
                 and any(session_dir and is_inside(Path(session_dir), target) for _id, _workdir, session_dir in places)
             )
             aliased = False
-            # (Asked so that a directory which is not to be reached says
-            # no, and does not raise; and not for a write, which searches
-            # nothing.)
-            if not writes and not names_only and os.path.isdir(target):
+            # (Not for a write, which searches nothing.)
+            if searched and not writes:
                 # Only a record that has a second name can lie anywhere
                 # under one, and it has none unless somebody gave it one:
                 # as a rule nothing is looked for, and no directory is
@@ -4940,14 +4948,20 @@ class TaskAgentManager:
                 if twice:
                     # (The sessions' own directories, where the records
                     # lie under their first names, are ruled on above.)
-                    apart: set[tuple[int, int]] = set()
+                    apart: dict[str, set[tuple[int, int]]] = {}
                     for _id, _workdir, session_dir in places:
+                        if not session_dir:
+                            continue
                         try:
-                            kept = os.stat(session_dir) if session_dir else None
+                            # (Under its real name: going through a
+                            # directory follows no link, and meets it
+                            # under that name.)
+                            real = os.path.realpath(session_dir)
+                            kept = os.stat(real)
                         except OSError:
                             continue  # Not there.
-                        if kept is not None:
-                            apart.add((kept.st_dev, kept.st_ino))
+                        name = os.path.normcase(os.path.basename(real))
+                        apart.setdefault(name, set()).add((kept.st_dev, kept.st_ino))
                     aliased = _lies_in(target, twice, apart, SESSION_RECORD_ALIAS_SCAN_ENTRIES)
             return in_own, in_work, record, holds, aliased
 

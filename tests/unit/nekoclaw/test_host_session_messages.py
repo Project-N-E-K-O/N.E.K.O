@@ -3344,15 +3344,15 @@ def test_a_directory_is_read_no_further_than_is_looked_at_for_a_second_name(tmp_
 
     # More entries than are looked at: taken to hold the record, and read no further than
     # the one that showed there are too many.
-    assert _lies_in(large, files, set(), 5) is True
+    assert _lies_in(large, files, {}, 5) is True
     assert len(read) == 6
     # Within the limit it is read through, and the record is not in it.
     read.clear()
-    assert _lies_in(large, files, set(), 100) is False
+    assert _lies_in(large, files, {}, 100) is False
     assert len(read) == 30
     # Nor is a directory read on once the record is found in it.
     os.link(record, large / "a second name.txt")
-    assert _lies_in(large, files, set(), 100) is True
+    assert _lies_in(large, files, {}, 100) is True
 
 
 def test_a_directory_that_cannot_be_read_through_is_taken_to_hold_a_second_name(tmp_path, monkeypatch):
@@ -3401,11 +3401,11 @@ def test_a_directory_that_cannot_be_read_through_is_taken_to_hold_a_second_name(
     monkeypatch.setattr(os, "scandir", reading)
 
     # A directory that cannot be opened is passed over, as a search passes over it.
-    assert _lies_in(work / "shut", files, set(), 100) is False
+    assert _lies_in(work / "shut", files, {}, 100) is False
     # One whose reading breaks off part of the way is taken to hold the record: it cannot be
     # told what the rest of it holds.
-    assert _lies_in(work / "broken", files, set(), 100) is True
-    assert _lies_in(work, files, set(), 100) is True
+    assert _lies_in(work / "broken", files, {}, 100) is True
+    assert _lies_in(work, files, {}, 100) is True
 
 
 def test_what_a_version_control_system_keeps_is_not_gone_into_for_a_second_name(tmp_path):
@@ -3428,15 +3428,15 @@ def test_what_a_version_control_system_keeps_is_not_gone_into_for_a_second_name(
 
     # What is kept in there does not count towards the limit either: a repository with a
     # great many objects is not taken, for those, to hold the record.
-    assert _lies_in(project, files, set(), 5) is False
+    assert _lies_in(project, files, {}, 5) is False
     os.link(record, project / "src" / "kept.txt")
-    assert _lies_in(project, files, set(), 5) is True
+    assert _lies_in(project, files, {}, 5) is True
     # A file of such a name is a file like any other (a working tree of git has one, and a
     # search reads it): looked at.
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     os.link(record, worktree / ".git")
-    assert _lies_in(worktree, files, set(), 5) is True
+    assert _lies_in(worktree, files, {}, 5) is True
 
 
 def test_a_second_name_is_looked_for_through_no_link(tmp_path):
@@ -3469,8 +3469,8 @@ def test_a_second_name_is_looked_for_through_no_link(tmp_path):
 
     # Reached from here only through a link or a junction, which a search does not read
     # through: not looked for there. (It is found where it lies.)
-    assert _lies_in(work, files, set(), 100) is False
-    assert _lies_in(outside, files, set(), 100) is True
+    assert _lies_in(work, files, {}, 100) is False
+    assert _lies_in(outside, files, {}, 100) is True
 
 
 def test_only_what_must_be_is_asked_of_itself_while_a_second_name_is_looked_for(tmp_path, monkeypatch):
@@ -3501,11 +3501,11 @@ def test_only_what_must_be_is_asked_of_itself_while_a_second_name_is_looked_for(
     # A directory is what the listing says it is, and is gone into without a call of its
     # own; a file is asked which file it is. (A search of a large tree is not held up for a
     # call for every directory in it.)
-    assert _lies_in(work, files, set(), 100) is False
+    assert _lies_in(work, files, {}, 100) is False
     assert sorted(asked) == ["file 0.txt", "file 1.txt", "file 2.txt"]
-    # Only a directory that may be one that is set apart is asked of itself.
+    # Only a directory named like one that is set apart is asked of itself.
     asked.clear()
-    assert _lies_in(work, files, {(there.st_dev, there.st_ino)}, 100) is False
+    assert _lies_in(work, files, {os.path.normcase("folder 4"): {(there.st_dev, there.st_ino)}}, 100) is False
     assert sorted(asked) == ["file 0.txt", "file 1.txt", "file 2.txt", "folder 4"]
 
 
@@ -3524,15 +3524,19 @@ def test_a_sessions_own_directory_is_not_gone_into_for_a_second_name_of_a_record
     os.link(record, tmp_path / "elsewhere.jsonl")
     found, there = os.stat(record), os.stat(own)
     files = {(found.st_dev, found.st_ino)}
-    # (Told by what it is, and not by how the path to it is written.)
-    apart = {(there.st_dev, there.st_ino)}
+    # (Looked for by its name, and told by what it is: not by how the path to it is written.)
+    apart = {os.path.normcase("one"): {(there.st_dev, there.st_ino)}}
 
     # That directory is ruled on by itself: what is looked for here is a second name, and the
     # record under its first is not one.
     assert _lies_in(work, files, apart, 100) is False
-    assert _lies_in(work, files, set(), 100) is True
-    # A second name beside it is found.
-    os.link(record, work / "sessions" / "kept.txt")
+    assert _lies_in(work, files, {}, 100) is True
+    # A directory that only has the same name is another directory: gone into, and a second
+    # name of the record in it is found.
+    namesake = work / "elsewhere" / "one"
+    namesake.mkdir(parents=True)
+    assert _lies_in(work, files, apart, 100) is False
+    os.link(record, namesake / "kept.txt")
     assert _lies_in(work, files, apart, 100) is True
 
 
