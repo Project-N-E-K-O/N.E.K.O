@@ -16,7 +16,6 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from main_logic import core as core_module
 from main_logic.core import LLMSessionManager
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
@@ -328,7 +327,7 @@ async def test_voice_fast_path_passes_allow_vision_to_nudge(
         session_manager=SimpleNamespace(get=lambda _lanlan_name: manager),
         character_data=("Master", "Yui", None, None, None, {}, None, None, None),
         game_route_active_for=lambda _lanlan_name: False,
-        break_config_manager_provider=lambda: SimpleNamespace(),
+        break_config_manager_provider=SimpleNamespace,
         run_mini_game_invite_short_circuit=AsyncMock(),
         push_mini_game_invite_options=AsyncMock(),
         push_mini_game_invite_resolved=AsyncMock(),
