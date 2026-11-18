@@ -840,6 +840,10 @@ async def test_the_session_of_an_old_commission_that_ran_in_dsh_is_cleaned_in_ds
     host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]), installation)
     done = await wait_status(host, await _dispatch(host, "sort the photos"), "done")
     await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    # And let go of by the commission that held it, which takes two more looks at the ledger
+    # once it has left the runtime: until then the session counts as in use, and its files
+    # are not removed (the tidying comes by again, as it would here).
+    await wait_until(lambda: done.session_id not in host.task_agents._held_by, what="the session being let go")
     session_dir = Path(done.session_dir)
     assert (session_dir / DSH_SESSION_NAME).is_file()
 
