@@ -5702,3 +5702,64 @@ async def test_a_pending_entry_that_took_effect_and_was_removed_right_after_gets
     # Not to be read back because it is gone, not because it is held: no line for a file that is not there.
     assert reply is not None and not waiting.exists()
     assert "video-dates.md" not in _index(root)
+
+
+async def test_a_file_that_is_gone_as_a_note_that_goes_on_waiting_is_judged_is_said_not_to_have_counted(
+    space, root, workdir, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    real = module._recorded
+
+    def removed_by_then(*args: Any) -> Any:
+        # There when the files the note names were looked at; gone as what waited is asked about.
+        (workdir / "src" / "app.py").unlink(missing_ok=True)
+        return real(*args)
+
+    monkeypatch.setattr(module, "_recorded", removed_by_then)
+
+    # Filed again by the commission that guessed it, as observed and with the file.
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+
+    # Nothing speaks for it by then: it waits, and is told that the file did not count.
+    assert reply.startswith("not in effect yet") and "app.py (not found)" in reply
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [])]
+
+
+async def test_a_pending_entry_that_took_effect_and_of_which_nothing_can_be_told_just_then_gets_its_line(
+    space, root, workdir, monkeypatch
+):
+    await space.submit(_commission(workdir), _lesson("Photo dates", "Use the EXIF date.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Video dates", "Videos may have none."))
+    waiting = _memory(root) / "video-dates.md"
+    editing, reading, is_file = space._edit_text, space._entry_from, Path.is_file
+    written: list[bool] = []
+
+    def then_held(path: Path, change: Any) -> bool:
+        changed = editing(path, change)
+        if path == waiting and changed:
+            written.append(True)
+        return changed
+
+    def unreadable(path: Path, project: Any, *, with_content: bool) -> Any:
+        if path == waiting and written:
+            return None
+        return reading(path, project, with_content=with_content)
+
+    def untold(path: Path) -> bool:
+        if path == waiting and written:
+            # Held so that not even whether it is there can be asked.
+            written.clear()
+            raise PermissionError("held by another program")
+        return is_file(path)
+
+    monkeypatch.setattr(space, "_edit_text", then_held)
+    monkeypatch.setattr(space, "_entry_from", unreadable)
+    monkeypatch.setattr(Path, "is_file", untold)
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Video dates", "Use the EXIF date.", "verified"))
+
+    # Held is not gone: it was written, and has its line.
+    assert reply is not None and "status" not in _head(waiting)
+    assert "- [Video dates](memory/video-dates.md)" in _index(root)

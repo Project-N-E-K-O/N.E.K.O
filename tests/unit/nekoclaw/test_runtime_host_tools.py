@@ -433,3 +433,20 @@ async def test_a_lesson_whose_way_of_being_known_is_none_of_the_three_is_turned_
     # Leaving it out is let through; saying something else is not.
     end = events.of("tool_end")[0]
     assert end["is_error"] is True and "confidence must be one of" in end["text"] and lessons == []
+
+
+async def test_a_lesson_with_no_title_is_turned_down_as_ever(tmp_path: Path) -> None:
+    lessons: list = []
+
+    events, _llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"content": "Read uv.lock before adding a dependency.", "category": "lesson", "confidence": "verified"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    # Only what came with the newer definition may be left out.
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is True and "missing required title" in end["text"] and lessons == []
