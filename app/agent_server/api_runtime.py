@@ -424,13 +424,14 @@ def forget_turns_for_task_agents() -> None:
 
 
 def forget_turns_if_nekoclaw_is_off() -> None:
-    """Drop what was kept for task agents if NekoClaw is off now: called wherever a switch has gone off.
+    """Drop what was kept for task agents if NekoClaw is off now: called the moment a capability switch goes off.
 
     NekoClaw is off with the master switch off, and as much so with
     the last capability switch off (``nekoclaw_on``). A capability
     switch goes off by the user's hand and by itself (a model that
-    cannot be reached, a tool that is not there any more), and each
-    of those places calls this once the switches stand as they will.
+    cannot be reached, a tool that is not there any more); every
+    such place puts it off by ``_shared._put_switch_off``, which
+    calls this before anything is waited for.
     """
     if not nekoclaw_on():
         forget_turns_for_task_agents()

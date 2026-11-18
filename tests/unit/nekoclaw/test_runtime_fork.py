@@ -1714,12 +1714,14 @@ async def test_the_mark_of_a_copy_names_the_directory_the_record_was_read_from_w
         if os.name != "nt":
             # A way that goes into a link and back out of it is where the system takes it, which is
             # not where folding the two away without looking would have it.
-            elsewhere = tmp_path / "elsewhere" / "inside"
-            elsewhere.mkdir(parents=True)
-            (tmp_path / "work").mkdir()
-            (tmp_path / "work" / "link").symlink_to(elsewhere, target_is_directory=True)
-            (tmp_path / "elsewhere" / "source").symlink_to(real, target_is_directory=True)
-            fork_record(tmp_path / "work" / "link" / ".." / "source", tmp_path / "sessions" / "copy-by-the-way-back")
+            there = tmp_path / "there" / "inside"
+            there.mkdir(parents=True)
+            # (Not "work": the working directory of the session is of that name.)
+            by_way_of = tmp_path / "by-way-of"
+            by_way_of.mkdir()
+            (by_way_of / "link").symlink_to(there, target_is_directory=True)
+            (tmp_path / "there" / "source").symlink_to(real, target_is_directory=True)
+            fork_record(by_way_of / "link" / ".." / "source", tmp_path / "sessions" / "copy-by-the-way-back")
             mark = _entries(tmp_path / "sessions" / "copy-by-the-way-back")[-1]
             assert mark.data["source_dir"] == str(real)
             assert mark.data["outputs"] == str(real / "outputs")
@@ -1729,3 +1731,63 @@ async def test_the_mark_of_a_copy_names_the_directory_the_record_was_read_from_w
             os.rmdir(link)
         else:
             link.unlink()
+
+
+# ---------------------------------------------------------------------------
+# The fifteenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_closing_a_session_whose_summing_up_waits_for_the_record_waits_for_that_as_well(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from nekoclaw.runtime import session as session_module
+
+    # (No waiting between the attempts to write an entry, and next to none for a run to stop.)
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", ())
+    monkeypatch.setattr(session_module, "CLOSE_GRACE_SECONDS", 0.05)
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    writing, refuse = threading.Event(), threading.Event()
+    closing: Any = None
+    try:
+        await _seed(session, events, llm)
+        writer = session._recorder
+        append = writer._append_blocking
+
+        def slow_and_refused(entry: Any) -> None:
+            if entry.type == "compaction":
+                # The disk takes its time over the summary, and refuses it in the end.
+                writing.set()
+                assert refuse.wait(10)
+                raise OSError("the disk is full")
+            append(entry)
+
+        writer._append_blocking = slow_and_refused
+        llm.add(say("## Current Work\n- the four steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        assert await asyncio.to_thread(writing.wait, 10)
+
+        closing = asyncio.ensure_future(session.close())
+        # Longer than closing gives a run to stop, and stopped a second time by it: the summary is
+        # still on its way to the record, and the session is not said to be closed before the
+        # record has taken it or has not. (As long as the record takes over one entry, and no
+        # longer: a runtime that shuts down gives all of its sessions a time of its own.)
+        await asyncio.sleep(0.3)
+        assert not closing.done()
+        assert "closed" not in [event.get("reason") for event in events.events[mark:] if event.get("type") == "ended"]
+
+        refuse.set()
+        await asyncio.wait_for(closing, 10)
+        # The record did not take it: no summing up is told of, and the session is closed.
+        assert not [event for event in events.events[mark:] if event.get("type") == "compacted"]
+        assert [event.get("reason") for event in events.events[mark:] if event.get("type") == "ended"][-1] == "closed"
+        assert session._compactions == 0
+    finally:
+        refuse.set()
+        if closing is None:
+            await session.close()

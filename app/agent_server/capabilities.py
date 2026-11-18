@@ -31,6 +31,7 @@ from typing import Callable, Dict, Any, Optional, Tuple
 from . import _shared
 from ._shared import (
     logger,
+    _put_switch_off,
     _set_capability,
     _bump_state_revision,
 )
@@ -317,15 +318,14 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             else:
                 logger.warning("[Agent] Agent-LLM connectivity check failed: %s", reason)
                 if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                    _shared.Modules.agent_flags["computer_use_enabled"] = False
+                    _put_switch_off("computer_use_enabled")
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_COMPUTER", "details": {"reason_code": reason}})
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                    _shared.Modules.agent_flags["browser_use_enabled"] = False
+                    _put_switch_off("browser_use_enabled")
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
                     # Put off for the user, not by them: a window they can
                     # see is not taken from them.
                     await _close_browser(capability_reason=reason, leave_window=True)
-                _forget_turns_if_nekoclaw_is_off()
 
             _bump_state_revision()
             await _emit_agent_status_update()
@@ -339,25 +339,13 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             _set_capability("computer_use", False, "AGENT_LLM_UNREACHABLE")
             _set_capability("browser_use", False, "AGENT_LLM_UNREACHABLE")
             if _shared.Modules.agent_flags.get("computer_use_enabled"):
-                _shared.Modules.agent_flags["computer_use_enabled"] = False
+                _put_switch_off("computer_use_enabled")
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
-                _shared.Modules.agent_flags["browser_use_enabled"] = False
+                _put_switch_off("browser_use_enabled")
                 await _close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
-            _forget_turns_if_nekoclaw_is_off()
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()
             await _emit_agent_status_update()
-
-
-def _forget_turns_if_nekoclaw_is_off() -> None:
-    """Drop what was kept of the main dialogue for task agents if the last capability switch has just gone off."""
-    try:
-        # Resolved when called: that module imports this one.
-        from .api_runtime import forget_turns_if_nekoclaw_is_off
-
-        forget_turns_if_nekoclaw_is_off()
-    except Exception:
-        logger.debug("[NekoClaw] dropping the messages kept for task agents failed")
 
 
 def _agent_flags_snapshot() -> Dict[str, Any]:

@@ -63,11 +63,12 @@ stop, so nothing the session still says can turn it into anything else.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import logging
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -107,9 +108,6 @@ _SERVICE_HANDOVER_SECONDS = 30.0
 # is tried again when it could not be removed and the host is shutting down.
 _FORK_REMOVE_RETRIES = 3
 _FORK_REMOVE_RETRY_SECONDS = 1.0
-# How often the account of a commission is read again because a write of
-# usage began while it was read (``_cb_budget``).
-_USAGE_READ_TRIES = 5
 _SESSION_NOT_GIVEN_BACK = (
     "its session is still being closed after the host had it open to sum it up; "
     "it can be handed in again in a moment"
@@ -568,9 +566,11 @@ class TaskAgentManager:
         # gives up on: what such a write comes to (written, or owed) is
         # for it alone to tell.
         self._usage_writes: set[asyncio.Task[Any]] = set()
-        # How many writes of usage were begun: one that begins while the
-        # account is read makes what was read of no use (``_cb_budget``).
-        self._usage_write_serial = 0
+        # How many are reading the account of a commission right now: no
+        # write of usage begins meanwhile (``_usage_read``), and whether
+        # one was put off for it.
+        self._usage_reading = 0
+        self._usage_put_off = False
         # Commissions whose task agent was told to hand over what it has,
         # each with the requests it has left for that: kept apart from
         # the session it was told in, which an idle runtime closes while
@@ -1957,11 +1957,16 @@ class TaskAgentManager:
             # Its making was no longer waited for, and the runtime is
             # through with it now: what it wrote is on no record, and
             # nothing would ever come by it to remove it.
-            del self._forks_given_up[spoken_of]
             # Whichever it said: a copy that failed may have left what
             # it could not remove itself. And what cannot be removed now
             # either is still this host's to remove (``_remove_fork_dir``).
-            await asyncio.shield(self._remove_fork_dir(spoken_of, given_up))
+            # Among what shutting down waits for before it is taken off
+            # the list of what shutting down removes: the host may be
+            # shutting down this moment, and would be gone, with the
+            # copy on neither, before it is removed.
+            removing = self._remove_fork_dir_soon(spoken_of, given_up)
+            del self._forks_given_up[spoken_of]
+            await asyncio.shield(removing)
             return
         service = self._service.get(spoken_of)
         if service is not None:
@@ -2321,7 +2326,14 @@ class TaskAgentManager:
         whoever was cancelled, what was written all the same would be
         written a second time.
         """
-        self._usage_write_serial += 1
+        if self._usage_reading and not self._closed:
+            # The account of a commission is being read: put down as
+            # owed, where whoever reads finds it, and written once the
+            # reading is over (``_usage_read``). Begun now, it would be
+            # in neither place for a moment.
+            self._owe(key, amounts, context, said)
+            self._usage_put_off = True
+            return
         owed = self._usage_owed.pop(key, None)
         if owed is not None:
             amounts = (
@@ -2386,14 +2398,49 @@ class TaskAgentManager:
                 if newest:
                     self._context_written[key[0]] = max(said, self._context_written.get(key[0], 0))
 
-    async def _usage_at_rest(self) -> None:
-        """Wait until no write of usage is under way: what was used is on the account then, or owed.
+    def _owe(
+        self, key: tuple[str, str | None], amounts: tuple[int, int, int, int, int], context: int | None, said: int
+    ) -> None:
+        """Put what requests used down as owed, with what is owed of the same session and commission already."""
+        before = self._usage_owed.get(key, (0, 0, 0, 0, 0, None, 0))
+        # How long the conversation was, as of whichever said so later.
+        length = (context, said) if context is not None and said > before[6] else (before[5], before[6])
+        self._usage_owed[key] = (
+            amounts[0] + before[0],
+            amounts[1] + before[1],
+            amounts[2] + before[2],
+            amounts[3] + before[3],
+            amounts[4] + before[4],
+            *length,
+        )
 
-        While one is under way it is neither: taken from what is
-        owed, and not in the ledger yet.
+    @contextlib.asynccontextmanager
+    async def _usage_read(self) -> AsyncIterator[None]:
+        """Keep what was used where it is while the account of a commission is read.
+
+        What was used is in the ledger or owed, and while it is being
+        written in neither: taken from what is owed, and not in the
+        ledger yet. So the writes under way are waited for first (each
+        ends in the ledger or owed again), and none begins until the
+        reading is over: what is to be written meanwhile is put down
+        as owed (``_write_usage``), and written right after. Whoever
+        reads the ledger and what is owed in here reads each thing
+        that was used once.
         """
-        while self._usage_writes:
-            await asyncio.wait(list(self._usage_writes))
+        self._usage_reading += 1
+        try:
+            while self._usage_writes:
+                await asyncio.wait(list(self._usage_writes))
+            yield
+        finally:
+            self._usage_reading -= 1
+            if not self._usage_reading and self._usage_put_off:
+                # What was put off is written now. (What was owed before
+                # this, because the ledger did not take it, is tried
+                # again when it always was, and not with every reading.)
+                self._usage_put_off = False
+                if self._usage_owed and not self._closed:
+                    self._spawn(self._write_owed_usage())
 
     async def _settle_usage(self) -> None:
         """Write what is owed of usage before the host is gone, as far as that can be done in the time a start gets.
@@ -3707,20 +3754,14 @@ class TaskAgentManager:
                 return None
             # With what was used and is not in the ledger yet (it did not
             # take it): used all the same, and counted once, here or there.
-            # Read with no write of usage under way, which would have it
-            # in neither place (a session that was let go of has what it
-            # owes written by a task of its own), and read again when
-            # one began meanwhile.
-            standing, owed = None, 0
-            for _attempt in range(_USAGE_READ_TRIES):
-                await self._usage_at_rest()
-                began = self._usage_write_serial
+            # Read with no write of usage under way or beginning, which
+            # would have it in neither place (a session that was let go
+            # of has what it owes written by a task of its own).
+            async with self._usage_read():
                 standing = await self._ledger.usage_standing(commission_id)
                 if standing is None:
                     return None
                 owed = await self._owed_tokens(standing.root)
-                if began == self._usage_write_serial:
-                    break
             if owed:
                 standing = dataclasses.replace(standing, used=standing.used + owed)
             allowed = standing.allowed if standing.allowed is not None else limit
@@ -3750,9 +3791,12 @@ class TaskAgentManager:
                         # top. Left out, that much of what was allowed
                         # would be gone the moment it is written.
                         await self._write_owed_usage()
-                        await self._usage_at_rest()
-                        owed = await self._owed_tokens(standing.root)
-                        await self._ledger.allow_usage(commission_id, limit + owed)
+                        async with self._usage_read():
+                            # (What is owed and what the ledger counts
+                            # from are of one moment: nothing moves from
+                            # the one to the other in here.)
+                            owed = await self._owed_tokens(standing.root)
+                            await self._ledger.allow_usage(commission_id, limit + owed)
                         return None
                     self._refused_more.add(standing.root)
         if self._sessions.get(commission_id) is not session or session.closing:
@@ -3990,13 +4034,21 @@ class TaskAgentManager:
         is of it is removed now, by a task of its own.
         """
         if answer.done() and not answer.cancelled() and answer.exception() is None:
-            removing = asyncio.ensure_future(self._remove_fork_dir(session_id, target_dir))
-            # (Kept with the copies that are being put on record: shutting
-            # down waits for these, and does not cut them off.)
-            self._fork_records.add(removing)
-            removing.add_done_callback(self._fork_records.discard)
+            self._remove_fork_dir_soon(session_id, target_dir)
             return
         self._forks_given_up[session_id] = str(target_dir)
+
+    def _remove_fork_dir_soon(self, session_id: str, target_dir: Any) -> "asyncio.Future[None]":
+        """Begin to remove what was written of a copy that is on no record, in a task of its own.
+
+        Kept with the copies that are being put on record: shutting
+        down waits for these and does not cut them off (``shutdown``,
+        ``forks_settled``).
+        """
+        removing = asyncio.ensure_future(self._remove_fork_dir(session_id, target_dir))
+        self._fork_records.add(removing)
+        removing.add_done_callback(self._fork_records.discard)
+        return removing
 
     async def _put_fork_on_record(
         self, source: Session, session_id: str, target_dir: Any, *, name: str | None, forked_at: str | None

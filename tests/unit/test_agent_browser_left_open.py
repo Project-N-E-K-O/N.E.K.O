@@ -1114,12 +1114,99 @@ async def test_user_plugins_that_do_not_come_up_drop_what_was_kept_when_theirs_w
     assert kept.recent("Lan") == []
 
 
-def test_every_place_that_puts_a_switch_off_looks_whether_nekoclaw_is_off_now() -> None:
+class _AsItWas:
+    """Says what was kept for task agents at the moment something is waited for."""
+
+    def __init__(self, kept: Any, answer: Any = None) -> None:
+        self.kept, self.answer = kept, answer
+        self.seen: list[list[str]] = []
+
+    def now(self) -> None:
+        self.seen.append([turn.text for turn in self.kept.recent("Lan")])
+
+    async def waited_for(self, *_args: Any, **_kwargs: Any) -> Any:
+        self.now()
+        return self.answer
+
+    def asked(self, *_args: Any, **_kwargs: Any) -> Any:
+        self.now()
+        return self.answer
+
+
+@pytest.mark.parametrize("result", [(False, "AGENT_API_KEY_INVALID"), RuntimeError("the probe itself broke")])
+async def test_what_was_kept_is_gone_before_the_browser_of_a_model_that_stopped_answering_is_waited_for(
+    stage: Any, monkeypatch: pytest.MonkeyPatch, result: Any
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.model_probe = Probe(result)
+    as_it_was = _AsItWas(kept)
+    monkeypatch.setattr(capabilities, "_close_browser", as_it_was.waited_for)
+
+    await capabilities._fire_agent_llm_connectivity_check()
+
+    # Dropped with the switch, and not after the browser is seen to: the switch may be on again by
+    # then, and what was said before it went off would be kept.
+    assert as_it_was.seen == [[]]
+    assert kept.recent("Lan") == []
+
+
+async def test_what_was_kept_is_gone_before_the_plugins_that_were_not_found_are_stopped(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage.state.agent_flags.update({"browser_use_enabled": False})
+    monkeypatch.setattr(stage.state, "user_plugin_lifecycle_seq", stage.state.user_plugin_lifecycle_seq)
+    monkeypatch.setattr(stage.state, "_persistent_tasks", set())
+    go = asyncio.Event()
+
+    async def comes_up(**_options: Any) -> bool:
+        await go.wait()
+        return True
+
+    async def none_there() -> dict[str, Any]:
+        return {"status": "empty", "empty_responses": 3}
+
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_started", comes_up)
+    monkeypatch.setattr(api_routes, "_check_user_plugin_registry_readiness", none_there)
+
+    await api_routes.set_agent_flags({"user_plugin_enabled": True, "_persist_intent": False})
+    kept = _kept_for_task_agents(monkeypatch)
+    as_it_was = _AsItWas(kept)
+    monkeypatch.setattr(api_routes, "_ensure_plugin_lifecycle_stopped", as_it_was.waited_for)
+    go.set()
+    pending = list(stage.state._persistent_tasks)
+    assert pending
+    await asyncio.wait(pending, timeout=10.0)
+
+    assert stage.state.agent_flags["user_plugin_enabled"] is False
+    assert as_it_was.seen == [[]]
+    assert kept.recent("Lan") == []
+
+
+async def test_what_was_kept_is_gone_before_a_switch_that_takes_the_place_of_the_last_one_is_looked_into(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept = _kept_for_task_agents(monkeypatch)
+    stage.state.agent_flags.update({"computer_use_enabled": True, "browser_use_enabled": False})
+    as_it_was = _AsItWas(kept, answer=(True, ""))
+    monkeypatch.setattr(api_routes, "_browser_dependency_status", as_it_was.asked)
+
+    # The keyboard and mouse go off, and the browser tools are to come on: whether they can is
+    # found out in a thread, and no switch is on meanwhile.
+    await api_routes.set_agent_flags(
+        {"computer_use_enabled": False, "browser_use_enabled": True, "_persist_intent": False}
+    )
+    await stage.settled()
+
+    assert stage.state.agent_flags["browser_use_enabled"] is True
+    assert as_it_was.seen == [[]]
+    assert kept.recent("Lan") == []
+
+
+def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
     import ast
     from pathlib import Path
 
     switches = {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}
-    looks = {"forget_turns_if_nekoclaw_is_off", "_forget_turns_if_nekoclaw_is_off", "forget_turns_for_task_agents"}
     functions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
     def own(function: ast.AST) -> list[ast.AST]:
@@ -1133,50 +1220,61 @@ def test_every_place_that_puts_a_switch_off_looks_whether_nekoclaw_is_off_now() 
                 todo.extend(ast.iter_child_nodes(node))
         return found
 
-    def puts_a_switch_off(node: ast.AST) -> bool:
-        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and node.value.value is False):
-            return False
-        for target in node.targets:
-            if isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled":
-                return True
-            if (
-                isinstance(target, ast.Subscript)
-                and isinstance(target.value, ast.Attribute)
-                and target.value.attr == "agent_flags"
-                and isinstance(target.slice, ast.Constant)
-                and target.slice.value in switches
-            ):
-                return True
+    def is_true(node: ast.AST) -> bool:
+        return isinstance(node, ast.Constant) and node.value is True
+
+    def puts_a_capability_switch_off(node: ast.AST) -> bool:
+        """An assignment to one of the switches of anything but True, or a change of them all at once."""
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Attribute)
+                    and target.value.attr == "agent_flags"
+                    and not (isinstance(target.slice, ast.Constant) and target.slice.value not in switches)
+                    and not is_true(getattr(node, "value", None))
+                ):
+                    return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            held = node.func.value
+            if isinstance(held, ast.Attribute) and held.attr == "agent_flags":
+                return node.func.attr in {"update", "clear", "pop", "popitem", "setdefault"}
         return False
+
+    def puts_the_master_switch_off(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Assign)
+            and not is_true(node.value)
+            and any(isinstance(target, ast.Attribute) and target.attr == "analyzer_enabled" for target in node.targets)
+        )
 
     def called(node: ast.AST) -> str | None:
         if not isinstance(node, ast.Call):
             return None
         return getattr(node.func, "id", None) or getattr(node.func, "attr", None)
 
-    putting_off: list[str] = []
-    not_looking: list[str] = []
+    capability: list[str] = []
+    master: dict[str, bool] = {}
     for path in sorted(Path(api_routes.__file__).parent.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for function in ast.walk(tree):
             if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             nodes = own(function)
-            if not any(puts_a_switch_off(node) for node in nodes):
-                continue
-            putting_off.append(f"{path.name}:{function.name}")
-            if not looks & {called(node) for node in nodes}:
-                not_looking.append(f"{path.name}:{function.name}")
+            name = f"{path.name}:{function.name}"
+            if any(puts_a_capability_switch_off(node) for node in nodes):
+                capability.append(name)
+                # In one go: the switch, and what was kept, with nothing waited for in between.
+                assert isinstance(function, ast.FunctionDef), name
+                assert not any(isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)) for node in nodes), name
+                assert "forget_turns_if_nekoclaw_is_off" in {called(node) for node in nodes}, name
+            if any(puts_the_master_switch_off(node) for node in nodes):
+                master[name] = "forget_turns_for_task_agents" in {called(node) for node in nodes}
 
-    # With the master switch off, or the last capability switch, NekoClaw is off: what was kept of
-    # the main dialogue for task agents is dropped by whoever put the switch off, and not only by
-    # the next message that happens to come by.
-    assert sorted(putting_off) == [
-        "api_routes.py:_bg_plugin_enable",
-        "api_routes.py:admin_control",
-        "api_routes.py:agent_command",
-        "api_routes.py:computer_use_availability",
-        "api_routes.py:set_agent_flags",
-        "capabilities.py:_fire_agent_llm_connectivity_check",
-    ]
-    assert not_looking == []
+    # With the master switch off, or the last capability switch, NekoClaw is off, and what was kept
+    # of the main dialogue for task agents goes with the switch. A capability switch goes off by
+    # the user's hand and by itself, in a dozen places: all of them by the one function that
+    # drops what was kept in the same breath.
+    assert capability == ["_shared.py:_put_switch_off"]
+    assert master == {"api_routes.py:admin_control": True, "api_routes.py:agent_command": True}

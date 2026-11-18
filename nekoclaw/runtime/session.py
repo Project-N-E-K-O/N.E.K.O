@@ -1624,7 +1624,6 @@ class TaskAgentSession(SessionInbox):
             # the conversation stays as it is. What the host said about
             # usage in a run that is over is not part of what is summed up.
             self._drop_usage_notices()
-            before, due_before = self._compactions, self._compaction_due
             as_it_was = self.transcript.rows()
             await self._fit(force=True, tight=False, or_drop=False)
             made = await self._summary_on_record(before, due_before, as_it_was)
