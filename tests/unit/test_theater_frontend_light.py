@@ -643,6 +643,13 @@ def test_selector_title_bar_has_shared_window_controls():
     # Pin stays hidden until the desktop host reports it as available.
     assert 'data-neko-window-control="pin" hidden' in header
 
+    css = _source("static/css/theater_selector.css")
+    # The page-wide button min-height must not leak into the shared 30px controls.
+    assert ".theater-window-controls .neko-window-control-btn{\nmin-height:0}" in css
+    # An implicit min-content column would let a long status push the controls off-screen.
+    shell = css[css.index(".theater-selector-shell{"):]
+    assert "grid-template-columns:minmax(0,1fr);" in shell[:shell.index("}")]
+
 
 _THEATER_FRONTEND_SOURCES = (
     "static/app/app-theater-runtime.js",
