@@ -30,6 +30,7 @@ from plugin.sdk.shared.core.output_contract import (
     OutputCheck,
     build_output_check,
     format_issues,
+    is_violation,
     output_payload,
 )
 
@@ -98,7 +99,7 @@ class EntryExecutor:
         if not issues:
             return
         summary = format_issues(issues)
-        strict = bool(getattr(meta, "strict_output", False))
+        strict = bool(getattr(meta, "strict_output", False)) and is_violation(issues)
         self._logger.warning(
             f"Plugin entry output does not match output_schema: entry={label}, strict={strict}, issues={summary}"
         )

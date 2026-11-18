@@ -482,3 +482,91 @@ def test_pydantic_check_is_used_for_inferred_models():
     # Lax mode, as the model itself would accept it.
     assert check({"city": "x", "temperature": "3"}) == []
     assert [(i.path, i.type) for i in check({"city": "x"})] == [("$.temperature", "missing")]
+
+
+# ---------------------------------------------------------------------------
+# No false positives in strict mode
+# ---------------------------------------------------------------------------
+
+
+class Inner(BaseModel):
+    v: int
+
+
+class Outer(BaseModel):
+    inner: Inner
+
+
+async def test_optional_model_annotation_accepts_none_in_strict_mode():
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> Outer | None:
+        return None
+
+    meta = _meta_of(entry)
+    # Nullable published schema, with $defs kept at the root so refs resolve.
+    assert meta.output_schema["anyOf"][1] == {"type": "null"}
+    assert "Inner" in meta.output_schema["$defs"]
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    assert await runtime.invoke("plugin_entry", "entry", {}) is None
+    check = build_output_check(meta)
+    assert check is not None
+    assert [(i.path, i.type) for i in check({"inner": {"v": "x"}})] == [("$.inner.v", "int_parsing")]
+
+
+async def test_plain_model_annotation_still_rejects_none():
+    runtime = _runtime_for_model(None, strict=True)
+    with pytest.raises(PluginOutputSchemaError):
+        await runtime.invoke("plugin_entry", "entry", {})
+
+
+def test_explicit_schema_checks_values_in_their_json_form():
+    import datetime
+    import enum
+    import uuid
+    from decimal import Decimal
+
+    class Color(enum.Enum):
+        RED = "red"
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "when": {"type": "string"},
+            "id": {"type": "string"},
+            "color": {"type": "string"},
+            "price": {"type": "number"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "raw": {"type": "string"},
+        },
+    }
+    value = {
+        "when": datetime.datetime(2026, 1, 1),
+        "id": uuid.uuid4(),
+        "color": Color.RED,
+        "price": Decimal("1.5"),
+        "tags": {"a"},
+        "raw": b"x",
+    }
+    assert _issues(schema, value) == []
+
+
+def test_recursive_schema_accepts_deep_data():
+    schema = {"type": "object", "properties": {"kids": {"type": "array", "items": {"$ref": "#"}}}}
+    tree: dict[str, object] = {"kids": []}
+    for _ in range(60):
+        tree = {"kids": [tree]}
+    assert _issues(schema, tree) == []
+    bad: dict[str, object] = {"kids": ["leaf"]}
+    for _ in range(40):
+        bad = {"kids": [bad]}
+    assert [kind for _path, kind in _issues(schema, bad)] == ["type"]
+
+
+async def test_checker_failure_is_logged_but_not_a_strict_failure(caplog):
+    deep: list[object] = []
+    for _ in range(5000):
+        deep = [deep]
+    runtime = _runtime_for(deep, output_schema={"type": "array", "items": {"$ref": "#"}}, strict_output=True)
+    with caplog.at_level(logging.WARNING, logger="test.output_contract"):
+        assert await runtime.invoke("plugin_entry", "entry", {}) is deep
+    assert "check_error:" in caplog.text

@@ -29,6 +29,15 @@ ENTRY_CONTRACT_FIELDS = (
     "strict_output",
 )
 
+# Contract fields added after the packaged metadata format was fixed. They
+# are opt-in: an entry that does not use one must produce the same bytes as
+# before, so writers leave them out while unset (None / False), and readers
+# treat a missing field as unknown.
+ENTRY_OPT_IN_CONTRACT_FIELDS = (
+    "output_schema",
+    "strict_output",
+)
+
 # Wire shapes of the contract fields, for code that coerces declared values
 # (registry config overlay, ``neko-plugin validate``). Fields in neither tuple
 # have their own rules at each consumer: ``kind`` (text), ``persist``
@@ -64,6 +73,14 @@ def entry_contract_fields(source: object) -> dict[str, object]:
         if value is not missing:
             fields[name] = value
     return fields
+
+
+def drop_unset_opt_in_fields(payload: dict[str, object]) -> dict[str, object]:
+    """Remove opt-in contract fields that are unset, in place; returns ``payload``."""
+    for name in ENTRY_OPT_IN_CONTRACT_FIELDS:
+        if name in payload and (payload[name] is None or payload[name] is False):
+            del payload[name]
+    return payload
 
 
 def unhandled_entry_contract_fields(

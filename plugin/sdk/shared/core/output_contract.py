@@ -22,15 +22,22 @@ Two checkers:
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from .finish import normalize_structured_data
 
 MAX_REPORTED_ISSUES = 20
+# Issue types starting with this mean the check itself failed to run; they are
+# logged, but strict_output does not turn them into a failure.
+CHECK_ERROR_PREFIX = "check_error:"
+# Consecutive $ref hops without descending into the data: only a reference
+# cycle such as {"$ref": "#"} gets this far. Real recursion consumes data.
 _MAX_REF_DEPTH = 32
 _WILDCARD = "*"
 
@@ -90,6 +97,11 @@ def build_output_check(meta: object) -> OutputCheck | None:
     return None
 
 
+def is_violation(issues: Sequence[OutputIssue]) -> bool:
+    """Whether any issue is a real mismatch rather than a checker failure."""
+    return any(not issue.type.startswith(CHECK_ERROR_PREFIX) for issue in issues)
+
+
 def format_issues(issues: Sequence[OutputIssue]) -> str:
     shown = ", ".join(f"{issue.path} ({issue.type})" for issue in issues[:MAX_REPORTED_ISSUES])
     more = len(issues) - MAX_REPORTED_ISSUES
@@ -117,8 +129,12 @@ def _pydantic_check(model: type, schema: Mapping[str, object] | None) -> OutputC
 
     adapter = TypeAdapter(model)
     declared = _declared_names(schema) if schema is not None else frozenset()
+    # ``Model | None`` publishes a nullable schema; the model alone rejects None.
+    nullable = schema is not None and not _JsonSchemaCheck(schema)(None)
 
     def check(value: object) -> list[OutputIssue]:
+        if value is None and nullable:
+            return []
         try:
             adapter.validate_python(value)
         except ValidationError as exc:
@@ -183,11 +199,12 @@ class _JsonSchemaCheck:
     def __call__(self, value: object) -> list[OutputIssue]:
         issues: list[OutputIssue] = []
         try:
-            self._check(self._root, normalize_structured_data(value), "$", issues, 0)
+            self._check(self._root, _json_form(value), "$", issues, 0)
         except _Enough:
             pass
-        except Exception as exc:  # noqa: BLE001 - a malformed schema is an issue, not a crash
-            issues.append(OutputIssue(path="$", type=f"schema_error:{type(exc).__name__}"))
+        except Exception as exc:  # noqa: BLE001 - a malformed schema or overly deep data
+            # The checker could not finish: reported, but never a violation.
+            issues.append(OutputIssue(path="$", type=f"{CHECK_ERROR_PREFIX}{type(exc).__name__}"))
         return issues
 
     # -- helpers -----------------------------------------------------------
@@ -256,7 +273,7 @@ class _JsonSchemaCheck:
                 return
             target = self._resolve(schema["$ref"])
             if target is not None:
-                self._check(target, value, path, issues, depth + 1, limit=limit)
+                self._check(target, value, path, issues, depth + 1, limit=limit)  # $ref hop
 
         expected = schema.get("type")
         if expected is not None:
@@ -275,15 +292,15 @@ class _JsonSchemaCheck:
         all_of = schema.get("allOf")
         if isinstance(all_of, list):
             for branch in all_of:
-                self._check(branch, value, path, issues, depth + 1, limit=limit)
+                self._check(branch, value, path, issues, depth, limit=limit)
         any_of = schema.get("anyOf")
-        if isinstance(any_of, list) and any_of and not any(self._matches(b, value, depth + 1) for b in any_of):
+        if isinstance(any_of, list) and any_of and not any(self._matches(b, value, depth) for b in any_of):
             self._add(issues, path, "anyOf", limit)
         one_of = schema.get("oneOf")
         if isinstance(one_of, list) and one_of:
-            if sum(1 for b in one_of if self._matches(b, value, depth + 1)) != 1:
+            if sum(1 for b in one_of if self._matches(b, value, depth)) != 1:
                 self._add(issues, path, "oneOf", limit)
-        if "not" in schema and self._matches(schema["not"], value, depth + 1):
+        if "not" in schema and self._matches(schema["not"], value, depth):
             self._add(issues, path, "not", limit)
 
         if isinstance(value, str):
@@ -340,7 +357,7 @@ class _JsonSchemaCheck:
                     self._add(issues, f"{path}.{name}", "required", limit)
         for name, sub_schema in properties.items():
             if name in value:
-                self._check(sub_schema, value[name], f"{path}.{name}", issues, depth + 1, limit=limit)
+                self._check(sub_schema, value[name], f"{path}.{name}", issues, 0, limit=limit)
         additional = schema.get("additionalProperties")
         if additional is None or additional is True or "patternProperties" in schema:
             return
@@ -352,7 +369,7 @@ class _JsonSchemaCheck:
             if additional is False:
                 self._add(issues, child, "additionalProperties", limit)
             else:
-                self._check(additional, item, child, issues, depth + 1, limit=limit)
+                self._check(additional, item, child, issues, 0, limit=limit)
 
     def _check_array(
         self,
@@ -376,11 +393,31 @@ class _JsonSchemaCheck:
         start = 0
         if isinstance(prefix, list):
             for index, sub_schema in enumerate(prefix[: len(value)]):
-                self._check(sub_schema, value[index], f"{path}[{index}]", issues, depth + 1, limit=limit)
+                self._check(sub_schema, value[index], f"{path}[{index}]", issues, 0, limit=limit)
             start = len(prefix)
         if items is not None:
             for index in range(start, len(value)):
-                self._check(items, value[index], f"{path}[{index}]", issues, depth + 1, limit=limit)
+                self._check(items, value[index], f"{path}[{index}]", issues, 0, limit=limit)
+
+
+def _json_form(value: object) -> object:
+    """The value as a JSON consumer receives it.
+
+    Datetimes, UUIDs, enums and the like arrive as strings, Decimals as numbers
+    and sets as arrays, so checking the raw Python objects would reject values
+    every caller accepts.
+    """
+    return json.loads(json.dumps(normalize_structured_data(value), default=_json_default, ensure_ascii=False))
+
+
+def _json_default(value: object) -> object:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (set, frozenset)):
+        return list(value)
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return str(value)
 
 
 class _Enough(Exception):
@@ -432,7 +469,9 @@ __all__ = [
     "OutputCheck",
     "OutputIssue",
     "SUPPORTED_KEYWORDS",
+    "CHECK_ERROR_PREFIX",
     "build_output_check",
+    "is_violation",
     "format_issues",
     "output_payload",
 ]

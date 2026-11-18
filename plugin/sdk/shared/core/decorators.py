@@ -246,6 +246,56 @@ def _infer_llm_result_model_from_signature(
     return model_type, schema
 
 
+def _infer_output_contract_from_func(
+    fn: Callable[..., object],
+    *,
+    localns: Mapping[str, object] | None = None,
+) -> tuple[type | None, dict[str, object] | None]:
+    hints = _get_type_hints_safe(fn, localns=localns)
+    return _output_contract_from_signature(inspect.signature(fn), hints)
+
+
+def _infer_output_contract_from_owner(
+    fn: Callable[..., object],
+    owner: type,
+) -> tuple[type | None, dict[str, object] | None]:
+    hints = _get_type_hints_for_owner_safe(fn, owner)
+    return _output_contract_from_signature(inspect.signature(fn), hints)
+
+
+def _output_contract_from_signature(
+    signature: inspect.Signature,
+    hints: Mapping[str, object],
+) -> tuple[type | None, dict[str, object] | None]:
+    """The llm_result inference, plus nullability: ``Model | None`` may return None.
+
+    llm_result_* drop the ``None`` arm (they only describe a payload), but the
+    output contract describes the whole return value, so it must accept it.
+    """
+    model, schema = _infer_llm_result_model_from_signature(signature, hints)
+    if model is None or schema is None:
+        return None, None
+    if _hint_allows_none(hints.get("return", signature.return_annotation)):
+        schema = dict(schema)
+        defs = schema.pop("$defs", None)
+        # Keep $defs at the root so "#/$defs/..." references still resolve.
+        nullable: dict[str, object] = {"anyOf": [schema, {"type": "null"}]}
+        if defs is not None:
+            nullable["$defs"] = defs
+        schema = nullable
+    return model, schema
+
+
+def _hint_allows_none(hint: object) -> bool:
+    metadata_items = getattr(hint, "__metadata__", None)
+    annotated_args = getattr(hint, "__args__", None)
+    if metadata_items is not None and annotated_args:
+        hint = annotated_args[0]
+    if get_origin(hint) in (Union, types.UnionType):
+        return type(None) in get_args(hint)
+    return False
+
+
 def _attach_event_meta(fn: F, meta: EventMeta) -> F:
     setattr(fn, EVENT_META_ATTR, meta)
     if meta.persist is not None:
@@ -310,7 +360,7 @@ def _finalize_plugin_entry_inference(owner: type) -> None:
         if getattr(member, _AUTO_INFER_OUTPUT_ATTR, False):
             # Same return-annotation inference as llm_result_*, resolved
             # against the owner class for forward references.
-            inferred_output_model, inferred_output_schema = _infer_llm_result_model_from_owner(member, owner)
+            inferred_output_model, inferred_output_schema = _infer_output_contract_from_owner(member, owner)
             if inferred_output_model is not None and inferred_output_schema is not None:
                 meta.output_model = inferred_output_model
                 meta.output_schema = cast(InputSchema, inferred_output_schema)
@@ -449,14 +499,14 @@ def plugin_entry(
         if normalized_llm_fields is None and llm_schema is not None:
             normalized_llm_fields = fields_from_schema(llm_schema)
         # Output contract: an explicit schema wins; otherwise a Pydantic return
-        # annotation is inferred exactly like llm_result_* (its own lookup, so
-        # an explicit llm_result_model does not become the output contract).
+        # annotation is inferred like llm_result_* (its own lookup, so an
+        # explicit llm_result_model does not become the output contract).
         output_model: type | None = None
         effective_output_schema: dict[str, object] | None = (
             dict(output_schema) if output_schema is not None else None
         )
         if effective_output_schema is None:
-            output_model, effective_output_schema = _infer_llm_result_model_from_func(
+            output_model, effective_output_schema = _infer_output_contract_from_func(
                 fn,
                 localns=declaration_locals,
             )

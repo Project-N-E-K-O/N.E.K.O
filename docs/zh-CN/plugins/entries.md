@@ -182,7 +182,7 @@ async def search(self, query: str):
     return Ok({"summary": "...", "count": 3})
 ```
 
-显式的 `output_schema` 优先于返回注解。两者都没有的入口没有输出契约，行为和以前完全一样。
+显式的 `output_schema` 优先于返回注解。两者都没有的入口没有输出契约，行为和以前完全一样；只写 `strict_output=True` 不起作用。注解是 `Model | None` 时，返回 `None` 也符合契约。
 
 **检查什么。** 每次调用成功后，用契约检查返回值：`Ok(...)` 里的值、直接返回的值，或 `self.finish(...)` 的 `data`。`Err(...)` 本身就是失败，不检查。
 

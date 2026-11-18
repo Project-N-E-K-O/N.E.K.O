@@ -31,6 +31,11 @@ class EventMeta:
     llm_result_fields: list[str] | None = None
     llm_result_schema: InputSchema | None = None
     llm_result_model: type | None = None
+    quick_action: bool = False
+    quick_action_config: QuickActionConfig = field(default_factory=QuickActionConfig)
+    extra: dict[str, JsonValue] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    # Appended last so positional construction keeps working.
     # Output contract, independent of the AI-visible llm_result_* fields.
     # ``output_schema`` is the published JSON schema; ``output_model`` is the
     # Pydantic model it was derived from (validated with the model itself,
@@ -39,10 +44,6 @@ class EventMeta:
     output_schema: InputSchema | None = None
     output_model: type | None = None
     strict_output: bool = False
-    quick_action: bool = False
-    quick_action_config: QuickActionConfig = field(default_factory=QuickActionConfig)
-    extra: dict[str, JsonValue] = field(default_factory=dict)
-    metadata: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

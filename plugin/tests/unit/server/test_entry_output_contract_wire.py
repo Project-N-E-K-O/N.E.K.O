@@ -221,6 +221,10 @@ def test_packaged_handler_metadata_carries_the_output_contract():
     assert payload["strict_output"] is True
     # The Pydantic model never leaves the plugin process.
     assert "output_model" not in _event_meta_payload(getattr(_Router.typed, EVENT_META_ATTR))
+    # An entry that declares nothing keeps its previous packaged bytes.
+    plain = _event_meta_payload(getattr(_Router.plain, EVENT_META_ATTR))
+    assert "output_schema" not in plain
+    assert "strict_output" not in plain
 
 
 def test_get_plugins_entries_publish_the_output_contract():
