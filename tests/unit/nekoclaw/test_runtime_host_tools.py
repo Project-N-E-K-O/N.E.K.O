@@ -450,3 +450,28 @@ async def test_a_lesson_with_no_title_is_turned_down_as_ever(tmp_path: Path) -> 
     # Only what came with the newer definition may be left out.
     end = events.of("tool_end")[0]
     assert end["is_error"] is True and "missing required title" in end["text"] and lessons == []
+
+
+async def test_a_lesson_that_says_nothing_of_how_it_is_known_is_handed_to_the_host_as_the_tool_is_defined_now(tmp_path: Path) -> None:
+    from config.prompts.prompts_nekoclaw_tools import NEKOCLAW_TOOL_SCHEMAS
+
+    # The model is told it is required.
+    assert "confidence" in NEKOCLAW_TOOL_SCHEMAS["note_lesson"]["parameters"]["required"]
+    lessons: list = []
+
+    events, llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    told = {tool["function"]["name"]: tool["function"]["parameters"] for tool in llm.overrides[0]["tools"]}
+    assert "confidence" in told["note_lesson"]["required"]
+    # A call that leaves it out is carried out all the same, in a session opened now as in one opened
+    # before: the host takes the lesson for inferred, and says in its reply that it waits.
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is False and end["text"] == "lesson submitted."
+    assert [payload["confidence"] for _session, payload in lessons] == [""]

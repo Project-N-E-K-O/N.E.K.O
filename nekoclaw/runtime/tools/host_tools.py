@@ -131,7 +131,9 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 # that was opened before the tool asked for this keeps the
                 # definition it was opened with, and says nothing of it
                 # (``newer`` below, so that such a call gets here): the
-                # host takes such a lesson for inferred.
+                # host takes such a lesson for inferred. So it does one
+                # from a session opened since that leaves it out: which
+                # definition a session was opened with is not kept apart.
                 "confidence": str(args.get("confidence") or ""),
                 "evidence": [str(path) for path in args.get("evidence") or [] if str(path).strip()],
             }

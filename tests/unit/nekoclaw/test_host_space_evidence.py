@@ -5709,22 +5709,27 @@ async def test_a_file_that_is_gone_as_a_note_that_goes_on_waiting_is_judged_is_s
 ):
     from nekoclaw.host import space as module
 
-    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    # Where it really is is longer than what is told of a path that does not count.
+    deep = workdir / "a-directory-with-a-name-so-long-that-the-path-is-cut-before-the-name-of-the-file"
+    deep.mkdir()
+    (deep / "notes.txt").write_text("notes\n", encoding="utf-8")
+    named = [str((deep / "notes.txt").relative_to(workdir))]
+    await space.submit(_commission(workdir), _lesson("Notes", "The notes are kept in notes.txt.", "inferred", named))
     real = module._recorded
 
     def removed_by_then(*args: Any) -> Any:
         # There when the files the note names were looked at; gone as what waited is asked about.
-        (workdir / "src" / "app.py").unlink(missing_ok=True)
+        (deep / "notes.txt").unlink(missing_ok=True)
         return real(*args)
 
     monkeypatch.setattr(module, "_recorded", removed_by_then)
 
     # Filed again by the commission that guessed it, as observed and with the file.
-    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+    reply = await space.submit(_commission(workdir), _lesson("Notes", "The notes are kept in notes.txt.", "observed", named))
 
-    # Nothing speaks for it by then: it waits, and is told that the file did not count.
-    assert reply.startswith("not in effect yet") and "app.py (not found)" in reply
-    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("entry-point", [])]
+    # Nothing speaks for it by then: it waits, and is told that the file did not count. By its name.
+    assert reply.startswith("not in effect yet") and "notes.txt (not found)" in reply
+    assert [(held["id"], held["evidence"]) for held in _pending(root)] == [("notes", [])]
 
 
 async def test_a_pending_entry_that_took_effect_and_of_which_nothing_can_be_told_just_then_gets_its_line(
@@ -5763,3 +5768,46 @@ async def test_a_pending_entry_that_took_effect_and_of_which_nothing_can_be_told
     # Held is not gone: it was written, and has its line.
     assert reply is not None and "status" not in _head(waiting)
     assert "- [Video dates](memory/video-dates.md)" in _index(root)
+
+
+# ---------------------------------------------------------------------------
+# Review round 20
+# ---------------------------------------------------------------------------
+
+
+async def test_a_lesson_handed_over_with_nothing_said_of_how_it_is_known_waits_as_a_guess(space, root, workdir):
+    # As the tool hands it over when the task agent left that out.
+    reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", ""))
+
+    assert reply.startswith("not in effect yet") and _in_effect(root) == []
+    assert [(held["id"], held["confidence"]) for held in _pending(root)] == [("entry-point", "inferred")]
+
+
+async def test_a_file_named_by_a_commission_that_works_in_no_directory_is_said_to_lie_outside(space, root):
+    reply = await space.submit(_commission(None), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+
+    # No disk is at fault: there is no directory the path could be read against.
+    assert reply.startswith("not in effect yet") and "outside the working directory" in reply
+    assert "not looked at" not in reply
+
+
+async def test_a_file_that_is_gone_once_the_turn_of_the_write_has_come_is_told_by_its_name(space, root, workdir, monkeypatch):
+    # Where it really is is longer than what is told of a path that does not count.
+    deep = workdir / "a-directory-with-a-name-so-long-that-the-path-is-cut-before-the-name-of-the-file"
+    deep.mkdir(parents=True)
+    (deep / "notes.txt").write_text("notes\n", encoding="utf-8")
+    writing = space._write_judged
+
+    async def then_removed(work: Any) -> Any:
+        # Found when it was looked for; removed while the write waited for its turn.
+        (deep / "notes.txt").unlink()
+        return await writing(work)
+
+    monkeypatch.setattr(space, "_write_judged", then_removed)
+
+    reply = await space.submit(
+        _commission(workdir),
+        _lesson("Notes", "The notes are kept in notes.txt.", "observed", [str((deep / "notes.txt").relative_to(workdir))]),
+    )
+
+    assert reply.startswith("not in effect yet") and "notes.txt (not found)" in reply

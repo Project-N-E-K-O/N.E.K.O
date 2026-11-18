@@ -1675,7 +1675,13 @@ class TaskAgentSpace:
 
         def reached(item: str) -> bool:
             where = item.strip()
-            return _place_of(where) not in out if os.path.isabs(where) else bool(roots)
+            if os.path.isabs(where):
+                return _place_of(where) not in out
+            # Read against the working directories: looked for unless
+            # every one of them is in a place that does not answer. With
+            # none to begin with it is looked for, and said to lie
+            # outside, as ever: no disk is at fault then.
+            return bool(roots) or not bases
 
         wanted = [item for item in first if reached(item)]
         unasked = [item for item in first if not reached(item)]
@@ -1738,7 +1744,9 @@ class TaskAgentSpace:
         there = _stood(counted)
         gone = [path for path in counted if there.get(path) is False]
         if gone:
-            others = [*others, *((path, "not found") for path in gone)]
+            # By its name: where it really is is long, and would be cut
+            # before the name.
+            others = [*others, *((os.path.basename(path), "not found") for path in gone)]
             counted = [path for path in counted if path not in gone]
             apart = [path for path in apart if path not in gone]
         return counted, others, apart, [path for path in counted if not there.get(path)]
