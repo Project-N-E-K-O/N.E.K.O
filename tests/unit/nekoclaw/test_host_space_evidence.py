@@ -6126,6 +6126,8 @@ def test_a_path_is_told_whole_when_it_is_short_and_by_its_end_when_it_is_long():
     from utils.tokenize import count_tokens
 
     assert _shown("src/app.py", 40) == "src/app.py"
+    # As it is called: a name with two spaces in a row is another file than the one with one.
+    assert _shown("notes/a  b.txt", 40) == "notes/a  b.txt" != _shown("notes/a b.txt", 40)
     long = "D:/a-directory-with-a-name-so-long/that-the-path-is-cut/before-the-name-of-the-file/" + "further/" * 30 + "src/app.py"
     told = _shown(long, 40)
     # Cut at the front, a directory at a time, and saying so; what stands last is what tells files apart.
@@ -6284,3 +6286,113 @@ async def test_a_file_the_note_names_that_was_gone_as_the_note_was_judged_did_no
     assert _rests_on(_memory(root) / "entry-point.md")[0] == ()
     payload = _lesson_event(events, "c2")
     assert payload["kept"] is True and "evidence_counted" not in payload
+
+
+async def test_a_path_with_nothing_to_be_read_against_is_told_so_though_the_file_system_cannot_be_asked(
+    open_space, setting, root, outside, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    setting.allowed = True
+    asked: list[Any] = []
+
+    async def none_to_spare(places: Any, look: Any) -> Any:
+        # As many questions are out as may be: no other is asked.
+        asked.append(set(places))
+        raise TimeoutError("too many questions to the file system are out")
+
+    monkeypatch.setattr(module, "_asked_off_the_loop", none_to_spare)
+
+    reply = await open_space.submit(
+        _commission(None), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py", str(outside)])
+    )
+
+    # The one that needs no look is told what it is; only the other waited for one, and was not looked at.
+    assert "src/app.py (no working directory to read it against)" in reply
+    assert "camera.ini (not looked at, the disk does not answer)" in reply and len(asked) == 1
+    # With nothing but such paths, nothing is asked at all.
+    reply = await open_space.submit(
+        _commission(None, id="c2"), _lesson("Readme", "See README.md.", "observed", ["README.md"])
+    )
+    assert "README.md (no working directory to read it against)" in reply and len(asked) == 1
+
+
+def _named_for_nobody(path: Path) -> None:
+    """Have a pending entry be one nobody is named for, as the summary of a project makes them."""
+    kept = [
+        line
+        for line in path.read_text(encoding="utf-8").split("\n")
+        if not line.startswith(("seen: ", "seen_by: ", "sources: "))
+    ]
+    path.write_text("\n".join(kept), encoding="utf-8", newline="\n")
+
+
+async def test_a_note_that_confirms_a_pending_entry_of_its_title_by_a_file_is_judged_anew_when_that_is_gone_as_it_is_written(
+    space, root, workdir, events, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    app = _where(workdir / "src" / "app.py")
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py"]))
+    waiting = _memory(root) / "entry-point.md"
+    _named_for_nobody(waiting)
+    real = module._stood
+    told: list[int] = []
+
+    def then_removed(paths: Any) -> Any:
+        paths = list(paths)
+        found = real(paths)
+        if app in paths and not told:
+            # There as the write's turn came; removed right after.
+            told.append(1)
+            (workdir / "src" / "app.py").unlink()
+        return found
+
+    monkeypatch.setattr(module, "_stood", then_removed)
+
+    # Other words under the title of the guess, observed, with the file: the only thing that speaks for it.
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("Entry point", "It is started from the command line.", "observed", ["src/app.py"])
+    )
+
+    # Asked about once more as the guess was to take effect with it, the file is gone: judged anew without
+    # it, the note waits with the guess, and nothing took effect.
+    assert reply.startswith("not in effect yet") and "src/app.py (not found)" in reply
+    assert _in_effect(root) == [] and "entry-point.md" not in _index(root)
+    assert "It is started from the command line." in waiting.read_text(encoding="utf-8")
+    assert [row[2]["kept"] for row in events.rows if row[0] == "c2" and row[1] == "lesson"] == [False]
+
+
+async def test_a_note_judged_anew_over_a_file_of_which_nothing_is_told_takes_effect_by_another_and_does_not_count_that_one(
+    space, root, workdir, events, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    app, readme = _where(workdir / "src" / "app.py"), _where(workdir / "README.md")
+    await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "inferred", ["src/app.py", "README.md"])
+    )
+    waiting = _memory(root) / "entry-point.md"
+    _named_for_nobody(waiting)
+    real = module._stood
+    told: list[int] = []
+
+    def then_silent(paths: Any) -> Any:
+        paths = list(paths)
+        if app not in paths:
+            return real(paths)
+        told.append(1)
+        # There as the write's turn came; from then on the disk says nothing of it.
+        return real(paths) if len(told) == 1 else {**real(paths), app: None}
+
+    monkeypatch.setattr(module, "_stood", then_silent)
+
+    reply = await space.submit(
+        _commission(workdir, id="c2"),
+        _lesson("Entry point", "It is started from the command line.", "observed", ["src/app.py", "README.md"]),
+    )
+
+    # Judged anew: the other file speaks for it, so it takes effect; the one not told of is on record, and did not count.
+    assert reply.startswith("kept in") and _in_effect(root) == ["entry-point"]
+    assert sorted(_rests_on(waiting)[0]) == sorted([app, readme])
+    assert _lesson_event(events, "c2")["evidence_counted"] == [readme]
