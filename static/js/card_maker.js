@@ -2718,13 +2718,9 @@
         return filename;
     }
 
-    // 这些页面跑在 Electron 托管的子窗口里，那里的 File System Access 只能弹框、不能写：
-    // showSaveFilePicker 会正常返回 handle（并把目标文件创建/截断成 0 字节），紧接着
-    // createWritable() 抛 NotAllowedError，而异常被 catch 吞掉后回落的 <a download>
-    // 又把文件下到别处 —— 用户手里于是多出一个打不开的空文件。
-    // 所以这里不试 picker：一律 <a download>，让 Electron 的原生保存框来选位置，
-    // 一次交互、一个有效文件。
     async function saveFile(blob, filename) {
+        // 统一走下载流程；Electron 的 will-download 已负责另存为对话框。
+        // 先用 showSaveFilePicker 再回退下载，会在写入失败时留下空文件并重复弹窗。
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
