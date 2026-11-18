@@ -153,6 +153,7 @@ def openai_tts_worker(
         # Only the hostname is logged: the configured URL may carry signed query values.
         endpoint_host = (urlparse(effective_base_url).hostname or "").lower() or "unknown"
         logged_formats = set()
+        requested_rate = extra_body.get("sample_rate")
 
         def resolve_pcm_format(response):
             sample_rate, channels, big_endian = openai_tts_pcm_format(
@@ -165,6 +166,16 @@ def openai_tts_worker(
             if format_key not in logged_formats:
                 # Log once per distinct format so per-sentence requests do not flood the log.
                 logged_formats.add(format_key)
+                if from_header and requested_rate and sample_rate != requested_rate:
+                    # The header wins, but a pinned host contradicting its own request is worth
+                    # surfacing when a maintainer investigates odd playback speed.
+                    logger.warning(
+                        "OpenAI TTS PCM Content-Type rate differs from requested sample_rate: "
+                        "host=%s rate=%d requested=%d",
+                        endpoint_host,
+                        sample_rate,
+                        requested_rate,
+                    )
                 if from_header:
                     logger.info(
                         "OpenAI TTS PCM format from Content-Type: host=%s rate=%d channels=%d",

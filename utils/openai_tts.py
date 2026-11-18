@@ -28,7 +28,6 @@ from typing import NamedTuple
 from urllib.parse import parse_qsl, urlparse, urlunparse
 
 
-OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"
 OPENAI_TTS_DEFAULT_MODEL = "gpt-4o-mini-tts"
 OPENAI_TTS_DEFAULT_VOICE = "marin"
 # Raw PCM returned by Speech API enters the project's streaming 24 kHz -> 48 kHz resampler.
@@ -173,7 +172,9 @@ def openai_tts_pcm_format(content_type: str | None) -> OpenAITtsPcmFormat:
         # Malformed RFC 2231 continuations can raise inside the stdlib parser;
         # the body may still be playable, so keep the default contract.
         raw_params = []
-    media_type = message.get_content_type().lower() if raw_params else ""
+    # Read the media type independently so a malformed parameter list cannot
+    # flip ``audio/L16`` back to little-endian decoding.
+    media_type = str(content_type or "").split(";", 1)[0].strip().lower()
     params = {
         str(key).lower(): value
         for key, value in raw_params[1:]

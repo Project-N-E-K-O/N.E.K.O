@@ -167,6 +167,7 @@ def test_strict_openai_compatible_hosts_get_no_extensions(endpoint):
         ("audio/pcm; rate=1; channels=0", (None, 1, False)),
         # Malformed RFC 2231 continuations make the stdlib parser raise.
         ("audio/pcm; rate*=abc; rate*0=x", (None, 1, False)),
+        ("audio/L16; rate*=abc; rate*0=x", (None, 1, True)),
     ],
 )
 def test_openai_tts_pcm_format_reads_content_type(content_type, expected):
@@ -1321,9 +1322,13 @@ def _wait_for_item(q, predicate, timeout=5.0):
     raise AssertionError(f"timed out waiting for queue item; seen={seen!r}")
 
 
-def _install_fake_openai(monkeypatch, chunks, headers=None):
+def _install_fake_openai(monkeypatch, chunks, headers=None, openai_base_url_env=None):
     import openai
 
+    # The fake resolves base_url like the SDK; keep the runner's environment out of it.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    if openai_base_url_env is not None:
+        monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url_env)
     clients = []
 
     class _FakeStreamingResponse:
@@ -1392,8 +1397,14 @@ def _run_worker_once(
     voice_id="character-voice",
     audio_api_key="sk-test",
     headers=None,
+    openai_base_url_env=None,
 ):
-    clients = _install_fake_openai(monkeypatch, chunks, headers=headers)
+    clients = _install_fake_openai(
+        monkeypatch,
+        chunks,
+        headers=headers,
+        openai_base_url_env=openai_base_url_env,
+    )
     request_queue = queue.Queue()
     response_queue = queue.Queue()
     kwargs = {}
@@ -1890,7 +1901,6 @@ def test_openai_tts_worker_decodes_audio_l16_as_big_endian(monkeypatch):
 
 
 def test_native_worker_derives_extensions_from_sdk_base_url_env(monkeypatch):
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.fish.audio/compat/v1")
     monkeypatch.setattr(
         openai_worker_module,
         "_resample_audio",
@@ -1899,6 +1909,7 @@ def test_native_worker_derives_extensions_from_sdk_base_url_env(monkeypatch):
     clients, request_queue, response_queue, thread = _run_worker_once(
         monkeypatch,
         [b"\x00\x00"],
+        openai_base_url_env="https://api.fish.audio/compat/v1",
     )
     try:
         _wait_for_item(response_queue, lambda item: isinstance(item, np.ndarray))
@@ -2009,3 +2020,42 @@ async def test_connectivity_probe_sends_fish_audio_sample_rate(monkeypatch):
         "response_format": "pcm",
         "sample_rate": 24000,
     }
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "content_type", "expect_warning"),
+    [
+        ("https://api.fish.audio/compat/v1", "audio/pcm; rate=44100", True),
+        ("https://api.fish.audio/compat/v1", "audio/pcm; rate=24000", False),
+        ("https://api.fish.audio/compat/v1", "audio/pcm", False),
+        ("https://speech.example.com/v1", "audio/pcm; rate=44100", False),
+    ],
+)
+def test_openai_tts_worker_warns_when_header_contradicts_pinned_rate(
+    endpoint, content_type, expect_warning, monkeypatch
+):
+    warnings = []
+
+    def capture(message, *args, **_kwargs):
+        warnings.append(message % args)
+
+    monkeypatch.setattr(openai_worker_module.logger, "warning", capture)
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00" * 64],
+        base_url=endpoint,
+        headers={"content-type": content_type},
+    )
+    try:
+        _collect_worker_audio(response_queue)
+    finally:
+        _stop_worker(request_queue, thread)
+
+    mismatch = [m for m in warnings if "differs from requested" in m]
+    if expect_warning:
+        assert mismatch == [
+            "OpenAI TTS PCM Content-Type rate differs from requested sample_rate: "
+            "host=api.fish.audio rate=44100 requested=24000"
+        ]
+    else:
+        assert mismatch == []
