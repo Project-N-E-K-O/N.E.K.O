@@ -180,7 +180,8 @@ def test_audit_uses_the_stdlib_rotating_writer_and_writes_json_lines(gate):
     assert isinstance(handler, logging.handlers.RotatingFileHandler)
     assert (handler.maxBytes, handler.backupCount) == (4 * 1024 * 1024, 3)
     assert logging.getLogger("neko.plugin_call_audit").propagate is False
-    assert call_audit.close() is True
+    flushed = call_audit.close()
+    assert flushed is True
     (line,) = (gate / "call_audit.jsonl").read_text(encoding="utf-8").splitlines()
     assert json.loads(line)["target"] == "a"
     call_audit.record({"kind": "forward", "target": "late"})  # after close: ring only
@@ -208,9 +209,11 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
         assert writing.wait(5)  # the writer holds the handler inside emit
         assert call_audit.dropped > baseline
         started = time.monotonic()
-        assert call_audit.close(0.3) is False
+        flushed = call_audit.close(0.3)
+        assert flushed is False
         assert time.monotonic() - started < 1.5
-        assert call_audit.close(0.1) is False  # still not exited: no false success
+        flushed = call_audit.close(0.1)  # still not exited: no false success
+        assert flushed is False
         # logging.shutdown() at exit must not wait on the stuck handler's lock.
         stuck_writer = call_audit._abandoned
         assert not any(ref() in stuck_writer.handlers for ref in logging._handlerList)
@@ -235,7 +238,8 @@ def test_unwritable_audit_file_is_counted_as_dropped(gate, monkeypatch):
     monkeypatch.setattr(call_audit, "audit_directory", lambda: blocker)
     baseline = call_audit.dropped
     call_audit.record({"kind": "forward"})
-    assert call_audit.close(2.0) is True
+    flushed = call_audit.close(2.0)
+    assert flushed is True
     assert call_audit.dropped == baseline + 1
 
 
@@ -271,12 +275,13 @@ async def test_audit_route_is_local_only(gate, client, base, headers, status):
         assert response.json()["mode"] == "observe"
 
 
-def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch):
+@pytest.mark.parametrize("ending", ["ok", "CANCELLED"])
+def test_push_arriving_after_the_call_ended_keeps_its_chain(gate, monkeypatch, ending):
     # A push rides its own uplink and may be routed after the call's reply.
     monkeypatch.setattr(capability_gate, "granted_capabilities", lambda p: ({"a": frozenset({"messages.push"})}.get(p, frozenset()), True))
     root = capability_gate.begin_call("b", "r1", "plugin_entry", "call", CallLink(Origin("run")))
     child = capability_gate.begin_call("a", "r2", "plugin_entry", "push", capability_gate.link_for_plugin_call("b", "r1"))
-    capability_gate.end_call(child, "ok", 0)
+    capability_gate.end_call(child, ending, 0)  # returned, or the caller cancelled it
     capability_gate.check("a", "r2", "messages.push", "MESSAGE_PUSH")
     capability_gate.check("a", "r2", "memory.read", "MEMORY_SEARCH")  # control RPCs alike
     capability_gate.end_call(root, "ok", 0)
