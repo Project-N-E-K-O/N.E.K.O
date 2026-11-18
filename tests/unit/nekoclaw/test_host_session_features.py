@@ -1679,7 +1679,7 @@ async def test_a_copy_that_was_no_longer_waited_for_is_removed_when_it_is_made_a
     (args, kwargs), = asked
     await fork(*args, **kwargs)
     await wait_until(lambda: manager._forks_given_up == {}, what="the late copy being taken note of")
-    await manager.settle()
+    await wait_until(lambda: not manager._fork_records, what="what was written of it being removed")
     assert not Path(target).exists()
     assert await host.ledger.forks_of(first.id) == []
 
@@ -1697,7 +1697,7 @@ async def test_a_copy_that_was_no_longer_waited_for_is_removed_when_it_is_made_a
     (args, kwargs), = asked
     await fork(*args, **kwargs)
     await wait_until(lambda: manager._forks_given_up == {}, what="the late copy being taken note of")
-    await manager.settle()
+    await wait_until(lambda: not manager._fork_records, what="what was written of it being removed")
     assert not Path(target).exists()
     assert await host.ledger.forks_of(first.id) == []
 
@@ -3560,7 +3560,7 @@ async def test_what_is_left_of_a_copy_nobody_waited_for_is_removed_when_the_runt
         {"type": "error", "command": "fork", "session_id": session_id, "message": "the record could not be put in its place"}
     )
     await wait_until(lambda: manager._forks_given_up == {}, what="the late word being taken note of")
-    await manager.settle()
+    await wait_until(lambda: not manager._fork_records, what="what was left of it being removed")
     # On no record, and no longer on the list of what the host removes when it shuts down: removed now.
     assert not Path(target).exists()
 
@@ -3963,6 +3963,10 @@ async def test_what_removes_a_copy_after_a_late_word_is_waited_for_by_a_host_tha
         manager._events.put_nowait({"type": "forked", "session_id": session_id, "upto": "e1"})
         assert await asyncio.to_thread(begun.wait, 10)
         assert manager._forks_given_up == {} and len(manager._fork_records) == 1
+        # Whoever handles what the runtimes say does not wait for it: what is said next is handled.
+        reached = asyncio.get_running_loop().create_future()
+        manager._events.put_nowait({task_agents_module._REACHED: reached})
+        await asyncio.wait_for(reached, 5)
         shutting = asyncio.ensure_future(host.shutdown())
         await asyncio.wait_for(waiting.wait(), 20)
         assert Path(target).exists()
@@ -4178,3 +4182,101 @@ async def test_what_was_used_before_the_user_allowed_more_and_not_heard_of_yet_d
     # what the host had not heard of yet. Used before more was allowed, it is not taken from it.
     assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 200 + 1_000
     assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
+
+
+# ---------------------------------------------------------------------------
+# The seventeenth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_only_what_was_put_off_while_the_account_was_read_is_written_once_it_is_read(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    before = (await host.ledger.get(first.id)).tokens
+    add = host.ledger.add_usage
+    written: list[str] = []
+
+    async def counted(**kwargs: Any) -> None:
+        written.append(kwargs["session_id"])
+        await add(**kwargs)
+
+    host.ledger.add_usage = counted
+    try:
+        # Owed from before: the ledger did not take it then.
+        manager._usage_owed[("an-older-session", first.id)] = (1, 5, 5, 0, 0, None, 0)
+        async with manager._usage_read():
+            await manager._note_usage("a-session", first.id, {"input": 100, "output": 10})
+            # Put off, and where whoever reads the account finds it.
+            assert written == [] and await manager._owed_tokens(first.id) == 10 + 110
+        await wait_until(
+            lambda: ("a-session", first.id) not in manager._usage_owed and not manager._usage_writes,
+            what="what was put off being written",
+        )
+    finally:
+        host.ledger.add_usage = add
+    # That, and nothing else: what the ledger did not take before is tried again when it always
+    # was (with the next request of its session, when the session is let go of, when the host
+    # shuts down), and not with every look at the account.
+    assert written == ["a-session"]
+    assert (await host.ledger.get(first.id)).tokens - before == 110
+    assert list(manager._usage_owed) == [("an-older-session", first.id)]
+    manager._usage_owed.clear()
+
+
+async def test_what_is_used_after_the_user_allowed_more_comes_out_of_what_was_allowed(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    caught_up = manager._caught_up
+    said_late: list[int] = []
+
+    async def said_right_after_the_answer(*args: Any, **kwargs: Any) -> None:
+        await caught_up(*args, **kwargs)
+        if kwargs.get("then") is not None and not said_late:
+            # The user has answered, and what was said before that is handled. Only now, while it
+            # is worked out what more may be used, a task agent of the commission says what a
+            # request used.
+            said_late.append(1)
+            (session,) = manager._sessions.values()
+            manager._events.put_nowait({"type": "usage", "session_id": session.session_id, "input": 150, "output": 50})
+            await caught_up()
+
+    manager._caught_up = said_right_after_the_answer
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        question = await _asked(host, first.id)
+        assert question["category"] == "usage_limit" and question["detail"]["used"] == tokens_text(1_100)
+        assert await host.answer(first.id, "ok", choice="once")
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        manager._caught_up = caught_up
+    assert said_late == [1]
+    # As much again from what had been used when the user answered. What was said after that is
+    # on the account like anything else, and is used from what was allowed.
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
+    assert manager._usage_owed == {}
+
+
+def test_a_message_with_a_time_that_is_no_time_is_kept_as_said_now_and_the_others_stay_in_their_order() -> None:
+    kept = RecentConversation(clock=lambda: 100.0)
+    assert kept.note("Lan", ROLE_USER, "said at a hundred", at=100.0)
+    # A number that is no time: nothing compares with it, and left as it is what comes after it
+    # would be put behind it, whatever the time it was said at.
+    assert kept.note("Lan", ROLE_CHARACTER, "said at no time", at=float("nan"))
+    assert kept.note("Lan", ROLE_USER, "said before both", at=99.0)
+    assert [(turn.text, turn.at) for turn in kept.recent("Lan")] == [
+        ("said before both", 99.0),
+        ("said at a hundred", 100.0),
+        ("said at no time", 100.0),
+    ]

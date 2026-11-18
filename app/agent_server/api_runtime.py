@@ -420,7 +420,9 @@ def forget_turns_for_task_agents() -> None:
 
         recent_conversation().forget()
     except Exception:
-        logger.debug("[NekoClaw] dropping the messages kept for task agents failed")
+        # Seen: with this failed, what was said before NekoClaw was
+        # switched off is handed to a task agent once it is on again.
+        logger.warning("[NekoClaw] dropping the messages kept for task agents failed", exc_info=True)
 
 
 def forget_turns_if_nekoclaw_is_off() -> None:

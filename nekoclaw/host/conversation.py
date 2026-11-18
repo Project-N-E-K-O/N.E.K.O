@@ -95,7 +95,14 @@ class RecentConversation:
         if event_id and any(turn.event_id == event_id for turn in turns):
             return False
         now = self._clock()
-        said_at = float(at) if at is not None else now
+        said_at = now
+        if at is not None:
+            said_at = float(at)
+            if not math.isfinite(said_at):
+                # A time that is no time: as if it was said now. Kept as
+                # it is, nothing compares with it, and what comes after
+                # it would no longer be kept in the order it was said.
+                said_at = now
         if not event_id:
             # Told twice without an id: the same words by the same side as
             # the message said just before it. By when it was said, and
@@ -128,7 +135,8 @@ class RecentConversation:
         if role is None or not isinstance(content, str):
             return False
         at = event.get("ts")
-        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at):
+        if isinstance(at, bool) or not isinstance(at, (int, float)):
+            # (A number that is no time is seen to where it is kept.)
             at = None
         return self.note(
             str(event.get("lanlan_name") or ""), role, content, at=at, event_id=str(event.get("event_id") or "")

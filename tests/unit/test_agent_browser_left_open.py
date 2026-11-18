@@ -1243,7 +1243,8 @@ def _puts_a_capability_switch_off(node: ast.AST) -> bool:
                 isinstance(target, ast.Subscript)
                 and _is_the_switches(target.value)
                 and not (isinstance(target.slice, ast.Constant) and target.slice.value not in _CAPABILITY_SWITCHES)
-                and not _is_true(getattr(node, "value", None))
+                # (Put on, as it stands there: not what toggles it, or sets it by something.)
+                and not (isinstance(node, ast.Assign) and _is_true(node.value))
             ):
                 return True
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and _is_the_switches(node.func.value):
@@ -1265,6 +1266,26 @@ def _called(node: ast.AST) -> str | None:
     return getattr(node.func, "id", None) or getattr(node.func, "attr", None)
 
 
+def test_a_switch_is_put_off_though_what_was_kept_could_not_be_dropped_and_that_is_seen(
+    stage: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = capabilities._shared
+    said: list[str] = []
+
+    def cannot() -> None:
+        raise RuntimeError("what was kept cannot be got at")
+
+    monkeypatch.setattr(api_runtime, "forget_turns_if_nekoclaw_is_off", cannot)
+    monkeypatch.setattr(shared.logger, "warning", lambda message, *args, **kwargs: said.append(str(message)))
+
+    shared._put_switch_off("browser_use_enabled")
+
+    # The switch is off all the same. And it does not go by unseen: what was said before the
+    # switch went off would be handed to a task agent once NekoClaw is on again.
+    assert stage.state.agent_flags["browser_use_enabled"] is False
+    assert len(said) == 1 and "dropping the messages kept for task agents failed" in said[0]
+
+
 @pytest.mark.parametrize(
     ("statement", "puts_one_off"),
     [
@@ -1272,6 +1293,8 @@ def _called(node: ast.AST) -> str | None:
         ('_shared.Modules.agent_flags["computer_use_enabled"] = not ready', True),
         ("Modules.agent_flags[key] = False", True),
         ("Modules.agent_flags[key] = value", True),
+        ('Modules.agent_flags["browser_use_enabled"] ^= True', True),
+        ('Modules.agent_flags["browser_use_enabled"] &= enabled', True),
         ('del Modules.agent_flags["user_plugin_enabled"]', True),
         # The whole table, in the place of the one there is or changed at once.
         ('Modules.agent_flags = {"computer_use_enabled": False, "browser_use_enabled": False}', True),
