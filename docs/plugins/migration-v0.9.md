@@ -91,7 +91,7 @@ The old SDK `MemoryClient` mixed two different concepts. The supported replaceme
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the SDK/runtime `MemoryClient` facade. `ctx.query_memory(...)` still exists for compatibility, but it reaches a deprecated placeholder endpoint and does not provide semantic recall. There is currently no public plugin SDK operation for structured persistent-memory recall.
+These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the SDK/runtime `MemoryClient` facade. `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool and returns the hits as rendered text (an empty string when nothing matches). There is currently no public plugin SDK operation for structured persistent-memory recall.
 
 ## `push_message` v2
 

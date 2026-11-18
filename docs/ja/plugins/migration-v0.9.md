@@ -91,7 +91,7 @@ callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と SDK/runtime の `MemoryClient` facade です。`ctx.query_memory(...)` は互換性のため残っていますが、非推奨の placeholder endpoint を呼ぶだけで semantic recall は行いません。現在、公開 plugin SDK に構造化された永続メモリ recall API はありません。
+これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と SDK/runtime の `MemoryClient` facade です。`ctx.query_memory(...)` は組み込みの `recall_memory` ツールと同じハイブリッド recall を実行し、ヒットをレンダリング済みテキストとして返します（該当なしの場合は空文字列）。現在、公開 plugin SDK に構造化された永続メモリ recall API はありません。
 
 ## `push_message` v2
 

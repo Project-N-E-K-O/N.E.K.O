@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import math
+from collections.abc import Mapping
 from urllib.parse import quote
 
 from plugin.logging_config import get_logger
@@ -35,12 +37,82 @@ def _normalize_non_empty_str(value: object, *, field: str) -> str:
     return value.strip()
 
 
-def _build_memory_search_url(*, lanlan_name: str, query: str) -> str:
+def _memory_server_base_url() -> str:
     from config import MEMORY_SERVER_PORT
 
+    return f"http://127.0.0.1:{MEMORY_SERVER_PORT}"
+
+
+def _build_memory_query_url(*, lanlan_name: str) -> str:
     safe_lanlan = quote(lanlan_name, safe="")
-    safe_query = quote(query, safe="")
-    return f"http://127.0.0.1:{MEMORY_SERVER_PORT}/search_for_memory/{safe_lanlan}/{safe_query}"
+    return f"{_memory_server_base_url()}/query_memory/{safe_lanlan}"
+
+
+def _build_prompt_locale_url(*, lanlan_name: str) -> str:
+    safe_lanlan = quote(lanlan_name, safe="")
+    return f"{_memory_server_base_url()}/prompt-locale/{safe_lanlan}"
+
+
+def _recall_budget_ms(timeout: float) -> int:
+    """Server-side recall budget for this call.
+
+    Past the budget the memory server drops the vector half and answers from
+    keywords, so a slow embedding model degrades the result instead of turning
+    the whole call into a timeout. Half of the caller's timeout leaves room
+    for the locale lookup and local rendering that follow the recall.
+    """
+    from config.turn_context_settings import RECALL_MEMORY_TOOL_BUDGET_MS
+
+    return max(0, min(RECALL_MEMORY_TOOL_BUDGET_MS, int(timeout * 500)))
+
+
+def _upstream_error(*, upstream_code: str) -> ServerDomainError:
+    return ServerDomainError(
+        code="MEMORY_QUERY_UPSTREAM_ERROR",
+        message="Memory server reported a recall failure",
+        status_code=502,
+        details={"upstream_code": upstream_code},
+    )
+
+
+def _extract_results(payload: object) -> list[Mapping[str, object]]:
+    """Validate a ``/query_memory`` response and return its hits.
+
+    The endpoint answers 200 even when recall itself failed, flagging it with
+    ``error_code`` and an empty list. Treating that as "no memories" is the
+    silent failure this service used to have, so it is surfaced as an error.
+    """
+    if not isinstance(payload, Mapping):
+        raise _upstream_error(upstream_code="invalid_response")
+    error_code = payload.get("error_code")
+    if error_code is not None:
+        raise _upstream_error(upstream_code=str(error_code))
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise _upstream_error(upstream_code="invalid_response")
+    return [item for item in results if isinstance(item, Mapping)]
+
+
+def _render_results(results: list[Mapping[str, object]], lang: object) -> str:
+    """Render hits through the repo's single recall renderer.
+
+    Synchronous on purpose: token counting can be slow on long entries, so the
+    caller runs this in a worker thread.
+    """
+    from config.prompts.prompts_memory import (
+        RECALL_MEMORY_TOOL_FOUND_HEADER,
+        _loc,
+        _normalize_memory_prompt_lang,
+    )
+    from memory.recall_render import render_recall_block
+
+    normalized_lang = _normalize_memory_prompt_lang(lang if isinstance(lang, str) else None)
+    block = render_recall_block(
+        results,
+        normalized_lang,
+        header_template=_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, normalized_lang),
+    )
+    return block.text
 
 
 class MemoryQueryService:
@@ -51,6 +123,12 @@ class MemoryQueryService:
         query: object,
         timeout: object,
     ) -> dict[str, object]:
+        """Recall memories for ``query`` and return them as prompt-ready text.
+
+        Returns ``{"result": text}``. ``text`` is a numbered, token-budgeted
+        block of hits, or an empty string when nothing relevant was found.
+        Plugins that need structured hits should use ``MemoryClient.search``.
+        """
         normalized_lanlan_name = _normalize_non_empty_str(lanlan_name, field="lanlan_name")
         normalized_query = _normalize_non_empty_str(query, field="query")
         normalized_timeout = _coerce_timeout(timeout)
@@ -58,20 +136,45 @@ class MemoryQueryService:
         httpx = await ensure_httpx()
 
         try:
-            url = _build_memory_search_url(
-                lanlan_name=normalized_lanlan_name,
-                query=normalized_query,
-            )
-            # No language param: this GET is a deprecated placeholder endpoint
-            # (semantic recall was removed from it long ago) and the plugin
-            # server has no session locale to contribute. Letting the memory
-            # server resolve its own locale keeps the plugin process's
-            # fallback from propagating across the boundary.
+            # No "language" field: the plugin server has no session locale to
+            # contribute, and its process-level fallback can disagree with the
+            # memory server's own resolution. The memory server resolves the
+            # character locale for recall, and the same resolution is read back
+            # from /prompt-locale for rendering.
+            body = {
+                "query": normalized_query,
+                "budget_ms": _recall_budget_ms(normalized_timeout),
+            }
             async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None, trust_env=False) as client:
-                response = await client.get(url)
+                response = await client.post(
+                    _build_memory_query_url(lanlan_name=normalized_lanlan_name),
+                    json=body,
+                )
                 response.raise_for_status()
-                result = response.json()
-            return {"result": result}
+                results = _extract_results(response.json())
+                if not results:
+                    return {"result": ""}
+                locale_response = await client.get(
+                    _build_prompt_locale_url(lanlan_name=normalized_lanlan_name),
+                )
+                locale_response.raise_for_status()
+                locale_payload = locale_response.json()
+            lang = (
+                locale_payload.get("effective_language")
+                if isinstance(locale_payload, Mapping)
+                else None
+            )
+            text = await asyncio.to_thread(_render_results, results, lang)
+            return {"result": text}
+        except ServerDomainError as exc:
+            logger.warning(
+                "query_memory upstream recall error: code={}, lanlan_name={}, query_len={}, details={}",
+                exc.code,
+                normalized_lanlan_name,
+                query_len,
+                exc.details,
+            )
+            raise
         except httpx.TimeoutException as exc:
             logger.warning(
                 "query_memory timeout: lanlan_name={}, query_len={}, timeout={}",
@@ -93,6 +196,13 @@ class MemoryQueryService:
                 normalized_lanlan_name,
                 query_len,
             )
+            if status_code == 503:
+                raise ServerDomainError(
+                    code="MEMORY_QUERY_NOT_READY",
+                    message="Memory server is not ready yet",
+                    status_code=503,
+                    details={"upstream_status": status_code},
+                ) from exc
             raise ServerDomainError(
                 code="MEMORY_QUERY_UPSTREAM_ERROR",
                 message="Memory server returned an error response",

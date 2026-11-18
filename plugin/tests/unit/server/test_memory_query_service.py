@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+
+import httpx
+import pytest
+
+from plugin.server.application.messages import memory_query_service as module
+from plugin.server.domain.errors import ServerDomainError
+from plugin.utils.http_imports import load_httpx
+
+
+def _install_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> list[httpx.Request]:
+    seen: list[httpx.Request] = []
+    httpx_module = load_httpx()
+    real_client = httpx_module.AsyncClient
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    def _client(**kwargs):
+        kwargs.pop("proxy", None)
+        kwargs.pop("trust_env", None)
+        return real_client(transport=httpx_module.MockTransport(_handler), **kwargs)
+
+    monkeypatch.setattr(httpx_module, "AsyncClient", _client)
+    return seen
+
+
+def _hit(text: str) -> dict[str, object]:
+    return {"id": "f1", "text": text, "tier": "fact", "entity": "master", "score": 0.9}
+
+
+def _router(
+    *,
+    query_status: int = 200,
+    query_json: object | None = None,
+    locale: str = "en",
+) -> Callable[[httpx.Request], httpx.Response]:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/query_memory/"):
+            return httpx.Response(query_status, json=query_json)
+        if request.url.path.startswith("/prompt-locale/"):
+            return httpx.Response(200, json={"success": True, "effective_language": locale})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    return handler
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_posts_to_query_memory_and_renders_hits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_transport(
+        monkeypatch,
+        _router(query_json={"results": [_hit("Likes green tea")], "query": "tea"}),
+    )
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko/1", query="  tea  ", timeout=5
+    )
+
+    query_request = seen[0]
+    assert query_request.method == "POST"
+    assert query_request.url.raw_path == b"/query_memory/Neko%2F1"
+    body = json.loads(query_request.content)
+    assert body["query"] == "tea"
+    assert body["budget_ms"] == 2000
+    # Plugins never send subjects (legacy private recall) or the plugin
+    # process locale.
+    assert "subjects" not in body
+    assert "language" not in body
+    assert all("/search_for_memory/" not in str(r.url) for r in seen)
+
+    text = result["result"]
+    assert isinstance(text, str)
+    assert "Found 1 relevant memories:" in text
+    assert "1. " in text
+    assert "Likes green tea" in text
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_renders_in_memory_server_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_json={"results": [_hit("喜欢绿茶")]}, locale="zh-CN"),
+    )
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="茶", timeout=5
+    )
+
+    assert result["result"].startswith("找到 1 条相关记忆：")
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_returns_empty_text_when_nothing_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_transport(monkeypatch, _router(query_json={"results": []}))
+
+    result = await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="tea", timeout=5
+    )
+
+    assert result == {"result": ""}
+    # No hits, nothing to render: the locale lookup is skipped.
+    assert [r.url.path for r in seen] == ["/query_memory/Neko"]
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_budget_shrinks_with_short_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _install_transport(monkeypatch, _router(query_json={"results": []}))
+
+    await module.MemoryQueryService().query_memory(
+        lanlan_name="Neko", query="tea", timeout=1.0
+    )
+
+    assert json.loads(seen[0].content)["budget_ms"] == 500
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_surfaces_recall_failure_reported_with_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_json={"results": [], "error_code": "hybrid_recall_failed"}),
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
+    assert exc_info.value.details == {"upstream_code": "hybrid_recall_failed"}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_rejects_malformed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(monkeypatch, _router(query_json={"unexpected": True}))
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_maps_503_to_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_status=503, query_json={"detail": "not initialized"}),
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "MEMORY_QUERY_NOT_READY"
+    assert exc_info.value.status_code == 503
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_maps_other_errors_to_upstream_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_status=422, query_json={"detail": "bad"}),
+    )
+
+    with pytest.raises(ServerDomainError) as exc_info:
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="tea", timeout=5
+        )
+
+    assert exc_info.value.code == "MEMORY_QUERY_UPSTREAM_ERROR"
+    assert exc_info.value.details == {"upstream_status": 422}
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
+async def test_query_memory_never_logs_raw_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_transport(
+        monkeypatch,
+        _router(query_json={"results": [], "error_code": "hybrid_recall_failed"}),
+    )
+    logged: list[tuple[object, ...]] = []
+
+    class _Logger:
+        def warning(self, *args, **_kw):
+            logged.append(args)
+
+        error = warning
+
+    monkeypatch.setattr(module, "logger", _Logger())
+
+    with pytest.raises(ServerDomainError):
+        await module.MemoryQueryService().query_memory(
+            lanlan_name="Neko", query="secret-query-text", timeout=5
+        )
+
+    assert logged
+    assert all("secret-query-text" not in str(arg) for args in logged for arg in args)
