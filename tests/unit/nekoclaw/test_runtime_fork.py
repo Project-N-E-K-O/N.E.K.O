@@ -1272,3 +1272,138 @@ async def test_a_summing_up_that_made_no_summary_does_not_say_that_the_conversat
         assert len(events.of("compacted")) == 1
     finally:
         await session.close()
+
+
+# ---------------------------------------------------------------------------
+# The ninth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_a_copy_holds_what_is_on_the_record_and_not_what_the_other_session_could_not_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.runtime import session as session_module
+
+    # (No waiting between the attempts to write an entry.)
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", ())
+    recorder = Recorder()
+    llm = ScriptedLLM([[say("The first is done."), finish()], [say("The second is done."), finish()]])
+    runtime = _runtime({"s1": llm}, recorder)
+    spec = make_spec(tmp_path)
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do the first.")
+        await recorder.wait_ended("s1")
+        writer = runtime.core._sessions["s1"]._recorder
+        append = writer._append_blocking
+
+        def full(entry: Any) -> None:
+            raise OSError("the disk is full")
+
+        # What is said from here on cannot be written, and is given up on: the session goes on.
+        writer._append_blocking = full
+        mark = len(recorder.events)
+        await runtime.prompt("s1", "Do the second.")
+        ended = await recorder.wait_for(lambda event: event.get("type") == "ended", start=mark)
+        assert ended["text"] == "The second is done."
+        writer._append_blocking = append
+
+        copy = make_spec(tmp_path, "copy")
+        mark = len(recorder.events)
+        await runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        made = await recorder.wait_for(lambda event: event.get("type") == "forked", start=mark)
+
+        # The copy is of the record as it is on the disk: what a session opened from it later would
+        # find, and no more. Not an error of the copying.
+        on_record = (Path(spec.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+        copied = (Path(copy.session_dir) / TRANSCRIPT_FILE).read_text(encoding="utf-8")
+        assert "The first is done." in on_record and "The second is done." not in on_record
+        assert "The first is done." in copied and "The second is done." not in copied and "Do the second." not in copied
+        assert made["entries"] == len([entry for entry in _entries(Path(spec.session_dir)) if entry.type != "custom"])
+    finally:
+        await runtime.shutdown()
+
+
+async def test_a_copy_that_was_still_being_prepared_when_the_runtime_shut_down_is_not_made_after_that(tmp_path: Path) -> None:
+    recorder = Recorder()
+    runtime = _runtime({"s1": ScriptedLLM([[say("Done."), finish()]])}, recorder)
+    spec = make_spec(tmp_path)
+    go = asyncio.Event()
+    try:
+        await runtime.start(spec)
+        await runtime.prompt("s1", "Do it.")
+        await recorder.wait_ended("s1")
+        source = runtime.core._sessions["s1"]
+        flush = source.flush
+        entered = asyncio.Event()
+
+        async def slow() -> None:
+            # What the other session has said so far takes its time to be written out.
+            entered.set()
+            await go.wait()
+            await flush()
+
+        source.flush = slow
+        copy = make_spec(tmp_path, "copy")
+        mark = len(recorder.events)
+        forking = asyncio.ensure_future(
+            runtime.fork("copy", session_dir=copy.session_dir, source_session_id="s1", source_dir=spec.session_dir)
+        )
+        await asyncio.wait_for(entered.wait(), 10)
+
+        # The runtime is shut down meanwhile, and that is over: whoever asked for the copy may have
+        # tidied up after it, and listens no longer.
+        await runtime.core.shutdown(timeout=0.05)
+        go.set()
+        await asyncio.wait_for(forking, 10)
+
+        refused = await recorder.wait_for(
+            lambda event: event.get("type") == "error" and event.get("command") == "fork", start=mark
+        )
+        assert refused["session_id"] == "copy" and "shutting down" in refused["message"]
+        # Nothing was written behind its back, and the id is not left taken.
+        assert not [event for event in recorder.events[mark:] if event.get("type") == "forked"]
+        assert not (Path(copy.session_dir) / TRANSCRIPT_FILE).exists()
+        assert "copy" not in runtime.core._forking and not runtime.core._copying
+    finally:
+        go.set()
+        await runtime.shutdown()
+
+
+async def test_what_can_be_removed_of_a_copy_that_failed_is_removed_though_one_file_cannot_be(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from nekoclaw.runtime.snapshot import SYSTEM_FILE
+
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+    finally:
+        await session.close()
+    source = Path(spec.session_dir)
+    target = tmp_path / "sessions" / "copy"
+    replace = os.replace
+    unlink = Path.unlink
+
+    def refused(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        if str(src).endswith(".partial"):
+            raise OSError("the file is in use")
+        replace(src, dst, *args, **kwargs)
+
+    def not_the_snapshot(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == SYSTEM_FILE and self.parent == target:
+            raise OSError("the snapshot is in use")
+        unlink(self, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", refused)
+        patched.setattr(Path, "unlink", not_the_snapshot)
+        # Told as what went wrong first: that the record could not be put in its place.
+        with pytest.raises(ForkError, match="could not be put in its place"):
+            fork_record(source, target)
+    # The snapshot could not be removed; the record under its first name and its lock file were.
+    assert [path.name for path in target.iterdir()] == [SYSTEM_FILE]

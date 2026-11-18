@@ -227,7 +227,14 @@ class CloseCommand(_Strict):
 
 
 class ForkCommand(_Strict):
-    """Make the record of a new session from that of another; see ``nekoclaw.runtime.fork``."""
+    """Make the record of a new session from that of another; see ``nekoclaw.runtime.fork``.
+
+    The copy is made of the other's record as it is on the disk. What a
+    session that is open said and could not write there (the disk
+    refused it, after the retries) is not part of the record: a
+    session opened from it later does not have it, and neither does
+    the copy. That is not an error of the copying.
+    """
 
     type: Literal["fork"] = "fork"
     # The session that is made. It must have no record yet.

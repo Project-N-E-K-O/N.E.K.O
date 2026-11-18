@@ -267,13 +267,14 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
         # back with it: left there, a copy made later, when the other
         # session's snapshot can no longer be read, would be opened with
         # this one.
-        try:
-            if snapshot is not None:
-                (target_dir / SYSTEM_FILE).unlink(missing_ok=True)
-            partial.unlink(missing_ok=True)
-            _lock_of(partial).unlink(missing_ok=True)
-        except OSError:
-            logger.warning("what was written of a copy that failed could not be removed", exc_info=True)
+        # Each by itself: one that cannot be removed does not leave the
+        # others where they are.
+        written = [*([target_dir / SYSTEM_FILE] if snapshot is not None else []), partial, _lock_of(partial)]
+        for left in written:
+            try:
+                left.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("%s of a copy that failed could not be removed", left.name, exc_info=True)
         raise ForkError(f"the record of the copy could not be put in its place: {exc}") from exc
     try:
         _lock_of(partial).unlink(missing_ok=True)

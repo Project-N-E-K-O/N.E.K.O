@@ -101,7 +101,10 @@ class RecentConversation:
             # the message said just before it. By when it was said, and
             # not by what was told of last: one that is told of late does
             # not repeat something that was said after it.
-            before = next((turn for turn in reversed(turns) if turn.at <= said_at), None)
+            # Among what is still kept for an excerpt: one that is old by
+            # now is not what this one repeats.
+            oldest = now - TASK_AGENT_EXCERPT_MAX_AGE_SECONDS
+            before = next((turn for turn in reversed(turns) if oldest <= turn.at <= said_at), None)
             if before is not None and (before.role, before.text) == (role, text):
                 return False
         if said_at < now - TASK_AGENT_EXCERPT_MAX_AGE_SECONDS:

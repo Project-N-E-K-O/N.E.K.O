@@ -555,7 +555,18 @@ class TaskAgentManager:
         # cache reads, cache writes, and how long the conversation was as
         # of the last of them that said so): written with the next one,
         # when the session is let go of, or when the host shuts down.
-        self._usage_owed: dict[tuple[str, str | None], tuple[int, int, int, int, int, int | None]] = {}
+        # The last two: that length, and when it was said (``_context_said``).
+        self._usage_owed: dict[tuple[str, str | None], tuple[int, int, int, int, int, int | None, int]] = {}
+        # Writes of usage under way. Not among the tasks shutting down
+        # gives up on: what such a write comes to (written, or owed) is
+        # for it alone to tell.
+        self._usage_writes: set[asyncio.Task[Any]] = set()
+        # A count that goes up with every request that says how long its
+        # session's conversation is, and for each session the count of
+        # the one the ledger has: what an older request said of it,
+        # written late, does not take the place of what a newer one did.
+        self._context_said = 0
+        self._context_written: dict[str, int] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -2240,16 +2251,26 @@ class TaskAgentManager:
             value = event.get(key)
             return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
+        # Nothing is said of the conversation's length by the request that
+        # summed it up.
+        context = number("context_tokens") or None
+        said = 0
+        if context is not None:
+            self._context_said += 1
+            said = self._context_said
         await self._write_usage(
             (session_id, commission_id),
             (1, number("input"), number("output"), number("cache_read"), number("cache_write")),
-            # Nothing is said of the conversation's length by the request
-            # that summed it up.
-            number("context_tokens") or None,
+            context,
+            said,
         )
 
     async def _write_usage(
-        self, key: tuple[str, str | None], amounts: tuple[int, int, int, int, int], context: int | None
+        self,
+        key: tuple[str, str | None],
+        amounts: tuple[int, int, int, int, int],
+        context: int | None,
+        said: int,
     ) -> None:
         """Write what requests used, with what the ledger did not take before for the same session and commission.
 
@@ -2270,13 +2291,28 @@ class TaskAgentManager:
                 amounts[3] + owed[3],
                 amounts[4] + owed[4],
             )
-            # As of the latest request that said how long it was.
-            context = context or owed[5]
-        await asyncio.shield(self._spawn(self._usage_written(key, amounts, context)))
+            if context is None:
+                # As of the latest request that said how long it was.
+                context, said = owed[5], owed[6]
+        # Not a task shutting down gives up on (``_spawn``): cut off while
+        # the ledger writes, it could no longer say that the writing
+        # failed, and what was used would be neither written nor owed.
+        writing = asyncio.ensure_future(self._usage_written(key, amounts, context, said))
+        self._usage_writes.add(writing)
+        writing.add_done_callback(self._usage_writes.discard)
+        await asyncio.shield(writing)
 
     async def _usage_written(
-        self, key: tuple[str, str | None], amounts: tuple[int, int, int, int, int], context: int | None
+        self,
+        key: tuple[str, str | None],
+        amounts: tuple[int, int, int, int, int],
+        context: int | None,
+        said: int,
     ) -> None:
+        # How long the conversation was, only when nothing said later of
+        # the same session is written already: a request that is written
+        # late is counted, and what it said of the length is the older.
+        newest = context is not None and said > self._context_written.get(key[0], 0)
         try:
             await self._ledger.add_usage(
                 session_id=key[0],
@@ -2286,20 +2322,24 @@ class TaskAgentManager:
                 tokens_out=amounts[2],
                 cache_read=amounts[3],
                 cache_write=amounts[4],
-                context_tokens=context,
+                context_tokens=context if newest else None,
             )
         except Exception:  # noqa: BLE001 - what was used is for showing and for the limit; the work goes on
             logger.warning("writing down what a model request used failed; written later", exc_info=True)
             # With what came to be owed meanwhile, which is the newer.
-            later = self._usage_owed.get(key, (0, 0, 0, 0, 0, None))
+            later = self._usage_owed.get(key, (0, 0, 0, 0, 0, None, 0))
+            length = (later[5], later[6]) if later[6] > said else (context, said)
             self._usage_owed[key] = (
                 amounts[0] + later[0],
                 amounts[1] + later[1],
                 amounts[2] + later[2],
                 amounts[3] + later[3],
                 amounts[4] + later[4],
-                later[5] or context,
+                *length,
             )
+        else:
+            if newest:
+                self._context_written[key[0]] = max(said, self._context_written.get(key[0], 0))
 
     def _settle_usage_of(self, session_id: str) -> None:
         """Have what is owed of a session's usage written, now that nothing is at work in it.
@@ -2317,7 +2357,7 @@ class TaskAgentManager:
         """Try once to write what is owed of one session's usage, or of every session's."""
         for key in [key for key in self._usage_owed if session_id is None or key[0] == session_id]:
             if key in self._usage_owed:
-                await self._write_usage(key, (0, 0, 0, 0, 0), None)
+                await self._write_usage(key, (0, 0, 0, 0, 0), None, 0)
 
     async def _on_usage(self, session: _Session, event: dict[str, Any]) -> None:
         """Count one model request; a commission whose quota is used up fails.
@@ -3730,6 +3770,7 @@ class TaskAgentManager:
         (the runtime is through with it: it said so); and only then is
         the session it was made from let go of.
         """
+        import os
         import shutil
 
         try:
@@ -3749,7 +3790,17 @@ class TaskAgentManager:
         except Exception as exc:  # noqa: BLE001 - told as a copy that was not made
             # Written, and not on record: nothing would ever come by it to remove it.
             logger.warning("a copied session could not be put on record; what was copied is removed", exc_info=True)
-            await asyncio.to_thread(shutil.rmtree, target_dir, True)
+
+            def removed() -> bool:
+                shutil.rmtree(target_dir, True)
+                return not os.path.lexists(str(target_dir))
+
+            if not await asyncio.to_thread(removed):
+                # It could not be removed either (something has it open,
+                # say): still this host's to remove, with the copies
+                # nobody waited for any more, when it shuts down.
+                logger.error("what was copied to %s could not be removed; tried again when the host shuts down", target_dir)
+                self._forks_given_up[session_id] = str(target_dir)
             raise ForkRefused(f"the copy could not be put on record: {exc}") from exc
         finally:
             self._copied_from(source.id)
@@ -4255,6 +4306,10 @@ class TaskAgentManager:
         if pump is not None:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
+        if self._usage_writes:
+            # Writes of usage under way: waited for as long as a start is,
+            # and left to go on after that.
+            await asyncio.wait(list(self._usage_writes), timeout=_SHUTDOWN_START_WAIT_SECONDS)
         if self._usage_owed:
             # What requests used that the ledger did not take: tried once
             # more before it is lost with the host. Not waited for longer

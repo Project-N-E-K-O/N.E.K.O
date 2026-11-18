@@ -693,8 +693,12 @@ class TaskBrain:
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
             elif selection.route == "task_agent" and self._task_agents is not None:
-                handed_over = True
                 await self._task_agents.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
+                # The task agents have it from here on (started, queued, or
+                # failed by them, with what was kept for it gone). Before
+                # that, a handing over that fails or is cut off leaves it
+                # with nobody, and what was kept goes below.
+                handed_over = True
             elif selection.route == "duplicate" and selection.duplicate_of:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
             else:

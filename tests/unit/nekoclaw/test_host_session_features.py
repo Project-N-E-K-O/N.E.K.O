@@ -92,6 +92,11 @@ async def _events(host: Any, commission_id: str, kind: str | None = None) -> lis
     return [event for event in await host.ledger.events(commission_id) if kind is None or event.type == kind]
 
 
+def _owed(manager: Any) -> dict[Any, Any]:
+    """What the ledger did not take of what requests used, without the count that tells when a length was said."""
+    return {key: owed[:6] for key, owed in manager._usage_owed.items()}
+
+
 async def _let_go(host: Any) -> None:
     """Wait until no commission holds a session any more."""
     await wait_until(lambda: host.task_agents._held_by == {}, what="every session being let go")
@@ -2286,7 +2291,7 @@ async def test_what_a_request_used_is_written_once_though_whoever_noted_it_was_c
         go.set()
         host.ledger.add_usage = add
     # Both, and the length of the conversation as the later of the two said it.
-    assert manager._usage_owed == {(first.id, first.id): (2, 1_020, 3, 0, 0, 60_000)}
+    assert _owed(manager) == {(first.id, first.id): (2, 1_020, 3, 0, 0, 60_000)}
     manager._usage_owed.clear()
 
 
@@ -2313,7 +2318,12 @@ async def test_what_the_ledger_did_not_take_of_a_last_request_is_written_when_it
         await _let_go(host)
         # The only request of the commission: none of the same session and commission comes after
         # it, with which it would be written. It is written when the session is let go of.
-        await wait_until(lambda: refused and manager._usage_owed == {}, what="what was owed being written")
+
+        async def written() -> bool:
+            return bool(refused) and (await host.ledger.get(first.id)).requests == 1
+
+        await wait_until(written, what="what was owed being written")
+        assert manager._usage_owed == {}
         after, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
         assert len(refused) == 1 and refused[0]["context_tokens"]
         assert (after.requests, after.tokens) == (1, 930) and (session.requests, session.tokens) == (1, 930)
@@ -2324,7 +2334,7 @@ async def test_what_the_ledger_did_not_take_of_a_last_request_is_written_when_it
         # which says none (the one that sums the conversation up).
         failing.append(RuntimeError("the ledger is locked"))
         await manager._note_usage(first.id, first.id, {"input": 100, "output": 10, "context_tokens": 120_000})
-        assert manager._usage_owed == {(first.id, first.id): (1, 100, 10, 0, 0, 120_000)}
+        assert _owed(manager) == {(first.id, first.id): (1, 100, 10, 0, 0, 120_000)}
         await manager._note_usage(first.id, first.id, {"input": 7, "output": 3, "summary": True})
         assert manager._usage_owed == {}
         assert (await host.ledger.get_session(first.id)).context_tokens == 120_000
@@ -2332,7 +2342,7 @@ async def test_what_the_ledger_did_not_take_of_a_last_request_is_written_when_it
         # What is still owed when the host shuts down is tried once more then.
         failing.append(RuntimeError("the ledger is locked"))
         await manager._note_usage(first.id, None, {"input": 5, "output": 5})
-        assert manager._usage_owed == {(first.id, None): (1, 5, 5, 0, 0, None)}
+        assert _owed(manager) == {(first.id, None): (1, 5, 5, 0, 0, None)}
         taken.clear()
         await host.shutdown()
         assert manager._usage_owed == {}
@@ -2515,7 +2525,12 @@ async def test_what_the_ledger_did_not_take_of_the_request_that_summed_a_session
         monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30.0)
         # The one request the host made by itself: no other of this session and of no commission
         # comes after it. Written when the session is given back.
-        await wait_until(lambda: refused and manager._usage_owed == {}, what="what was owed being written")
+
+        async def written() -> bool:
+            return bool(refused) and (await host.ledger.get_session(first.id)).requests - before.requests == 1
+
+        await wait_until(written, what="what was owed being written")
+        assert manager._usage_owed == {}
     finally:
         host.ledger.add_usage = add
     after = await host.ledger.get_session(first.id)
@@ -2579,7 +2594,7 @@ async def test_usage_the_ledger_took_in_part_is_taken_back_whole_and_written_onc
     # All of it was taken back: the session does not hold what the commission does not.
     now = await host.ledger.get_session(first.id)
     assert (now.requests, now.tokens) == (session.requests, session.tokens)
-    assert manager._usage_owed == {(first.id, first.id): (1, 100, 10, 0, 0, None)}
+    assert _owed(manager) == {(first.id, first.id): (1, 100, 10, 0, 0, None)}
 
     await manager._note_usage(first.id, first.id, {"input": 7, "output": 3})
 
@@ -2733,3 +2748,167 @@ async def test_a_commission_that_is_taken_up_again_is_handed_what_was_said_befor
     assert [turn.text for turn in manager._excerpts[first.id]] == ["the photos are on the desktop", "the folder is unlocked now"]
     release.set()
     await wait_status(host, first.id, "done")
+
+
+# ---------------------------------------------------------------------------
+# The ninth batch of the review
+# ---------------------------------------------------------------------------
+
+
+def test_a_message_is_not_taken_for_a_repetition_of_one_that_is_old_by_now():
+    now = [0.0]
+    kept = RecentConversation(clock=lambda: now[0])
+    assert kept.note("Lan", ROLE_USER, "yes", at=0.0)
+    # More than the time an excerpt goes back later: a "no", and then, told of late, the "yes"
+    # said a second before it. The "yes" of then is not what it repeats.
+    now[0] = settings.TASK_AGENT_EXCERPT_MAX_AGE_SECONDS + 60.0
+    assert kept.note("Lan", ROLE_USER, "no", at=now[0])
+    assert kept.note("Lan", ROLE_USER, "yes", at=now[0] - 1.0)
+    assert [turn.text for turn in kept.recent("Lan")] == ["yes", "no"]
+    # Told twice, it is still kept once.
+    assert kept.note("Lan", ROLE_USER, "yes", at=now[0] - 1.0) is False
+
+
+async def test_what_an_older_request_said_of_the_length_does_not_take_the_place_of_what_a_newer_one_did(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    manager = host.task_agents
+    before = await host.ledger.get(first.id)
+    add = host.ledger.add_usage
+    failing = [RuntimeError("the ledger is locked")]
+
+    async def sometimes(**kwargs: Any) -> None:
+        if failing:
+            raise failing.pop()
+        await add(**kwargs)
+
+    host.ledger.add_usage = sometimes
+    try:
+        # A request of the commission says the conversation is long, and the ledger does not take it.
+        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10, "context_tokens": 120_000})
+        assert _owed(manager) == {(first.id, first.id): (1, 100, 10, 0, 0, 120_000)}
+        # A later request in the same session (of nobody's commission, here) says it is shorter by
+        # now, and is taken.
+        await manager._note_usage(first.id, None, {"input": 7, "output": 3, "context_tokens": 40_000})
+        assert (await host.ledger.get_session(first.id)).context_tokens == 40_000
+        # The first is written after all: counted, and what it said of the length is the older.
+        await manager._write_owed_usage(first.id)
+    finally:
+        host.ledger.add_usage = add
+    after, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+    assert manager._usage_owed == {} and after.requests - before.requests == 1
+    assert session.context_tokens == 40_000
+
+
+async def test_usage_that_is_being_written_when_the_host_shuts_down_is_written_or_owed_and_not_lost(
+    hosts, tmp_path, monkeypatch
+):
+    from nekoclaw.host import task_agents as task_agents_module
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await host.brain.settle()
+    manager = host.task_agents
+    monkeypatch.setattr(task_agents_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.1)
+    add = host.ledger.add_usage
+    entered, go = asyncio.Event(), asyncio.Event()
+    taken: list[dict[str, Any]] = []
+
+    async def slow(**kwargs: Any) -> None:
+        # The ledger has much to write, and does not get to this for now.
+        entered.set()
+        await go.wait()
+        await add(**kwargs)
+        taken.append(kwargs)
+
+    host.ledger.add_usage = slow
+    try:
+        noting = asyncio.ensure_future(manager._note_usage(first.id, first.id, {"input": 100, "output": 10}))
+        await asyncio.wait_for(entered.wait(), 10)
+
+        await asyncio.wait_for(host.shutdown(), 10)
+
+        # Not cut off by the shutting down: how the writing ends is still for it to tell.
+        assert not noting.done() and len(manager._usage_writes) == 1
+        go.set()
+        await asyncio.wait_for(noting, 10)
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    # Written, or (the ledger being closed by now) put down as owed: one of the two, and once.
+    assert len(taken) + len(manager._usage_owed) == 1
+    assert _owed(manager) in ({}, {(first.id, first.id): (1, 100, 10, 0, 0, None)})
+    assert manager._usage_writes == set()
+
+
+async def test_what_was_kept_for_a_commission_goes_when_handing_it_to_a_task_agent_fails(hosts, tmp_path):
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    manager = host.task_agents
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    update = host.ledger.update
+    kept_then: list[int] = []
+
+    async def not_the_route(commission_id: str, **values: Any) -> Any:
+        if values == {"route": "task_agent"} and not kept_then:
+            # Where the handing over begins: kept since it was filed, and not the task agents' yet.
+            kept_then.append(len(manager._excerpts))
+            raise RuntimeError("the ledger is locked")
+        return await update(commission_id, **values)
+
+    host.ledger.update = not_the_route
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "failed")
+        await host.brain.settle()
+    finally:
+        host.ledger.update = update
+    assert kept_then == [1] and scripts["sort the photos"].requests == []
+    assert manager._excerpts == {}
+
+
+async def test_a_copy_that_can_neither_be_put_on_record_nor_removed_is_removed_when_the_host_shuts_down(
+    hosts, tmp_path, monkeypatch
+):
+    import shutil
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted by year")])}
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    create = host.ledger.create_session
+    remove = shutil.rmtree
+    held: list[str] = []
+
+    async def locked(**kwargs: Any) -> Any:
+        raise RuntimeError("the ledger is locked")
+
+    def in_use_at_first(path: Any, *args: Any, **kwargs: Any) -> None:
+        if not held:
+            # Something has the directory open: it cannot be removed for now.
+            held.append(str(path))
+            return
+        remove(path, *args, **kwargs)
+
+    host.ledger.create_session = locked
+    monkeypatch.setattr(shutil, "rmtree", in_use_at_first)
+    try:
+        with pytest.raises(ForkRefused, match="could not be put on record"):
+            await host.fork_session(first.id)
+    finally:
+        host.ledger.create_session = create
+    # Still there, on no record: this host's to remove, and not forgotten.
+    assert len(held) == 1 and Path(held[0]).exists()
+    assert list(manager._forks_given_up.values()) == held and manager._copying_from == {}
+
+    await host.shutdown()
+
+    assert not Path(held[0]).exists() and manager._forks_given_up == {}

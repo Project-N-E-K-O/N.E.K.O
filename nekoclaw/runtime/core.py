@@ -111,6 +111,9 @@ class RuntimeCore:
         # session and no new work is accepted. A count, not a flag: a second
         # call that returns first must not reopen the door for the first.
         self._shutdowns = 0
+        # How many calls of ``shutdown`` have begun, ever: what was being
+        # prepared when one began does not go on once it is over.
+        self._shutdowns_begun = 0
         # Sessions whose creation outlasted a shutdown; closed on arrival.
         self._abandoned: set[str] = set()
         # Keeps the tasks that close sessions alive until they are done.
@@ -203,6 +206,7 @@ class RuntimeCore:
             self._reject(session_id, "fork", f'session "{session_id}" already exists')
             return
         self._forking.add(session_id)
+        shutdowns = self._shutdowns_begun
         try:
             for under_way in (self._starting.get(source_id), self._closing.get(source_id)):
                 if under_way is not None:
@@ -218,6 +222,15 @@ class RuntimeCore:
             self._forking.discard(session_id)
             logger.exception("could not copy session %s", source_id)
             self._reject(session_id, "fork", f"{type(exc).__name__}: {exc}")
+            return
+
+        if self._shutdowns_begun != shutdowns:
+            # The runtime was shut down while this waited for the other
+            # session, and that is over by now or still under way:
+            # nothing is written behind its back. (Whoever asked may have
+            # tidied up after it already, and no longer listens.)
+            self._forking.discard(session_id)
+            self._reject(session_id, "fork", "the runtime is shutting down")
             return
 
         def written(done: "asyncio.Future[Any]") -> None:
@@ -402,6 +415,7 @@ class RuntimeCore:
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
         self._shutdowns += 1
+        self._shutdowns_begun += 1
         try:
             while True:
                 for session_id, session in list(self._sessions.items()):
