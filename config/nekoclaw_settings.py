@@ -476,12 +476,15 @@ BROWSER_CLOSE_AT_SHUTDOWN_SECONDS = 4.0
 """How long the browser is given to close by itself once the shutdown gets to
 it; less when less than that is left before it is killed (above)."""
 
-KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS = 6.0
+KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS = 5.0
 """Until how long after the agent process began to shut down held keys that
 the first try after the host stopped could not let go of are tried once more
 (after the browser). Bounded by what is left before then, and skipped when
-nothing is: of the launcher's 8 seconds, the rest is for queueing the final
-stats save and the last status update."""
+nothing is. The launcher's 8 seconds start before this process's shutdown
+does: in merged mode connections are drained first, for up to
+``MERGED_CONNECTION_DRAIN_TIMEOUT`` (1 second, ``launcher_core/runtime.py``).
+So this ends at most 6 seconds into the launcher's 8, and the last 2 are for
+queueing the final stats save and the last status update."""
 
 BROWSER_CLOSE_AT_END_ALL_SECONDS = 4.0
 """How long the browser the tools started is given to close when the user

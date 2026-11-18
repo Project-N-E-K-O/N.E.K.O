@@ -763,12 +763,16 @@ async def shutdown():
         # is left before ``KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS`` (the shared
         # budget only starts once the launcher cancels, which is after it has
         # already given up on this process) and the cancellation budget. Not when the
-        # first one let go of everything.
-        left = min(2.0, keys_retry_until - asyncio.get_running_loop().time())
-        if left > 0:
-            await step(lambda: release_held_keys(left), "Agent held keys release retry")
-        else:
-            logger.warning("[Agent] Held keys release retry skipped: no time left before the launcher ends the process")
+        # first one let go of everything. What is left is read in the retry
+        # itself, when it gets to run, not when it is scheduled.
+        async def retry_held_keys():
+            left = min(2.0, keys_retry_until - asyncio.get_running_loop().time())
+            if left <= 0:
+                logger.warning("[Agent] Held keys release retry skipped: no time left before the launcher ends the process")
+                return
+            await release_held_keys(left)
+
+        await step(retry_held_keys, "Agent held keys release retry")
 
     try:
         from utils.token_tracker import TokenTracker
