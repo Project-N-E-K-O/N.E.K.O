@@ -974,3 +974,22 @@ async def test_envelope_extraction_failure_is_logged_not_raised(caplog):
         assert await runtime.invoke("plugin_entry", "entry", {}) is returned
     assert "could not be checked" in caplog.text
     assert "error_type=RuntimeError" in caplog.text
+
+
+class AliasOut(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    user_id: int = Field(alias="userId")
+
+
+async def test_model_serializing_by_alias_publishes_alias_keys():
+    from plugin.sdk.shared.core.finish import build_finish_envelope
+
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> AliasOut:
+        return build_finish_envelope(data=AliasOut(userId=3), delivery="silent")  # type: ignore[return-value]
+
+    meta = _meta_of(entry)
+    runtime = _executor({"entry": entry}, {"entry": meta})
+    result = await runtime.invoke("plugin_entry", "entry", {})
+    # The published contract names exactly the keys the data carries.
+    assert set(result["data"]) == set(meta.output_schema["properties"]) == {"userId"}
