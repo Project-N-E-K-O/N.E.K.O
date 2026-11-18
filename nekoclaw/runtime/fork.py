@@ -65,7 +65,7 @@ from nekoclaw.runtime.loop.messages import AssistantMessage, ToolResultMessage
 from nekoclaw.runtime.loop.session import CustomEntry, JsonlSessionStorage, SessionEntry
 from nekoclaw.runtime.loop.session.jsonl import entries_from_json_lines
 from nekoclaw.runtime.loop.session.tree import path_to_entry
-from nekoclaw.runtime.snapshot import read_snapshot, write_snapshot
+from nekoclaw.runtime.snapshot import SYSTEM_FILE, read_snapshot, write_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +260,21 @@ def fork_record(source_dir: Path, target_dir: Path, *, upto: str | None = None) 
             except OSError:
                 logger.warning("the record of a copy that failed could not be removed", exc_info=True)
             raise ForkError(f"the system snapshot of the copy could not be written: {exc}") from exc
-    os.replace(partial, target_path)
+    try:
+        os.replace(partial, target_path)
+    except OSError as exc:
+        # Neither, as above, and the snapshot written this time is taken
+        # back with it: left there, a copy made later, when the other
+        # session's snapshot can no longer be read, would be opened with
+        # this one.
+        try:
+            if snapshot is not None:
+                (target_dir / SYSTEM_FILE).unlink(missing_ok=True)
+            partial.unlink(missing_ok=True)
+            _lock_of(partial).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("what was written of a copy that failed could not be removed", exc_info=True)
+        raise ForkError(f"the record of the copy could not be put in its place: {exc}") from exc
     try:
         _lock_of(partial).unlink(missing_ok=True)
     except OSError:

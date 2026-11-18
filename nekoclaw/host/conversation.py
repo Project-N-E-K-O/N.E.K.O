@@ -74,7 +74,8 @@ class RecentConversation:
         """Keep one message; returns whether it was kept.
 
         Not kept: an empty one, and one that is here already (told twice,
-        by its id or, without one, by being what the same side said last).
+        by its id or, without one, by being what the same side said just
+        before it, going by when each was said).
         A long one is kept cut: an excerpt takes a part of it at the most.
         """
         from config.nekoclaw_settings import (
@@ -93,10 +94,16 @@ class RecentConversation:
         text = text[:TASK_AGENT_EXCERPT_KEPT_CHARS]
         if event_id and any(turn.event_id == event_id for turn in turns):
             return False
-        if not event_id and turns and (turns[-1].role, turns[-1].text) == (role, text):
-            return False
         now = self._clock()
         said_at = float(at) if at is not None else now
+        if not event_id:
+            # Told twice without an id: the same words by the same side as
+            # the message said just before it. By when it was said, and
+            # not by what was told of last: one that is told of late does
+            # not repeat something that was said after it.
+            before = next((turn for turn in reversed(turns) if turn.at <= said_at), None)
+            if before is not None and (before.role, before.text) == (role, text):
+                return False
         if said_at < now - TASK_AGENT_EXCERPT_MAX_AGE_SECONDS:
             # Told of when it is old already: it would take the place of one that is not.
             return False

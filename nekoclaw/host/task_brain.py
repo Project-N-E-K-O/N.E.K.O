@@ -633,6 +633,11 @@ class TaskBrain:
         )
         if not created:
             return Receipt(kind="duplicate", commissions=[commission], model_calls=calls)
+        if self._task_agents is not None:
+            # What was said just before it, as of now: by the time it is
+            # chosen who does it, more may have been said, and what the
+            # sentence refers to may no longer be among what is kept.
+            self._task_agents.note_filed(commission)
         request.active = [item for item in request.active if item.id != commission.id]
         self._spawn(self._second_round(commission, request, triage, follows=follows), commission_id=commission.id)
         return Receipt(kind="accepted", commissions=[commission], model_calls=calls)
@@ -654,6 +659,8 @@ class TaskBrain:
         agent does it become part of that session; done by a plugin, or by
         nothing, it has no part in it, and holds nothing of it.
         """
+        # Whether a task agent has it: what was kept for one goes otherwise.
+        handed_over = False
         try:
             request.preferences = await self._preferences.render(request.match_text)
             selection = await self._decision.select(request, triage)
@@ -686,6 +693,7 @@ class TaskBrain:
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
             elif selection.route == "task_agent" and self._task_agents is not None:
+                handed_over = True
                 await self._task_agents.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
             elif selection.route == "duplicate" and selection.duplicate_of:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
@@ -702,6 +710,9 @@ class TaskBrain:
                 await self._reporter.correction(
                     commission, reason="no_capability", detail="error", text=self._no_capability_text(commission, "no_match")
                 )
+        finally:
+            if not handed_over and self._task_agents is not None:
+                self._task_agents.drop_excerpt(commission.id)
 
     def _no_capability_text(self, commission: Commission, reason: str) -> str:
         return Receipt(kind="no_capability", commissions=[commission], reason=reason).text(commission.lang or "en")

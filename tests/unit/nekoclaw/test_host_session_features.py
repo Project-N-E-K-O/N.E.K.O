@@ -1117,7 +1117,21 @@ async def test_nothing_is_summed_up_unless_it_is_switched_on_and_worth_it(hosts,
     assert len(metered) == asked_before and len(export.requests) == 5
     assert manager._idle_compacts_under_way == 0 and len(manager._idle_compacted_at) == 0
     on["switch"] = False
-    assert await manager._idle_compact(first.id) is False
+    runtime = manager._runtimes.builtin()
+    start = runtime.start
+    opened: list[str] = []
+
+    async def counting(spec: Any) -> None:
+        opened.append(spec.session_id)
+        await start(spec)
+
+    runtime.start = counting
+    try:
+        assert await manager._idle_compact(first.id) is False
+    finally:
+        runtime.start = start
+    # Not even opened: with NekoClaw switched off the host has no runtime do anything by itself.
+    assert opened == [] and len(export.requests) == 5
     on["switch"] = True
     # Nor before it has been idle for as long as is set, nor past the day's limit.
     monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 3_600.0)
@@ -1565,17 +1579,47 @@ async def test_what_was_said_in_a_session_is_not_removed_while_a_copy_of_it_is_m
         asking = asyncio.ensure_future(host.fork_session(first.id))
         await asyncio.wait_for(entered.wait(), 10)
         asking.cancel()
-        await asyncio.gather(asking, return_exceptions=True)
+        # Whoever asked hears of that at once, and not only when the copy is on record ...
+        await asyncio.wait({asking}, timeout=10)
+        assert asking.cancelled()
+        # ... and the session it was made from stays held until then: its record is not removed
+        # under a copy that is on no record yet.
+        assert manager._copying_from == {first.id: 1} and manager.hold_files(first.id) is False
         go.set()
 
         async def on_record() -> bool:
             return len(await host.ledger.forks_of(first.id)) == 2
 
         await wait_until(on_record, what="the copy being put on record")
+        await wait_until(lambda: manager._copying_from == {}, what="the session it was copied from being let go of")
+
+        # The same when it cannot be put on record after whoever asked has left: what was written
+        # is removed, and only then is the session let go of.
+        there = sorted(path.name for path in sessions.iterdir())
+        entered.clear()
+        go.clear()
+
+        async def locked_late(**kwargs: Any) -> Any:
+            entered.set()
+            await go.wait()
+            raise RuntimeError("the ledger is locked")
+
+        host.ledger.create_session = locked_late
+        leaving = asyncio.ensure_future(host.fork_session(first.id))
+        await asyncio.wait_for(entered.wait(), 10)
+        leaving.cancel()
+        await asyncio.wait({leaving}, timeout=10)
+        assert leaving.cancelled() and len(list(sessions.iterdir())) == len(there) + 1
+        assert manager._copying_from == {first.id: 1}
+        go.set()
+        await wait_until(lambda: manager._copying_from == {}, what="the session it was copied from being let go of")
+        assert sorted(path.name for path in sessions.iterdir()) == there
+        assert len(await host.ledger.forks_of(first.id)) == 2
     finally:
         go.set()
         host.ledger.create_session = create
-    assert asking.cancelled() and manager._copying_from == {}
+        await asyncio.wait({asking}, timeout=10)
+    assert manager._copying_from == {}
     # Refused before anything is looked at when its record is being removed this moment.
     assert manager.hold_files(first.id) is True
     with pytest.raises(ForkRefused, match="no longer kept"):
@@ -2171,3 +2215,309 @@ async def test_a_host_that_shuts_down_does_not_wait_for_a_runtime_that_never_say
         await close(first.id)
     assert told == [first.id]
     assert manager._service == {} and manager._idle_over == {} and manager._compacting == {}
+
+
+# ---------------------------------------------------------------------------
+# What the fifth round of review found
+# ---------------------------------------------------------------------------
+
+
+async def test_what_a_request_used_is_written_once_though_whoever_noted_it_was_cancelled(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "sorted")]))
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    manager = host.task_agents
+    before = await host.ledger.get(first.id)
+    add = host.ledger.add_usage
+    entered, go = asyncio.Event(), asyncio.Event()
+
+    async def slow(**kwargs: Any) -> None:
+        entered.set()
+        await go.wait()
+        await add(**kwargs)
+
+    async def written(requests: int) -> bool:
+        return (await host.ledger.get(first.id)).requests - before.requests == requests
+
+    host.ledger.add_usage = slow
+    try:
+        noting = asyncio.ensure_future(manager._note_usage(first.id, first.id, {"input": 100, "output": 10}))
+        await asyncio.wait_for(entered.wait(), 10)
+        # Whoever noted it is cancelled while the ledger writes (a summing up that a commission cuts short, say).
+        noting.cancel()
+        await asyncio.wait({noting}, timeout=10)
+        assert noting.cancelled()
+        # Not put down as owed: the ledger is writing it, and takes it.
+        assert manager._usage_owed == {}
+        go.set()
+        await wait_until(lambda: written(1), what="the usage being written")
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    await manager._note_usage(first.id, first.id, {"input": 7, "output": 3})
+    after = await host.ledger.get(first.id)
+    # Each of the two once.
+    assert (after.requests - before.requests, after.tokens - before.tokens) == (2, 120)
+    assert manager._usage_owed == {}
+
+    # A writing that fails after another came to be owed meanwhile is owed with it, not in its place.
+    entered.clear()
+    go.clear()
+    failing: list[Any] = []
+
+    async def first_slow_then_failing(**kwargs: Any) -> None:
+        failing.append(kwargs)
+        if len(failing) == 1:
+            entered.set()
+            await go.wait()
+        raise RuntimeError("the ledger is locked")
+
+    host.ledger.add_usage = first_slow_then_failing
+    try:
+        slow_one = asyncio.ensure_future(
+            manager._note_usage(first.id, first.id, {"input": 1_000, "output": 1, "context_tokens": 50_000})
+        )
+        await asyncio.wait_for(entered.wait(), 10)
+        await manager._note_usage(first.id, first.id, {"input": 20, "output": 2, "context_tokens": 60_000})
+        go.set()
+        await asyncio.wait_for(slow_one, 10)
+    finally:
+        go.set()
+        host.ledger.add_usage = add
+    # Both, and the length of the conversation as the later of the two said it.
+    assert manager._usage_owed == {(first.id, first.id): (2, 1_020, 3, 0, 0, 60_000)}
+    manager._usage_owed.clear()
+
+
+async def test_what_the_ledger_did_not_take_of_a_last_request_is_written_when_its_session_is_let_go_of(hosts, tmp_path):
+    script = ScriptedLLM([[call("report", {"status": "ready", "summary": "sorted"}, "call-r"), _used(900, 30), finish("tool_calls")]])
+    host = _host(hosts, tmp_path, script)
+    manager = host.task_agents
+    add = host.ledger.add_usage
+    failing = [RuntimeError("the ledger is locked")]
+    refused: list[dict[str, Any]] = []
+    taken: list[dict[str, Any]] = []
+
+    async def sometimes(**kwargs: Any) -> None:
+        if failing:
+            refused.append(kwargs)
+            raise failing.pop()
+        await add(**kwargs)
+        taken.append(kwargs)
+
+    host.ledger.add_usage = sometimes
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+        # The only request of the commission: none of the same session and commission comes after
+        # it, with which it would be written. It is written when the session is let go of.
+        await wait_until(lambda: refused and manager._usage_owed == {}, what="what was owed being written")
+        after, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+        assert len(refused) == 1 and refused[0]["context_tokens"]
+        assert (after.requests, after.tokens) == (1, 930) and (session.requests, session.tokens) == (1, 930)
+        # With how long the conversation was as of it.
+        assert session.context_tokens == refused[0]["context_tokens"]
+
+        # The length a request said, and the ledger did not take, is written with the next request,
+        # which says none (the one that sums the conversation up).
+        failing.append(RuntimeError("the ledger is locked"))
+        await manager._note_usage(first.id, first.id, {"input": 100, "output": 10, "context_tokens": 120_000})
+        assert manager._usage_owed == {(first.id, first.id): (1, 100, 10, 0, 0, 120_000)}
+        await manager._note_usage(first.id, first.id, {"input": 7, "output": 3, "summary": True})
+        assert manager._usage_owed == {}
+        assert (await host.ledger.get_session(first.id)).context_tokens == 120_000
+
+        # What is still owed when the host shuts down is tried once more then.
+        failing.append(RuntimeError("the ledger is locked"))
+        await manager._note_usage(first.id, None, {"input": 5, "output": 5})
+        assert manager._usage_owed == {(first.id, None): (1, 5, 5, 0, 0, None)}
+        taken.clear()
+        await host.shutdown()
+        assert manager._usage_owed == {}
+        assert [(told["session_id"], told["commission_id"], told["requests"], told["tokens_in"]) for told in taken] == [
+            (first.id, None, 1, 5)
+        ]
+    finally:
+        host.ledger.add_usage = add
+
+
+async def test_nothing_is_summed_up_when_nekoclaw_is_switched_off_while_the_session_is_being_opened(
+    hosts, tmp_path, monkeypatch
+):
+    _idle_on(monkeypatch, after=30.0)
+    export = ScriptedLLM([*_long_work("export added")])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    on = [True]
+    charged: list[str] = []
+
+    async def counting(commission_id: str) -> bool:
+        charged.append(commission_id)
+        return True
+
+    monkeypatch.setattr(manager, "_switched_on", lambda: on[0])
+    monkeypatch.setattr(manager, "_meter", counting)
+    runtime = manager._runtimes.builtin()
+    start = runtime.start
+    opened: list[str] = []
+
+    async def switched_off_meanwhile(spec: Any) -> None:
+        # The user switches NekoClaw off while the runtime opens the session.
+        on[0] = False
+        opened.append(spec.session_id)
+        await start(spec)
+
+    runtime.start = switched_off_meanwhile
+    try:
+        task = manager._spawn(manager._idle_compact(first.id))
+        assert await asyncio.wait_for(task, 10) is False
+    finally:
+        runtime.start = start
+        monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30.0)
+    # The session was opened, and that is as far as it got: nothing was asked of a model, nothing
+    # was charged, and it is not one of those the day has a limit for.
+    assert opened == [first.id] and len(export.requests) == 5 and charged == []
+    assert not manager._idle_compacted_at and manager._idle_compacts_under_way == 0
+    await wait_until(lambda: first.id not in manager._compacting, what="the session being given back")
+    session = await host.ledger.get_session(first.id)
+    assert session.status == "closed" and session.compacted_at is None
+    assert manager._service == {} and manager._idle_over == {}
+
+
+async def test_what_was_said_before_a_commission_is_kept_when_it_is_filed_whatever_is_said_while_it_is_routed(
+    hosts, tmp_path
+):
+    import time
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    manager = host.task_agents
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    decision = host.brain._decision
+    select = decision.select
+    kept_meanwhile: list[int] = []
+
+    async def much_is_said_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        # While it is chosen who does it: more than is kept of the main dialogue.
+        kept_meanwhile.append(len(manager._excerpts))
+        for index in range(settings.TASK_AGENT_EXCERPT_KEPT_MESSAGES):
+            said.note("Lan", ROLE_USER, f"something else {index}", at=time.time() + 1 + index)
+        return await select(*args, **kwargs)
+
+    decision.select = much_is_said_meanwhile
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "done")
+    finally:
+        decision.select = select
+    assert not any("the photos are on the desktop" in turn.text for turn in said.recent("Lan"))
+    opening = _user_messages(scripts["sort the photos"].requests[0])[0]
+    # What the sentence referred to when it was dispatched, and nothing of what was said after.
+    assert "User: the photos are on the desktop" in opening and "something else" not in opening
+    assert kept_meanwhile == [1]
+
+    # Kept for a task agent, it goes when none takes the commission.
+    await wait_until(lambda: manager._excerpts == {}, what="what was kept for the first one being dropped")
+    said.note("Mei", ROLE_USER, "the mail is in the other account")
+    kept_for: list[list[list[str]]] = []
+
+    async def fails(*args: Any, **kwargs: Any) -> Any:
+        kept_for.append([[turn.text for turn in turns] for turns in manager._excerpts.values()])
+        raise RuntimeError("the model is away")
+
+    decision.select = fails
+    try:
+        second = (await _dispatch(host, "check the mail", lanlan_name="Mei")).commissions[0]
+        await wait_status(host, second.id, "failed")
+        await host.brain.settle()
+    finally:
+        decision.select = select
+    assert kept_for == [[["the mail is in the other account"]]]
+    assert manager._excerpts == {}
+
+
+def test_a_message_told_of_late_is_not_taken_for_a_repetition_of_one_that_was_said_after_it():
+    kept = RecentConversation(clock=lambda: 100.0)
+    assert kept.note("Lan", ROLE_USER, "no", at=21.0)
+    assert kept.note("Lan", ROLE_USER, "yes", at=22.0)
+    # Said before the two, and told of after them: the "yes" that follows the "no" is another one.
+    assert kept.note("Lan", ROLE_USER, "yes", at=20.0)
+    assert [(turn.text, turn.at) for turn in kept.recent("Lan")] == [("yes", 20.0), ("no", 21.0), ("yes", 22.0)]
+    # Told twice, each is still kept once: the newest, and one in the middle that is told of late.
+    assert kept.note("Lan", ROLE_USER, "yes", at=22.0) is False
+    assert kept.note("Lan", ROLE_USER, "no", at=21.0) is False
+    assert kept.note("Lan", ROLE_USER, "yes") is False
+    assert len(kept.recent("Lan")) == 3
+
+
+async def test_a_commission_that_is_handed_over_without_having_been_filed_by_the_brain_gets_its_excerpt_then(
+    hosts, tmp_path
+):
+    import time
+
+    scripts = {"sort the photos": ScriptedLLM([_report("ready", "sorted")])}
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    commission, created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the photos", dispatch_text="sort the photos", source="dispatch", lang="en"
+    )
+    assert created and host.task_agents._excerpts == {}
+    # Said after it was filed, and before it is handed over.
+    said.note("Lan", ROLE_USER, "and what about the videos", at=time.time() + 60)
+
+    assert await host.task_agents.submit(commission)
+
+    await wait_status(host, commission.id, "done")
+    opening = _user_messages(scripts["sort the photos"].requests[0])[0]
+    assert "User: the photos are on the desktop" in opening and "and what about the videos" not in opening
+
+
+async def test_what_the_ledger_did_not_take_of_the_request_that_summed_a_session_up_is_written_when_it_is_given_back(
+    hosts, tmp_path, monkeypatch
+):
+    _idle_on(monkeypatch, after=30.0)
+    summary = [say("## Current Work\n- export added"), _used(7_000, 60), finish()]
+    export = ScriptedLLM([*_long_work("export added"), summary])
+    host = _host(hosts, tmp_path, _scripts_by_session({"add a CSV export": export}), task_agent_model=_small_window)
+    await host.space.touch_project("Budget app")
+    manager = host.task_agents
+    first = (await _dispatch(host, "add a CSV export to the budget app")).commissions[0]
+    await wait_status(host, first.id, "done")
+    await _let_go(host)
+    await wait_until(lambda: first.id in manager._idle_timers, what="the timer")
+    manager._drop_idle_timer(first.id)
+    monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 0.0)
+    before = await host.ledger.get_session(first.id)
+    add = host.ledger.add_usage
+    refused: list[dict[str, Any]] = []
+
+    async def not_the_hosts_own_at_first(**kwargs: Any) -> None:
+        if kwargs.get("commission_id") is None and not refused:
+            refused.append(kwargs)
+            raise RuntimeError("the ledger is locked")
+        await add(**kwargs)
+
+    host.ledger.add_usage = not_the_hosts_own_at_first
+    try:
+        task = manager._spawn(manager._idle_compact(first.id))
+        assert await asyncio.wait_for(task, 10) is True
+        monkeypatch.setattr(settings, "TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS", 30.0)
+        # The one request the host made by itself: no other of this session and of no commission
+        # comes after it. Written when the session is given back.
+        await wait_until(lambda: refused and manager._usage_owed == {}, what="what was owed being written")
+    finally:
+        host.ledger.add_usage = add
+    after = await host.ledger.get_session(first.id)
+    assert len(refused) == 1
+    assert (after.requests - before.requests, after.tokens - before.tokens) == (1, 7_060)

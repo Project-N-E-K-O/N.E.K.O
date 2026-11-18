@@ -544,8 +544,10 @@ class TaskAgentManager:
         self._fork_dirs: dict[str, str] = {}
         # What requests used that the ledger did not take when it was to be
         # written, by session and commission (requests, input, output,
-        # cache reads, cache writes): written with the next one.
-        self._usage_owed: dict[tuple[str, str | None], tuple[int, int, int, int, int]] = {}
+        # cache reads, cache writes, and how long the conversation was as
+        # of the last of them that said so): written with the next one,
+        # when the session is let go of, or when the host shuts down.
+        self._usage_owed: dict[tuple[str, str | None], tuple[int, int, int, int, int, int | None]] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -726,19 +728,23 @@ class TaskAgentManager:
             try:
                 commission = await self._give_session(commission)
             except asyncio.CancelledError:
+                self._excerpts.pop(commission.id, None)
                 raise
             except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
                 logger.warning("giving commission %s a session failed: %s", commission.id, exc)
                 self._candidates.pop(commission.id, None)
+                self._excerpts.pop(commission.id, None)
                 await self._fail(commission.id, f"the task agent could not be started: {exc}")
                 return False
         if self._closed:
             self._candidates.pop(commission.id, None)
+            self._excerpts.pop(commission.id, None)
             self._session_of.pop(commission.id, None)
             await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
             return False
         self._new_work_in(self._session_of.get(commission.id), stops)
         # Up to when it was filed, which is when the sentence was dispatched.
+        # (Kept then already for one that was filed by the task brain.)
         self._keep_excerpt(commission, upto=commission.created_at)
         if not self._take_place(commission.id):
             if not wait:
@@ -887,6 +893,21 @@ class TaskAgentManager:
         # After the cap above and with one of its own (``SPACE_BRIEF_MAX_TOKENS``):
         # neither part can push the other out.
         return own + "\n\n" + kept if kept else own
+
+    def note_filed(self, commission: Commission) -> None:
+        """Keep what she and the user said just before a commission that was filed this moment.
+
+        For the task agent that may take it. Who does it is chosen
+        next, which takes a model request, and what is said meanwhile
+        pushes what was said before out of what is kept of the main
+        dialogue. Dropped again when no task agent takes the
+        commission (``drop_excerpt``).
+        """
+        self._keep_excerpt(commission, upto=commission.created_at)
+
+    def drop_excerpt(self, commission_id: str) -> None:
+        """Drop what ``note_filed`` kept for a commission that no task agent takes."""
+        self._excerpts.pop(commission_id, None)
 
     def _keep_excerpt(self, commission: Commission, *, upto: float | None = None) -> None:
         """Keep what she and the user said just before a commission, until its session is opened.
@@ -1723,6 +1744,8 @@ class TaskAgentManager:
             self._usage_settled(commission)
         if self._queue:
             self._spawn(self._start_next())
+        # What its requests used that the ledger did not take is tried again.
+        self._settle_usage_of(session_id)
         # Nothing is at work in it from here on: when that lasts, and the
         # host is set to, its conversation is summed up.
         self._schedule_idle_compact(session_id)
@@ -2186,36 +2209,84 @@ class TaskAgentManager:
             value = event.get(key)
             return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
-        # With what could not be written before, for the same session and
-        # commission: the account catches up once the ledger takes it.
-        key = (session_id, commission_id)
-        owed = self._usage_owed.pop(key, (0, 0, 0, 0, 0))
-        amounts = (
-            owed[0] + 1,
-            owed[1] + number("input"),
-            owed[2] + number("output"),
-            owed[3] + number("cache_read"),
-            owed[4] + number("cache_write"),
+        await self._write_usage(
+            (session_id, commission_id),
+            (1, number("input"), number("output"), number("cache_read"), number("cache_write")),
+            # Nothing is said of the conversation's length by the request
+            # that summed it up.
+            number("context_tokens") or None,
         )
+
+    async def _write_usage(
+        self, key: tuple[str, str | None], amounts: tuple[int, int, int, int, int], context: int | None
+    ) -> None:
+        """Write what requests used, with what the ledger did not take before for the same session and commission.
+
+        The account catches up once the ledger takes it. The writing is
+        a task of its own, carried through whatever becomes of whoever
+        waits for it: the ledger writes in a thread, which a
+        cancellation does not stop, so only what sees how the writing
+        ended can tell whether it is still owed. Put down as owed by
+        whoever was cancelled, what was written all the same would be
+        written a second time.
+        """
+        owed = self._usage_owed.pop(key, None)
+        if owed is not None:
+            amounts = (
+                amounts[0] + owed[0],
+                amounts[1] + owed[1],
+                amounts[2] + owed[2],
+                amounts[3] + owed[3],
+                amounts[4] + owed[4],
+            )
+            # As of the latest request that said how long it was.
+            context = context or owed[5]
+        await asyncio.shield(self._spawn(self._usage_written(key, amounts, context)))
+
+    async def _usage_written(
+        self, key: tuple[str, str | None], amounts: tuple[int, int, int, int, int], context: int | None
+    ) -> None:
         try:
             await self._ledger.add_usage(
-                session_id=session_id,
-                commission_id=commission_id,
+                session_id=key[0],
+                commission_id=key[1],
                 requests=amounts[0],
                 tokens_in=amounts[1],
                 tokens_out=amounts[2],
                 cache_read=amounts[3],
                 cache_write=amounts[4],
-                # Nothing is said of the conversation's length by the
-                # request that summed it up.
-                context_tokens=number("context_tokens") or None,
+                context_tokens=context,
             )
-        except asyncio.CancelledError:
-            self._usage_owed[key] = amounts
-            raise
         except Exception:  # noqa: BLE001 - what was used is for showing and for the limit; the work goes on
-            logger.warning("writing down what a model request used failed; written with the next", exc_info=True)
-            self._usage_owed[key] = amounts
+            logger.warning("writing down what a model request used failed; written later", exc_info=True)
+            # With what came to be owed meanwhile, which is the newer.
+            later = self._usage_owed.get(key, (0, 0, 0, 0, 0, None))
+            self._usage_owed[key] = (
+                amounts[0] + later[0],
+                amounts[1] + later[1],
+                amounts[2] + later[2],
+                amounts[3] + later[3],
+                amounts[4] + later[4],
+                later[5] or context,
+            )
+
+    def _settle_usage_of(self, session_id: str) -> None:
+        """Have what is owed of a session's usage written, now that nothing is at work in it.
+
+        Without this it would be written only with the next request of
+        the same session and commission, and the last request of a
+        commission has none after it. Tried once; what the ledger does
+        not take this time either stays owed, and the host tries once
+        more when it shuts down.
+        """
+        if not self._closed and any(key[0] == session_id for key in self._usage_owed):
+            self._spawn(self._write_owed_usage(session_id))
+
+    async def _write_owed_usage(self, session_id: str | None = None) -> None:
+        """Try once to write what is owed of one session's usage, or of every session's."""
+        for key in [key for key in self._usage_owed if session_id is None or key[0] == session_id]:
+            if key in self._usage_owed:
+                await self._write_usage(key, (0, 0, 0, 0, 0), None)
 
     async def _on_usage(self, session: _Session, event: dict[str, Any]) -> None:
         """Count one model request; a commission whose quota is used up fails.
@@ -3516,19 +3587,34 @@ class TaskAgentManager:
         # the copy would not be found among the session's copies, which
         # go when it does, and would keep what the session no longer has.
         self._copying_from[source_session_id] = self._copying_from.get(source_session_id, 0) + 1
+        registering: asyncio.Task[Session] | None = None
         try:
-            return await self._fork(source_session_id, name=name, upto=upto)
+            registering = await self._fork(source_session_id, name=name, upto=upto)
         finally:
-            left = self._copying_from[source_session_id] - 1
-            if left > 0:
-                self._copying_from[source_session_id] = left
-            else:
-                del self._copying_from[source_session_id]
+            if registering is None:
+                # Not written, or no longer waited for.
+                self._copied_from(source_session_id)
+        # The copy is written. Putting it on record is a task of its own,
+        # which lets go of the session it was made from when it is through.
+        # Whoever asked may be cancelled meanwhile, and hears of that at
+        # once; the record of that session is still not removed under a
+        # copy that is on no record yet.
+        return await asyncio.shield(registering)
 
-    async def _fork(self, source_session_id: str, *, name: str | None, upto: str | None) -> Session:
-        """Make the copy ``fork_session`` returns; the session it is made from is held by the caller."""
-        import shutil
+    def _copied_from(self, source_session_id: str) -> None:
+        """Let go of a session a copy was being made from (of this copy's share in it, if there are several)."""
+        left = self._copying_from[source_session_id] - 1
+        if left > 0:
+            self._copying_from[source_session_id] = left
+        else:
+            del self._copying_from[source_session_id]
 
+    async def _fork(self, source_session_id: str, *, name: str | None, upto: str | None) -> "asyncio.Task[Session]":
+        """Have the runtime write the copy ``fork_session`` returns; returns the task that puts it on record.
+
+        The session it is made from is held by the caller until this
+        returns or raises, and by that task from then on.
+        """
         from config.nekoclaw_settings import TASK_AGENT_FORK_SECONDS
 
         source = await self._ledger.get_session(source_session_id)
@@ -3572,30 +3658,51 @@ class TaskAgentManager:
             self._fork_dirs.pop(session_id, None)
         if event.get("type") != "forked":
             raise ForkRefused(str(event.get("message") or "the runtime could not copy the session"))
+        # With no await since the runtime's word was taken: nothing comes
+        # between the copy being written and its being put on record.
+        registering = self._spawn(
+            self._put_fork_on_record(
+                source, session_id, target_dir, name=name, forked_at=str(event.get("upto") or "") or None
+            )
+        )
+        # What it fails with is read here, should whoever asked have left.
+        registering.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return registering
+
+    async def _put_fork_on_record(
+        self, source: Session, session_id: str, target_dir: Any, *, name: str | None, forked_at: str | None
+    ) -> Session:
+        """Put a copy the runtime has written on record, and let go of the session it was made from.
+
+        All of it, whatever becomes of whoever asked for the copy: the
+        copy is written, and without its row nothing would find it;
+        when the row cannot be written, what was written is removed
+        (the runtime is through with it: it said so); and only then is
+        the session it was made from let go of.
+        """
+        import shutil
+
         try:
-            # Carried through whatever becomes of whoever asked: the copy
-            # is written, and without its row nothing would find it.
-            return await asyncio.shield(
-                self._ledger.create_session(
-                    id=session_id,
-                    name=name or f"{source.name}/fork",
-                    lanlan_name=source.lanlan_name,
-                    kind="fork",
-                    project=source.project,
-                    workdir=source.workdir,
-                    session_dir=str(target_dir),
-                    runtime=RUNTIME_BUILTIN,
-                    forked_from=source.id,
-                    forked_at=str(event.get("upto") or "") or None,
-                    status="closed",
-                )
+            return await self._ledger.create_session(
+                id=session_id,
+                name=name or f"{source.name}/fork",
+                lanlan_name=source.lanlan_name,
+                kind="fork",
+                project=source.project,
+                workdir=source.workdir,
+                session_dir=str(target_dir),
+                runtime=RUNTIME_BUILTIN,
+                forked_from=source.id,
+                forked_at=forked_at,
+                status="closed",
             )
         except Exception as exc:  # noqa: BLE001 - told as a copy that was not made
-            # Written, and not on record: nothing would ever come by it to
-            # remove it. The runtime is through with it (it said so).
+            # Written, and not on record: nothing would ever come by it to remove it.
             logger.warning("a copied session could not be put on record; what was copied is removed", exc_info=True)
-            await asyncio.shield(asyncio.to_thread(shutil.rmtree, target_dir, True))
+            await asyncio.to_thread(shutil.rmtree, target_dir, True)
             raise ForkRefused(f"the copy could not be put on record: {exc}") from exc
+        finally:
+            self._copied_from(source.id)
 
     # -- summing up idle sessions -------------------------------------------
 
@@ -3732,6 +3839,15 @@ class TaskAgentManager:
         within_the_day = sum(1 for at in self._idle_compacted_at if now - at < 24 * 3600.0)
         return within_the_day + self._idle_compacts_under_way < TASK_AGENT_IDLE_COMPACTS_PER_DAY
 
+    def _is_switched_on(self) -> bool:
+        """Whether NekoClaw is switched on, as far as this was told how to find out; a switch that cannot be read is off."""
+        if self._switched_on is None:
+            return True
+        try:
+            return bool(self._switched_on())
+        except Exception:  # noqa: BLE001 - an unreadable switch counts as off
+            return False
+
     def _idle_now(self, session_id: str) -> bool:
         """Whether nothing is at work in a session, or on its way to be, and nothing else has claimed it."""
         return not self._closed and not self._in_use(session_id)
@@ -3767,12 +3883,8 @@ class TaskAgentManager:
         if stops is not None and stops != self._idle_stops:
             # Everything was stopped between the timer and this.
             return False
-        if self._switched_on is not None:
-            try:
-                if not self._switched_on():
-                    return False
-            except Exception:  # noqa: BLE001 - an unreadable switch counts as off
-                return False
+        if not self._is_switched_on():
+            return False
         task = asyncio.current_task()
         assert task is not None
         # Claimed before anything is awaited: a commission that takes the
@@ -3855,6 +3967,11 @@ class TaskAgentManager:
                     event = await events.get()
                     kind = event.get("type")
                     if kind == "started" and not asked:
+                        if not self._is_switched_on():
+                            # Switched off while the session was being
+                            # opened: the host asks nothing of a model
+                            # by itself, and nothing is charged.
+                            return
                         # Charged here, when the request is about to be
                         # made, and not before the session was marked
                         # and opened: nothing is charged for a summing
@@ -3949,6 +4066,8 @@ class TaskAgentManager:
                 del self._compacting[session_id]
             if self._idle_over.get(session_id) is asyncio.current_task():
                 del self._idle_over[session_id]
+            # What the request that summed it up used, should the ledger not have taken it.
+            self._settle_usage_of(session_id)
             if too_early is not None and stops == self._idle_stops and self._idle_now(session_id):
                 # A little more than what is left, so that it is not a
                 # moment early once more.
@@ -4080,3 +4199,11 @@ class TaskAgentManager:
         if pump is not None:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
+        if self._usage_owed:
+            # What requests used that the ledger did not take: tried once
+            # more before it is lost with the host. Not waited for longer
+            # than a start is.
+            try:
+                await asyncio.wait_for(self._write_owed_usage(), _SHUTDOWN_START_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("what model requests used could not be written before the host shut down")

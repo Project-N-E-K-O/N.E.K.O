@@ -1072,3 +1072,47 @@ async def test_a_tool_called_in_place_of_a_summary_is_a_summary_that_failed(tmp_
         assert session._compactions == 1
     finally:
         await session.close()
+
+
+# ---------------------------------------------------------------------------
+# What the fifth round of review found
+# ---------------------------------------------------------------------------
+
+
+async def test_nothing_is_left_of_a_copy_whose_record_could_not_be_put_in_its_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from nekoclaw.runtime.snapshot import SYSTEM_FILE
+
+    spec = make_spec(tmp_path, model=_small_model())
+    llm = ScriptedLLM()
+    session, events = await open_session(spec, llm)
+    try:
+        await _seed(session, events, llm)
+    finally:
+        await session.close()
+    source = Path(spec.session_dir)
+    assert read_snapshot(source) is not None
+    target = tmp_path / "sessions" / "copy"
+    replace = os.replace
+
+    def refused(src: Any, dst: Any, *args: Any, **kwargs: Any) -> None:
+        # The record, written under another name first, cannot be given its own.
+        if str(src).endswith(".partial"):
+            raise OSError("the file is in use")
+        replace(src, dst, *args, **kwargs)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "replace", refused)
+        with pytest.raises(ForkError, match="could not be put in its place"):
+            fork_record(source, target)
+    # Neither the record, nor the snapshot that was written for it this time, nor what it was written under first.
+    assert not target.exists() or [path.name for path in target.iterdir()] == []
+
+    # Made again when the other session's snapshot can no longer be read, the copy has none, and
+    # puts its own together when it is opened: it is not handed the one of the copy that failed.
+    (source / SYSTEM_FILE).unlink()
+    assert fork_record(source, target).entries > 0
+    assert read_snapshot(target) is None and not (target / SYSTEM_FILE).exists()
