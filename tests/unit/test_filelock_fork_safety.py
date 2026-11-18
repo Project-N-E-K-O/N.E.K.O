@@ -71,6 +71,24 @@ def test_recent_file_cached_lock_works_after_fork(tmp_path):
         pass
 
 
+def _recent_child_uses_lock_object(lock):
+    if not lock.acquire(timeout=5):
+        raise SystemExit(2)
+    lock.release()
+
+
+def test_recent_file_lock_outside_cache_works_after_fork(tmp_path, monkeypatch):
+    """A lock a caller still holds after it left the cache is rebuilt too."""
+    lock = recent_file.recent_file_lock(tmp_path / 'Role' / 'recent.json')
+    with lock:
+        pass
+    monkeypatch.setattr(recent_file, '_LOCKS', {})
+
+    assert _run_in_fork_child(_recent_child_uses_lock_object, lock) == 0
+    with lock:
+        pass
+
+
 def test_recent_file_fork_child_respects_parent_hold(tmp_path):
     path = tmp_path / 'Role' / 'recent.json'
     lock = recent_file.recent_file_lock(path)
@@ -113,6 +131,24 @@ def test_chat_sync_writer_cached_lock_works_after_fork(tmp_path):
 
     assert _run_in_fork_child(_writer_child_uses_cached_lock, directory) == 0
     with writer.locked():
+        pass
+
+
+def _writer_child_uses_writer_object(writer):
+    with writer.locked():
+        pass
+
+
+def test_chat_sync_writer_replaced_in_registry_works_after_fork(tmp_path):
+    """A runtime may still hold a writer a newer one replaced in the registry."""
+    directory, replaced = _new_writer(tmp_path)
+    with replaced.locked():
+        pass
+    _, current = _new_writer(tmp_path)
+    assert chat_sync_writer.registered_writer(directory) is current
+
+    assert _run_in_fork_child(_writer_child_uses_writer_object, replaced) == 0
+    with replaced.locked():
         pass
 
 
