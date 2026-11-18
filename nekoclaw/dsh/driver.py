@@ -41,8 +41,9 @@ runtime. What a host can count on, and where dsh makes it differ:
   tool of the host's gateway, asked before the call because dsh ends such
   a call after a minute, and ``other`` for a tool the driver does not know
   (one a dsh plugin brought).
-* **What the host tells a session** (``TaskAgentSpec.instructions``, the
-  language to answer in) is the head of the session's first message; dsh
+* **What the host tells a session** (``TaskAgentSpec.instructions``, and
+  that the language to write to the user in is named by each commission's
+  opening message) is the head of the session's first message; dsh
   has one system prompt for all its sessions. A session takes several
   commissions, one after the other, and is resumed for each: what it was
   told at first is in dsh's record of it and is not told again, as a

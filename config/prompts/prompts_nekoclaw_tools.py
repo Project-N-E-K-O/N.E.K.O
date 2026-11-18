@@ -579,8 +579,8 @@ DSH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                 'description': {
                     'type': 'string',
                     'description': (
-                        'A short (3-5 word) description of the delegated task, for display. '
-                        "Use the language of the user's current request."
+                        'A short (3-5 word) description of the delegated task, for display, in '
+                        'the language the current commission names for the user.'
                     ),
                 },
                 'name': {
