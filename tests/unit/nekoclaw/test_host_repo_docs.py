@@ -833,7 +833,9 @@ async def test_a_task_agent_starts_without_the_list_when_no_thread_can_be_starte
     root = _repository(tmp_path, {"AGENTS.md": "a"})
 
     def no_thread(work: Any, *, name: str) -> Any:
-        raise RuntimeError("can't start new thread")
+        from nekoclaw.host.detached import NoThread
+
+        raise NoThread("can't start new thread")
 
     monkeypatch.setattr("nekoclaw.host.detached.run_detached", no_thread)
     llm = ScriptedLLM([_report()])

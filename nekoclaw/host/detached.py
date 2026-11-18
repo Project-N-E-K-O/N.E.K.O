@@ -34,6 +34,10 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
+class NoThread(RuntimeError):
+    """No thread could be started for the work: it was not begun."""
+
+
 def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
     """Run blocking work in a thread of its own; return a future of what it returns or raises.
 
@@ -51,7 +55,7 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
     (``SystemExit``), a RuntimeError that says it ended without a
     result, while that goes on its way in the thread.
 
-    Raises RuntimeError when no thread can be started.
+    Raises ``NoThread`` when no thread can be started.
     """
     loop = asyncio.get_running_loop()
     done: asyncio.Future[T] = loop.create_future()
@@ -85,8 +89,16 @@ def run_detached(work: Callable[[], T], *, name: str) -> asyncio.Future[T]:
                 # The loop is closed: nobody waits for it any more.
                 pass
 
-    threading.Thread(target=run, name=name, daemon=True).start()
+    _start(threading.Thread(target=run, name=name, daemon=True))
     return done
+
+
+def _start(thread: threading.Thread) -> None:
+    try:
+        thread.start()
+    except RuntimeError as exc:
+        # Told apart from what the work itself may raise.
+        raise NoThread(str(exc)) from exc
 
 
 def wait_detached(work: Callable[[], T], *, name: str, seconds: float) -> T:
@@ -95,22 +107,29 @@ def wait_detached(work: Callable[[], T], *, name: str, seconds: float) -> T:
     For a caller that is not on the event loop and holds something
     others wait for (work under a lock, in a worker thread): it gets on
     after ``seconds`` whatever the work does. Returns what the work
-    returns and raises what it raises. Raises TimeoutError when it has
-    not come back by then; it goes on in its thread, a daemon thread
-    like that of ``run_detached``.
+    returns and raises what it raises; when the work was ended by
+    something that is no ``Exception`` (``SystemExit``), a RuntimeError
+    that says it ended without a result. Raises TimeoutError when it
+    has not come back by then; it goes on in its thread, a daemon
+    thread like that of ``run_detached``.
 
-    Raises RuntimeError when no thread can be started.
+    Raises ``NoThread`` when no thread can be started.
     """
     came: list[tuple[T | None, Exception | None]] = []
 
     def run() -> None:
+        # What whoever waits is told when the work is ended by something
+        # that is no ``Exception``: it has come back, and is not at it.
+        outcome: tuple[T | None, Exception | None] = (None, RuntimeError("the work ended without a result"))
         try:
-            came.append((work(), None))
+            outcome = (work(), None)
         except Exception as exc:  # noqa: BLE001 - raised for whoever waits for it
-            came.append((None, exc))
+            outcome = (None, exc)
+        finally:
+            came.append(outcome)
 
     thread = threading.Thread(target=run, name=name, daemon=True)
-    thread.start()
+    _start(thread)
     thread.join(seconds)
     if not came:
         raise TimeoutError(f"{name} has not come back")

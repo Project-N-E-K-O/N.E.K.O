@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from nekoclaw.host.detached import run_detached, wait_detached
+from nekoclaw.host.detached import NoThread, run_detached, wait_detached
 
 
 async def test_what_the_work_returns_is_handed_back():
@@ -101,8 +101,11 @@ def test_a_thread_that_cannot_be_started_is_told_at_once(monkeypatch):
     async def started() -> None:
         with monkeypatch.context() as patched:
             patched.setattr(threading.Thread, "start", no_start)
-            with pytest.raises(RuntimeError, match="can't start new thread"):
+            # Told as what it is, apart from anything the work itself may raise.
+            with pytest.raises(NoThread, match="can't start new thread"):
                 run_detached(lambda: None, name="nekoclaw-test")
+            with pytest.raises(NoThread, match="can't start new thread"):
+                wait_detached(lambda: None, name="nekoclaw-test", seconds=30)
 
     loop = asyncio.new_event_loop()
     try:
@@ -159,8 +162,17 @@ def test_what_work_waited_for_in_a_thread_returns_or_raises_is_handed_on():
         wait_detached(failing, name="nekoclaw-test-wait", seconds=30)
 
 
-def test_work_waited_for_in_a_thread_is_given_up_on_when_its_time_is_up_and_goes_on():
+def test_work_waited_for_in_a_thread_is_given_up_on_when_its_time_is_up_and_goes_on(monkeypatch):
     release, over = threading.Event(), threading.Event()
+    waited: list[Any] = []
+    join = threading.Thread.join
+
+    def watched(self: threading.Thread, timeout: Any = None) -> None:
+        if self.name == "nekoclaw-test-wait":
+            waited.append(timeout)
+        join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", watched)
 
     def work() -> None:
         release.wait(120)
@@ -173,3 +185,18 @@ def test_work_waited_for_in_a_thread_is_given_up_on_when_its_time_is_up_and_goes
     finally:
         release.set()
     assert over.wait(30)
+    # Waited for as long as it was told to, and no longer.
+    assert waited == [0.05]
+
+
+def test_work_waited_for_in_a_thread_that_is_ended_by_something_that_is_no_exception_is_not_taken_to_be_at_it(monkeypatch):
+    ended: list[Any] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: ended.append(args.exc_type))
+
+    def work() -> None:
+        raise SystemExit(3)
+
+    # It came back, so it is not given up on as if its time were up; and what ended it is not raised here.
+    with pytest.raises(RuntimeError, match="the work ended without a result"):
+        wait_detached(work, name="nekoclaw-test-wait", seconds=30)
+    assert ended == [SystemExit]

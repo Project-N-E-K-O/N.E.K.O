@@ -884,7 +884,7 @@ class TaskAgentManager:
 
         from config.nekoclaw_settings import REPO_DOCUMENTS_SCAN_SECONDS, REPO_DOCUMENTS_SCANS_AT_ONCE
         from nekoclaw.host import repo_docs
-        from nekoclaw.host.detached import run_detached
+        from nekoclaw.host.detached import NoThread, run_detached
         from nekoclaw.runtime.permissions import is_inside
 
         def look() -> str:
@@ -915,7 +915,7 @@ class TaskAgentManager:
         self._document_scans += 1
         try:
             scan = run_detached(look, name="nekoclaw-repo-documents")
-        except RuntimeError:
+        except NoThread:
             # No thread could be started for it: nothing is under way.
             self._document_scans -= 1
             logger.warning("no thread could be started to list the files a repository keeps for agents")
