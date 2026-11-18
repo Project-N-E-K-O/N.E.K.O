@@ -42,24 +42,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import contextlib
+import uuid
 from pathlib import Path
+from urllib.parse import unquote
 from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
-from starlette.datastructures import FormData, UploadFile
-from starlette.formparsers import MultiPartParser
+from fastapi.responses import JSONResponse, FileResponse
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartParser, MultiPartException
 
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
+from knowledge.models import KnowledgePackError
 from knowledge.subscriptions import (
     SUBSCRIPTION_PROTOCOL_VERSION,
-    KnowledgeSubscription,
     SubscriptionError,
     parse_expected_identity,
     parse_releases,
     parse_subscription_json,
 )
-from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES
+from utils.http.knowledge_proxy import JSON_BODY_MAX_BYTES, PACK_BODY_MAX_BYTES, SOURCE_BODY_MAX_BYTES, capped_body, BodyTooLarge
 
 from ._shared import logger
 
@@ -111,6 +114,16 @@ class _SharedEmbedder:
     def model_id(self) -> str | None:
         return self._service.model_id() if self._service is not None else None
 
+    def spec(self) -> dict | None:
+        """Read exact local identity off-loop without requesting model loading."""
+        method = getattr(self._service, "spec", None)
+        return method() if callable(method) else None
+
+    def count_tokens(self, texts: list[str]) -> list[int] | None:
+        """Count complete inputs off-loop with the owner's untruncated tokenizer."""
+        method = getattr(self._service, "count_tokens", None)
+        return method(texts) if callable(method) else None
+
     # Knowledge only borrows the loaded model: an inference error on its
     # (third-party) text fails that call alone and never disables vectors
     # for memory; the indexer's own attempt count handles retries.
@@ -118,6 +131,24 @@ class _SharedEmbedder:
         if self._service is None:
             return None
         return await self._service.embed(text, sticky_failure=False)
+
+    async def embed_query(self, text: str) -> list[float] | None:
+        """Interactive lookup always uses foreground admission."""
+        return await self.embed(text)
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float] | None]:
+        """Index every knowledge source through the same deferred background lane."""
+        if self._service is None:
+            return [None] * len(texts)
+        method = getattr(self._service, "embed_documents", None)
+        if not callable(method):
+            return [None] * len(texts)
+        vectors = await method(texts, sticky_failure=False)
+        if len(texts) > 1 and all(vector is None for vector in vectors) and self._service.is_available():
+            # Isolate genuine bad rows, but keep every retry in the background
+            # lane. EmbedDeferred propagates before the indexer charges attempts.
+            vectors = [(await method([text], sticky_failure=False))[0] for text in texts]
+        return vectors
 
     async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
         if self._service is None:
@@ -160,7 +191,7 @@ async def start_knowledge_runtime(knowledge_root: Path) -> None:
         _service = service
         await service.start()
     except Exception as exc:
-        logger.warning("[Knowledge] runtime start failed: %s", type(exc).__name__, exc_info=True)
+        logger.warning("[Knowledge] runtime start failed: %s", type(exc).__name__)
 
 
 def spawn_knowledge_runtime(knowledge_root: Path) -> None:
@@ -208,8 +239,12 @@ async def _call(
         payload = await func(service)
     except KnowledgeUnavailable as exc:
         return {"ok": False, "reason": exc.reason, **service.availability()}
+    except KnowledgePackError as exc:
+        return {"ok": False, "reason": exc.reason, **service.availability()}
     except Exception as exc:
-        logger.warning("[Knowledge] request failed: %s", type(exc).__name__, exc_info=True)
+        # Parser/storage exceptions can carry private text or filenames in
+        # their message and chained cause; diagnostics retain only the type.
+        logger.warning("[Knowledge] request failed: %s", type(exc).__name__)
         return _failure("knowledge_error", 500)
     # ``payload`` may carry its own ``ok`` (a refused cancel, a rejected pack).
     return {"ok": True, **payload, **service.availability()}
@@ -344,13 +379,16 @@ async def knowledge_status():
 
 @router.get("/entries")
 async def knowledge_entries(
-    # Not limited here: the service cuts the search to its maximum, so a long
-    # pasted text still gets a normal answer instead of a validation error.
-    query: str = Query(default=""),
+    request: Request,
     pack_id: str = Query(default="", max_length=64),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=20_000),
 ):
+    # The service bounds decoded search text; private input never belongs in URLs.
+    try:
+        query = unquote(request.headers.get("x-knowledge-query", ""), errors="strict")
+    except UnicodeError:
+        return _failure("invalid_request", 400)
     return await _call(
         lambda svc: svc.list_entries(query=query, pack_id=pack_id, limit=limit, offset=offset)
     )
@@ -358,9 +396,16 @@ async def knowledge_entries(
 
 @router.get("/entry")
 async def knowledge_entry(
+    request: Request,
     pack_id: str = Query(..., min_length=2, max_length=64),
-    title: str = Query(..., min_length=1, max_length=500),
 ):
+    # Titles include source filenames, so they arrive only in the explicit header.
+    try:
+        title = unquote(request.headers.get("x-knowledge-title", ""), errors="strict")
+    except UnicodeError:
+        return _failure("invalid_request", 400)
+    if not 1 <= len(title) <= 500:
+        return _failure("invalid_request", 400)
     return await _call(lambda svc: svc.get_entry(pack_id, title))
 
 
@@ -399,64 +444,100 @@ async def knowledge_settings(request: Request):
     return await _call(lambda svc: svc.set_enabled(payload["enabled"]))
 
 
-async def _parse_form(request: Request, body: bytes) -> FormData | None:
-    """Parse an already size-capped ``multipart/form-data`` body: one file, a few small fields."""
+async def _streamed_pack_import(request: Request, service: KnowledgeService, *, subscribed: bool = False):
+    """Spool bounded input to disk and retain ownership through cancellation.
 
-    async def stream():
-        yield body
-
-    try:
-        return await MultiPartParser(
-            request.headers, stream(), max_files=1, max_fields=8,
-            max_part_size=_JSON_BODY_MAX_BYTES,
-        ).parse()
-    except Exception:
-        return None
-
-
-async def _pack_from_multipart(request: Request, body: bytes) -> bytes | None:
-    """Return the uploaded file of a ``multipart/form-data`` import body.
-
-    The ``pack`` field wins; otherwise the only uploaded file is used.
+    The browser-facing proxies already stream bytes. Multipart files use
+    Starlette's disk spool; a bounded copy gives the import worker a stable
+    pathname, rather than materializing a 64 MiB ZIP in a bytes object.
     """
-    form = await _parse_form(request, body)
-    if form is None:
-        return None
+    async def owned():
+        folder = service.root / ".staging"
+        await service._thread(folder.mkdir, parents=True, exist_ok=True)
+        path = folder / (uuid.uuid4().hex + ".upload")
+        form = None
+        try:
+            subscription = None
+            if _media_type(request) == "multipart/form-data":
+                form = await MultiPartParser(
+                    request.headers, capped_body(request, _PACK_BODY_MAX_BYTES),
+                    max_files=1, max_fields=8, max_part_size=_JSON_BODY_MAX_BYTES,
+                ).parse()
+                uploads = [value for value in form.values() if isinstance(value, UploadFile)]
+                upload = form.get("pack") if isinstance(form.get("pack"), UploadFile) else None
+                # Keep the subscription transport's explicit pack field;
+                # only ordinary local imports accept a sole unnamed file.
+                if not subscribed:
+                    upload = upload or (uploads[0] if len(uploads) == 1 else None)
+                if upload is None:
+                    return _failure("invalid_request", 400)
+                if subscribed:
+                    if form.get("protocol_version") != str(SUBSCRIPTION_PROTOCOL_VERSION):
+                        return _failure("unsupported_protocol", 400)
+                    metadata = form.get("subscription")
+                    if not isinstance(metadata, str):
+                        return _failure("invalid_request", 400)
+                    try:
+                        subscription = parse_subscription_json(metadata)
+                    except SubscriptionError as error:
+                        return _failure(error.reason, 400)
+
+                async def blocks():
+                    while chunk := await upload.read(64 * 1024):
+                        yield chunk
+            else:
+                blocks = lambda: capped_body(request, _PACK_BODY_MAX_BYTES)
+            handle = await service._thread(path.open, "xb")
+            try:
+                async for chunk in blocks():
+                    await service._thread(handle.write, chunk)
+            finally:
+                await service._thread(handle.close)
+            # Local JSON/ZIP can contain private personal material just like
+            # source documents. Only verified market subscriptions retain the
+            # existing opt-in policy of the subscription transport.
+            options = None if subscribed else {"origin": "imported", "enabled": False}
+            return await _call(lambda svc: svc.import_pack(path, subscription=subscription, _options=options))
+        except BodyTooLarge:
+            return _failure("pack_too_large", 413)
+        except (ValueError, OSError, MultiPartException):
+            return _failure("invalid_request", 400)
+        finally:
+            if form is not None:
+                await form.close()
+            with contextlib.suppress(OSError):
+                await service._thread(path.unlink, missing_ok=True)
+
+    # A disconnected caller cannot delete the spool while a native parser or
+    # admission thread still reads it. Drain the actual owner before cleanup.
+    task = asyncio.create_task(owned())
     try:
-        uploads = [value for value in form.values() if isinstance(value, UploadFile)]
-        upload = form.get("pack") if isinstance(form.get("pack"), UploadFile) else None
-        upload = upload or (uploads[0] if len(uploads) == 1 else None)
-        return await upload.read() if upload is not None else None
-    finally:
-        await form.close()
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if task.done() and not task.cancelled():
+            task.exception()
+        raise
 
 
 @router.post("/packs/import")
 async def knowledge_import_pack(request: Request):
-    """Import a pack sent as the raw JSON body or as a multipart file upload."""
+    """Import unchanged v1 JSON or a bounded v2 ZIP through the same pack path."""
     service = _service
     if service is None:
         return _failure("knowledge_starting", 503)
-    # The most destructive write takes only the two types its callers send,
-    # never a CORS-simple text/plain body.
-    media_type = _media_type(request)
-    if media_type not in ("application/json", "multipart/form-data"):
+    if _media_type(request) not in {"application/json", "application/zip", "application/octet-stream", "multipart/form-data"}:
         return _failure("invalid_request", 400)
-    # A body up to the pack limit is read into memory: refuse before reading
-    # when imports are already full, and never buffer more bodies than the
-    # service would take.
     if _import_slots.locked() or service.import_busy():
         return {"ok": False, "reason": "knowledge_busy", **service.availability()}
-    # Not locked, so this acquires without waiting.
     async with _import_slots:
-        raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
-        if raw is None:
-            return _failure("pack_too_large", 413)
-        if media_type == "multipart/form-data":
-            raw = await _pack_from_multipart(request, raw)
-            if raw is None:
-                return _failure("invalid_request", 400)
-        return await _call(lambda svc: svc.import_pack(raw))
+        return await _streamed_pack_import(request, service)
 
 
 @router.post("/packs/jobs/cancel")
@@ -485,6 +566,16 @@ async def knowledge_discard_job(request: Request):
     return await _call(run)
 
 
+@router.post("/packs/jobs/retry")
+async def knowledge_retry_job(request: Request):
+    """Retry the retained task input; the client cannot substitute source text."""
+    payload = await _json_object(request)
+    job_id = payload.get("job_id") if payload else None
+    if not isinstance(job_id, str) or not job_id:
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.retry_job(job_id))
+
+
 @router.post("/entry/disabled")
 async def knowledge_entry_disabled(request: Request):
     payload = await _json_object(request)
@@ -506,6 +597,92 @@ async def knowledge_pack_auto_context(request: Request):
     if payload is None or not _pack_id(payload) or not isinstance(payload.get("enabled"), bool):
         return _failure("invalid_request", 400)
     return await _call(lambda svc: svc.set_pack_auto_context(_pack_id(payload), payload["enabled"]))
+
+
+@router.post("/packs/enabled")
+async def knowledge_pack_enabled(request: Request):
+    """Apply participation policy to every pack origin, independently of indexing."""
+    payload = await _json_object(request)
+    if payload is None or not _pack_id(payload) or not isinstance(payload.get("enabled"), bool):
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.set_pack_enabled(_pack_id(payload), payload["enabled"]))
+
+
+@router.get("/sources")
+async def knowledge_sources(pack_id: str = Query(...)):
+    return await _call(lambda svc: svc.list_sources(pack_id))
+
+
+@router.get("/sources/versions")
+async def knowledge_source_versions(pack_id: str = Query(...), doc_id: str = Query(...)):
+    return await _call(lambda svc: svc.source_versions(pack_id, doc_id))
+
+
+@router.post("/sources/preview")
+async def knowledge_source_preview(request: Request, pack_id: str = "", doc_id: str = ""):
+    """Keep private names in headers rather than ordinary HTTP access-log URLs."""
+    if _media_type(request) != "application/octet-stream":
+        return _failure("invalid_request", 400)
+    if _import_slots.locked():
+        return _failure("knowledge_busy", 429)
+    try:
+        filename = unquote(request.headers.get("x-knowledge-filename", ""), errors="strict")
+        name = unquote(request.headers.get("x-knowledge-name", ""), errors="strict")
+    except UnicodeError:
+        return _failure("invalid_request", 400)
+    if not filename:
+        return _failure("invalid_request", 400)
+    async with _import_slots:
+        raw = await _read_body(request, max_bytes=SOURCE_BODY_MAX_BYTES)
+        if raw is None:
+            return _failure("document_too_large", 413)
+        return await _call(lambda svc: svc.preview_source(filename, raw, pack_id=pack_id, doc_id=doc_id, name=name))
+
+
+@router.post("/sources/commit")
+async def knowledge_source_commit(request: Request):
+    payload = await _json_object(request)
+    if (payload is None or not isinstance(payload.get("preview_id"), str)
+            or not isinstance(payload.get("sha256"), str) or type(payload.get("enabled", False)) is not bool):
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.commit_source(payload["preview_id"], payload["sha256"], enabled=payload.get("enabled", False)))
+
+
+@router.post("/sources/remove")
+async def knowledge_source_remove(request: Request):
+    payload = await _json_object(request)
+    if payload is None or not _pack_id(payload) or not isinstance(payload.get("doc_id"), str):
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.remove_source(_pack_id(payload), payload["doc_id"]))
+
+
+@router.post("/sources/restore")
+async def knowledge_source_restore(request: Request):
+    payload = await _json_object(request)
+    if (payload is None or not _pack_id(payload) or not isinstance(payload.get("doc_id"), str)
+            or type(payload.get("version")) is not int):
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.restore_source(_pack_id(payload), payload["doc_id"], payload["version"]))
+
+
+@router.post("/packs/export")
+async def knowledge_pack_export(request: Request):
+    payload = await _json_object(request)
+    if payload is None or not _pack_id(payload) or type(payload.get("format_version", 2)) is not int:
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.export_pack(_pack_id(payload), format_version=payload.get("format_version", 2), version=payload.get("version", "1")))
+
+
+@router.get("/packs/artifacts")
+async def knowledge_pack_artifact(artifact_id: str = Query(...)):
+    service = _service
+    if service is None:
+        return _failure("knowledge_starting", 503)
+    try:
+        path = await service._thread(service.artifact_path, artifact_id)
+    except KnowledgePackError as error:
+        return _failure(error.reason, 404)
+    return FileResponse(path, filename=path.name, media_type="application/zip" if path.suffix == ".zip" else "application/json")
 
 
 @router.post("/packs/index-policy")
@@ -536,58 +713,18 @@ async def knowledge_pack_remove(request: Request):
     return await _call(lambda svc: svc.remove_pack(_pack_id(payload)))
 
 
-async def _subscription_from_multipart(
-    request: Request, body: bytes
-) -> tuple[bytes, KnowledgeSubscription] | str:
-    """The pack file and subscription metadata of an apply body, or a refusal reason."""
-    form = await _parse_form(request, body)
-    if form is None:
-        return "invalid_request"
-    try:
-        if form.get("protocol_version") != str(SUBSCRIPTION_PROTOCOL_VERSION):
-            return "unsupported_protocol"
-        metadata = form.get("subscription")
-        upload = form.get("pack")
-        if not isinstance(metadata, str) or not isinstance(upload, UploadFile):
-            return "invalid_request"
-        try:
-            subscription = parse_subscription_json(metadata)
-        except SubscriptionError as exc:
-            return exc.reason
-        return await upload.read(), subscription
-    finally:
-        await form.close()
-
-
 @router.post("/subscriptions/apply")
 async def knowledge_apply_subscription(request: Request):
-    """Install a plugin-market artifact the plugin server downloaded and verified.
-
-    Reached only through Main's ``/api/public-knowledge/subscriptions/apply``
-    (CSRF + Origin), which the plugin server calls; the browser-facing bridge
-    does not forward this path. The pack must be the exact artifact named by
-    the subscription (same SHA-256, pack id and material type).
-    """
+    """Install the market's hash-bound artifact without buffering a whole ZIP."""
     service = _service
     if service is None:
         return _failure("knowledge_starting", 503)
     if _media_type(request) != "multipart/form-data":
         return _failure("invalid_request", 400)
-    # The body is read into memory, at most as many at once as local imports
-    # (the same slots). Unlike a local import it is read even when imports are
-    # full: a repeat of an apply already staged must reach the service, which
-    # answers it with that import and refuses anything else before parsing.
     if _import_slots.locked():
         return {"ok": False, "reason": "knowledge_busy", **service.availability()}
     async with _import_slots:
-        raw = await _read_body(request, max_bytes=_PACK_BODY_MAX_BYTES)
-        if raw is None:
-            return _failure("pack_too_large", 413)
-        parsed = await _subscription_from_multipart(request, raw)
-        if isinstance(parsed, str):
-            return _failure(parsed, 400)
-        pack, subscription = parsed
-        return await _call(lambda svc: svc.import_pack(pack, subscription=subscription))
+        return await _streamed_pack_import(request, service, subscribed=True)
 
 
 @router.get("/subscriptions")

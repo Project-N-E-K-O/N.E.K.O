@@ -54,9 +54,12 @@ def resolve_background_token_budget(ram_gb: float | None) -> int:
     """
     if ram_gb is None or ram_gb < 8:
         return 1024
-    if ram_gb < 16:
-        return 2048
-    return 4096
+    return 2048
+
+
+def resolve_background_duty(ram_gb: float | None) -> float:
+    """Reserve foreground headroom using the same conservative RAM tiers."""
+    return 0.15 if ram_gb is None or ram_gb < 8 else 0.25
 
 
 def auto_int8_or_none(

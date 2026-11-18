@@ -73,7 +73,8 @@ from typing import Any
 from ._embeddings import lifecycle as _service_lifecycle
 from ._embeddings import hardware as _hardware
 from ._embeddings import profiles as _profiles
-from ._embeddings.scheduling import InferenceBusy, InferenceQueue
+from ._embeddings.scheduling import InferenceBusy, InferenceQueue, InferenceUnavailable
+from utils.embedding_contract import EmbedDeferred, EmbedResult
 from ._embeddings.resources import resource_file_identity
 from ._embeddings.schema import (
     build_model_id,
@@ -1041,7 +1042,7 @@ class EmbeddingService:
         self._tokenizer = None
         self._loaded_file_identity = None
         self._load_lock = asyncio.Lock()
-        self._inference_queue = InferenceQueue()
+        self._inference_queue = InferenceQueue(background_duty=_hardware.resolve_background_duty(self._ram_gb))
         self._lifecycle_condition = asyncio.Condition()
         self._active_operations = 0
         self._closing = False
@@ -1173,6 +1174,9 @@ class EmbeddingService:
             if self._state is EmbeddingState.CLOSED:
                 return
             self._closing = True
+            # Waiters do not own native work. Wake them even during background
+            # cooldown, while executing workers retain their existing leases.
+            await self._inference_queue.shutdown()
             while self._active_operations:
                 await self._lifecycle_condition.wait()
             self._session = None
@@ -1180,81 +1184,100 @@ class EmbeddingService:
             self._loaded_file_identity = None
             self._state = EmbeddingState.CLOSED
 
-    async def embed(self, text: str, *, sticky_failure: bool = True,
-                    priority: str = "foreground") -> list[float] | None:
-        """Single-text embedding. Returns None when not READY — caller
-        must treat this as a cache miss and skip the vector path for
-        this query.
+    def spec(self) -> dict | None:
+        """Read exact resources off-loop without creating or loading a session."""
+        from ._embeddings.spec import specification
 
-        ``sticky_failure=False`` is for borrowers of the model (the public
-        knowledge indexer): an inference error then only fails this call
-        instead of disabling vectors for the whole process."""
-        if not text:
-            return None
-        if not await self._begin_operation():
-            return None
-        try:
-            if not self.is_available():
-                return None
-            try:
-                vectors = await self._run_inference([text], priority)
-            except InferenceBusy:
-                if priority == "background":
-                    # Borrowers must wait without treating pressure as a
-                    # missing model, native failure or consumed retry.
-                    raise
-                return None  # Queue pressure must not disable the shared encoder.
-            except Exception as e:  # noqa: BLE001 — sticky inference failure
-                if not self._closing:
-                    self._on_inference_error(e, sticky=sticky_failure)
-                return None
-            return vectors[0] if vectors else None
-        finally:
-            await self._end_operation()
+        return specification(self, max_length=DEFAULT_VECTORS_MAX_LENGTH)
 
-    async def embed_batch(
-        self, texts: list[str], *, sticky_failure: bool = True, priority: str = "foreground"
-    ) -> list[list[float] | None]:
-        """Batch embedding. Empty / None inputs and not-ready service
-        both produce a None at the corresponding output index — keeps
-        callers' index alignment with the input list intact.
+    def count_tokens(self, texts: list[str]) -> list[int] | None:
+        """Count full inputs with an independent tokenizer; callers offload CPU."""
+        from ._embeddings.spec import count_tokens
 
-        ``sticky_failure`` works as in ``embed``."""
-        if not texts:
-            return []
+        return count_tokens(self, texts, max_length=DEFAULT_VECTORS_MAX_LENGTH)
+
+    def status_counts(self) -> dict[str, int]:
+        """Expose content-free outcome counters instead of silent cache misses."""
+        return dict(getattr(self, "_embed_status_counts", {}))
+
+    def _embed_result(self, vectors, status, retry_after_ms=0) -> EmbedResult:
+        """Count each public computation outcome exactly once."""
+        counts = getattr(self, "_embed_status_counts", None)
+        if counts is None:
+            counts = self._embed_status_counts = {}
+        counts[status] = counts.get(status, 0) + 1
+        return EmbedResult(vectors, status, retry_after_ms)
+
+    async def embed_ex(self, texts: list[str], *, sticky_failure: bool = True,
+                       lane: str = "foreground", deadline: float | None = None) -> EmbedResult:
+        """Return observable admission/lifecycle outcomes without loading a model.
+
+        A deadline uses the event loop's monotonic clock. Native cancellation
+        still drains its real worker before ownership and lifecycle leases end.
+        """
+        if lane not in {"foreground", "background"}:
+            raise ValueError("invalid_inference_priority")
         result: list[list[float] | None] = [None] * len(texts)
+        if not texts:
+            return self._embed_result(result, "ok")
         if not await self._begin_operation():
-            return result
+            return self._embed_result(result, "unavailable")
         try:
             if not self.is_available():
-                return result
-            # Filter out empty entries before inference but preserve
-            # positional alignment in the output via index mapping.
-            active_idx: list[int] = []
-            active_texts: list[str] = []
-            for i, t in enumerate(texts):
-                if t:
-                    active_idx.append(i)
-                    active_texts.append(t)
-            if not active_texts:
-                return result
+                status = ("disabled" if self.is_disabled() else
+                          "loading" if self._state is EmbeddingState.LOADING else "unavailable")
+                return self._embed_result(result, status)
+            active_idx = [index for index, text in enumerate(texts) if text]
+            if not active_idx:
+                return self._embed_result(result, "ok")
+            active_texts = [texts[index] for index in active_idx]
             try:
-                vectors = await self._run_inference(active_texts, priority)
-            except InferenceBusy:
-                if priority == "background":
-                    # Preserve the retryable signal before the generic native
-                    # failure handler; no sticky disable is warranted here.
-                    raise
-                return result
-            except Exception as e:  # noqa: BLE001
+                async with asyncio.timeout_at(deadline):
+                    vectors = await self._run_inference(active_texts, lane)
+            except EmbedDeferred as error:
+                return self._embed_result(result, "busy", error.retry_after_ms)
+            except InferenceUnavailable:
+                return self._embed_result(result, "unavailable")
+            except TimeoutError:
+                return self._embed_result(result, "timeout")
+            except Exception as error:
                 if not self._closing:
-                    self._on_inference_error(e, sticky=sticky_failure)
-                return result
-            for slot, vec in zip(active_idx, vectors):
-                result[slot] = vec
-            return result
+                    self._on_inference_error(error, sticky=sticky_failure)
+                return self._embed_result(result, "error")
+            if len(vectors) != len(active_texts) or any(vector is None for vector in vectors):
+                return self._embed_result(result, "unavailable" if self._closing else "error")
+            for index, vector in zip(active_idx, vectors):
+                result[index] = vector
+            return self._embed_result(result, "ok")
         finally:
             await self._end_operation()
+
+    async def embed(self, text: str, *, sticky_failure: bool = True,
+                    priority: str = "foreground", lane: str | None = None) -> list[float] | None:
+        """Keep the legacy single-query cache-miss contract for existing callers."""
+        result = await self.embed_ex([text], sticky_failure=sticky_failure, lane=lane or priority)
+        if result.status == "busy" and (lane or priority) == "background":
+            raise InferenceBusy(result.retry_after_ms)
+        return result.vectors[0] if result.status == "ok" else None
+
+    async def embed_batch(self, texts: list[str], *, sticky_failure: bool = True,
+                          priority: str = "foreground", lane: str | None = None) -> list[list[float] | None]:
+        """Keep legacy positional None results while exposing explicit background deferral."""
+        result = await self.embed_ex(texts, sticky_failure=sticky_failure, lane=lane or priority)
+        if result.status == "busy" and (lane or priority) == "background":
+            raise InferenceBusy(result.retry_after_ms)
+        return result.vectors if result.status == "ok" else [None] * len(texts)
+
+    async def embed_query(self, text: str, *, sticky_failure: bool = False) -> list[float] | None:
+        """Use the foreground lane for interactive lookup."""
+        return await self.embed(text, sticky_failure=sticky_failure)
+
+    async def embed_documents(self, texts: list[str], *, sticky_failure: bool = False) -> list[list[float] | None]:
+        """Let background callers defer pressure without consuming index attempts."""
+        result = await self.embed_ex(texts, sticky_failure=sticky_failure, lane="background")
+        if result.status == "busy":
+            raise EmbedDeferred(result.retry_after_ms)
+        return result.vectors if result.status == "ok" else [None] * len(texts)
 
     def _background_batches(self, texts: list[str]) -> list[list[str]]:
         """Group exact tokenizer lengths by padded token cost in input order."""

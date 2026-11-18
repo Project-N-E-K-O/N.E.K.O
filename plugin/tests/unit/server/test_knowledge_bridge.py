@@ -52,10 +52,11 @@ def test_only_allowlisted_paths_are_forwarded(bridge):
 
 def test_reads_drop_the_token_and_reach_main(bridge):
     client, seen = bridge
-    response = client.get("/market/knowledge/entries", params={"token": get_bridge_token(), "query": "猫"})
+    response = client.get("/market/knowledge/entries", params={"token": get_bridge_token()}, headers={"X-Knowledge-Query": "%E7%8C%AB"})
     assert response.json() == {"ok": True, "path": "/api/public-knowledge/entries"}
     assert "token" not in seen[0].url.params
-    assert seen[0].url.params["query"] == "猫"
+    assert "query" not in seen[0].url.params
+    assert seen[0].headers["x-knowledge-query"] == "%E7%8C%AB"
 
 
 def test_writes_carry_main_csrf_and_stream_the_body(bridge, monkeypatch):

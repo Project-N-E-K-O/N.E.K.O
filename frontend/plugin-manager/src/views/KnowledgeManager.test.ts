@@ -17,10 +17,12 @@ const api = vi.hoisted(() => ({
   setEntryDisabled: vi.fn(),
   importPack: vi.fn(),
   cancelPackJob: vi.fn(),
+  retryPackJob: vi.fn(),
   discardPackJob: vi.fn(),
   setPackAutoContext: vi.fn(),
   setPackIndexPolicy: vi.fn(),
   setPackMaterialType: vi.fn(),
+  setPackEnabled: vi.fn(),
   removePack: vi.fn(),
 }))
 
@@ -177,6 +179,23 @@ describe('KnowledgeManager diagnostics', () => {
 })
 
 describe('KnowledgeManager overview', () => {
+  it('offers frozen retry only for failed or cancelled jobs, never a waiting job', async () => {
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [
+      { ...job('failed'), reason: 'process_interrupted' },
+      { ...job('cancelled'), job_id: 'cancelled-1' },
+      { ...job('building'), job_id: 'busy-1', reason: 'knowledge_busy' },
+    ] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-1', state: 'queued' })
+    const container = await mount()
+    await openTab('packs')
+    const retries = [...container.querySelectorAll<HTMLButtonElement>('button')].filter(button => button.textContent?.trim() === 'Retry task')
+    expect(retries).toHaveLength(2)
+    retries[0]!.click()
+    await flush()
+    expect(api.retryPackJob).toHaveBeenCalledWith({ job_id: 'job-1' })
+    expect(api.retryPackJob).toHaveBeenCalledTimes(1)
+  })
+
   it('posts the global switch and reflects the saved value', async () => {
     const container = await mount()
     const toggle = container.querySelector<HTMLElement>('[data-testid="knowledge-global-switch"]')
@@ -201,6 +220,26 @@ describe('KnowledgeManager overview', () => {
 
     expect(container.querySelector('[data-testid="knowledge-state"]')?.textContent).toContain('Unavailable')
     expect(container.textContent).toContain('The pack registry file is damaged or unreadable.')
+  })
+
+  it('toggles pack retrieval independently of automatic context and local vectors', async () => {
+    api.packs.mockResolvedValue({ ok: true, packs: [{
+      pack_id: 'imp.test', source: { name: 'My notes', homepage: '', license: '' },
+      origin: 'imported', enabled: true, auto_context: false, local_embedding: true,
+      declared_material_type: 'knowledge', material_type_override: null, effective_material_type: 'knowledge',
+      entries: 1, disabled_entries: 0, chunks_total: 1, chunks_ready: 0, chunks_failed: 0,
+      vector_state: 'waiting', broken: false, subscription: null, installed_at: '', updated_at: '',
+    }] })
+    api.setPackEnabled.mockResolvedValue({ ok: true, pack_id: 'imp.test', enabled: false })
+    const container = await mount()
+    await openTab('packs')
+    expect(container.textContent).toContain('Imported documents')
+    container.querySelector<HTMLElement>('[data-testid="pack-enabled-imp.test"]')!.click()
+    await flush()
+    expect(api.setPackEnabled).toHaveBeenCalledWith({ pack_id: 'imp.test', enabled: false })
+    expect(api.setPackAutoContext).not.toHaveBeenCalled()
+    expect(api.setPackIndexPolicy).not.toHaveBeenCalled()
+    expect(container.querySelector<HTMLInputElement>('input[type="file"]')!.accept).toContain('.pdf')
   })
 })
 

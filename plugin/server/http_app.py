@@ -382,12 +382,12 @@ def build_plugin_server_app(
     # Before the bridge: its /market/knowledge/{path} catch-all would
     # otherwise answer the subscription routes with 404.
     app.include_router(knowledge_market_router)
+    from plugin.server.routes.knowledge_publish import router as knowledge_publish_router
+    app.include_router(knowledge_publish_router)
     app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
     from plugin.server.routes.theater_market import router as theater_market_router
     app.include_router(theater_market_router)
-    from plugin.server.routes.library_market import router as library_market_router
-    app.include_router(library_market_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
     from utils.instance_access import InstanceAccessMiddleware

@@ -394,8 +394,6 @@ from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
 from main_routers.pngtuber_router import router as pngtuber_router  # noqa
 from main_routers.public_knowledge_router import router as public_knowledge_router  # noqa
-from main_routers.knowledge_library_router import router as knowledge_library_router
-from services.knowledge_library.host import close_library_hosts
 from main_routers.numeric_theater_router import router as numeric_theater_router  # noqa
 from main_routers.storage_location_router import router as storage_location_router  # noqa
 from main_routers.plugin_card_router import router as plugin_card_router  # noqa
@@ -827,9 +825,6 @@ app.include_router(jukebox_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 app.include_router(public_knowledge_router)
-app.include_router(knowledge_library_router)
-# Drain only personal-library work; this feature never owns the shared encoder.
-app.router.add_event_handler("shutdown", close_library_hosts)
 # Canonical chat operations retain their own local authorization, including memory saves.
 app.include_router(chat_sync_router)
 app.router.add_event_handler("shutdown", close_chat_sync_runtime)
@@ -856,8 +851,6 @@ app.include_router(capture_router)
 app.include_router(numeric_theater_router)
 from main_routers.theater_market_router import router as theater_market_router
 app.include_router(theater_market_router)
-from main_routers.knowledge_library_market_router import router as knowledge_library_market_router
-app.include_router(knowledge_library_market_router)
 # Neko visits: /api/visit (including /api/visit/transport/ws); initiation is gated by NEKO_VISIT_ENABLED, data management is not.
 app.include_router(visit_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.

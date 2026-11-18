@@ -79,12 +79,34 @@ async def test_import_then_query_reports_tool_availability(client):
     assert body["ok"] is True and body["state"] == "queued"
     await _wait_active(http)
     availability = (await http.get("/internal/knowledge/availability")).json()
-    assert availability["tool_available"] is True
+    assert availability["tool_available"] is False
+    pack = (await http.get("/internal/knowledge/packs")).json()["packs"][0]
+    assert pack["enabled"] is False and pack["origin"] == "imported" and pack["sources_managed"] is False
+    # Local packages can contain private text; explicit activation is required
+    # before the existing query and availability behavior is exercised.
+    await http.post("/internal/knowledge/packs/enabled", json={"pack_id": "route-pack", "enabled": True})
 
     result = (await http.post("/internal/knowledge/query", json={"query": "kotatsu"})).json()
     assert result["result"] == "matched"
     assert result["tool_available"] is True
     assert "Kotatsu" in result["context"]
+
+
+async def test_local_zip_defaults_disabled_without_fabricating_original_history(client, tmp_path):
+    from tests.unit.test_knowledge_archive_v2 import make_archive
+
+    http, service = client
+    raw = make_archive(tmp_path / "source.zip").read_bytes()
+    response = await http.post("/internal/knowledge/packs/import", content=raw, headers={"Content-Type": "application/zip"})
+    assert response.json()["ok"] is True
+    await _wait_active(http)
+    record = (await service.list_packs())[0]
+    assert not record["enabled"] and record["origin"] == "imported" and not record["sources_managed"]
+    sources = (await http.get("/internal/knowledge/sources", params={"pack_id": record["pack_id"]})).json()
+    assert sources["ok"] and sources["sources"] == []
+    appended = await http.post("/internal/knowledge/sources/preview", params={"pack_id": record["pack_id"]},
+                               content=b"Never replace a completed package.", headers={"X-Knowledge-Filename": "notes.txt"})
+    assert appended.json()["ok"] is False and appended.json()["reason"] == "invalid_request"
 
 
 async def test_management_reads_and_writes(client):
@@ -93,9 +115,9 @@ async def test_management_reads_and_writes(client):
     await _wait_active(http)
     status = (await http.get("/internal/knowledge/status")).json()
     assert status["ok"] is True and status["status"]["entries"] == 1
-    entries = (await http.get("/internal/knowledge/entries", params={"query": "kotatsu"})).json()
+    entries = (await http.get("/internal/knowledge/entries", headers={"X-Knowledge-Query": "kotatsu"})).json()
     assert entries["items"][0]["title"] == "Kotatsu"
-    entry = (await http.get("/internal/knowledge/entry", params={"pack_id": "route-pack", "title": "Kotatsu"})).json()
+    entry = (await http.get("/internal/knowledge/entry", params={"pack_id": "route-pack"}, headers={"X-Knowledge-Title": "Kotatsu"})).json()
     assert entry["entry"]["content"].startswith("A kotatsu")
     toggled = (await http.post("/internal/knowledge/packs/auto-context", json={"pack_id": "route-pack", "enabled": True})).json()
     assert toggled["auto_context"] is True
@@ -155,9 +177,44 @@ async def test_long_catalog_searches_are_cut_not_refused(client):
     http, _service = client
     await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers={"Content-Type": "application/json"})
     await _wait_active(http)
-    response = await http.get("/internal/knowledge/entries", params={"query": "kotatsu " * 100})
+    response = await http.get("/internal/knowledge/entries", headers={"X-Knowledge-Query": "kotatsu " * 100})
     assert response.status_code == 200
     assert response.json()["ok"] is True
+
+
+async def test_management_read_identity_is_decoded_from_headers_not_retired_url_fields(client, monkeypatch):
+    """Unicode private fields have no query-string fallback or log exposure."""
+    from urllib.parse import quote
+
+    http, service = client
+    calls = []
+
+    async def entries(**kwargs):
+        calls.append(kwargs)
+        return {"items": []}
+
+    async def entry(pack_id, title):
+        calls.append({"pack_id": pack_id, "title": title})
+        return {"entry": {}}
+
+    monkeypatch.setattr(service, "list_entries", entries)
+    monkeypatch.setattr(service, "get_entry", entry)
+    assert (await http.get("/internal/knowledge/entries", params={"query": "ignored"},
+                           headers={"X-Knowledge-Query": quote("私密查询")})).status_code == 200
+    assert calls[-1]["query"] == "私密查询"
+    assert (await http.get("/internal/knowledge/entry", params={"pack_id": "route-pack", "title": "ignored"},
+                           headers={"X-Knowledge-Title": quote("私密文件.txt")})).status_code == 200
+    assert calls[-1]["title"] == "私密文件.txt"
+    assert (await http.get("/internal/knowledge/entry", params={"pack_id": "route-pack", "title": "ignored"})).status_code == 400
+    assert (await http.get("/internal/knowledge/entries", headers={"X-Knowledge-Query": "%FF"})).status_code == 400
+
+
+async def test_source_preview_never_accepts_a_private_filename_from_the_url(client):
+    """An old URL field cannot replace the required private display header."""
+    http, _service = client
+    response = await http.post("/internal/knowledge/sources/preview", params={"filename": "private.txt", "name": "private-group"},
+                               content=b"Synthetic original", headers={"Content-Type": "application/octet-stream"})
+    assert response.status_code == 400 and response.json()["reason"] == "invalid_request"
 
 
 async def test_imports_are_refused_before_their_body_is_read_when_full(client, monkeypatch):
@@ -208,11 +265,11 @@ async def test_knowledge_embeddings_never_disable_vectors_for_memory(monkeypatch
 
 
 def test_proxy_body_limit_matches_the_pack_limit():
-    from knowledge.models import MAX_PACK_BYTES
+    from utils.knowledge_package import DEFAULT_LIMITS
     from utils.http import knowledge_proxy
 
     # utils cannot import knowledge, so the proxies keep their own copy.
-    assert knowledge_proxy.PACK_BODY_MAX_BYTES == MAX_PACK_BYTES + 64 * 1024
+    assert knowledge_proxy.PACK_BODY_MAX_BYTES == DEFAULT_LIMITS.max_archive_bytes + 64 * 1024
     assert knowledge_routes._PACK_BODY_MAX_BYTES == knowledge_proxy.PACK_BODY_MAX_BYTES
     assert knowledge_proxy.WRITE_PATHS["packs/import"] == knowledge_proxy.PACK_BODY_MAX_BYTES
 

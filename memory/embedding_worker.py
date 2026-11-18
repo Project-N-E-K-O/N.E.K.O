@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from utils.embedding_contract import EmbedDeferred
 
 try:
     from memory.embeddings import (
@@ -223,6 +224,14 @@ class EmbeddingWarmupWorker:
         while not self._stop_event.is_set():
             try:
                 processed = await self._sweep_once()
+            except EmbedDeferred as deferred:
+                # Pressure is scheduling, not a failed embedding. Keep stale
+                # records untouched and remain interruptible while yielding.
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), deferred.retry_after_ms / 1000)
+                except TimeoutError:
+                    pass
+                continue
             except Exception as e:  # noqa: BLE001 — best effort, log + retry
                 logger.warning(
                     "[EmbeddingWorker] sweep raised (%s: %s); retrying next tick",
@@ -606,5 +615,9 @@ class EmbeddingWarmupWorker:
         vectors: dict = {}
         for i in range(0, len(texts), BATCH_SIZE):
             chunk = texts[i : i + BATCH_SIZE]
-            vectors.update(zip(chunk, await self._service.embed_batch(chunk)))
+            background = getattr(self._service, "embed_documents", None)
+            # Legacy disabled/fake services retain their small compatibility
+            # surface; production always exposes the explicit background lane.
+            values = await background(chunk, sticky_failure=True) if callable(background) else await self._service.embed_batch(chunk)
+            vectors.update(zip(chunk, values))
         return vectors

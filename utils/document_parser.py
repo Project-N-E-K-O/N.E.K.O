@@ -34,6 +34,15 @@ class DocumentParseError(ValueError):
         self.code = code
 
 
+@dataclass(frozen=True)
+class DocumentLimits:
+    """Caller-owned limits; omitted values preserve attachment behavior."""
+
+    max_document_bytes: int = MAX_DOCUMENT_BYTES
+    max_extracted_chars: int = MAX_EXTRACTED_CHARS
+    max_pdf_pages: int = MAX_PDF_PAGES
+
+
 @dataclass
 class _TextBudget:
     limit: int = MAX_EXTRACTED_CHARS
@@ -67,17 +76,18 @@ _SPREADSHEET_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _OFFICE_REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 
-def parse_document(filename: str, content_type: str, data: bytes) -> dict[str, Any]:
+def parse_document(filename: str, content_type: str, data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
+    limits = limits or DocumentLimits()
     if not isinstance(data, (bytes, bytearray)) or not data:
         raise DocumentParseError("empty_file")
-    if len(data) > MAX_DOCUMENT_BYTES:
+    if len(data) > limits.max_document_bytes:
         raise DocumentParseError("document_too_large")
 
     document_type = _detect_document_type(filename, content_type, bytes(data))
     if document_type == "pdf":
-        result = _parse_pdf(bytes(data))
+        result = _parse_pdf(bytes(data), limits=limits)
     elif document_type == "docx":
-        result = _parse_docx(bytes(data))
+        result = _parse_docx(bytes(data), limits=limits)
     elif document_type == "xlsx":
         result = _parse_xlsx(bytes(data))
     elif document_type == "pptx":
@@ -117,7 +127,8 @@ def _detect_document_type(filename: str, content_type: str, data: bytes) -> str:
     raise DocumentParseError("unsupported_document")
 
 
-def _parse_pdf(data: bytes) -> dict[str, Any]:
+def _parse_pdf(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
+    limits = limits or DocumentLimits()
     try:
         from pypdf import PdfReader
     except Exception as exc:  # pragma: no cover - depends on environment
@@ -131,14 +142,14 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
         raise DocumentParseError("encrypted_pdf_unsupported")
 
     total_pages = _get_pdf_declared_page_count(reader)
-    budget = _TextBudget()
+    budget = _TextBudget(limit=limits.max_extracted_chars)
     parts: list[str] = []
     seen_text_keys: set[str] = set()
     observed_pages = 0
-    page_limit = MAX_PDF_PAGES if total_pages and total_pages > MAX_PDF_PAGES else MAX_PDF_PAGES + 1
+    page_limit = limits.max_pdf_pages if total_pages and total_pages > limits.max_pdf_pages else limits.max_pdf_pages + 1
     for index, page in enumerate(_iter_pdf_pages_until(reader, page_limit), start=1):
         observed_pages = index
-        if index > MAX_PDF_PAGES:
+        if index > limits.max_pdf_pages:
             budget.truncated = True
             break
         try:
@@ -148,7 +159,7 @@ def _parse_pdf(data: bytes) -> dict[str, Any]:
         _add_unique_text_part(budget, parts, seen_text_keys, f"Page {index}", text)
         if budget.truncated:
             break
-    if total_pages is not None and total_pages > MAX_PDF_PAGES:
+    if total_pages is not None and total_pages > limits.max_pdf_pages:
         budget.truncated = True
     return {
         "content": "\n\n".join(parts),
@@ -164,6 +175,76 @@ def _get_pdf_declared_page_count(reader: Any) -> int | None:
         return count if count >= 0 else None
     except Exception:
         return None
+
+
+def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimits) -> list[dict[str, Any]]:
+    """Extract complete, located sections with shared OOXML/PDF safety guards.
+
+    Unlike attachment previews this mode never silently truncates or removes
+    repeated paragraphs. The source importer persists the complete result or
+    reports a stable capacity/unsupported error.
+    """
+    if not data:
+        raise DocumentParseError("empty_file")
+    if len(data) > limits.max_document_bytes:
+        raise DocumentParseError("document_too_large")
+    kind = _detect_document_type(filename, "", data)
+    sections = []
+    if kind == "docx":
+        with _open_checked_zip(data, "docx") as archive:
+            _require_member(archive, "word/document.xml")
+            _reject_macro_members(archive, "word/")
+            root = _parse_xml(_read_xml_member(archive, "word/document.xml"))
+            members = [("word/document.xml", root)]
+            members += [(name, _parse_xml(_read_xml_member(archive, name)))
+                        for name in _read_docx_header_footer_names(archive, root)]
+            for name, member in members:
+                for index, paragraph in enumerate(member.iter(_WORD_NS + "p"), 1):
+                    # Read only this paragraph; nested textbox paragraphs are
+                    # visited separately and must not be included twice.
+                    text = _extract_word_paragraph_text(paragraph).strip()
+                    if text:
+                        sections.append({"text": text, "location": {"member": name, "paragraph": index}})
+            for name, reference, tag in (
+                ("word/footnotes.xml", "footnoteReference", "footnote"),
+                ("word/endnotes.xml", "endnoteReference", "endnote"),
+            ):
+                if name not in archive.namelist():
+                    continue
+                ids = _collect_word_note_reference_ids(root, _WORD_NS + reference)
+                notes = _parse_xml(_read_xml_member(archive, name))
+                for note in notes.findall(_WORD_NS + tag):
+                    if note.attrib.get(_WORD_NS + "id", "") not in ids:
+                        continue
+                    for index, paragraph in enumerate(note.iter(_WORD_NS + "p"), 1):
+                        text = _extract_word_paragraph_text(paragraph).strip()
+                        if text:
+                            sections.append({"text": text, "location": {"member": name, "paragraph": index}})
+    elif kind == "pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted:
+            raise DocumentParseError("encrypted_pdf_unsupported")
+        count = _get_pdf_declared_page_count(reader)
+        if count is not None and count > limits.max_pdf_pages:
+            raise DocumentParseError("document_too_many_pages")
+        for index, page in enumerate(_iter_pdf_pages_until(reader, limits.max_pdf_pages + 1), 1):
+            if index > limits.max_pdf_pages:
+                raise DocumentParseError("document_too_many_pages")
+            text = page.extract_text() or ""
+            if not text.strip() and page.get("/Resources", {}).get("/XObject"):
+                raise DocumentParseError("scan_unsupported")
+            for paragraph, value in enumerate(re.split(r"\n\s*\n", text), 1):
+                if value.strip():
+                    sections.append({"text": value.strip(), "location": {"page": index, "paragraph": paragraph}})
+    else:
+        raise DocumentParseError("unsupported_document")
+    content = "\n\n".join(section["text"] for section in sections)
+    if len(content) > limits.max_extracted_chars:
+        raise DocumentParseError("document_text_too_large")
+    _validate_text_quality(content)
+    return sections
 
 
 def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
@@ -231,11 +312,12 @@ def _resolve_pdf_object(value: Any) -> Any:
     return value
 
 
-def _parse_docx(data: bytes) -> dict[str, Any]:
+def _parse_docx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
+    limits = limits or DocumentLimits()
     with _open_checked_zip(data, "docx") as archive:
         _require_member(archive, "word/document.xml")
         _reject_macro_members(archive, "word/")
-        budget = _TextBudget()
+        budget = _TextBudget(limit=limits.max_extracted_chars)
         parts: list[str] = []
         seen_text_keys: set[str] = set()
 

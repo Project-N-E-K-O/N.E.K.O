@@ -241,11 +241,6 @@ from . import knowledge_routes  # noqa: F401
 # its middleware / storage gate) with memory; see knowledge_routes.
 runtime.app.include_router(knowledge_routes.router)
 
-# Personal libraries borrow bounded vector computation only. Their documents,
-# jobs and indexes stay owned by Main's isolated services/knowledge_library.
-from . import library_embeddings
-runtime.app.include_router(library_embeddings.router)
-
 from . import routes  # noqa: F401
 from .routes import (  # noqa: F401
     ExternalMemoryImportRequest,

@@ -23,6 +23,7 @@ connection, so readers never share a connection with the single writer.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import logging
 import sqlite3
@@ -44,7 +45,7 @@ tag_key = title_key
 logger = logging.getLogger("N.E.K.O.Knowledge")
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_CHUNKS_PER_PACK = 10_000
 MAX_TOTAL_CHUNKS = 20_000
 MAX_EMBED_ATTEMPTS = 3
@@ -89,13 +90,16 @@ _SCHEMA = (
     " embed_text TEXT NOT NULL,"
     " model_id TEXT,"
     " vector BLOB,"
+    " spec_sha256 TEXT,"
     " attempts INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE IF NOT EXISTS vector_specs ("
+    " spec_sha256 TEXT PRIMARY KEY, model_id TEXT NOT NULL, specification TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS chunks_pack_idx ON chunks (pack_id, model_id)",
     "CREATE INDEX IF NOT EXISTS chunks_entry_idx ON chunks (entry_id)",
 )
 
 
-_REQUIRED_TABLES = frozenset({"meta", "packs", "entries", "surfaces", "entries_fts", "chunks"})
+_REQUIRED_TABLES = frozenset({"meta", "packs", "entries", "surfaces", "entries_fts", "chunks", "vector_specs"})
 
 
 # Passive naming: a name is looked up among message spans of at most this
@@ -141,6 +145,8 @@ class VectorSnapshot:
     # The indexed version of every pack when the vectors were read; ``None``
     # when unknown.
     pack_versions: dict[str, str] | None = None
+    # Actual encoder resources used by this matrix, beyond its profile name.
+    specification: dict | None = None
 
 
 def _row_to_entry(row: sqlite3.Row) -> StoredEntry:
@@ -194,8 +200,8 @@ def _is_unit_vector(blob: bytes) -> bool:
     return abs(float(np.linalg.norm(vector)) - 1.0) <= _UNIT_NORM_TOLERANCE
 
 
-def count_pack_chunks(pack: KnowledgePack) -> int:
-    return sum(len(derive_chunks(entry)) for entry in pack.entries)
+def count_pack_chunks(pack: KnowledgePack, *, fit: Callable[[str], bool] | None = None) -> int:
+    return sum(len(derive_chunks(entry, fit=fit)) for entry in pack.entries)
 
 
 class KnowledgeStore:
@@ -263,6 +269,17 @@ class KnowledgeStore:
                     row = conn.execute(
                         "SELECT value FROM meta WHERE key='schema_version'"
                     ).fetchone()
+                    if row is not None and row[0] == "3":
+                        # Add provenance without discarding cached vectors. A
+                        # legacy vector remains searchable, but cannot be
+                        # exported as if its exact resource identity were known.
+                        columns = {value[1] for value in conn.execute("PRAGMA table_info(chunks)")}
+                        if "spec_sha256" not in columns:
+                            conn.execute("ALTER TABLE chunks ADD COLUMN spec_sha256 TEXT")
+                        conn.execute("CREATE TABLE IF NOT EXISTS vector_specs (spec_sha256 TEXT PRIMARY KEY, model_id TEXT NOT NULL, specification TEXT NOT NULL)")
+                        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (str(SCHEMA_VERSION),))
+                        tables.add("vector_specs")
+                        row = (str(SCHEMA_VERSION),)
                     if row is None or row[0] != str(SCHEMA_VERSION):
                         raise KnowledgeStoreError("schema_version_mismatch")
                     # quick_check passes after a table is dropped; a derived
@@ -352,6 +369,8 @@ class KnowledgeStore:
         disabled_keys: Iterable[str] = (),
         should_cancel: Callable[[], bool] | None = None,
         commit_gate: Callable[[], bool] | None = None,
+        fit: Callable[[str], bool] | None = None,
+        seed_vectors: Sequence[Mapping] = (),
     ) -> int:
         """Replace one pack's rows atomically; returns the number of chunks.
 
@@ -366,17 +385,21 @@ class KnowledgeStore:
         for entry in pack.entries:
             if should_cancel is not None and should_cancel():
                 raise InterruptedError("cancelled")
-            prepared.append((entry, _entry_tokens(entry), _entry_surfaces(entry), derive_chunks(entry)))
+            prepared.append((entry, _entry_tokens(entry), _entry_surfaces(entry), derive_chunks(entry, fit=fit)))
         if should_cancel is not None and should_cancel():
             raise InterruptedError("cancelled")
         with self._write(names=True) as conn:
-            reusable: dict[str, tuple[str, bytes]] = {}
+            reusable: dict[str, tuple[str, bytes, str | None]] = {}
             for row in conn.execute(
-                "SELECT text_hash, model_id, vector FROM chunks"
+                "SELECT text_hash, model_id, vector, spec_sha256 FROM chunks"
                 " WHERE pack_id=? AND vector IS NOT NULL AND model_id IS NOT NULL",
                 (pack.pack_id,),
             ):
-                reusable.setdefault(str(row[0]), (str(row[1]), bytes(row[2])))
+                reusable.setdefault(str(row[0]), (str(row[1]), bytes(row[2]), row[3]))
+            # Seeds bind exact entry, chunk and input hash; unrelated package
+            # vectors cannot be attached by position alone.
+            seeds = {(value["entry_title"], value["chunk_index"], value["text_hash"]): value
+                     for value in seed_vectors}
             self._delete_pack_rows(conn, pack.pack_id)
             chunk_total = 0
             surface_total = 0
@@ -409,10 +432,18 @@ class KnowledgeStore:
                 )
                 surface_total += len(surfaces)
                 for chunk in chunks:
-                    carried = reusable.get(chunk.text_hash, (None, None))
+                    carried = reusable.get(chunk.text_hash, (None, None, None))
+                    seed = seeds.get((entry.title, chunk.chunk_index, chunk.text_hash))
+                    if seed is not None and seed.get("embedding_text") == chunk.embed_text:
+                        spec_hash = self._bind_spec(conn, seed.get("model_id"), seed.get("specification"))
+                        blob = seed.get("vector")
+                        dimension = seed.get("specification", {}).get("dimension")
+                        if (spec_hash and type(dimension) is int and isinstance(blob, bytes)
+                                and len(blob) == dimension * 4 and _is_unit_vector(blob)):
+                            carried = (seed["model_id"], blob, spec_hash)
                     conn.execute(
                         "INSERT INTO chunks (entry_id, pack_id, chunk_index, text_hash,"
-                        " embed_text, model_id, vector) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        " embed_text, model_id, vector, spec_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (
                             entry_id,
                             pack.pack_id,
@@ -421,6 +452,7 @@ class KnowledgeStore:
                             chunk.embed_text,
                             carried[0],
                             carried[1],
+                            carried[2],
                         ),
                     )
                 chunk_total += len(chunks)
@@ -569,6 +601,13 @@ class KnowledgeStore:
     def fetch_entries(self, entry_ids: Sequence[int]) -> dict[int, StoredEntry]:
         with self._read() as conn:
             return self._fetch(conn, entry_ids)
+
+    def entry_embedding_inputs(self, entry_id: int) -> list[str]:
+        """Read the exact indexed order used by semantic chunk positions."""
+        with self._read() as conn:
+            return [str(row[0]) for row in conn.execute(
+                "SELECT embed_text FROM chunks WHERE entry_id=? ORDER BY chunk_index", (entry_id,)
+            )]
 
     @staticmethod
     def _pack_clause(
@@ -775,20 +814,25 @@ class KnowledgeStore:
     # ── vectors ─────────────────────────────────────────────────────
 
     def pending_chunks(
-        self, *, model_id: str, pack_ids: Sequence[str], limit: int
+        self, *, model_id: str, pack_ids: Sequence[str], limit: int, require_spec: bool = False,
+        specification: Mapping | None = None,
     ) -> list[tuple[int, str, str]]:
         """Chunks that lack a vector for ``model_id``: (id, text_hash, text)."""
         if not pack_ids:
             return []
         placeholders = ",".join("?" for _ in pack_ids)
+        # A model name is a hardware profile, not proof of identical weights.
+        # Re-encode stale resource identities even when that name is unchanged.
+        spec_clause = " OR spec_sha256 IS NOT ?" if specification else (" OR spec_sha256 IS NULL" if require_spec else "")
+        spec_args = (self._spec_hash(specification),) if specification else ()
         with self._read() as conn:
             return [
                 (int(row[0]), str(row[1]), str(row[2]))
                 for row in conn.execute(
                     f"SELECT id, text_hash, embed_text FROM chunks WHERE pack_id IN ({placeholders})"
-                    " AND (model_id IS NOT ? OR vector IS NULL) AND attempts < ?"
+                    " AND (model_id IS NOT ? OR vector IS NULL" + spec_clause + ") AND attempts < ?"
                     " ORDER BY id LIMIT ?",
-                    (*pack_ids, model_id, MAX_EMBED_ATTEMPTS, limit),
+                    (*pack_ids, model_id, *spec_args, MAX_EMBED_ATTEMPTS, limit),
                 )
             ]
 
@@ -798,6 +842,7 @@ class KnowledgeStore:
         model_id: str,
         rows: Sequence[tuple[int, str, bytes | None]],
         pack_ids: Sequence[str] | None = None,
+        specification: Mapping | None = None,
     ) -> tuple[int, int]:
         """Write vectors for unchanged chunks; return (stored, failed).
 
@@ -810,6 +855,7 @@ class KnowledgeStore:
         extra = tuple(pack_ids) if pack_ids is not None else ()
         stored = failed = 0
         with self._write() as conn:
+            spec_hash = self._bind_spec(conn, model_id, specification)
             for chunk_id, text_hash, blob in rows:
                 if blob is None:
                     cursor = conn.execute(
@@ -819,11 +865,79 @@ class KnowledgeStore:
                     failed += cursor.rowcount
                     continue
                 cursor = conn.execute(
-                    f"UPDATE chunks SET model_id=?, vector=?, attempts=0 WHERE id=? AND text_hash=?{clause}",
-                    (model_id, blob, chunk_id, text_hash, *extra),
+                    f"UPDATE chunks SET model_id=?, vector=?, spec_sha256=?, attempts=0 WHERE id=? AND text_hash=?{clause}",
+                    (model_id, blob, spec_hash, chunk_id, text_hash, *extra),
                 )
                 stored += cursor.rowcount
         return stored, failed
+
+    @staticmethod
+    def _spec_hash(specification: Mapping) -> str:
+        """Fingerprint the full immutable identity, including resource hashes."""
+        raw = json.dumps(dict(specification), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    @staticmethod
+    def _bind_spec(conn: sqlite3.Connection, model_id: str | None, specification: Mapping | None) -> str | None:
+        """Record proven resource identity; legacy/unknown vectors stay unbound."""
+        if not model_id or not specification or specification.get("model_id") != model_id:
+            return None
+        raw = json.dumps(dict(specification), sort_keys=True, separators=(",", ":"))
+        digest = KnowledgeStore._spec_hash(specification)
+        conn.execute("INSERT OR IGNORE INTO vector_specs VALUES (?, ?, ?)", (digest, model_id, raw))
+        return digest
+
+    def vector_specification(self, model_id: str | None, *, pack_id: str | None = None) -> dict | None:
+        """Only return an unambiguous identity recorded by actual encoding."""
+        with self._read() as conn:
+            if pack_id is None:
+                rows = conn.execute("SELECT specification FROM vector_specs WHERE model_id=?", (model_id,)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT DISTINCT s.specification FROM vector_specs s JOIN chunks c ON c.spec_sha256=s.spec_sha256 "
+                    "WHERE c.pack_id=?" + (" AND c.model_id=?" if model_id else ""),
+                    (pack_id, model_id) if model_id else (pack_id,),
+                ).fetchall()
+        return json.loads(rows[0][0]) if len(rows) == 1 else None
+
+    def vectors_for_pack(self, pack_id: str, model_id: str) -> list[dict]:
+        """Snapshot complete, proven vectors without expanding float32 blobs."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT e.title,c.chunk_index,c.text_hash,c.embed_text,c.vector,c.model_id,c.spec_sha256 "
+                "FROM chunks c JOIN entries e ON e.id=c.entry_id WHERE c.pack_id=? ORDER BY e.title_key,c.chunk_index",
+                (pack_id,),
+            ).fetchall()
+        if not rows or any(row[4] is None or row[5] != model_id or not row[6] for row in rows):
+            return []
+        if len({row[6] for row in rows}) != 1:
+            return []
+        return [{"entry_title": row[0], "chunk_index": row[1], "text_hash": row[2],
+                 "embedding_text": row[3], "vector": bytes(row[4])} for row in rows]
+
+    def seed_pack_vectors(self, pack_id: str, seeds: Sequence[Mapping]) -> int:
+        """Attach retained package vectors only to the exact currently indexed input."""
+        stored = 0
+        with self._write() as conn:
+            for seed in seeds:
+                specification, blob = seed.get("specification"), seed.get("vector")
+                dimension = specification.get("dimension") if specification else None
+                if (type(dimension) is not int or not isinstance(blob, bytes)
+                        or len(blob) != dimension * 4 or not _is_unit_vector(blob)):
+                    continue
+                spec_hash = self._bind_spec(conn, seed.get("model_id"), specification)
+                if spec_hash is None:
+                    continue
+                cursor = conn.execute(
+                    "UPDATE chunks SET vector=?,model_id=?,spec_sha256=?,attempts=0 "
+                    "WHERE pack_id=? AND chunk_index=? AND text_hash=? AND embed_text=? "
+                    "AND entry_id IN (SELECT id FROM entries WHERE pack_id=? AND title=?) "
+                    "AND (vector IS NULL OR model_id IS NOT ? OR spec_sha256 IS NOT ?)",
+                    (blob, seed["model_id"], spec_hash, pack_id, seed["chunk_index"], seed["text_hash"],
+                     seed["embedding_text"], pack_id, seed["entry_title"], seed["model_id"], spec_hash),
+                )
+                stored += cursor.rowcount
+        return stored
 
     def reset_attempts(self, pack_id: str = "") -> int:
         """Give chunks that hit ``MAX_EMBED_ATTEMPTS`` another chance."""
@@ -869,7 +983,7 @@ class KnowledgeStore:
             )
             return cursor.rowcount
 
-    def load_vectors(self, model_id: str) -> VectorSnapshot | None:
+    def load_vectors(self, model_id: str, *, specification: Mapping | None = None) -> VectorSnapshot | None:
         """Load every ready vector of ``model_id`` into one normalized matrix."""
         with self._read() as conn:
             # One read transaction: the versions describe exactly these rows.
@@ -877,8 +991,8 @@ class KnowledgeStore:
             try:
                 rows = conn.execute(
                     "SELECT id, entry_id, pack_id, vector, chunk_index FROM chunks"
-                    " WHERE model_id=? AND vector IS NOT NULL ORDER BY id",
-                    (model_id,),
+                    " WHERE model_id=? AND vector IS NOT NULL" + (" AND spec_sha256=?" if specification else "") + " ORDER BY id",
+                    (model_id, self._spec_hash(specification)) if specification else (model_id,),
                 ).fetchall()
                 versions = {
                     str(row["pack_id"]): str(row["pack_sha256"])
@@ -929,4 +1043,5 @@ class KnowledgeStore:
             chunk_indexes=np.asarray(chunk_indexes, dtype=np.int32),
             damaged=tuple(damaged),
             pack_versions=versions,
+            specification=dict(specification) if specification else None,
         )

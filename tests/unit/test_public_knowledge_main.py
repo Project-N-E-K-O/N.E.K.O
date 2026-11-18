@@ -169,11 +169,12 @@ async def proxy():
 
 async def test_reads_are_forwarded_and_refresh_the_tool_flag(proxy, memory_server):
     client = memory_server(lambda request: httpx.Response(200, json={"ok": True, "items": [], "tool_available": True}))
-    response = await proxy.get("/api/public-knowledge/entries", params={"query": "猫", "limit": 5})
+    response = await proxy.get("/api/public-knowledge/entries", params={"limit": 5}, headers={"X-Knowledge-Query": "%E7%8C%AB"})
     assert response.status_code == 200
     forwarded = client.requests[0]
     assert forwarded.url.path == "/internal/knowledge/entries"
-    assert forwarded.url.params["query"] == "猫"
+    assert "query" not in forwarded.url.params
+    assert forwarded.headers["x-knowledge-query"] == "%E7%8C%AB"
     assert public_knowledge.tool_available() is True
 
 

@@ -1,0 +1,148 @@
+"""Immutable originals and parsed versions; active v1 pack tags select versions."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import uuid
+from pathlib import Path
+
+from utils.file_utils import atomic_write_bytes, atomic_write_json
+from ..models import KnowledgePackError, pack_id_is_valid
+from ..registry import utc_now
+from .documents import SourceLimits, parse_source
+
+
+def _id(value: str) -> str:
+    """Never accept paths or arbitrary filenames as a sidecar identity."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value):
+        raise KnowledgePackError("invalid_request")
+    return value
+
+
+class SourceStore:
+    """Store provenance separately from the shared SQLite vector index."""
+
+    def __init__(self, root: Path):
+        self.root = root / "sources"
+
+    def directory(self, pack_id: str) -> Path:
+        if not pack_id_is_valid(pack_id):
+            raise KnowledgePackError("invalid_request")
+        return self.root / pack_id
+
+    @staticmethod
+    def read(path: Path) -> dict:
+        """Cap sidecar reads before decoding; vectors never belong here."""
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(8 * 1024 * 1024 + 1)
+        except FileNotFoundError as error:
+            raise KnowledgePackError("source_not_found") from error
+        if len(raw) > 8 * 1024 * 1024:
+            raise KnowledgePackError("document_text_too_large")
+        return json.loads(raw)
+
+    def preview(self, filename: str, raw: bytes, *, pack_id: str = "", doc_id: str = "", name: str = "") -> dict:
+        """Retain exact retry input and a digest-bound, complete text preview."""
+        parsed = parse_source(filename, raw, SourceLimits())
+        pack_id = pack_id or "imp." + uuid.uuid4().hex
+        doc_id = _id(doc_id) if doc_id else uuid.uuid4().hex
+        folder = self.directory(pack_id) / "previews"
+        folder.mkdir(parents=True, exist_ok=True)
+        preview_id = uuid.uuid4().hex
+        preview = {"preview_id": preview_id, "pack_id": pack_id, "doc_id": doc_id,
+                   "name": parsed["filename"], "pack_name": (name or parsed["filename"])[:200],
+                   "sha256": hashlib.sha256(raw).hexdigest(), "content": parsed["content"],
+                   "sections": parsed["sections"], "chars": len(parsed["content"]), "created_at": utc_now()}
+        atomic_write_bytes(folder / (preview_id + ".original"), raw)
+        atomic_write_json(folder / (preview_id + ".json"), preview)
+        return preview
+
+    def find_preview(self, preview_id: str) -> dict:
+        """Resolve only a generated preview identity, not a caller-provided path."""
+        identity = _id(preview_id)
+        for path in self.root.glob(f"*/previews/{identity}.json"):
+            return self.read(path)
+        raise KnowledgePackError("preview_not_found")
+
+    def retain_preview(self, preview_id: str, sha256: str) -> dict:
+        """Write an immutable version before scheduling its ordinary pack import."""
+        preview = self.find_preview(preview_id)
+        if preview["sha256"] != sha256:
+            raise KnowledgePackError("preview_changed")
+        folder = self.directory(preview["pack_id"])
+        versions = self.versions(preview["pack_id"], preview["doc_id"])
+        version = max((value["version"] for value in versions), default=0) + 1
+        original = folder / "previews" / (preview_id + ".original")
+        with original.open("rb") as stream:
+            raw = stream.read(SourceLimits().max_document_bytes + 1)
+        if hashlib.sha256(raw).hexdigest() != sha256:
+            raise KnowledgePackError("preview_changed")
+        target = folder / "originals" / preview["doc_id"] / f"v{version}" / "original"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(target, raw)
+        value = {**preview, "version": version}
+        output = folder / "versions" / f"{preview['doc_id']}.v{version}.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(output, value)
+        # This is descriptive history only. Active versions are selected by
+        # the committed pack's doc:/ver: tags, so a failed job cannot activate it.
+        atomic_write_json(folder / "manifest.json", {"pack_id": preview["pack_id"], "name": preview["pack_name"]})
+        return value
+
+    def versions(self, pack_id: str, doc_id: str) -> list[dict]:
+        identity = _id(doc_id)
+        return sorted((self.read(path) for path in (self.directory(pack_id) / "versions").glob(f"{identity}.v*.json")),
+                      key=lambda value: value["version"])
+
+    def version(self, pack_id: str, doc_id: str, version: int) -> dict:
+        if type(version) is not int or version < 1:
+            raise KnowledgePackError("invalid_request")
+        path = self.directory(pack_id) / "versions" / f"{_id(doc_id)}.v{version}.json"
+        if not path.is_file():
+            raise KnowledgePackError("source_version_not_found")
+        return self.read(path)
+
+    def name(self, pack_id: str) -> str:
+        return self.read(self.directory(pack_id) / "manifest.json")["name"]
+
+    def has_history(self, pack_id: str) -> bool:
+        """Origin labels do not prove that this device owns editable originals."""
+        folder = self.directory(pack_id)
+        try:
+            manifest = self.read(folder / "manifest.json")
+            return (isinstance(manifest, dict) and manifest.get("pack_id") == pack_id
+                    and any((folder / "versions").glob("*.json"))
+                    and any((folder / "originals").glob("*/*/original")))
+        except (KnowledgePackError, OSError, ValueError):
+            return False
+
+    def all_documents(self, pack_id: str) -> list[dict]:
+        """Return the newest retained version of every known document."""
+        identities = {path.name.split(".")[0] for path in (self.directory(pack_id) / "versions").glob("*.json")}
+        return [versions[-1] for identity in sorted(identities)
+                if (versions := self.versions(pack_id, identity))]
+
+    def retained_packs(self) -> list[dict]:
+        """History groups remain discoverable after their last source is removed."""
+        values = []
+        for path in self.root.glob("*/manifest.json"):
+            try:
+                value = self.read(path)
+                if pack_id_is_valid(value.get("pack_id")):
+                    values.append(value)
+            except (KnowledgePackError, ValueError):
+                continue
+        return values
+
+    def documents(self, pack, pack_id: str) -> list[dict]:
+        """Recover source selection from the sole committed pack authority."""
+        selected = {}
+        for entry in pack.entries if pack is not None else ():
+            docs = [tag[4:] for tag in entry.tags if tag.startswith("doc:")]
+            versions = [tag[4:] for tag in entry.tags if tag.startswith("ver:")]
+            if len(docs) == len(versions) == 1 and versions[0].isdigit():
+                selected[docs[0]] = int(versions[0])
+        return [self.version(pack_id, doc_id, version) for doc_id, version in selected.items()]

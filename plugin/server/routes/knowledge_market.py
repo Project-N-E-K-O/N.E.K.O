@@ -77,10 +77,10 @@ router = APIRouter(prefix="/market/knowledge", tags=["market-knowledge"])
 logger = get_logger("server.routes.knowledge_market")
 
 MARKET_PROVIDER = "plugin-market"
-SUBSCRIPTION_PROTOCOL_VERSION = 1
-# Equal to knowledge.models.MAX_PACK_BYTES (the plugin server does not import
-# the knowledge package).
-MAX_ARTIFACT_BYTES = 10 * 1024 * 1024
+SUBSCRIPTION_PROTOCOL_VERSION = 2
+# Unified v2 archives contain the v1 text plus precomputed vectors. The plugin
+# keeps the transport bound aligned without importing the knowledge domain.
+MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 _PACKAGE_ID_MAX = 9_999_999_999_999_999_999
 
 # Workers alive at once (each may hold a downloaded artifact in memory).
@@ -101,7 +101,7 @@ _ALLOWED_ARTIFACT_HOSTS = frozenset(
     {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
     | {(urlparse(prefix).hostname or "").lower() for prefix in _GITHUB_MIRROR_PREFIXES}
 )
-_ARTIFACT_SUFFIX = ".neko-knowledge.json"
+_ARTIFACT_SUFFIX = ".neko-knowledge.zip"
 # Each download source gets at most this long; the whole download keeps
 # _ARTIFACT_DOWNLOAD_TIMEOUT_SECONDS.
 _ARTIFACT_SOURCE_TIMEOUT_SECONDS = 60.0
@@ -183,8 +183,7 @@ class KnowledgeArtifactDescriptor(BaseModel):
 
 
 class KnowledgeArtifactSet(BaseModel):
-    # Prebuilt index artifacts a descriptor may list are ignored: v1 installs
-    # raw text only and computes vectors locally.
+    # The single v2 artifact contains both pack text and validated seed vectors.
     model_config = ConfigDict(extra="ignore")
 
     knowledge: KnowledgeArtifactDescriptor
@@ -193,9 +192,10 @@ class KnowledgeArtifactSet(BaseModel):
 class KnowledgeVersionDescriptor(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    protocol_version: Literal[1]
+    protocol_version: Literal[2]
     package_id: int = Field(gt=0, le=_PACKAGE_ID_MAX)
-    remote_id: str = Field(pattern=r"^knowledge/[a-z0-9][a-z0-9._-]{1,99}$")
+    # Market share IDs 1 through 9 are valid one-character remote identities.
+    remote_id: str = Field(pattern=r"^knowledge/[a-z0-9][a-z0-9._-]{0,99}$")
     pack_id: str = Field(pattern=_PACK_ID_PATTERN)
     material_type: Literal["knowledge", "corpus"]
     version: str = Field(pattern=_VERSION_PATTERN)
@@ -616,7 +616,7 @@ async def _apply_subscription(subscription: dict[str, str], raw: bytes) -> dict[
                 "protocol_version": str(SUBSCRIPTION_PROTOCOL_VERSION),
                 "subscription": json.dumps(subscription, separators=(",", ":"), sort_keys=True),
             },
-            files={"pack": ("pack" + _ARTIFACT_SUFFIX, raw, "application/json")},
+            files={"pack": ("pack" + _ARTIFACT_SUFFIX, raw, "application/zip")},
         )
     except _TaskError as exc:
         return {"ok": False, "reason": exc.code}
@@ -652,7 +652,7 @@ async def _fetch_version_descriptor(request: KnowledgeSubscribeRequest) -> Knowl
         headers = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        return await client.get(url, params={"channel": request.channel}, headers=headers)
+        return await client.get(url, params={"channel": request.channel, "format_version": 2}, headers=headers)
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
@@ -684,7 +684,25 @@ async def _fetch_version_descriptor(request: KnowledgeSubscribeRequest) -> Knowl
     return descriptor
 
 
+def _market_artifact_url(url: str) -> bool:
+    """Trust only the configured market's exact authenticated download route."""
+    try:
+        parsed, base = urlparse(url), urlparse(MARKET_API_URL.rstrip("/"))
+        origin = (parsed.scheme, (parsed.hostname or "").lower(), parsed.port or (443 if parsed.scheme == "https" else 80))
+        expected = (base.scheme, (base.hostname or "").lower(), base.port or (443 if base.scheme == "https" else 80))
+        if origin != expected or parsed.username or parsed.password or parsed.fragment:
+            return False
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}):
+            return False
+        prefix = base.path.rstrip("/") + "/api/v1/shares/"
+        return re.fullmatch(re.escape(prefix) + r"[1-9][0-9]*/download", parsed.path) is not None
+    except ValueError:
+        return False
+
+
 def _artifact_url_allowed(url: str, *, final: bool) -> bool:
+    if _market_artifact_url(url):
+        return True
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -809,13 +827,26 @@ async def _download_verified_artifact(descriptor: KnowledgeArtifactDescriptor) -
 async def _download(url: str, httpx: Any) -> bytes:
     """GET ``url``, following only redirects to allowlisted hosts, at most the size cap."""
     current = url
+    refreshed = False
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False
     ) as client:
         for _redirect in range(_MAX_ARTIFACT_REDIRECTS + 1):
+            headers = {"Accept": "*/*", "Accept-Encoding": "identity"}
+            if _market_artifact_url(current):
+                credentials = await _ensure_valid_oauth_token()
+                if not credentials or not credentials.get("access_token"):
+                    raise _TaskError("market_auth_required", "market_auth_required", retryable=True)
+                headers["Authorization"] = "Bearer " + credentials["access_token"]
             async with client.stream(
-                "GET", current, headers={"Accept": "*/*", "Accept-Encoding": "identity"}
+                "GET", current, headers=headers,
             ) as response:
+                if response.status_code == 401 and _market_artifact_url(current) and not refreshed:
+                    await _ensure_valid_oauth_token(
+                        force_refresh=True, rejected_access_token=headers["Authorization"].removeprefix("Bearer "),
+                    )
+                    refreshed = True
+                    continue
                 if response.status_code in _ARTIFACT_REDIRECT_STATUSES:
                     location = response.headers.get("location")
                     target = urljoin(str(response.url), location) if location else ""

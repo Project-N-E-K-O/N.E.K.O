@@ -40,6 +40,9 @@ import concurrent.futures
 import contextlib
 import contextvars
 import logging
+import json
+import hashlib
+import shutil
 import random
 import threading
 import time
@@ -51,7 +54,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, Sequence, 
 
 import numpy as np
 
-from utils.file_utils import atomic_write_bytes
+from utils.file_utils import atomic_write_bytes, atomic_write_json
+from utils.embedding_contract import EmbedDeferred
 
 from .diagnostics import KnowledgeDiagnostics
 from .models import (
@@ -61,6 +65,7 @@ from .models import (
     MAX_TOTAL_ENTRIES,
     KnowledgePack,
     KnowledgePackError,
+    parse_pack,
     canonical_pack_bytes,
     decode_pack_bytes,
     pack_id_is_valid,
@@ -76,8 +81,8 @@ from .registry import (
     save_registry,
     utc_now,
 )
-from .chunking import chunk_bodies
-from .subscriptions import KnowledgeSubscription, Release, identity_conflict
+from .chunking import MAX_HEADER_CHARS, chunk_bodies
+from .subscriptions import KnowledgeSubscription, Release, identity_conflict, parse_subscription
 from .passive import PASSIVE_SEMANTIC_CANDIDATES, Calibration, PassiveHit, select_hits, thresholds_for
 from .render import RenderCard, render_reference_block, render_turn_cards
 from .retrieval import (
@@ -99,6 +104,8 @@ from .store import (
     normalize_vector,
 )
 from .text import title_key
+from .importing.sources import SourceStore
+from .importing.projection import project_pack
 
 from config.turn_context_settings import (
     TURN_CONTEXT_ITEM_MAX_TOKENS,
@@ -191,8 +198,20 @@ class ImportJob:
     # Set once the index write commits; from then on the import is no longer
     # cancellable. The lock makes "cancel" and "commit" exclusive.
     committed: bool = False
+    # Registry/artifact publication is the user-visible commit point. The
+    # earlier SQLite gate alone does not prove an install became active.
+    published: bool = False
     # Market metadata of a subscription install; None for a local import.
     subscription: KnowledgeSubscription | None = None
+    kind: str = "pack_import"
+    origin: str = ""
+    initial_enabled: bool | None = None
+    archive_sha256: str = ""
+    result: dict[str, Any] | None = None
+    seed_vectors: list[dict] = field(default_factory=list, repr=False, compare=False)
+    export_format: int = 2
+    export_version: str = "1"
+    frozen_input: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     gate: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
@@ -206,6 +225,8 @@ class ImportJob:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "subscription": self.subscription.to_json() if self.subscription else None,
+            "kind": self.kind,
+            "result": self.result,
         }
 
 
@@ -333,6 +354,11 @@ class KnowledgeService:
         # Arrival numbers whose admission runs on its own (shielded), which
         # then owns removing the ``_incoming`` entry.
         self._admission_owned: set[int] = set()
+        self._sources = SourceStore(self.root)
+        self._job_persist_lock = asyncio.Lock()
+        # A package installed before model assets existed may seed vectors once
+        # their real identity is known, without recomputing its native model.
+        self._seeded_artifacts: set[tuple[str, str]] = set()
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -354,7 +380,7 @@ class KnowledgeService:
             return
         except Exception as exc:
             self._state, self._error_code = "unavailable", type(exc).__name__
-            logger.warning("[Knowledge] startup failed: %s", type(exc).__name__, exc_info=True)
+            logger.warning("[Knowledge] startup failed: %s", type(exc).__name__)
             return
         self._tasks = [
             asyncio.create_task(self._job_loop(), name="knowledge-import-jobs"),
@@ -413,17 +439,74 @@ class KnowledgeService:
             self._store.remove_files()
             self._store.initialize()
         try:
-            broken = self._reconcile_blocking(registry)
+            broken, registry = self._reconcile_blocking(registry)
         except Exception as exc:
             logger.warning("[Knowledge] index reconcile failed (%s); rebuilding", type(exc).__name__)
             self._store.remove_files()
             self._store.initialize()
-            broken = self._reconcile_blocking(registry)
+            broken, registry = self._reconcile_blocking(registry)
         self._registry = registry
         self._broken_packs = tuple(broken)
+        self._load_jobs_blocking()
         self._clean_files_blocking(registry)
 
-    def _reconcile_blocking(self, registry: Registry) -> list[str]:
+    def _load_jobs_blocking(self) -> None:
+        """Reconcile durable task facts against the registry's sole commit point."""
+        loaded = []
+        for path in sorted((self.root / "jobs").glob("*.json")):
+            if path.name.endswith(".pack.json"):
+                continue
+            try:
+                with path.open("rb") as stream:
+                    raw = stream.read(128 * 1024 + 1)
+                if len(raw) > 128 * 1024:
+                    continue
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    continue
+                fields = {key: value for key, value in data.items() if key in {
+                    "job_id", "pack_id", "state", "created_at", "updated_at", "entries_total", "chunks_total", "reason",
+                    "cancel_requested", "arrived_at", "staged_bytes", "staged_sha256", "committed", "kind", "origin",
+                    "initial_enabled", "archive_sha256", "result", "export_format", "export_version", "frozen_input",
+                }}
+                if data.get("subscription") is not None:
+                    fields["subscription"] = parse_subscription(data["subscription"], strict=False)
+                job = ImportJob(**fields)
+                if path.stem != job.job_id or len(job.job_id) != 32:
+                    continue
+                if job.state in ACTIVE_JOB_STATES:
+                    record = self._registry.packs.get(job.pack_id)
+                    if (job.kind != "pack_export" and record is not None
+                            and record.pack_sha256 == job.staged_sha256
+                            and record.subscription == job.subscription
+                            and record.archive_sha256 == job.archive_sha256):
+                        job.state, job.reason, job.committed, job.published = "active", "", True, True
+                    else:
+                        job.state, job.reason = "failed", "process_interrupted"
+                    atomic_write_json(path, self._job_record(job))
+                loaded.append(job)
+            except (OSError, ValueError, TypeError):
+                continue
+        # UUID filenames have no chronological order. Keep the newest bounded
+        # task window after restart, matching normal in-process admission.
+        for job in sorted(loaded, key=lambda value: (value.created_at, value.job_id)):
+            self._remember_job(job)
+
+    @staticmethod
+    def _job_record(job: ImportJob) -> dict[str, Any]:
+        """Freeze safe task metadata; source bodies and vector lists stay out."""
+        return {**job.to_json(), "cancel_requested": job.cancel_requested, "arrived_at": job.arrived_at,
+                "staged_bytes": job.staged_bytes, "staged_sha256": job.staged_sha256,
+                "committed": job.committed, "origin": job.origin, "initial_enabled": job.initial_enabled,
+                "archive_sha256": job.archive_sha256, "export_format": job.export_format,
+                "export_version": job.export_version, "frozen_input": job.frozen_input}
+
+    async def _persist_job(self, job: ImportJob) -> None:
+        """Serialize writes so a late queued snapshot cannot replace terminal facts."""
+        async with self._job_persist_lock:
+            await self._thread(atomic_write_json, self.root / "jobs" / (job.job_id + ".json"), self._job_record(job))
+
+    def _reconcile_blocking(self, registry: Registry) -> tuple[list[str], Registry]:
         """Make ``knowledge.db`` match the registry; return packs whose raw file is lost."""
         indexed = self._store.pack_versions()
         for pack_id in indexed.keys() - registry.packs.keys():
@@ -432,6 +515,7 @@ class KnowledgeService:
         chunk_counts = self._store.chunk_stats(None)
         search_rows = self._store.search_row_counts()
         broken: list[str] = []
+        original_registry = registry
         for pack_id, record in registry.packs.items():
             # The raw file is the source of truth even when the index is
             # current: a pack whose file is gone or altered cannot be rebuilt
@@ -457,28 +541,57 @@ class KnowledgeService:
                     continue
                 pack = decode_pack_bytes(raw)
             except (OSError, KnowledgePackError) as exc:
-                logger.warning("[Knowledge] pack %s cannot be rebuilt: %s", pack_id, exc)
+                logger.warning("[Knowledge] pack %s cannot be rebuilt (%s)", pack_id, type(exc).__name__)
                 self._store.delete_pack(pack_id)
                 broken.append(pack_id)
                 continue
-            self._store.replace_pack(
-                pack, pack_sha256=record.pack_sha256, disabled_keys=record.disabled_titles
-            )
+            options = self._rebuild_options(record)
+            chunks = count_pack_chunks(pack, fit=options.get("fit"))
+            others = sum(value.chunks for key, value in registry.packs.items() if key != pack_id)
+            if chunks > MAX_CHUNKS_PER_PACK or others + chunks > MAX_TOTAL_CHUNKS:
+                # Preserve keyword availability within the original admitted
+                # budget. A later token replan is explicitly refused before
+                # native inference, rather than truncating text or overfilling.
+                options.pop("fit", None)
+                chunks = count_pack_chunks(pack)
+            self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
+                                     disabled_keys=record.disabled_titles, **options)
+            if chunks != record.chunks:
+                registry = registry.with_pack(replace(record, chunks=chunks))
             logger.info("[Knowledge] rebuilt index of pack %s", pack_id)
-        return broken
+        if registry != original_registry:
+            save_registry(self.root, registry)
+        return broken, registry
+
+    def _rebuild_options(self, record: PackRecord) -> dict[str, Any]:
+        """Recover verified package vectors without loading or invoking a model."""
+        options: dict[str, Any] = {}
+        fit = self._chunk_fit()
+        if fit is not None:
+            options["fit"] = fit
+        if record.archive_sha256:
+            from .archive import read_archive
+
+            try:
+                spec = getattr(self.embedder, "spec", lambda: None)()
+                path = self.artifact_path(record.archive_sha256)
+                checked = read_archive(path, expected_spec=spec)
+                if checked["artifact_sha256"] != record.archive_sha256:
+                    raise KnowledgePackError("artifact_hash_mismatch")
+                if checked["seed_vectors"]:
+                    options["seed_vectors"] = checked["seed_vectors"]
+            except (OSError, KnowledgePackError):
+                # Canonical text remains authoritative if a retained optional
+                # artifact was damaged; ordinary backfill can rebuild vectors.
+                pass
+        return options
 
     def _clean_files_blocking(self, registry: Registry) -> None:
         """Drop leftovers; a file that cannot be deleted now is retried next start."""
         staging = self.root / STAGING_DIR
-        referenced = {record.file_name for record in registry.packs.values()}
         leftovers = [path for path in staging.iterdir() if path.is_file()] if staging.is_dir() else []
-        leftovers += [
-            path
-            for path in (self.root / PACKS_DIR).iterdir()
-            if path.is_file()
-            and path.suffix in (".json", ".tmp")
-            and path.name not in referenced
-        ]
+        # Pack revisions and source history are retained user data. Only
+        # disposable staging files belong to startup cleanup.
         for path in leftovers:
             try:
                 path.unlink(missing_ok=True)
@@ -490,7 +603,7 @@ class KnowledgeService:
     def availability(self) -> dict[str, bool]:
         registry = self._registry
         has_usable = any(
-            record.entries > len(record.disabled_titles)
+            record.enabled and record.entries > len(record.disabled_titles)
             and record.pack_id not in self._broken_packs
             for record in registry.packs.values()
         )
@@ -577,6 +690,11 @@ class KnowledgeService:
     async def set_pack_auto_context(self, pack_id: str, enabled: bool) -> dict[str, Any]:
         record = await self._update_record(pack_id, auto_context=bool(enabled))
         return {"pack_id": pack_id, "auto_context": record.auto_context}
+
+    async def set_pack_enabled(self, pack_id: str, enabled: bool) -> dict[str, Any]:
+        """Gate all retrieval while preserving the pack and its vector policy."""
+        record = await self._update_record(pack_id, enabled=bool(enabled))
+        return {"pack_id": pack_id, "enabled": record.enabled}
 
     async def set_pack_local_embedding(self, pack_id: str, enabled: bool) -> dict[str, Any]:
         async def run() -> PackRecord:
@@ -747,6 +865,8 @@ class KnowledgeService:
                     self._finish_job(job, "cancelled")
                     self._unqueue(job.job_id)
                     await self._discard_staging(job.job_id)
+                    with contextlib.suppress(OSError):
+                        await self._persist_job(job)
             if record is None or registry is None:
                 return {"pack_id": pack_id, "removed_entries": 0, "kept": kept}
             file_name = record.file_name
@@ -756,10 +876,17 @@ class KnowledgeService:
                 # and the startup reconcile drops leftover rows and files.
                 try:
                     self._store.delete_pack(pack_id)
-                except Exception:
-                    logger.warning("[Knowledge] index cleanup of %s failed", pack_id, exc_info=True)
+                except Exception as exc:
+                    logger.warning("[Knowledge] index cleanup of %s failed (%s)", pack_id, type(exc).__name__)
                 try:
-                    (self.root / PACKS_DIR / file_name).unlink(missing_ok=True)
+                    original = self.root / PACKS_DIR / file_name
+                    if original.is_file():
+                        # Pack removal changes the active registry selection;
+                        # retain its immutable revision before dropping a name.
+                        history = self.root / "history" / pack_id / file_name
+                        history.parent.mkdir(parents=True, exist_ok=True)
+                        atomic_write_bytes(history, _read_bounded(original))
+                        original.unlink(missing_ok=True)
                 except OSError:
                     logger.warning("[Knowledge] could not delete the file of %s", pack_id)
 
@@ -823,11 +950,270 @@ class KnowledgeService:
 
     # ── imports ─────────────────────────────────────────────────────
 
+    def _sources_managed(self, pack_id: str) -> bool:
+        """Only local originals that still project the current pack are editable."""
+        if not self._sources.has_history(pack_id):
+            return False
+        try:
+            self._source_pack(pack_id)
+            return True
+        except (KnowledgePackError, OSError, ValueError):
+            return False
+
+    def _source_pack(self, pack_id: str) -> KnowledgePack | None:
+        """Read the active source projection, never an uncommitted sidecar."""
+        record = self._registry.packs.get(pack_id)
+        if record is None:
+            return None
+        if not self._sources.has_history(pack_id):
+            raise KnowledgePackError("invalid_request")
+        raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
+        if pack_sha256(raw) != record.pack_sha256:
+            raise KnowledgePackError("pack_file_mismatch")
+        pack = decode_pack_bytes(raw)
+        documents = self._sources.documents(pack, pack_id)
+        projection = project_pack(pack_id, pack.source.name, documents)
+        expected = parse_pack(json.loads(canonical_pack_bytes(projection)))
+        if pack.entries != expected.entries:
+            # A downloaded/edited offline pack may reuse a local ID. Existing
+            # sidecars never authorize replacing unrelated current contents.
+            raise KnowledgePackError("invalid_request")
+        return pack
+
+    async def preview_source(self, filename: str, raw: bytes, *, pack_id: str = "", doc_id: str = "", name: str = "") -> dict[str, Any]:
+        """Parse an original without installing it or requesting model loading."""
+        self._require_ready()
+        if pack_id:
+            record = self._registry.packs.get(pack_id)
+            if record is None or not await self._thread(self._sources_managed, pack_id):
+                raise KnowledgePackError("invalid_request")
+            name = record.source.name
+        value = await self._thread(self._sources.preview, filename, raw, pack_id=pack_id, doc_id=doc_id, name=name)
+        return {"ok": True, "pack_id": value["pack_id"], "preview": {
+            key: value[key] for key in ("preview_id", "doc_id", "sha256", "name", "content", "chars", "sections")
+        }}
+
+    async def list_sources(self, pack_id: str) -> dict[str, Any]:
+        """List current source selections, retaining all immutable past versions."""
+        def read():
+            if not self._sources_managed(pack_id):
+                return []  # Finished packages contain no editable originals.
+            pack = self._source_pack(pack_id)
+            documents = self._sources.documents(pack, pack_id)
+            active = {row["doc_id"]: row for row in documents}
+            return [{"doc_id": row["doc_id"], "name": active.get(row["doc_id"], row)["name"],
+                     "current_version": active[row["doc_id"]]["version"] if row["doc_id"] in active else None,
+                     "removed": row["doc_id"] not in active,
+                     "versions_count": len(self._sources.versions(pack_id, row["doc_id"])),
+                     "chars": active.get(row["doc_id"], row)["chars"], "updated_at": row["created_at"]}
+                    for row in self._sources.all_documents(pack_id)]
+        return {"ok": True, "pack_id": pack_id, "sources": await self._thread(read)}
+
+    async def source_versions(self, pack_id: str, doc_id: str) -> dict[str, Any]:
+        """Expose version metadata only; original paths never cross the API."""
+        def read():
+            if not self._sources_managed(pack_id):
+                return []
+            active = self._sources.documents(self._source_pack(pack_id), pack_id)
+            current = next((row["version"] for row in active if row["doc_id"] == doc_id), None)
+            return [{**{key: row[key] for key in ("version", "name", "chars", "sha256", "created_at")},
+                     "current": row["version"] == current} for row in self._sources.versions(pack_id, doc_id)]
+        return {"ok": True, "pack_id": pack_id, "doc_id": doc_id, "versions": await self._thread(read)}
+
+    async def _project_sources(self, pack_id: str, name: str, documents: list[dict], *, enabled: bool = False) -> dict[str, Any]:
+        """Send a source projection through the one existing import runner."""
+        pack = await self._thread(project_pack, pack_id, name, documents)
+        # v1 validation is reused before staging; no source-specific bypass of
+        # entry, chunk or total pack budgets is admitted.
+        canonical = await self._thread(lambda: canonical_pack_bytes(parse_pack(json.loads(canonical_pack_bytes(pack)))))
+        return await self.import_pack(canonical, _options={"kind": "import_commit", "origin": "imported", "enabled": enabled,
+                                                           "frozen_input": {"documents": [{"doc_id": row["doc_id"], "version": row["version"]} for row in documents]}})
+
+    async def commit_source(self, preview_id: str, sha256: str, *, enabled: bool = False) -> dict[str, Any]:
+        """Retain the frozen original, then enqueue a disabled-by-default pack."""
+        async def run():
+            value = await self._thread(self._sources.retain_preview, preview_id, sha256)
+            pack_id = value["pack_id"]
+            pack = await self._thread(self._source_pack, pack_id)
+            documents = await self._thread(self._sources.documents, pack, pack_id)
+            documents = [row for row in documents if row["doc_id"] != value["doc_id"]] + [value]
+            return await self._project_sources(pack_id, value["pack_name"], documents, enabled=enabled)
+        return await self._locked(run)
+
+    async def remove_source(self, pack_id: str, doc_id: str) -> dict[str, Any]:
+        """Remove an active selection without deleting its original or history."""
+        async def run():
+            pack = await self._thread(self._source_pack, pack_id)
+            if pack is None:
+                raise KnowledgePackError("source_not_found")
+            documents = await self._thread(self._sources.documents, pack, pack_id)
+            retained = [row for row in documents if row["doc_id"] != doc_id]
+            if len(retained) == len(documents):
+                raise KnowledgePackError("source_not_found")
+            return await self._project_sources(pack_id, pack.source.name, retained) if retained else None
+        result = await self._locked(run)
+        if result is not None:
+            return result
+        # An empty schema-v1 pack is invalid. Removing its last source uses the
+        # existing pack-removal ordering while leaving every retained revision.
+        await self.remove_pack(pack_id)
+        stamp = utc_now()
+        job = ImportJob(uuid.uuid4().hex, pack_id, "active", stamp, stamp, kind="import_commit")
+        self._remember_job(job)
+        with contextlib.suppress(OSError):
+            await self._persist_job(job)
+        return {"ok": True, **job.to_json()}
+
+    async def restore_source(self, pack_id: str, doc_id: str, version: int) -> dict[str, Any]:
+        """Select an immutable past version through the same pack import path."""
+        async def run():
+            value = await self._thread(self._sources.version, pack_id, doc_id, version)
+            pack = await self._thread(self._source_pack, pack_id)
+            documents = await self._thread(self._sources.documents, pack, pack_id)
+            documents = [row for row in documents if row["doc_id"] != doc_id] + [value]
+            return await self._project_sources(pack_id, pack.source.name if pack else value["pack_name"], documents)
+        return await self._locked(run)
+
+    async def _import_archive_input(self, raw: bytes | Path, *, subscription: KnowledgeSubscription | None, options: dict) -> dict:
+        """Validate ZIP files off-loop and keep their exact bytes for recovery."""
+        from .archive import read_archive
+
+        temporary = None
+        if isinstance(raw, bytes):
+            folder = self.root / STAGING_DIR
+            await self._thread(folder.mkdir, parents=True, exist_ok=True)
+            temporary = folder / (uuid.uuid4().hex + ".upload.zip")
+            await self._thread(atomic_write_bytes, temporary, raw)
+            path = temporary
+        else:
+            path = raw
+        try:
+            def magic():
+                with path.open("rb") as stream:
+                    return stream.read(4)
+            if await self._thread(magic) != b"PK\x03\x04":
+                return await self.import_pack(await self._thread(_read_bounded, path), subscription=subscription, _options=options)
+            spec = await self._thread(getattr(self.embedder, "spec", lambda: None))
+            checked = await self._thread(read_archive, path, expected_spec=spec)
+            digest = checked["artifact_sha256"]
+            if subscription is not None and digest != subscription.artifact_sha256:
+                return {"ok": False, "reason": "artifact_hash_mismatch"}
+            if subscription is not None:
+                staged = self._staged_subscription_job(subscription)
+                if staged is not None:
+                    return {"ok": True, **staged.to_json(), "existing": True}
+            def retain():
+                output = self.root / "artifacts" / (digest + ".neko-knowledge.zip")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                stage = output.with_suffix(".tmp")
+                with path.open("rb") as source, stage.open("wb") as target:
+                    shutil.copyfileobj(source, target, 64 * 1024)
+                    target.flush()
+                    import os
+                    os.fsync(target.fileno())
+                hasher = hashlib.sha256()
+                with stage.open("rb") as source:
+                    for block in iter(lambda: source.read(64 * 1024), b""):
+                        hasher.update(block)
+                if hasher.hexdigest() != digest:
+                    stage.unlink(missing_ok=True)
+                    raise KnowledgePackError("artifact_hash_mismatch")
+                stage.replace(output)
+            await self._thread(retain)
+            canonical = await self._thread(lambda: canonical_pack_bytes(parse_pack(checked["pack"])))
+            options.update(archive_sha256=digest, artifact_sha256=digest, seed_vectors=checked["seed_vectors"])
+            return await self.import_pack(canonical, subscription=subscription, _options=options)
+        finally:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    await self._thread(temporary.unlink, missing_ok=True)
+
+    async def export_pack(self, pack_id: str, *, format_version: int = 2, version: str = "1") -> dict[str, Any]:
+        """Queue export on the existing worker, without computing any vectors."""
+        self._require_ready()
+        if type(format_version) is not int or format_version not in {1, 2} or not isinstance(version, str):
+            raise KnowledgePackError("invalid_request")
+        record = self._registry.packs.get(pack_id)
+        if record is None:
+            raise KnowledgePackError("not_found")
+        active = [job for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES]
+        if any(job.pack_id == pack_id for job in active):
+            raise KnowledgePackError("job_in_progress")
+        if len(active) >= MAX_PENDING_IMPORTS:
+            raise KnowledgePackError("knowledge_busy")
+        stamp = utc_now()
+        job = ImportJob(uuid.uuid4().hex, pack_id, "queued", stamp, stamp,
+                        kind="pack_export", staged_sha256=record.pack_sha256,
+                        export_format=format_version, export_version=version)
+        self._request_seq += 1
+        job.arrived_at = self._request_seq
+        self._remember_job(job)
+        try:
+            await self._persist_job(job)
+        except OSError:
+            self._jobs.pop(job.job_id, None)
+            raise
+        self._job_queue.append(job.job_id)
+        self._job_queued.set()
+        return {"ok": True, **job.to_json()}
+
+    async def _export_job(self, job: ImportJob) -> None:
+        """Snapshot under the mutation lock, then serialize after releasing it."""
+        from .archive import export_archive
+
+        async def snapshot():
+            record = self._registry.packs.get(job.pack_id)
+            if record is None or record.pack_sha256 != job.staged_sha256:
+                raise KnowledgePackError("pack_changed")
+            def read():
+                payload = json.loads(_read_bounded(self.root / PACKS_DIR / record.file_name))
+                model_id = self._current_model_id()
+                spec = self._store.vector_specification(model_id, pack_id=job.pack_id)
+                vectors = self._store.vectors_for_pack(job.pack_id, spec["model_id"]) if spec else []
+                return payload, spec, vectors
+            return await self._thread(read)
+
+        payload, spec, vectors = await self._locked(snapshot, wait=True)
+        def check():
+            if self._superseded(job) or self._stopping:
+                raise InterruptedError("cancelled")
+        def commit_gate():
+            # The archive calls this immediately before publication. Keep
+            # accepting cancellation through fsync, then make that decision
+            # exclusive with cancel_job rather than waiting for thread return.
+            with job.gate:
+                if self._superseded(job) or self._stopping:
+                    return False
+                job.committed = True
+                return True
+        job.result = await self._thread(export_archive, self.root / "artifacts", payload,
+                                        version=job.export_version, specification=spec,
+                                        vectors=vectors, format_version=job.export_format,
+                                        check_cancelled=check, commit_gate=commit_gate)
+        job.published = True
+
+    def artifact_path(self, artifact_id: str) -> Path:
+        """Resolve only retained SHA identities; never accept an arbitrary path."""
+        import re
+
+        if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_id):
+            raise KnowledgePackError("invalid_request")
+        folder = self.root / "artifacts"
+        for suffix in (".neko-knowledge.zip", ".neko-knowledge.json"):
+            path = folder / (artifact_id + suffix)
+            if path.is_file() and not path.is_symlink() and path.resolve().parent == folder.resolve():
+                return path
+        raise KnowledgePackError("not_found")
+
     async def import_pack(
-        self, raw: bytes, *, subscription: KnowledgeSubscription | None = None
+        self, raw: bytes | Path, *, subscription: KnowledgeSubscription | None = None,
+        _options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Import a pack; ``subscription`` marks a verified plugin-market artifact."""
         self._require_ready()
+        options = dict(_options or {})
+        if isinstance(raw, Path) or raw.startswith(b"PK\x03\x04"):
+            return await self._import_archive_input(raw, subscription=subscription, options=options)
         # Parsing a large pack holds several copies of it in memory: refuse
         # before parsing when imports are already at their limit, and never
         # parse more than that many at once.
@@ -847,7 +1233,7 @@ class KnowledgeService:
         if subscription is not None:
             self._incoming[arrived_at] = subscription
         try:
-            return await self._import_parsed(raw, arrived_at, parse_work, subscription)
+            return await self._import_parsed(raw, arrived_at, parse_work, subscription, options or None)
         except asyncio.CancelledError:
             # A cancelled request stops waiting, but its parse thread runs on
             # with the pack in memory: the slot is freed when that ends.
@@ -940,11 +1326,13 @@ class KnowledgeService:
         arrived_at: int,
         parse_work: list[concurrent.futures.Future[Any]],
         subscription: KnowledgeSubscription | None = None,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if subscription is not None:
             # The market published these exact bytes; anything else is not
             # the artifact the subscription names.
-            if await self._parse_thread(parse_work, pack_sha256, raw) != subscription.artifact_sha256:
+            artifact_hash = (options or {}).get("artifact_sha256") or await self._parse_thread(parse_work, pack_sha256, raw)
+            if artifact_hash != subscription.artifact_sha256:
                 return {"ok": False, "reason": "artifact_hash_mismatch"}
             staged = self._staged_subscription_job(subscription)
             if staged is not None:
@@ -1002,7 +1390,7 @@ class KnowledgeService:
 
         async def admit() -> dict[str, Any]:
             try:
-                return await self._admit_import(pack, canonical, chunks, arrived_at, subscription)
+                return await self._admit_import(pack, canonical, chunks, arrived_at, subscription, options)
             finally:
                 self._admitting.pop(pack.pack_id, None)
 
@@ -1025,6 +1413,7 @@ class KnowledgeService:
         chunks: int,
         arrived_at: int,
         subscription: KnowledgeSubscription | None = None,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         registry = self._registry
         others = [record for record in registry.packs.values() if record.pack_id != pack.pack_id]
@@ -1040,7 +1429,7 @@ class KnowledgeService:
         # another admission's just-written staging file would otherwise be
         # counted on disk and again as that admission's reservation.
         async with self._admission_lock:
-            return await self._stage_import(pack, canonical, chunks, arrived_at, subscription)
+            return await self._stage_import(pack, canonical, chunks, arrived_at, subscription, options)
 
     async def _stage_import(
         self,
@@ -1049,6 +1438,7 @@ class KnowledgeService:
         chunks: int,
         arrived_at: int,
         subscription: KnowledgeSubscription | None = None,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # Staged files are counted from their jobs, or from the reservation of
         # an admission that has not written one yet; taken together with the
@@ -1063,6 +1453,7 @@ class KnowledgeService:
         if installed_bytes + staged_bytes + len(canonical) > MAX_TOTAL_PACK_BYTES:
             return {"ok": False, "reason": "capacity_bytes"}
         now = utc_now()
+        options = options or {}
         job = ImportJob(
             job_id=uuid.uuid4().hex,
             pack_id=pack.pack_id,
@@ -1074,21 +1465,40 @@ class KnowledgeService:
             staged_bytes=len(canonical),
             staged_sha256=pack_sha256(canonical),
             subscription=subscription,
+            kind=options.get("kind", "pack_import"),
+            origin=options.get("origin", ""),
+            initial_enabled=options.get("enabled"),
+            archive_sha256=options.get("archive_sha256", ""),
+            seed_vectors=options.get("seed_vectors", []),
+            frozen_input=options.get("frozen_input", {}),
         )
         await self._thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
+        # Retain exact retry bytes apart from disposable staging. The same
+        # original job may fail without losing its frozen pack selection.
+        await self._thread(atomic_write_bytes, self.root / "jobs" / (job.job_id + ".pack.json"), canonical)
         if self._stopping:
             # The runner is gone; a queued job would never run.
             await self._discard_staging(job.job_id)
             return {"ok": False, "reason": "knowledge_stopping"}
+        job.arrived_at = arrived_at
         self._remember_job(job)
+        try:
+            await self._persist_job(job)
+        except OSError:
+            # Admission failed before queueing: retained originals/retry bytes
+            # remain, but a phantom queued task must not hold a capacity slot.
+            self._jobs.pop(job.job_id, None)
+            await self._discard_staging(job.job_id)
+            raise
         # A job now: listed as one, no longer as an incoming import.
         self._incoming.pop(arrived_at, None)
-        job.arrived_at = arrived_at
         if self._removal_committed_over(pack.pack_id, subscription, arrived_at):
             # The pack was removed while this import was being admitted.
             job.cancel_requested = True
             self._finish_job(job, "cancelled")
             await self._discard_staging(job.job_id)
+            with contextlib.suppress(OSError):
+                await self._persist_job(job)
             return {"ok": True, **job.to_json()}
         self._job_queue.append(job.job_id)
         self._job_queued.set()
@@ -1147,10 +1557,19 @@ class KnowledgeService:
         with self._thread_work_lock:
             self._thread_work.discard(future)
 
-    @staticmethod
-    def _prepare_import(raw: bytes) -> tuple[KnowledgePack, bytes, int]:
+    def _prepare_import(self, raw: bytes) -> tuple[KnowledgePack, bytes, int]:
         pack = decode_pack_bytes(raw)
-        return pack, canonical_pack_bytes(pack), count_pack_chunks(pack)
+        return pack, canonical_pack_bytes(pack), count_pack_chunks(pack, fit=self._chunk_fit())
+
+    def _chunk_fit(self) -> Callable[[str], bool] | None:
+        """Called only in workers; token counting never loads an ONNX session."""
+        count = getattr(self.embedder, "count_tokens", None)
+        spec = getattr(self.embedder, "spec", lambda: None)()
+        if not callable(count) or not spec:
+            return None
+        if count([""]) is None:
+            return None  # Missing tokenizer resources must not block text import.
+        return lambda text: bool((sizes := count([text])) and sizes[0] <= spec["max_length"])
 
     def _raw_file_intact(self, record: PackRecord) -> bool:
         try:
@@ -1167,10 +1586,8 @@ class KnowledgeService:
     def _installed_pack_bytes(self, replacing: str, job_files: frozenset[str] = frozenset()) -> int:
         """Bytes of pack files on disk, except the one ``replacing`` swaps out.
 
-        Every file counts, not just registered ones: an old version or a
-        staged upload whose deletion failed still takes disk space until a
-        later cleanup. ``job_files`` (see ``_job_files``) are left out here;
-        the callers count those from the jobs themselves.
+        Retained historical revisions have a separate, explicit no-deletion
+        policy; the active-pack budget counts current revisions and staging.
         """
         record = self._registry.packs.get(replacing)
         skip = record.file_name if record is not None else None
@@ -1227,6 +1644,7 @@ class KnowledgeService:
             # A cancelled job no longer counts toward the staging limits, so
             # its file must go now, not when the runner reaches the job.
             await self._discard_staging(job_id)
+        await self._persist_job(job)
         return True
 
     def _unqueue(self, job_id: str) -> None:
@@ -1239,7 +1657,38 @@ class KnowledgeService:
         if job is None or job.state not in TERMINAL_JOB_STATES:
             return False
         del self._jobs[job_id]
+        async def discard():
+            async with self._job_persist_lock:
+                await self._thread((self.root / "jobs" / (job_id + ".json")).unlink, missing_ok=True)
+        task = asyncio.create_task(discard())
+        self._detached.add(task)
+        task.add_done_callback(self._detached.discard)
+        task.add_done_callback(_consume)
         return True
+
+    async def retry_job(self, job_id: str) -> dict[str, Any]:
+        """Retry the original frozen source selection, never today's document set."""
+        job = self._jobs.get(job_id)
+        if job is None or job.state not in {"failed", "cancelled"}:
+            raise KnowledgePackError("job_not_retryable")
+        if job.kind == "pack_export":
+            record = self._registry.packs.get(job.pack_id)
+            if record is None or record.pack_sha256 != job.staged_sha256:
+                raise KnowledgePackError("pack_changed")
+            return await self.export_pack(job.pack_id, format_version=job.export_format, version=job.export_version)
+        options = {"kind": job.kind, "origin": job.origin, "enabled": job.initial_enabled, "frozen_input": job.frozen_input}
+        if job.archive_sha256:
+            path = self.artifact_path(job.archive_sha256)
+            from utils.knowledge_package import DEFAULT_LIMITS, hash_file
+
+            digest, _size = await self._thread(hash_file, path, DEFAULT_LIMITS.max_archive_bytes)
+            if digest != job.archive_sha256:
+                raise KnowledgePackError("artifact_hash_mismatch")
+            return await self.import_pack(path, subscription=job.subscription, _options=options)
+        raw = await self._thread(_read_bounded, self.root / "jobs" / (job.job_id + ".pack.json"))
+        if pack_sha256(raw) != job.staged_sha256:
+            raise KnowledgePackError("pack_file_mismatch")
+        return await self.import_pack(raw, subscription=job.subscription, _options=options)
 
     def _finish_job(self, job: ImportJob, state: str, reason: str = "") -> None:
         job.state = state
@@ -1265,6 +1714,10 @@ class KnowledgeService:
                 continue
             job.state, job.updated_at = "building", utc_now()
             try:
+                if job.kind == "pack_export":
+                    await self._export_job(job)
+                    self._finish_job(job, "active")
+                    continue
                 for attempt in range(MAX_IMPORT_YIELDS + 1):
                     try:
                         await self._locked(lambda job=job: self._commit_job(job), wait=True)
@@ -1291,19 +1744,27 @@ class KnowledgeService:
                 self._index_wakeup.set()
                 self._schedule_vector_refresh()
             except InterruptedError:
-                self._finish_job(job, "cancelled")
+                self._finish_job(job, "active" if job.published else "cancelled")
             except KnowledgeUnavailable as exc:
-                self._finish_job(job, "failed", exc.reason)
+                self._finish_job(job, "active" if job.published else "failed", "" if job.published else exc.reason)
             except KnowledgePackError as exc:
-                self._finish_job(job, "failed", exc.reason)
+                self._finish_job(job, "active" if job.published else "failed", "" if job.published else exc.reason)
             except asyncio.CancelledError:
-                self._finish_job(job, "failed", "knowledge_stopping")
+                self._finish_job(job, "active" if job.published else "failed", "" if job.published else "knowledge_stopping")
                 raise
             except Exception as exc:
-                logger.warning("[Knowledge] import of %s failed: %s", job.pack_id, exc, exc_info=True)
-                self._finish_job(job, "failed", type(exc).__name__)
+                # Post-publication cache or cleanup errors cannot undo the
+                # successful registry commit or expose document text in logs.
+                logger.warning("[Knowledge] import bookkeeping failed (%s)", type(exc).__name__)
+                self._finish_job(job, "active" if job.published else "failed", "" if job.published else "operation_failed")
             finally:
                 await self._discard_staging(job_id)
+                try:
+                    await self._persist_job(job)
+                except OSError:
+                    # Registry commit remains authoritative even when task
+                    # bookkeeping cannot be flushed after a successful import.
+                    pass
 
     async def _await_pending_removals(self, job: ImportJob) -> None:
         while self._removal_pending_over(job):
@@ -1364,17 +1825,34 @@ class KnowledgeService:
                 installed_at=previous.installed_at if previous else now,
                 updated_at=now,
                 subscription=job.subscription,
+                enabled=previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True),
+                origin=previous.origin if previous else (job.origin or ("market" if job.subscription else "builtin")),
+                archive_sha256=job.archive_sha256,
             )
             final_path = self.root / PACKS_DIR / record.file_name
+            if previous is not None and previous.file_name != record.file_name:
+                # Keep the previous immutable pack in an explicit history
+                # directory before committing its replacement. History is not
+                # charged as current searchable pack content.
+                history = self.root / "history" / previous.pack_id / previous.file_name
+                history.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_bytes(history, _read_bounded(self.root / PACKS_DIR / previous.file_name))
             atomic_write_bytes(final_path, raw)
             indexed = False
             try:
+                chunk_options = {}
+                fit = self._chunk_fit()
+                if fit is not None:
+                    chunk_options["fit"] = fit
+                if job.seed_vectors:
+                    chunk_options["seed_vectors"] = job.seed_vectors
                 self._store.replace_pack(
                     pack,
                     pack_sha256=sha,
                     disabled_keys=record.disabled_titles,
                     should_cancel=lambda: self._superseded(job) or self._stopping,
                     commit_gate=commit_gate,
+                    **chunk_options,
                 )
                 indexed = True
                 registry = self._registry.with_pack(record)
@@ -1387,18 +1865,17 @@ class KnowledgeService:
                 if previous is None or previous.file_name != record.file_name:
                     final_path.unlink(missing_ok=True)
                 raise
+            # Keep every immutable raw revision. A failed cleanup must never
+            # turn an already committed import into a failed task.
             if previous is not None and previous.file_name != record.file_name:
-                # The new version is committed; a leftover old file is only
-                # clutter and is removed by the startup cleanup.
-                try:
+                with contextlib.suppress(OSError):
                     (self.root / PACKS_DIR / previous.file_name).unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("[Knowledge] could not delete the old file of %s", pack.pack_id)
             return registry, record
 
         registry, _record = await self._thread(blocking)
         self._broken_packs = tuple(p for p in self._broken_packs if p != job.pack_id)
         self._publish_registry(registry)
+        job.published = True
 
     def _restore_index_blocking(self, pack_id: str, previous: PackRecord | None) -> None:
         try:
@@ -1417,10 +1894,11 @@ class KnowledgeService:
                 decode_pack_bytes(raw),
                 pack_sha256=previous.pack_sha256,
                 disabled_keys=previous.disabled_titles,
+                **self._rebuild_options(previous),
             )
-        except Exception:
+        except Exception as exc:
             # Startup reconcile repairs the index from the registry anyway.
-            logger.warning("[Knowledge] could not restore index after a failed import", exc_info=True)
+            logger.warning("[Knowledge] could not restore index after a failed import (%s)", type(exc).__name__)
 
     # ── vectors ─────────────────────────────────────────────────────
 
@@ -1454,14 +1932,33 @@ class KnowledgeService:
             return
         key = (self._vector_generation, model_id)
         try:
-            snapshot = await self._thread(self._store.load_vectors, model_id)
-        except Exception:
+            snapshot = await self._thread(self._load_vector_snapshot, model_id)
+        except Exception as exc:
             # The scheduled refresh retries; lookups meanwhile skip ids that
             # no longer exist.
-            logger.warning("[Knowledge] vector snapshot reload failed", exc_info=True)
+            logger.warning("[Knowledge] vector snapshot reload failed (%s)", type(exc).__name__)
             return
         self._install_vectors(snapshot, key)
         await self._clear_damaged_vectors(snapshot)
+
+    def _load_vector_snapshot(self, model_id: str) -> VectorSnapshot | None:
+        """Run off-loop: a profile name cannot certify a different resource set."""
+        provider = getattr(self.embedder, "spec", None)
+        if callable(provider):
+            specification = provider()
+            if specification is None:
+                return None
+            return self._store.load_vectors(model_id, specification=specification)
+        return self._store.load_vectors(model_id)
+
+    async def _compatible_snapshot(self, snapshot: VectorSnapshot | None) -> VectorSnapshot | None:
+        """Fail closed if on-disk resources changed after the matrix was loaded."""
+        provider = getattr(self.embedder, "spec", None)
+        if snapshot is not None and callable(provider):
+            current = await self._thread(provider)
+            if current is None or current != snapshot.specification:
+                return None
+        return snapshot
 
     async def _clear_damaged_vectors(self, snapshot: VectorSnapshot | None) -> None:
         """Hand unusable stored vectors back to the indexer, under the write lock.
@@ -1476,8 +1973,8 @@ class KnowledgeService:
             await self._locked(
                 lambda: self._thread(self._store.clear_vectors, damaged), wait=True
             )
-        except Exception:
-            logger.warning("[Knowledge] could not clear damaged vectors", exc_info=True)
+        except Exception as exc:
+            logger.warning("[Knowledge] could not clear damaged vectors (%s)", type(exc).__name__)
             return
         self._index_wakeup.set()
 
@@ -1493,9 +1990,9 @@ class KnowledgeService:
 
         async def rebuild() -> bool:
             try:
-                snapshot = await self._thread(self._store.load_vectors, model_id)
-            except Exception:
-                logger.warning("[Knowledge] vector snapshot rebuild failed", exc_info=True)
+                snapshot = await self._thread(self._load_vector_snapshot, model_id)
+            except Exception as exc:
+                logger.warning("[Knowledge] vector snapshot rebuild failed (%s)", type(exc).__name__)
                 return False
             self._install_vectors(snapshot, key)
             await self._clear_damaged_vectors(snapshot)
@@ -1521,8 +2018,8 @@ class KnowledgeService:
                 processed = await self._index_round(until=last_refresh + VECTOR_REFRESH_SECONDS)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("[Knowledge] indexer round failed", exc_info=True)
+            except Exception as exc:
+                logger.warning("[Knowledge] indexer round failed (%s)", type(exc).__name__)
                 processed = 0
             # New vectors become searchable once the backlog drains, or at
             # least every VECTOR_REFRESH_SECONDS while a long backfill runs;
@@ -1546,6 +2043,74 @@ class KnowledgeService:
         if self._stopping or self._state != "ready" or not self._registry.enabled:
             return None
         return [record.pack_id for record in self._registry.packs.values() if record.local_embedding]
+
+    async def _replan_vector_inputs(self, pack_ids: list[str]) -> None:
+        """Rebuild chunks after a tokenizer becomes available, retaining text.
+
+        Imports made with missing model assets stay keyword-searchable. Before
+        any later encoding, full input counts may require smaller chunks. The
+        same total/per-pack limits remain authoritative for that rebuild.
+        """
+        async def run():
+            def rebuild():
+                fit = self._chunk_fit()
+                if fit is None:
+                    return self._registry
+                planned = []
+                for pack_id in pack_ids:
+                    record = self._registry.packs.get(pack_id)
+                    if record is None:
+                        continue
+                    raw = _read_bounded(self.root / PACKS_DIR / record.file_name)
+                    if pack_sha256(raw) != record.pack_sha256:
+                        raise KnowledgePackError("pack_file_mismatch")
+                    pack = decode_pack_bytes(raw)
+                    chunks = count_pack_chunks(pack, fit=fit)
+                    if chunks > MAX_CHUNKS_PER_PACK:
+                        raise KnowledgePackError("too_many_chunks")
+                    planned.append((pack, record, chunks))
+                changed = {record.pack_id: chunks for _pack, record, chunks in planned}
+                if sum(changed.get(key, record.chunks) for key, record in self._registry.packs.items()) > MAX_TOTAL_CHUNKS:
+                    raise KnowledgePackError("capacity_chunks")
+                registry = self._registry
+                for pack, record, chunks in planned:
+                    self._store.replace_pack(pack, pack_sha256=record.pack_sha256,
+                                             disabled_keys=record.disabled_titles, fit=fit)
+                    registry = registry.with_pack(replace(record, chunks=chunks))
+                save_registry(self.root, registry)
+                return registry
+
+            self._publish_registry(await self._thread(rebuild))
+            # Replacement changes row IDs even when canonical text is equal.
+            self._vectors = None
+            self._vector_generation += 1
+        await self._locked(run, wait=True)
+
+    async def _seed_retained_packages(self, pack_ids: list[str], specification: dict) -> None:
+        """Recover product-package vectors when assets arrive after text install."""
+        from .archive import read_archive
+
+        identity = self._store._spec_hash(specification)
+        for pack_id in pack_ids:
+            record = self._registry.packs.get(pack_id)
+            if record is None or not record.archive_sha256:
+                continue
+            key = (record.archive_sha256, identity)
+            if key in self._seeded_artifacts:
+                continue
+            try:
+                checked = await self._thread(read_archive, self.artifact_path(record.archive_sha256), expected_spec=specification)
+                if checked["artifact_sha256"] != record.archive_sha256:
+                    continue
+                async def write():
+                    if self._registry.packs.get(pack_id) != record:
+                        return 0
+                    return await self._thread(self._store.seed_pack_vectors, pack_id, checked["seed_vectors"])
+                if await self._locked(write, wait=True):
+                    self._vectors_dirty = True
+            except (OSError, KnowledgePackError):
+                pass  # Valid canonical text can still use ordinary backfill.
+            self._seeded_artifacts.add(key)
 
     async def _index_round(self, until: float | None = None) -> int:
         """Embed pending chunks; return how many were tried.
@@ -1571,13 +2136,37 @@ class KnowledgeService:
             pack_ids = self._vector_pack_ids()
             if pack_ids is None:
                 break
+            specification = await self._thread(getattr(self.embedder, "spec", lambda: None))
+            if specification is not None:
+                await self._seed_retained_packages(pack_ids, specification)
             rows = await self._thread(
-                self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE
+                self._store.pending_chunks, model_id=model_id, pack_ids=pack_ids, limit=INDEX_BATCH_SIZE,
+                require_spec=specification is not None,
+                specification=specification,
             )
             if not rows:
                 break
+            counter = getattr(self.embedder, "count_tokens", None)
+            if specification is not None and callable(counter):
+                counts = await self._thread(counter, [text for _id, _hash, text in rows])
+                if counts is None:
+                    break  # Missing assets are deferred, never failed attempts.
+                if any(size > specification["max_length"] for size in counts):
+                    await self._replan_vector_inputs(pack_ids)
+                    continue  # Re-read the new complete inputs before inference.
             started = time.monotonic()
-            vectors = await self.embedder.embed_batch([text for _id, _hash, text in rows])
+            try:
+                compute = getattr(self.embedder, "embed_documents", self.embedder.embed_batch)
+                vectors = await compute([text for _id, _hash, text in rows])
+            except EmbedDeferred as deferred:
+                # Scheduling pressure is not an encoding attempt. Keep the
+                # same pending rows and let the next round retry them.
+                await asyncio.sleep(max(0.05, deferred.retry_after_ms / 1000))
+                self._index_wakeup.set()
+                return processed
+            after_specification = await self._thread(getattr(self.embedder, "spec", lambda: None))
+            if after_specification != specification:
+                break  # Changed resources cannot certify the batch just computed.
             inference_seconds = time.monotonic() - started
             if self._current_model_id() != model_id:
                 break
@@ -1590,7 +2179,8 @@ class KnowledgeService:
             ]
             stored, failed = await self._locked(
                 lambda blobs=blobs, pack_ids=pack_ids: self._thread(
-                    self._store.store_vectors, model_id=model_id, rows=blobs, pack_ids=pack_ids
+                    self._store.store_vectors, model_id=model_id, rows=blobs, pack_ids=pack_ids,
+                    specification=specification,
                 ),
                 wait=True,
             )
@@ -1615,7 +2205,7 @@ class KnowledgeService:
 
     # ── queries ─────────────────────────────────────────────────────
 
-    def _current_packs(self, pack_ids: Sequence[str], registry: Registry) -> set[str]:
+    def _current_packs(self, pack_ids: Sequence[str], registry: Registry, *, management: bool = False) -> set[str]:
         """Packs whose indexed rows are the version ``registry`` describes.
 
         An import writes the rows before the registry, and queries do not take
@@ -1627,6 +2217,7 @@ class KnowledgeService:
             pack_id
             for pack_id in pack_ids
             if (record := registry.packs.get(pack_id)) is not None
+            and (current := self._registry.packs.get(pack_id)) is not None and (management or current.enabled)
             and indexed.get(pack_id) == record.pack_sha256
         }
 
@@ -1635,7 +2226,7 @@ class KnowledgeService:
         return [
             record.pack_id
             for record in registry.packs.values()
-            if record.effective_material_type in wanted and record.pack_id not in self._broken_packs
+            if record.enabled and record.effective_material_type in wanted and record.pack_id not in self._broken_packs
         ]
 
     async def query(
@@ -1668,7 +2259,9 @@ class KnowledgeService:
                 result=result,
                 retrieval_mode=extra.get("retrieval_mode", ""),
                 hits=len(hits),
-                entry_title=hits[0]["title"] if hits else "",
+                # Imported entry titles can contain original filenames. Keep
+                # diagnostics to structural counts and opaque pack identities.
+                entry_title="",
                 pack_id=hits[0]["pack_id"] if hits else "",
                 elapsed_ms=elapsed,
                 error_type=extra.get("error_type", ""),
@@ -1724,7 +2317,7 @@ class KnowledgeService:
             except TimeoutError:
                 return finish("timeout")
             except Exception as exc:
-                logger.warning("[Knowledge] query failed: %s", type(exc).__name__, exc_info=True)
+                logger.warning("[Knowledge] query failed: %s", type(exc).__name__)
                 return finish("error", error_type=type(exc).__name__)
         if not hits:
             return finish("miss", retrieval_mode=retrieval_mode)
@@ -1816,7 +2409,7 @@ class KnowledgeService:
             except TimeoutError:
                 return finish("timeout")
             except Exception as exc:
-                logger.warning("[Knowledge] turn context failed: %s", type(exc).__name__, exc_info=True)
+                logger.warning("[Knowledge] turn context failed: %s", type(exc).__name__)
                 return finish("error", error_type=type(exc).__name__)
         if not any(section["card_ids"] for section in sections.values()):
             return finish("miss", retrieval_mode=retrieval_mode)
@@ -1836,6 +2429,7 @@ class KnowledgeService:
         # very snapshot in the calibration cache.
         snapshot = self._vectors
         snapshot_key = self._vectors_built_for
+        snapshot = await self._compatible_snapshot(snapshot)
         vector_packs = [
             pack_id
             for pack_id in allowed
@@ -1865,7 +2459,7 @@ class KnowledgeService:
             and self.embedder is not None
         ):
             self._calibration.ensure_probes(model_id, self.embedder.embed_batch)
-            embed_task = asyncio.create_task(self.embedder.embed(text))
+            embed_task = asyncio.create_task(getattr(self.embedder, "embed_query", self.embedder.embed)(text))
             embed_task.add_done_callback(_consume)
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
@@ -2008,7 +2602,7 @@ class KnowledgeService:
                 record = registry.packs.get(entry.pack_id) if entry is not None else None
                 if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
                     continue
-                bodies = chunk_bodies(entry.content) or [entry.content]
+                bodies = self._excerpt_bodies(entry, hit.semantic_chunk)
                 index = best_excerpt_index(text, bodies, hit.semantic_chunk)
                 excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
                 cards.append(
@@ -2104,6 +2698,7 @@ class KnowledgeService:
         embed_task: asyncio.Task[Any] | None = None
         model_id = self._current_model_id()
         snapshot = self._vectors
+        snapshot = await self._compatible_snapshot(snapshot)
         # A pack with local vectors turned off is keyword-only, even if
         # vectors from before the switch are still in the snapshot; when no
         # eligible pack has vectors, the query is not embedded at all.
@@ -2131,7 +2726,7 @@ class KnowledgeService:
             # Cap those, or slow inference piles up on the shared model.
             and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
         ):
-            embed_task = asyncio.create_task(self.embedder.embed(query))
+            embed_task = asyncio.create_task(getattr(self.embedder, "embed_query", self.embedder.embed)(query))
             embed_task.add_done_callback(_consume)
             self._query_embeddings.add(embed_task)
             embed_task.add_done_callback(self._query_embeddings.discard)
@@ -2250,7 +2845,7 @@ class KnowledgeService:
             if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
                 continue
             # Show the passage that matched, not just the start of the entry.
-            bodies = chunk_bodies(entry.content) or [entry.content]
+            bodies = self._excerpt_bodies(entry, ranked_hit.semantic_chunk)
             index = best_excerpt_index(query, bodies, ranked_hit.semantic_chunk)
             excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
             cards.append(
@@ -2271,6 +2866,22 @@ class KnowledgeService:
                 }
             )
         return hits, render_reference_block(cards, language=language)
+
+    def _excerpt_bodies(self, entry: StoredEntry, semantic_chunk: int | None) -> list[str]:
+        """Render the actual token-fitted chunk instead of a different char split."""
+        if semantic_chunk is not None:
+            inputs = self._store.entry_embedding_inputs(entry.entry_id)
+            bodies = []
+            for index, text in enumerate(inputs):
+                header = entry.title + ("\n" + entry.summary if index == 0 and entry.summary else "")
+                prefix = header[:MAX_HEADER_CHARS] + "\n"
+                if not text.startswith(prefix):
+                    break
+                bodies.append(text[len(prefix):])
+            else:
+                if bodies:
+                    return bodies
+        return chunk_bodies(entry.content) or [entry.content]
 
     # ── management reads ────────────────────────────────────────────
 
@@ -2307,7 +2918,7 @@ class KnowledgeService:
         # whose cleanup failed (or of an import in flight) stay hidden.
         registry = self._registry
         visible = await self._thread(
-            self._current_packs, [pack_id] if pack_id else list(registry.packs), registry
+            self._current_packs, [pack_id] if pack_id else list(registry.packs), registry, management=True
         )
         pack_ids = sorted(visible)
         if query:
@@ -2326,7 +2937,7 @@ class KnowledgeService:
         # Recheck after the read: a pack replaced in between is left out
         # rather than shown with the snapshot's (older) metadata.
         still_current = await self._thread(
-            self._current_packs, sorted({entry.pack_id for entry in entries}), registry
+            self._current_packs, sorted({entry.pack_id for entry in entries}), registry, management=True
         )
         entries = [entry for entry in entries if entry.pack_id in still_current]
         return {
@@ -2342,10 +2953,10 @@ class KnowledgeService:
         if not pack_id_is_valid(pack_id):
             raise KnowledgeUnavailable("invalid_request")
         registry = self._registry
-        if not await self._thread(self._current_packs, [pack_id], registry):
+        if not await self._thread(self._current_packs, [pack_id], registry, management=True):
             raise KnowledgeUnavailable("not_found")
         entry = await self._thread(self._store.get_entry, pack_id, title)
-        if entry is None or not await self._thread(self._current_packs, [pack_id], registry):
+        if entry is None or not await self._thread(self._current_packs, [pack_id], registry, management=True):
             raise KnowledgeUnavailable("not_found")
         return {"entry": self._entry_payload(entry, detail=True)}
 
@@ -2357,6 +2968,9 @@ class KnowledgeService:
             self._thread(self._store.chunk_stats, model_id),
         )
         embedding_state = self._embedding_state()
+        # Inspect local sidecar facts off-loop; imported ZIP/JSON origins alone
+        # do not grant the document-management capability.
+        managed = await self._thread(lambda: {key for key in self._registry.packs if self._sources_managed(key)})
         packs: list[dict[str, Any]] = []
         for record in sorted(self._registry.packs.values(), key=lambda item: item.pack_id):
             entries, disabled = counts.get(record.pack_id, (0, 0))
@@ -2373,6 +2987,10 @@ class KnowledgeService:
                     "material_type_override": record.material_type_override,
                     "effective_material_type": record.effective_material_type,
                     "entries": entries,
+                    "enabled": record.enabled,
+                    "origin": record.origin,
+                    "retained": False,
+                    "sources_managed": record.pack_id in managed,
                     "disabled_entries": disabled,
                     "auto_context": record.auto_context,
                     "local_embedding": record.local_embedding,
@@ -2388,6 +3006,16 @@ class KnowledgeService:
                     "updated_at": record.updated_at,
                 }
             )
+        for retained in await self._thread(self._sources.retained_packs):
+            if retained["pack_id"] in self._registry.packs:
+                continue
+            packs.append({"pack_id": retained["pack_id"], "source": {"name": retained["name"], "homepage": "", "license": ""},
+                          "declared_material_type": "knowledge", "material_type_override": None, "effective_material_type": "knowledge",
+                          "entries": 0, "disabled_entries": 0, "enabled": False, "origin": "imported", "retained": True,
+                          "sources_managed": True,
+                          "auto_context": False, "local_embedding": False, "chunks_total": 0, "chunks_ready": 0,
+                          "chunks_failed": 0, "vector_state": "off", "broken": False, "subscription": None,
+                          "installed_at": "", "updated_at": ""})
         return packs
 
     @staticmethod

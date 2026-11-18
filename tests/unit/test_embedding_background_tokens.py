@@ -28,14 +28,14 @@ def _service(monkeypatch, ram_gb, lengths):
 
 @pytest.mark.parametrize("ram_gb,expected", [
     (None, 1024), (0, 1024), (4, 1024), (7.99, 1024),
-    (8, 2048), (15.99, 2048), (16, 4096), (64, 4096),
+    (8, 2048), (15.99, 2048), (16, 2048), (64, 2048),
 ])
 def test_background_token_budget_tracks_existing_memory_tiers(ram_gb, expected):
     """Unknown memory remains conservative without changing model enablement."""
     assert hardware.resolve_background_token_budget(ram_gb) == expected
 
 
-@pytest.mark.parametrize("ram_gb,counts", [(4, [2, 2, 1]), (8, [4, 1]), (16, [5])])
+@pytest.mark.parametrize("ram_gb,counts", [(4, [2, 2, 1]), (8, [4, 1]), (16, [4, 1])])
 async def test_background_batches_use_padded_token_cost_and_preserve_order(monkeypatch, ram_gb, counts):
     """Identical text counts may yield different microbatches on each memory tier."""
     lengths = {str(index): 500 for index in range(5)}
