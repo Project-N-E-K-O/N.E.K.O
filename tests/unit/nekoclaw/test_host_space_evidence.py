@@ -755,7 +755,8 @@ async def test_filing_it_again_oneself_is_not_seeing_it_a_second_time(space, roo
 
     (held,) = _pending(root)
     assert held["seen_by"] == ["c1"] and held["sources"] == ["c1", "c1-a"]
-    assert _in_effect(root) == []
+    # Filed again while it waits, it is in no index either.
+    assert _in_effect(root) == [] and _index(root) == ""
 
 
 async def test_as_many_commissions_as_are_asked_for_must_have_seen_it(space, root, workdir, monkeypatch):
@@ -2462,7 +2463,8 @@ async def test_the_fullest_space_is_shown_whole_with_what_is_said_about_reading_
 
     brief = await space.brief("Budget app")
 
-    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    # Written full, it is some 2040 tokens: within the cap, with room for a data root that has a longer path.
+    assert 2020 < count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS - 50
     note, *sections = brief.split("\n\n")
     assert count_tokens(note) < 200
     lines = [len(section.split("\n")) - 2 for section in sections]
@@ -3000,3 +3002,554 @@ async def test_a_text_of_ones_own_that_is_in_an_entry_is_not_judged_again(space,
 
     assert reply == "already in camera-drive.md in project _daily; nothing was added"
     assert _pending(root) == [] and _head(_memory(root) / "camera-drive.md")["confidence"] == "verified"
+
+
+# ---------------------------------------------------------------------------
+# A guess is confirmed by whoever checks it
+# ---------------------------------------------------------------------------
+
+
+async def test_a_task_agent_confirms_a_guess_it_came_upon_by_filing_it_under_its_title_as_verified(space, root, workdir, events):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+
+    # Another commission came upon the file, checked it, and says so in its own words under that title.
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("camera drive", "Checked with the card in: the camera is drive E.", "verified")
+    )
+
+    assert reply == "kept in project _daily as camera-drive.md"
+    head = _head(_memory(root) / "camera-drive.md")
+    assert "status" not in head and "notice" not in head
+    assert (head["confidence"], head["seen"], head["seen_by"], head["sources"]) == ("verified", "2", "c1, c2", "c1, c2")
+    said = (_memory(root) / "camera-drive.md").read_text(encoding="utf-8")
+    assert said.index("It is probably E: here.") < said.index("Checked with the card in: the camera is drive E.")
+    assert _pending(root) == [] and _index(root).count("(memory/camera-drive.md)") == 1
+    payload = events.rows[-1][2]
+    assert payload["kept"] is True and payload["created"] is True and payload["entry"] == "camera-drive"
+    # It put a text on file, and that used a place of the commission that confirmed it.
+    assert space._added_by == {"c1": 1, "c2": 1}
+
+
+async def test_the_commission_that_guessed_confirms_its_own_guess_the_same_way(space, root, workdir):
+    commission = _commission(workdir)
+    await space.submit(commission, _lesson("Camera drive", "It is probably E: here."))
+
+    reply = await space.submit(commission, _lesson("Camera drive", "It is E: looked at in the file manager.", "verified"))
+
+    assert reply == "kept in project _daily as camera-drive.md"
+    head = _head(_memory(root) / "camera-drive.md")
+    assert "status" not in head and (head["confidence"], head["seen"], head["seen_by"]) == ("verified", "1", "c1")
+    assert _pending(root) == [] and _in_effect(root) == ["camera-drive"]
+
+
+async def test_what_is_only_observed_does_not_take_a_guess_of_its_own_commission_along(space, root, workdir):
+    commission = _commission(workdir)
+    await space.submit(commission, _lesson("Entry point", "It probably starts in main.py."))
+
+    # Seen to happen, with a file: in effect by itself. Nobody checked the guess, and nobody else has seen it.
+    seen = await space.submit(commission, _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
+
+    assert seen == "kept in project _daily as entry-point-2.md"
+    assert [held["id"] for held in _pending(root)] == ["entry-point"] and _in_effect(root) == ["entry-point-2"]
+    assert "It probably starts in main.py." not in (_memory(root) / "entry-point-2.md").read_text(encoding="utf-8")
+    # Another commission files under that title: the guess goes into the entry of that title. One title is one entry.
+    other = await space.submit(_commission(workdir, id="c2"), _lesson("Entry point", "It is started by run.cmd."))
+    assert other == "added to entry-point-2.md in project _daily"
+    said = (_memory(root) / "entry-point-2.md").read_text(encoding="utf-8")
+    assert said.index("The app starts in app.py.") < said.index("It probably starts in main.py.") < said.index("It is started by run.cmd.")
+    assert [path.name for path in _memory(root).iterdir()] == ["entry-point-2.md"]
+    assert _index(root).count("(memory/entry-point-2.md)") == 1 and "(memory/entry-point.md)" not in _index(root)
+
+
+async def test_a_pending_entry_the_user_rewords_stays_pending_and_gets_no_line(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+
+    entry = await space.edit_entry(
+        "camera-drive", DEFAULT_PROJECT, title="Camera drive letter", description="where the camera shows up"
+    )
+
+    assert entry is not None and (entry.title, entry.status) == ("Camera drive letter", ENTRY_PENDING)
+    assert _index(root) == "" and [held["title"] for held in _pending(root)] == ["Camera drive letter"]
+    # It is confirmed under the title it has now, and listed as the user worded it.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive letter", "Checked: it is E.", "verified"))
+    assert reply == "kept in project _daily as camera-drive.md"
+    assert "- [Camera drive letter](memory/camera-drive.md) — where the camera shows up" in _index(root)
+
+
+async def test_removing_a_pending_entry_removes_the_file_and_remembers_it(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+
+    assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+
+    assert list(_memory(root).iterdir()) == []
+    assert _notes(root)["removed"] == [
+        {"marks": [_digest("It is probably E: here.")], "title": "Camera drive", "at": "2027-01-15"}
+    ]
+    # The user removed it: the same note is not kept again, as a guess or as anything else.
+    assert await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is drive F.")) == REMOVED
+    assert await space.submit(_commission(workdir, id="c2"), _lesson("Card slot", "It is probably E: here.", "verified")) == REMOVED
+    assert list(_memory(root).iterdir()) == []
+
+
+async def test_a_file_the_user_wrote_that_says_pending_is_not_the_hosts_to_remove(space, root, workdir, monkeypatch, clock):
+    from config.nekoclaw_settings import SPACE_HELD_KEPT_SECONDS
+
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 1)
+    memory = _memory(root)
+    memory.mkdir(parents=True)
+    # No marks of texts: not a file the host made, whatever it says of itself.
+    mine = memory / "my-idea.md"
+    mine.write_text(
+        "---\nname: My idea\nstatus: pending\nupdated: 2020-01-01\n---\n\nSomething I mean to look into.\n", encoding="utf-8"
+    )
+
+    (entry,) = await space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status) == ("my-idea", ENTRY_ACTIVE)
+    # It is not one of the notes that wait: not counted among them, and not removed for having waited.
+    assert await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here.")) == _held("camera-drive")
+    assert sorted(path.name for path in memory.iterdir()) == ["camera-drive.md", "my-idea.md"]
+    clock.now += SPACE_HELD_KEPT_SECONDS + 2 * 86400
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 1}
+    assert [path.name for path in memory.iterdir()] == ["my-idea.md"]
+    assert "status: pending" in mine.read_text(encoding="utf-8")
+
+
+async def test_a_pending_entry_does_not_expire(space, root, workdir):
+    reply = await space.submit(
+        _commission(workdir), _lesson("Entry point", "The app probably starts in app.py.", "inferred", ["src/app.py"])
+    )
+    assert reply == _held("entry-point")
+    (workdir / "src" / "app.py").unlink()
+
+    # It is in no index to begin with; that the file it named is gone changes nothing in what it says.
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    head = _head(_memory(root) / "entry-point.md")
+    assert head["status"] == "pending" and "expired" not in head
+    # Nor when it is asked for by name.
+    assert not await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", True)
+    assert _head(_memory(root) / "entry-point.md")["status"] == "pending"
+
+
+async def test_a_pending_entry_that_was_filed_again_or_took_effect_meanwhile_is_not_removed_for_waiting(space, root, workdir, clock):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+    await space.submit(_commission(workdir), _lesson("Backups", "Probably copied first."))
+    clock.now += 100 * 86400
+    oldest = "2027-04-01"
+
+    # Looked at once more when it is its turn: one was filed again on that day, the other was confirmed.
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here."))
+    await space.submit(_commission(workdir, id="c2"), _lesson("Backups", "Probably copied first."))
+
+    assert not await space._write(space._drop_pending, DEFAULT_PROJECT, "camera-drive", oldest)
+    assert not await space._write(space._drop_pending, DEFAULT_PROJECT, "backups", oldest)
+    assert not await space._write(space._drop_pending, DEFAULT_PROJECT, "no-such-entry", oldest)
+    assert [held["title"] for held in _pending(root)] == ["Camera drive"] and _in_effect(root) == ["backups"]
+    # One that is still as it was found goes.
+    assert await space._write(space._drop_pending, DEFAULT_PROJECT, "camera-drive", "2027-05-01")
+    assert _pending(root) == []
+
+
+def test_the_texts_of_an_entry_are_told_apart_by_their_dated_headings():
+    from nekoclaw.host.space import _texts_of
+
+    body = (
+        "First text.\n\nStill the first.\n\n## 2027-01-16\n\nSecond text.\n\n## Notes\n\nNot a day: part of the second."
+        "\n\n## 2027-01-17\n\n...\n"
+    )
+
+    # A text that says nothing is none.
+    assert _texts_of(body) == [
+        "First text.\n\nStill the first.",
+        "Second text.\n\n## Notes\n\nNot a day: part of the second.",
+    ]
+    assert _texts_of("") == [] and _texts_of("\n\n## 2027-01-16\n\n") == []
+
+
+async def test_a_pending_entry_with_more_than_one_text_goes_with_its_commission_text_by_text(space, root, workdir, clock):
+    await space.touch_project("Budget app")
+    commission = _commission(workdir)
+    await space.submit(commission, _lesson("Camera drive", "It is probably E: here."))
+    clock.now += 86400
+    again = await space.submit(commission, _lesson("Camera drive", "Or F:, with the card reader in."))
+    (before,) = _pending(root)
+    # Another guess under that title is another text of the one pending entry.
+    assert again == _held("camera-drive") and before["content"].count("## 2027-01-16") == 1 and len(before["texts"]) == 2
+    # A commission of the project has guessed the second of the two.
+    await space.submit(
+        _commission(workdir, id="p1", project="Budget app"), _lesson("Card reader", "Or F:, with the card reader in.")
+    )
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # That one is seen twice there and takes effect; the other waits there, since the days it was filed on.
+    assert moved == ["card-reader"]
+    head = _head(_memory(root, "Budget app") / "card-reader.md")
+    assert "status" not in head and (head["seen"], head["seen_by"]) == ("2", "p1, c1")
+    (held,) = _pending(root, "Budget app")
+    assert (held["id"], held["content"]) == ("camera-drive", "It is probably E: here.")
+    assert (held["first"], held["last"]) == ("2027-01-15", "2027-01-16")
+    assert _pending(root) == [] and list(_memory(root).iterdir()) == []
+
+
+def test_a_task_agent_is_told_what_a_pending_file_is_and_how_it_is_confirmed():
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    assert (
+        "A file there that says status: pending is a guess nobody has confirmed, in no index: if you check one "
+        "yourself and it holds, submit it again under its title as verified."
+    ) in texts.SPACE_BRIEF_NOTE
+    # What that costs with every request of a session that is shown the space: under forty tokens.
+    note = texts.SPACE_BRIEF_NOTE.format(root="D:/Documents/N.E.K.O/nekoclaw/task_agent_space", project="_daily")
+    assert 185 < count_tokens(note) < 200
+    # What a pending file says of itself is read only by a task agent that opens it; one line of its front matter.
+    assert 50 < count_tokens(texts.SPACE_ENTRY_PENDING_NOTICE) < 70 and "\n" not in texts.SPACE_ENTRY_PENDING_NOTICE
+    held = texts.SPACE_NOTE_HELD.format(why=texts.SPACE_NOTE_HELD_INFERRED, entry="camera-drive")
+    assert count_tokens(held) < 75
+
+
+# ---------------------------------------------------------------------------
+# Files outside the working directories
+# ---------------------------------------------------------------------------
+
+
+class _Setting:
+    """Stands in for the user's setting on reading outside the working directory."""
+
+    def __init__(self, allowed: bool = False) -> None:
+        self.allowed = allowed
+
+    async def __call__(self) -> bool:
+        return self.allowed
+
+
+@pytest.fixture
+def setting() -> _Setting:
+    return _Setting()
+
+
+@pytest.fixture
+def outside(tmp_path: Path) -> Path:
+    """A file that is in no working directory."""
+    directory = tmp_path / "elsewhere"
+    directory.mkdir()
+    path = directory / "camera.ini"
+    path.write_text("drive=E\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def open_space(root: Path, clock: Clock, events: _Events, setting: _Setting) -> TaskAgentSpace:
+    """A space that is told whether task agents may read outside the working directory without being asked."""
+    return TaskAgentSpace(lambda: SpacePaths(root), ledger=events, clock=clock, outside_readable=setting)
+
+
+def _where(path: Path) -> str:
+    """Return a file as the space keeps it: where it really is."""
+    return Path(os.path.realpath(path)).as_posix()
+
+
+def test_what_counts_outside_the_working_directory(workdir, outside, tmp_path):
+    named = [str(outside), "../elsewhere/camera.ini", "../elsewhere/missing.ini", "src/app.py", str(tmp_path / "elsewhere")]
+
+    counted, others = evidence_of(named, [str(workdir)], outside=True)
+
+    # By its full path or by one that leads out of the working directory; a directory is no file.
+    assert counted == [_where(outside), (workdir / "src" / "app.py").as_posix()]
+    assert others == [("../elsewhere/missing.ini", "not found"), (str(tmp_path / "elsewhere"), "not found")]
+    # Not allowed: what leads out is not looked at, and said to be outside.
+    counted, others = evidence_of(named, [str(workdir)])
+    assert counted == [(workdir / "src" / "app.py").as_posix()]
+    assert [why for _path, why in others] == ["outside the working directory"] * 4
+    # With no working directory at all, a full path is still a file that may be read.
+    assert evidence_of([str(outside), "camera.ini"], [], outside=True) == ([_where(outside)], [("camera.ini", "not found")])
+    assert evidence_of([str(outside)], []) == ([], [(str(outside), "outside the working directory")])
+
+
+async def test_a_file_outside_the_working_directory_counts_only_while_task_agents_may_read_there_unasked(
+    open_space, setting, root, workdir, outside
+):
+    lesson = _lesson("Camera drive", "The camera is drive E, as camera.ini says.", "observed", [str(outside)])
+
+    asked = await open_space.submit(_commission(workdir), lesson)
+
+    # Not looked at: a task agent would have to ask before it may read it.
+    assert asked.startswith(_held("camera-drive", NO_FILE) + " Not counted as evidence: ")
+    assert asked.endswith(" (outside the working directory).")
+    assert _pending(root)[0]["evidence"] == []
+    # The user lets task agents read out there without asking: it is a file like any other.
+    setting.allowed = True
+    allowed = await open_space.submit(_commission(workdir), lesson)
+
+    assert allowed == "kept in project _daily as camera-drive.md"
+    head = _head(_memory(root) / "camera-drive.md")
+    assert json.loads(head["evidence"]) == json.loads(head["evidence_outside"]) == [_where(outside)]
+    (entry,) = await open_space.list_entries(DEFAULT_PROJECT)
+    assert entry.evidence == entry.evidence_outside == (_where(outside),)
+    assert entry.to_json()["evidence_outside"] == [_where(outside)]
+
+
+async def test_only_the_files_outside_are_marked_as_such(open_space, setting, root, workdir, outside):
+    setting.allowed = True
+
+    await open_space.submit(
+        _commission(workdir), _lesson("Camera drive", "It is E:.", "observed", ["src/app.py", "../elsewhere/camera.ini"])
+    )
+    await open_space.submit(_commission(workdir), _lesson("Entry point", "It is app.py.", "observed", ["src/app.py"]))
+
+    head = _head(_memory(root) / "camera-drive.md")
+    assert json.loads(head["evidence"]) == [(workdir / "src" / "app.py").as_posix(), _where(outside)]
+    assert json.loads(head["evidence_outside"]) == [_where(outside)]
+    assert "evidence_outside" not in _head(_memory(root) / "entry-point.md")
+    # A file of the working directory that is named for it later is not one of them either.
+    await open_space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E:.", "observed", ["README.md"]))
+    head = _head(_memory(root) / "camera-drive.md")
+    assert len(json.loads(head["evidence"])) == 3 and json.loads(head["evidence_outside"]) == [_where(outside)]
+
+
+async def test_an_entry_does_not_expire_over_a_file_outside_once_reading_there_is_asked_about_again(
+    open_space, setting, root, workdir, outside
+):
+    setting.allowed = True
+    await open_space.submit(_commission(workdir), _lesson("Camera drive", "It is E:.", "observed", [str(outside)]))
+    # The user takes that back, and the file goes.
+    setting.allowed = False
+    outside.unlink()
+
+    # Whether it is there is not looked at any more, so it cannot be told: the entry is left as it is.
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert "status" not in _head(_memory(root) / "camera-drive.md") and "(memory/camera-drive.md)" in _index(root)
+    assert not await open_space._write(open_space._set_standing, DEFAULT_PROJECT, "camera-drive", True, False)
+    assert "status" not in _head(_memory(root) / "camera-drive.md")
+
+    # Allowed again, it is looked at, and found gone.
+    setting.allowed = True
+    assert await open_space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+    assert _head(_memory(root) / "camera-drive.md")["status"] == "expired" and _index(root) == ""
+    # Back, but not to be looked at: it stays expired. Looked at again, it is in effect again.
+    outside.write_text("drive=E\n", encoding="utf-8")
+    setting.allowed = False
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert not await open_space._write(open_space._set_standing, DEFAULT_PROJECT, "camera-drive", False, False)
+    assert _head(_memory(root) / "camera-drive.md")["status"] == "expired" and _index(root) == ""
+    setting.allowed = True
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
+    assert "status" not in _head(_memory(root) / "camera-drive.md") and "(memory/camera-drive.md)" in _index(root)
+
+
+async def test_an_entry_whose_files_inside_are_gone_does_not_expire_while_one_outside_cannot_be_looked_at(
+    open_space, setting, root, workdir, outside
+):
+    setting.allowed = True
+    await open_space.submit(
+        _commission(workdir), _lesson("Camera drive", "It is E:.", "observed", ["src/app.py", str(outside)])
+    )
+    setting.allowed = False
+
+    # One inside is there: nothing needs to be told about the one outside.
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    (workdir / "src" / "app.py").unlink()
+    # None inside is, and the one outside may not be looked at: it cannot be told, and nothing is changed.
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    assert "status" not in _head(_memory(root) / "camera-drive.md") and "(memory/camera-drive.md)" in _index(root)
+    # Looked at, the one outside is there: it would not have expired either way.
+    setting.allowed = True
+    assert await open_space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    outside.unlink()
+    assert await open_space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+
+
+async def test_a_file_outside_no_longer_speaks_for_a_note_that_waits_once_it_may_not_be_looked_at(
+    open_space, setting, root, workdir, outside
+):
+    setting.allowed = True
+    first = await open_space.submit(
+        _commission(workdir), _lesson("Camera drive", "It is probably E:.", "inferred", [str(outside)])
+    )
+    assert first == _held("camera-drive") and _pending(root)[0]["evidence"] == [_where(outside)]
+    setting.allowed = False
+
+    # Filed again as seen, with no file named: what it named before may not be looked at now.
+    again = await open_space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E:.", "observed"))
+
+    assert again == _held("camera-drive", NO_FILE)
+    # Confirmed by another commission, it keeps the file as what it rests on: gone or not, that is not
+    # looked at, so nothing says it is gone.
+    outside.unlink()
+    await open_space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is probably E:."))
+    head = _head(_memory(root) / "camera-drive.md")
+    assert "status" not in head
+    assert json.loads(head["evidence"]) == json.loads(head["evidence_outside"]) == [_where(outside)]
+
+
+async def test_a_file_outside_that_is_gone_is_not_kept_by_a_guess_that_takes_effect_while_it_may_be_looked_at(
+    open_space, setting, root, workdir, outside
+):
+    setting.allowed = True
+    await open_space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E:.", "inferred", [str(outside)]))
+    outside.unlink()
+
+    await open_space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is probably E:."))
+
+    head = _head(_memory(root) / "camera-drive.md")
+    assert "status" not in head and "evidence" not in head and "evidence_outside" not in head
+
+
+async def test_not_knowing_whether_task_agents_may_read_outside_is_not_being_allowed(root, clock, workdir, outside):
+    async def broken() -> bool:
+        raise RuntimeError("the settings cannot be read")
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), clock=clock, outside_readable=broken)
+
+    reply = await space.submit(_commission(workdir), _lesson("Camera drive", "It is E:.", "observed", [str(outside)]))
+
+    assert reply.startswith(_held("camera-drive", NO_FILE)) and reply.endswith(" (outside the working directory).")
+    # Nor is a space that nobody tells anything.
+    assert not await TaskAgentSpace(lambda: SpacePaths(root), clock=clock)._outside_allowed()
+
+
+# ---------------------------------------------------------------------------
+# The files a model gives for an entry it made
+# ---------------------------------------------------------------------------
+
+
+async def test_the_files_a_model_gives_for_an_entry_are_what_it_rests_on(space, root, workdir):
+    entry, created = await space.propose_entry(
+        DEFAULT_PROJECT,
+        title="Entry point",
+        content="The app is started from one module.",
+        source="c1",
+        bases=[str(workdir)],
+        evidence=["src/app.py", "missing.py", "README.md"],
+    )
+
+    # Its words name no file. The ones it gave are looked at, two of them and no more.
+    assert created and entry is not None and (entry.status, entry.confidence) == (ENTRY_ACTIVE, "observed")
+    assert entry.evidence == ((workdir / "src" / "app.py").as_posix(),)
+
+
+LONG_NAME = "-".join(f"q{number}x{number * 7}z" for number in range(1, 12)) + ".md"
+
+
+@pytest.mark.parametrize(
+    "given", [None, "src/app.py", [3, None, {"path": "src/app.py"}], ["  ", ""], [LONG_NAME], ("../README.md",)]
+)
+async def test_what_a_model_gives_that_names_no_file_it_may_rest_on_is_not_counted(space, root, workdir, given):
+    from config.nekoclaw_settings import SPACE_EVIDENCE_PATH_MAX_TOKENS, TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    # A file, and one a task agent could name: only longer than a path a model is asked to give.
+    (workdir / LONG_NAME).write_text("a report\n", encoding="utf-8")
+    assert TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS < count_tokens(LONG_NAME) <= SPACE_EVIDENCE_PATH_MAX_TOKENS
+    entry, _created = await space.propose_entry(
+        DEFAULT_PROJECT,
+        title="Entry point",
+        content="The app is started from one module.",
+        source="c1",
+        bases=[str(workdir)],
+        evidence=given,
+    )
+
+    # No list of paths, a path longer than a path is, one that leads out: it waits like any guess.
+    assert entry is None and [(held["confidence"], held["evidence"]) for held in _pending(root)] == [("inferred", [])]
+
+
+async def test_the_files_its_words_name_still_count_when_a_model_gives_none_that_exists(space, root, workdir):
+    entry, _created = await space.propose_entry(
+        DEFAULT_PROJECT,
+        title="Entry point",
+        content="The app starts in `src/app.py`.",
+        source="c1",
+        bases=[str(workdir)],
+        evidence=["app.py"],
+    )
+
+    assert entry is not None and entry.evidence == ((workdir / "src" / "app.py").as_posix(),)
+
+
+async def test_a_file_a_model_gives_outside_the_working_directory_counts_while_task_agents_may_read_there(
+    open_space, setting, root, workdir, outside
+):
+    async def proposed(title: str) -> Any:
+        entry, _created = await open_space.propose_entry(
+            DEFAULT_PROJECT, title=title, content="The camera is drive E.", source="c1", bases=[str(workdir)], evidence=["../elsewhere/camera.ini"]
+        )
+        return entry
+
+    assert await proposed("Camera drive") is None
+    setting.allowed = True
+    entry = await proposed("Camera drive")
+
+    assert entry is not None and entry.evidence == entry.evidence_outside == (_where(outside),)
+
+
+# ---------------------------------------------------------------------------
+# A guess and the entries that are in effect
+# ---------------------------------------------------------------------------
+
+
+async def test_a_guess_is_not_added_to_an_entry_in_effect_about_a_similar_topic(space, root, workdir):
+    from config.nekoclaw_settings import SPACE_SAME_TOPIC_SIMILARITY
+    from nekoclaw.host.selection import similarity
+
+    await space.submit(_commission(workdir), _lesson("pip install fails on Windows", "A long path.", "verified"))
+
+    # Alike enough to be added to that entry if it were in effect; a guess adds nothing to what is.
+    reply = await space.submit(
+        _commission(workdir, id="c2"), _lesson("npm install fails on Windows", "A missing compiler, perhaps.")
+    )
+
+    assert reply == _held("npm-install-fails-on-windows")
+    assert "A missing compiler" not in (_memory(root) / "pip-install-fails-on-windows.md").read_text(encoding="utf-8")
+    assert similarity("pip install fails on Windows", "npm install fails on Windows") >= SPACE_SAME_TOPIC_SIMILARITY
+
+
+async def test_removing_an_entry_leaves_the_entries_in_effect_that_say_the_same(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
+    # The same text in an entry of another title, made in the console.
+    other, _created = await space.file_entry(DEFAULT_PROJECT, title="Photo location", content="It is E: here.")
+
+    assert await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+
+    # Only what the user named is removed, and what waits to become it: an entry in effect is theirs to remove.
+    assert _in_effect(root) == [other.id] and "(memory/photo-location.md)" in _index(root)
+
+
+async def test_a_guess_whose_text_is_in_an_entry_by_now_goes_into_that_entry(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Photo location", "It is probably E: here."))
+    # The user writes the same into an entry of their own, under another title.
+    await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is probably E: here.")
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Where photos are", "It is probably E: here."))
+
+    # The text is in effect, so there is nothing to judge, and nothing of it waits any longer: the guess
+    # is that entry, with everyone who has seen it.
+    assert reply == "already in camera-drive.md in project _daily; nothing was added"
+    assert _pending(root) == [] and _in_effect(root) == ["camera-drive"]
+    head = _head(_memory(root) / "camera-drive.md")
+    assert (head["seen_by"], head["sources"]) == ("c1, c2", "c1, c2")
+    assert (_memory(root) / "camera-drive.md").read_text(encoding="utf-8").count("It is probably E: here.") == 2
+
+
+async def test_a_note_brought_to_where_the_same_waits_keeps_the_earliest_and_the_latest_day(space, root, workdir, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_SEEN_TO_TAKE_EFFECT", 3)
+    await space.touch_project("Budget app")
+    # A commission of the project guessed it on the day of these tests; one that belongs to none yet did
+    # before that, and filed it once more after.
+    await space.submit(_commission(workdir, id="p1", project="Budget app"), _lesson("Shared guess", "A guess of two."))
+    _pending_file(root, "Shared guess", "A guess of two.", ["c1"], created="2027-01-01", updated="2027-02-01")
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # Two have seen it, which is not enough here: it waits on, since the first day and from the last.
+    (held,) = _pending(root, "Budget app")
+    assert (held["seen_by"], held["first"], held["last"]) == (["p1", "c1"], "2027-01-01", "2027-02-01")
+    assert _pending(root) == []
+
+
+def test_a_link_out_of_the_working_directory_counts_while_task_agents_may_read_where_it_leads(workdir, outside):
+    _linked(workdir / "README.md", outside)
+
+    # Where it leads is what is kept, and what is marked as outside.
+    assert evidence_of(["README.md"], [str(workdir)], outside=True) == ([_where(outside)], [])
+    assert evidence_of(["README.md"], [str(workdir)]) == ([], [("README.md", "outside the working directory")])

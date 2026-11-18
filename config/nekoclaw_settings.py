@@ -247,11 +247,13 @@ SPACE_BRIEF_PROJECT_INDEX_MAX_TOKENS = 500
 SPACE_BRIEF_MAX_TOKENS = 2100
 """Cap on everything the space adds to a task agent's system prompt: the four
 parts above (1800 together), their headings, the line each has when it was
-cut, and the note in front of them, which says where the files are and how
-a note is to be read (some 190 tokens with an ordinary path). It is paid
-with every request of the session. Nothing is added while the space holds
-nothing for the commission. With all four parts at their caps the whole is
-some 2060 tokens and fits; a test keeps it so."""
+cut, and the note in front of them, which says where the files are, how a
+note is to be read and what a pending file is (some 195 tokens with an
+ordinary path). It is paid with every request of the session. Nothing is
+added while the space holds nothing for the commission. With all four parts
+at their caps the whole is some 2040 tokens, as measured; the sixty that
+are left are for a data root with a long path. A test keeps the whole
+within the cap."""
 
 SPACE_ENTRY_TITLE_MAX_TOKENS = 24
 SPACE_ENTRY_DESCRIPTION_MAX_TOKENS = 40

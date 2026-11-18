@@ -2968,3 +2968,62 @@ def test_the_two_prompts_ask_for_the_file_an_entry_is_about():
     # Every entry has a place for them in what a model is asked to write; how it is known is the host's to tell.
     for prompt in (texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT, texts.SPACE_ARCHIVE_SYSTEM_PROMPT):
         assert '"content": "...", "evidence": ["..."]}}]' in prompt and '"confidence"' not in prompt
+
+
+async def test_the_files_a_review_gives_for_an_entry_are_what_it_rests_on(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [
+                {"title": "Photo dates", "content": "EXIF first, then the file date.", "evidence": ["src/dates.py"]},
+                {"title": "Videos", "content": "They have no EXIF date.", "evidence": "src/dates.py"},
+            ],
+        }
+    ]
+
+    commission = await world.finished(workdir=str(folder))
+
+    kept, waiting = await world.space.list_entries(DEFAULT_PROJECT)
+    # The words of the first name no file: the one the review gave for it is what it rests on.
+    assert (kept.id, kept.status, kept.confidence) == ("photo-dates", "active", "observed")
+    assert kept.evidence == ((folder / "src" / "dates.py").as_posix(),)
+    # What is no list of paths is not read as one: the second waits like any guess.
+    assert (waiting.id, waiting.status, waiting.confidence, waiting.evidence) == ("videos", "pending", "inferred", ())
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"], "waiting": 1}
+    ]
+
+
+async def test_an_entry_of_a_summary_for_the_archive_is_cut_and_rests_on_the_files_it_gives(world, tmp_path, judged):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS, TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", description="tracks spending", workdir=str(folder))
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "An app that tracks spending.",
+            "line": "spending tracker, paused",
+            "entries": [
+                {
+                    "title": "Date formats",
+                    "type": "lesson",
+                    "content": "Dates are kept in one module. " * 60,
+                    "evidence": ["src/dates.py"],
+                }
+            ],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+
+    # Its words name no file; the one the summary gave for it is what it rests on.
+    (entry,) = await world.space.list_entries()
+    assert (entry.id, entry.status, entry.confidence) == ("date-formats", "active", "observed")
+    assert entry.evidence == ((folder / "src" / "dates.py").as_posix(),)
+    # As long as an entry of a review may be, and ended where a sentence ends.
+    said = (await world.space.read_entry("date-formats")).content
+    assert count_tokens(said) <= TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+    assert said.endswith("Dates are kept in one module.") and 10 < said.count("Dates are kept in one module.") < 60

@@ -1649,8 +1649,7 @@ class TaskAgentSpace:
 
         First the one that is in effect or has expired, and whether it
         has the text: the one that has it, else the one of that title.
-        Then the pending ones, each with whether it has the text, those
-        that have it first.
+        Then the pending ones, each with whether it has the text.
         """
         name = _normal(title)
         there: Entry | None = None
@@ -1680,7 +1679,6 @@ class TaskAgentSpace:
                 there = there or entry
             else:
                 called = called or entry
-        waits.sort(key=lambda item: not item[1])
         if there is not None:
             return there, True, waits
         return called, False, waits

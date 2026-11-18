@@ -828,3 +828,47 @@ async def test_shutting_down_stands_the_space_down_before_the_task_agents_are_st
     await host.shutdown()
 
     assert stood_down == [True]
+
+
+async def test_the_space_is_told_whether_task_agents_may_read_outside_the_working_directory_unasked(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+
+    # Asked about by default: the space does not look at files out there.
+    assert not await host.space._outside_allowed()
+    await host.permission_store.set_mode("outside_read", "allow")
+    assert await host.space._outside_allowed()
+    # Any other setting is one under which a task agent does not read there unasked.
+    for mode in ("first_ask", "always_ask", "deny"):
+        await host.permission_store.set_mode("outside_read", mode)
+        assert not await host.space._outside_allowed()
+
+
+async def test_a_lesson_may_rest_on_a_file_outside_the_folder_once_reading_there_is_allowed(hosts, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "camera.ini").write_text("drive=E\n", encoding="utf-8")
+    lesson = {
+        "title": "Camera drive",
+        "content": "The camera is drive E, as camera.ini says.",
+        "category": "lesson",
+        "confidence": "observed",
+        "evidence": [str(elsewhere / "camera.ini")],
+    }
+    llm = ScriptedLLM([_tool("note_lesson", lesson, "n1"), _report(), _tool("note_lesson", lesson, "n2"), _report()])
+    host = _host(hosts, tmp_path, llm)
+
+    first = await _dispatch(host, "find the camera")
+    await wait_status(host, first.commission_id, "done")
+
+    # A task agent would have to ask before it reads that file: the host does not look at it either.
+    (guess,) = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (guess.id, guess.status, guess.evidence) == ("camera-drive", "pending", ())
+    assert "(outside the working directory)" in llm.requests[1][-1]["content"]
+
+    await host.permission_store.set_mode("outside_read", "allow")
+    second = await _dispatch(host, "find the camera again")
+    await wait_status(host, second.commission_id, "done")
+
+    (entry,) = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status, entry.confidence) == ("camera-drive", "active", "observed")
+    assert entry.evidence == entry.evidence_outside == ((elsewhere / "camera.ini").resolve().as_posix(),)
