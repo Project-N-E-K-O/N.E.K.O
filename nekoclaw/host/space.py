@@ -708,9 +708,14 @@ def paths_named_in(text: Any) -> list[str]:
 def _stands(path: str) -> bool | None:
     """Whether a file an entry rests on is there. None when that cannot be told.
 
-    It cannot be told while the drive or the share it is on is not there
-    (a disk that is unplugged, a network that is down), or while the file
-    system refuses to say: an entry does not expire over that.
+    It cannot be told while the drive it is on is not there, or while the
+    file system refuses to say: an entry does not expire over that. A
+    drive that is not there is known by its letter, so this holds where
+    drives have letters (Windows: a disk that is unplugged, a share that
+    is down). Where volumes are mounted below a directory (macOS, Linux)
+    one that is away looks like a file that is gone: False. The entry
+    expires then, and is in effect again at the first look after the
+    volume is back (``check_evidence``).
 
     A path that leads somewhere else by now, through a link put in its
     place or in the place of a directory above it, does not stand. What
@@ -817,16 +822,24 @@ def _removed_there(removed: Iterable[dict[str, Any]], text: str | None, title: s
     By any of the texts it holds, or by its title, as a note that is
     filed is told to be one (``_take_note``). An entry that cannot be
     read is told by its title alone.
+
+    The texts it holds are the ones it was given, of which it keeps the
+    marks, and what it says now: its text may have been replaced in an
+    editor since, and a text that was removed elsewhere stands in it
+    without a mark then, as all it says or as a part of it.
     """
-    marks: set[str] = set()
-    if text is not None:
-        document = _parse_document(text)
-        marks = set(_listed(document, "texts") or [_digest(document.body)])
+    records = list(removed)
     name = _normal(title)
-    for item in removed:
-        if marks & set(_strings(item.get("marks"))) or (name and _normal(item.get("title")) == name):
-            return True
-    return False
+    if name and any(_normal(item.get("title")) == name for item in records):
+        return True
+    wanted = {mark for item in records for mark in _strings(item.get("marks"))}
+    if text is None or not wanted:
+        return False
+    document = _parse_document(text)
+    if wanted & {*_listed(document, "texts"), _digest(document.body)}:
+        return True
+    # None when the entry is too long to look through: not told then.
+    return bool(_standing_marks(document.body, wanted))
 
 
 def _known_of_held(item: dict[str, Any], *, observer: str | None, seen_before: Iterable[str]) -> _Known:
@@ -2908,24 +2921,35 @@ class TaskAgentSpace:
             return False
         line = _index_line(document.get("name") or path.stem, target, document.get("description"))
         self._index_add(paths.index(project), line, target)
+        failed: OSError | None = None
+        changed = False
         try:
             changed = self._edit_text(path, change)
-        except OSError:
-            # The entry could not be written: it still says it expired, and
-            # an entry that expired has no line. The line goes again, as
-            # far as that can be done; the next look tries anew, and finds
-            # the line there or not.
-            try:
-                self._index_remove(paths.index(project), target)
-            except OSError:
-                logger.warning("the line of an entry that could not be brought back could not be taken out", exc_info=True)
-            raise
-        if not (still and still[0]):
-            # Its files could not be seen to be there after all (the disk
-            # they are on went at this very moment): it still says it
-            # expired, and gets no line. While its files cannot be looked
-            # at nothing else would take the line out again.
-            self._index_remove(paths.index(project), target)
+        except OSError as exc:
+            failed = exc
+        if failed is not None or not (still and still[0]):
+            # Not brought back, as far as can be told: the entry could not
+            # be written, or its files could not be seen to be there after
+            # all (the disk they are on went at this very moment). An entry
+            # that expired has no line, and while its files cannot be
+            # looked at nothing else would take the line out again. Whether
+            # it still says it expired is told by its file as it is now,
+            # not by how the writing ended: the writing may have gone
+            # through before it failed, and an entry that is in effect
+            # keeps its line. One that cannot be read keeps it as well; if
+            # it still says it expired, the next look goes on from there.
+            now = self._read_text(path)
+            if now is not None and _parse_document(now).get("status").strip().lower() == ENTRY_EXPIRED:
+                try:
+                    self._index_remove(paths.index(project), target)
+                except OSError:
+                    if failed is None:
+                        raise
+                    logger.warning(
+                        "the line of an entry that could not be brought back could not be taken out", exc_info=True
+                    )
+        if failed is not None:
+            raise failed
         return changed
 
     # -- for the console: rules and indexes -------------------------------

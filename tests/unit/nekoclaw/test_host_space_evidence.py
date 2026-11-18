@@ -1365,6 +1365,59 @@ async def test_an_entry_that_cannot_be_written_when_it_comes_back_gets_no_line_a
     assert _index(root).count("(memory/entry-point.md)") == 1
 
 
+async def test_an_entry_that_came_back_before_the_writing_failed_keeps_its_line(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
+    editing = TaskAgentSpace._edit_text
+
+    def written_then_failed(self: TaskAgentSpace, path: Path, change: Any) -> bool:
+        done = editing(self, path, change)
+        if path.name == "entry-point.md":
+            # The entry was replaced, and what came after (reading it back while an editor held it) failed.
+            raise PermissionError(13, "in use")
+        return done
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", written_then_failed)
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+
+    # It is in effect by what its file says, and an entry in effect has its line: nothing would put it back.
+    assert "status" not in _head(_memory(root) / "entry-point.md")
+    assert _index(root).count("(memory/entry-point.md)") == 1
+
+
+async def test_an_entry_that_cannot_be_read_after_the_writing_failed_keeps_its_line_for_the_next_look(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
+    editing, reading = TaskAgentSpace._edit_text, TaskAgentSpace._read_text
+    failed: list[bool] = []
+
+    def held(self: TaskAgentSpace, path: Path, change: Any) -> bool:
+        if path.name == "entry-point.md":
+            failed.append(True)
+            raise PermissionError(13, "in use")
+        return editing(self, path, change)
+
+    def unreadable(path: Path) -> Any:
+        # Held by another program from the moment the writing failed.
+        return None if failed and path.name == "entry-point.md" else reading(path)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", held)
+    monkeypatch.setattr(TaskAgentSpace, "_read_text", staticmethod(unreadable))
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+    monkeypatch.undo()
+
+    # What it says cannot be told, so its line is left. It still says it expired, and the next look goes on.
+    assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and "(memory/entry-point.md)" in _index(root)
+    assert await space.check_evidence() == {"expired": 0, "restored": 1, "dropped": 0}
+    assert _index(root).count("(memory/entry-point.md)") == 1
+
+
 async def test_an_entry_that_kept_its_line_and_still_says_it_expired_is_finished_at_the_next_look(space, root, workdir, monkeypatch):
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
@@ -2276,6 +2329,84 @@ async def test_what_the_user_removed_from_a_project_does_not_come_back_with_a_co
     assert sorted(entry.id for entry in await space.list_entries(DEFAULT_PROJECT)) == ["backups", "where-the-camera-is"]
     assert "(memory/backups.md)" in _index(root) and "(memory/where-the-camera-is.md)" in _index(root)
     assert "Camera" not in _index(root, "Budget app") and "Backups" not in _index(root, "Budget app")
+
+
+def _said_instead(path: Path, old: str, new: str) -> None:
+    """Have the user replace a text of an entry in an editor: what it says, not what stands in its front matter."""
+    _opening, head, said = path.read_text(encoding="utf-8").split("---" + chr(10), 2)
+    assert old in said
+    path.write_text(f"---\n{head}---\n{said.replace(old, new)}", encoding="utf-8", newline="\n")
+
+
+async def test_an_entry_that_says_by_now_what_the_user_removed_from_a_project_does_not_go_there(space, root, workdir):
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Camera drive", "It is E: here.", "verified"))
+    await space.delete_entry("camera-drive", "Budget app")
+    # Two entries of a commission that was one of the daily ones, under other titles and with other texts.
+    await space.submit(_commission(workdir), _lesson("Where the camera is", "It is somewhere.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Things about the camera", "It has a card.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Checked", "It is so.", "verified"))
+    # In an editor the first is made to say what was removed, and the second to say it as one part of more.
+    # Neither has a mark of that text: the marks they keep are of what they were given.
+    first, second = _memory(root) / "where-the-camera-is.md", _memory(root) / "things-about-the-camera.md"
+    _said_instead(first, "It is somewhere.", "It is E: here.")
+    _said_instead(second, "It has a card.", "It has a card.\n\nit is e here\n\nAnd a strap.")
+    # Each is still an entry of that commission, and keeps the mark of what it was given and no other.
+    entries = {entry.id: entry for entry in await space.list_entries(DEFAULT_PROJECT)}
+    assert all(entries[name].sources == ("c1",) for name in ("where-the-camera-is", "things-about-the-camera"))
+    assert _head(first)["texts"] == _digest("It is somewhere.") and _head(second)["texts"] == _digest("It has a card.")
+
+    moved = await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    assert moved == ["checked"]
+    assert sorted(entry.id for entry in await space.list_entries(DEFAULT_PROJECT)) == [
+        "things-about-the-camera",
+        "where-the-camera-is",
+    ]
+
+
+async def test_an_entry_too_long_to_look_through_is_told_by_the_marks_of_what_it_was_given(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await space.touch_project("Budget app")
+    await space.submit(_commission(workdir, id="c9", project="Budget app"), _lesson("Camera drive", "It is E: here.", "verified"))
+    await space.delete_entry("camera-drive", "Budget app")
+    # An entry under another title that was given that text as an addition: it is not all the entry says.
+    await space.submit(_commission(workdir), _lesson("Where the camera is", "It is somewhere.", "verified"))
+    await space.submit(_commission(workdir), _lesson("Where the camera is", "It is E: here.", "verified"))
+    # Too long for its parts to be looked through one by one.
+    monkeypatch.setattr(module, "_standing_marks", lambda body, marks: None)
+
+    assert await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app") == []
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["where-the-camera-is"]
+
+
+async def test_that_the_line_of_an_entry_that_did_not_come_back_cannot_be_taken_out_is_told(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    (workdir / "README.md").write_text("# Back\n", encoding="utf-8")
+    real = module._gone
+    looks: list[Any] = []
+
+    def then_unplugged(evidence: Any) -> Any:
+        # There when the entry is looked at, and not to be told when it is written: the disk went.
+        looks.append(real(evidence))
+        return None if len(looks) > 1 else looks[-1]
+
+    def held(self: TaskAgentSpace, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(module, "_gone", then_unplugged)
+    monkeypatch.setattr(TaskAgentSpace, "_index_remove", held)
+
+    # Nothing else went wrong, so this is what whoever asked is told: the line is still there.
+    with pytest.raises(PermissionError):
+        await space._write(space._set_standing, DEFAULT_PROJECT, "entry-point", False)
+    assert _head(_memory(root) / "entry-point.md")["status"] == "expired" and "(memory/entry-point.md)" in _index(root)
 
 
 async def test_entries_go_with_their_commission_though_what_was_removed_there_cannot_be_read(space, root, workdir):
