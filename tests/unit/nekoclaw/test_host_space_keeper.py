@@ -2865,11 +2865,41 @@ async def test_an_entry_of_a_summary_for_the_archive_is_judged_like_one_of_a_rev
 
     await world.keeper.tidy(force=True)
 
+    # A file it names speaks for it; nobody is named as having seen it.
     (entry,) = await world.space.list_entries()
-    assert (entry.id, entry.confidence, entry.seen_by) == ("date-formats", "observed", ("archive:Budget app",))
+    assert (entry.id, entry.confidence, entry.seen_by) == ("date-formats", "observed", ())
     assert entry.evidence == ((folder / "src" / "dates.py").as_posix(),)
     (held,) = (await world.space.read_notes(None))["held"]
-    assert (held["title"], held["seen_by"]) == ("CSV on Windows", ["archive:Budget app"])
+    assert (held["title"], held["seen_by"]) == ("CSV on Windows", [])
+
+
+async def test_a_summary_for_the_archive_that_repeats_a_guess_of_its_project_is_no_second_sighting(world, tmp_path, judged):
+    from types import SimpleNamespace
+
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", description="tracks spending", workdir=str(folder))
+    # A commission of the project guessed something that would hold everywhere: it waits.
+    guess = {"title": "CSV on Windows", "content": "Write a BOM so Excel reads UTF-8.", "category": "lesson", "scope": "global"}
+    commission = SimpleNamespace(id="c1", parent_id=None, project="Budget app", workdir=str(folder))
+    assert (await world.space.submit(commission, {**guess, "confidence": "inferred"})).startswith("not in effect yet")
+    # The summary is made from what the project's commissions did, and says the same again.
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "An app that tracks spending.",
+            "line": "spending tracker, paused",
+            "entries": [{"title": guess["title"], "type": "lesson", "content": guess["content"]}],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+
+    # Seen by one commission still: it goes on waiting.
+    assert await world.space.list_entries() == []
+    (held,) = (await world.space.read_notes(None))["held"]
+    assert (held["title"], held["seen_by"]) == ("CSV on Windows", ["c1"])
 
 
 async def test_tidying_has_entries_expire_whose_files_are_gone(world, tmp_path, judged):

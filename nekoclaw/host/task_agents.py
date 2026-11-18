@@ -620,11 +620,26 @@ class TaskAgentManager:
         The host reads none of them. Looked for in a worker thread, since
         it reads the file system; a folder that cannot be looked at does
         not keep a task agent from starting.
+
+        In a directory of the host's own (the one a commission is given
+        that names none, below the folder the host keeps its data in)
+        only that directory is looked at, not what lies above it: see
+        ``repo_docs.listing``.
         """
+        from pathlib import Path
+
         from nekoclaw.host import repo_docs
+        from nekoclaw.runtime.permissions import is_inside
+
+        def look() -> str:
+            try:
+                own = is_inside(Path(workdir), self._paths.root())
+            except (OSError, ValueError):
+                own = False
+            return repo_docs.listing(workdir, upward=not own)
 
         try:
-            return await asyncio.to_thread(repo_docs.listing, workdir)
+            return await asyncio.to_thread(look)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - it starts without the list

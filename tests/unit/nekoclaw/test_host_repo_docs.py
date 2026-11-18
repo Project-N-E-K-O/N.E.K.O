@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import builtins
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -247,6 +248,91 @@ def test_a_directory_with_very_many_files_is_looked_at_only_so_far(tmp_path, mon
     assert listing(root).split("\n")[1:] == ["- docs/adr/ (40 files)"]
 
 
+class _Name:
+    """Stands in for what ``os.scandir`` gives: a name that is a file."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def is_file(self) -> bool:
+        return True
+
+
+class _Names:
+    """Stands in for ``os.scandir``: gives names in the order it was made with, as a file system may."""
+
+    def __init__(self, names: list[str]) -> None:
+        self.names = names
+        self.given = 0
+
+    def __call__(self, directory: Any) -> Any:
+        return self
+
+    def __enter__(self) -> Any:
+        for name in self.names:
+            self.given += 1
+            yield _Name(name)
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+
+def test_the_files_listed_of_a_full_directory_are_its_first_by_name_whatever_order_they_come_in(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENT_DIRECTORY_MAX_FILES", 3)
+    names = _Names(["e.md", "b.md", "d.md", "a.md", "c.md"])
+    monkeypatch.setattr(repo_docs, "os", SimpleNamespace(scandir=names))
+
+    files, more = repo_docs._files_of(tmp_path)
+
+    assert [item.name for item in files] == ["a.md", "b.md", "c.md"] and more
+    assert files[0] == tmp_path / "a.md"
+    # No more than there are, and nothing is said to be left.
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENT_DIRECTORY_MAX_FILES", 5)
+    assert [item.name for item in repo_docs._files_of(tmp_path)[0]] == ["a.md", "b.md", "c.md", "d.md", "e.md"]
+    assert repo_docs._files_of(tmp_path)[1] is False
+
+
+def test_only_so_many_names_of_a_directory_are_looked_at(tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENT_DIRECTORY_MAX_FILES", 2)
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENT_DIRECTORY_MAX_SCANNED", 4)
+    names = _Names(["e.md", "d.md", "c.md", "b.md", "a.md", "0.md", "1.md"])
+    monkeypatch.setattr(repo_docs, "os", SimpleNamespace(scandir=names))
+
+    files, more = repo_docs._files_of(tmp_path)
+
+    # Four names were looked at and one more to see that there are more: the first two of those four.
+    assert names.given == 5
+    assert [item.name for item in files] == ["b.md", "c.md"] and more
+    # Not looked at to its end: there are more, though what was seen is no more than may be listed.
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENT_DIRECTORY_MAX_FILES", 9)
+    assert repo_docs._files_of(tmp_path) == ([tmp_path / name for name in ("b.md", "c.md", "d.md", "e.md")], True)
+    # Looked at to its end, and no fuller than may be listed: nothing is left.
+    monkeypatch.setattr(repo_docs, "os", SimpleNamespace(scandir=_Names(["b.md", "a.md"])))
+    assert repo_docs._files_of(tmp_path) == ([tmp_path / "a.md", tmp_path / "b.md"], False)
+
+
+def test_what_is_in_a_directory_and_is_no_file_is_not_listed(tmp_path):
+    (tmp_path / "rules").mkdir()
+    (tmp_path / "rules" / "b.md").write_text("b", encoding="utf-8")
+    (tmp_path / "rules" / "a.md").write_text("a", encoding="utf-8")
+    (tmp_path / "rules" / "more").mkdir()
+
+    assert repo_docs._files_of(tmp_path / "rules") == ([tmp_path / "rules" / "a.md", tmp_path / "rules" / "b.md"], False)
+    assert repo_docs._files_of(tmp_path / "none") == ([], False)
+
+
+def test_nothing_above_a_folder_is_looked_at_when_it_is_not_to_be(tmp_path):
+    root = _repository(tmp_path, {"AGENTS.md": "a", "work/notes.txt": "n"})
+
+    assert listing(root / "work").split("\n")[1:] == ["- AGENTS.md (1 B)"]
+    assert listing(root / "work", upward=False) == ""
+    assert repository_root(root / "work", upward=False) == (root / "work").resolve()
+    # What the folder itself keeps is still listed.
+    (root / "work" / "CLAUDE.md").write_text("c", encoding="utf-8")
+    assert listing(root / "work", upward=False).split("\n")[1:] == ["- CLAUDE.md (1 B)"]
+    assert (root / "work").resolve().as_posix() in listing(root / "work", upward=False)
+
+
 def test_how_many_are_left_out_is_the_least_it_can_be_when_a_directory_was_not_looked_at_to_its_end(tmp_path, monkeypatch):
     monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENT_DIRECTORY_MAX_FILES", 3)
     root = _repository(tmp_path, {f".agent/rules/rule-{number}.md": "r" for number in range(9)})
@@ -311,9 +397,7 @@ def test_a_file_called_something_with_line_ends_in_it_stays_one_line_of_the_list
     assert "\r" not in text and "\n\n" not in text
 
 
-def test_what_cannot_be_printed_in_a_name_is_written_as_an_escape_and_a_long_name_is_cut(tmp_path, monkeypatch):
-    from utils.tokenize import count_tokens
-
+def test_what_cannot_be_printed_in_a_name_is_written_as_an_escape_and_a_name_too_long_is_left_out(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     found = [
         Document(".agent/rules/a\x00b\x1b[31m" + chr(0x2028) + "c" + chr(0x200B) + "\td" + chr(92) + "n.md", size=1),
@@ -327,13 +411,27 @@ def test_what_cannot_be_printed_in_a_name_is_written_as_an_escape_and_a_long_nam
     # The character that begins an escape is doubled, so a name that holds the two characters of an escape
     # reads differently from one that holds the line end.
     assert lines[1] == "- .agent/rules/a\\x00b\\x1b[31m\\u2028c\\u200b\\td\\\\n.md (1 B)"
-    assert lines[2].startswith("- .cursor/rules/very-long-name-") and lines[2].endswith(" (2 B)")
-    assert count_tokens(lines[2]) < 80
-    assert lines[3] == "- docs/adr/\\n (3 files)"
+    # Too long to write: cut, it would name another file or none. It is there, and counted as not listed.
+    assert lines[2] == "- docs/adr/\\n (3 files)"
+    assert lines[3] == "(1 more are not listed)"
+    # When no path can be written there is no list.
+    assert render(root, found[1:2]) == ""
     # The place of the repository is written the same way.
     odd = tmp_path / "re\npo"
     assert render(odd, [Document("AGENTS.md", size=1)]).split("\n")[1:] == ["- AGENTS.md (1 B)"]
     assert "re\\npo" in render(odd, [Document("AGENTS.md", size=1)])
+    # The place may be longer than a path of the list: it is written out from the root of the disk.
+    from utils.tokenize import count_tokens
+
+    deep = tmp_path
+    while count_tokens(deep.as_posix()) <= 70:
+        deep = deep / "a-folder-inside"
+    assert 70 < count_tokens(deep.as_posix()) < 120
+    assert deep.as_posix() in render(deep, [Document("AGENTS.md", size=1)])
+    # A place too long to write is not cut either: there is no list then.
+    monkeypatch.setattr("config.nekoclaw_settings.REPO_DOCUMENTS_ROOT_MAX_TOKENS", 5)
+    assert render(tmp_path / ("a-very-long-place-" * 10), [Document("AGENTS.md", size=1)]) == ""
+    assert render(Path("/r"), [Document("AGENTS.md", size=1)]).split("\n")[1:] == ["- AGENTS.md (1 B)"]
 
 
 @pytest.mark.parametrize(
@@ -430,7 +528,7 @@ async def test_a_task_agent_that_works_in_no_such_repository_is_given_nothing_mo
 
 
 async def test_a_folder_that_cannot_be_listed_does_not_keep_a_task_agent_from_starting(hosts, tmp_path, monkeypatch):
-    def broken(workdir: Any) -> str:
+    def broken(workdir: Any, **how: Any) -> str:
         raise RuntimeError("the disk is gone")
 
     monkeypatch.setattr(repo_docs, "listing", broken)
@@ -450,9 +548,9 @@ async def test_the_list_is_made_off_the_event_loop(hosts, tmp_path, monkeypatch)
     threads: list[str] = []
     real = repo_docs.listing
 
-    def watched(workdir: Any) -> str:
+    def watched(workdir: Any, **how: Any) -> str:
         threads.append(threading.current_thread().name)
-        return real(workdir)
+        return real(workdir, **how)
 
     monkeypatch.setattr(repo_docs, "listing", watched)
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
@@ -462,3 +560,30 @@ async def test_the_list_is_made_off_the_event_loop(hosts, tmp_path, monkeypatch)
     await wait_status(host, receipt.commission_id, "done")
 
     assert threads and threading.current_thread().name not in threads
+
+
+async def test_a_folder_the_host_made_for_a_commission_is_in_no_repository(hosts, tmp_path):
+    # The folder the application keeps its data in lies inside a repository that has files for agents.
+    root = _repository(tmp_path, {"AGENTS.md": "Always answer in French."})
+    llm = ScriptedLLM([_report()])
+    host = _host(hosts, root, llm)
+
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en", user_text="can you sort my photos")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    # It named no folder and works in one of the host's own, below that repository. Nobody chose to work
+    # in the repository, and it is not told of its files.
+    assert Path(done.workdir).is_relative_to(root)
+    assert "Files written for agents" not in llm.requests[0][0]["content"]
+
+
+async def test_a_folder_the_user_named_is_in_the_repository_above_it(hosts, tmp_path):
+    root = _repository(tmp_path, {"AGENTS.md": "a", "app/main.py": "m"})
+    llm = ScriptedLLM([_report()])
+    host = _host(hosts, tmp_path, llm)
+    await host.space.touch_project("Budget app", workdir=str(root / "app"))
+
+    receipt = await host.dispatch("add an export to the Budget app", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "done")
+
+    assert llm.requests[0][0]["content"].endswith(NOTE.format(root=root.as_posix()) + "\n- AGENTS.md (1 B)")

@@ -39,6 +39,7 @@ goes is the caller's business: today it follows a task agent's brief
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,7 +66,7 @@ class Document:
     more: bool = False
 
 
-def repository_root(workdir: Path) -> Path:
+def repository_root(workdir: Path, *, upward: bool = True) -> Path:
     """Return the root of the repository a directory is in, or the directory itself when it is in none.
 
     The nearest directory, going up, that has a ``.git`` (a directory in
@@ -76,6 +77,10 @@ def repository_root(workdir: Path) -> Path:
     Going up starts from where the directory really is: one reached
     through a link is in the repository the link leads into, not in
     whatever the link itself lies in.
+
+    With ``upward`` False nothing above the directory is looked at: it
+    is its own root. For a directory nobody chose to work in, see
+    ``listing``.
     """
     from config.nekoclaw_settings import REPO_ROOT_SEARCH_MAX_LEVELS
 
@@ -83,6 +88,8 @@ def repository_root(workdir: Path) -> Path:
         start = workdir.resolve()
     except (OSError, RuntimeError):
         start = workdir
+    if not upward:
+        return start
     current = start
     for _level in range(REPO_ROOT_SEARCH_MAX_LEVELS + 1):
         try:
@@ -97,27 +104,36 @@ def repository_root(workdir: Path) -> Path:
 
 
 def _files_of(directory: Path) -> tuple[list[Path], bool]:
-    """Return the files directly in a directory, by name, and whether it has more than were looked at.
+    """Return the first files directly in a directory, by name, and whether it has more than those.
 
-    None when it cannot be read. No more than
-    ``REPO_DOCUMENT_DIRECTORY_MAX_FILES`` are looked at: a directory fuller
-    than that is no set of rules, and what is listed of it is the
-    beginning.
+    Empty when it cannot be read. The first
+    ``REPO_DOCUMENT_DIRECTORY_MAX_FILES`` by name: a directory fuller than
+    that is no set of rules, and what is listed of it is its beginning,
+    the same every time and not whatever the file system happens to give
+    first. Which those are is known once every name was seen; no more
+    than ``REPO_DOCUMENT_DIRECTORY_MAX_SCANNED`` names are, and of a
+    directory fuller than that the first of the ones that were seen.
     """
-    from config.nekoclaw_settings import REPO_DOCUMENT_DIRECTORY_MAX_FILES
+    from config.nekoclaw_settings import REPO_DOCUMENT_DIRECTORY_MAX_FILES, REPO_DOCUMENT_DIRECTORY_MAX_SCANNED
 
-    files: list[Path] = []
+    names: list[str] = []
     more = False
     try:
-        for item in directory.iterdir():
-            if item.is_file():
-                if len(files) >= REPO_DOCUMENT_DIRECTORY_MAX_FILES:
+        with os.scandir(directory) as items:
+            for seen, item in enumerate(items):
+                if seen >= REPO_DOCUMENT_DIRECTORY_MAX_SCANNED:
                     more = True
                     break
-                files.append(item)
+                try:
+                    if item.is_file():
+                        names.append(item.name)
+                except OSError:
+                    continue
     except OSError:
         return [], False
-    return sorted(files, key=lambda item: item.name), more
+    names.sort()
+    more = more or len(names) > REPO_DOCUMENT_DIRECTORY_MAX_FILES
+    return [directory / name for name in names[:REPO_DOCUMENT_DIRECTORY_MAX_FILES]], more
 
 
 def _size(path: Path) -> int | None:
@@ -154,8 +170,8 @@ def documents(root: Path) -> list[Document]:
 _ESCAPE = chr(92)
 
 
-def _shown(text: str) -> str:
-    """Return a path as one line of text that still says what the path is, no longer than a path may be.
+def _shown(text: str, most: int | None = None) -> str | None:
+    """Return a path as one line of text that still says what the path is; None for one longer than a path may be.
 
     What a file is called is the repository's author's to choose, and on
     most file systems a name may hold line ends. Written out as it is,
@@ -164,9 +180,14 @@ def _shown(text: str) -> str:
     no printable character, is written the way Python writes it inside a
     string, and so is the character that begins such an escape. The
     line stays one line, and the path can still be read off it.
+
+    A path that takes more than ``most`` tokens written so
+    (``REPO_DOCUMENT_PATH_MAX_TOKENS`` unless said otherwise) is not
+    written at all. Cut short it would name another file or none, and
+    the cut could fall inside an escape.
     """
     from config.nekoclaw_settings import REPO_DOCUMENT_PATH_MAX_TOKENS
-    from utils.tokenize import truncate_to_tokens
+    from utils.tokenize import count_tokens
 
     written: list[str] = []
     for char in str(text):
@@ -176,7 +197,8 @@ def _shown(text: str) -> str:
             written.append(char)
         else:
             written.append(char.encode("unicode_escape").decode("ascii"))
-    return truncate_to_tokens("".join(written), REPO_DOCUMENT_PATH_MAX_TOKENS)
+    shown = "".join(written)
+    return shown if count_tokens(shown) <= (most or REPO_DOCUMENT_PATH_MAX_TOKENS) else None
 
 
 def _size_text(size: int | None) -> str:
@@ -198,14 +220,21 @@ def render(root: Path, found: list[Document]) -> str:
     more than ``REPO_DOCUMENTS_MAX_LINES`` and no more text than
     ``REPO_DOCUMENTS_MAX_TOKENS``; a last line says how many were left out.
     Every path is written as one line (``_shown``), whatever the file is
-    called. Of a directory that was not looked at to its end, what is said
-    is the least it can be: "at least" so many.
+    called; one that is too long to write is among those left out, and
+    when the root itself is, there is no list. Of a directory that was
+    not looked at to its end, what is said is the least it can be: "at
+    least" so many.
     """
-    from config.nekoclaw_settings import REPO_DOCUMENTS_MAX_LINES, REPO_DOCUMENTS_MAX_TOKENS
+    from config.nekoclaw_settings import (
+        REPO_DOCUMENTS_MAX_LINES,
+        REPO_DOCUMENTS_MAX_TOKENS,
+        REPO_DOCUMENTS_ROOT_MAX_TOKENS,
+    )
     from config.prompts import prompts_nekoclaw_brain as texts
     from utils.tokenize import count_tokens
 
-    if not found:
+    where = _shown(root.as_posix(), REPO_DOCUMENTS_ROOT_MAX_TOKENS)
+    if not found or where is None:
         return ""
     def counted(item: Document) -> str:
         count = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT
@@ -214,18 +243,21 @@ def render(root: Path, found: list[Document]) -> str:
             count = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_COUNT_AT_LEAST
         return count.format(count=item.files)
 
-    lines = [
-        f"- {_shown(item.path)} ({counted(item) if item.files is not None else _size_text(item.size)})"
-        for item in found
-    ]
-    note = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_NOTE.format(root=_shown(root.as_posix()))
+    lines: list[str] = []
+    for item in found:
+        path = _shown(item.path)
+        if path is not None:
+            lines.append(f"- {path} ({counted(item) if item.files is not None else _size_text(item.size)})")
+    # The ones whose path is too long to write: there, and not listed.
+    unwritten = len(found) - len(lines)
+    note = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_NOTE.format(root=where)
     shown = lines[:REPO_DOCUMENTS_MAX_LINES]
     # Directories whose files are listed one by one and were not looked at
     # to the end: each has one file more at the least.
     unseen = len({item.path.rsplit("/", 1)[0] for item in found if item.more and item.files is None})
 
     def whole() -> str:
-        left_out = len(lines) - len(shown) + unseen
+        left_out = len(lines) - len(shown) + unseen + unwritten
         said = texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE_AT_LEAST if unseen else texts.TASK_AGENT_BRIEF_REPO_DOCUMENTS_MORE
         more = [said.format(count=left_out)] if left_out else []
         return "\n".join([note, *shown, *more])
@@ -236,16 +268,23 @@ def render(root: Path, found: list[Document]) -> str:
     return whole() if shown else ""
 
 
-def listing(workdir: str | Path | None) -> str:
+def listing(workdir: str | Path | None, *, upward: bool = True) -> str:
     """Return what to tell a task agent that works in ``workdir`` about the files its repository keeps for agents.
 
     Empty when the directory is in no repository that has any, or cannot
     be looked at: a task agent starts without the list then. Blocking.
+
+    ``upward`` is False for a directory the host made for a commission
+    that named none. Nobody chose to work there, and whatever repository
+    lies above it (the folder the application keeps its data in may be
+    inside one, a home directory that is a repository of settings) has
+    nothing to do with the commission: only the directory itself is
+    looked at.
     """
     if not workdir:
         return ""
     try:
-        root = repository_root(Path(workdir))
+        root = repository_root(Path(workdir), upward=upward)
         return render(root, documents(root))
     except (OSError, ValueError):
         logger.warning("the files a repository keeps for agents could not be listed", exc_info=True)

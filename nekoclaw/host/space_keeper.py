@@ -719,7 +719,7 @@ class SpaceKeeper:
         kept: list[str] = []
         waiting = 0
         entries = data.get("entries")
-        bases = await self._evidence_bases(commission.workdir, project)
+        bases = await self._space.evidence_bases(commission.workdir, project)
         for item in (entries if isinstance(entries, list) else [])[: self._entries_allowed(commission)]:
             if not isinstance(item, dict):
                 continue
@@ -755,18 +755,6 @@ class SpaceKeeper:
         if refiled:
             outcome["refiled"] = [f"{project}/{entry_id}" for entry_id in refiled]
         return outcome
-
-    async def _evidence_bases(self, workdir: str | None, project: str | None) -> list[str]:
-        """Return the directories in which the files an entry names are looked for: where the work was done, where the project is."""
-        bases = [workdir] if workdir else []
-        if project and project != DEFAULT_PROJECT:
-            try:
-                record = await self._space.get_project(project)
-            except (SpaceError, OSError, ValueError):
-                record = None
-            if record is not None and record.workdir and record.workdir not in bases:
-                bases.append(record.workdir)
-        return bases
 
     def _unreviewed(self, conn: sqlite3.Connection, since: float, before: float, limit: int) -> list[str]:
         """Return the oldest commissions that ended between two times and have no review. Blocking.
@@ -1034,14 +1022,17 @@ class SpaceKeeper:
                 kind = str(item.get("type") or "").strip().lower()
                 try:
                     # Judged as what a review makes is; see ``_keep_review``.
-                    # The project as a whole is what has seen it.
+                    # Nobody is named as having seen it: the summary is
+                    # made from what the project's own commissions did,
+                    # so it says again what one of them found and is no
+                    # second sighting of it. A file it names still speaks
+                    # for it.
                     await self._space.propose_entry(
                         None,
                         title=str(item.get("title") or ""),
                         content=str(item.get("content") or ""),
                         kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
                         description=str(item.get("description") or ""),
-                        observer=f"archive:{project.name}",
                         bases=[project.workdir] if project.workdir else [],
                     )
                 except (SpaceError, OSError) as exc:

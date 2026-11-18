@@ -354,6 +354,18 @@ def test_the_same_file_named_twice_is_one(workdir):
     assert counted == [(workdir / "src" / "app.py").as_posix()]
 
 
+def test_a_file_reached_through_a_link_is_kept_as_where_it_really_is(workdir):
+    try:
+        (workdir / "link.md").symlink_to(workdir / "README.md")
+        (workdir / "code").symlink_to(workdir / "src", target_is_directory=True)
+    except OSError:
+        pytest.skip("links cannot be made here")
+
+    counted, _others = evidence_of(["link.md", "code/app.py"], [str(workdir)])
+
+    assert counted == [(workdir / "README.md").as_posix(), (workdir / "src" / "app.py").as_posix()]
+
+
 def test_a_link_that_leads_out_of_the_directory_is_no_evidence(tmp_path, workdir):
     outside = tmp_path / "secret.txt"
     outside.write_text("secret\n", encoding="utf-8")
@@ -372,20 +384,55 @@ def test_the_paths_a_text_names_are_found_by_how_they_are_written():
         "配置在config/settings.toml里，入口是「src/app.py」。"
     )
 
-    # Words between spaces, quotation marks and brackets first, then what is written like a path wherever
-    # it stands (Chinese puts no space around one). Whether any of them is a file is told elsewhere.
+    # What is written like a path first, wherever it stands (Chinese puts no space around one), then the
+    # words between spaces, quotation marks and brackets. A number is no file. Whether any of the others is
+    # one is told elsewhere.
     assert paths_named_in(text) == [
         "src/photos/exif.py",
         "README.md",
         "tests\\run.ps1",
-        "3.10",
         "v1.2.3",
-        "配置在config/settings.toml里",
-        "src/app.py",
         "config/settings.toml",
+        "src/app.py",
+        "配置在config/settings.toml里",
     ]
     assert paths_named_in("") == [] and paths_named_in(None) == []
     assert paths_named_in("a word, another word. done") == []
+
+
+def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
+    assert paths_named_in("Use Node.js 3.10, e.g. via nvm (i.e. nvm.sh); edit config/app.yaml") == [
+        "Node.js",
+        "e.g",
+        "i.e",
+        "nvm.sh",
+        "config/app.yaml",
+    ]
+    # Chinese: a clause is one word as spaces go. The paths in it are found by themselves, and come first.
+    assert paths_named_in("修改config/app.yaml后要先跑tests/test_app.py，确认Python3.11下没问题") == [
+        "config/app.yaml",
+        "tests/test_app.py",
+        "Python3.11",
+        "修改config/app.yaml后要先跑tests/test_app.py",
+    ]
+    assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
+
+
+async def test_a_file_named_after_many_words_that_are_written_like_one_still_speaks_for_an_entry(space, root, workdir):
+    (workdir / "config").mkdir()
+    (workdir / "config" / "app.yaml").write_text("port: 1\n", encoding="utf-8")
+
+    entry, created = await space.propose_entry(
+        DEFAULT_PROJECT,
+        title="Node version",
+        content="Use Node.js 3.10, e.g. via nvm (i.e. nvm.sh); edit config/app.yaml",
+        source="c1",
+        bases=[str(workdir)],
+    )
+
+    # The sixth thing in it that is written like a path is the one that is a file.
+    assert created and entry is not None and entry.confidence == "observed"
+    assert entry.evidence == ((workdir / "config" / "app.yaml").as_posix(),)
 
 
 def test_only_so_many_paths_are_taken_from_a_text(monkeypatch):
@@ -434,6 +481,23 @@ def test_text_that_puts_no_spaces_between_words_is_compared_without_its_marks_to
     # A path in it keeps what it is written with.
     assert _digest("入口是src/app.py") != _digest("入口是srcapp.py")
     assert _digest("日付はEXIFを使う。ファイルの日付は使わない。") == _digest("日付はEXIFを使う ファイルの日付は使わない")
+
+
+def test_a_mark_inside_a_word_of_such_text_goes_only_where_it_is_the_sentences():
+    # Between narrow characters it is part of what is written there: a call, a key and its value.
+    assert _digest("调用foo(bar)") != _digest("调用foobar")
+    assert _digest("用foo(bar)函数") != _digest("用foobar函数")
+    assert _digest("设置a:b后重启") != _digest("设置ab后重启")
+    assert _normal("调用foo(bar)") == "调用foo(bar"
+    # Next to a character of that text it is a mark of the sentence, written wide or narrow.
+    assert _digest("注意:先做A,再做B") == _digest("注意：先做A，再做B") == _digest("注意 先做A 再做B")
+    assert _digest("先做A),再做B") == _digest("先做A 再做B")
+    # On either side of it: the character of that text may stand before the mark or after it.
+    assert _digest("先备份,then重启") == _digest("先备份 then重启")
+    assert _digest("backup first,再重启") == _digest("backup first 再重启")
+    assert _digest("函数(参数)要写全") == _digest("函数参数要写全")
+    # A mark that only such text has is one wherever it stands.
+    assert _digest("改a.py、b.py") == _digest("改a.py b.py")
 
 
 async def test_the_same_words_filed_again_add_nothing_and_are_counted(space, root, workdir, events):
@@ -1107,8 +1171,11 @@ async def test_what_was_removed_is_remembered_though_its_line_could_not_be_taken
     monkeypatch.undo()
 
     assert not (_memory(root) / "camera-drive.md").exists()
+    assert "(memory/camera-drive.md)" in _index(root)
     # Asked again there is no file to remove; had it not been put on record the first time, it never would be.
+    # The line that was left goes now.
     assert not await space.delete_entry("camera-drive", DEFAULT_PROJECT)
+    assert "(memory/camera-drive.md)" not in _index(root)
     assert [removed["title"] for removed in _notes(root)["removed"]] == ["Camera drive"]
     assert await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E: here.", "verified")) == REMOVED
 
@@ -1597,6 +1664,111 @@ async def test_a_note_that_cannot_be_kept_where_its_commission_goes_stays_where_
     assert notes.read_text(encoding="utf-8") == "{ not json"
 
 
+async def test_a_note_that_goes_with_its_commission_has_waited_as_long_as_it_had(space, root, workdir, clock):
+    from config.nekoclaw_settings import SPACE_HELD_KEPT_SECONDS
+
+    filed_at = clock.now
+    await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
+    (before,) = _notes(root)["held"]
+    await space.touch_project("Budget app")
+    # The commission runs for ten days more before it is found to belong to the project.
+    clock.now += 10 * 86400
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    (held,) = _notes(root, "Budget app")["held"]
+    # Brought along, not filed anew: it waits since the day it was filed.
+    assert (held["first"], held["last"], held["at"]) == (before["first"], before["last"], filed_at) == ("2027-01-15", "2027-01-15", filed_at)
+    # And is dropped when it has waited its time from then, not from the day it was brought along.
+    clock.now = filed_at + SPACE_HELD_KEPT_SECONDS + 60
+    assert (await space.check_evidence())["dropped"] == 1
+    assert _notes(root, "Budget app")["held"] == []
+
+
+async def test_a_note_that_is_brought_along_goes_first_when_it_waited_longest(space, root, workdir, monkeypatch, clock):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_HELD_MAX_NOTES", 2)
+    await space.touch_project("Budget app")
+    # The oldest of all, in no project yet; then two that wait in the project.
+    await space.submit(_commission(workdir), _lesson("Brought", "A guess that is brought along."))
+    for number in range(2):
+        clock.now += 60
+        await space.submit(
+            _commission(workdir, id=f"p{number}", project="Budget app"), _lesson(f"There {number}", f"A guess there {number}.")
+        )
+    clock.now += 60
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # Being brought along did not make it the newest: the two that were filed after it stay.
+    assert [held["title"] for held in _notes(root, "Budget app")["held"]] == ["There 0", "There 1"]
+    assert _notes(root)["held"] == []
+
+
+async def test_everyone_a_note_came_from_goes_along_with_it(space, root, workdir, monkeypatch):
+    # The commission and a task agent it started filed the same guess: one that has seen it, two it came from.
+    await space.submit(_commission(workdir), _lesson("Own guess", "A guess of c1."))
+    await space.submit(_commission(workdir, id="c1-a", parent_id="c1"), _lesson("Own guess", "A guess of c1."))
+    (before,) = _notes(root)["held"]
+    assert (before["seen_by"], before["sources"]) == (["c1"], ["c1", "c1-a"])
+    await space.touch_project("Budget app")
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-a",))
+
+    (held,) = _notes(root, "Budget app")["held"]
+    assert (held["seen_by"], held["sources"]) == (["c1"], ["c1", "c1-a"])
+    # It takes effect there with both on record.
+    await space.submit(_commission(workdir, id="c2", project="Budget app"), _lesson("Own guess", "A guess of c1."))
+    head = _head(_memory(root, "Budget app") / "own-guess.md")
+    assert (head["seen"], head["seen_by"], head["sources"]) == ("2", "c1, c2", "c1, c1-a, c2")
+
+
+async def test_everyone_who_has_seen_a_note_goes_along_with_it(space, root, workdir, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_SEEN_TO_TAKE_EFFECT", 3)
+    await space.touch_project("Budget app")
+    # Seen by two already where it waits (as a list of notes that was put together by hand may have it).
+    notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
+    notes.parent.mkdir(parents=True)
+    waiting = {
+        "mark": _digest("A guess of two."), "title": "Shared guess", "content": "A guess of two.", "type": "lesson",
+        "confidence": "inferred", "seen_by": ["c1", "c1-b"], "sources": ["c1", "c1-b"], "first": "2027-01-01",
+        "last": "2027-01-02", "at": 1_799_000_000.0,
+    }
+    notes.write_text(json.dumps({"held": [waiting], "removed": []}), encoding="utf-8")
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-b",))
+
+    (held,) = _notes(root, "Budget app")["held"]
+    assert (held["seen_by"], held["sources"]) == (["c1", "c1-b"], ["c1", "c1-b"])
+    assert (held["first"], held["last"], held["at"]) == ("2027-01-01", "2027-01-02", 1_799_000_000.0)
+    # A third commission sees it there: three have, and it takes effect.
+    reply = await space.submit(_commission(workdir, id="c2", project="Budget app"), _lesson("Shared guess", "A guess of two."))
+    assert reply == "kept in project Budget app as shared-guess.md"
+    head = _head(_memory(root, "Budget app") / "shared-guess.md")
+    assert (head["seen"], head["seen_by"]) == ("3", "c1, c1-b, c2")
+
+
+async def test_all_who_have_seen_a_note_are_counted_where_it_is_brought_to(space, root, workdir, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_SEEN_TO_TAKE_EFFECT", 3)
+    await space.touch_project("Budget app")
+    # One commission of the project has guessed it; two more have, where no project was known yet.
+    await space.submit(_commission(workdir, id="p1", project="Budget app"), _lesson("Shared guess", "A guess of two."))
+    notes = root / "projects" / DEFAULT_PROJECT / "notes.json"
+    notes.parent.mkdir(parents=True)
+    waiting = {
+        "mark": _digest("A guess of two."), "title": "Shared guess", "content": "A guess of two.", "type": "lesson",
+        "confidence": "inferred", "seen_by": ["c1", "c1-b"], "sources": ["c1", "c1-b"], "first": "2027-01-01",
+        "last": "2027-01-02", "at": 1_799_000_000.0,
+    }
+    notes.write_text(json.dumps({"held": [waiting], "removed": []}), encoding="utf-8")
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app", also=("c1-b",))
+
+    # Three have seen it by now, which is as many as are asked for: it takes effect, with all of them on record.
+    head = _head(_memory(root, "Budget app") / "shared-guess.md")
+    assert (head["seen"], head["seen_by"], head["sources"]) == ("3", "p1, c1, c1-b", "p1, c1, c1-b")
+    assert _notes(root, "Budget app")["held"] == [] and _notes(root)["held"] == []
+
+
 async def test_an_entry_that_expired_goes_with_its_commission_and_gets_no_line(space, root, workdir):
     await _filed_with_a_file(space, workdir)
     (workdir / "src" / "app.py").unlink()
@@ -1679,3 +1851,207 @@ async def test_what_is_said_about_reading_notes_costs_the_fullest_space_a_few_li
     # of the 29 lines it had; the rules, which are the user's, and the other index are whole.
     assert lines == [1, 29, 1, 26]
     assert [count_tokens(sections[position]) for position in (0, 2)] == [265, 266]
+
+
+# ---------------------------------------------------------------------------
+# A link put in the place of a file a note rests on
+# ---------------------------------------------------------------------------
+
+
+def _linked(path: Path, target: Path) -> None:
+    """Put a link to ``target`` where the file ``path`` is; skips the test where links cannot be made."""
+    path.unlink()
+    try:
+        path.symlink_to(target)
+    except OSError:
+        path.write_text("# The app\n", encoding="utf-8")
+        pytest.skip("links cannot be made here")
+
+
+@pytest.mark.parametrize("there", [True, False])
+async def test_a_file_that_became_a_link_out_of_the_folder_no_longer_speaks_for_a_note_that_waits(
+    space, root, workdir, tmp_path, there
+):
+    outside = tmp_path / "secret.txt"
+    if there:
+        outside.write_text("secret\n", encoding="utf-8")
+    first = await space.submit(_commission(workdir), _lesson("Readme", "It says what the app is.", "inferred", ["README.md"]))
+    assert first == HELD_INFERRED and _notes(root)["held"][0]["evidence"] == [(workdir / "README.md").as_posix()]
+    _linked(workdir / "README.md", outside)
+
+    # Filed again as seen, with no file named: what it rested on leads out of the folder by now. Whether
+    # anything is where it leads is not looked at, and makes no difference to what becomes of the note.
+    again = await space.submit(_commission(workdir), _lesson("Readme", "It says what the app is.", "observed"))
+
+    assert again == HELD_OBSERVED
+    assert not _memory(root).exists()
+
+
+async def test_an_entry_expires_when_the_file_it_rests_on_became_a_link_out_of_the_folder(space, root, workdir, tmp_path):
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+    reply = await space.submit(_commission(workdir), _lesson("Readme", "It says what the app is.", "observed", ["README.md"]))
+    assert reply.startswith("kept in ")
+    _linked(workdir / "README.md", outside)
+
+    assert await space.check_evidence() == {"expired": 1, "restored": 0, "dropped": 0}
+    # And it does not come back for what the link leads to being there.
+    assert await space.check_evidence() == {"expired": 0, "restored": 0, "dropped": 0}
+
+
+def test_a_file_stands_only_where_it_was_found(workdir, tmp_path):
+    from nekoclaw.host.space import _stands
+
+    path = (workdir / "README.md").as_posix()
+    assert _stands(path) is True
+    # Written with another case or other separators it is the same file where the file system reads names so.
+    assert _stands(os.path.normcase(str(workdir / "README.md"))) is True
+    assert _stands((workdir / "missing.md").as_posix()) is False
+    assert _stands((workdir / "src").as_posix()) is False
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "app.py").write_text("print('other')\n", encoding="utf-8")
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "src").rmdir()
+    try:
+        (workdir / "src").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("links cannot be made here")
+    # A directory above it was replaced by a link: the path leads to another file now.
+    assert _stands((workdir / "src" / "app.py").as_posix()) is False
+
+
+# ---------------------------------------------------------------------------
+# A text that is taken out of an entry while a note with it is judged
+# ---------------------------------------------------------------------------
+
+
+def _taken_out_after_it_was_seen(space: TaskAgentSpace, monkeypatch: Any, path: Path, text: str) -> None:
+    """Have the user save an entry without ``text`` right after a note was told to be in it."""
+    real = space._same_note
+
+    def then_saved(*args: Any) -> Any:
+        found = real(*args)
+        kept = path.read_text(encoding="utf-8")
+        if text in kept:
+            path.write_text(kept.replace(text, "Something else."), encoding="utf-8", newline="\n")
+        return found
+
+    monkeypatch.setattr(space, "_same_note", then_saved)
+
+
+async def test_a_text_that_was_taken_out_while_its_note_was_judged_is_added_again_and_told_so(space, root, workdir, monkeypatch, events):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here.", "verified"))
+    path = _memory(root) / "camera-drive.md"
+    _taken_out_after_it_was_seen(space, monkeypatch, path, "It is E: here.")
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is E: here.", "verified"))
+
+    # Not "already in": the entry did not have it any more, and has it again.
+    assert reply == "added to camera-drive.md in project _daily"
+    assert "Something else." in path.read_text(encoding="utf-8") and "It is E: here." in path.read_text(encoding="utf-8")
+    assert events.rows[-1][2]["added"] is True
+    # What was put on file used a place of the commission that put it there.
+    assert space._added_by == {"c1": 1, "c2": 1} and space._adding == {}
+
+
+async def test_such_a_text_is_not_added_again_for_a_commission_that_has_no_place_left(space, root, workdir, monkeypatch):
+    from nekoclaw.host.space import VERIFIED, _Known, _NoPlace, _Note
+
+    # A guess that waits, and the same text in an entry the user made in the console.
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is E: here."))
+    await space.file_entry(DEFAULT_PROJECT, title="Camera drive", content="It is E: here.")
+    assert [held["seen_by"] for held in _notes(root)["held"]] == [["c1"]]
+    path = _memory(root) / "camera-drive.md"
+    _taken_out_after_it_was_seen(space, monkeypatch, path, "It is E: here.")
+    note = _Note(
+        title="Camera drive",
+        content="It is E: here.",
+        kind="lesson",
+        source="c2",
+        known=_Known(confidence=VERIFIED, observer="c2"),
+    )
+
+    with pytest.raises(_NoPlace):
+        await space._write(lambda: space._take_note(DEFAULT_PROJECT, note, may_use_place=False))
+
+    # Nothing was written: the entry is as the user saved it. What waited goes on waiting, since the
+    # entry does not say it.
+    assert "It is E: here." not in path.read_text(encoding="utf-8")
+    assert [held["seen_by"] for held in _notes(root)["held"]] == [["c1"]]
+    # With a place it is added, and uses the place; it waits no longer.
+    taken = await space._write(lambda: space._take_note(DEFAULT_PROJECT, note))
+    assert (taken.how, taken.charged) == ("added", True)
+    assert _notes(root)["held"] == []
+
+
+async def test_nor_is_it_added_again_to_an_entry_that_expired_without_a_place(space, root, workdir, monkeypatch):
+    from nekoclaw.host.space import VERIFIED, _Known, _NoPlace, _Note
+
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    path = _memory(root) / "entry-point.md"
+    _taken_out_after_it_was_seen(space, monkeypatch, path, "The app starts in app.py.")
+    note = _Note(
+        title="Entry point",
+        content="The app starts in app.py.",
+        kind="lesson",
+        source="c2",
+        known=_Known(confidence=VERIFIED, observer="c2"),
+    )
+
+    # Bringing back an entry that has the text uses no place, so it is judged without one. The text is
+    # gone when it is written: adding it would use a place, and there is none.
+    with pytest.raises(_NoPlace):
+        await space._write(lambda: space._take_note(DEFAULT_PROJECT, note, may_use_place=False))
+
+    assert "The app starts in app.py." not in path.read_text(encoding="utf-8")
+    assert _head(path)["status"] == "expired"
+
+
+async def test_such_a_text_of_an_entry_that_expired_is_added_again_and_uses_a_place(space, root, workdir, monkeypatch):
+    await _filed_with_a_file(space, workdir)
+    (workdir / "src" / "app.py").unlink()
+    (workdir / "README.md").unlink()
+    await space.check_evidence()
+    path = _memory(root) / "entry-point.md"
+    _taken_out_after_it_was_seen(space, monkeypatch, path, "The app starts in app.py.")
+
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Entry point", "The app starts in app.py.", "verified"))
+
+    assert reply == "added to entry-point.md in project _daily. It had expired and is in effect again."
+    assert space._added_by == {"c1": 1, "c2": 1}
+
+
+# ---------------------------------------------------------------------------
+# Where the files a note names are looked for; what a summary for the archive makes
+# ---------------------------------------------------------------------------
+
+
+async def test_the_files_a_note_names_are_looked_for_where_the_work_was_done_and_where_the_project_is(space, workdir, tmp_path):
+    folder = tmp_path / "budget"
+    folder.mkdir()
+    await space.touch_project("Budget app", workdir=str(folder))
+
+    assert await space.evidence_bases(str(workdir), "Budget app") == [str(workdir), str(folder)]
+    assert await space.evidence_bases(None, "Budget app") == [str(folder)]
+    assert await space.evidence_bases(str(folder), "Budget app") == [str(folder)]
+    assert await space.evidence_bases(str(workdir), DEFAULT_PROJECT) == [str(workdir)]
+    assert await space.evidence_bases(str(workdir), "No such project") == [str(workdir)]
+    assert await space.evidence_bases(None, None) == []
+
+
+async def test_what_nobody_is_named_for_is_no_second_sighting_of_a_note_that_waits(space, root, workdir):
+    await space.submit(_commission(workdir), _lesson("Camera drive", "It is probably E: here.", scope="global"))
+
+    # Said again by a model that read what the commission did (a summary for the archive): nobody saw it anew.
+    entry, _created = await space.propose_entry(None, title="Camera drive", content="It is probably E: here.")
+
+    assert entry is None
+    (held,) = _notes(root, None)["held"]
+    assert held["seen_by"] == ["c1"]
+    # A second commission still has it take effect.
+    reply = await space.submit(_commission(workdir, id="c2"), _lesson("Camera drive", "It is probably E: here.", scope="global"))
+    assert reply == "kept in the space of every project as camera-drive.md"

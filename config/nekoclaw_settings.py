@@ -185,10 +185,22 @@ ordinary paths are some 280 tokens."""
 
 REPO_DOCUMENT_PATH_MAX_TOKENS = 60
 """Cap on one path of that list as it is written out. A file may be called
-anything, and what it is called goes into a task agent's instructions."""
+anything, and what it is called goes into a task agent's instructions. A
+path longer than that is left out of the list and counted among the ones
+that are not listed."""
+
+REPO_DOCUMENTS_ROOT_MAX_TOKENS = 120
+"""Cap on the path of the repository's root as that list names it. With a
+root longer than that there is no list: a path that is cut names another
+place."""
 
 REPO_DOCUMENT_DIRECTORY_MAX_FILES = 200
-"""Most files of one directory that are looked at for that list."""
+"""Most files of one directory that are taken into that list: its first by
+name."""
+
+REPO_DOCUMENT_DIRECTORY_MAX_SCANNED = 5000
+"""Most names of one directory that are looked at to find those. Names
+only: no file is opened or measured for it."""
 
 REPO_ROOT_SEARCH_MAX_LEVELS = 32
 """How many directories up from the working directory a repository's root
