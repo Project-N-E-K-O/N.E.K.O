@@ -174,7 +174,7 @@ def openai_tts_worker(
                     )
                 else:
                     logger.info(
-                        "OpenAI TTS PCM Content-Type has no rate; assuming default: host=%s rate=%d channels=%d",
+                        "OpenAI TTS PCM Content-Type has no rate; using the OpenAI 24 kHz contract: host=%s rate=%d channels=%d",
                         endpoint_host,
                         sample_rate,
                         channels,

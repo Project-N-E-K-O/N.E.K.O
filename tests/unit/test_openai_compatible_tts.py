@@ -1833,10 +1833,10 @@ def test_openai_tts_worker_downmixes_multichannel_pcm(monkeypatch):
 
 
 def test_openai_pcm_to_mono_averages_interleaved_frames():
-    stereo = np.array([100, 300, -100, -301, 32767, 32767], dtype="<i2").tobytes()
+    stereo = np.array([100, 300, -100, -303, 32767, 32767], dtype="<i2").tobytes()
     mono = openai_worker_module._openai_pcm_to_mono(stereo, 2)
     assert mono.dtype == np.int16
-    assert mono.tolist() == [200, -200, 32767]
+    assert mono.tolist() == [200, -202, 32767]
 
 
 @pytest.mark.parametrize(
