@@ -710,8 +710,22 @@ def test_cat1_mouse_hover_selects_three_animations_and_restores_after_their_cycl
         page.clock.fast_forward(1)
         assert art.get_attribute("src") == expected_idle
 
-    art.evaluate("art => _playNekoIdleHoverArt(art, 'cat1')")
-    assert art.get_attribute("src").split("?", 1)[0].endswith("cat-idle-cat1-click.webp")
+    for roll, duration in ((1 / 3, 5040), (0, 2430)):
+        page.evaluate("roll => { Math.random = () => roll; }", roll)
+        page.mouse.move(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+        page.clock.fast_forward(duration + 250)
+        button.evaluate("""button => {
+            _getNekoIdleCat1Journey(button).targetKind = _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE;
+            _playNekoIdleCat1SoundReaction();
+        }""")
+        src = art.get_attribute("src")
+        assert src.split("?", 1)[0].endswith("cat-idle-cat1-click.webp")
+        assert art.evaluate("img => img.__nekoIdleHoverStartedAt === Date.now()")
+        page.clock.fast_forward(2429)
+        assert art.get_attribute("src") == src
+        page.clock.fast_forward(1)
+        assert art.get_attribute("src") == expected_idle
+        page.mouse.move(0, 0)
 
 
 def test_animated_webp_appearance_assets_decode_and_advance_in_chromium(page: Page):
