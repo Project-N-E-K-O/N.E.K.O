@@ -207,7 +207,10 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
     if mode == "wrong_generation":
         payload["sdk_route_instance_id"] = "older"
     if mode == "timeout":
-        monkeypatch.setattr(vision, "REQUEST_TIMEOUT", 0.02)
+        # Long enough for the analysis to be entered first: at 20 ms a stalled
+        # runner hit the deadline before ``_analyze`` ran, so there was no
+        # in-flight analysis left to cancel and the ``entered`` wait timed out.
+        monkeypatch.setattr(vision, "REQUEST_TIMEOUT", 0.5)
     request = Request(payload)
     task = asyncio.create_task(vision.game_sdk_vision_analyze("example-game", request))
     try:
@@ -215,7 +218,7 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
             assert (await task)["reason"] == "route_inactive"
             assert not entered.is_set()
             return
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), 10)  # Hang guards below, not speed checks.
         if mode == "superseded":
             # Same textual identity cannot revive a response from another state object.
             current[0] = dict(state)
@@ -227,8 +230,8 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
                 await task
         else:
             expected = {"superseded": "route_inactive", "disconnected": "cancelled", "timeout": "timeout"}[mode]
-            assert (await asyncio.wait_for(task, 1))["reason"] == expected
-        await asyncio.wait_for(released.wait(), 1)
+            assert (await asyncio.wait_for(task, 10))["reason"] == expected
+        await asyncio.wait_for(released.wait(), 10)
         await asyncio.sleep(0)
         assert not vision._active_operations
     finally:

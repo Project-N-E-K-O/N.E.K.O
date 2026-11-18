@@ -904,7 +904,7 @@ async def test_fallback_timeout_reserves_recovery_for_only_its_session(
     handler = manager._start_tts_response_handler()
     retry = None
     try:
-        await asyncio.wait_for(handler, 1)
+        await asyncio.wait_for(handler, 10)  # Hang guards in this case, not speed checks.
         retry = reservations[0]
         assert retry is not None, "deadline must leave an owned recovery reservation"
         if plain_retry is not None:
@@ -921,13 +921,13 @@ async def test_fallback_timeout_reserves_recovery_for_only_its_session(
             retry.cancel()
             await asyncio.gather(retry, return_exceptions=True)
         releases[0].set()
-        await asyncio.wait_for(asyncio.shield(first.cleanup_task), 1)
+        await asyncio.wait_for(asyncio.shield(first.cleanup_task), 10)
         if outcome == "recover":
-            await asyncio.wait_for(recovered.wait(), 1)
+            await asyncio.wait_for(recovered.wait(), 10)
             assert manager.tts_ready
             assert len(replacements) == 1
         else:
-            await asyncio.wait_for(asyncio.gather(retry, return_exceptions=True), 1)
+            await asyncio.wait_for(asyncio.gather(retry, return_exceptions=True), 10)
             assert not recovered.is_set()
             assert not replacements
     finally:

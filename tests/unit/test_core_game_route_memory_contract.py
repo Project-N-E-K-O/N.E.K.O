@@ -820,7 +820,7 @@ async def test_tts_audio_done_resolves_game_speech_completion_slot():
     mgr.tts_response_queue.put(("__audio_done__", "game-speech-1"))
 
     task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
-    assert await asyncio.wait_for(future, timeout=1) is True
+    assert await asyncio.wait_for(future, timeout=10) is True
     task.cancel()
     cancelled_result = await asyncio.gather(task, return_exceptions=True)
 

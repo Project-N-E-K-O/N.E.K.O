@@ -65,12 +65,15 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
     monkeypatch.setattr(manager, "_check_start_operation", observe_start_poll)
     starting = asyncio.create_task(manager.start_session(
         socket, request_id="tts-fallback",
-        _deadline=asyncio.get_running_loop().time() + (1 if outcome == "timeout" else 5),
+        # In the timeout case the deadline has to outlast the setup up to the
+        # fallback: at 1 s a stalled runner spent it before the retired
+        # runtime was ever polled. The waits below are hang guards.
+        _deadline=asyncio.get_running_loop().time() + (3 if outcome == "timeout" else 5),
     ))
     try:
-        client = await asyncio.wait_for(created.get(), 2)
+        client = await asyncio.wait_for(created.get(), 10)
         client.allow_connect.set()
-        await asyncio.wait_for(retired_poll.wait(), 2)
+        await asyncio.wait_for(retired_poll.wait(), 10)
         old = manager._tts_runtime
         assert old.retired and old.thread.is_alive()
         assert not old.cleanup_complete.is_set()
@@ -85,9 +88,9 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
 
         if outcome == "cancel":
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(starting, 2)
+                await asyncio.wait_for(starting, 10)
         else:
-            await asyncio.wait_for(starting, 2)
+            await asyncio.wait_for(starting, 10)
         started = [m for m in socket.messages if m.get("type") == "session_started"]
         failed = [m for m in socket.messages if m.get("type") == "session_failed"]
         if outcome == "recover":

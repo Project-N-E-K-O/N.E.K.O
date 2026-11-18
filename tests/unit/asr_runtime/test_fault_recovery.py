@@ -1,7 +1,6 @@
 """Exercise owned fault recovery with the real runtime and lifecycle."""
 
 import asyncio
-import time
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -33,13 +32,13 @@ async def _started(monkeypatch, *, candidate_count=4):
     return owner, runtime, sessions, provider_callbacks, detector, observers
 
 
-async def _recover(runtime, *, code="ASR_QWEN_READ_DISCONNECTED", source=FailureSource.PROVIDER):
+async def _recover(runtime, *, code="ASR_QWEN_READ_DISCONNECTED", source=FailureSource.PROVIDER, guard=2):
     await runtime._handle_independent_asr_error(
         runtime._asr_session_epoch, "qwen", status_code=code, failure_source=source,
     )
     operation = runtime._asr_recovery
     assert operation is not None
-    await asyncio.wait_for(asyncio.shield(operation.task), 2)
+    await asyncio.wait_for(asyncio.shield(operation.task), guard)
     return operation
 
 
@@ -272,6 +271,13 @@ async def test_real_endpoint_watchdog_and_final_settle_only_one_outcome(monkeypa
 
 
 async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch):
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    # The old transport's close never returns, and its own cleanup bound is
+    # pushed far past the guard below: the recovery can only end in time if
+    # its 30 ms total deadline covers that close. This replaces timing the
+    # call on the wall clock, which a stalled runner stretched past 0.5 s.
+    monkeypatch.setattr(asr_runtime_module, "_CONNECT_CLEANUP_TIMEOUT_SECONDS", 60.0)
     _, runtime, sessions, callbacks, _, observers = await _started(monkeypatch)
     close_entered, close_release = asyncio.Event(), asyncio.Event()
 
@@ -282,9 +288,7 @@ async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch)
     sessions[0].close.side_effect = close
     runtime._asr_recovery_budget.total_seconds = 0.03
     try:
-        started = time.monotonic()
-        await _recover(runtime)
-        assert time.monotonic() - started < 0.5
+        await _recover(runtime, guard=10)
         assert close_entered.is_set()
         assert len(callbacks) == 1
         assert runtime._asr_recovery_budget.attempts_used == 0

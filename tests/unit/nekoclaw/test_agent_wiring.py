@@ -2041,10 +2041,13 @@ async def test_shutting_the_host_down_is_bounded_and_the_steps_still_finish(wiri
     await wiring.runtime.nekoclaw_dispatch({"text": "查一下上海的天气", "lanlan_name": "Lan"})
     host = wiring.host_mount.peek_host()
     finished = asyncio.Event()
+    release = asyncio.Event()
     real_shutdown = host.shutdown
 
     async def slow_shutdown() -> None:
-        await asyncio.sleep(0.3)
+        # Held until the test lets go, instead of a fixed 0.3 s sleep that a
+        # stalled runner could outlast while the caller was still waiting.
+        await release.wait()
         await real_shutdown()
         finished.set()
 
@@ -2052,12 +2055,15 @@ async def test_shutting_the_host_down_is_bounded_and_the_steps_still_finish(wiri
     monkeypatch.setattr(settings, "HOST_SHUTDOWN_BUDGET_SECONDS", 0.05)
     monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
 
-    started = time.monotonic()
-    await wiring.mount_module.shutdown_nekoclaw_host()
-    waited = time.monotonic() - started
-
-    assert waited < 0.25
-    assert not finished.is_set()
+    # The steps cannot finish before ``release``, so returning at all proves
+    # the caller stopped waiting at its budget; one that waited for the steps
+    # would hang into this guard. The guard stays under the shipped 4 s budget
+    # so that a caller ignoring the patched 0.05 s budget fails too.
+    try:
+        await asyncio.wait_for(wiring.mount_module.shutdown_nekoclaw_host(), 3)
+        assert not finished.is_set()
+    finally:
+        release.set()
     # Not cancelled by the caller that stopped waiting: it runs to its end.
     await asyncio.wait_for(finished.wait(), 5)
     assert host.closed is True

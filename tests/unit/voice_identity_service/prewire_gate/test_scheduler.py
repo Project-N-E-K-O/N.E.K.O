@@ -309,8 +309,15 @@ async def test_queued_cancellation_is_distinct_and_never_scores() -> None:
 @pytest.mark.asyncio
 async def test_execution_timeout_is_reported_before_late_score_finishes() -> None:
     backend = _BlockedBackend()
-    scheduler = _scheduler(backend, deadline_seconds=0.01)
+    # The deadline is read from the injected clock, so the queue part of it
+    # can be spent without waiting: with a 10 ms deadline on the real clock, a
+    # runner that is slow to start the worker expired the job in the queue
+    # instead (deadline_expired_in_queue). The long nominal deadline keeps the
+    # real-time queue timer out of the way; only 10 ms are left to execute.
+    now = [0.0]
+    scheduler = _scheduler(backend, deadline_seconds=30.0, clock=lambda: now[0])
     receipt = scheduler.submit(_request("timeout"))
+    now[0] = 30.0 - 0.01
 
     result = await scheduler.await_result(receipt)
     assert result.status is ScoreResultStatus.TIMED_OUT

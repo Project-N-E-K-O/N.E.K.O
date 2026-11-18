@@ -348,7 +348,13 @@ async def test_finish_handoff_survives_provider_close_in_real_transcript_dispatc
         dispatcher.invalidate_all()
 
 
-async def test_finish_resource_retirement_cannot_extend_caller_deadline():
+async def test_finish_resource_retirement_cannot_extend_caller_deadline(monkeypatch):
+    from main_logic.asr_client import _infra
+
+    # The worker's own close bound (5 s shipped) is pushed past the guard
+    # below, so a finish that waited for the retirement instead of its 30 ms
+    # deadline could not finish in time by way of that bound either.
+    monkeypatch.setattr(_infra, "_WORKER_CLOSE_TIMEOUT_SECONDS", 60.0)
     release_worker = asyncio.Event()
 
     async def worker(requests, responses, api_key, config):
@@ -361,10 +367,15 @@ async def test_finish_resource_retirement_cannot_extend_caller_deadline():
 
     session, callback, _ = await make_session(worker)
     try:
+        # The outer wait is only a hang guard. It has to sit well past the
+        # caller's 30 ms deadline: when a stalled runner wakes up with both
+        # expired, the guard firing first raises a bare TimeoutError and
+        # fails the match even though the deadline was honoured. A finish that
+        # did wait for the stuck worker still fails here, at the guard.
         with pytest.raises(TimeoutError, match="ASR_FINISH_RETIRE_TIMEOUT"):
             await asyncio.wait_for(
                 session.finish_and_drain(deadline=asyncio.get_running_loop().time() + 0.03),
-                0.5,
+                10,
             )
         assert session._state.value == "closing"
         assert session._generation == 1
