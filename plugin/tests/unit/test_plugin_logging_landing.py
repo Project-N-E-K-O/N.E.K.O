@@ -189,8 +189,14 @@ def _parked_fifo_stream(path: Path):
     readable.register(reader, select.POLLIN)
 
     def drain(timeout_ms=0):
-        if readable.poll(timeout_ms):
-            os.read(reader, 1 << 16)
+        """Read one chunk if available, keeping it in drain.received; return its size."""
+        if not readable.poll(timeout_ms):
+            return 0
+        chunk = os.read(reader, 1 << 16)
+        drain.received += chunk
+        return len(chunk)
+
+    drain.received = bytearray()
 
     writer = stream = None
     try:
@@ -299,10 +305,15 @@ def test_fork_while_parent_thread_writes_stdout_gives_child_fresh_std_streams(
                 return 0 if sys.stdout is not fifo_stream and console.stream is sys.stdout else 2
 
             code = _run_forked(child_main, drain, "child blocked writing to stdout inherited over fork")
+            while drain():
+                pass  # Collect child output still queued behind the parent's payload.
         finally:
             library.removeHandler(console)
             sys.stdout = saved_stdout
     assert code == 0
+    received = bytes(drain.received)
+    for marker in (b"child-print-marker", b"child-inherited-console-marker", b"child-console-marker"):
+        assert received.count(marker) == 1, marker  # Console output reached the real descriptor.
     assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-console-marker") == 1
 
 

@@ -76,17 +76,18 @@ def reopen_inherited_std_streams():
     replaced = {}
     for name in ("stdout", "stderr"):
         old = getattr(sys, name)
-        if not isinstance(old, io.TextIOWrapper) or not isinstance(old.buffer, (io.BufferedWriter, io.BufferedRandom)):
-            continue
-        new = replaced.get(old)
-        if new is None:
-            try:
+        try:
+            if not isinstance(old, io.TextIOWrapper) or not isinstance(
+                    old.buffer, (io.BufferedWriter, io.BufferedRandom)):
+                continue
+            new = replaced.get(old)
+            if new is None:
                 new = open(old.fileno(), "w", buffering=1 if old.line_buffering else -1,
                            encoding=old.encoding, errors=old.errors, closefd=False)
-            except Exception:
-                continue  # A fork hook must never fail the child; keep the old stream.
-            replaced[old] = new
-            _ABANDONED_STD_STREAMS.append(old)
+                replaced[old] = new
+                _ABANDONED_STD_STREAMS.append(old)
+        except Exception:
+            continue  # A fork hook must never fail the child; keep the old stream.
         setattr(sys, name, new)
         if getattr(sys, f"__{name}__", None) is old:
             setattr(sys, f"__{name}__", new)
