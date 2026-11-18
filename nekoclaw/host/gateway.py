@@ -406,9 +406,12 @@ def _group_text(group: str, tools: list[Capability]) -> str:
 def _definition(capability: Capability, *, with_output: bool = True) -> dict[str, Any]:
     """The tool definition of a capability.
 
-    ``with_output=False`` leaves out ``outputSchema``: the runtime hands a
-    model only name, description and ``inputSchema``, so model-visible text
-    and the token budgets of listings are worked out without it.
+    ``with_output=False`` leaves out ``outputSchema``. Every definition the
+    gateway hands out today (search results, the picked entries in an opening
+    message) is model-visible text, and calls answer with text only, no
+    ``structuredContent``, so they all pass ``with_output=False``: MCP says a
+    declared ``outputSchema`` promises structured results. Publish it once
+    calls return ``structuredContent``.
     """
     from config.nekoclaw_settings import GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS
     from utils.tokenize import truncate_to_tokens
