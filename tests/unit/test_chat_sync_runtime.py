@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import sqlite3
+import socket
 import ssl
 import subprocess
 import sys
@@ -580,7 +581,7 @@ async def test_changed_notification_coalesces_only_its_channel_without_http_or_a
 
 
 @pytest.mark.asyncio
-async def test_notification_production_transport_uses_verified_wss_and_closes(tmp_path, local_tls_files):
+async def test_notification_production_transport_uses_verified_wss_and_closes(tmp_path, local_tls_files, localhost_is_ipv4):
     """Exercise the real WSS connector against a disposable TLS socket, not Auth."""
     from websockets.asyncio.server import serve
     ca_path, _, cert_path, key_path = local_tls_files
@@ -612,7 +613,7 @@ async def test_notification_production_transport_uses_verified_wss_and_closes(tm
 
 
 @pytest.mark.asyncio
-async def test_established_silent_wss_wakes_pull_after_approved_heartbeat_deadline(tmp_path, local_tls_files):
+async def test_established_silent_wss_wakes_pull_after_approved_heartbeat_deadline(tmp_path, local_tls_files, localhost_is_ipv4):
     """Use production keepalive against a TLS peer that silently stops reading."""
     from websockets.asyncio.server import serve
     ca_path, _, cert_path, key_path = local_tls_files
@@ -1199,6 +1200,28 @@ def test_redirect_does_not_forward_bearer_even_with_redirecting_injected_client(
         await runtime.close()
 
     asyncio.run(scenario())
+
+
+@pytest.fixture
+async def localhost_is_ipv4(monkeypatch):
+    """Resolve ``localhost`` to 127.0.0.1 only, where the test peers listen.
+
+    The leaf certificate names ``localhost``, so the client has to dial that
+    name. Windows resolves it to ``::1`` first, and a refused connect there is
+    retried for about two seconds before 127.0.0.1 is tried, which eats most of
+    the production connector's 3 s ``open_timeout`` and fails the first
+    subscription on a busy runner. Only this test loop's resolver changes; the
+    production connector, TLS chain and hostname checks run as shipped.
+    """
+    loop = asyncio.get_running_loop()
+    resolve = loop.getaddrinfo
+
+    async def getaddrinfo(host, port, *, family=0, **kwargs):
+        if host == "localhost":
+            family = socket.AF_INET
+        return await resolve(host, port, family=family, **kwargs)
+
+    monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
 
 
 @pytest.fixture

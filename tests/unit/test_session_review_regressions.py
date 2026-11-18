@@ -63,14 +63,45 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
             retired_poll.set()
 
     monkeypatch.setattr(manager, "_check_start_operation", observe_start_poll)
+    if outcome == "timeout":
+        # The TTS wait gives up 0.1 s before the shared startup deadline, and
+        # that tail is all publication gets. Show the TTS step a deadline
+        # 2 s earlier than the real one, so a stalled runner neither spends
+        # the startup budget before the fallback is reached nor runs out of
+        # tail after the TTS wait gives up. Every other step sees the real
+        # deadline, and the TTS wait still ends by timing out.
+        real_start_deadline = manager._current_start_deadline
+
+        shim_hits = []
+
+        def start_deadline_seen_by_tts():
+            task = asyncio.current_task()
+            deadline = real_start_deadline()
+            if task is not None and task.get_coro().__name__ == "_start_session_start_tts_if_needed":
+                shim_hits.append(deadline)
+                return deadline - 2.0
+            return deadline
+
+        monkeypatch.setattr(manager, "_current_start_deadline", start_deadline_seen_by_tts)
+        # Record the deadline the TTS wait is actually given, against the real
+        # startup deadline at that moment.
+        tts_deadlines = []
+        real_ensure = manager.ensure_tts_pipeline_alive
+
+        async def ensure_tts_pipeline_alive(*args, **kwargs):
+            tts_deadlines.append((kwargs.get("deadline"), real_start_deadline()))
+            return await real_ensure(*args, **kwargs)
+
+        monkeypatch.setattr(manager, "ensure_tts_pipeline_alive", ensure_tts_pipeline_alive)
     starting = asyncio.create_task(manager.start_session(
         socket, request_id="tts-fallback",
-        _deadline=asyncio.get_running_loop().time() + (1 if outcome == "timeout" else 5),
+        # The waits below are hang guards.
+        _deadline=asyncio.get_running_loop().time() + 5,
     ))
     try:
-        client = await asyncio.wait_for(created.get(), 2)
+        client = await asyncio.wait_for(created.get(), 10)
         client.allow_connect.set()
-        await asyncio.wait_for(retired_poll.wait(), 2)
+        await asyncio.wait_for(retired_poll.wait(), 10)
         old = manager._tts_runtime
         assert old.retired and old.thread.is_alive()
         assert not old.cleanup_complete.is_set()
@@ -85,9 +116,9 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
 
         if outcome == "cancel":
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(starting, 2)
+                await asyncio.wait_for(starting, 10)
         else:
-            await asyncio.wait_for(starting, 2)
+            await asyncio.wait_for(starting, 10)
         started = [m for m in socket.messages if m.get("type") == "session_started"]
         failed = [m for m in socket.messages if m.get("type") == "session_failed"]
         if outcome == "recover":
@@ -104,6 +135,15 @@ async def test_start_waits_for_owned_configured_tts_fallback(monkeypatch, outcom
         else:
             assert workers == ["configured"]
             assert len(started) == 1 and not failed
+            if outcome == "timeout":
+                # The TTS wait used the injected deadline (2 s early, less its
+                # own 0.1 s tail), not one of its own making.
+                # The shim matched the TTS step; were it renamed, the shim
+                # would silently stop applying and the 0.1 s tail return.
+                assert shim_hits
+                assert tts_deadlines
+                for given, real in tts_deadlines:
+                    assert abs(given - (real - 2.1)) < 1e-6
             assert manager._live_tts_runtime_count() == 1
             assert not old.cleanup_task.cancelled()
         assert manager.session_start_failure_count == 0
