@@ -649,3 +649,42 @@ test('acquiring the vision stream stops when consent is revoked during the windo
     assert.equal(await h.window.acquireProactiveVisionStream(), false);
     assert.equal(backendCalls, 0);
 });
+
+// ── a revocation whose local save failed (storage still says allowed) ──────
+
+test('failed save: acquiring stops when this window revoked during the window check', async () => {
+    let backendCalls = 0;
+    let h;
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            fetchBackendScreenshot: async () => { backendCalls += 1; return { dataUrl: 'data:image/jpeg;base64,DESK' }; },
+        },
+    });
+    h.window.prepareRememberedWindowCapture = async () => {
+        h.S.proactiveVisionEnabled = false; // saved value stays true
+        return { required: false, allowed: true };
+    };
+    assert.equal(await h.window.acquireProactiveVisionStream(), false);
+    assert.equal(backendCalls, 0);
+});
+
+test('failed save: a late stream is released and text-chat vision does not keep it', async () => {
+    let h;
+    const stream = fakeStream();
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            acquireOrReuseCachedStream: async () => {
+                h.S.proactiveVisionEnabled = false; // saved value stays true
+                h.S.screenCaptureStream = stream;
+                return stream;
+            },
+        },
+    });
+    h.S.proactiveVisionChatEnabled = true; // text-chat vision would otherwise keep it
+
+    assert.equal(await h.window.acquireProactiveVisionStream(), false);
+    assert.equal(stream.stopped, 1);
+    assert.equal(h.S.screenCaptureStream, null);
+});

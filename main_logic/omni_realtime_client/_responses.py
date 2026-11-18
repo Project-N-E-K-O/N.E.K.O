@@ -1428,9 +1428,12 @@ class _ResponseMixin:
     ) -> Optional[ResponseTicket]:
         """Inject a user-role text item and explicitly trigger a response.
 
-        ``admission_check`` is evaluated again right before the queued events
-        are written (Gemini: right before the SDK send); when it returns False
-        nothing is sent and the call fails.
+        ``admission_check`` is evaluated again before each queued event is
+        handed to the transport (Gemini: before the tool wait and before the
+        SDK send). Refused before the first event, nothing is sent and the
+        call fails. Refused after an earlier event of the batch was already
+        written, the arbiter stops the batch and attempts a compensating
+        delete of the committed item; that item did reach the provider.
 
         Used by the voice-mode proactive path (agent task callbacks /
         plugin push_message ai_behavior="respond") to surface a rendered

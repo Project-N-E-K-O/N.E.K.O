@@ -134,6 +134,12 @@
     // from either side: the latest saved setting (another window may have
     // revoked first) or this window's own value (the save may have failed).
     function canProactiveVisionRunDuringSpeech() {
+        return isVisionConsentHeldNow();
+    }
+
+    // Consent as both this window and the latest saved setting see it; a
+    // revocation on either side (including a failed local save) wins.
+    function isVisionConsentHeldNow() {
         var ownValue = typeof window.proactiveVisionEnabled !== 'undefined'
             ? !!window.proactiveVisionEnabled
             : !!S.proactiveVisionEnabled;
@@ -2552,13 +2558,13 @@
         if (isHomeTutorialFeatureSuppressed()) return false;
 
         // Consent may be revoked while the remembered window was being checked.
-        if (!isProactiveVisionEnabledNow()) return false;
+        if (!isVisionConsentHeldNow()) return false;
 
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
             if (isHomeTutorialFeatureSuppressed()) return false;
-            if (!isProactiveVisionEnabledNow()) return false;
+            if (!isVisionConsentHeldNow()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;
@@ -2575,7 +2581,7 @@
         }
         if (stream) {
             // Consent revoked while the picker was open: do not keep the stream.
-            if (!isProactiveVisionEnabledNow()) {
+            if (!isVisionConsentHeldNow()) {
                 releaseProactiveVisionStream();
                 return false;
             }
@@ -2604,7 +2610,7 @@
             return;
         }
 
-        var privacyBlocksVision = !isProactiveVisionEnabledNow();
+        var privacyBlocksVision = !isVisionConsentHeldNow();
         // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
         // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
         // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。

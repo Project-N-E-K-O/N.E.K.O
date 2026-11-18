@@ -2456,3 +2456,26 @@ async def test_gemini_admission_is_checked_before_waiting_for_tools():
 
     client._settle_tools_before_gemini_proactive.assert_not_awaited()
     await client.close()
+
+
+@pytest.mark.unit
+async def test_stepfun_analysis_error_after_discard_keeps_the_newer_frame(monkeypatch):
+    import utils.screenshot_utils as screenshot_utils
+
+    client = _make_client(api_type="step", model="step-realtime")
+    newer = "/9j/NEWER"
+
+    async def fail_after_revocation(**_kwargs):
+        client.discard_cached_visual_context()
+        client._latest_image_b64 = newer  # a frame staged after re-consent
+        client._proactive_image_consumed = False
+        raise RuntimeError("vision model timeout")
+
+    monkeypatch.setattr(screenshot_utils, "analyze_image_with_vision_model", fail_after_revocation)
+    client._image_being_analyzed = True
+
+    assert await client._analyze_image_with_vision_model(DUMMY_IMAGE_B64) == ""
+    assert client._latest_image_b64 == newer
+    assert client._proactive_image_consumed is False
+    assert client._image_being_analyzed is False
+    await client.close()
