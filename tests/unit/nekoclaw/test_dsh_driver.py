@@ -1959,6 +1959,21 @@ async def test_a_text_whose_answer_is_heard_of_after_its_turn_ended_is_dealt_wit
     _sent_again(driver, await driver.events.wait_ended("s1", start=mark))
 
 
+async def test_what_a_call_of_a_run_that_was_stopped_was_handed_is_not_queued_again(tmp_path: Path, dsh) -> None:
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh)
+    try:
+        # The run is stopped; that the answer of its call went nowhere is heard of after that.
+        await driver.runtime.abort("s1")
+        ended = await driver.events.wait_ended("s1")
+        assert ended["reason"] == "aborted" and session.unsettled == []
+        told[0](False)
+        # What it was handed went with the stop: not queued again, and no run started for it.
+        assert session.queue == [] and session.run is None
+        assert len(driver.record("session/prompt")) == 1 and _taken(driver) == [1]
+    finally:
+        go.write_text("", encoding="utf-8")
+
+
 async def test_what_two_calls_were_handed_is_queued_again_in_the_order_it_was_given(tmp_path: Path, dsh) -> None:
     from nekoclaw.dsh.driver import _Given
 
@@ -1968,9 +1983,12 @@ async def test_what_two_calls_were_handed_is_queued_again_in_the_order_it_was_gi
         later, waiting = _Given("a second note", 3), _Given("a third note", 4)
         session.given = 4
         session.queue = [waiting]
-        # Both answers went nowhere, and the one of the later call is heard of first.
-        driver.runtime._give_back(session, [later], session.runs)
+        # Both answers went nowhere. Whichever is heard of first, what is queued again is
+        # in the order it was given: put in front one after the other, the later of the
+        # two would end up ahead of the earlier.
         told[0](False)
+        assert [text.number for text in session.queue] == [2, 4]
+        driver.runtime._give_back(session, [later], session.runs)
         assert [text.number for text in session.queue] == [2, 3, 4]
     finally:
         session.queue = [text for text in session.queue if text.number == 2]
