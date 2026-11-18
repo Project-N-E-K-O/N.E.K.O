@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import time
 from collections.abc import Callable
@@ -229,9 +230,9 @@ class ModelCapabilityStore:
         """Return a window read from an entry, or None when it is not a usable number."""
         from config.nekoclaw_settings import TASK_AGENT_CONTEXT_WINDOW_MIN
 
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        if value in (float("inf"), float("-inf")) or value <= 0:
+        if not math.isfinite(value) or value <= 0:
             return None
         return max(TASK_AGENT_CONTEXT_WINDOW_MIN, int(value))
 

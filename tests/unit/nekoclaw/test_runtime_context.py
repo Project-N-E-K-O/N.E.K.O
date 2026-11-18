@@ -19,6 +19,7 @@ from nekoclaw.runtime.context import (
     cap_result_text,
     choose_cut,
     kind_of,
+    output_allowance,
     prune_rows,
     retain_recent_images,
     select_user_rows,
@@ -86,6 +87,27 @@ def _manager(tmp_path: Path, policy: ContextPolicy, summaries: list, *, fail: bo
 # ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("window", "configured", "allowed"),
+    [
+        # What the model is configured for, where the window holds it four times over.
+        (256_000, 8_192, 8_192),
+        (32_768, 8_192, 8_192),
+        # A quarter of a smaller window: the rest is for what the request sends.
+        (32_767, 8_192, 8_191),
+        (16_384, 8_192, 4_096),
+        (4_000, 8_192, 1_000),
+        # Never more than configured, and never next to nothing.
+        (16_384, 512, 512),
+        (800, 8_192, 256),
+    ],
+)
+def test_the_output_a_request_asks_for_is_a_quarter_of_the_window_at_the_most(
+    window: int, configured: int, allowed: int
+) -> None:
+    assert output_allowance(window, configured) == allowed
 
 
 def test_thresholds_scale_with_the_window() -> None:

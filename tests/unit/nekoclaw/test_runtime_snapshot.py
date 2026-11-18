@@ -527,6 +527,53 @@ async def test_a_session_is_managed_for_the_smaller_window_its_provider_states(t
         await session.close()
 
 
+async def test_the_output_asked_for_shrinks_with_the_window_the_provider_states(tmp_path: Path) -> None:
+    # Configured for 8192 tokens of output, in a window that holds that many times over.
+    model = ModelConfig(model="fake-model", api_key="k", context_window=256_000, max_output_tokens=8_192)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=model), llm)
+    try:
+        await _ask(session, events, "Start.")
+        await _seed(session, events, llm)
+        # Nothing is said of the output while it is what the model is configured for.
+        assert all("max_completion_tokens" not in overrides for overrides in llm.overrides)
+        assert session.context.policy.max_output == 8_192
+
+        llm.add(RuntimeError("Error code: 400 - This model's maximum context length is 16384 tokens."))
+        llm.add(say("## Current Work\n- summed up"), finish())
+        llm.add(say("Went on."), finish())
+        mark = len(llm.overrides)
+        ended = await _ask(session, events, "Go on.")
+
+        assert ended["reason"] == "completed" and ended["text"] == "Went on."
+        # A provider counts the output a request asks for against the window too: asked for
+        # 8192 in a window of 16384, half the window would be gone before anything is sent.
+        assert session.context.policy.window == 16_384 and session.context.policy.max_output == 4_096
+        refused, summary, retry = llm.overrides[mark:]
+        assert "max_completion_tokens" not in refused
+        assert summary["max_completion_tokens"] == session.context.policy.summary_cap == 4_096
+        assert retry["max_completion_tokens"] == 4_096
+
+        # And so for every request after it.
+        llm.add(say("More."), finish())
+        await _ask(session, events, "And more.")
+        assert llm.overrides[-1]["max_completion_tokens"] == 4_096
+    finally:
+        await session.close()
+
+
+async def test_a_session_opened_in_a_small_window_asks_for_less_output_from_the_start(tmp_path: Path) -> None:
+    model = ModelConfig(model="fake-model", api_key="k", context_window=20_000, max_output_tokens=8_192)
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path, model=model), llm)
+    try:
+        await _ask(session, events, "Start.")
+        assert session.context.policy.max_output == 5_000
+        assert llm.overrides[0]["max_completion_tokens"] == 5_000
+    finally:
+        await session.close()
+
+
 @pytest.mark.parametrize(
     ("said", "window"),
     [

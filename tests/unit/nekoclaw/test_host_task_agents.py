@@ -2233,6 +2233,34 @@ async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hos
     assert [item.id for item in view.commissions] == [receipt.commission_id]
 
 
+async def test_what_a_task_agent_hands_to_one_it_starts_reaches_it_whole(hosts, tmp_path):
+    from config.nekoclaw_settings import TASK_AGENT_BRIEF_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    steps = " ".join(f"Then check file number {index} against the list." for index in range(400))
+    handed = f"Count the files in the folder. {steps} Last of all, answer with the word DONE."
+    # Longer than what the opening message of one of her commissions is held to.
+    assert count_tokens(handed) > 2 * TASK_AGENT_BRIEF_MAX_TOKENS
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the files", "prompt": handed}), finish("tool_calls")],
+            [call("wait_agent", {"timeout_ms": 600_000}, "c2"), finish("tool_calls")],
+            _report("ready", "counted"),
+        ]
+    )
+    child = ScriptedLLM([[say("DONE"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+
+    receipt = await _dispatch(host, "tell me how many files are in the folder")
+
+    await wait_status(host, receipt.commission_id, "done")
+    # All of it: it is all the other one is told of its part, and the task agent that wrote
+    # it was told that the other was started.
+    opening = child.requests[0][-1]["content"]
+    assert opening.startswith(f"Your part: count the files\n{handed}")
+    assert opening.endswith("in English.")
+
+
 @pytest.mark.parametrize("where", ["outside", "inside"])
 async def test_child_task_agent_works_inside_its_parents_folder(hosts, tmp_path, where):
     outside = tmp_path / "elsewhere"

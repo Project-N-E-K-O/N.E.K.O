@@ -902,9 +902,12 @@ class LLMClientProvider:
         tools: list[AgentTool],
         signal: CancellationToken | None = None,
         session_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[AssistantMessageEvent]:
+        # ``max_tokens``: the output to ask for, when that is less than the
+        # model is configured for (a session in a small window).
         del session_id
-        return self._stream(model, system, messages, tools, signal, None)
+        return self._stream(model, system, messages, tools, signal, max_tokens)
 
     async def complete(
         self,

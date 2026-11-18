@@ -1158,6 +1158,16 @@ TASK_AGENT_BRIEF_PREFERENCES_HEADER = (
     "How the user wants such things done (guidance only; it does not change what you are permitted to do):"
 )
 
+# Added when a commission is opened a second time in its session: it stopped
+# (it was stuck), the session went on with other commissions, and it is taken
+# up again now. Without it the session would read what it is told next as part
+# of the commission it worked on last.
+TASK_AGENT_COMMISSION_BACK = (
+    "You began this commission earlier in this conversation. It stopped before it was done, and "
+    "other commissions were worked on here since. It is taken up again now: go on with it from "
+    "where it stopped, with what follows."
+)
+
 # Added when the commission follows up an earlier one of the same session.
 TASK_AGENT_COMMISSION_CONTINUES = (
     "This follows up the earlier commission \"{title}\", worked on above in this conversation."

@@ -727,7 +727,7 @@ class TaskAgentManager:
         # neither part can push the other out.
         return own + "\n\n" + kept if kept else own
 
-    async def _opening(self, commission: Commission, *, cleared: bool) -> str:
+    async def _opening(self, commission: Commission, *, cleared: bool, back: bool = False) -> str:
         """Return the message that opens a commission in its session.
 
         What was dispatched and what the user said; which earlier commission
@@ -737,19 +737,26 @@ class TaskAgentManager:
         tools, which stay the same from one commission to the next); the
         language to answer in. ``cleared`` says that what was said in the
         session before was removed since: a commission that follows another
-        up is then told what came of that one.
+        up is then told what came of that one. ``back`` says that the
+        commission was opened in this session before and that the session
+        worked on others since.
+
+        What a task agent hands to one it starts is not cut: it is all that
+        one is told of its part, and the task agent that wrote it is told
+        that the other was started. (What she dispatches is short by the
+        time it is filed, ``DISPATCH_TEXT_MAX_TOKENS``.)
         """
         from config.nekoclaw_settings import TASK_AGENT_BRIEF_MAX_TOKENS, TASK_AGENT_CONTINUED_RESULT_MAX_TOKENS
         from config.prompts import prompts_nekoclaw_brain as texts
         from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
         from utils.tokenize import truncate_to_tokens
 
+        whole = ""
         if commission.parent_id is not None:
-            parts = [
-                texts.TASK_AGENT_CHILD_COMMISSION_TEMPLATE.format(
-                    description=commission.title, dispatch_text=commission.dispatch_text
-                )
-            ]
+            whole = texts.TASK_AGENT_CHILD_COMMISSION_TEMPLATE.format(
+                description=commission.title, dispatch_text=commission.dispatch_text
+            )
+            parts = []
         else:
             parts = [
                 texts.TASK_AGENT_COMMISSION_TEMPLATE.format(
@@ -758,6 +765,8 @@ class TaskAgentManager:
                     user_text=commission.user_text or commission.dispatch_text,
                 )
             ]
+        if back:
+            parts.append(texts.TASK_AGENT_COMMISSION_BACK)
         earlier = await self._ledger.get(commission.continues) if commission.continues else None
         if earlier is not None:
             if cleared:
@@ -771,7 +780,8 @@ class TaskAgentManager:
         preferences = await self._preferences.render(f"{commission.dispatch_text}\n{commission.user_text}")
         if preferences:
             parts.append(f"{texts.TASK_AGENT_BRIEF_PREFERENCES_HEADER}\n{preferences}")
-        opening = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
+        capped = truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS) if parts else ""
+        opening = "\n\n".join(part for part in (whole, capped) if part)
         # After the cap above, each within a cap of its own.
         picked = await self._picked_entries(commission)
         if picked:
@@ -929,8 +939,12 @@ class TaskAgentManager:
 
             session_path, workdir, begun_in = await asyncio.to_thread(prepare)
             # Whether this commission was opened in its session before: the
-            # message that says what it is was sent, and taken.
+            # message that says what it is was sent, and taken. And whether
+            # it is the one its session is at: a commission that was stuck
+            # lets the session go on with the next, and what it is told
+            # after that reads as part of that other one.
             opened = await self._ledger.has_event(commission.id, "opened")
+            at_it = opened and await self._ledger.opened_last(session.session_id) == commission.id
 
             if "supports_images" not in config:
                 config = {**config, "supports_images": await self._sees_images(config)}
@@ -1009,8 +1023,10 @@ class TaskAgentManager:
             session.carried = [*carried, *([prompt] if prompt is not None else []), *notes]
 
             # What the commission is: said once, in the session it is worked
-            # on in, and again only where that is not there to be read.
+            # on in, and again only where that is not there to be read, or
+            # where the session has been at another commission since.
             opening = await self._opening(commission, cleared=begun_in is None)
+            back_at_it = await self._opening(commission, cleared=False, back=True) if opened and not at_it else opening
 
             def first_message(runtime_name: str) -> tuple[str, bool]:
                 # The commission is opened when it starts, and again when it
@@ -1018,10 +1034,16 @@ class TaskAgentManager:
                 # reached the session (the start failed before the session
                 # took it), or what was said is in the other runtime (began
                 # in dsh, dsh is gone or would not take it), or nowhere any
-                # more (removed, being old). Otherwise it goes on from what
-                # the session holds, with what it is told now.
-                opens = prompt is None or not opened or begun_in != runtime_name
-                parts = [*([opening] if opens else []), *carried, *([prompt] if prompt is not None else [])]
+                # more (removed, being old). Also when its session took the
+                # opening message of another commission since: the session
+                # is told which commission it is back at, and the runtime
+                # keeps this message, not the other one's, through a summary.
+                # Otherwise it goes on from what the session holds, with
+                # what it is told now.
+                here = begun_in == runtime_name
+                opens = prompt is None or not opened or not here or not at_it
+                said = back_at_it if here and opened else opening
+                parts = [*([said] if opens else []), *carried, *([prompt] if prompt is not None else [])]
                 return "\n\n".join([*parts, *notes]), opens
 
             text, opens = first_message(runtime_name)

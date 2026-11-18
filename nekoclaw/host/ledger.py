@@ -1068,6 +1068,27 @@ class Ledger:
 
         await self.run(work)
 
+    async def opened_last(self, session_id: str) -> str | None:
+        """Return the commission whose opening message a session took last; None when it took none.
+
+        A session is at one commission at a time, and which one is told by
+        the opening message it took last. A commission that got stuck lets
+        its session go on with the next; taken up again after that, it is
+        no longer the one its session is at.
+        """
+
+        def work(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT events.commission_id FROM events "
+                "JOIN commissions ON commissions.id = events.commission_id "
+                "WHERE commissions.session_id = ? AND events.type = 'opened' "
+                "ORDER BY events.rowid DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            return str(row["commission_id"]) if row is not None else None
+
+        return await self.run(work)
+
     async def has_event(self, commission_id: str, kind: str) -> bool:
         """Return whether a commission has an event of a kind."""
         return await self.run(

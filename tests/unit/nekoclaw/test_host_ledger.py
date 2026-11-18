@@ -1015,6 +1015,30 @@ async def test_an_event_of_a_kind_is_looked_for_in_one_commission(ledger):
     assert await ledger.has_event(second.id, "opened") is False
 
 
+async def test_the_commission_whose_opening_message_a_session_took_last(ledger):
+    first = await _file(ledger, title="add a CSV export", session_id="s1")
+    second = await _file(ledger, title="add a chart", session_id="s1")
+    elsewhere = await _file(ledger, title="sort the photos", session_id="s2")
+    assert await ledger.opened_last("s1") is None
+
+    await ledger.append_event(first.id, "opened", {})
+    await ledger.append_event(first.id, "started", {})
+    assert await ledger.opened_last("s1") == first.id
+
+    # The session goes on with the next one; what another session takes is none of its business,
+    # and neither are the other events of a commission.
+    await ledger.append_event(second.id, "opened", {})
+    await ledger.append_event(elsewhere.id, "opened", {})
+    await ledger.append_event(first.id, "tool_start", {})
+    assert await ledger.opened_last("s1") == second.id
+    assert await ledger.opened_last("s2") == elsewhere.id
+
+    # Back at the first: opened a second time.
+    await ledger.append_event(first.id, "opened", {})
+    assert await ledger.opened_last("s1") == first.id
+    assert await ledger.opened_last("no-such-session") is None
+
+
 def _old_ledger(path: Any, rows: list[tuple[Any, ...]], events: list[tuple[Any, ...]] = ()) -> None:
     """Write a ledger as a build from before sessions left it: the tables of then, at version 2."""
     conn = sqlite3.connect(path)

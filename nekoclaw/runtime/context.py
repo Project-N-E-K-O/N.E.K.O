@@ -75,6 +75,22 @@ SUMMARY_FALLBACK = (
 # ---------------------------------------------------------------------------
 
 
+# The largest part of the window a request's output may take: one in this many.
+OUTPUT_WINDOW_SHARE = 4
+
+
+def output_allowance(window: int, configured: int) -> int:
+    """Return how many tokens of output a request asks for in a window of ``window`` tokens.
+
+    What the model is configured for, and a quarter of the window at the
+    most. A provider counts the output a request asks for against the
+    window together with what it sends; in a window near the configured
+    output there would be no room left for the conversation, and a request
+    would be refused as too long however much of it was summed up.
+    """
+    return max(256, min(configured, window // OUTPUT_WINDOW_SHARE))
+
+
 @dataclass(frozen=True, slots=True)
 class ContextPolicy:
     """Token budgets of one session, derived from the model's window."""

@@ -318,11 +318,20 @@ async def test_a_blocked_commission_taken_up_again_waits_for_its_session_like_an
     await wait_status(host, second.commission_id, "done")
     done = await wait_status(host, first.commission_id, "done")
     assert done.result_summary == "export added"
-    # It went on from the session as it is by now, told what the user added and not, again, what it is.
+    # The session was at the second commission since: it is told which one it is back at, and
+    # that it is back at it, in front of what the user added. Told nothing but what the user
+    # added, it would read that as part of the commission it worked on last.
     said = _user_messages(llm.requests[-1])
-    assert said[-1] == "you have access now"
-    assert any(text.startswith(_opens(second.commission_id, "add a chart")) for text in said)
-    assert sum(1 for text in said if text.startswith(_opens(first.commission_id, "add a CSV export"))) == 1
+    assert any(text.startswith(_opens(second.commission_id, "add a chart")) for text in said[:-1])
+    assert said[-1].startswith(_opens(first.commission_id, "add a CSV export"))
+    assert brain_texts.TASK_AGENT_COMMISSION_BACK in said[-1]
+    assert said[-1].endswith("you have access now")
+    assert said[-1].index(brain_texts.TASK_AGENT_COMMISSION_BACK) < said[-1].index("you have access now")
+    assert sum(1 for text in said if text.startswith(_opens(first.commission_id, "add a CSV export"))) == 2
+    # Opened anew, so the runtime keeps this message through a summary, not the second one's.
+    opened = [event.payload for event in await _events(host, first.commission_id, "opened")]
+    assert opened == [{"session_id": first.commission_id}] * 2
+    assert await host.ledger.opened_last(first.commission_id) == first.commission_id
 
 
 async def test_a_queued_commission_of_a_session_that_is_stopped_never_starts(hosts, tmp_path):

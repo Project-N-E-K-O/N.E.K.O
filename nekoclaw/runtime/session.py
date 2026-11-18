@@ -55,6 +55,7 @@ from nekoclaw.runtime.context import (
     RowKind,
     Transcript,
     kind_of,
+    output_allowance,
 )
 from nekoclaw.runtime.guards import GoalRound, RepeatToolGuard, next_goal_round
 from nekoclaw.runtime.host import HostBridge
@@ -469,6 +470,9 @@ class TaskAgentSession(SessionInbox):
         self._opening_message: AgentMessage | None = None
         # The window the conversation is managed for.
         self._window = spec.model.context_window
+        # The output a request asks for: what the model is configured for,
+        # less in a small window (``output_allowance``).
+        self._max_output = output_allowance(spec.model.context_window, spec.model.max_output_tokens)
         self._gateway: Any = None
         # Set in _open.
         self._recorder: SessionRecorder
@@ -611,7 +615,7 @@ class TaskAgentSession(SessionInbox):
 
         self.context = ContextManager(
             policy=ContextPolicy(
-                window=spec.model.context_window, max_output=spec.model.max_output_tokens
+                window=spec.model.context_window, max_output=self._max_output
             ),
             spill=spill,
             summarize=self._summarize,
@@ -867,12 +871,16 @@ class TaskAgentSession(SessionInbox):
             # an overflow does not announce two responses.
             held: AssistantStartEvent | None = None
             try:
+                # Said only when it is less than the model is configured
+                # for, which is what a request asks for unless told otherwise.
+                less = self._max_output < self.spec.model.max_output_tokens
                 async for event in self._model.stream_response(
                     model=model,
                     system=self._system,
                     messages=history,
                     tools=self._wire_tools,
                     signal=signal,
+                    **({"max_tokens": self._max_output} if less else {}),
                 ):
                     if isinstance(event, AssistantStartEvent):
                         held = event
@@ -966,7 +974,11 @@ class TaskAgentSession(SessionInbox):
             return
         logger.info("session %s: the provider states a window of %d tokens; managed for it now", self.session_id, stated)
         self._window = stated
-        self.context.policy = dataclasses.replace(self.context.policy, window=stated)
+        # The output asked for shrinks with it: the provider counts it
+        # against the window too, and what the conversation is fitted to
+        # (``ContextPolicy``) is the window less the output.
+        self._max_output = min(self._max_output, output_allowance(stated, self.spec.model.max_output_tokens))
+        self.context.policy = dataclasses.replace(self.context.policy, window=stated, max_output=self._max_output)
         self._emit(
             protocol.ModelCapabilityEvent(
                 session_id=self.session_id, context_window=stated, reason=" ".join(said.split())[:300]
