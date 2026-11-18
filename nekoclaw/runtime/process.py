@@ -552,6 +552,8 @@ class SubprocessRuntime:
                         "the runtime process is not running or is shutting down; "
                         "start the session again"
                     ),
+                    # Of a text: the number it was sent under.
+                    serial=getattr(command, "serial", None),
                 )
             )
         )
@@ -589,17 +591,22 @@ class SubprocessRuntime:
         if self._send_or_reject(spec.session_id, protocol.StartCommand(spec=spec)):
             self._pending_starts[spec.session_id] = self._pending_starts.get(spec.session_id, 0) + 1
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False, human: bool = True) -> None:
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
         self._send_or_reject(
-            session_id, protocol.PromptCommand(session_id=session_id, text=text, opening=opening, human=human)
+            session_id,
+            protocol.PromptCommand(session_id=session_id, text=text, opening=opening, human=human, serial=serial),
         )
 
-    async def steer(self, session_id: str, text: str, *, human: bool = True) -> None:
-        self._send_or_reject(session_id, protocol.SteerCommand(session_id=session_id, text=text, human=human))
-
-    async def follow_up(self, session_id: str, text: str, *, human: bool = True) -> None:
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         self._send_or_reject(
-            session_id, protocol.FollowUpCommand(session_id=session_id, text=text, human=human)
+            session_id, protocol.SteerCommand(session_id=session_id, text=text, human=human, serial=serial)
+        )
+
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
+        self._send_or_reject(
+            session_id, protocol.FollowUpCommand(session_id=session_id, text=text, human=human, serial=serial)
         )
 
     async def abort(self, session_id: str) -> None:

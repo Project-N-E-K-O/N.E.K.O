@@ -282,6 +282,14 @@ class _Session:
     # ends, the earlier one's end is held here and decides nothing.
     sent: int = 0
     held_end: dict[str, Any] | None = None
+    # Every text is sent under a number of its own that is never given
+    # again (``serial`` counts them), which the runtime says with a
+    # refusal. ``numbered`` has, for those that are neither known to be
+    # taken nor refused, which of the texts sent each is: the next may be
+    # on its way before a refusal of this one is heard of, so the one
+    # refused need not be the last one sent (``_withdraw``).
+    serial: int = 0
+    numbered: dict[int, int] = field(default_factory=dict)
     # The end of a run is being looked at this moment: whether the commission
     # is done with it, rests, or waits on. What waits to be handed to the
     # session is kept back meanwhile (``_hand_to``): steered in now, it would
@@ -310,6 +318,35 @@ class _Session:
     refused_until: float = 0.0
     # The address and the name of the model the session was started with.
     model: tuple[Any, Any] | None = None
+
+
+def _withdraw(session: _Session, serial: Any) -> list[int]:
+    """Take a text the session did not get out of the count of those sent; returns the wake requests it brought.
+
+    By the number it was sent under (``_Session.numbered``), and with no
+    such number the last one sent, which is what a runtime that names
+    none means. The texts sent after it move up by one: the runtime
+    numbers what it takes, and this one it never took, so what it calls
+    the n-th from here on is what was sent as the n+1-th. A number that
+    is not known (the text was taken, or withdrawn before) withdraws
+    nothing.
+    """
+    if isinstance(serial, int) and not isinstance(serial, bool):
+        number = session.numbered.pop(serial, None)
+        if number is None:
+            return []
+    else:
+        number = session.sent
+        for key in [key for key, value in session.numbered.items() if value == number]:
+            del session.numbered[key]
+    wakes = session.handed.pop(number, None) or []
+    for later in sorted(key for key in session.handed if key > number):
+        session.handed[later - 1] = session.handed.pop(later)
+    for key, value in session.numbered.items():
+        if value > number:
+            session.numbered[key] = value - 1
+    session.sent -= 1
+    return wakes
 
 
 class _Handed(str):
@@ -1610,6 +1647,9 @@ class TaskAgentManager:
         said = {} if human else {"human": False}
         session.sent += 1
         number = session.sent
+        session.serial += 1
+        serial = session.serial
+        session.numbered[serial] = number
         riding = list(wakes if wakes is not None else getattr(text, "wakes", ()))
         if riding:
             session.handed[number] = riding
@@ -1623,12 +1663,12 @@ class TaskAgentManager:
         try:
             if opening:
                 session.opening_sent = True
-                await runtime.prompt(session.session_id, text, opening=True, **said)
+                await runtime.prompt(session.session_id, text, opening=True, serial=serial, **said)
             else:
-                await getattr(runtime, command)(session.session_id, text, **said)
+                await getattr(runtime, command)(session.session_id, text, serial=serial, **said)
         except BaseException:
-            session.sent -= 1
-            session.handed.pop(number, None)
+            # By its own number: another text may have been sent meanwhile.
+            _withdraw(session, serial)
             if opening:
                 session.opening_sent = False
             if woke:
@@ -1745,7 +1785,16 @@ class TaskAgentManager:
         live = self._sessions.get(commission.id)
         if live is not None:
             live.stands = commission
-        if commission.status in ENDED_STATUSES and previous not in ENDED_STATUSES and not self._closed:
+        if (
+            commission.status in ENDED_STATUSES
+            and previous not in ENDED_STATUSES
+            and not self._closed
+            # Only a task agent's commission is handed anything: one that a
+            # plugin carries out has no session to hand it to, and is not
+            # looked up for nothing.
+            and commission.route == "task_agent"
+            and commission.session_id
+        ):
             self._spawn(self._return_untaken(commission.id, self._ledger.fired_mark()))
         session_id = commission.session_id
         if (
@@ -2082,7 +2131,6 @@ class TaskAgentManager:
         """
         session.settling = True
         try:
-            await self._act_on_end(session, event)
             # Whoever wrote to the session and asked to hear back is told
             # that the turn is over, and what came of it: once, by the host,
             # with no model asked. Of the notes this run took, which the
@@ -2093,7 +2141,25 @@ class TaskAgentManager:
             # all it took.)
             inputs = event.get("inputs")
             upto = inputs if isinstance(inputs, int) and not isinstance(inputs, bool) else None
-            await self._turn_over(session, str(event.get("text") or ""), upto)
+            said = str(event.get("text") or "")
+            if upto is not None:
+                # What the run took is not refused any more.
+                for key in [key for key, value in session.numbered.items() if value <= upto]:
+                    del session.numbered[key]
+            try:
+                await self._act_on_end(session, event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # What the end means could not be made out (the ledger was
+                # not to be read, asked again as it was). The run is over
+                # all the same, and took the notes it took: their senders
+                # are told of it, with these words, now or once the ledger
+                # can be written. Left to a later run, they would be told
+                # with that run's words, or of nothing.
+                await self._turn_over(session, said, upto)
+                raise
+            await self._turn_over(session, said, upto)
         finally:
             session.settling = False
 
@@ -2172,6 +2238,11 @@ class TaskAgentManager:
                     # Task agents it started are still at work. Their results
                     # arrive as messages and start its next run; it is not done.
                     session.idle = not (isinstance(inputs, int) and inputs < session.sent)
+                    if not session.idle:
+                        # Something was sent while the ledger was asked: a
+                        # run is on its way. This end is kept for where that
+                        # text is refused, and the session idle after all.
+                        session.held_end = event
                     return
                 if await self._rests(session, commission, event):
                     # It asked to be woken (a time it set, word of a note it
@@ -2214,9 +2285,19 @@ class TaskAgentManager:
                 # twice in the transcript does less harm than not at all.)
                 await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
-        for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
-            await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
-            await self.abort(child.id)
+        # (How it ended is written by now. Should what it started not be
+        # readable, even asked again, its session is let go all the same:
+        # left open, it would keep its place for a commission that is over,
+        # and the senders of its notes would hear nothing.)
+        try:
+            started = await self._looked(lambda: self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES))
+            for child in started:
+                await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
+                await self.abort(child.id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - its own end stands, and its session is closed
+            logger.warning("ending what a commission that is over had started failed", exc_info=True)
         await self._close_session(session)
 
     @staticmethod
@@ -2272,14 +2353,20 @@ class TaskAgentManager:
                 # a run is under way again, and its end is the one to look at.
                 return isinstance(inputs, int) and inputs < session.sent
 
+            if went_on():
+                # Its end decides. This one's is kept, as where it is seen
+                # at the outset (``_act_on_end``): should what was sent be
+                # refused, no such run comes, and this end is looked at
+                # again (``_on_error``). Not kept, the commission would stay
+                # at work with nobody at it, and keep its place.
+                session.held_end = event
+                return True
             # Jobs whose end starts the next run. One that is being stopped
             # tells nobody when it is gone, and closing the session does it
             # no harm: it does not keep the session open, and its place taken.
             jobs = event.get("waking_jobs")
             if isinstance(jobs, int) and not isinstance(jobs, bool) and jobs > 0:
-                session.idle = not went_on()
-                return True
-            if went_on():
+                session.idle = True
                 return True
             resting = await looked(lambda: self._ledger.rest(commission.id))
             if resting is None:
@@ -2303,6 +2390,8 @@ class TaskAgentManager:
                 raise
             except Exception:  # noqa: BLE001 - the run goes on all the same; its end writes it anew
                 logger.warning("taking back that a commission rests failed", exc_info=True)
+            # (Kept for where what was sent is refused; see above.)
+            session.held_end = event
             return True
         # (That it rests is no change of status, and is told to nobody.)
         session.stands = dataclasses.replace(session.stands or commission, resting_since=resting.since)
@@ -2466,6 +2555,9 @@ class TaskAgentManager:
         number = event.get("inputs")
         if not isinstance(number, int) or isinstance(number, bool):
             return
+        # Taken, so it is not refused any more.
+        for key in [key for key, value in session.numbered.items() if value <= number]:
+            del session.numbered[key]
         wakes = session.handed.pop(number, None)
         if not wakes:
             return
@@ -2491,8 +2583,8 @@ class TaskAgentManager:
         """
         from nekoclaw.host.wakes import STOPPED_REASON
 
-        stopped_at = float(getattr(self._waker, "stopped_at", 0.0) or 0.0)
-        await self._ledger.wakes_unfire(wake_ids, stopped_at=stopped_at, reason=STOPPED_REASON)
+        stopped_upto = getattr(self._waker, "stopped_upto", None)
+        await self._ledger.wakes_unfire(wake_ids, stopped_upto=stopped_upto, reason=STOPPED_REASON)
 
     async def _turn_over(self, session: _Session, said: str, upto: int | None = None) -> None:
         """Tell the sessions that wrote to a commission and asked to hear back that its turn is over.
@@ -2521,11 +2613,17 @@ class TaskAgentManager:
         if not took:
             # It took no note: nobody waits to hear of it.
             return
-        text, taken = said.strip(), sorted(self._unconfirmed)
+        text = said.strip()
+
+        def not_told() -> None:
+            # Cut off before it was written (the host is shutting down):
+            # the session's again, as if this had not begun.
+            session.took[numbers[0]] = [*took, *session.took.get(numbers[0], [])]
+
         try:
             commission = await self._ledger.get(commission_id)
         except asyncio.CancelledError:
-            session.took[numbers[0]] = [*took, *session.took.get(numbers[0], [])]
+            not_told()
             raise
         except Exception:  # noqa: BLE001 - told with how it was last seen to stand
             # How it stands cannot be read this moment. What is told, now
@@ -2546,6 +2644,7 @@ class TaskAgentManager:
             )
             self._unconfirmed.difference_update(taken)
         except asyncio.CancelledError:
+            not_told()
             raise
         except Exception:  # noqa: BLE001 - kept, and told when the ledger can be written again
             logger.warning("telling the senders of notes that a turn is over failed; it is tried again", exc_info=True)
@@ -2594,8 +2693,10 @@ class TaskAgentManager:
             # over is not left under its number, which the next text gets
             # (and whose being taken would then count for this one): it is
             # pending again, and the session is not tried again at once.
-            refused = session.handed.pop(session.sent, None)
-            session.sent -= 1
+            # Which text it was, the runtime says (``serial``): the next
+            # one may have been sent before this was heard of, and is not
+            # the one that was refused.
+            refused = _withdraw(session, event.get("serial"))
             if refused:
                 from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
 
@@ -2674,7 +2775,9 @@ class TaskAgentManager:
         that is never reported. A parent task agent is told after the change.
         Returns whether the change was made.
         """
-        commission = await self._ledger.get(commission_id)
+        # Asked again where it cannot be read this moment: given up on at
+        # once, a run that is over would leave its commission at work.
+        commission = await self._looked(lambda: self._ledger.get(commission_id))
         if commission is None:
             return False
         report = None
@@ -4518,28 +4621,10 @@ class TaskAgentManager:
         from config.nekoclaw_settings import TURNS_OWED_CLOSE_WAIT_SECONDS
 
         self._closed = True
-        # One limit for both steps below.
-        loop = asyncio.get_running_loop()
-        limit = loop.time() + TURNS_OWED_CLOSE_WAIT_SECONDS
-        returning, self._returning = self._returning, None
-        if returning is not None and not returning.done():
-            # The loop that tries again ends with the host. Stopped here,
-            # and waited for: this moment it may hold what a turn owes
-            # (taken out of what is kept for as long as the ledger is
-            # asked), which it puts back as it is cancelled. Left to
-            # itself it would sit out its pause among what the steps below
-            # wait for, and what it holds would be seen by nobody.
-            returning.cancel()
-            await asyncio.wait({returning}, timeout=max(0.0, limit - loop.time()))
-        if self._turns_owed or self._unconfirmed:
-            # Tried once more, a bounded while, with the ledger still open:
-            # the notes were taken and are not handed over anew, so what
-            # is not written now is told to nobody (a sender that still
-            # waits is told, when its wait is up, that no word came).
-            try:
-                await asyncio.wait_for(self._settle_owed(), max(0.0, limit - loop.time()))
-            except asyncio.TimeoutError:
-                logger.warning("what turns that are over still owe could not be written in time as the host shuts down")
+        # Before the commissions under way are ended below: what their
+        # sessions took is on record as taken by then, and is not handed
+        # over a second time by the next process.
+        await self._settle_at_close(TURNS_OWED_CLOSE_WAIT_SECONDS)
         queued = list(self._queue)
         self._queue.clear()
         for commission_id in queued:
@@ -4590,3 +4675,34 @@ class TaskAgentManager:
         if pump is not None:
             pump.cancel()
             await asyncio.gather(pump, return_exceptions=True)
+        # And once more, now that no run ends any more: the sessions that
+        # were closed above ended their turns meanwhile, and one whose word
+        # to the senders of its notes could not be written then is owed
+        # since. (Nothing else writes it: the loop that tries again ended
+        # with the host.) The ledger is closed after this.
+        await self._settle_at_close(TURNS_OWED_CLOSE_WAIT_SECONDS)
+
+    async def _settle_at_close(self, within: float) -> None:
+        """Write what turns that are over still owe as the host shuts down, for ``within`` seconds at the most."""
+        loop = asyncio.get_running_loop()
+        # One limit for both steps below.
+        limit = loop.time() + within
+        returning, self._returning = self._returning, None
+        if returning is not None and not returning.done():
+            # The loop that tries again ends with the host. Stopped here,
+            # and waited for: this moment it may hold what a turn owes
+            # (taken out of what is kept for as long as the ledger is
+            # asked), which it puts back as it is cancelled. Left to
+            # itself it would sit out its pause among what shutting down
+            # waits for, and what it holds would be seen by nobody.
+            returning.cancel()
+            await asyncio.wait({returning}, timeout=max(0.0, limit - loop.time()))
+        if self._turns_owed or self._unconfirmed:
+            # Tried once more, a bounded while, with the ledger still open:
+            # the notes were taken and are not handed over anew, so what
+            # is not written now is told to nobody (a sender that still
+            # waits is told, when its wait is up, that no word came).
+            try:
+                await asyncio.wait_for(self._settle_owed(), max(0.0, limit - loop.time()))
+            except asyncio.TimeoutError:
+                logger.warning("what turns that are over still owe could not be written in time as the host shuts down")

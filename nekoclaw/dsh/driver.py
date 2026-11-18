@@ -86,7 +86,7 @@ from nekoclaw.dsh import profile
 from nekoclaw.dsh.acp import AcpClosed, AcpConnection, AcpError
 from nekoclaw.dsh.endpoint import LocalEndpoint
 from nekoclaw.dsh.forward import ModelForwarder, unsupported_reason
-from nekoclaw.dsh.host_tools import UNDELIVERED, HostTools
+from nekoclaw.dsh.host_tools import ON_ANSWERED, HostTools
 from nekoclaw.dsh.profile import SESSION_FILE, DshLaunch, DshUnavailable, Shape
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime.host import HostBridge, NoHost
@@ -169,6 +169,9 @@ class _Session:
     # The numbers of the texts a call of the turn under way was handed
     # (``_take_input``), until that turn is over.
     awaited: list[int] = field(default_factory=list)
+    # Of those, the ones whose answer is still on its way to dsh: whether
+    # it got there (set by whoever serves the call), and their numbers.
+    answering: list[tuple[asyncio.Future[bool], list[int]]] = field(default_factory=list)
     # Counts the runs that are over. A call dsh makes belongs to the run
     # under way as it is made, and is handed nothing once that run is over.
     runs: int = 0
@@ -385,8 +388,12 @@ class DshRuntime:
         session.seq += 1
         self._deliver(protocol.dump(event))
 
-    def _reject(self, session_id: str, command: str, message: str) -> None:
-        self._deliver(protocol.dump(protocol.ErrorEvent(session_id=session_id, command=command, message=message)))
+    def _reject(self, session_id: str, command: str, message: str, serial: int | None = None) -> None:
+        self._deliver(
+            protocol.dump(
+                protocol.ErrorEvent(session_id=session_id, command=command, message=message, serial=serial)
+            )
+        )
 
     def _on_usage(self, session_id: str, metadata: dict[str, Any]) -> None:
         from nekoclaw.runtime.model import usage_from_metadata
@@ -861,14 +868,14 @@ class DshRuntime:
         if slot >= 0 and slot not in process.free_slots:
             process.free_slots.append(slot)
 
-    async def _session(self, session_id: str, command: str) -> _Session | None:
+    async def _session(self, session_id: str, command: str, serial: int | None = None) -> _Session | None:
         session = self._sessions.get(session_id)
         if session is not None and not session.opening.done():
             # A command sent right after ``start`` waits for the session.
             await asyncio.shield(session.opening)
             session = self._sessions.get(session_id)
         if session is None or session.closing is not None:
-            self._reject(session_id, command, f'unknown session "{session_id}"')
+            self._reject(session_id, command, f'unknown session "{session_id}"', serial)
             return None
         return session
 
@@ -1120,13 +1127,44 @@ class DshRuntime:
         # meanwhile): they are told of as taken when the turn the call
         # belongs to ends as a turn does that was not cut short.
         session.awaited.extend(numbers)
-        undo = UNDELIVERED.get()
-        if undo is not None:
-            # And where the answer is seen not to reach dsh (it hung up on
-            # this one call, and its turn goes on): they are queued again,
-            # ahead of what came since, and are not told of as taken.
-            undo.append(lambda: self._give_back(session, texts, of_run))
+        on_answered = ON_ANSWERED.get()
+        if on_answered is not None:
+            # Whoever serves the call says whether its answer reached dsh.
+            # The end of the turn waits for that (``_run``): where it did
+            # not (dsh hung up on this one call, and its turn goes on),
+            # they are queued again, ahead of what came since, and are not
+            # told of as taken.
+            outcome: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            session.answering.append((outcome, numbers))
+            on_answered.append(lambda delivered: self._answered(session, texts, of_run, outcome, delivered))
         return texts
+
+    def _answered(
+        self, session: _Session, texts: list[str], of_run: int, outcome: asyncio.Future[bool], delivered: bool
+    ) -> None:
+        """Take note of whether the answer that carried some texts reached dsh; queue them again where it did not."""
+        if not outcome.done():
+            outcome.set_result(delivered)
+        if not delivered:
+            self._give_back(session, texts, of_run)
+
+    async def _answers_settled(self, session: _Session) -> None:
+        """Wait, a bounded while, until it is known of every answer that carried texts whether it reached dsh.
+
+        Called as a turn ends, before what its calls were handed is told
+        of as taken. One whose answer is still not known to have got there
+        is not told of: whoever sent it finds it untaken, and sends it
+        again in time.
+        """
+        from config.nekoclaw_settings import DSH_ANSWER_SETTLE_SECONDS
+
+        open_ones = [outcome for outcome, _numbers in session.answering if not outcome.done()]
+        if open_ones:
+            await asyncio.wait(open_ones, timeout=DSH_ANSWER_SETTLE_SECONDS)
+        unknown = {number for outcome, numbers in session.answering if not outcome.done() for number in numbers}
+        if unknown:
+            session.awaited = [number for number in session.awaited if number not in unknown]
+        session.answering = []
 
     def _give_back(self, session: _Session, texts: list[str], of_run: int) -> None:
         """Queue again the texts a call was handed whose answer did not reach dsh."""
@@ -1186,9 +1224,14 @@ class DshRuntime:
                 stopped = isinstance(answer, dict) and str(answer.get("stopReason") or "") == "cancelled"
                 if not (session.aborting or stopped):
                     # And what a call of the turn was handed meanwhile: the
-                    # turn ran to its end with it.
+                    # turn ran to its end with it. Once it is known that
+                    # the answers of those calls got to dsh, that is: one
+                    # that did not has its texts queued again by then, and
+                    # they go with the next turn.
+                    await self._answers_settled(session)
                     self._say_taken(session, session.awaited)
                 session.awaited = []
+                session.answering = []
                 if first:
                     # dsh took it, so it is in the session's record. Until
                     # then the next message carries it (again, at worst):
@@ -1229,36 +1272,39 @@ class DshRuntime:
             # Arrived while the end was being announced: an idle session is started by it.
             session.run = asyncio.ensure_future(self._run(session))
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False, human: bool = True) -> None:
+    async def prompt(
+        self, session_id: str, text: str, *, opening: bool = False, human: bool = True, serial: int | None = None
+    ) -> None:
         # ``opening`` is for a runtime that sums the conversation up itself
         # and can leave that text as it is; dsh sums up on its own. ``human``
         # is for one that keeps something for the user's own words; dsh
-        # asks the host before every call that needs asking.
+        # asks the host before every call that needs asking. ``serial`` is
+        # said again where the text is refused.
         del opening, human
-        session = await self._session(session_id, "prompt")
+        session = await self._session(session_id, "prompt", serial)
         if session is None:
             return
         if self._shutdowns:
-            self._reject(session_id, "prompt", "the runtime is shutting down")
+            self._reject(session_id, "prompt", "the runtime is shutting down", serial)
         elif session.run is not None:
-            self._reject(session_id, "prompt", "a run is in progress")
+            self._reject(session_id, "prompt", "a run is in progress", serial)
         else:
             self._queue(session, text)
 
-    async def steer(self, session_id: str, text: str, *, human: bool = True) -> None:
+    async def steer(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         del human
-        await self._add(session_id, "steer", text)
+        await self._add(session_id, "steer", text, serial)
 
-    async def follow_up(self, session_id: str, text: str, *, human: bool = True) -> None:
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True, serial: int | None = None) -> None:
         del human
-        await self._add(session_id, "follow_up", text)
+        await self._add(session_id, "follow_up", text, serial)
 
-    async def _add(self, session_id: str, command: str, text: str) -> None:
-        session = await self._session(session_id, command)
+    async def _add(self, session_id: str, command: str, text: str, serial: int | None) -> None:
+        session = await self._session(session_id, command, serial)
         if session is None:
             return
         if self._shutdowns:
-            self._reject(session_id, command, "the runtime is shutting down")
+            self._reject(session_id, command, "the runtime is shutting down", serial)
             return
         self._queue(session, text)
 

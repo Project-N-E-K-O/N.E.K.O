@@ -206,6 +206,11 @@ class PromptCommand(_Strict):
     # in the conversation like any text, and entitles the run to nothing
     # that only the user's own words entitle it to.
     human: bool = True
+    # A number of the sender's own for this text, or None. Said again by
+    # the ``error`` event of a text that is refused: texts are sent without
+    # waiting for the one before, so "the last one sent" need not be the
+    # one a refusal is about.
+    serial: int | None = None
 
 
 class SteerCommand(_Strict):
@@ -214,6 +219,8 @@ class SteerCommand(_Strict):
     text: str = Field(min_length=1)
     # See ``PromptCommand.human``.
     human: bool = True
+    # See ``PromptCommand.serial``.
+    serial: int | None = None
 
 
 class FollowUpCommand(_Strict):
@@ -222,6 +229,8 @@ class FollowUpCommand(_Strict):
     text: str = Field(min_length=1)
     # See ``PromptCommand.human``.
     human: bool = True
+    # See ``PromptCommand.serial``.
+    serial: int | None = None
 
 
 class AbortCommand(_Strict):
@@ -410,6 +419,9 @@ class ErrorEvent(_SessionEvent):
     type: Literal["error"] = "error"
     command: str
     message: str
+    # Of a text that was refused: the number it was sent under
+    # (``PromptCommand.serial``), where it had one.
+    serial: int | None = None
 
 
 class HostRequestEvent(_Strict):

@@ -961,9 +961,9 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
         sent.append(("prompt", text))
         return await prompt(session_id, text, **options)
 
-    async def record_steer(session_id: str, text: str) -> Any:
+    async def record_steer(session_id: str, text: str, **options: Any) -> Any:
         sent.append(("steer", text))
-        return await steer(session_id, text)
+        return await steer(session_id, text, **options)
 
     runtime.start, runtime.prompt, runtime.steer = slow_start, record_prompt, record_steer
     second = await _filed(host, "back up the notes")
@@ -1439,7 +1439,7 @@ async def test_what_was_passed_on_while_a_start_was_set_up_is_kept_when_its_prom
 
         asyncio.get_running_loop().create_task(later())
 
-    async def record_steer(session_id: str, text: str) -> None:
+    async def record_steer(session_id: str, text: str, **_options: Any) -> None:
         steered.append(text)
 
     runtime.start, runtime.prompt, runtime.steer = start_with_a_note, refused_later, record_steer
@@ -2498,9 +2498,9 @@ async def test_a_result_for_a_parent_back_at_work_while_it_was_looked_up_is_stee
     steered: list[str] = []
     steer = runtime.steer
 
-    async def record(session_id: str, text: str) -> Any:
+    async def record(session_id: str, text: str, **options: Any) -> Any:
         steered.append(text)
-        return await steer(session_id, text)
+        return await steer(session_id, text, **options)
 
     runtime.steer = record
 
@@ -2512,7 +2512,10 @@ async def test_a_result_for_a_parent_back_at_work_while_it_was_looked_up_is_stee
     release.set()
 
 
-async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp_path):
+@pytest.mark.parametrize("ledger", ["readable", "unreadable for a moment as the child is looked for"])
+async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp_path, monkeypatch, ledger):
+    from nekoclaw.host.ledger import ACTIVE_STATUSES
+
     parent = ScriptedLLM(
         [
             [call("subagent", {"description": "open the vault", "prompt": "Open the vault."}), finish("tool_calls")],
@@ -2523,8 +2526,37 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     )
     child = ScriptedLLM([_report("blocked", "the vault needs a key"), [say("waiting"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    select, act = host.ledger.select, host.task_agents._act_on_end
+    ending: list[str] = []
+    failed: list[int] = []
+    the_parent: list[str] = []
+
+    async def acting(session: Any, event: dict[str, Any]) -> None:
+        ending.append(session.commission_id)
+        try:
+            await act(session, event)
+        finally:
+            ending.pop()
+
+    async def unreadable_once(*args: Any, **asked: Any) -> Any:
+        # What the parent started that is to end with it: read as the end of its run is acted
+        # on, once its own end is written.
+        if (
+            ledger != "readable"
+            and not failed
+            and ending
+            and the_parent == [ending[-1]] == [asked.get("parent_id")]
+            and asked.get("statuses") == ACTIVE_STATUSES
+        ):
+            failed.append(1)
+            raise OSError("the disk is busy")
+        return await select(*args, **asked)
+
+    monkeypatch.setattr(host.task_agents, "_act_on_end", acting)
+    monkeypatch.setattr(host.ledger, "select", unreadable_once)
 
     receipt = await _dispatch(host, "tidy up and open the vault")
+    the_parent.append(receipt.commission_id)
 
     # The blocked child has reported and produces nothing more, so the parent
     # is done rather than left working with its place held.
@@ -2535,6 +2567,8 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     await wait_until(lambda: _child_status(host, receipt.commission_id, "cancelled"), what="the child being closed")
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent finished")
+    # (Asked again where the ledger could not be read at once: the child is not left as it was.)
+    assert bool(failed) == (ledger != "readable")
 
 
 async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts, tmp_path):
@@ -2834,17 +2868,21 @@ class RecordingRuntime:
         self.sent: list[tuple[str, str, str]] = []
         # Whether each prompt was said to open a commission.
         self.openings: list[bool] = []
+        # The number each text was sent under, in the order of ``sent``.
+        self.serials: list[int | None] = []
         self.closed: list[str] = []
 
     async def start(self, spec: Any) -> None:
         self.specs.append(spec)
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False, serial: int | None = None) -> None:
         self.sent.append(("prompt", session_id, text))
         self.openings.append(opening)
+        self.serials.append(serial)
 
-    async def steer(self, session_id: str, text: str) -> None:
+    async def steer(self, session_id: str, text: str, *, serial: int | None = None) -> None:
         self.sent.append(("steer", session_id, text))
+        self.serials.append(serial)
 
     async def close(self, session_id: str) -> None:
         self.closed.append(session_id)
@@ -2892,7 +2930,9 @@ async def test_a_start_that_fails_after_a_runtime_opened_its_session_closes_it_b
     told = RecordingRuntime.prompt
     order: list[str] = []
 
-    async def cannot_be_told(self: Any, session_id: str, text: str, *, opening: bool = False) -> None:
+    async def cannot_be_told(
+        self: Any, session_id: str, text: str, *, opening: bool = False, **_options: Any
+    ) -> None:
         if not order:
             order.append("refused")
             raise RuntimeError("the runtime went away")

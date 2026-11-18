@@ -392,6 +392,13 @@ as one that asked for nothing: ended on the first failure, a time it had
 set would be dropped with it. Short, since the events of every other
 session wait meanwhile."""
 
+DSH_ANSWER_SETTLE_SECONDS = 2.0
+"""How long the end of a turn of a dsh session waits to learn whether the
+answers of its ``wait_agent`` calls reached dsh, where one is still on its
+way as the turn ends. Whoever serves the call says so a moment after the
+answer is written; a text whose answer is not known to have got there by
+then is not told of as taken."""
+
 TURNS_OWED_CLOSE_WAIT_SECONDS = 1.0
 """How long shutting down gives what turns that are over still owe (word to
 the senders of the notes they took, and that those notes were taken) to be

@@ -465,8 +465,6 @@ async def ledger_exists() -> bool:
 
 async def stop_everything(reason: str = "Cancelled by user") -> int:
     """Stop every commission that is under way. Returns how many were stopped."""
-    from nekoclaw.host.ledger import ACTIVE_STATUSES
-
     global _stops_on_their_way
 
     host = peek_host()

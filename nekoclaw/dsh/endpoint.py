@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from nekoclaw.dsh.forward import ModelForwarder, respond_json
-from nekoclaw.dsh.host_tools import UNDELIVERED, HostTools
+from nekoclaw.dsh.host_tools import ON_ANSWERED, HostTools
 
 logger = logging.getLogger(__name__)
 
@@ -271,14 +271,15 @@ class LocalEndpoint:
         # awaited in between: a session closed and opened again under the
         # same id before the call is carried out is not this one.
         # What the work hands dsh that must not be lost with an answer that
-        # never gets there (the texts a ``wait_agent`` takes): undone below
-        # unless the answer was sent to a dsh that was still listening.
-        undo: list[Callable[[], None]] = []
-        marked = UNDELIVERED.set(undo)
+        # never gets there (the texts a ``wait_agent`` takes): whoever
+        # handed it over is told below whether the answer was sent to a dsh
+        # that was still listening.
+        told: list[Callable[[bool], None]] = []
+        marked = ON_ANSWERED.set(told)
         try:
             work = asyncio.ensure_future(self._tools.handle(session_id, payload, offer=self._tools.offer(session_id)))
         finally:
-            UNDELIVERED.reset(marked)
+            ON_ANSWERED.reset(marked)
         gone = asyncio.ensure_future(_wait_disconnect(receive))
         delivered = False
         try:
@@ -323,12 +324,14 @@ class LocalEndpoint:
                 if not work.done():
                     work.cancel()
         finally:
-            if not delivered:
-                for step in undo:
-                    try:
-                        step()
-                    except Exception:  # noqa: BLE001 - the other steps are still taken
-                        logger.exception("undoing what a call that dsh gave up had handed it failed")
+            # Whoever handed dsh something with this answer is told whether
+            # it got there. The last to hand over first: what is queued
+            # again goes to the front, and so ends up in the order it came.
+            for tell in reversed(told):
+                try:
+                    tell(delivered)
+                except Exception:  # noqa: BLE001 - the others are still told
+                    logger.exception("telling whether an answer reached dsh failed")
 
 
 async def _close_listener(server: Any, task: "asyncio.Task[Any] | None") -> None:

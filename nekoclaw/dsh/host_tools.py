@@ -74,12 +74,13 @@ WAIT_TOOL = "wait_agent"
 # handed to the session.
 TakeInput = Callable[[float], Awaitable[list[str]]]
 
-# What to undo when the answer to the request under way does not reach dsh:
-# set by whoever serves the request (``LocalEndpoint``), added to by a call
-# that hands dsh something it must not lose (``wait_agent``'s texts). Calls
-# run in tasks of their own, which see the same list.
-UNDELIVERED: contextvars.ContextVar[list[Callable[[], None]] | None] = contextvars.ContextVar(
-    "nekoclaw_dsh_undelivered", default=None
+# Whom to tell whether the answer to the request under way reached dsh: set
+# by whoever serves the request (``LocalEndpoint``), added to by a call that
+# hands dsh something it must not lose (``wait_agent``'s texts). Each is
+# called once the answer is written, with True, or with False where it did
+# not get there. Calls run in tasks of their own, which see the same list.
+ON_ANSWERED: contextvars.ContextVar[list[Callable[[bool], None]] | None] = contextvars.ContextVar(
+    "nekoclaw_dsh_on_answered", default=None
 )
 
 
@@ -282,6 +283,11 @@ class HostTools:
         elif method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments")
+            if is_notification and name == WAIT_TOOL:
+                # Asked for with no id: no answer goes back, so what the wait
+                # handed over would go nowhere. Not carried out: the texts
+                # stay for a wait that can be answered.
+                return None
             result = await self.call(
                 session_id,
                 str(name or ""),

@@ -559,34 +559,39 @@ async def test_stopping_the_listener_drops_every_token_and_it_can_be_started_aga
 
 
 @pytest.mark.parametrize(
-    "how, undone",
+    "how, reached",
     [
-        ("takes the answer", []),
-        ("hangs up while the call is carried out", ["given back"]),
-        ("hangs up as the answer is ready", ["given back"]),
-        ("hung up a moment before the answer is written, and the write says nothing", ["given back"]),
-        ("hangs up while the answer is written, and the write says nothing", ["given back"]),
+        ("takes the answer", True),
+        ("hangs up while the call is carried out", False),
+        ("hangs up as the answer is ready", False),
+        ("hung up a moment before the answer is written, and the write says nothing", False),
+        ("hangs up while the answer is written, and the write says nothing", False),
         # What cannot be told: the server knows, the watcher hears of it after the last look.
-        ("hung up in the last turn of the loop before the answer is written, and the write says nothing", []),
-        ("is gone when the answer is written", ["given back"]),
+        ("hung up in the last turn of the loop before the answer is written, and the write says nothing", True),
+        ("is gone when the answer is written", False),
     ],
 )
-async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
-    endpoint, monkeypatch: pytest.MonkeyPatch, how: str, undone: list[str]
+async def test_whoever_handed_dsh_something_is_told_whether_the_answer_reached_it(
+    endpoint, monkeypatch: pytest.MonkeyPatch, how: str, reached: bool
 ) -> None:
     from nekoclaw.dsh.endpoint import TOOLS_PATH
-    from nekoclaw.dsh.host_tools import UNDELIVERED
+    from nekoclaw.dsh.host_tools import ON_ANSWERED
 
     listener, _calls = endpoint
     token = listener.issue("s1")
-    done: list[str] = []
+    told: list[tuple[str, bool]] = []
     handed, answered, hanging_up = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    # Whether whoever watches the request had heard that dsh hung up, as an answer was dropped.
+    watcher: list[int] = []
+    heard: list[bool] = []
+    last_turn = "hung up in the last turn of the loop before the answer is written, and the write says nothing"
 
     async def handle(session_id: str, payload: Any, **options: Any) -> Any:
-        # As a ``wait_agent`` that hands dsh the texts that arrived.
-        steps = UNDELIVERED.get()
+        # As two ``wait_agent`` calls of one request, each handing dsh the texts that arrived.
+        steps = ON_ANSWERED.get()
         assert steps is not None
-        steps.append(lambda: done.append("given back"))
+        steps.append(lambda delivered: told.append(("the first", delivered)))
+        steps.append(lambda delivered: told.append(("the second", delivered)))
         handed.set()
         if how == "hangs up while the call is carried out":
             await asyncio.Event().wait()
@@ -595,7 +600,7 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
             # it a turn of the loop after the answer is ready to be written.
             loop = asyncio.get_running_loop()
             loop.call_soon(loop.call_soon, hanging_up.set)
-        if how == "hung up in the last turn of the loop before the answer is written, and the write says nothing":
+        if how == last_turn:
             # Later still: neither of the turns of the loop that are waited out before the
             # answer is written brings it to the watcher.
             loop = asyncio.get_running_loop()
@@ -617,6 +622,7 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
             await answered.wait()
         elif how.endswith("and the write says nothing"):
             await hanging_up.wait()
+            watcher.append(1)
         else:
             await handed.wait()
         return {"type": "http.disconnect"}
@@ -631,6 +637,11 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
                 hanging_up.set()
                 await asyncio.sleep(0)
                 await asyncio.sleep(0)
+            if how == last_turn:
+                # The server has found the connection gone, and writes nothing. Whoever
+                # watches the request is told of it apart from that, and a moment later.
+                heard.append(bool(watcher))
+                return
             answered.set()
 
     scope = {
@@ -646,8 +657,35 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
         assert isinstance(serving.exception(), ConnectionError)
     else:
         assert serving.exception() is None
-        assert answered.is_set() == (how != "hangs up while the call is carried out")
+        assert answered.is_set() == (how not in ("hangs up while the call is carried out", last_turn))
+    if how == last_turn:
+        # The answer did not get there. The server knew; whoever watches the request had not
+        # heard of it at the last look: this is the moment that is left, and what was handed
+        # over is taken for delivered.
+        assert heard == [False] and hanging_up.is_set()
 
-    # The step that undoes it is not the call's own to see (it runs in a task of its own).
-    assert UNDELIVERED.get() is None
-    assert done == undone
+    # (What the call adds to is not the caller's own to see: the call runs in a task of its own.)
+    assert ON_ANSWERED.get() is None
+    # Both are told, the last to hand over first: what is queued again goes to the front,
+    # and so ends up in the order it came in.
+    assert told == [("the second", reached), ("the first", reached)]
+
+
+async def test_a_wait_that_cannot_be_answered_takes_nothing(tmp_path: Path) -> None:
+    asked: list[float] = []
+
+    async def take_input(seconds: float) -> list[str]:
+        asked.append(seconds)
+        return ["a note that would go nowhere"]
+
+    tools = HostTools(_callbacks([]))
+    _open(tools, tmp_path, take_input=take_input)
+    wait = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "wait_agent", "arguments": {}}}
+
+    # Sent with no id: nothing goes back, so nothing is handed over. Alone, or beside one that is answered.
+    assert await tools.handle("s1", wait) is None
+    answers = await tools.handle("s1", [wait, _request("ping", request_id=7)])
+    assert asked == [] and [answer["id"] for answer in answers] == [7]
+    # With an id it is carried out as ever.
+    answered = await tools.handle("s1", {**wait, "id": 8})
+    assert asked == [30.0] and "a note that would go nowhere" in answered["result"]["content"][0]["text"]

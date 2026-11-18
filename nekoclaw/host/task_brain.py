@@ -1114,26 +1114,32 @@ class TaskBrain:
             if any(relevance(item) > 0 for item in (*active, *recent)):
                 active = sorted(active, key=relevance, reverse=True)
                 recent = sorted(recent, key=relevance, reverse=True)
+        # One that is in both lists ended between the two readings. It is
+        # listed once: one that is looked at again below, as that look
+        # finds it (what the second list has of it is of an earlier moment
+        # by then: ended there, it may be under way again); any other (one
+        # that a plugin carries out is not looked at again), as the second
+        # list has it, which is the later of the two readings. Sorted out
+        # here, before the lists are cut to size: cut first, a first list
+        # that fills the rows by itself would leave no room for what the
+        # second has of it, and the earlier reading would be the one told.
+        twice = {item.id for item in active}.intersection(item.id for item in recent)
+        again = {item.id for item in active if item.id in twice and self._looked_at_again(item)}
+        active = [item for item in active if item.id not in twice or item.id in again]
+        recent = [item for item in recent if item.id not in again]
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
         # Each row from one look at its commission: its status, what it
         # asks and what it waits for are read together, so that a row does
         # not say "waiting for you" of one that was answered and rests.
-        looked = [await self._waiting_words(item, lang, now) for item in active]
+        looked = [await self._waiting_words(item, lang) for item in active]
         # Sorted by how each stands as of that look. One that ended since
         # the lists were read is among those that ended, and counts there
-        # as one she was told of. Each of them is listed once, as it
-        # stands now: what the second list has of it is of an earlier
-        # moment (ended there, it may be under way again by this look).
-        # Not every one of them is looked at again (one that a plugin
-        # carries out is not): of those, what the second list has is the
-        # later of the two readings, and is what is listed.
-        again = {seen.id for listed, (seen, _said) in zip(active, looked) if seen is not listed}
-        later = {item.id for item in recent} - again
+        # as one she was told of.
         ended = [seen for seen, _said in looked if seen.status not in ACTIVE_STATUSES]
-        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES and seen.id not in later]
+        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES]
         waiting = {seen.id: said for seen, said in looked if seen.status in ACTIVE_STATUSES}
-        recent = [*ended, *(item for item in recent if item.id not in again)]
+        recent = [*ended, *recent]
 
         def line(commission: Commission) -> str:
             head = f"- {commission.title} ({status_word(commission.status, lang)})"
@@ -1180,7 +1186,12 @@ class TaskBrain:
             commissions=[*active, *recent],
         )
 
-    async def _waiting_words(self, commission: Commission, lang: str, now: float) -> tuple[Commission, str]:
+    @staticmethod
+    def _looked_at_again(commission: Commission) -> bool:
+        """Whether a row of a query's answer is made from a new look at its commission (``_waiting_words``)."""
+        return commission.route == "task_agent" and bool(commission.session_id)
+
+    async def _waiting_words(self, commission: Commission, lang: str) -> tuple[Commission, str]:
         """Say, for a row of a query's answer, what a commission under way waits for and what waits for it; empty for neither.
 
         Returned with the commission as it was read for that: the row is
@@ -1195,7 +1206,7 @@ class TaskBrain:
 
         from config.prompts.prompts_nekoclaw_sessions import SESSION_QUERY_TEXTS
 
-        if commission.route != "task_agent" or not commission.session_id:
+        if not self._looked_at_again(commission):
             return commission, ""
         words = _texts(SESSION_QUERY_TEXTS, lang)
 
@@ -1208,6 +1219,9 @@ class TaskBrain:
         # apart, a commission that was woken in between would be said to
         # rest until the next of its times.
         seen, own, notes = await self._ledger.waiting_view(commission.id)
+        # What time it is once that is read, and not when the query began:
+        # a time that came while the ledger was asked has come.
+        now = self._ledger._clock()
         if seen is None:
             return commission, ""
         if own and seen.resting:
