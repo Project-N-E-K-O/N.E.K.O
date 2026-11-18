@@ -455,10 +455,13 @@ def test_a_record_that_is_not_there_or_too_large_says_so(tmp_path):
     path = _record(tmp_path / "transcript.jsonl", RECORD)
     with pytest.raises(records.RecordError, match="too large"):
         records.search_record(path, "csv", hits=5, excerpt_tokens=20, max_bytes=10)
-    # The line being written this moment is not read.
+    # The line being written this moment is not read, whatever it holds so far: a line ends with its line break.
     with path.open("ab") as handle:
-        handle.write(b'{"type": "message", "message": {"role": "user", "content": "half a li')
+        handle.write(b'{"type": "message", "message": {"role": "user", "content": "written this moment"}}')
     assert records.read_record(path, None, **LIMITS_OF_A_READ).last == 8
+    with path.open("ab") as handle:
+        handle.write(b"\n")
+    assert records.read_record(path, None, **LIMITS_OF_A_READ).last == 9
 
 
 def test_a_frame_indents_every_line_so_none_of_them_is_a_marker():
@@ -771,6 +774,34 @@ async def test_a_note_reaches_a_session_at_work_before_its_next_step(hosts, tmp_
     assert [e.payload["wake_ids"] for e in await _events(host, built.id, "woken")] != []
 
 
+async def test_a_note_wakes_the_commission_that_rests_in_the_session(hosts, tmp_path, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    scripts = {
+        _k("watch the deployment"): ScriptedLLM(
+            [_wake("is it through"), [say("Waiting."), finish()], _report("ready", "it is through, as the other session said")]
+        ),
+        _k("paint the fence"): ScriptedLLM([_report("ready", "painted")]),
+    }
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    watching = await _dispatch(host, "watch the deployment")
+    await wait_until(lambda: _resting(host, watching.commission_id), what="the commission coming to rest")
+    await _let_go(host)
+    other = await wait_status(host, (await _dispatch(host, "paint the fence")).commission_id, "done")
+    resting = await host.ledger.get(watching.commission_id)
+
+    await _note(host.ledger, other, resting.session_id, "The deployment is through.")
+    host.wakes.kick()
+
+    # The session is at the commission that rests in it: that one is woken, and none is filed.
+    done = await wait_status(host, watching.commission_id, "done")
+    assert done.result_summary == "it is through, as the other session said"
+    assert await _filed_for_notes(host) == []
+    said = _said(scripts[_k("watch the deployment")].requests[-1])
+    assert "    The deployment is through." in said[-1] and "A wake you set is due" not in said[-1]
+    [delivered] = await _delivered(host)
+    assert delivered.delivered_to == watching.commission_id
+
+
 async def _delivered(host: Any) -> list[Any]:
     rows = await host.ledger.run(lambda conn: [row["id"] for row in conn.execute("SELECT id FROM messages WHERE status = 'delivered'")])
     return [await host.ledger.message_get(item) for item in rows]
@@ -980,6 +1011,11 @@ async def test_a_task_agent_started_by_another_neither_writes_to_other_sessions_
         await host.task_agents._cb_session_send(other.session_id, {"to": child.session_id, "message": "hi"})
     child_name = (await host.ledger.get_session(child.session_id)).name
     assert str(caught.value) == words.MESSAGE_REFUSALS["child"].format(name=child_name)
+    # It is not offered the tools either, and is offered those that find and read.
+    await wait_until(lambda: _events(host, child.id, "started"), what="the session of the child being opened")
+    [started] = await _events(host, child.id, "started")
+    assert not set(started.payload["tools"]) & {"subagent", "message_session", "schedule_wake"}
+    assert {"list_sessions", "read_session"} <= set(started.payload["tools"])
     # It can look for sessions and read what they left; it is in no list itself.
     listed = (await host.task_agents._cb_session_list(child.session_id, {"page": 1}))["text"]
     assert f"[{other.session_id[:8]}]" in listed and child.session_id[:8] not in listed

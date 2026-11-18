@@ -115,9 +115,10 @@ SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent", "session")
 ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 
 # "note": what a task agent wrote to another session. "done": the host
-# telling the sender that the turn its note began is over. "expired": the
-# host telling the sender that no such word came in time.
-MESSAGE_KINDS: tuple[str, ...] = ("note", "done", "expired")
+# telling the sender that the turn its note began is over. (That no such
+# word came in time is told from the wake request that says so, with no
+# message of its own.)
+MESSAGE_KINDS: tuple[str, ...] = ("note", "done")
 MESSAGE_STATUSES: tuple[str, ...] = ("queued", "delivered", "void")
 # "message": a row of ``messages`` is to be handed over. "timer": a task
 # agent asked to be woken then. "notice_expiry": the sender of a note that
@@ -1011,12 +1012,6 @@ class Ledger:
                 "WHERE commission_id = ? AND status = 'pending'",
                 (COMMISSION_OVER_REASON, commission_id),
             )
-            # Nor is it told of the notes it sent any more.
-            conn.execute(
-                "UPDATE messages SET notified_at = ? "
-                "WHERE from_commission = ? AND notify_when_done = 1 AND notified_at IS NULL",
-                (now, commission_id),
-            )
             # What the host had to tell it and had not yet handed over.
             conn.execute(
                 "UPDATE messages SET status = 'void', status_reason = ? WHERE status = 'queued' "
@@ -1630,7 +1625,7 @@ class Ledger:
             now = self._clock()
             rows = conn.execute(
                 "SELECT * FROM messages WHERE delivered_to = ? AND notify_when_done = 1 "
-                "AND notified_at IS NULL AND status = 'delivered' AND kind = 'note' ORDER BY id",
+                "AND notified_at IS NULL AND kind = 'note' ORDER BY id",
                 (commission_id,),
             ).fetchall()
             written = 0
@@ -1738,7 +1733,7 @@ class Ledger:
 
         return await self.run(work)
 
-    async def wakes_due(self, *, due_by: float, limit: int = 200) -> list[WakeRequest]:
+    async def wakes_due(self, *, due_by: float, limit: int = 1000) -> list[WakeRequest]:
         """Return the pending wake requests due by a time, the first due first."""
 
         def work(conn: sqlite3.Connection) -> list[WakeRequest]:

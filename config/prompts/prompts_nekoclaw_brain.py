@@ -1231,5 +1231,3 @@ TASK_AGENT_COMMISSION_CANDIDATES_HEADER = (
     "Entries of the host picked for this commission, one per line with its name, what it does and "
     "its arguments. Call one with capability_call, giving its name and arguments that match its schema:"
 )
-
-TASK_AGENT_CHILD_RESULT_TEMPLATE = "[child task agent {name} finished: {status}]\n{text}"

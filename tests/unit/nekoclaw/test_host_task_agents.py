@@ -2221,7 +2221,10 @@ async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hos
     assert child_session.name.endswith("/agent-1")
     assert "subagent" not in [tool["function"]["name"] for tool in child.overrides[0].get("tools", [])]
     # Its result came back to the parent as a message, and the parent listed it.
-    assert "[child task agent agent-1 finished: completed]\n3 files" in json.dumps(parent.requests[2], ensure_ascii=False).replace("\\n", "\n")
+    handed_back = json.dumps(parent.requests[2], ensure_ascii=False).replace("\\n", "\n")
+    # In a frame of the host's, every line of it indented: it is what a model wrote.
+    assert "[child task agent agent-1 finished: completed] What it handed back is between" in handed_back
+    assert "\n    3 files\n========" in handed_back
     listing = next(message["content"] for message in parent.requests[2] if message.get("role") == "tool" and "lead" in str(message.get("content")))
     assert listing.startswith("lead [working]")
     assert "agent-1 [" in listing

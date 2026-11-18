@@ -109,6 +109,11 @@ _CHILD_DISABLED_TOOLS = ("subagent", "message_session", "schedule_wake")
 # How long what is to be handed to a session waits for that session's
 # runtime to have closed it, when it is closing this moment.
 _CLOSING_RETRY_SECONDS = 1.0
+# The kinds of session another session finds and writes to: the session of
+# a project, and that of a commission of no project. A session of any other
+# kind is somebody's helper (a task agent another one started), reached
+# through whoever it helps.
+_ADDRESSED_KINDS = ("project", "single")
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -2189,15 +2194,21 @@ class TaskAgentManager:
         return True
 
     async def _tell_parent(self, commission: Commission, status: str, text: str) -> None:
+        import secrets
+
         from config.nekoclaw_settings import TASK_AGENT_CHILD_RESULT_MAX_TOKENS
-        from config.prompts import prompts_nekoclaw_brain as texts
+        from config.prompts import prompts_nekoclaw_sessions as words
         from utils.tokenize import truncate_to_tokens
 
         parent_id = str(commission.parent_id)
-        message = texts.TASK_AGENT_CHILD_RESULT_TEMPLATE.format(
-            name=commission.name or commission.id,
-            status=status,
-            text=truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS),
+        # What another task agent wrote, like a note from another session:
+        # the host says whose it is, and frames it so that nothing in it
+        # reads as words of the host or of the user.
+        nonce = secrets.token_hex(8)
+        message = words.frame(
+            words.CHILD_RESULT_FRAME.format(name=commission.name or commission.id, status=status, nonce=nonce),
+            truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.CHILD_RESULT_NOTHING,
+            nonce,
         )
         parent = self._sessions.get(parent_id)
         if parent is None:
@@ -3213,8 +3224,6 @@ class TaskAgentManager:
             await self._ledger.wakes_void(ids, "nothing was left of it to hand over")
             return Handover("dropped")
         if session is not None and session.ready and self._runtime_of(session) is not None:
-            if commission.status != "working":
-                return Handover("held", _CLOSING_RETRY_SECONDS)
             # Before its next model request; an idle session is started by it.
             await self._send_text(self._runtime_of(session), session, "steer", text)
         elif self._in_hand(commission_id):
@@ -3298,8 +3307,10 @@ class TaskAgentManager:
             # Only a note has a commission filed for it.
             await self._ledger.wakes_void(ids, COMMISSION_OVER_REASON)
             return Handover("dropped")
-        if target.kind == "child" or target.status == "cleared":
-            reason = "its session was another task agent's helper" if target.kind == "child" else "its session's record was removed"
+        if target.kind not in _ADDRESSED_KINDS or target.status == "cleared":
+            reason = (
+                "its session's record was removed" if target.kind in _ADDRESSED_KINDS else "its session is a helper's"
+            )
             await self._ledger.wakes_void(ids, reason)
             return Handover("dropped")
 
@@ -3462,7 +3473,7 @@ class TaskAgentManager:
         )
         # A task agent another one started is that one's business, as it is
         # in every list she is shown: it is reached through its lead.
-        rows = [row for row in rows if row.session.kind != "child"]
+        rows = [row for row in rows if row.session.kind in _ADDRESSED_KINDS]
         query = " ".join(str(payload.get("query") or "").split())
         if query:
             folded = query.casefold()
@@ -3599,7 +3610,7 @@ class TaskAgentManager:
         target = await self._session_named(str(payload.get("to") or ""))
         if target.id == caller.session_id:
             raise RuntimeError(refusals["self"])
-        if target.kind == "child":
+        if target.kind not in _ADDRESSED_KINDS:
             raise RuntimeError(refusals["child"].format(name=target.name))
         if target.status == "cleared":
             raise RuntimeError(refusals["cleared"].format(name=target.name))

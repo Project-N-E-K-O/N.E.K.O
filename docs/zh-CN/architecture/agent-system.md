@@ -49,6 +49,16 @@ task agent 在内置 agent runtime（`nekoclaw/runtime/`）的一个会话里干
 
 task agent 用 agent 模型，还可以再开自己的 task agent。task agent 向用户提问或需要权限批准时，委托进入 `waiting_user`，直到她用 `dispatch_task` 把回答转达过来。
 
+### 会话之间的消息和唤醒
+
+task agent 可以找到别的会话、读它留下的东西、给它发消息，也可以让宿主过一阵再叫醒自己。这是 runtime 的四个工具，都由宿主执行：`list_sessions` 在会话的名字、项目和最近几件委托的标题里按词找（不调模型），一页 10 行；`read_session` 给出一个会话最近几件委托的结果和复盘，或者它的对话记录里哪些位置出现了某些词，或者从某个位置起的一段记录（最多 2,000 token，记录从不整份给）；`message_session` 给另一个会话发一条消息；`schedule_wake` 让自己在至少 10 分钟以后被重新叫起来。哪个角色名下的会话都能找到、能读、能发消息，每一行、每条消息都标着这个会话是哪个角色的。task agent 起的 task agent 可以找会话、读会话，但只能给自己这个小队发消息，也不能定时。
+
+每一轮都算在一件委托头上。委托自己要的唤醒（它定的时间、它发消息时订的做完通知）叫醒的是这件委托：一轮结束时这样的请求还没到点，这件委托就**歇着**——状态仍是 `working`，台账里记着从什么时候开始歇，runtime 里的会话关掉，位置和会话都让出来，同一个项目后来的委托可以先办。到点以后它重新排队，从说过的话接着办。它汇报了办完、卡住或没办成，或者被叫停，没到点的请求随之作废。歇着的委托在宿主重启时不会被记成失败；它等的东西记在台账里，由宿主里第一次干活的调用接着管，不在启动时。发给会话的消息交给这个会话当时在办的那件委托：在跑的，在它下一次请求模型之前送进去；歇着的，叫醒它；在等用户回话的，先留着。没有委托在办时，在这个会话里为这条消息立一件新委托（它接着这个会话上一件委托，照常占位置、扣额度、该问用户时问用户，并向这个会话所属的角色汇报，task agent 没有另外指定时随角色的下一轮带上）。
+
+消息和唤醒请求是台账里的行（`messages`、`wake_requests`），和汇报一样先写后发。消息送达时由宿主当场包一层：写明是哪个会话写的，写明它不是用户的话、不带用户的任何授权，再把正文放在两行边框之间，边框带一串只用这一次的随机字符，正文每行缩进。`read_session` 返回的内容，以及发起方订了做完通知时收到的那句话（`notify_when_done`；12 小时等不到就改成告诉它没等到），都用同一个办法包。单条消息最多 1,500 token；同一个会话给同一个目标每分钟最多一条、每小时最多 20 条；一个会话最多有 50 条在排队；被消息叫起来新立的委托还能再用消息叫起一件，那一件就不能再发了。一个会话最多同时定 10 个时间，每天最多自己叫醒自己 300 次。总开关关着、免费额度用完时不叫醒，请求留着。「全部停止」会作废还没送达的消息，歇着的委托和别的委托一起被叫停。
+
+别的会话工作目录里的文件、它落盘的工具输出，读的时候不用问用户（设置里禁止读工作目录以外的除外）；它的对话记录只能经 `read_session` 读；别的会话自己的目录不能写。
+
 ### task agent 空间
 
 task agent 留给以后委托用的东西（界面上叫使魔空间）放在 `<数据根>/nekoclaw/task_agent_space/`（`nekoclaw/host/space.py`）：全是明文，只有宿主写，按用户一份，所有 task agent 共用。里面有用户自己写的守则（`AGENTS.md`）、一行一条的索引（`MEMORY.md`）和一条一个文件的条目（`memory/*.md`）：可复用的经验、对出错之处的反思、东西在哪的参考、项目进度。全局一套，每个项目一套（`projects/<项目>/`）；不属于任何项目的委托归在 `_daily` 下。
@@ -167,7 +177,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 - 叫停时先把状态写成 `cancelled`，再取消插件的 Run（调用插件服务的 `POST /runs/{run_id}/cancel`）或关掉 task agent 的会话。`POST /admin/control` 的 `end_all` 和关闭总开关会叫停全部在办的委托。
 - 桌面和浏览器同一时间各只归一件委托用（见「内置工具」一节）；同一次占用里的调用一个做完才做下一个。叫停一件委托会取消正在做的调用，并放开它占着的桌面或浏览器；已经发出的点击和跳转撤不回。
 - 插件可以返回 `deferred: true`。委托保持 `working`，直到 `/api/agent/tasks/{task_id}/complete` 被调用；一小时没等到就标成 `failed`。
-- 宿主重启后，上一个进程留下的 `queued`、`working`、`waiting_user` 委托标成 `failed`，随她的下一轮汇报；deferred 的委托保留到期限为止。
+- 宿主重启后，上一个进程留下的 `queued`、`working`、`waiting_user` 委托标成 `failed`，随她的下一轮汇报；deferred 的委托保留到期限为止；歇着的委托原样留着，它等的东西记在台账里。
 - 智能体进程给 HUD 用的任务视图会把已结束的任务保留五分钟。
 
 ## 实现映射
@@ -180,6 +190,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 派发、查询、事后检查 | `nekoclaw/host/task_brain.py` |
 | 插件筛选和决策模型 | `nekoclaw/host/selection.py`、`decision.py` |
 | 台账、outbox、汇报 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
+| 会话之间的消息、唤醒、读别的会话的记录 | `nekoclaw/host/wakes.py`、`records.py`、`task_agents.py`、`config/prompts/prompts_nekoclaw_sessions.py` |
 | task agent 和 agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
 | dsh：可选的 agent runtime 和它的选用 | `nekoclaw/dsh/`、`nekoclaw/host/runtimes.py`、`config/prompts/prompts_nekoclaw_dsh.py` |
 | task agent 空间：条目、索引、复盘、归档 | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |
