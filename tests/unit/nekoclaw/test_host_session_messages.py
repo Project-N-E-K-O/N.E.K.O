@@ -3267,6 +3267,84 @@ async def test_a_directory_that_holds_a_record_under_a_second_name_is_not_search
     assert await asked("grep", project / "docs") == refused
 
 
+def test_a_directory_is_read_no_further_than_is_looked_at_for_a_second_name(tmp_path, monkeypatch):
+    import os
+
+    from nekoclaw.host.task_agents import _lies_in
+
+    record = tmp_path / "transcript.jsonl"
+    record.write_text("x", encoding="utf-8")
+    os.link(record, tmp_path / "transcript again.jsonl")
+    found = os.stat(record)
+    files = {(found.st_dev, found.st_ino)}
+    large = tmp_path / "a large directory"
+    large.mkdir()
+    for index in range(30):
+        (large / f"file {index}.txt").write_text("x", encoding="utf-8")
+    scandir = os.scandir
+    read: list[str] = []
+
+    class Counting:
+        """What ``os.scandir`` hands back, which notes every entry that is read from it."""
+
+        def __init__(self, path: Any) -> None:
+            self._entries = scandir(path)
+
+        def __enter__(self) -> Any:
+            return self
+
+        def __exit__(self, *_exc: Any) -> None:
+            self._entries.close()
+
+        def __iter__(self) -> Any:
+            return self
+
+        def __next__(self) -> Any:
+            entry = next(self._entries)
+            read.append(entry.name)
+            return entry
+
+    monkeypatch.setattr(os, "scandir", Counting)
+
+    # More entries than are looked at: taken to hold the record, and read no further than
+    # the one that showed there are too many.
+    assert _lies_in(large, files, set(), 5) is True
+    assert len(read) == 6
+    # Within the limit it is read through, and the record is not in it.
+    read.clear()
+    assert _lies_in(large, files, set(), 100) is False
+    assert len(read) == 30
+    # Nor is a directory read on once the record is found in it.
+    os.link(record, large / "a second name.txt")
+    assert _lies_in(large, files, set(), 100) is True
+
+
+def test_a_sessions_own_directory_is_not_gone_into_for_a_second_name_of_a_record(tmp_path):
+    import os
+
+    from nekoclaw.host.task_agents import _lies_in
+
+    # A working directory with a session's own directory in it, where the record lies under
+    # its first name; its second name is somewhere else altogether.
+    work = tmp_path / "work"
+    own = work / "sessions" / "one"
+    own.mkdir(parents=True)
+    record = own / "transcript.jsonl"
+    record.write_text("x", encoding="utf-8")
+    os.link(record, tmp_path / "elsewhere.jsonl")
+    found = os.stat(record)
+    files = {(found.st_dev, found.st_ino)}
+    apart = {os.path.normcase(os.path.abspath(own))}
+
+    # That directory is ruled on by itself: what is looked for here is a second name, and the
+    # record under its first is not one.
+    assert _lies_in(work, files, apart, 100) is False
+    assert _lies_in(work, files, set(), 100) is True
+    # A second name beside it is found.
+    os.link(record, work / "sessions" / "kept.txt")
+    assert _lies_in(work, files, apart, 100) is True
+
+
 async def test_a_file_with_two_names_among_the_callers_own_files_is_read_whatever_the_settings_say_of_elsewhere(
     hosts, tmp_path
 ):

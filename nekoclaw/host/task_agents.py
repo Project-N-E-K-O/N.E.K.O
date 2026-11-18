@@ -499,7 +499,9 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[str], limit
     are not gone into (other sessions' own directories, which are ruled
     on by themselves). No more than ``limit`` entries are looked at: a
     directory that has more is taken to hold one of the files, as it
-    cannot be told that it does not.
+    cannot be told that it does not. A directory is read an entry at a
+    time, and no further than that: one with a great many entries is not
+    read whole to find that it has too many.
     """
     import os
     import stat
@@ -508,27 +510,32 @@ def _lies_in(directory: Any, files: set[tuple[int, int]], apart: set[str], limit
     pending = [os.fspath(directory)]
     while pending:
         try:
-            entries = list(os.scandir(pending.pop()))
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    looked += 1
+                    if looked > limit:
+                        return True
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if os.path.normcase(os.path.abspath(entry.path)) not in apart:
+                                pending.append(entry.path)
+                            continue
+                        # (Asked of the file itself: what a directory tells
+                        # of its entries does not have the number on every
+                        # system.)
+                        found = os.stat(entry.path, follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if (
+                        stat.S_ISREG(found.st_mode)
+                        and found.st_nlink > 1
+                        and (found.st_dev, found.st_ino) in files
+                    ):
+                        return True
         except OSError:
-            continue  # Not to be read: nor is it by a search.
-        for entry in entries:
-            looked += 1
-            if looked > limit:
-                return True
-            try:
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    if os.path.normcase(os.path.abspath(entry.path)) not in apart:
-                        pending.append(entry.path)
-                    continue
-                # (Asked of the file itself: what a directory tells of its
-                # entries does not have the number on every system.)
-                found = os.stat(entry.path, follow_symlinks=False)
-            except OSError:
-                continue
-            if stat.S_ISREG(found.st_mode) and found.st_nlink > 1 and (found.st_dev, found.st_ino) in files:
-                return True
+            continue  # Not to be read (or gone meanwhile): nor is it by a search.
     return False
 
 
