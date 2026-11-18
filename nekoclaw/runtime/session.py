@@ -1179,13 +1179,18 @@ class TaskAgentSession(SessionInbox):
             # over before (a group of tools and how they are used) may be gone.
             self._gateway.compactions = self._compactions
 
-    async def _after_compaction(self) -> None:
+    async def _after_compaction(self, *, tell: bool = True) -> None:
         """Do what follows a summary of the conversation, before the next request.
 
         The head of the request changes with a summary anyway, so this is
         when the system prompt and the tool definitions are put together
         anew: what the host's instructions hold by now, and the tools there
         are now, take effect.
+
+        ``tell`` is whether the host is told that the conversation was
+        summed up. Not when this is only made up for (the summary was
+        made before the session was last closed) by a summing up that
+        made none itself: the host takes the word for that one.
         """
         await self._renew_snapshot(REASON_COMPACTED)
         self.context.fixed_tokens = await self._fixed_tokens()
@@ -1193,6 +1198,8 @@ class TaskAgentSession(SessionInbox):
         # Only now: stopped while the snapshot was written, the next run
         # does all of this again, and measures against what it sends.
         self._compaction_due = False
+        if not tell:
+            return
         self._emit(
             protocol.CompactedEvent(
                 session_id=self.session_id,
@@ -1601,9 +1608,14 @@ class TaskAgentSession(SessionInbox):
             # the conversation stays as it is. What the host said about
             # usage in a run that is over is not part of what is summed up.
             self._drop_usage_notices()
+            before = self._compactions
             await self._fit(force=True, tight=False, or_drop=False)
             if self._compaction_due:
-                await self._after_compaction()
+                # Also when no summary was made now and one from before the
+                # session was last closed still waits for what follows it:
+                # that is done, and the host is not told of a summing up,
+                # there having been none this time.
+                await self._after_compaction(tell=self._compactions > before)
             await self._recorder.flush()
         except asyncio.CancelledError:
             if not (self._abort_requested or self._closing):

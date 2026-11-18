@@ -267,6 +267,10 @@ class _Session:
     # having allowed no more to be used: how many model requests it has left
     # for that. None while it works as usual.
     wind_up_left: int | None = None
+    # The run it was told in is over. What the runtime was told goes with
+    # the run it was told for, so it is said again before the next request,
+    # should the session be given more of the same round.
+    wind_up_told_again: bool = True
     # The host ended the commission itself when those were used, and closes
     # the session: what the run says as it is stopped decides nothing.
     wound_up: bool = False
@@ -1922,8 +1926,28 @@ class TaskAgentManager:
             return
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
-        if session.sent > 0 and _shows_run_at_work(event):
+        at_work = session.sent > 0 and _shows_run_at_work(event)
+        if at_work:
             session.carried = []
+        if kind == "usage":
+            # Counted whether or not it can be noted among the commission's
+            # events (a request with no text in front of it is the first
+            # the host sees of a run, so that the commission was opened
+            # is noted here as well): a ledger that does not take a note
+            # may take what was used a moment later, and what it does
+            # not take is owed. Left out when a note fails, the request
+            # would be missing from the account, and from what the limit
+            # goes by. What the noting failed with is raised as before,
+            # once it is counted.
+            try:
+                if at_work:
+                    await self._note_opened(session)
+                await self._flush(session)
+                await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
+            finally:
+                await self._on_usage(session, event)
+            return
+        if at_work:
             await self._note_opened(session)
         if kind == "text":
             delta = str(event.get("delta") or "")
@@ -1936,19 +1960,6 @@ class TaskAgentManager:
             call_id = str(event.get("tool_call_id") or "")
             session.updates.setdefault(call_id, []).append(str(event.get("text") or ""))
             session.update_names[call_id] = str(event.get("tool_name") or "")
-            return
-        if kind == "usage":
-            # Counted whether or not it can be noted among the commission's
-            # events: a ledger that does not take the note may take what
-            # was used a moment later, and what it does not take is owed.
-            # Left out when the note fails, the request would be missing
-            # from the account, and from what the limit goes by. What the
-            # noting failed with is raised as before, once it is counted.
-            try:
-                await self._flush(session)
-                await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
-            finally:
-                await self._on_usage(session, event)
             return
         await self._flush(session)
         await self._ledger.append_event(session.commission_id, str(kind), self._compact(event))
@@ -2102,6 +2113,11 @@ class TaskAgentManager:
 
         commission_id = session.commission_id
         reason = event.get("reason")
+        if session.wind_up_left is not None:
+            # A run of one that was told to hand over what it has is over.
+            # Given more of the same round (it asked the user something,
+            # and is answered), it is told again: see ``_wind_up_step``.
+            session.wind_up_told_again = False
         if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
             # A close was asked for, and the runtime process went away
             # before answering it: the close will not come back. It ends
@@ -2579,6 +2595,10 @@ class TaskAgentManager:
             # failed before, or what was said was removed, being old), it is
             # handed what was said in the main dialogue just before this:
             # what was kept when it was first handed over went when it ended.
+            # (Or is still there, when its start failed and it is taken up
+            # before that was let go of: this round is about what is said
+            # now, so that goes first.)
+            self._excerpts.pop(commission_id, None)
             self._keep_excerpt(commission)
             taken = await self._take_up_again(commission_id, text, still_wanted=still_wanted)
             if not taken:
@@ -3510,7 +3530,17 @@ class TaskAgentManager:
         is stopped, and its session is closed.
         """
         if session.wind_up_left:
+            left = session.wind_up_left
             session.wind_up_left -= 1
+            if not session.wind_up_told_again:
+                # The first request of another run of the same round: what
+                # it was told went with the run it was told in, and without
+                # it the task agent would go on working on what it is to
+                # hand over, on the requests it has left for that.
+                from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_USAGE_WIND_UP
+
+                session.wind_up_told_again = True
+                return {"notice": TASK_AGENT_USAGE_WIND_UP.format(requests=left)}
             return None
         commission_id = session.commission_id
         commission = await self._ledger.get(commission_id)

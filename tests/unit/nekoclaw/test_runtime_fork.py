@@ -1140,7 +1140,9 @@ async def test_the_request_that_sums_a_conversation_up_does_not_carry_what_the_h
         # Enough was said for a summary to be asked for.
         await _seed(session, events, llm)
         answers.append({"notice": "No more may be used. Hand over what you have."})
-        llm.add(say("Handing over: half is done."), finish())
+        # What it hands over is longer than what a summary leaves word for word: what the host
+        # said in front of it is in the part that is summed up, unless it was taken out first.
+        llm.add(say("Handing over: half is done. " + _words(4_000, "hw")), finish())
         await _ask(session, events, "Sort the photos.")
         assert _said(llm.requests[-1])[-1] == "user: No more may be used. Hand over what you have."
 
@@ -1240,3 +1242,33 @@ async def test_a_copy_that_could_not_be_begun_is_told_of_and_leaves_its_id_free(
         assert made["session_id"] == "copy" and made["entries"] > 0
     finally:
         await runtime.shutdown()
+
+
+async def test_a_summing_up_that_made_no_summary_does_not_say_that_the_conversation_was_summed_up(tmp_path: Path) -> None:
+    llm = ScriptedLLM()
+    session, events = await open_session(make_spec(tmp_path, model=_small_model()), llm)
+    try:
+        await _seed(session, events, llm)
+        # A summary that was made before the session was last closed still waits for what follows
+        # it (the system prompt put together anew): that is what a session opened again finds.
+        session._compaction_due = True
+
+        async def fails() -> None:
+            raise RuntimeError("the provider is away")
+
+        llm.add(fails)
+        mark = len(events.events)
+        session.compact()
+        assert (await events.wait_ended(start=mark))["reason"] == "completed"
+        # What was due is done, and nothing is said of a summing up: there was none this time, and
+        # the host would take the word for this one.
+        assert session._compaction_due is False and not events.of("compacted")
+
+        # One that does make a summary is told of, as before.
+        llm.add(say("## Current Work\n- the four steps are done"), finish())
+        mark = len(events.events)
+        session.compact()
+        await events.wait_ended(start=mark)
+        assert len(events.of("compacted")) == 1
+    finally:
+        await session.close()

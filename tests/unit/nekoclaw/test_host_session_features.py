@@ -2634,3 +2634,102 @@ async def test_a_copy_that_is_being_put_on_record_when_the_host_shuts_down_is_no
         host.ledger.create_session = create
     assert not Path(written[0]).exists()
     assert manager._copying_from == {} and manager._fork_records == set()
+
+
+# ---------------------------------------------------------------------------
+# The eighth batch of the review
+# ---------------------------------------------------------------------------
+
+
+async def test_told_to_hand_over_a_task_agent_that_asks_the_user_something_is_told_again_when_it_is_answered(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    llm = ScriptedLLM(
+        [
+            [call("glob", {"pattern": "*.none"}), _used(900, 200), finish("tool_calls")],
+            # Told to hand over what it has, it asks the user something first.
+            [call("report", {"status": "waiting", "summary": "Which folder do the sorted ones go in?"}, "call-2"), _used(950, 60), finish("tool_calls")],
+            [call("report", {"status": "blocked", "summary": "half of the photos are sorted, in Sorted"}, "call-3"), _used(960, 40), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await _asked(host, first.id)
+    assert await host.answer(first.id, "no", choice="deny")
+
+    async def asks() -> bool:
+        commission = await host.ledger.get(first.id)
+        return commission.status == "waiting_user" and (commission.question() or {}).get("kind") == "report"
+
+    await wait_until(asks, what="its question to the user")
+    left = settings.TASK_AGENT_USAGE_WIND_UP_REQUESTS
+    told = brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=left)
+    assert _user_messages(llm.requests[1])[-1] == told
+
+    # The user answers: more of the same round, in the same session, on the requests it has left.
+    assert (await _dispatch(host, "answer: in the folder Sorted")).kind == "answered"
+
+    stuck = await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    said = _user_messages(llm.requests[2])
+    # What it was told went with the run it was told in; it is told again, with what it has left
+    # by now, and so hands over instead of going on working.
+    again = brain_texts.TASK_AGENT_USAGE_WIND_UP.format(requests=left - 1)
+    assert said[-1] == again and told not in said and "answer: in the folder Sorted" in said
+    assert stuck.result_summary == "half of the photos are sorted, in Sorted"
+    # The user was asked once, and the requests it had left were counted on.
+    assert len(await _events(host, first.id, "usage_refused")) == 1
+
+
+async def test_what_a_request_used_is_counted_though_the_note_that_the_commission_was_opened_failed(hosts, tmp_path):
+    # No text in front of it: what the request used is the first the host sees of the run, and with
+    # it the note that the commission was opened in its session is written.
+    script = ScriptedLLM([[call("report", {"status": "ready", "summary": "sorted"}, "call-r"), _used(900, 30), finish("tool_calls")]])
+    host = _host(hosts, tmp_path, script)
+    append = host.ledger.append_event
+    refused: list[str] = []
+
+    async def not_opened_at_first(commission_id: str, kind: str, payload: dict[str, Any] | None = None) -> int:
+        if kind == "opened" and not refused:
+            refused.append(commission_id)
+            raise RuntimeError("the ledger is locked")
+        return await append(commission_id, kind, payload)
+
+    host.ledger.append_event = not_opened_at_first
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        host.ledger.append_event = append
+    assert refused == [first.id]
+    after, session = await host.ledger.get(first.id), await host.ledger.get_session(first.id)
+    assert (after.requests, after.tokens) == (1, 930) and (session.requests, session.tokens) == (1, 930)
+
+
+async def test_a_commission_that_is_taken_up_again_is_handed_what_was_said_before_that_and_not_what_was_kept_before(
+    hosts, tmp_path
+):
+    release, wait = _gate()
+    scripts = {
+        "sort the photos": ScriptedLLM([_report("blocked", "the folder is locked"), [wait, *_report("ready", "sorted")]])
+    }
+    said = RecentConversation()
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), conversation=said)
+    manager = host.task_agents
+    said.note("Lan", ROLE_USER, "the photos are on the desktop")
+    first = (await _dispatch(host, "sort the photos")).commissions[0]
+    await wait_status(host, first.id, "blocked")
+    await _let_go(host)
+    # What was kept for its first round is still there (its start failed, say, and it is taken up
+    # before that was let go of).
+    manager._excerpts[first.id] = list(said.recent("Lan"))
+    said.note("Lan", ROLE_USER, "the folder is unlocked now")
+
+    assert await host.tell(first.id, "go on")
+
+    # This round is about what is said now.
+    assert [turn.text for turn in manager._excerpts[first.id]] == ["the photos are on the desktop", "the folder is unlocked now"]
+    release.set()
+    await wait_status(host, first.id, "done")
