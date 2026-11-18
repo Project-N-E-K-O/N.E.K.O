@@ -66,7 +66,7 @@ async def process(self, data: str, **_):
 | `fields` | `type` | `None` | Alias for `params` |
 | `metadata` | `dict` | `None` | Additional metadata |
 | `output_schema` | `dict` | `None` | JSON Schema of the return value. Inferred from a Pydantic return annotation when omitted. See [Output contract](./entries#output-contract) |
-| `strict_output` | `bool` | `False` | When the return value violates the output contract, also fail the call (`PLUGIN_OUTPUT_SCHEMA_VIOLATION`). The default only logs a warning; strict mode logs the warning too |
+| `strict_output` | `bool` | `False` | When the return value violates the output contract, also fail the call (`PLUGIN_OUTPUT_SCHEMA_VIOLATION`). The default only logs a warning; strict mode logs the warning too. Only contracts inferred from a Pydantic return annotation are checked, so it has no effect on an explicit `output_schema` |
 
 `output_schema` is independent of `llm_result_fields` / `llm_result_model`: those decide what a model reads, `output_schema` describes the whole return value. The two can be combined.
 

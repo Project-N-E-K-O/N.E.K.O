@@ -468,3 +468,18 @@ def test_custom_error_types_are_replaced_by_a_fixed_code():
 
     check = build_output_check(SimpleNamespace(output_schema=Custom.model_json_schema(), output_model=Custom))
     assert _issues(check, {"n": 7}) == [("$.n", "custom_error")]
+
+
+class Status(BaseModel):
+    success: bool
+    error: str | None = None
+    time: float
+
+
+async def test_a_model_with_envelope_like_fields_is_not_mistaken_for_an_envelope():
+    @plugin_decorators.plugin_entry(id="entry", strict_output=True)
+    async def entry() -> Status:
+        return {"success": True, "error": None, "time": 1.5}  # type: ignore[return-value]
+
+    runtime = _executor({"entry": entry}, {"entry": _meta_of(entry)})
+    assert await runtime.invoke("plugin_entry", "entry", {}) == {"success": True, "error": None, "time": 1.5}

@@ -39,6 +39,7 @@ UNSET_TIMEOUT = object()
 # Output-contract warnings: the same mismatch of the same entry is logged at
 # most once per interval; the next warning reports how many were suppressed.
 _WARN_INTERVAL = 60.0
+_WARN_KEYS_MAX = 1024
 
 
 class EntryExecutor:
@@ -113,6 +114,9 @@ class EntryExecutor:
         if last is not None and now - last[0] < _WARN_INTERVAL:
             self._warned[(event_id, key)] = (last[0], last[1] + 1)
             return
+        if len(self._warned) >= _WARN_KEYS_MAX:
+            # Many distinct mismatches: start over rather than grow without bound.
+            self._warned.clear()
         self._warned[(event_id, key)] = (now, 0)
         suffix = f", suppressed={last[1]}" if last is not None and last[1] else ""
         self._logger.warning(f"{message}{suffix}")
@@ -130,9 +134,15 @@ class EntryExecutor:
         if check is None:
             return
         try:
-            if is_envelope(result):
+            if hasattr(result, "is_ok") and callable(result.is_ok):
+                # Ok: check its value. Err is a failure already: not checked.
+                if not result.is_ok():
+                    return
+                result = result.value
+            if is_envelope(result) and "data" in result:
                 # finish()/ok() envelopes: the contract describes ``data``;
                 # a fail() envelope is a failure already and is not checked.
+                # ("data" too: a model may have success/error/time fields.)
                 if result.get("success") is not True:
                     return
                 result = result.get("data")
@@ -275,11 +285,7 @@ class EntryExecutor:
                 # Before persisting: a strict violation fails the call and the
                 # automatic state snapshot is skipped. The handler's own side
                 # effects have already happened and are not rolled back.
-                is_result = hasattr(result, "is_ok") and callable(result.is_ok)
-                if not is_result:
-                    self._check_output(event_id, label, result, call_meta)
-                elif result.is_ok():
-                    self._check_output(event_id, label, result.value, call_meta)
+                self._check_output(event_id, label, result, call_meta)
             if event_type == "plugin_entry" and self._should_persist(method):
                 try:
                     await self._persist("auto")

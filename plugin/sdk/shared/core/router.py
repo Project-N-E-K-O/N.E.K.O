@@ -221,7 +221,6 @@ class PluginRouter:
         input_schema: Mapping[str, JsonValue] | None = None,
         replace: bool = False,
         output_schema: Mapping[str, JsonValue] | None = None,
-        strict_output: bool = False,
     ) -> Result[bool, RouterErrorLike]:
         trimmed = entry_id.strip()
         if trimmed == "":
@@ -236,7 +235,6 @@ class PluginRouter:
             description=description,
             input_schema=dict(input_schema) if input_schema is not None else None,
             output_schema=detached_copy(output_schema) if output_schema is not None else None,
-            strict_output=bool(strict_output),
         )
         self._entries[full_entry_id] = _EntryRecord(meta=meta, handler=handler)
         return Ok(True)

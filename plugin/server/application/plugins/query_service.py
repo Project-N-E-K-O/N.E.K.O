@@ -331,8 +331,6 @@ def _build_entries_from_handlers(
     return entries, seen
 
 
-
-
 def _carry_contract_fields(entry_dict: dict[str, object], source: object, *, context: str) -> None:
     for name, value in unhandled_entry_contract_fields(source, ENTRY_PROJECTION_SHAPED_FIELDS).items():
         if isinstance(value, Mapping):

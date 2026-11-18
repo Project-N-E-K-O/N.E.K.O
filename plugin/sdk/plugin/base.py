@@ -44,8 +44,6 @@ from .llm_tool import (
 DEFAULT_PLUGIN_VERSION = _DEFAULT_PLUGIN_VERSION
 
 
-
-
 def _entry_listing(entry_id: str, meta: object, *, enabled: bool, dynamic: bool) -> dict[str, Any]:
     """One ``list_entries`` item; contract fields not shaped here are carried as-is."""
     listing: dict[str, Any] = {
@@ -425,7 +423,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
         timeout: float | None = None,
         llm_result_fields: list[str] | None = None,
         output_schema: dict[str, Any] | None = None,
-        strict_output: bool = False,
     ) -> bool:
         if not callable(handler):
             raise TypeError("handler must be callable")
@@ -453,7 +450,6 @@ class NekoPluginBase(_SharedNekoPluginBase):
             llm_result_fields=llm_result_fields,
             # Nested levels too: a caller reusing its dict cannot change the contract.
             output_schema=detached_copy(output_schema) if output_schema is not None else None,
-            strict_output=bool(strict_output),
             metadata={"dynamic": True, "enabled": True},
         )
         if timeout is not None:

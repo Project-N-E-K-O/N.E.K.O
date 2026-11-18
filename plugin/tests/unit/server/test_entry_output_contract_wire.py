@@ -67,10 +67,9 @@ async def test_router_add_entry_accepts_the_output_contract():
     async def handler():
         return {}
 
-    await router.add_entry("dyn", handler, output_schema=SCHEMA, strict_output=True)
+    await router.add_entry("dyn", handler, output_schema=SCHEMA)
     meta = router.collect_entries()["r_dyn"].meta
     assert meta.output_schema == SCHEMA
-    assert meta.strict_output is True
 
 
 class _Queue:
@@ -115,23 +114,20 @@ def test_dynamic_entry_carries_the_output_contract_everywhere():
     async def handler():
         return {"n": 1}
 
-    plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA, strict_output=True)
+    plugin.register_dynamic_entry("dyn", handler, output_schema=SCHEMA)
     plugin.register_dynamic_entry("bare", handler)
 
     payload = _register_payload(ctx, "dyn")
     assert payload["output_schema"] == SCHEMA
-    assert payload["strict_output"] is True
     bare_payload = _register_payload(ctx, "bare")
     assert "output_schema" not in bare_payload
     assert "strict_output" not in bare_payload
 
     meta = plugin.collect_entries()["dyn"].meta
     assert meta.output_schema == SCHEMA
-    assert meta.strict_output is True
 
     listed = {item["id"]: item for item in plugin.list_entries()}
     assert listed["dyn"]["output_schema"] == SCHEMA
-    assert listed["dyn"]["strict_output"] is True
     assert "output_schema" not in listed["bare"]
 
     plugin.disable_entry("dyn")

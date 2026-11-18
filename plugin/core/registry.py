@@ -217,8 +217,6 @@ def _find_missing_python_requirements(
         return []
 
 
-
-
 def get_plugins() -> List[Dict[str, Any]]:
     """Return list of plugin dicts (in-process access)."""
     with state.acquire_plugins_read_lock():
@@ -848,8 +846,6 @@ def _set_declared_result_fields(preview: Dict[str, Any], declared: Any) -> None:
     # fields despite schema properties, so this path is real (coderabbit).
     if isinstance(declared, list):
         preview["llm_result_fields"] = _entry_string_list(declared)
-
-
 
 
 def _entry_preview(pid: str, eid: str, event_meta: Any) -> Dict[str, Any]:
