@@ -2,7 +2,9 @@
 // @vitest-environment-options {"settings":{"enableIframePageLoading":true}}
 // happy-dom 21 默认不加载 iframe 页面（SSRF 修复），iframe.contentWindow 为空；这里测的就是
 // 宿主与插件 iframe 的通信，只在本文件恢复 <=20.x 的行为。本文件的 iframe 只允许 data: URL 或
-// srcdoc（宿主生成的内容），由 assertNoNetworkIframes 在挂载、换 URL 和每条用例结束时检查，避免真的发起网络请求。
+// srcdoc（宿主生成的内容）：assertNoNetworkIframes 在挂载、换 URL 和每条用例结束时检查，违反即失败。
+// （没有用 happy-dom 的 fetch 拦截器预先拦截：拦截器总会被 await，改变 iframe 加载时序，
+// 会让本文件里断言计时器数量的用例失效。）
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, reactive, ref } from 'vue'
@@ -160,9 +162,17 @@ async function mountFrame(initialSurface = makeSurface(), options: { requireIfra
     await nextTick()
   }
 
-  assertNoNetworkIframes(container)
-  const iframe = container.querySelector('iframe') as HTMLIFrameElement | null
-  if (options.requireIframe !== false && !iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
+  let iframe: HTMLIFrameElement | null
+  try {
+    assertNoNetworkIframes(container)
+    iframe = container.querySelector('iframe') as HTMLIFrameElement | null
+    if (options.requireIframe !== false && !iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
+  } catch (error) {
+    // 还没登记进 mountedFrames，afterEach 清理不到，这里自己卸载。
+    app.unmount()
+    container.remove()
+    throw error
+  }
   const iframeWindow = iframe?.contentWindow
   const postMessage = vi.fn()
   if (iframeWindow) iframeWindow.postMessage = postMessage
@@ -252,10 +262,13 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
   })
 
   afterEach(() => {
-    // 兜底：测试过程中重渲染出来的 iframe 也要满足同一约束。
-    assertNoNetworkIframes(document.body)
-    while (mountedFrames.length > 0) mountedFrames.pop()?.unmount()
-    vi.useRealTimers()
+    try {
+      // 兜底：测试过程中重渲染出来的 iframe 也要满足同一约束。
+      assertNoNetworkIframes(document.body)
+    } finally {
+      while (mountedFrames.length > 0) mountedFrames.pop()?.unmount()
+      vi.useRealTimers()
+    }
   })
 
   it('reloads a static iframe on a locale change but not on a title change', async () => {
