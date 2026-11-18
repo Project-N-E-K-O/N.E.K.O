@@ -162,6 +162,12 @@ class _LeftOpen:
     """An answer a turn stopped waiting for: the numbers of the texts it carried, and what becomes of them."""
 
     numbers: list[int]
+    # What the turn began with, where the turn failed before it was known
+    # that dsh had begun it: told of as taken with the texts above, should
+    # their answer turn out to have got there. (One list for all the
+    # answers the turn left open: told of once, by whichever says so
+    # first.)
+    began: list[int] = field(default_factory=list)
     # Whether they are queued again where the answer went nowhere: not
     # those of a run that was stopped.
     again: bool = True
@@ -1196,7 +1202,12 @@ class DshRuntime:
             # is yet to be announced, and tells of them as of any text it
             # took.
             over = session.runs != of_run
-            self._say_taken(session, _numbers_of(texts), late=of_run if over else None)
+            # (With what its turn began with, where that turn failed
+            # before this was known: the answer shows that dsh had begun
+            # the turn.)
+            numbers = [*left.began, *_numbers_of(texts)]
+            left.began.clear()
+            self._say_taken(session, numbers, late=of_run if over else None)
 
     async def _answers_settled(self, session: _Session) -> None:
         """Wait, a bounded while, until it is known of every answer that carried texts whether it reached dsh.
@@ -1213,7 +1224,7 @@ class DshRuntime:
             await asyncio.wait(open_ones, timeout=DSH_ANSWER_SETTLE_SECONDS)
         self._answers_known(session)
 
-    def _answers_known(self, session: _Session) -> None:
+    def _answers_known(self, session: _Session, began: list[int] | None = None) -> None:
         """Leave of what a turn's calls were handed (``awaited``) the texts dsh is known to have; stop waiting for the rest.
 
         Each text by the answer that carried it last: one whose answer
@@ -1222,7 +1233,8 @@ class DshRuntime:
         have got there, or known not to have (a stop that came meanwhile
         kept it from being queued again; it is not in dsh's conversation
         for that). An answer not known of yet is dealt with when it is
-        (``_answered``).
+        (``_answered``); ``began`` goes with it, for a turn that failed
+        (``_LeftOpen.began``).
         """
         got_there: dict[int, bool] = {}
         for outcome, numbers in session.answering:
@@ -1230,7 +1242,9 @@ class DshRuntime:
                 got_there[number] = outcome.done() and outcome.result()
         session.awaited = [number for number in session.awaited if got_there.get(number, True)]
         session.unsettled.update(
-            (outcome, _LeftOpen(numbers)) for outcome, numbers in session.answering if not outcome.done()
+            (outcome, _LeftOpen(numbers, began if began is not None else []))
+            for outcome, numbers in session.answering
+            if not outcome.done()
         )
         session.answering = []
 
@@ -1323,10 +1337,15 @@ class DshRuntime:
                         # turn was under way by then, and not refused at
                         # the door. An answer still on its way is not
                         # waited for, here or at the end of a later turn,
-                        # and is dealt with when it is known.
-                        self._answers_known(session)
+                        # and is dealt with when it is known: where it
+                        # got there, that shows the same of what the turn
+                        # began with, which is told of with it then,
+                        # unless it is told of here.
+                        began = list(sent)
+                        self._answers_known(session, began)
                         if session.awaited:
                             self._say_taken(session, sent)
+                            began.clear()
                         self._say_taken(session, session.awaited)
                     # (Asked to stop before dsh answered, with an error as
                     # it happens: what the turn's calls were handed goes
@@ -1398,7 +1417,7 @@ class DshRuntime:
                 inputs=session.taken,
                 # (Counted on as the run ended, above.)
                 run=session.runs - 1,
-                open_inputs=sorted({number for item in left for number in item.numbers}),
+                open_inputs=sorted({number for item in left for number in (*item.began, *item.numbers)}),
             ),
         )
         if session.kept_back:

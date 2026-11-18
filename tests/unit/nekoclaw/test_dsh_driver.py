@@ -2059,16 +2059,17 @@ async def test_a_text_whose_answer_is_heard_of_after_its_turn_failed_is_dealt_wi
     go.write_text("", encoding="utf-8")
     ended = await driver.events.wait_ended("s1")
     assert ended["reason"] == "error" and _taken(driver) == [] and len(session.unsettled) == 1
-    assert ended["open_inputs"] == [2]
+    # (Open with it is what the turn began with: whether dsh had begun the turn is not known.)
+    assert ended["open_inputs"] == [1, 2]
     mark = len(driver.events.events)
     # Heard of only now, with the run over and the session still open.
     told[0](reached)
     assert not session.unsettled
     if reached:
         # In dsh's conversation after all: told of as taken, as of the run that failed, and
-        # not sent again.
+        # not sent again. With what the turn began with, which dsh had begun as this shows.
         late = [(event["inputs"], event["late"], event["run"]) for event in driver.events.of("taken")]
-        assert late == [(2, True, ended["run"])]
+        assert late == [(1, True, ended["run"]), (2, True, ended["run"])]
         assert session.run is None and len(driver.record("session/prompt")) == 1
         return
     # It is not: queued again, and it goes to dsh as a turn of its own.
@@ -2265,6 +2266,51 @@ async def test_what_the_run_being_stopped_left_open_itself_is_not_kept_until_the
     assert len(driver.record("session/prompt")) == 2 and 2 not in _taken(driver)
 
 
+@pytest.mark.parametrize("early", [False, True])
+async def test_what_a_turn_that_failed_began_with_is_told_of_once_when_an_answer_shows_dsh_had_begun_it(
+    tmp_path: Path, dsh, early: bool
+) -> None:
+    from nekoclaw.dsh.host_tools import ON_ANSWERED
+
+    driver, session, go, told = await _handed_to_a_call(tmp_path, dsh, then="!fail the model gave out")
+    try:
+        # A second call of the turn is handed another note.
+        await driver.runtime.steer("s1", "another note")
+        other: list[Any] = []
+        marked = ON_ANSWERED.set(other)
+        try:
+            assert await driver.runtime._take_input(session, 1.0) == ["another note"]
+        finally:
+            ON_ANSWERED.reset(marked)
+        if early:
+            # The answer of the first got to dsh before the turn failed.
+            told[0](True)
+    finally:
+        go.write_text("", encoding="utf-8")
+    ended = await driver.events.wait_ended("s1")
+    assert ended["reason"] == "error"
+
+    def said() -> list[tuple[int, bool]]:
+        return [(event["inputs"], event["late"]) for event in driver.events.of("taken")]
+
+    if early:
+        # dsh had begun the turn: what it began with is told of with the first note, and
+        # only the second note is open. That its answer got there too says nothing more of
+        # what the turn began with.
+        assert said() == [(1, False), (2, False)] and ended["open_inputs"] == [3]
+        other[0](True)
+        assert said() == [(1, False), (2, False), (3, True)]
+        return
+    # Neither answer is known of as the turn fails: what it began with is open with the notes.
+    assert said() == [] and ended["open_inputs"] == [1, 2, 3]
+    # Whichever answer gets there first shows that dsh had begun the turn; the other does not
+    # say so once more.
+    other[0](True)
+    assert said() == [(1, True), (3, True)]
+    told[0](True)
+    assert said() == [(1, True), (3, True), (2, True)]
+
+
 async def test_what_a_run_left_open_whose_stop_dsh_answered_with_an_error_is_not_queued_again(
     tmp_path: Path, dsh, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2301,7 +2347,7 @@ async def test_a_text_whose_answer_was_heard_of_before_its_turn_failed_is_dealt_
     finally:
         go.write_text("", encoding="utf-8")
     ended = await driver.events.wait_ended("s1")
-    assert ended["reason"] == "error" and not session.unsettled
+    assert ended["reason"] == "error" and not session.unsettled and ended["open_inputs"] == []
     if reached:
         # In dsh's conversation, though its turn failed after that: told of as taken before
         # the end of the run is, once, and not sent again. With what the turn began with:
