@@ -6792,3 +6792,26 @@ async def test_a_file_found_again_as_the_entry_is_written_is_not_among_what_was_
 
     # Gone as the note was judged, there as the entry was written: it spoke for the note in the end.
     assert taken.spoke == (app,) and taken.gone == ()
+
+
+# ---------------------------------------------------------------------------
+# Review round 26
+# ---------------------------------------------------------------------------
+
+
+async def test_which_of_the_guesses_wait_still_is_told_by_the_file_of_each(space, root, workdir, monkeypatch):
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py."))
+    await space.submit(_commission(workdir), _lesson("Readme", "See README.md."))
+    await space.submit(_commission(workdir, id="c2"), _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(_commission(workdir, id="c2"), _lesson("Video dates", "Videos may have none."))
+    names = ["entry-point", "readme", "photo-dates", "video-dates", "never-there"]
+    assert await space.still_pending(DEFAULT_PROJECT, names) == {"entry-point", "readme", "photo-dates", "video-dates"}
+
+    # One takes effect, one is removed, and one is held by another program.
+    await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "verified"))
+    (_memory(root) / "readme.md").unlink()
+    reading = space._read_text
+    monkeypatch.setattr(space, "_read_text", lambda path: None if path.name == "photo-dates.md" else reading(path))
+
+    # In effect, or gone for good: it waits no longer. Not to be read just now: nothing says it does not wait.
+    assert await space.still_pending(DEFAULT_PROJECT, names) == {"photo-dates", "video-dates"}

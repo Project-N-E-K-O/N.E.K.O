@@ -4109,6 +4109,32 @@ class TaskAgentSpace:
 
         return await self._write(work)
 
+    async def still_pending(self, project: str | None, ids: Iterable[str]) -> set[str]:
+        """Return the ones of ``ids`` that are pending entries still, as far as can be told.
+
+        Of the space (``project`` None) or of a project. One is not when
+        its file is gone for good (it went into another entry, or was
+        removed), or says by now that it is in effect. One that cannot
+        be read just now (held by another program, a disk that is away)
+        is taken to wait still: nothing says that it does not.
+        """
+        names = list(ids)
+
+        def work() -> set[str]:
+            directory = self._paths().memory_dir(project)
+            still: set[str] = set()
+            for name in names:
+                path = directory / f"{name}.md"
+                text = self._read_text(path)
+                if text is None:
+                    if not _gone_for_good(path):
+                        still.add(name)
+                elif _status_of(_parse_document(text)) == ENTRY_PENDING:
+                    still.add(name)
+            return still
+
+        return await self._read(work)
+
     async def read_notes(self, project: str | None = None, *, archive_year: str | None = None) -> dict[str, Any]:
         """Return what was remembered of the entries the user removed from a project, or from the space.
 

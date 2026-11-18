@@ -3257,18 +3257,34 @@ async def test_a_guess_of_a_review_that_went_into_an_entry_by_a_later_one_of_the
     assert outcome["status"] == "written" and "waiting" not in outcome
 
 
-async def test_a_guess_of_a_review_is_counted_as_waiting_when_what_is_on_file_cannot_be_told(world, tmp_path, judged, monkeypatch):
+async def test_a_guess_of_a_review_is_counted_as_waiting_when_its_file_cannot_be_read_just_then(world, tmp_path, judged):
     folder = _work_folder(tmp_path)
     world.llm.answers[TIER_REVIEW] = [
         {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]},
     ]
+    proposing, reading = world.space.propose_entry, world.space._read_text
+    held: list[bool] = []
 
-    async def unreadable(*args: Any, **kwargs: Any) -> Any:
-        raise OSError("the space cannot be read just now")
+    async def then_held(*args: Any, **kwargs: Any) -> Any:
+        made = await proposing(*args, **kwargs)
+        # Kept, as a file that waits; and held by another program from then on.
+        held.append(True)
+        return made
 
-    monkeypatch.setattr(world.space, "list_entries", unreadable)
+    def unreadable(path: Any) -> Any:
+        if held and path.name == "photo-dates.md":
+            return None
+        return reading(path)
 
-    first = await world.finished(workdir=str(folder))
+    world.space.propose_entry = then_held
+    world.space._read_text = unreadable
+    try:
+        first = await world.finished(workdir=str(folder))
+    finally:
+        world.space.propose_entry, world.space._read_text = proposing, reading
 
     # Not known to have gone anywhere: it is said to wait, as it was noted when it was made.
     assert (await world.reviews(first.id))[-1].get("waiting") == 1
+    assert [(entry.id, entry.status) for entry in await world.space.list_entries(DEFAULT_PROJECT)] == [
+        ("photo-dates", "pending")
+    ]
