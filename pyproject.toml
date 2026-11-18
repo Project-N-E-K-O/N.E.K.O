@@ -12,7 +12,7 @@ dependencies = [
   "av==16.1.0",
   # Shared HTTP and document-parser security floors must survive lock refreshes.
   "anyio>=4.14.2,<5",
-  "pypdf>=6.19.0,<7",
+  "pypdf>=6.21.4,<7",
   "starlette>=1.3.1,<2",
   "fastapi>=0.141.1,<0.142.0",
   "websockets~=15.0.1",
@@ -22,7 +22,8 @@ dependencies = [
   "jinja2",
   "dashscope==1.27.7",
   "python-multipart",
-  "pillow",
+  # Image-decoder security floor (13.0.0 fixes the 12.x CVE batch).
+  "pillow>=13.0.0,<14",
   "regex",
   "pyautogui",
   # Typing text beyond ASCII goes through the clipboard (nekoclaw/builtin/desktop.py).
@@ -80,7 +81,14 @@ dependencies = [
   "portalocker>=2.10.1",
   "filelock>=3.16",
   "pyncm-async==1.8.1",
-  "tornado>=6.5.4",
+  # Never imported by name, but required at runtime: pyzmq's zmq.asyncio (used by
+  # plugin/core/zmq_transport.py and message_plane_transport.py) borrows
+  # tornado's AddThreadSelectorEventLoop whenever the running loop is a Windows
+  # ProactorEventLoop -- the default for the embedded plugin server thread
+  # (app/agent_server/plugin_host.py) and for asyncio.run() in plugin child
+  # processes. Without it zmq.asyncio raises RuntimeError there. The floor is a
+  # security floor (6.6.1 fixes the 6.5.x CVEs).
+  "tornado>=6.6.1",
   "jmespath>=1.1.0",
   "orjson>=3.11.8",
   # memory-evidence-rfc §3.6.6: tiktoken for persona/reflection render
