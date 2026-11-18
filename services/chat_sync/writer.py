@@ -22,6 +22,8 @@ _registry = {}
 _registry_lock = threading.RLock()
 # Every ChatSyncWriter, including one a newer writer replaced in _registry but a runtime still holds.
 _FORK_RESET_WRITERS = weakref.WeakSet()
+# Exceptions from rebuilds in this (fork child) process; see _reset_file_locks_after_fork.
+_FORK_RESET_FAILURES: list = []
 
 
 def _reset_file_locks_after_fork():
@@ -37,18 +39,15 @@ def _reset_file_locks_after_fork():
     only if that process imported this module.
     """
     # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
-    failures = []
+    _FORK_RESET_FAILURES.clear()  # A grandchild must not inherit its parent's record.
     for writer in list(_FORK_RESET_WRITERS):
         try:
             writer._reset_after_fork()
         except Exception as exc:
-            failures.append(exc)
-    # Report only after every rebuild: a write to a full, unread stdout pipe can block.
-    for exc in failures:
-        try:
-            print(f'[chat_sync] fork 子进程重建 writer 锁失败: {type(exc).__name__}: {exc}', flush=True)
-        except Exception:
-            pass
+            # No output here: a write to a full, unread stdout pipe would block the hook
+            # and the child's start. A lock left unrebuilt still fails loudly on use
+            # (filelock raises "inherited across fork"); the cause is kept for inspection.
+            _FORK_RESET_FAILURES.append(exc)
 
 
 if hasattr(os, 'register_at_fork'):

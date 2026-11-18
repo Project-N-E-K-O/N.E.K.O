@@ -275,6 +275,8 @@ class _RecentFileLock:
 
 # Every _RecentFileLock, including any a caller still references outside _LOCKS.
 _FORK_RESET_LOCKS: weakref.WeakSet = weakref.WeakSet()
+# Exceptions from rebuilds in this (fork child) process; see _reset_file_locks_after_fork.
+_FORK_RESET_FAILURES: list = []
 _LOCKS: dict[str, _RecentFileLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
@@ -301,18 +303,15 @@ def _reset_file_locks_after_fork() -> None:
     only if that process imported this module.
     """
     # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
-    failures = []
+    _FORK_RESET_FAILURES.clear()  # A grandchild must not inherit its parent's record.
     for lock in list(_FORK_RESET_LOCKS):
         try:
             lock._reset_after_fork()
         except Exception as exc:
-            failures.append(exc)
-    # Report only after every rebuild: a write to a full, unread stdout pipe can block.
-    for exc in failures:
-        try:
-            print(f'[recent_file] fork 子进程重建 recent 锁失败: {type(exc).__name__}: {exc}', flush=True)
-        except Exception:
-            pass
+            # No output here: a write to a full, unread stdout pipe would block the hook
+            # and the child's start. A lock left unrebuilt still fails loudly on use
+            # (filelock raises "inherited across fork"); the cause is kept for inspection.
+            _FORK_RESET_FAILURES.append(exc)
 
 
 if hasattr(os, 'register_at_fork'):
