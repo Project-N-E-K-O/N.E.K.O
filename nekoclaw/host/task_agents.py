@@ -223,7 +223,9 @@ class _Session:
     update_names: dict[str, str] = field(default_factory=dict)
     # Set while a host callback waits for the user's answer.
     question: asyncio.Future[dict[str, Any]] | None = None
-    # Done the moment that answer is in, before whoever asked goes on.
+    # Done the moment the answer to that question is in, before whoever
+    # asked goes on. Set and taken away with the question it was asked
+    # with (``_ask``): the answer to another one does not do it.
     at_answer: Callable[[], None] | None = None
     ask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # True after a ``waiting`` report: the answer becomes the session's next work.
@@ -440,9 +442,19 @@ class _UsageCut:
         await manager._reach(self._reached)
         # (Not reached in time: what is owed by now is what there is to go by.)
         self._after()
-        # Both as they stand at one moment: what is owed, less what of it came after the answer.
-        owed, late = dict(manager._usage_owed), dict(self._late or {})
-        return max(0, await manager._owed_tokens(root, owed_at=owed) - await manager._owed_tokens(root, owed_at=late))
+        # Both as they stand at one moment: what is owed, less what of it
+        # came after the answer. Taken off for each session and commission
+        # by itself, before whose work each is of is looked up, once:
+        # looked up for the two apart, one of the two may fail, and what
+        # came after the answer would be allowed on top.
+        late = self._late or {}
+        before: dict[Any, Any] = {}
+        for key, owed in manager._usage_owed.items():
+            after = late.get(key, (0, 0, 0, 0, 0))
+            left = tuple(max(0, owed[at] - after[at]) for at in range(1, 5))
+            if any(left):
+                before[key] = (owed[0], *left)
+        return await manager._owed_tokens(root, owed_at=before)
 
     def end(self) -> None:
         """Let usage be written again. Once only, and only if it was begun."""
@@ -3234,11 +3246,15 @@ class TaskAgentManager:
         finally:
             self._answering_closed.discard(commission_id)
 
-    async def _ask(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
+    async def _ask(
+        self, commission_id: str, question: dict[str, Any], *, at_answer: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
         """Put a question to the user and wait for the answer.
 
         The commission is ``waiting_user`` meanwhile and ``working`` again
-        afterwards.
+        afterwards. ``at_answer`` is done the moment the answer to this
+        question is in (``answer``), with nothing awaited before: this
+        gets to go on only a while later.
         """
         session = self._sessions.get(commission_id)
         if session is None:
@@ -3253,12 +3269,12 @@ class TaskAgentManager:
             )
             if not moved.applied or moved.commission is None:
                 raise RuntimeError(f"the commission cannot wait for the user ({moved.refusal})")
-            session.question = future
+            session.question, session.at_answer = future, at_answer
             try:
                 await self._reporter.question(moved.commission, question)
                 return await future
             finally:
-                session.question = None
+                session.question, session.at_answer = None, None
                 # Back to working only from waiting: a commission stopped, or
                 # failed (by shutting down, say) meanwhile, stays as it is.
                 await asyncio.shield(
@@ -3277,7 +3293,7 @@ class TaskAgentManager:
 
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""
-        answer = await self._ask(commission_id, ask.to_json())
+        answer = await self._ask(commission_id, ask.to_json(), at_answer=ask.at_answer)
         choice = answer.get("choice")
         # Anything that is not one of the four answers is a refusal. An
         # approval wider than the question offered is narrowed by the gate.
@@ -3903,13 +3919,16 @@ class TaskAgentManager:
                     # answer is in (``_UsageCut``), and not when this
                     # gets to go on, which is a while later (the
                     # commission is put back to work first).
+                    # Of this question's answer, and of no other's: one
+                    # that was asked for the commission before it (by
+                    # something it called, say) is answered first.
                     cut = _UsageCut(self)
-                    session.at_answer = cut.begin
                     try:
                         decision = await self._permissions.ask_each_time(
                             commission_id,
                             USAGE_LIMIT,
                             detail={"used": tokens_text(standing.used), "more": tokens_text(limit)},
+                            at_answer=cut.begin,
                         )
                         if decision.allow:
                             # (Answered by a way that does not come by the
@@ -3922,7 +3941,6 @@ class TaskAgentManager:
                             owed = await cut.owed(standing.root)
                             await self._ledger.allow_usage(commission_id, limit + owed)
                     finally:
-                        session.at_answer = None
                         cut.end()
                     if decision.allow:
                         # What the ledger did not take before is tried
@@ -4181,6 +4199,17 @@ class TaskAgentManager:
         removing = asyncio.ensure_future(self._remove_fork_dir(session_id, target_dir))
         self._fork_records.add(removing)
         removing.add_done_callback(self._fork_records.discard)
+
+        def seen(removing: "asyncio.Future[None]") -> None:
+            # Mostly nobody waits for it: what it ended with would go by unseen.
+            if not removing.cancelled() and removing.exception() is not None:
+                logger.error(
+                    "removing what was copied to %s ended with an error; it may be left there, on no record",
+                    target_dir,
+                    exc_info=removing.exception(),
+                )
+
+        removing.add_done_callback(seen)
         return removing
 
     async def _put_fork_on_record(

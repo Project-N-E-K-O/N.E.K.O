@@ -4386,3 +4386,201 @@ def test_a_message_with_a_time_too_large_to_be_one_is_kept_as_said_now() -> None
         ("said before it", 99.0),
         ("said at a time out of all bounds", 100.0),
     ]
+
+
+async def test_the_answer_to_another_question_of_the_commission_is_not_where_what_it_had_used_ends(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    release, wait = _gate()
+    llm = ScriptedLLM(
+        [
+            [wait, call("glob", {"pattern": "*.a"}), _used(1_000, 100), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "sorted"}, "call-2"), _used(100, 30), finish("tool_calls")],
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    manager = host.task_agents
+    ask_each_time, transition = manager._permissions.ask_each_time, host.ledger.transition
+    about_usage, about_to_wait, go = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def slow_to_wait_for_the_other_answer(commission_id: str, status: str, **kwargs: Any) -> Any:
+        if status == "waiting_user" and not about_to_wait.is_set():
+            about_to_wait.set()
+            await go.wait()
+        return await transition(commission_id, status, **kwargs)
+
+    async def seen(commission_id: str, category: str, **kwargs: Any) -> Any:
+        if category == "usage_limit":
+            about_usage.set()
+        return await ask_each_time(commission_id, category, **kwargs)
+
+    async def asked_about_usage() -> bool:
+        commission = await host.ledger.get(first.id)
+        return commission.status == "waiting_user" and (commission.question() or {}).get("category") == "usage_limit"
+
+    manager._permissions.ask_each_time, host.ledger.transition = seen, slow_to_wait_for_the_other_answer
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await wait_until(lambda: llm.requests, what="its first request")
+        # Something the commission called asks the user a question of its own. It is the one
+        # that is asked now, and the commission is not yet put down as waiting for the user...
+        other = asyncio.ensure_future(
+            manager.ask_user(first.id, {"kind": "questions", "questions": [{"question": "which folder?"}]})
+        )
+        await asyncio.wait_for(about_to_wait.wait(), 10)
+        # ...when the commission, at work as far as the ledger says, has used what it may: the
+        # question about that waits its turn behind the other one.
+        release.set()
+        await asyncio.wait_for(about_usage.wait(), 10)
+        go.set()
+        assert (await _asked(host, first.id))["kind"] == "questions"
+        assert await host.answer(first.id, "the left one")
+        assert (await asyncio.wait_for(other, 10))["text"] == "the left one"
+        # That was no answer about usage. Nothing is held back for it, and what a task agent says
+        # it used from here on was used before the user has even been asked whether more may be.
+        assert manager._usage_reading == 0 and manager._usage_late == []
+        _says_it_used_200(manager)
+        await manager._caught_up()
+        await wait_until(asked_about_usage, what="the question about usage")
+        assert await host.answer(first.id, "ok", choice="once")
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        release.set()
+        go.set()
+        manager._permissions.ask_each_time, host.ledger.transition = ask_each_time, transition
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 200 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
+    assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0
+
+
+async def test_what_came_after_the_answer_is_taken_off_before_whose_work_it_is_of_is_looked_up(hosts, tmp_path):
+    import types
+
+    from nekoclaw.host.task_agents import _UsageCut
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+    usage_standing = host.ledger.usage_standing
+    looked_up: list[str] = []
+
+    async def once_for_each(commission_id: str) -> Any:
+        looked_up.append(commission_id)
+        if looked_up.count(commission_id) > 1:
+            raise RuntimeError("the ledger cannot be read just now")
+        return types.SimpleNamespace(root="the-commission")
+
+    host.ledger.usage_standing = once_for_each
+    cut = _UsageCut(manager)
+    try:
+        # What a task agent the commission started had used before the answer and the ledger has not taken: 50.
+        manager._owe(("its-session", "started-by-it"), (1, 30, 20, 0, 0), None, 0)
+        cut.begin()
+        # What it says after the answer (200), and what another one says that had said nothing before (70).
+        await manager._write_usage(("its-session", "started-by-it"), (1, 150, 50, 0, 0), None, 0)
+        await manager._write_usage(("another-session", "started-later"), (1, 50, 20, 0, 0), None, 0)
+        assert manager._usage_owed[("its-session", "started-by-it")][:5] == (2, 180, 70, 0, 0)
+        # The 50 are what the new limit is counted from, and nothing of what came after the answer...
+        assert await cut.owed("the-commission") == 50
+        # ...by looking up once whose work they are of. Looked up again for what came after, that
+        # may fail where the first time did not, and what came after would be allowed on top.
+        assert looked_up == ["started-by-it"]
+    finally:
+        manager._usage_put_off.clear()
+        manager._usage_owed.clear()
+        cut.end()
+        host.ledger.usage_standing = usage_standing
+    assert manager._usage_late == [] and manager._usage_reading == 0
+
+
+async def test_a_removal_of_what_was_copied_that_ends_with_an_error_does_not_go_by_unseen(
+    hosts, tmp_path, monkeypatch, caplog
+):
+    import logging
+
+    host = _host(hosts, tmp_path, ScriptedLLM([]))
+    manager = host.task_agents
+
+    async def breaks(session_id: str, target_dir: Any) -> None:
+        raise RuntimeError("no thread to remove it in")
+
+    monkeypatch.setattr(manager, "_remove_fork_dir", breaks)
+    caplog.set_level(logging.ERROR, logger="nekoclaw.host.task_agents")
+    # Nobody waits for it (what the runtimes say next is not held up by it).
+    removing = manager._remove_fork_dir_soon("a-copy", tmp_path / "a-copy")
+    await asyncio.wait([removing])
+    await wait_until(lambda: "ended with an error" in caplog.text, timeout=3, what="the error being said")
+    (record,) = [record for record in caplog.records if "ended with an error" in record.getMessage()]
+    assert "a-copy" in record.getMessage() and isinstance(record.exc_info[1], RuntimeError)
+    assert manager._fork_records == set()
+
+
+def test_a_message_said_at_a_time_further_ahead_than_messages_are_kept_for_is_kept_as_said_now() -> None:
+    now = 1_700_000_000.0
+    kept = RecentConversation(clock=lambda: now)
+    # Counted in something smaller than seconds, say. Kept as it is, it would be the newest there
+    # is, and never old, for as long as the process runs.
+    assert kept.note_event(
+        {"turn_type": "user_message", "lanlan_name": "Lan", "content": "said in milliseconds", "ts": now * 1000}
+    )
+    # One that is a little ahead (said by another process, by its own clock) stays where it is.
+    assert kept.note("Lan", ROLE_CHARACTER, "said a moment ahead", at=now + 60)
+    assert kept.note("Lan", ROLE_USER, "said just past what is kept", at=now + settings.TASK_AGENT_EXCERPT_MAX_AGE_SECONDS + 1)
+    assert [(turn.text, turn.at) for turn in kept.recent("Lan")] == [
+        ("said in milliseconds", now),
+        ("said just past what is kept", now),
+        ("said a moment ahead", now + 60),
+    ]
+
+
+async def test_what_was_said_before_the_answer_and_is_not_handled_in_time_comes_out_of_what_was_allowed(
+    hosts, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "TASK_AGENT_USAGE_LIMIT_TOKENS", 1_000)
+    host = _host(hosts, tmp_path, _over_at_the_second_request())
+    manager = host.task_agents
+    handle, reach = manager._handle, manager._reach
+    held, go, given_up = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def held_up_by_something_else(event: dict[str, Any]) -> None:
+        if event.get("type") == "held-up":
+            held.set()
+            await go.wait()
+            return
+        await handle(event)
+
+    async def not_for_long(reached: Any, within: float = 0.0) -> None:
+        # (As when the ten seconds it waits at the most have gone by.)
+        await reach(reached, 0.05)
+        given_up.set()
+
+    async def more_is_allowed() -> bool:
+        return (await host.ledger.usage_standing(first.id)).allowed is not None
+
+    manager._handle = held_up_by_something_else
+    try:
+        first = (await _dispatch(host, "sort the photos")).commissions[0]
+        await _asked(host, first.id)
+        # Whoever handles what the runtimes say is held up, and stays so: what a task agent said
+        # it used before the answer is still not handled when the wait for it runs out.
+        manager._events.put_nowait({"type": "held-up"})
+        await asyncio.wait_for(held.wait(), 10)
+        _says_it_used_200(manager)
+        manager._reach = not_for_long
+        assert await asyncio.wait_for(host.answer(first.id, "ok", choice="once"), 5)
+        await asyncio.wait_for(given_up.wait(), 5)
+        # The commission is not kept waiting for it: as much again from what is written down by now.
+        await wait_until(more_is_allowed, what="more being allowed")
+        assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
+        go.set()
+        await wait_status(host, first.id, "done")
+        await _let_go(host)
+    finally:
+        go.set()
+        manager._handle, manager._reach = handle, reach
+    # What was held up is on the account once it is handled, and comes out of what was allowed:
+    # the new limit is the tighter for it, and never the wider. Nothing is left held back.
+    assert (await host.ledger.usage_standing(first.id)).allowed == 1_100 + 1_000
+    assert (await host.ledger.get(first.id)).tokens == 1_100 + 200 + 130
+    assert manager._usage_owed == {} and manager._usage_late == [] and manager._usage_reading == 0

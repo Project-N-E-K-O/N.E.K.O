@@ -101,11 +101,15 @@ class RecentConversation:
                 said_at = float(at)
             except (OverflowError, TypeError, ValueError):
                 # (A whole number too large to be one of seconds, say.)
-                said_at = math.inf
-            if not math.isfinite(said_at):
+                said_at = now
+            if not math.isfinite(said_at) or said_at > now + TASK_AGENT_EXCERPT_MAX_AGE_SECONDS:
                 # A time that is no time: as if it was said now. Kept as
                 # it is, nothing compares with it, and what comes after
                 # it would no longer be kept in the order it was said.
+                # And one that lies further ahead than a message is kept
+                # for is not one of seconds (it counts something smaller,
+                # say): kept as it is, the message would be the newest
+                # there is, and never old, for as long as this runs.
                 said_at = now
         if not event_id:
             # Told twice without an id: the same words by the same side as

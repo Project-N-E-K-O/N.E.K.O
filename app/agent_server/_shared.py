@@ -129,7 +129,13 @@ def _put_switch_off(key: str) -> None:
     except Exception:
         # Seen: with this failed, what was said before the switch went
         # off is handed to a task agent once NekoClaw is on again.
-        logger.warning("[NekoClaw] dropping the messages kept for task agents failed", exc_info=True)
+        # (Whether NekoClaw is off now could not be looked at, that is:
+        # the dropping itself says so by itself when it fails.)
+        logger.warning(
+            "[NekoClaw] looking whether NekoClaw is off now failed as a switch went off;"
+            " the messages kept for task agents are not dropped",
+            exc_info=True,
+        )
 
 
 def _set_capability(name: str, ready: bool, reason: str = "") -> None:

@@ -1227,16 +1227,37 @@ def _is_the_switches(node: ast.AST) -> bool:
     return isinstance(node, ast.Attribute) and node.attr == "agent_flags"
 
 
+def _each_of(target: ast.AST) -> list[ast.AST]:
+    """What a target stands for: each of them by itself, where it takes a row apart."""
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [inner for element in target.elts for inner in _each_of(element)]
+    if isinstance(target, ast.Starred):
+        return _each_of(target.value)
+    return [target]
+
+
+def _set_by(node: ast.AST) -> list[ast.AST]:
+    """What a node sets, or takes out, as it stands there (a row that is taken apart is one of them)."""
+    if isinstance(node, (ast.Assign, ast.Delete)):
+        return list(node.targets)
+    if isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.comprehension)):
+        return [node.target]
+    if isinstance(node, ast.withitem) and node.optional_vars is not None:
+        return [node.optional_vars]
+    return []
+
+
 def _puts_a_capability_switch_off(node: ast.AST) -> bool:
     """Whether a statement may put a capability switch off.
 
     One of them set to anything but True, or taken out; and the whole
     table of them changed at once, or put in the place of the one
     there is: whatever that sets them to, it is not looked at here.
+    Nor is it where a switch is set as one of a row that is taken
+    apart, or by what a loop or a ``with`` hands it.
     """
-    if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete)):
-        targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
-        for target in targets:
+    for whole in _set_by(node):
+        for target in _each_of(whole):
             if _is_the_switches(target):
                 return True
             if (
@@ -1244,7 +1265,7 @@ def _puts_a_capability_switch_off(node: ast.AST) -> bool:
                 and _is_the_switches(target.value)
                 and not (isinstance(target.slice, ast.Constant) and target.slice.value not in _CAPABILITY_SWITCHES)
                 # (Put on, as it stands there, with a type said for it or without: not what
-                # toggles it, or sets it by something.)
+                # toggles it, or sets it by something. A row that is taken apart is no True.)
                 and not (isinstance(node, (ast.Assign, ast.AnnAssign)) and _is_true(node.value))
             ):
                 return True
@@ -1284,7 +1305,7 @@ def test_a_switch_is_put_off_though_what_was_kept_could_not_be_dropped_and_that_
     # The switch is off all the same. And it does not go by unseen: what was said before the
     # switch went off would be handed to a task agent once NekoClaw is on again.
     assert stage.state.agent_flags["browser_use_enabled"] is False
-    assert len(said) == 1 and "dropping the messages kept for task agents failed" in said[0]
+    assert len(said) == 1 and "the messages kept for task agents are not dropped" in said[0]
 
 
 @pytest.mark.parametrize(
@@ -1304,6 +1325,19 @@ def test_a_switch_is_put_off_though_what_was_kept_could_not_be_dropped_and_that_
         ("Modules.agent_flags.update(browser_use_enabled=False)", True),
         ("Modules.agent_flags.clear()", True),
         ('Modules.agent_flags.pop("user_plugin_enabled", None)', True),
+        # As one of a row that is taken apart (whatever each of them gets), and by a loop or a ``with``.
+        ('Modules.agent_flags["browser_use_enabled"], reason = False, ""', True),
+        ('[Modules.agent_flags["browser_use_enabled"], reason] = False, ""', True),
+        ('reason, (Modules.agent_flags[key], ready) = "", (False, False)', True),
+        ('first, *Modules.agent_flags["browser_use_enabled"] = values', True),
+        ('Modules.agent_flags["browser_use_enabled"], reason = True, ""', True),
+        ("Modules.agent_flags, reason = {}, None", True),
+        ('for Modules.agent_flags["browser_use_enabled"] in (False,): pass', True),
+        ('with opened() as Modules.agent_flags["browser_use_enabled"]: pass', True),
+        ('seen = [None for Modules.agent_flags["browser_use_enabled"] in (False,)]', True),
+        ('Modules.agent_flags["something_else"], reason = False, ""', False),
+        ('on, reason = Modules.agent_flags["browser_use_enabled"], ""', False),
+        ('on = other = Modules.agent_flags["browser_use_enabled"] = True', False),
         # Put on, read, or another switch than the three.
         ('Modules.agent_flags["browser_use_enabled"] = True', False),
         ('Modules.agent_flags["browser_use_enabled"]: bool = True', False),
