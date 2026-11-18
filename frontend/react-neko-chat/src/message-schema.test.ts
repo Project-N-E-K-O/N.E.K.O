@@ -1,9 +1,9 @@
 import { ZodError, z } from 'zod';
+import { parseChatMessage, parseChatWindowProps } from './message-schema';
 
 // zod 4 的函数包装器（z.function().implement）在调用时用核心层 parse，抛的是
 // z.core.$ZodError（classic ZodError 的父类），不是 ZodError 本身。
 const ZodCallbackError = z.core.$ZodError;
-import { parseChatMessage, parseChatWindowProps } from './message-schema';
 
 describe('message-schema', () => {
   it('parses a valid chat message', () => {
