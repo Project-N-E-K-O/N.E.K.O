@@ -23,6 +23,12 @@
       "sitemapUrl": "https://project-neko.cn/sitemap.xml",
       "robotsUrl": "https://project-neko.cn/robots.txt",
       "bingSiteAuthUrl": "https://project-neko.cn/BingSiteAuth.xml",
+      "regionalSearch": [
+        { "id": "baidu", "label": "百度", "crawler": "Baiduspider", "verificationPath": "/baidu_verify_codeva-b1V26s9VjT.html" },
+        { "id": "sogou", "label": "搜狗", "crawler": "Sogou web spider", "verificationPath": "/sogousiteverification.txt" },
+        { "id": "360", "label": "360", "crawler": "360Spider", "verificationPath": "/45ba7194274367dd963784c7560ae586.txt" },
+        { "id": "toutiao", "label": "头条搜索", "crawler": "Bytespider", "verificationPath": "/ByteDanceVerify.html" }
+      ],
       "indexNowKeyUrl": "https://project-neko.cn/f9f8637d61bc993c56926de9e529404e22e901af83b794d3f0e0cefd78b0f7b0.txt",
       "measurementId": "G-2D1RSKSR72",
       "gsc": {
@@ -75,6 +81,7 @@
       "siteId": "cn",
       "label": ".cn zh-CN / China",
       "bingRanking": "china-opt-in",
+      "baiduRanking": true,
       "configPath": "seo/dataforseo.cn.config.json",
       "reportPathEnv": "DATAFORSEO_CN_REPORT_PATH",
       "statusPathEnv": "DATAFORSEO_CN_STATUS_PATH",

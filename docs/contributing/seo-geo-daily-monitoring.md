@@ -74,6 +74,12 @@ CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.
 3. `paid` 模式使用现有 DataForSEO 凭证，按深度 10 采集 `.online` 英文组，19 词预计增加 $0.038。开启 `include_bing_cn` 后，先通过免费的中国地区列表确认位置码 2156，再请求 `.cn` 中文组排名，8 词预计增加 $0.016。日报按组展示 API 已报告费用。 [Bing Webmaster API 授权](https://learn.microsoft.com/en-us/bingwebmaster/getting-access) · [DataForSEO Bing 地区列表](https://docs.dataforseo.com/v3/serp/bing/locations/) · [DataForSEO Bing 价格](https://dataforseo.com/pricing/serp/bing-organic-serp-api)
 4. 付费对比基线沿用 Google 和既有来源的验证门禁。Bing 独立显示每组的有效结果数和逐词状态，Bing 采集失败时整份日报仍会生成。
 
+## 百度、搜狗、360 和头条搜索
+
+- 百度自然排名复用现有 `.cn` 关键词组，位置码为 2156，语言码为 `zh_CN`。付费运行提交一次 Standard 队列任务，最多等待 6 分钟。每个词采首个结果页（深度 10）并要求直达网址，以识别结果实际指向的站点。当前 8 个词预计每次 **$0.048**。等待超时的结果记为 `UNKNOWN`，保留已报告费用。`dry-run` 校验排名任务未提交。 [任务提交](https://docs.dataforseo.com/v3/serp/baidu/organic/task_post/) · [百度定价](https://dataforseo.com/pricing/serp/baidu-organic-serp-api)
+- 公开探针检查官网的验证文件、robots.txt 对首页的规则和 sitemap。百度还检查首页及最新生产推送回执，复用已有的 `SEO_REPORTS_TOKEN` 读取官网仓库有权限的 Actions 产物。如果没有可读取的回执，日报显示 `UNKNOWN`。收录和搜索表现可在站长平台人工查看。 [百度站长平台工具说明](https://ziyuan.baidu.com/college/articleinfo?id=3170)
+- 搜狗、360、头条的排名与搜索表现显示 `UNSUPPORTED`，日报只访问官网上的探针地址。
+
 ## 时间窗口
 
 - GSC 最新完整日：先按 Google Search Console 的 `America/Los_Angeles` 日期查询 `dataState=all + dimensions=date`，读取 API `metadata.first_incomplete_date`，再把其前一天作为真实最新完整日；如果所查范围没有未完整日期，则使用探测范围末日。随后比较以该日结尾的连续两个 7 日窗口。sitemap 覆盖率为 GSC API 返回的 `indexed / submitted`，不是公网 sitemap 的 URL 数；API 未返回内容时保持 `N/A`。生产门禁同时检查这份完整性元数据，并要求完整日距上海日报日为 1–4 天（Google 通常延迟 2–3 天，另留 1 天覆盖上海/PT 日期边界）；更旧的数据视为陈旧证据，不能报绿。

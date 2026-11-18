@@ -158,6 +158,27 @@ jobs:
             echo "The previous artifact has no unified JSON report."
           fi
 
+      - name: Read latest Baidu submission evidence
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SEO_REPORTS_TOKEN }}
+        run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "SEO_REPORTS_TOKEN is not configured."
+            exit 0
+          fi
+          repository="Project-N-E-K-O/N.E.K.O.OfficialWebsite"
+          run_id="$(gh api "repos/${repository}/actions/artifacts?name=baidu-cn-submission&per_page=100" --jq '.artifacts | map(select(.expired == false and .workflow_run.head_branch == "main")) | sort_by(.created_at) | last | .workflow_run.id // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "No unexpired production Baidu submission receipt."
+            exit 0
+          fi
+          evidence_dir="$RUNNER_TEMP/baidu-submission"
+          gh run download "$run_id" --repo "$repository" --name baidu-cn-submission --dir "$evidence_dir"
+          echo "BAIDU_PUSH_REPORT_PATH=$evidence_dir/baidu-execution.json" >> "$GITHUB_ENV"
+          echo "BAIDU_PUSH_REPORT_EVIDENCE=https://github.com/${repository}/actions/runs/${run_id}" >> "$GITHUB_ENV"
+
       - name: Reuse today's authoritative .cn ranking artifact
         if: env.COLLECTION_KIND == 'paid'
         continue-on-error: true
@@ -414,3 +435,4 @@ jobs:
           done
           report=".seo-reports/seo-monitoring-${GITHUB_RUN_ID}.json"
           node scripts/seo-monitoring/assert-report.mjs --input "$report" --level bing-dry-run
+          node scripts/seo-monitoring/assert-report.mjs --input "$report" --level baidu-dry-run

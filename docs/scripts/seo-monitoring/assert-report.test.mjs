@@ -404,6 +404,14 @@ test('the Bing dry-run contract requires both unspent ranking groups and permits
   }
 })
 
+test('Baidu dry-run requires the configured ranking group with no tasks or reported charge', () => {
+  const planned = { id: 'cn', status: 'UNKNOWN', rows: [] }
+  assert.deepEqual(requiredFailures({ baiduRanking: planned }, 'baidu-dry-run'), [])
+  assert.notEqual(requiredFailures({}, 'baidu-dry-run').length, 0)
+  assert.notEqual(requiredFailures({ baiduRanking: { ...planned, knownCostUsd: 0 } }, 'baidu-dry-run').length, 0)
+  assert.notEqual(requiredFailures({ baiduRanking: { ...planned, rows: [{ keyword: 'unexpected' }] } }, 'baidu-dry-run').length, 0)
+})
+
 test('a fully populated report passes core, daily, and all contracts', () => {
   const report = validReport()
   assert.deepEqual(requiredFailures(report, 'core'), [])

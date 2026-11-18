@@ -220,6 +220,40 @@ test('Bing Markdown shows observed values and independent unavailable sources', 
   )
 })
 
+test('regional search report exposes ranking availability separately from public probes', () => {
+  const definition = {
+    id: 'cn',
+    label: '.cn 产品主页',
+    regionalSearch: [
+      { id: 'baidu', label: '百度', crawler: 'Baiduspider' },
+      { id: 'sogou', label: '搜狗', crawler: 'Sogou web spider' },
+      { id: '360', label: '360', crawler: '360Spider' },
+      { id: 'toutiao', label: '头条搜索', crawler: 'Bytespider' },
+    ],
+  }
+  const probes = definition.regionalSearch.map(({ id }) => ({
+    id, verification: { status: 'OBSERVED' }, homepage: { status: 'OBSERVED' },
+    sitemap: { status: 'OBSERVED' }, robots: { status: 'OBSERVED', allowed: true },
+  }))
+  const report = buildMonitoringReport({
+    config, generatedAt: '2026-07-28T23:30:00.000Z',
+    window: { gsc: {}, ga4: {} }, dataForSeoInputs: [],
+    siteInputs: [{
+      definition, gsc: unavailable('no GSC fixture'), ga4: unavailable('no GA4 fixture'),
+      technical: { ...technical('https://project-neko.cn'), regionalSearch: probes },
+      baiduSubmission: { status: 'UNKNOWN', reason: '无正式回执' },
+    }],
+    baiduRanking: { id: 'cn', depth: 10, status: 'UNKNOWN', reason: 'dry-run 未提交百度付费排名任务', rows: [] },
+  })
+  const markdown = renderMarkdown(report)
+  assert.match(markdown, /## 国内搜索引擎/u)
+  assert.match(markdown, /搜狗 \| UNSUPPORTED.*\| UNSUPPORTED/u)
+  assert.match(markdown, /360 \| UNSUPPORTED.*\| UNSUPPORTED/u)
+  assert.match(markdown, /头条搜索 \| UNSUPPORTED.*\| UNSUPPORTED/u)
+  assert.match(markdown, /百度推送 · UNKNOWN/u)
+  assert.deepEqual(report.sites[0].regionalSearch.map(engine => engine.performance.status), Array(4).fill('UNSUPPORTED'))
+})
+
 test('rank buckets distinguish observed off-100 results, failures, and not-run rows', () => {
   assert.deepEqual(rankBuckets([
     { organicRank: 2, error: null, collectionStatus: 'observed' },

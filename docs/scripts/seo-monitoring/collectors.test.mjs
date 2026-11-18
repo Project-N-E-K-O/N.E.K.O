@@ -306,6 +306,36 @@ test('technical collector checks HTTP, discovery files, canonical, hreflang, sch
   assert.equal(result.indexNowKey.contentMatchesFilename, true)
 })
 
+test('regional verification and crawler probes distinguish site evidence from failures', async () => {
+  const origin = 'https://example.test'
+  const result = await collectTechnicalSeo({
+    origin,
+    robotsUrl: `${origin}/robots.txt`,
+    sitemapUrl: `${origin}/sitemap.xml`,
+    bingSiteAuthUrl: `${origin}/BingSiteAuth.xml`,
+    indexNowKeyUrl: `${origin}/indexnow-key.txt`,
+    regionalSearch: [
+      { id: 'sogou', label: '搜狗', crawler: 'Sogou web spider', verificationPath: '/sogou.txt' },
+      { id: 'toutiao', label: '头条搜索', crawler: 'Bytespider', verificationPath: '/verify.html' },
+    ],
+  }, {
+    fetchImpl: async url => {
+      if (url.endsWith('/robots.txt')) return new Response('User-agent: Sogou web spider\nDisallow: /\n\nUser-agent: *\nAllow: /')
+      if (url.endsWith('/sitemap.xml')) return new Response(`<urlset><url><loc>${origin}/</loc></url></urlset>`)
+      if (url.endsWith('/sogou.txt')) return new Response('tokenFixture')
+      return new Response('<html>Unexpected page fallback</html>')
+    },
+  })
+  const [sogou, toutiao] = result.regionalSearch
+  assert.equal(sogou.verification.status, 'OBSERVED')
+  assert.equal(sogou.robots.status, 'FAILED')
+  assert.equal(sogou.robots.allowed, false)
+  assert.equal(toutiao.verification.status, 'FAILED')
+  assert.equal(toutiao.robots.allowed, true)
+  assert.equal(toutiao.sitemap.status, 'OBSERVED')
+  assert.doesNotMatch(JSON.stringify(result.regionalSearch), /tokenFixture/u)
+})
+
 test('technical collector makes failed content invariants block growth reporting', async () => {
   const origin = 'https://project-neko.cn'
   const result = await collectTechnicalSeo({

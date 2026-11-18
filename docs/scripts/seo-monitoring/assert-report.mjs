@@ -685,7 +685,20 @@ function validateTechnical(site, failures) {
   add(failures, (technical.html?.hreflang?.length ?? 0) > 0, `${label} hreflang links are missing`)
 }
 
+function unspentRanking(segment) {
+  return segment?.status === 'UNKNOWN'
+    && Array.isArray(segment.rows)
+    && segment.rows.length === 0
+    && !Object.hasOwn(segment, 'knownCostUsd')
+}
+
 export function requiredFailures(report, level = 'core') {
+  if (level === 'baidu-dry-run') {
+    const expected = monitoringConfig.dataForSeoSegments.find(segment => segment.baiduRanking)
+    return expected && report?.baiduRanking?.id === expected.id && unspentRanking(report.baiduRanking)
+      ? []
+      : ['Baidu dry-run must report the configured ranking group with UNKNOWN status, empty rows and no reported cost']
+  }
   if (level === 'bing-dry-run') {
     const expectedIds = monitoringConfig.dataForSeoSegments.filter(segment => segment.bingRanking).map(segment => segment.id)
     const segments = report?.bingRankings
@@ -694,11 +707,7 @@ export function requiredFailures(report, level = 'core') {
     }
     return expectedIds.flatMap(id => {
       const segment = segments.find(item => item?.id === id)
-      const planned = segment?.status === 'UNKNOWN'
-        && Array.isArray(segment.rows)
-        && segment.rows.length === 0
-        && !Object.hasOwn(segment, 'knownCostUsd')
-      return planned ? [] : [`Bing dry-run ${id} must have UNKNOWN status, empty rows and no reported cost`]
+      return unspentRanking(segment) ? [] : [`Bing dry-run ${id} must have UNKNOWN status, empty rows and no reported cost`]
     })
   }
   const failures = []
@@ -747,8 +756,8 @@ function parseArgs(argv) {
     else throw new TypeError(`Unknown argument: ${argv[index]}`)
   }
   if (!options.input) throw new TypeError('--input is required')
-  if (!['core', 'daily', 'all', 'bing-dry-run'].includes(options.level)) {
-    throw new TypeError('--level must be core, daily, all, or bing-dry-run')
+  if (!['core', 'daily', 'all', 'bing-dry-run', 'baidu-dry-run'].includes(options.level)) {
+    throw new TypeError('--level must be core, daily, all, bing-dry-run, or baidu-dry-run')
   }
   return options
 }

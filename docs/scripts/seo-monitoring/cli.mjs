@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { DataForSeoClient } from '../dataforseo/client.mjs'
+import { collectBaiduRankings, summarizeBaiduSubmission } from './baidu.mjs'
 import { collectBingRankings, collectBingWebmaster } from './bing.mjs'
 import {
   collectGa4,
@@ -163,13 +164,13 @@ async function main() {
   }
 
   const duplicates = duplicatePropertyIds(config)
-  const siteInputs = await Promise.all(config.sites.map(async definition => {
+  const siteInputsPromise = Promise.all(config.sites.map(async definition => {
     const siteUrl = process.env[definition.gsc.siteUrlEnv] || definition.gsc.defaultSiteUrl
     const propertyId = process.env[definition.ga4.propertyIdEnv]
     const duplicateSites = propertyId ? duplicates.get(propertyId) : null
     const indexNowPath = options.indexNow.get(definition.id)
       || process.env[definition.indexNow.statusPathEnv]
-    const [gsc, ga4, technical, indexNow, bing] = await Promise.all([
+    const [gsc, ga4, technical, indexNow, bing, baiduReceipt] = await Promise.all([
       accessToken
         ? safely(() => collectGsc({
           siteUrl,
@@ -201,8 +202,14 @@ async function main() {
       collectBingWebmaster(definition.origin, {
         apiKey: process.env.BING_WEBMASTER_API_KEY,
       }),
+      definition.regionalSearch?.some(engine => engine.id === 'baidu')
+        ? readOptionalJson(process.env.BAIDU_PUSH_REPORT_PATH, 'No Baidu submission evidence')
+        : null,
     ])
-    return { definition, gsc, ga4, technical, indexNow, bing }
+    const baiduSubmission = baiduReceipt
+      ? summarizeBaiduSubmission(baiduReceipt, definition.origin, process.env.BAIDU_PUSH_REPORT_EVIDENCE)
+      : undefined
+    return { definition, gsc, ga4, technical, indexNow, bing, baiduSubmission }
   }))
 
   const paid = process.env.COLLECTION_KIND === 'paid'
@@ -211,13 +218,19 @@ async function main() {
   const client = paid && login?.trim() && password?.trim()
     ? new DataForSeoClient({ login, password })
     : null
-  const bingRankings = await Promise.all(definitions
+  const bingRankingsPromise = Promise.all(definitions
     .filter(definition => definition.bingRanking)
     .map(definition => collectBingRankings(definition, {
       client,
       paid,
       includeCn: process.env.INCLUDE_BING_CN === 'true',
     })))
+  const baiduDefinition = definitions.find(definition => definition.baiduRanking)
+  const [siteInputs, bingRankings, baiduRanking] = await Promise.all([
+    siteInputsPromise,
+    bingRankingsPromise,
+    baiduDefinition ? collectBaiduRankings(baiduDefinition, { client, paid }) : null,
+  ])
 
   const report = buildMonitoringReport({
     config,
@@ -226,6 +239,7 @@ async function main() {
     dataForSeoInputs,
     siteInputs,
     bingRankings,
+    baiduRanking,
     previousReport: previousReport?.status === 'unavailable' ? null : previousReport,
     previousReportEvidence: process.env.PREVIOUS_REPORT_EVIDENCE ?? options.previousReport,
   })

@@ -641,20 +641,21 @@ function robotsAllowsPath(rules, path) {
     .some(rule => rule.field === 'allow')
 }
 
+function crawlerPolicy(groups, name) {
+  const exact = groups.filter(group => group.agents.includes(name.toLowerCase()))
+  const applicable = exact.length > 0
+    ? exact
+    : groups.filter(group => group.agents.includes('*'))
+  return {
+    name,
+    explicitlyNamed: exact.length > 0,
+    allowed: robotsAllowsPath(applicable.flatMap(group => group.rules), '/'),
+  }
+}
+
 function aiCrawlerPolicy(source) {
   const groups = robotsGroups(source)
-  const results = AI_CRAWLERS.map(name => {
-    const exact = groups.filter(group => group.agents.includes(name.toLowerCase()))
-    const applicable = exact.length > 0
-      ? exact
-      : groups.filter(group => group.agents.includes('*'))
-    const rules = applicable.flatMap(group => group.rules)
-    return {
-      name,
-      explicitlyNamed: exact.length > 0,
-      allowed: robotsAllowsPath(rules, '/'),
-    }
-  })
+  const results = AI_CRAWLERS.map(name => crawlerPolicy(groups, name))
   const blocked = results.filter(item => !item.allowed).map(item => item.name)
   return {
     status: blocked.length === 0 ? 'allowed' : 'blocked',
@@ -698,16 +699,55 @@ function expectedIndexNowKey(url) {
   }
 }
 
+function regionalProbeStatus(probe, usable, reason) {
+  if (probe?.status !== 'ok' || probe.httpStatus !== 200) {
+    return {
+      status: 'FAILED',
+      reason: probe?.httpStatus ? `HTTP ${probe.httpStatus}` : '未取得 HTTP 响应',
+    }
+  }
+  return usable ? { status: 'OBSERVED' } : { status: 'FAILED', reason }
+}
+
+function regionalSearchEvidence(definitions, checks, { home, robots, sitemap, sitemapUrlCount }) {
+  const groups = robotsGroups(robots.source)
+  const robotsAccess = regionalProbeStatus(robots, !/^\s*</u.test(robots.source), 'robots.txt 返回了网页内容')
+  return definitions.map((definition, index) => {
+    const verification = checks[index]
+    const evidence = regionalProbeStatus(verification, (
+      verification.finalUrl === verification.url && /^[a-z\d_-]{6,128}$/iu.test(verification.source.trim())
+    ), '验证文件地址或内容格式异常')
+    const crawler = crawlerPolicy(groups, definition.crawler)
+    return {
+      id: definition.id,
+      label: definition.label,
+      crawler: definition.crawler,
+      verification: { ...evidence, url: verification.url },
+      homepage: regionalProbeStatus(home, true),
+      robots: robotsAccess.status !== 'OBSERVED' ? robotsAccess
+        : crawler.allowed ? { status: 'OBSERVED', allowed: true }
+          : { status: 'FAILED', allowed: false, reason: 'robots.txt 禁止抓取首页' },
+      sitemap: regionalProbeStatus(sitemap, sitemapUrlCount > 0
+        && /<(?:urlset|sitemapindex)\b/iu.test(sitemap.source), 'sitemap 未返回有效网址'),
+    }
+  })
+}
+
 export async function collectTechnicalSeo(site, {
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 } = {}) {
-  const [home, robots, sitemap, bingAuth, indexNowKey] = await Promise.all([
+  const regionalDefinitions = site.regionalSearch ?? []
+  const [home, robots, sitemap, bingAuth, indexNowKey, regionalFiles] = await Promise.all([
     fetchProbe(`${site.origin}/`, { fetchImpl, timeoutMs }),
     fetchProbe(site.robotsUrl, { fetchImpl, timeoutMs }),
     fetchProbe(site.sitemapUrl, { fetchImpl, timeoutMs }),
     fetchProbe(site.bingSiteAuthUrl, { fetchImpl, timeoutMs }),
     fetchProbe(site.indexNowKeyUrl, { fetchImpl, timeoutMs }),
+    Promise.all(regionalDefinitions.map(async ({ verificationPath }) => {
+      const url = new URL(verificationPath, site.origin).href
+      return { ...await fetchProbe(url, { fetchImpl, timeoutMs }), url }
+    })),
   ])
   const linkTags = [...home.source.matchAll(/<link\b[^>]*>/giu)].map(match => match[0])
   const canonical = linkTags.find(tag => tagAttribute(tag, 'rel')?.toLowerCase() === 'canonical')
@@ -779,6 +819,7 @@ export async function collectTechnicalSeo(site, {
       aiCrawlers: crawlerPolicy,
     },
     sitemap: { status: sitemap.status, httpStatus: sitemap.httpStatus, urlCount: sitemapUrlCount },
+    regionalSearch: regionalSearchEvidence(regionalDefinitions, regionalFiles, { home, robots, sitemap, sitemapUrlCount }),
     bingSiteAuth: { status: bingAuth.status, httpStatus: bingAuth.httpStatus },
     indexNowKey: {
       status: indexNowKey.status,

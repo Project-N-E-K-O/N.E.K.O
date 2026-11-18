@@ -7,6 +7,8 @@ export const DATAFORSEO_ENDPOINTS = Object.freeze({
   organicSerp: '/v3/serp/google/organic/live/advanced',
   bingOrganicSerp: '/v3/serp/bing/organic/live/advanced',
   bingChinaLocations: '/v3/serp/bing/locations/cn',
+  baiduTaskPost: '/v3/serp/baidu/organic/task_post',
+  baiduTaskGet: '/v3/serp/baidu/organic/task_get/advanced',
 })
 
 export class DataForSeoApiError extends Error {
@@ -108,7 +110,7 @@ function apiMessage(payload) {
   return `${code}${message}`
 }
 
-function assertSuccessfulPayload(payload, endpoint) {
+function assertSuccessfulPayload(payload, endpoint, allowTaskErrors) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new DataForSeoApiError(
       `DataForSEO returned an invalid JSON envelope for ${endpoint}`,
@@ -130,6 +132,7 @@ function assertSuccessfulPayload(payload, endpoint) {
     )
   }
 
+  if (allowTaskErrors) return
   const failedTasks = Array.isArray(payload.tasks)
     ? payload.tasks.filter(task => task?.status_code !== 20000)
     : []
@@ -178,7 +181,7 @@ export class DataForSeoClient {
     return this.#request(endpoint, { method: 'GET' }, options)
   }
 
-  async #request(endpoint, request, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  async #request(endpoint, request, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, allowTaskErrors = false } = {}) {
     if (typeof endpoint !== 'string' || !endpoint.startsWith('/v3/')) {
       throw new TypeError('DataForSEO endpoint must start with /v3/')
     }
@@ -248,7 +251,7 @@ export class DataForSeoClient {
       )
     }
 
-    assertSuccessfulPayload(payload, endpoint)
+    assertSuccessfulPayload(payload, endpoint, allowTaskErrors)
     return payload
   }
 }
