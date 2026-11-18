@@ -34,13 +34,14 @@ by the gateway, not by the runtime's own permission hook.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY, GATEWAY_REPLY_META_KEY
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -52,6 +53,28 @@ CLIENT_NAME = "nekoclaw-runtime"
 HANDSHAKE_TIMEOUT_SECONDS = 30.0
 CONNECT_TIMEOUT_SECONDS = 5.0
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
+
+# The one TLS configuration of this process's gateway clients; see ``_tls``.
+_TLS: Any = None
+
+
+async def _tls() -> Any:
+    """Return the TLS configuration every request to the gateway is made with, put together once.
+
+    A request is made with a client of its own, and a client that is given
+    no configuration loads the certificate bundle anew: a tenth of a second
+    and more each time, which is longer than everything else a request to
+    the loopback address takes, three times over for the handshake of a
+    session that is opened. So it is made when first asked for, on a thread,
+    and used from then on. (Made twice by two sessions that ask at the same
+    moment, which does no harm.)
+    """
+    global _TLS
+    if _TLS is None:
+        import httpx
+
+        _TLS = await asyncio.to_thread(httpx.create_ssl_context, trust_env=False)
+    return _TLS
 
 
 MAX_IMAGES_PER_RESULT = 4
@@ -90,6 +113,11 @@ class GatewayClient:
         self._protocol_version: str | None = None
         # Which reply of the model the calls being made were written in.
         self._reply = 0
+        # How often the session's conversation has been summed up; the
+        # session keeps it current. Every call names it: what the gateway
+        # handed over before a summary (a group of tools and how they are
+        # used) is no longer in the conversation after it.
+        self.compactions = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -107,7 +135,7 @@ class GatewayClient:
         timeout = httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT_SECONDS)
         try:
             # The gateway is on the loopback address: no proxy, no environment.
-            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False, verify=await _tls()) as client:
                 response = await client.post(self._url, headers=self._headers(), content=json.dumps(message))
         except httpx.HTTPError as exc:
             raise GatewayError(f"{type(exc).__name__}: {exc}") from exc
@@ -171,7 +199,11 @@ class GatewayClient:
 
     async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
         """Call one tool and return its text and pictures; waits as long as the tool takes."""
-        params = {"name": name, "arguments": arguments, "_meta": {GATEWAY_REPLY_META_KEY: self._reply}}
+        params = {
+            "name": name,
+            "arguments": arguments,
+            "_meta": {GATEWAY_REPLY_META_KEY: self._reply, GATEWAY_COMPACTIONS_META_KEY: self.compactions},
+        }
         result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
             return GatewayResult("", (), False)

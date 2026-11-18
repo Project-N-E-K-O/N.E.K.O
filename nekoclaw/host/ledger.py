@@ -14,9 +14,13 @@
 
 """The commission ledger: one SQLite file, written only by the host.
 
-``<data root>/nekoclaw/ledger.db`` holds four tables:
+``<data root>/nekoclaw/ledger.db`` holds five tables:
 
 * ``commissions`` - one row per commission (design section 5).
+* ``sessions``    - one row per task agent session: a conversation that can
+  be gone on with. A commission is given to a session (``session_id``), and
+  a session takes several, one after the other: the session of a project
+  takes every commission filed under it. See ``Session``.
 * ``events``      - what happened to a commission, in order; the commission
   board replays it.
 * ``outbox``      - reports for the main server. A report is written here
@@ -90,13 +94,25 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "cancelled": frozenset(),
 }
 
+SESSION_STATUSES: tuple[str, ...] = ("idle", "running", "waiting", "closed", "cleared")
+# Open in a runtime, or kept for an answer: only a host process that runs
+# can have a session so. What an earlier one left so is closed on opening.
+LIVE_SESSION_STATUSES: frozenset[str] = frozenset({"idle", "running", "waiting"})
+# "project": the one session of a project, for one character. "single": of
+# one commission that belongs to no project, and of what follows it up.
+# "child": of a task agent that another task agent started.
+SESSION_KINDS: tuple[str, ...] = ("project", "single", "child")
+
 SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent")
 ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 
 # Why a commission left unfinished by an earlier host process failed.
 HOST_ENDED_REASON = "the host process ended before this finished"
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
+# The first version in which a commission is worked on in a session that is a
+# row of its own; a ledger of an earlier one has its commissions given theirs.
+_SESSIONS_SINCE_VERSION = 3
 _BUSY_TIMEOUT_SECONDS = 5.0
 
 _SCHEMA = """
@@ -128,10 +144,31 @@ CREATE TABLE IF NOT EXISTS commissions (
     name TEXT,
     deferred_until REAL,
     host_instance TEXT,
-    session_dir TEXT
+    session_dir TEXT,
+    session_id TEXT,
+    continues TEXT
 );
 CREATE INDEX IF NOT EXISTS commissions_by_owner ON commissions (lanlan_name, status);
 CREATE INDEX IF NOT EXISTS commissions_by_parent ON commissions (parent_id);
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    lanlan_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    project TEXT,
+    workdir TEXT,
+    session_dir TEXT,
+    runtime TEXT,
+    parent_id TEXT,
+    forked_from TEXT,
+    status TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    last_active_at REAL NOT NULL,
+    compacted_at REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
+CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
+CREATE INDEX IF NOT EXISTS sessions_by_activity ON sessions (status, last_active_at);
 CREATE TABLE IF NOT EXISTS events (
     commission_id TEXT NOT NULL,
     seq INTEGER NOT NULL,
@@ -212,6 +249,12 @@ class Commission:
     # The data root may be moved later; the ledger goes along and the
     # sessions stay, so the place is on record and not worked out anew.
     session_dir: str | None = None
+    # The session a task agent works on it in (``sessions.id``); None until it
+    # is handed to a task agent. Several commissions can name one session.
+    session_id: str | None = None
+    # The commission this one follows up: one that was done or stopped, and
+    # is gone on with as a commission of its own in the same session.
+    continues: str | None = None
 
     @property
     def active(self) -> bool:
@@ -232,9 +275,52 @@ _COMMISSION_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Commis
 # Columns of ``commissions`` that the first schema did not have, with their
 # types: added to a ledger that was made before them when it is opened. Its
 # rows read as NULL there.
-_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("session_dir", "TEXT"),)
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("session_dir", "TEXT"),
+    ("session_id", "TEXT"),
+    ("continues", "TEXT"),
+)
 # Columns ``update`` may write. The status is not among them.
 _UPDATABLE: frozenset[str] = frozenset(_COMMISSION_COLUMNS) - {"id", "status", "created_at", "host_instance"}
+
+
+@dataclass(frozen=True, slots=True)
+class Session:
+    """One row of ``sessions``: a task agent's conversation, which outlasts the commissions worked on in it.
+
+    What was said is kept in ``session_dir`` by the runtime that holds it
+    (``runtime``), and the task agent works in ``workdir``; they are set
+    when the session is first opened. ``status`` says where the session
+    stands (``SESSION_STATUSES``): ``running`` while a commission is worked
+    on in it, ``waiting`` while one waits for the user, ``idle`` while it
+    is open in a runtime with no run under way, ``closed`` when no runtime
+    has it open (what was said is kept, and it can be gone on with),
+    ``cleared`` once what was said was removed, being old.
+    """
+
+    id: str
+    # How it is addressed; no two sessions of one character share a name.
+    name: str
+    lanlan_name: str
+    kind: str
+    project: str | None
+    workdir: str | None
+    session_dir: str | None
+    runtime: str | None
+    # The session of the task agent that started this one's.
+    parent_id: str | None
+    # Kept for sessions made from another by copying what was said.
+    forked_from: str | None
+    status: str
+    created_at: float
+    # When a commission of it last changed its status.
+    last_active_at: float
+    compacted_at: float | None
+
+
+_SESSION_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Session))
+# Columns ``update_session`` may write.
+_SESSION_UPDATABLE: frozenset[str] = frozenset(_SESSION_COLUMNS) - {"id", "lanlan_name", "kind", "created_at"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,10 +371,21 @@ def new_commission_id() -> str:
     return uuid.uuid4().hex
 
 
+def new_session_id() -> str:
+    """Return a new session id."""
+    return uuid.uuid4().hex
+
+
 def _commission(row: sqlite3.Row | None) -> Commission | None:
     if row is None:
         return None
     return Commission(**{name: row[name] for name in _COMMISSION_COLUMNS})
+
+
+def _session(row: sqlite3.Row | None) -> Session | None:
+    if row is None:
+        return None
+    return Session(**{name: row[name] for name in _SESSION_COLUMNS})
 
 
 def _dump(value: Any) -> str:
@@ -374,8 +471,20 @@ class Ledger:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            # As the ledger was left: 0 for one that is made now.
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             conn.executescript(_SCHEMA)
             self._add_columns(conn)
+            # Not in the script above: in a ledger of an earlier build the
+            # column is only there once it was added.
+            conn.execute("CREATE INDEX IF NOT EXISTS commissions_by_session ON commissions (session_id)")
+            if version < _SESSIONS_SINCE_VERSION:
+                # Only a ledger of a build without sessions. In one of this
+                # build a commission without a session was never given one
+                # (the process ended in between, or was shutting down): it
+                # is given one when it is taken up, its project's if it has
+                # a project, which a session under its own id would not be.
+                self._give_sessions(conn)
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             self._reconcile(conn)
         except BaseException:
@@ -393,6 +502,55 @@ class Ledger:
             if name not in present:
                 conn.execute(f"ALTER TABLE commissions ADD COLUMN {name} {kind}")
 
+    def _give_sessions(self, conn: sqlite3.Connection) -> None:
+        """Give every task agent commission of an earlier build the session it had.
+
+        Before sessions were rows of their own, a commission's id was the id
+        of its session. Such a commission gets a session of that very id,
+        with the directories the commission has on record, so nothing on
+        the disk moves and it is taken up again where it was. A session
+        whose transcript was removed since, being old, is ``cleared``.
+        All in one transaction; a ledger opened again has nothing left to do.
+        """
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                "SELECT * FROM commissions WHERE route = 'task_agent' AND session_id IS NULL "
+                "ORDER BY created_at, rowid"
+            ).fetchall()
+            for row in rows:
+                if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (row["id"],)).fetchone() is None:
+                    cleaned = conn.execute(
+                        "SELECT MAX(ts) AS ts FROM events WHERE commission_id = ? AND type = 'session_cleaned'",
+                        (row["id"],),
+                    ).fetchone()
+                    # Cleaned, and not taken up again since.
+                    cleared = cleaned["ts"] is not None and cleaned["ts"] >= row["updated_at"]
+                    self._insert_session(
+                        conn,
+                        {
+                            "id": row["id"],
+                            "name": f"{row['title']}-{row['id'][:6]}",
+                            "lanlan_name": row["lanlan_name"],
+                            "kind": "child" if row["parent_id"] else "single",
+                            "project": row["project"],
+                            "workdir": row["workdir"],
+                            "session_dir": row["session_dir"],
+                            "runtime": row["runtime"],
+                            "parent_id": row["parent_id"],
+                            "status": "cleared" if cleared else "closed",
+                            "created_at": row["created_at"],
+                            "last_active_at": row["updated_at"],
+                        },
+                    )
+                self._set_session(conn, row["id"], row["id"])
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+        if rows:
+            logger.info("ledger: %d commission(s) of an earlier build given their sessions", len(rows))
+
     def _reconcile(self, conn: sqlite3.Connection) -> None:
         """Fail what a previous host process left unfinished.
 
@@ -403,10 +561,16 @@ class Ledger:
         Questions of the failed ones that were never sent are dropped. With a
         ``reconcile_report``, the row it builds for a failed commission is
         stored along with the change, so she learns of it. All of it is one
-        transaction, so no status changes without its event.
+        transaction, so no status changes without its event. No runtime of
+        this process has opened a session yet: every session an earlier one
+        left open is ``closed``, what was said in it being on the disk.
         """
         conn.execute("BEGIN IMMEDIATE")
         try:
+            marks = ", ".join("?" for _ in LIVE_SESSION_STATUSES)
+            conn.execute(
+                f"UPDATE sessions SET status = 'closed' WHERE status IN ({marks})", sorted(LIVE_SESSION_STATUSES)
+            )
             rows = conn.execute(
                 "SELECT id FROM commissions WHERE status IN ('queued','working','waiting_user') "
                 "AND COALESCE(host_instance, '') != ? "
@@ -558,12 +722,16 @@ class Ledger:
         lanlan_name: str | None = None,
         statuses: Iterable[str] | None = None,
         parent_id: str | None = None,
+        session_id: str | None = None,
         updated_since: float | None = None,
         limit: int | None = None,
         oldest_first: bool = False,
     ) -> list[Commission]:
         clauses: list[str] = []
         params: list[Any] = []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
         if lanlan_name is not None:
             clauses.append("lanlan_name = ?")
             params.append(lanlan_name)
@@ -590,7 +758,7 @@ class Ledger:
         """Return commissions, newest first unless ``oldest_first`` is set.
 
         Criteria: ``lanlan_name``, ``statuses``, ``parent_id``,
-        ``updated_since``, ``limit``, ``oldest_first``.
+        ``session_id``, ``updated_since``, ``limit``, ``oldest_first``.
         """
         return await self.run(lambda conn: self._select(conn, **criteria))
 
@@ -637,6 +805,17 @@ class Ledger:
             [*changes.values(), commission_id],
         )
         self._event(conn, commission_id, "status", {"from": current.status, "to": status, "reason": reason})
+        session_id = changes.get("session_id", current.session_id)
+        if session_id:
+            # A session is as old as the last change of any commission in it,
+            # and at work, or waiting for the user, when a commission in it
+            # is. (That it is closed, no runtime having it open any more, is
+            # written by whoever closed it.)
+            stands = {"working": "running", "waiting_user": "waiting"}.get(status)
+            conn.execute(
+                "UPDATE sessions SET last_active_at = ?, status = COALESCE(?, status) WHERE id = ?",
+                (now, stands, session_id),
+            )
         if current.status == "waiting_user":
             # No longer waiting: a question of it not yet delivered is out of
             # date (answered, stopped or failed) and must not reach her now.
@@ -706,6 +885,218 @@ class Ledger:
 
         return await self.run(work)
 
+    # -- sessions ---------------------------------------------------------
+
+    @staticmethod
+    def _free_name(conn: sqlite3.Connection, lanlan_name: str, wanted: Any) -> str:
+        """Return ``wanted`` as a session name no other session of the character has: numbered when it is taken."""
+        base = " ".join(str(wanted or "").split()) or "session"
+        name, number = base, 1
+        while conn.execute(
+            "SELECT 1 FROM sessions WHERE lanlan_name = ? AND name = ?", (lanlan_name, name)
+        ).fetchone():
+            number += 1
+            name = f"{base}-{number}"
+        return name
+
+    def _insert_session(self, conn: sqlite3.Connection, values: dict[str, Any]) -> Session:
+        now = self._clock()
+        row: dict[str, Any] = {name: None for name in _SESSION_COLUMNS}
+        row.update(id=new_session_id(), kind="single", status="closed", created_at=now, last_active_at=now)
+        row.update(values)
+        if row["status"] not in SESSION_STATUSES:
+            raise ValueError(f"unknown session status {row['status']!r}")
+        if row["kind"] not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind {row['kind']!r}")
+        if not row["lanlan_name"]:
+            raise ValueError("a session belongs to a character")
+        row["name"] = self._free_name(conn, row["lanlan_name"], row["name"])
+        columns = ", ".join(_SESSION_COLUMNS)
+        marks = ", ".join("?" for _ in _SESSION_COLUMNS)
+        conn.execute(f"INSERT INTO sessions ({columns}) VALUES ({marks})", [row[name] for name in _SESSION_COLUMNS])
+        session = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (row["id"],)).fetchone())
+        assert session is not None
+        return session
+
+    async def create_session(self, **values: Any) -> Session:
+        """Make a session. ``name`` is what it is to be called; a name that is taken gets a number."""
+        unknown = set(values) - set(_SESSION_COLUMNS)
+        if unknown:
+            raise ValueError(f"unknown session fields: {sorted(unknown)}")
+        return await self.run(lambda conn: self._insert_session(conn, values))
+
+    async def get_session(self, session_id: str | None) -> Session | None:
+        if not session_id:
+            return None
+        return await self.run(
+            lambda conn: _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+        )
+
+    async def project_session(self, lanlan_name: str, project: str, **values: Any) -> tuple[Session, bool]:
+        """Return the session of a project for one character, made now when there is none; and whether it was.
+
+        A project has one session for each character, which takes the
+        commissions filed under it one after the other. Looking and making
+        are one transaction, so two commissions of a project that are
+        handed over at the same time get the same session. ``values`` are
+        for the session that is made.
+        """
+        unknown = set(values) - set(_SESSION_COLUMNS)
+        if unknown:
+            raise ValueError(f"unknown session fields: {sorted(unknown)}")
+
+        def work(conn: sqlite3.Connection) -> tuple[Session, bool]:
+            found = _session(
+                conn.execute(
+                    "SELECT * FROM sessions WHERE lanlan_name = ? AND project = ? AND kind = 'project' "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (lanlan_name, project),
+                ).fetchone()
+            )
+            if found is not None:
+                return found, False
+            made = {"name": project, **values, "lanlan_name": lanlan_name, "project": project, "kind": "project"}
+            return self._insert_session(conn, made), True
+
+        return await self.run(work)
+
+    @staticmethod
+    def _set_session(conn: sqlite3.Connection, commission_id: str, session_id: str) -> None:
+        """Write which session a commission is worked on in; nothing else of the commission changes."""
+        conn.execute("UPDATE commissions SET session_id = ? WHERE id = ?", (session_id, commission_id))
+
+    async def give_session(
+        self, commission_id: str, *, kind: str, name: Any, parent_id: str | None = None
+    ) -> tuple[Commission, Session]:
+        """Give a commission the session it is worked on in, and return both.
+
+        One that has a session keeps it. Otherwise, for ``kind``
+        ``"project"``, it gets the session of its project for its
+        character (``project_session``), and for the other kinds a session
+        of its own. A session that is made here takes the commission's id
+        as its own, as every session did when a commission and its session
+        were one, so its directory is named as it always was. All in one
+        transaction: asked twice at the same time, a commission gets one
+        session, and two commissions of a project the same one.
+        """
+        if kind not in SESSION_KINDS:
+            raise ValueError(f"unknown session kind {kind!r}")
+
+        def work(conn: sqlite3.Connection) -> tuple[Commission, Session]:
+            commission = _commission(
+                conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+            )
+            if commission is None:
+                raise ValueError(f"unknown commission {commission_id!r}")
+            session = None
+            if commission.session_id:
+                session = _session(
+                    conn.execute("SELECT * FROM sessions WHERE id = ?", (commission.session_id,)).fetchone()
+                )
+            if session is None and kind == "project" and commission.project:
+                session = _session(
+                    conn.execute(
+                        "SELECT * FROM sessions WHERE lanlan_name = ? AND project = ? AND kind = 'project' "
+                        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                        (commission.lanlan_name, commission.project),
+                    ).fetchone()
+                )
+            if session is None:
+                # One of that id is there already when the commission lost
+                # its session id without losing its session.
+                session = _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (commission_id,)).fetchone())
+            if session is None:
+                session = self._insert_session(
+                    conn,
+                    {
+                        "id": commission_id,
+                        "name": name,
+                        "lanlan_name": commission.lanlan_name,
+                        "kind": kind,
+                        "project": commission.project,
+                        "parent_id": parent_id,
+                    },
+                )
+            if commission.session_id != session.id:
+                self._set_session(conn, commission_id, session.id)
+                commission = _commission(
+                    conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+                )
+                assert commission is not None
+            return commission, session
+
+        return await self.run(work)
+
+    async def update_session(self, session_id: str, **values: Any) -> Session | None:
+        """Write columns of a session; ``active=True`` also notes that it was in use just now."""
+        touched = bool(values.pop("active", False))
+        unknown = set(values) - _SESSION_UPDATABLE
+        if unknown:
+            raise ValueError(f"session fields that cannot be updated: {sorted(unknown)}")
+        if "status" in values and values["status"] not in SESSION_STATUSES:
+            raise ValueError(f"unknown session status {values['status']!r}")
+
+        def work(conn: sqlite3.Connection) -> Session | None:
+            changes = dict(values)
+            if touched:
+                changes["last_active_at"] = self._clock()
+            if "name" in changes:
+                current = conn.execute("SELECT lanlan_name, name FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if current is not None and current["name"] != changes["name"]:
+                    changes["name"] = self._free_name(conn, current["lanlan_name"], changes["name"])
+            if changes:
+                assignments = ", ".join(f"{name} = ?" for name in changes)
+                conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*changes.values(), session_id])
+            return _session(conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone())
+
+        return await self.run(work)
+
+    async def settle_session(self, session_id: str, commission_id: str) -> None:
+        """Write where a session stands once the commission that holds it has left its runtime.
+
+        ``waiting`` when that commission waits for the user, ``closed``
+        when it is over. Read and written together: a commission that was
+        taken up again meanwhile (the user answered, say) is queued or at
+        work, which was written of the session with its own status, and
+        that stands; a look that began before it is not to write over it.
+
+        A session whose conversation was removed, being old, and that no
+        runtime had open since stays ``cleared``: a commission that gets
+        to work in it writes that it is at work, so one that is still
+        ``cleared`` was held by a commission that failed, or was stopped,
+        before that. Nothing is in it.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            row = conn.execute("SELECT status FROM commissions WHERE id = ?", (commission_id,)).fetchone()
+            status = row["status"] if row is not None else None
+            if status in ("queued", "working"):
+                return
+            if status == "waiting_user":
+                conn.execute("UPDATE sessions SET status = 'waiting' WHERE id = ?", (session_id,))
+            else:
+                conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status != 'cleared'", (session_id,))
+
+        await self.run(work)
+
+    async def mark_session_cleared(self, session_id: str) -> None:
+        """Put on record that what was said in a session is gone, being old.
+
+        With the session, which is ``cleared``, and with each commission
+        of it, which gets a ``session_cleaned`` event that names the
+        session: written together, or not at all.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE sessions SET status = 'cleared' WHERE id = ?", (session_id,))
+            rows = conn.execute(
+                "SELECT id FROM commissions WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+            ).fetchall()
+            for row in rows:
+                self._event(conn, row["id"], "session_cleaned", {"session_id": session_id})
+
+        await self.run(work)
+
     # -- events -----------------------------------------------------------
 
     def _event(self, conn: sqlite3.Connection, commission_id: str, kind: str, payload: dict[str, Any]) -> int:
@@ -733,6 +1124,58 @@ class Ledger:
                 self._event(conn, commission_id, kind, payload)
 
         await self.run(work)
+
+    async def ended_lately(self, lanlan_name: str, *, since: float, limit: int) -> list[Commission]:
+        """Return her commissions a task agent worked on in a session that ended since ``since``, the last to end first.
+
+        Done, failed or stopped; her own (not one a task agent started for
+        itself). Chosen and ordered here, before the limit: taken from the
+        newest by when they were filed, one that was long at work and has
+        just ended would be left out behind those filed after it.
+        """
+        statuses = sorted(ENDED_STATUSES - {"blocked"})
+
+        def work(conn: sqlite3.Connection) -> list[Commission]:
+            rows = conn.execute(
+                "SELECT * FROM commissions WHERE lanlan_name = ? AND route = 'task_agent' "
+                "AND parent_id IS NULL AND session_id IS NOT NULL "
+                f"AND status IN ({', '.join('?' for _ in statuses)}) AND updated_at >= ? "
+                "ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                (lanlan_name, *statuses, since, int(limit)),
+            ).fetchall()
+            return [item for item in (_commission(row) for row in rows) if item]
+
+        return await self.run(work)
+
+    async def opened_last(self, session_id: str) -> str | None:
+        """Return the commission whose opening message a session took last; None when it took none.
+
+        A session is at one commission at a time, and which one is told by
+        the opening message it took last. A commission that got stuck lets
+        its session go on with the next; taken up again after that, it is
+        no longer the one its session is at.
+        """
+
+        def work(conn: sqlite3.Connection) -> str | None:
+            row = conn.execute(
+                "SELECT events.commission_id FROM events "
+                "JOIN commissions ON commissions.id = events.commission_id "
+                "WHERE commissions.session_id = ? AND events.type = 'opened' "
+                "ORDER BY events.rowid DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            return str(row["commission_id"]) if row is not None else None
+
+        return await self.run(work)
+
+    async def has_event(self, commission_id: str, kind: str) -> bool:
+        """Return whether a commission has an event of a kind."""
+        return await self.run(
+            lambda conn: conn.execute(
+                "SELECT 1 FROM events WHERE commission_id = ? AND type = ? LIMIT 1", (commission_id, kind)
+            ).fetchone()
+            is not None
+        )
 
     async def events(self, commission_id: str, *, after: int = 0, limit: int = 500) -> list[LedgerEvent]:
         def work(conn: sqlite3.Connection) -> list[LedgerEvent]:

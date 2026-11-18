@@ -338,6 +338,142 @@ async def test_addition_cannot_go_to_a_plugin_run():
     assert triage.kind == "new"
 
 
+def _over(commission_id: str, dispatch_text: str, **values: Any) -> Commission:
+    """A commission a task agent worked on that is over, in a session of its own."""
+    values.setdefault("status", "done")
+    values.setdefault("route", "task_agent")
+    values.setdefault("session_id", commission_id)
+    return commission(commission_id, dispatch_text, **values)
+
+
+async def test_an_addition_to_a_commission_that_is_over_goes_on_with_it():
+    recent = [
+        _over("c9", "查一下上海明天的天气", route="plugin", session_id=None),
+        _over("c3", "写一个整理发票的脚本"),
+        _over("c1", "整理下载文件夹里的照片", result_summary="照片已按月份分到 D:/Photos"),
+    ]
+    llm = FakeDecisionLLM()
+
+    triage = await LexicalDecisionModel(llm).triage(
+        request("另外照片里的截图单独放一个文件夹", recent=recent, task_agent_available=True)
+    )
+
+    assert llm.calls == []
+    assert (triage.kind, triage.targets) == ("continue", ["c1"])
+    # What it came to counts as well as what it was.
+    by_result = await LexicalDecisionModel(llm).triage(
+        request("对了 D:/Photos 那边还有重复的", recent=recent, task_agent_available=True)
+    )
+    assert (by_result.kind, by_result.targets) == ("continue", ["c1"])
+
+
+async def test_what_is_under_way_takes_an_addition_before_what_is_over():
+    active = [commission("c1", "整理下载文件夹里的照片", route="task_agent")]
+    recent = [_over("c2", "整理下载文件夹里的照片并发到相册")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("另外照片按月份分文件夹", active=active, recent=recent, task_agent_available=True)
+    )
+
+    assert (triage.kind, triage.targets) == ("tell", ["c1"])
+
+
+async def test_an_addition_about_nothing_under_way_goes_on_with_what_is_over():
+    active = [
+        commission("c1", "写一个整理发票的脚本", route="task_agent"),
+        commission("c4", "给博客换个主题", route="task_agent"),
+    ]
+    recent = [_over("c2", "整理下载文件夹里的照片")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("另外照片按月份分文件夹", active=active, recent=recent, task_agent_available=True)
+    )
+
+    assert (triage.kind, triage.targets) == ("continue", ["c2"])
+
+
+@pytest.mark.parametrize(
+    "text, recent, kind",
+    [
+        # No word that says it adds something: a commission of its own, as before.
+        ("照片里的截图单独放一个文件夹", [("c1", "整理下载文件夹里的照片", {})], "new"),
+        # About something else.
+        ("另外把台灯关掉", [("c1", "整理下载文件夹里的照片", {})], "new"),
+        # Only a commission a task agent worked on, of her own, in a session, can be gone on with
+        # (the same sentence goes on with one that is all three: see the newest-of-several test).
+        ("另外照片按月份分文件夹", [("c1", "整理下载文件夹里的照片", {"route": "plugin"})], "new"),
+        ("另外照片按月份分文件夹", [("c1", "整理下载文件夹里的照片", {"parent_id": "c0"})], "new"),
+        ("另外照片按月份分文件夹", [("c1", "整理下载文件夹里的照片", {"session_id": None})], "new"),
+        # Nothing to go on with.
+        ("另外照片按月份分", [], "new"),
+        # One word in common is not enough, nor are words every request has.
+        ("also back up the notes to drive F:", [("c1", "sort the photos on drive E: as well", {})], "new"),
+        ("also remind me tomorrow", [("c1", "check the mail for me tomorrow morning", {})], "new"),
+    ],
+)
+async def test_a_sentence_that_is_no_follow_up_is_a_commission_of_its_own(text, recent, kind):
+    over = [_over(commission_id, dispatched, **values) for commission_id, dispatched, values in recent]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(request(text, recent=over, task_agent_available=True))
+
+    assert (triage.kind, triage.targets) == (kind, [])
+
+
+async def test_nothing_is_gone_on_with_when_no_task_agent_can_be_started():
+    recent = [_over("c1", "整理下载文件夹里的照片")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("另外照片按月份分文件夹", recent=recent, task_agent_available=False, plugins=weather_plugins())
+    )
+
+    assert triage.kind != "continue" and triage.targets == []
+
+
+async def test_of_several_that_share_as_much_the_newest_is_gone_on_with():
+    # Newest first, as the task brain hands them over.
+    recent = [_over("c3", "整理下载文件夹里的照片"), _over("c1", "整理下载文件夹里的照片")]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("另外照片按月份分文件夹", recent=recent, task_agent_available=True)
+    )
+
+    assert (triage.kind, triage.targets) == ("continue", ["c3"])
+
+
+@pytest.mark.parametrize(
+    "recent_ids, active, kind, targets",
+    [
+        # Nothing but "and also": about the one thing there was.
+        (["c1"], [], "continue", ["c1"]),
+        # Which of two, nobody can tell; and with something else under way it is not about what is over.
+        (["c1", "c2"], [], "new", []),
+        (["c1"], [("c5", "写一个整理发票的脚本"), ("c6", "给博客换个主题")], "new", []),
+    ],
+)
+async def test_a_sentence_that_only_says_it_adds_something(recent_ids, active, kind, targets):
+    recent = [_over(commission_id, "整理下载文件夹里的照片") for commission_id in recent_ids]
+    under_way = [commission(commission_id, text, route="task_agent") for commission_id, text in active]
+
+    triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
+        request("对了", active=under_way, recent=recent, task_agent_available=True)
+    )
+
+    assert (triage.kind, triage.targets) == (kind, targets)
+
+
+async def test_a_follow_up_takes_along_the_plugins_its_words_point_at():
+    recent = [_over("c1", "整理下载文件夹里的照片")]
+    llm = FakeDecisionLLM()
+
+    triage = await LexicalDecisionModel(llm).triage(
+        request("另外照片整理完查一下天气", recent=recent, task_agent_available=True)
+    )
+
+    assert (triage.kind, triage.targets) == ("continue", ["c1"])
+    assert "weather" in triage.candidate_ids and "weather" in triage.keyword_hit_ids
+    assert llm.calls == []
+
+
 async def test_answer_to_a_waiting_commission_is_read_locally():
     question = json.dumps({"kind": "questions", "questions": [{"id": "q1", "question": "照片按月份还是按地点分？"}]})
     active = [commission("c1", "整理下载文件夹里的照片", route="task_agent", status="waiting_user", pending_question=question)]
@@ -716,7 +852,10 @@ async def test_dispatch_text_user_text_and_preferences_are_capped_in_tokens():
     preferences = "\n".join(lines[lines.index("PREFERENCES:") + 1 :])
     assert count_tokens(task[len("TASK: ") :]) <= DISPATCH_TEXT_MAX_TOKENS
     assert count_tokens(said[len("USER_SAID: ") :]) <= DISPATCH_USER_TEXT_MAX_TOKENS
-    assert count_tokens(preferences) <= PREFERENCE_PROMPT_MAX_TOKENS == 150
+    assert count_tokens(preferences) <= PREFERENCE_PROMPT_MAX_TOKENS == 300
+    # What the owner agreed to (2026-11-18): with all three at their caps the fine selection
+    # is sent 1700 tokens of them, 950 more than before.
+    assert (DISPATCH_TEXT_MAX_TOKENS, DISPATCH_USER_TEXT_MAX_TOKENS) == (600, 800)
 
 
 # What the fixed part of the analyzer's selection prompt cost, per language,

@@ -57,10 +57,24 @@ What the gateway serves:
   (``leases.py``), and a result may carry pictures (screenshots) next to its
   text. A tool that hands back pictures is offered only to a task agent
   whose model can see them;
-* two tools of its own, ``capability_search`` and ``capability_call``. Only
-  the entries the task brain picked as candidates are listed up front, within
-  ``GATEWAY_TOOL_LIST_MAX_TOKENS``; the rest are found and called through
-  these two, so a long plugin list does not fill every request.
+* two tools of its own, ``capability_search`` and ``capability_call``, and
+  no others: they are all a task agent is offered of the gateway as tools,
+  whichever commission it works on, so the tool definitions of a session
+  stay the same from one commission to the next. A session takes several
+  commissions, and what the task brain picked for one is not what it picked
+  for the next. The entries it picked as candidates for a commission are
+  told to the task agent in the message that opens that commission
+  (``candidate_definitions``, within ``GATEWAY_TOOL_LIST_MAX_TOKENS``), and
+  called by name through ``capability_call`` like everything else. A
+  ``tools/call`` that names a capability directly is carried out all the
+  same: a client that lists none of them may still know their names.
+
+What was handed over in the answer to a call (a group of built-in tools) is
+only in hand while it is in the task agent's conversation. A runtime that
+sums a conversation up says so with every call
+(``GATEWAY_COMPACTIONS_META_KEY``): when the number has changed, the groups
+count as not handed over, and each is handed over anew when one of its
+tools is next called.
 
 Permissions are decided here, at the gateway's entry, by the same
 ``PermissionGate`` the built-in tools use. A runtime whose client gives a
@@ -123,10 +137,11 @@ _SEARCH_TOOL_DEFINITION = {
         "by what they do. Returns their names, descriptions and argument schemas. Call one with "
         f"{CALL_TOOL}."
     ),
+    # Nothing is required: a group of built-in tools is loaded with
+    # ``group`` alone (``_search_tool_definition``).
     "inputSchema": {
         "type": "object",
         "properties": {"query": {"type": "string", "description": "What the capability should do."}},
-        "required": ["query"],
     },
 }
 
@@ -191,7 +206,7 @@ class Grant:
 
     commission_id: str
     token: str
-    # Plugins whose entries are listed up front.
+    # Plugins whose entries the commission's opening message tells of.
     candidate_plugin_ids: tuple[str, ...] = ()
     # Whether the model of this commission's task agent can see pictures.
     supports_images: bool = False
@@ -203,6 +218,9 @@ class Grant:
     # client names its replies (``GATEWAY_REPLY_META_KEY``); nothing for a
     # group handed to a client that names none.
     handed_in: dict[str, int | str] = field(default_factory=dict)
+    # How often the client's conversation had been summed up as of its last
+    # call (``GATEWAY_COMPACTIONS_META_KEY``); None for a client that says nothing of it.
+    compactions: int | None = None
     calls: int = 0
     in_flight: set[asyncio.Task[Any]] = field(default_factory=set)
     # Calls ruled on before they were made, by capability and arguments
@@ -223,6 +241,33 @@ def _reply_of(params: dict[str, Any]) -> int | str | None:
     if isinstance(reply, bool) or not isinstance(reply, (int, str)):
         return None
     return reply
+
+
+def _compactions_of(params: dict[str, Any]) -> int | None:
+    """Return how often a ``tools/call`` says its conversation has been summed up, if it says."""
+    from config.nekoclaw_settings import GATEWAY_COMPACTIONS_META_KEY
+
+    meta = params.get("_meta")
+    count = meta.get(GATEWAY_COMPACTIONS_META_KEY) if isinstance(meta, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    return count
+
+
+def _note_compactions(grant: Grant, compactions: int | None) -> None:
+    """Take what was handed over as gone when the client's conversation was summed up since.
+
+    The groups of built-in tools were handed over as text in the
+    conversation; a summary does not keep that text. Each group is then
+    handed over anew by the call that next needs it. A client that says
+    nothing of summaries is taken to hold what it was handed.
+    """
+    if compactions is None:
+        return
+    if grant.compactions is not None and compactions != grant.compactions:
+        grant.loaded_groups.clear()
+        grant.handed_in.clear()
+    grant.compactions = compactions
 
 
 def _in_hand(grant: Grant, group: str, reply: int | str | None) -> bool:
@@ -282,20 +327,30 @@ def _first_call(group: str, capabilities: list[Capability]) -> tuple[Capability,
 def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
     """Return the search tool as offered to a task agent that can call ``capabilities``.
 
-    Without a built-in tool among them it is the plain search tool, word
-    for word. With some, its description ends in one line about each of
-    their groups, with the group's first call, which is all a request
-    carries of a group that was not loaded, and it takes ``group``.
+    With a built-in tool among them, its description ends in one line
+    about each of their groups, with the group's first call, which is all a
+    request carries of a group that was not loaded. Without one it says
+    nothing of groups, and still takes ``group``.
+
+    ``group`` is any string, never one of a list: a session keeps the
+    definition it was opened with, a group that is switched on while it
+    lasts is named by a search result (``TOOL_GROUP_POINTER``), and
+    loading it with ``group`` alone has to be a call the definition
+    allows. Whether there is such a group is told when it is asked for.
     """
-    groups = _groups_of(capabilities)
-    if not groups:
-        return _SEARCH_TOOL_DEFINITION
     from config.prompts.prompts_nekoclaw_builtin import (
         BUILTIN_GROUP_SUMMARIES,
         TOOL_GROUP_ARGUMENT,
+        TOOL_GROUP_ARGUMENT_UNNAMED,
         TOOL_GROUP_FIRST_CALL,
         TOOL_GROUPS_INTRO,
     )
+
+    groups = _groups_of(capabilities)
+    if not groups:
+        schema = _SEARCH_TOOL_DEFINITION["inputSchema"]
+        properties = {**schema["properties"], "group": {"type": "string", "description": TOOL_GROUP_ARGUMENT_UNNAMED}}
+        return {**_SEARCH_TOOL_DEFINITION, "inputSchema": {**schema, "properties": properties}}
 
     lines = [str(_SEARCH_TOOL_DEFINITION["description"]), TOOL_GROUPS_INTRO.format(call_tool=CALL_TOOL)]
     for group in groups:
@@ -310,11 +365,7 @@ def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "What the capability should do."},
-                "group": {
-                    "type": "string",
-                    "enum": [_group_name(group) for group in groups],
-                    "description": TOOL_GROUP_ARGUMENT,
-                },
+                "group": {"type": "string", "description": TOOL_GROUP_ARGUMENT},
             },
         },
     }
@@ -664,31 +715,52 @@ class CapabilityGateway:
                 raise JsonRpcError(-32602, "tools/call needs a tool name")
             arguments = params.get("arguments")
             return await self.call_tool(
-                grant, name, arguments if isinstance(arguments, dict) else {}, reply=_reply_of(params)
+                grant,
+                name,
+                arguments if isinstance(arguments, dict) else {},
+                reply=_reply_of(params),
+                compactions=_compactions_of(params),
             )
         raise JsonRpcError(-32601, f"unknown method {method}")
 
     # -- tools ------------------------------------------------------------
 
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
-        """Return the tools one commission is offered up front.
+        """Return the tools a task agent is offered: the search and the call tool, always.
 
-        The entries of its candidate plugins as far as their budget reaches,
-        and the search and call tools when anything is left that was not
-        listed. The built-in tools are never listed: the search tool's
-        description tells of their groups, and a group is handed over when
-        it is first used.
+        The same for every commission, and whether or not anything can be
+        called right now. A session keeps the tools it was opened with for
+        as long as it lasts, and what can be called changes meanwhile (a
+        plugin is installed, the browser is switched on): offered only
+        while there is something to call, the two would be missing from a
+        session opened before that, which could then reach none of it.
+        Nothing else is listed: what was picked for a commission is told
+        with the commission (``candidate_definitions``); the built-in tools
+        are told of in the search tool's description, a group at a time,
+        and a group is handed over when it is first used.
+        """
+        callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
+        return [_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION]
+
+    async def candidate_definitions(self, commission_id: str) -> list[dict[str, Any]]:
+        """Return the entries picked for a commission, as its opening message tells of them.
+
+        The entries of the candidate plugins its token was issued with, as
+        far as their budget reaches (``GATEWAY_TOOL_LIST_MAX_TOKENS``), each
+        with its name, what it does and its arguments. They are called by
+        name through the call tool. Empty for a commission without a token
+        or without candidates.
         """
         from config.nekoclaw_settings import GATEWAY_TOOL_LIST_MAX_TOKENS
         from utils.tokenize import count_tokens
 
-        callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
-        if not callable_now:
+        grant = self._by_commission.get(commission_id)
+        if grant is None or not grant.candidate_plugin_ids:
             return []
         candidates = set(grant.candidate_plugin_ids)
         listed: list[dict[str, Any]] = []
         used = 0
-        for capability in callable_now:
+        for capability in self._offered(grant, await self._registry.callable_by_task_agents()):
             # Plugin entries, and MCP tools when the adapter was among the
             # candidates. (A built-in tool belongs to no plugin, so it is
             # never one of them.)
@@ -700,8 +772,6 @@ class CapabilityGateway:
                 continue
             listed.append(definition)
             used += cost
-        if len(listed) < len(callable_now):
-            listed.extend([_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION])
         return listed
 
     @staticmethod
@@ -712,15 +782,23 @@ class CapabilityGateway:
         return [item for item in capabilities if not item.needs_images]
 
     async def call_tool(
-        self, grant: Grant, name: str, arguments: dict[str, Any], *, reply: int | str | None = None
+        self,
+        grant: Grant,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        reply: int | str | None = None,
+        compactions: int | None = None,
     ) -> dict[str, Any]:
         """Carry out one ``tools/call`` and return its MCP result.
 
         ``reply`` is the model reply the call was written in, as the client
         names it (``GATEWAY_REPLY_META_KEY``), ``None`` for a client that
-        names none.
+        names none. ``compactions`` is how often the client's conversation
+        has been summed up (``GATEWAY_COMPACTIONS_META_KEY``), likewise.
         """
         grant.calls += 1
+        _note_compactions(grant, compactions)
         if name == SEARCH_TOOL:
             group = arguments.get("group")
             if isinstance(group, str) and group.strip():
@@ -841,7 +919,13 @@ class CapabilityGateway:
 
         capabilities = self._offered(grant, await self._registry.callable_by_task_agents())
         if not capabilities:
-            return "No capabilities are available."
+            # The two tools are there whether or not anything can be called,
+            # and the session goes on after this answer: what it says holds
+            # for now only.
+            return (
+                "No capabilities are available right now. That can change while you work (a plugin gets "
+                "installed, the browser gets switched on): search again when a later commission needs one."
+            )
         # A built-in tool is not found on its own: its definition is of no
         # use without how its group is used, and the rest of the group is
         # needed with it. A group is searched as one thing, by all its tools

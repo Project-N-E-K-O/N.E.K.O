@@ -18,7 +18,9 @@ from nekoclaw.runtime.context import (
     Transcript,
     cap_result_text,
     choose_cut,
+    compact_ratio,
     kind_of,
+    output_allowance,
     prune_rows,
     retain_recent_images,
     select_user_rows,
@@ -88,16 +90,80 @@ def _manager(tmp_path: Path, policy: ContextPolicy, summaries: list, *, fail: bo
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("window", "configured", "allowed"),
+    [
+        # What the model is configured for, where the window holds it four times over.
+        (200_000, 8_192, 8_192),
+        (32_768, 8_192, 8_192),
+        # A quarter of a smaller window: the rest is for what the request sends.
+        (32_767, 8_192, 8_191),
+        (16_384, 8_192, 4_096),
+        (4_000, 8_192, 1_000),
+        # Never more than configured, and never next to nothing.
+        (16_384, 512, 512),
+        (800, 8_192, 256),
+    ],
+)
+def test_the_output_a_request_asks_for_is_a_quarter_of_the_window_at_the_most(
+    window: int, configured: int, allowed: int
+) -> None:
+    assert output_allowance(window, configured) == allowed
+
+
 def test_thresholds_scale_with_the_window() -> None:
+    # The owner's numbers (2026-11-18): a window of 200,000 is summed up from 170,000 on.
+    preset = ContextPolicy(window=200_000, max_output=8_192)
+    assert preset.threshold == 170_000
+    assert preset.threshold + preset.max_output + 20_000 <= 200_000
     small = ContextPolicy(window=32_000, max_output=4_000)
-    assert small.headroom == 4_000
-    assert small.threshold == 24_000  # window - output - headroom is the tighter bound
+    assert small.headroom == 3_200
+    assert small.threshold == 24_800  # window - output - headroom is the tighter bound
     assert small.retain_tokens == int(28_000 * 0.16)
     large = ContextPolicy(window=1_000_000, max_output=64_000)
     assert large.headroom == 65_536
-    assert large.threshold == 800_000  # 80% of the window is the tighter bound
+    assert large.threshold == 850_000  # 17 in 20 of the window is the tighter bound
+    # The free tier's model: later than the 102,400 of a window managed by four fifths, and
+    # well inside the 131,000 it takes.
+    assert ContextPolicy(window=128_000, max_output=8_192).threshold == 107_008
     assert large.result_cap == 12_500
     assert ContextPolicy(window=8_000, max_output=1_000).result_cap == 2_000
+
+
+@pytest.mark.parametrize(
+    ("window", "compact_at", "threshold"),
+    [
+        # Told where to sum up from: that point, as long as the output and the margin have room.
+        (200_000, 170_000, 170_000),
+        (200_000, 150_000, 150_000),
+        (200_000, 100_000, 100_000),
+        # As early as it was set (the host takes a point from 1,000 tokens on).
+        (200_000, 15_000, 15_000),
+        (200_000, 1_000, 1_000),
+        (200_000, 199_000, 171_808),
+        (200_000, 400_000, 171_808),
+        # Not told: 17 in 20 of the window.
+        (200_000, None, 170_000),
+        (100_000, None, 81_808),
+        (64_000, None, 49_408),
+    ],
+)
+def test_a_conversation_is_summed_up_from_where_the_session_was_told(
+    window: int, compact_at: int | None, threshold: int
+) -> None:
+    policy = ContextPolicy(window=window, max_output=8_192, threshold_ratio=compact_ratio(window, compact_at))
+
+    assert policy.threshold == threshold
+
+
+def test_the_part_of_the_window_follows_a_window_that_turns_out_smaller() -> None:
+    import dataclasses
+
+    told = ContextPolicy(window=200_000, max_output=8_192, threshold_ratio=compact_ratio(200_000, 150_000))
+    # As a session does that learns its model takes less: the same part of the smaller window.
+    smaller = dataclasses.replace(told, window=100_000)
+
+    assert (told.threshold, smaller.threshold) == (150_000, 75_000)
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +727,12 @@ def test_recent_user_messages_are_selected_newest_first_within_budget() -> None:
     assert select_user_rows(region, sizes, 250) == {"e4", "e2"}
     assert select_user_rows(region, sizes, 1_000) == {"e0", "e2", "e4"}
     assert select_user_rows(region, sizes, 50) == set()
+    # A pinned row is kept whatever its size, and takes nothing from the room of the others.
+    assert select_user_rows(region, sizes, 250, pinned={"e0"}) == {"e0", "e4", "e2"}
+    assert select_user_rows(region, sizes, 50, pinned={"e0"}) == {"e0"}
+    assert select_user_rows(region, sizes, 150, pinned={"e4"}) == {"e4", "e2"}
+    # One that is not in the part being summed up changes nothing.
+    assert select_user_rows(region, sizes, 250, pinned={"elsewhere"}) == {"e4", "e2"}
 
 
 async def test_summary_replaces_old_work_and_keeps_user_text_verbatim(tmp_path: Path) -> None:
