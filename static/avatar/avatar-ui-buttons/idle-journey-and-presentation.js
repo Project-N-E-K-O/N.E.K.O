@@ -2032,7 +2032,7 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
         && subactionState.substate === profile.walkingSubstate);
     const clickSrc = useSubactionInteractive
         ? profile.assets.interactive()
-        : _getNekoIdleReturnClickAssetUrl(normalizedTier);
+        : _getNekoIdleReturnClickAssetUrl(normalizedTier, options);
     const dispatchHoverObservation = () => {
         // This helper is also reused by autonomous sound presentation. Only a
         // real input adapter may label the presentation as user interaction.
