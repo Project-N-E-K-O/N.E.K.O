@@ -4078,7 +4078,10 @@ async def test_what_is_put_back_for_a_commission_that_ended_is_what_it_was_hande
     await wait_status(host, building.id, "done")
 
 
-async def test_the_end_of_a_run_is_not_lost_to_a_ledger_that_cannot_be_read_for_a_moment(hosts, tmp_path, monkeypatch):
+@pytest.mark.parametrize("unreadable", ["how the commission stands", "whether its task agents are still at work"])
+async def test_the_end_of_a_run_is_not_lost_to_a_ledger_that_cannot_be_read_for_a_moment(
+    hosts, tmp_path, monkeypatch, unreadable
+):
     monkeypatch.setattr("config.nekoclaw_settings.REST_LOOK_RETRY_DELAYS", (0.01, 0.01))
     release, wait = _gate()
     llm = ScriptedLLM([[wait, say("All built."), finish()]])
@@ -4086,6 +4089,7 @@ async def test_the_end_of_a_run_is_not_lost_to_a_ledger_that_cannot_be_read_for_
     receipt = await _dispatch(host, "build the site")
     await wait_until(lambda: len(llm.requests) == 1, what="the run under way")
     get, append_event, act = host.ledger.get, host.ledger.append_event, host.task_agents._act_on_end
+    select = host.ledger.select
     ending: list[int] = []
     failed: list[str] = []
 
@@ -4097,10 +4101,16 @@ async def test_the_end_of_a_run_is_not_lost_to_a_ledger_that_cannot_be_read_for_
             ending.pop()
 
     async def unreadable_once(commission_id: str) -> Any:
-        if ending and "read" not in failed:
+        if ending and "read" not in failed and unreadable == "how the commission stands":
             failed.append("read")
             raise OSError("the disk is busy")
         return await get(commission_id)
+
+    async def children_unreadable_once(*args: Any, **asked: Any) -> Any:
+        if ending and "read" not in failed and "parent_id" in asked and unreadable != "how the commission stands":
+            failed.append("read")
+            raise OSError("the disk is busy")
+        return await select(*args, **asked)
 
     async def not_written(commission_id: str, kind: str, payload: Any) -> Any:
         if kind == "ended":
@@ -4110,6 +4120,7 @@ async def test_the_end_of_a_run_is_not_lost_to_a_ledger_that_cannot_be_read_for_
 
     monkeypatch.setattr(host.task_agents, "_act_on_end", acting)
     monkeypatch.setattr(host.ledger, "get", unreadable_once)
+    monkeypatch.setattr(host.ledger, "select", children_unreadable_once)
     monkeypatch.setattr(host.ledger, "append_event", not_written)
     release.set()
 

@@ -564,6 +564,7 @@ async def test_stopping_the_listener_drops_every_token_and_it_can_be_started_aga
         ("takes the answer", []),
         ("hangs up while the call is carried out", ["given back"]),
         ("hangs up as the answer is ready", ["given back"]),
+        ("hung up a moment before the answer is written, and the write says nothing", ["given back"]),
         ("hangs up while the answer is written, and the write says nothing", ["given back"]),
         ("is gone when the answer is written", ["given back"]),
     ],
@@ -577,7 +578,7 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
     listener, _calls = endpoint
     token = listener.issue("s1")
     done: list[str] = []
-    handed, answered = asyncio.Event(), asyncio.Event()
+    handed, answered, hanging_up = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def handle(session_id: str, payload: Any, **options: Any) -> Any:
         # As a ``wait_agent`` that hands dsh the texts that arrived.
@@ -587,13 +588,16 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
         handed.set()
         if how == "hangs up while the call is carried out":
             await asyncio.Event().wait()
+        if how == "hung up a moment before the answer is written, and the write says nothing":
+            # The server knows as the work finishes; whoever watches the request hears of
+            # it a turn of the loop after the answer is ready to be written.
+            loop = asyncio.get_running_loop()
+            loop.call_soon(loop.call_soon, hanging_up.set)
         return {"jsonrpc": "2.0", "id": 1, "result": {"content": []}}
 
     monkeypatch.setattr(listener._tools, "handle", handle)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "wait_agent"}}).encode()
     request: list[dict[str, Any]] = [{"type": "http.request", "body": body, "more_body": False}]
-
-    hanging_up = asyncio.Event()
 
     async def receive() -> dict[str, Any]:
         if request:
@@ -604,7 +608,7 @@ async def test_what_a_call_handed_dsh_is_undone_unless_its_answer_reaches_dsh(
             # As a server does: whoever waits for more of the request is told that the
             # connection is done with once the answer is complete.
             await answered.wait()
-        elif how == "hangs up while the answer is written, and the write says nothing":
+        elif how.endswith("and the write says nothing"):
             await hanging_up.wait()
         else:
             await handed.wait()

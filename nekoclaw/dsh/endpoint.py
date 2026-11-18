@@ -294,25 +294,25 @@ class LocalEndpoint:
                     answer = work.result()
                 except asyncio.CancelledError:
                     return
-                # A dsh that hung up as the work finished gets no answer. The
-                # server may know of it and the watcher not yet: it is given
-                # the turns of the loop it takes to hear of it.
+                # A dsh that hung up as the work finished may be known to the
+                # server and not yet to the watcher: the watcher is given the
+                # turns of the loop it takes to hear of it, before the answer
+                # is written and looked at below.
                 await asyncio.sleep(0)
                 await asyncio.sleep(0)
-                hung_up = gone.done()
                 if answer is None:
                     await send({"type": "http.response.start", "status": 202, "headers": [(b"content-length", b"0")]})
                     await send({"type": "http.response.body", "body": b""})
                 else:
                     await respond_json(send, 200, answer)
-                # Looked at again as the last of the answer is handed to the
+                # Looked at as the last of the answer is handed to the
                 # server, nothing awaited since. A server that finds the
                 # connection gone writes nothing and says nothing, so that
                 # the write went through does not show that it was sent: but
                 # it tells whoever waits for the request before it lets a
                 # write go on, and the watcher is done by now. One that is
                 # told so only because the answer is complete is not yet.
-                delivered = not hung_up and not gone.done()
+                delivered = not gone.done()
             finally:
                 gone.cancel()
                 if not work.done():
