@@ -54,16 +54,17 @@ class AgentRuntime(Protocol):
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         """Create a session, continuing its transcript if one exists."""
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False, human: bool = True) -> None:
         """Hand the session work; rejected while a run is in progress.
 
-        ``opening`` marks the text that opens a commission; see ``protocol.PromptCommand``.
+        ``opening`` marks the text that opens a commission, and ``human``
+        says whether a person wrote the text; see ``protocol.PromptCommand``.
         """
 
-    async def steer(self, session_id: str, text: str) -> None:
+    async def steer(self, session_id: str, text: str, *, human: bool = True) -> None:
         """Deliver text before the next model request of the current run."""
 
-    async def follow_up(self, session_id: str, text: str) -> None:
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True) -> None:
         """Deliver text once the current run has nothing left to do."""
 
     async def abort(self, session_id: str) -> None:
@@ -148,11 +149,11 @@ class RuntimeCore:
         if opening is not None:
             await asyncio.shield(opening)
         if isinstance(command, protocol.PromptCommand):
-            self.prompt(command.session_id, command.text, opening=command.opening)
+            self.prompt(command.session_id, command.text, opening=command.opening, human=command.human)
         elif isinstance(command, protocol.SteerCommand):
-            self.steer(command.session_id, command.text)
+            self.steer(command.session_id, command.text, human=command.human)
         elif isinstance(command, protocol.FollowUpCommand):
-            self.follow_up(command.session_id, command.text)
+            self.follow_up(command.session_id, command.text, human=command.human)
         elif isinstance(command, protocol.AbortCommand):
             self.abort(command.session_id)
         elif isinstance(command, protocol.CloseCommand):
@@ -214,14 +215,14 @@ class RuntimeCore:
         except SessionError as exc:
             self._reject(session_id, command, str(exc))
 
-    def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
-        self._text_command(session_id, "prompt", text, opening=opening)
+    def prompt(self, session_id: str, text: str, *, opening: bool = False, human: bool = True) -> None:
+        self._text_command(session_id, "prompt", text, opening=opening, human=human)
 
-    def steer(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "steer", text)
+    def steer(self, session_id: str, text: str, *, human: bool = True) -> None:
+        self._text_command(session_id, "steer", text, human=human)
 
-    def follow_up(self, session_id: str, text: str) -> None:
-        self._text_command(session_id, "follow_up", text)
+    def follow_up(self, session_id: str, text: str, *, human: bool = True) -> None:
+        self._text_command(session_id, "follow_up", text, human=human)
 
     def abort(self, session_id: str) -> None:
         session = self._session(session_id, "abort")
@@ -329,14 +330,16 @@ class InProcessRuntime:
     async def start(self, spec: protocol.TaskAgentSpec) -> None:
         await self._core.handle(protocol.StartCommand(spec=spec))
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
-        await self._core.handle(protocol.PromptCommand(session_id=session_id, text=text, opening=opening))
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False, human: bool = True) -> None:
+        await self._core.handle(
+            protocol.PromptCommand(session_id=session_id, text=text, opening=opening, human=human)
+        )
 
-    async def steer(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.SteerCommand(session_id=session_id, text=text))
+    async def steer(self, session_id: str, text: str, *, human: bool = True) -> None:
+        await self._core.handle(protocol.SteerCommand(session_id=session_id, text=text, human=human))
 
-    async def follow_up(self, session_id: str, text: str) -> None:
-        await self._core.handle(protocol.FollowUpCommand(session_id=session_id, text=text))
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True) -> None:
+        await self._core.handle(protocol.FollowUpCommand(session_id=session_id, text=text, human=human))
 
     async def abort(self, session_id: str) -> None:
         await self._core.handle(protocol.AbortCommand(session_id=session_id))

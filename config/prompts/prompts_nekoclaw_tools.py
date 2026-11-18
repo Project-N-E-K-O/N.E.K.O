@@ -798,7 +798,7 @@ NEKOCLAW_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     'message_session': {
         'name': 'message_session',
         'description': (
-            'Write a note to another session. One at work gets it at its next step; one waiting '
+            'Write a note to another session. One at work gets it at its next step or turn; one waiting '
             'for its user, once that is settled; otherwise it starts a turn there. It is told who '
             'wrote and that the note is not from the user. The call returns once the note is '
             'queued, not read: do not ask whether it arrived or write again to hurry it. A note '

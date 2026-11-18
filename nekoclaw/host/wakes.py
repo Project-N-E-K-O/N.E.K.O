@@ -76,6 +76,8 @@ class SessionWakes:
         # ledger could not be written when the stop came. Nothing is handed
         # over before it is.
         self._drop_before: float | None = None
+        # Whether that is noted next to the ledger too (``Ledger.note_stop_owed``).
+        self._owed_noted = False
         # How many stops of everything are under way (``hold``): nothing is
         # handed over meanwhile.
         self._holds = 0
@@ -127,12 +129,31 @@ class SessionWakes:
         except BaseException:
             # Not dropped: the ledger could not be written. The next round
             # drops them before it hands anything over (``flush``), so none
-            # of them starts a turn meanwhile; the caller is told.
+            # of them starts a turn meanwhile; the caller is told. Noted
+            # next to the ledger as well: a process that ends before the
+            # round gets to it leaves the stop to the next one.
+            await self._note_owed(now, reason)
             self.kick()
             raise
         if self._drop_before == now:
             self._drop_before = None
+            await self._forget_owed()
         return dropped
+
+    async def _note_owed(self, before: float, reason: str) -> None:
+        try:
+            await asyncio.to_thread(self._ledger.note_stop_owed, before, reason)
+            self._owed_noted = True
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - kept in mind here all the same
+            logger.warning("noting a stop that could not be written failed", exc_info=True)
+
+    async def _forget_owed(self) -> None:
+        if not self._owed_noted:
+            return
+        self._owed_noted = False
+        await asyncio.to_thread(self._ledger.clear_stop_owed)
 
     async def flush(self) -> float | None:
         """Hand over everything that is due now, once. Returns when to look again, or None when nothing is pending."""
@@ -145,14 +166,17 @@ class SessionWakes:
             WAKE_FAILED_RETRY_MAX_SECONDS,
         )
 
-        if self._drop_before is not None:
+        while self._drop_before is not None:
             # A stop of everything could not drop what waited then. Dropped
             # now, before anything is handed over; while this fails, the
-            # round fails, and nothing is.
+            # round fails, and nothing is. Looked at again after every
+            # write: a later stop that could not drop either is made up
+            # for before this round reads anything.
             before = self._drop_before
             await self._ledger.wakes_void_all(STOPPED_REASON, before=before)
             if self._drop_before == before:
                 self._drop_before = None
+                await self._forget_owed()
         now = self._clock()
         generation = self._generation
         # All that is due, a page after the other: with the first page
@@ -285,7 +309,11 @@ class SessionWakes:
             await asyncio.wait_for(asyncio.shield(task), WAKES_CLOSE_WAIT_SECONDS)
         except asyncio.TimeoutError:
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            # What it does as it is cut off (taking back what it had put on
+            # record as handed over) gets as long again and no longer:
+            # shutting down has a budget. What is left on record as on its
+            # way is put right by the next process.
+            await asyncio.wait({task}, timeout=WAKES_CLOSE_WAIT_SECONDS)
         except asyncio.CancelledError:
             task.cancel()
             raise

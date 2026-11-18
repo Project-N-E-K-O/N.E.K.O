@@ -1116,7 +1116,12 @@ class TaskBrain:
                 recent = sorted(recent, key=relevance, reverse=True)
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
-        waiting = {item.id: await self._waiting_words(item, lang, now) for item in active}
+        # Each row from one look at its commission: its status, what it
+        # asks and what it waits for are read together, so that a row does
+        # not say "waiting for you" of one that was answered and rests.
+        looked = [await self._waiting_words(item, lang, now) for item in active]
+        active = [seen for seen, _said in looked]
+        waiting = {seen.id: said for seen, said in looked}
 
         def line(commission: Commission) -> str:
             head = f"- {commission.title} ({status_word(commission.status, lang)})"
@@ -1163,8 +1168,11 @@ class TaskBrain:
             commissions=[*active, *recent],
         )
 
-    async def _waiting_words(self, commission: Commission, lang: str, now: float) -> str:
+    async def _waiting_words(self, commission: Commission, lang: str, now: float) -> tuple[Commission, str]:
         """Say, for a row of a query's answer, what a commission under way waits for and what waits for it; empty for neither.
+
+        Returned with the commission as it was read for that: the row is
+        made from the one look.
 
         That it rests and when it goes on; else the times its task agent
         set for itself that have not come; and the notes other sessions
@@ -1176,7 +1184,7 @@ class TaskBrain:
         from config.prompts.prompts_nekoclaw_sessions import SESSION_QUERY_TEXTS
 
         if commission.route != "task_agent" or not commission.session_id:
-            return ""
+            return commission, ""
         words = _texts(SESSION_QUERY_TEXTS, lang)
 
         def at(moment: float) -> str:
@@ -1189,7 +1197,7 @@ class TaskBrain:
         # rest until the next of its times.
         seen, own, notes = await self._ledger.waiting_view(commission.id)
         if seen is None:
-            return ""
+            return commission, ""
         if own and seen.resting:
             # One whose time has come and that could not be woken yet (the
             # quota is used up, say) does not go on "at" a time gone by.
@@ -1201,7 +1209,7 @@ class TaskBrain:
                 parts.append(words["wakes"].format(count=len(timers), time=at(timers[0].due_at)))
         if notes:
             parts.append(words["notes"].format(count=notes))
-        return "; ".join(parts)
+        return seen, "; ".join(parts)
 
     # -- what a new session is told ---------------------------------------
 

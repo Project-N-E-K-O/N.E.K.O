@@ -146,9 +146,13 @@ async def test_steer_reaches_the_model_before_its_next_request(tmp_path: Path) -
         assert second[-1]["content"] == "Also check the tests."
         assert len(llm.requests) == 2
         # Each text it was given is told of once, by its number, when it is in the
-        # conversation: the steered one after what the request under way put out.
+        # conversation and on the disk: the steered one after what the request under way put out.
         kinds = [(event["type"], event.get("inputs")) for event in events.events if event["type"] in ("taken", "tool_start")]
-        assert kinds == [("taken", 1), ("tool_start", None), ("taken", 2)]
+        assert [kind for kind in kinds if kind[0] == "taken"] == [("taken", 1), ("taken", 2)]
+        assert kinds.index(("tool_start", None)) < kinds.index(("taken", 2))
+        # Both before the run is said to be over.
+        order = [event["type"] for event in events.events]
+        assert order.index("ended") > max(index for index, kind in enumerate(order) if kind == "taken")
     finally:
         await session.close()
 
@@ -169,7 +173,10 @@ async def test_a_text_that_is_dropped_before_it_is_in_the_conversation_is_never_
     holder["session"] = session
     try:
         session.prompt("Start.")
-        await steered.wait()
+        try:
+            await asyncio.wait_for(steered.wait(), 10.0)
+        except asyncio.TimeoutError:
+            pytest.fail(f"the text was never steered in; the session said: {events.events}")
         # Stopped while the steered text waits for the next request: it is dropped.
         assert session.abort() is True
         ended = await events.wait_ended()
@@ -180,8 +187,85 @@ async def test_a_text_that_is_dropped_before_it_is_in_the_conversation_is_never_
         session.prompt("Go on.")
         await events.wait_ended(start=mark)
         assert [event["inputs"] for event in events.of("taken")] == [1, 3]
+        # And what was dropped is not kept to be looked for.
+        assert session._given == [] and session._not_human == []
     finally:
         gate.set()
+        await session.close()
+
+
+async def test_a_text_is_told_of_as_taken_once_it_is_on_the_disk_and_not_before(tmp_path: Path) -> None:
+    llm = ScriptedLLM([[say("ok"), finish()], [say("again"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    append = session._recorder._append_blocking
+    written = __import__("threading").Event()
+    held: list[str] = []
+
+    def waiting(entry: object) -> None:
+        # The disk is slow: nothing is written until it lets go.
+        held.append(type(entry).__name__)
+        written.wait(10.0)
+        append(entry)
+
+    session._recorder._append_blocking = waiting  # type: ignore[method-assign]
+    try:
+        session.prompt("Start.")
+        await asyncio.sleep(0.2)
+        # In the conversation, and not on the disk: not told of.
+        assert held and events.of("taken") == []
+        written.set()
+        await events.wait_ended()
+        assert [event["inputs"] for event in events.of("taken")] == [1]
+    finally:
+        written.set()
+        await session.close()
+
+
+async def test_a_text_whose_record_could_not_be_written_is_not_told_of_as_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session_module, "APPEND_RETRY_DELAYS", ())
+    llm = ScriptedLLM([[say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+
+    def failing(entry: object) -> None:
+        raise OSError("the disk is full")
+
+    session._recorder._append_blocking = failing  # type: ignore[method-assign]
+    session._recorder._is_saved_blocking = lambda entry: False  # type: ignore[method-assign]
+    try:
+        session.prompt("Start.")
+        ended = await events.wait_ended()
+        # The run went on (a failed write does not stop it); whoever sent the text is not told it is kept.
+        assert ended["reason"] == "completed" and events.of("taken") == []
+    finally:
+        await session.close()
+
+
+async def test_a_text_no_person_wrote_does_not_make_the_run_one_the_user_spoke_in(tmp_path: Path) -> None:
+    holder: dict[str, Any] = {}
+    seen: list[bool] = []
+
+    async def look() -> None:
+        seen.append(holder["session"].in_direct_human_turn())
+
+    llm = ScriptedLLM([[look, say("ok"), finish()], [look, say("ok"), finish()], [look, say("ok"), finish()]])
+    session, events = await open_session(make_spec(tmp_path), llm)
+    holder["session"] = session
+    try:
+        # A note from another session, or a time that has come: text in the conversation, and nobody's word.
+        mark = len(events.events)
+        session.steer("A note from another task agent session.", human=False)
+        await events.wait_ended(start=mark)
+        mark = len(events.events)
+        session.prompt("A wake you set is due.", human=False)
+        await events.wait_ended(start=mark)
+        # What the user says is.
+        mark = len(events.events)
+        session.prompt("Go on.")
+        await events.wait_ended(start=mark)
+        assert seen == [False, False, True]
+    finally:
         await session.close()
 
 

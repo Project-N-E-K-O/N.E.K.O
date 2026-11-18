@@ -132,6 +132,21 @@ class _Process:
     watcher: asyncio.Task[None] | None = None
 
 
+class _Given(str):
+    """A text a session was given, and which one it is, counted from 1 in the order they were given."""
+
+    number: int
+
+    def __new__(cls, text: str, number: int) -> "_Given":
+        made = super().__new__(cls, text)
+        made.number = number
+        return made
+
+
+def _numbers_of(texts: list[str]) -> list[int]:
+    return [text.number for text in texts if isinstance(text, _Given)]
+
+
 @dataclass(slots=True)
 class _Session:
     spec: protocol.TaskAgentSpec
@@ -143,10 +158,17 @@ class _Session:
     dsh_id: str = ""
     slot: int = -1
     seq: int = 0
-    # Texts waiting to be sent: a prompt, and what was added since.
+    # Texts waiting to be sent: a prompt, and what was added since. Each
+    # is a ``_Given``: it knows its number.
     queue: list[str] = field(default_factory=list)
-    # Texts the session has taken, for ``ended.inputs``.
+    # How many texts the session was given (those it queued); the last one's number.
+    given: int = 0
+    # The number of the last text the session has taken, for ``ended.inputs``:
+    # how many it took, where none was dropped on the way.
     taken: int = 0
+    # The numbers of the texts a call of the turn under way was handed
+    # (``_take_input``), until that turn is over.
+    awaited: list[int] = field(default_factory=list)
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
     # Whether it is offered the subagent tool, which its first message then tells of.
@@ -1062,7 +1084,10 @@ class DshRuntime:
             logger.warning("the note of dsh session %s could not be written", session.id, exc_info=True)
 
     def _queue(self, session: _Session, text: str) -> None:
-        session.queue.append(text)
+        # Numbered as it is given, like the host numbers what it sends: a
+        # text that is dropped before dsh has it leaves its number unused.
+        session.given += 1
+        session.queue.append(_Given(text, session.given))
         session.arrived.set()
         if session.run is None:
             session.aborting = False
@@ -1077,15 +1102,18 @@ class DshRuntime:
             except asyncio.TimeoutError:
                 return []
         texts, session.queue = session.queue, []
-        first = session.taken + 1
-        session.taken += len(texts)
-        # They are the result of a call dsh made and waits for: it has them.
-        self._say_taken(session, first, len(texts))
+        numbers = _numbers_of(texts)
+        session.taken = max([session.taken, *numbers])
+        # They go back as the result of a call dsh made. Whether dsh took
+        # that result is not known here (the call may have been called off
+        # meanwhile): they are told of as taken when the turn the call
+        # belongs to ends as a turn does that was not cut short.
+        session.awaited.extend(numbers)
         return texts
 
-    def _say_taken(self, session: _Session, first: int, count: int) -> None:
-        """Say of ``count`` texts, numbered from ``first``, that dsh has them in its conversation; one ``taken`` each."""
-        for number in range(first, first + count):
+    def _say_taken(self, session: _Session, numbers: list[int]) -> None:
+        """Say of the texts with these numbers that dsh has them in its conversation; one ``taken`` each."""
+        for number in numbers:
             self._emit(session, protocol.TakenEvent(session_id=session.id, inputs=number))
 
     async def _run(self, session: _Session) -> None:
@@ -1102,8 +1130,9 @@ class DshRuntime:
         try:
             while session.queue and not session.aborting and session.closing is None:
                 texts, session.queue = session.queue, []
-                first_taken = session.taken + 1
-                session.taken += len(texts)
+                sent = _numbers_of(texts)
+                session.taken = max([session.taken, *sent])
+                session.awaited = []
                 work = "\n\n".join(texts)
                 first = not session.briefed
                 if first:
@@ -1123,7 +1152,13 @@ class DshRuntime:
                 # A process that went before it had them, or a request it
                 # refused, leaves them untold, so that whoever sent them
                 # knows they may have to be sent again.
-                self._say_taken(session, first_taken, len(texts))
+                self._say_taken(session, sent)
+                stopped = isinstance(answer, dict) and str(answer.get("stopReason") or "") == "cancelled"
+                if not (session.aborting or stopped):
+                    # And what a call of the turn was handed meanwhile: the
+                    # turn ran to its end with it.
+                    self._say_taken(session, session.awaited)
+                session.awaited = []
                 if first:
                     # dsh took it, so it is in the session's record. Until
                     # then the next message carries it (again, at worst):
@@ -1161,10 +1196,12 @@ class DshRuntime:
             # Arrived while the end was being announced: an idle session is started by it.
             session.run = asyncio.ensure_future(self._run(session))
 
-    async def prompt(self, session_id: str, text: str, *, opening: bool = False) -> None:
+    async def prompt(self, session_id: str, text: str, *, opening: bool = False, human: bool = True) -> None:
         # ``opening`` is for a runtime that sums the conversation up itself
-        # and can leave that text as it is; dsh sums up on its own.
-        del opening
+        # and can leave that text as it is; dsh sums up on its own. ``human``
+        # is for one that keeps something for the user's own words; dsh
+        # asks the host before every call that needs asking.
+        del opening, human
         session = await self._session(session_id, "prompt")
         if session is None:
             return
@@ -1175,10 +1212,12 @@ class DshRuntime:
         else:
             self._queue(session, text)
 
-    async def steer(self, session_id: str, text: str) -> None:
+    async def steer(self, session_id: str, text: str, *, human: bool = True) -> None:
+        del human
         await self._add(session_id, "steer", text)
 
-    async def follow_up(self, session_id: str, text: str) -> None:
+    async def follow_up(self, session_id: str, text: str, *, human: bool = True) -> None:
+        del human
         await self._add(session_id, "follow_up", text)
 
     async def _add(self, session_id: str, command: str, text: str) -> None:

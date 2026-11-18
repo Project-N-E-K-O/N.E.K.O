@@ -587,6 +587,56 @@ async def test_stopping_everything_right_after_a_restart_stops_what_was_left_und
     assert (await wiring.host_mount.peek_host().ledger.get(commission.id)).status == "cancelled"
 
 
+async def test_stopping_everything_right_after_a_restart_hands_nothing_over_while_the_host_is_made_ready(
+    wiring, tmp_path, monkeypatch
+):
+    from nekoclaw.host.ledger import Ledger, MessageLimits
+
+    # An earlier process left a note for a session with nothing under way, and something to stop.
+    commission = await _left_by_an_earlier_process(tmp_path)
+    earlier = Ledger(tmp_path / "nekoclaw" / "ledger.db")
+    made = []
+    for title in ("sender", "target"):
+        row, _created = await earlier.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent"
+        )
+        row, _session = await earlier.give_session(row.id, kind="single", name=title)
+        await earlier.transition(row.id, "working")
+        made.append(row)
+    sender, target = made
+    await earlier.transition(target.id, "done")
+    message, refusal, _wait = await earlier.message_add(
+        from_session=sender.session_id,
+        from_commission=sender.id,
+        to_session=target.session_id,
+        body="rebuild it",
+        depth=1,
+        notify_when_done=False,
+        notice_after=3600.0,
+        limits=MessageLimits(target_interval=0.0, per_hour=10, queue_max=10, dedup_seconds=0.0),
+    )
+    assert refusal == ""
+    await earlier.transition(sender.id, "done")
+    await earlier.close()
+    ready = wiring.mount_module.ready_host
+    held: list[int] = []
+
+    async def looking() -> Any:
+        # Making the host ready starts what waits to be handed to sessions: held before that.
+        held.append(wiring.host_mount.get_host().wakes._holds)
+        return await ready()
+
+    monkeypatch.setattr(wiring.mount_module, "ready_host", looking)
+
+    assert await wiring.mount_module.stop_everything() == 1
+
+    host = wiring.host_mount.peek_host()
+    assert held == [1] and host.wakes._holds == 0
+    assert (await host.ledger.get(commission.id)).status == "cancelled"
+    assert (await host.ledger.message_get(message.id)).status == "void"
+    assert [item for item in await host.ledger.select() if item.source == "session"] == []
+
+
 async def test_stopping_everything_without_a_record_builds_nothing(wiring, tmp_path):
     assert await wiring.mount_module.stop_everything() == 0
 

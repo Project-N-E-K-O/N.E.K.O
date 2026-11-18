@@ -438,6 +438,7 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
     from nekoclaw.host.ledger import ACTIVE_STATUSES
 
     host = peek_host()
+    held = None
     if host is None:
         # Nothing has used the host in this process, yet an earlier process
         # may have left a deferred result under way. That is stopped too,
@@ -445,10 +446,30 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
         if not await ledger_exists():
             return 0
         try:
+            # Held before it is made ready: making it ready starts what an
+            # earlier process left to be handed to sessions, and a note
+            # handed over then would start a turn this stop comes too late
+            # for.
+            from nekoclaw.host import mount
+
+            held = mount.get_host()
+            held.wakes.hold()
             host = await ready_host()
         except Exception as e:
             logger.warning("[Agent] opening the ledger to stop what is under way failed: %s", e)
+            if held is not None:
+                held.wakes.release()
             return 0
+    try:
+        return await _stop_everything(host, reason)
+    finally:
+        if held is not None:
+            held.wakes.release()
+
+
+async def _stop_everything(host: Any, reason: str) -> int:
+    from nekoclaw.host.ledger import ACTIVE_STATUSES
+
     # A dispatch still in its first round has no commission yet and would be
     # missed below; it is told not to file one.
     host.brain.drop_pending_dispatches()

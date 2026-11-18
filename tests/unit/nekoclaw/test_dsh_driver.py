@@ -205,7 +205,10 @@ async def test_text_added_during_a_turn_is_the_next_turn_and_the_run_ends_once(t
     # Each text is told of as taken once dsh has it: the first after its own turn, the other two after the next.
     kinds = [(event["type"], event.get("inputs")) for event in driver.events.events if event["type"] in ("taken", "text")]
     assert [kind for kind in kinds if kind[0] == "taken"] == [("taken", 1), ("taken", 2), ("taken", 3)]
-    assert kinds.index(("taken", 1)) > 0 and kinds[-2:] == [("taken", 2), ("taken", 3)]
+    # The first between what the two turns said, the others after the second.
+    replies = [index for index, kind in enumerate(kinds) if kind[0] == "text"]
+    assert len(replies) == 2 and replies[0] < kinds.index(("taken", 1)) < replies[1]
+    assert kinds[-2:] == [("taken", 2), ("taken", 3)]
     assert len(driver.events.of("ended")) == 1
     assert _texts(driver.events) == "one\n\necho: two\n\nthree"
     assert ended["text"] == "echo: two\n\nthree"
@@ -251,6 +254,10 @@ async def test_abort_stops_the_turn_and_drops_what_was_queued(tmp_path: Path, ds
     # The session is still there and takes new work.
     again = await driver.run("s1", "after")
     assert again["reason"] == "completed" and again["text"] == "echo: after"
+    # Texts are told of by the number they were given under: the one that was dropped
+    # leaves its number unused, and what came after it is the third.
+    assert [event["inputs"] for event in driver.events.of("taken")] == [1, 3]
+    assert again["inputs"] == 3
 
 
 async def test_text_added_after_a_stop_and_before_the_turn_ended_goes_with_it(tmp_path: Path, dsh) -> None:
@@ -1415,6 +1422,28 @@ async def test_a_waiting_session_is_handed_what_arrives_as_the_result_of_its_wai
     # Handed over in the turn: it is not sent again as a turn of its own.
     assert len(driver.record("session/prompt")) == 1
     assert ended["reason"] == "completed" and ended["inputs"] == 2 and ended["text"] == "went on"
+    # Told of as taken once the turn it was handed over in has run to its end, and not when it was handed over.
+    order = [(event["type"], event.get("inputs")) for event in driver.events.events if event["type"] in ("taken", "tool_end")]
+    assert order == [("tool_end", None), ("taken", 1), ("taken", 2)]
+
+
+async def test_what_a_waiting_session_was_handed_in_a_turn_that_is_cut_short_is_not_told_of_as_taken(
+    tmp_path: Path, dsh
+) -> None:
+    host, _calls = _host()
+    driver = dsh(host)
+    await driver.started(make_spec(tmp_path))
+
+    await driver.runtime.prompt("s1", '!host wait_agent {"timeout_ms": 10000}\n!sleep 30')
+    await driver.events.wait_for(lambda event: event["type"] == "tool_start")
+    await driver.runtime.steer("s1", "all done")
+    await driver.events.wait_for(lambda event: event["type"] == "tool_end")
+    await driver.runtime.abort("s1")
+    ended = await driver.events.wait_ended("s1")
+
+    # Whether dsh took the result of that call is not known: whoever sent the text may have to send it again.
+    assert ended["reason"] == "aborted"
+    assert [event["inputs"] for event in driver.events.of("taken")] == [1]
 
 
 async def test_a_wait_that_nothing_arrives_for_times_out_inside_dshs_limit(

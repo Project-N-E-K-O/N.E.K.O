@@ -239,20 +239,22 @@ def read_record(
             made[index] = (shown, count_tokens(shown))
         return made[index]
 
+    # What stands between two entries of a stretch counts towards its cap.
+    between = count_tokens("\n\n")
     if at is None:
         # The last stretch: as many entries from the end as fit.
         start, used = len(entries), 0
-        while start > 0 and (start == len(entries) or used + cut(start - 1)[1] <= segment_tokens):
+        while start > 0 and (start == len(entries) or used + between + cut(start - 1)[1] <= segment_tokens):
             start -= 1
-            used += cut(start)[1]
+            used += cut(start)[1] + (between if start < len(entries) - 1 else 0)
         end = len(entries)
     else:
         start = next((index for index, entry in enumerate(entries) if entry[0] >= at), len(entries))
         if start >= len(entries):
             raise RecordError(f"the record ends before position {at}; its last entry is at {entries[-1][0]}")
         end, used = start, 0
-        while end < len(entries) and (end == start or used + cut(end)[1] <= segment_tokens):
-            used += cut(end)[1]
+        while end < len(entries) and (end == start or used + between + cut(end)[1] <= segment_tokens):
+            used += cut(end)[1] + (between if end > start else 0)
             end += 1
     return Stretch(
         text="\n\n".join(cut(index)[0] for index in range(start, end)),

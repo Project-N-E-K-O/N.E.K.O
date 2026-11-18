@@ -164,6 +164,14 @@ SESSION_RECORD_READ_REFUSED = (
     '(what="search" to find a place, then what="read" for the stretch around it).'
 )
 
+# Stands in the opening of a commission that was filed for notes and is taken
+# up again when those notes are not its own any more.
+SESSION_COMMISSION_NOTES_GONE = (
+    "The notes this commission was filed for are not repeated here: it did not take them when it was "
+    "filed, and they were handed to another commission of this session since, or dropped. Go by what "
+    "is said to you now."
+)
+
 # Searching a directory that holds another session's record: the search would
 # read the record as a file.
 SESSION_RECORD_SEARCH_REFUSED = (

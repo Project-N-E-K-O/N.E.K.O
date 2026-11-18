@@ -198,8 +198,10 @@ async def test_a_snapshot_written_before_the_session_tools_is_put_together_anew_
     host = HostCallbacks(session_list=answer, session_read=answer, session_send=answer, wake_schedule=answer)
     first_llm = ScriptedLLM([[say("Done."), finish()]])
     session, events = await open_session(make_spec(tmp_path), first_llm, host)
-    await _ask(session, events, "First commission.")
-    await session.close()
+    try:
+        await _ask(session, events, "First commission.")
+    finally:
+        await session.close()
     spec = make_spec(tmp_path)
     # As a host of the version before left it: version 1, by its number and not by one counted
     # from this version, and none of the tools that came with the next.

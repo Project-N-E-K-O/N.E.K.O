@@ -554,6 +554,11 @@ class TaskAgentManager:
         # Likewise those to be put on record as taken: their session has
         # them, and the ledger could not be written when it said so.
         self._unconfirmed: set[int] = set()
+        # Turns that ended while the ledger could not be written: the
+        # commission, what it ended on and how it stood, for the senders of
+        # the notes it took. Told when the ledger can be written again (it
+        # tells each sender once, whoever asks).
+        self._turns_owed: list[tuple[str, str, str]] = []
         # The last count against the quota was refused. Cleared by the next
         # one that is not, which has what waits for the quota tried again.
         self._quota_out = False
@@ -957,6 +962,12 @@ class TaskAgentManager:
 
         head = words.SESSION_COMMISSION_TEMPLATE.format(commission_id=commission.id, lanlan_name=commission.lanlan_name)
         notes = await self._ledger.messages_opening(commission.id)
+        if not notes and await self._ledger.opening_handed_on(commission.id):
+            # It never took them (its opening message was refused, say), and
+            # they were handed to another commission since, or dropped: they
+            # are not said a second time here, from the record or from what
+            # was filed.
+            return f"{head}\n\n{words.SESSION_COMMISSION_NOTES_GONE}"
         if not notes:
             # Its notes are gone from the record; what was filed says what they were.
             return f"{head}\n\n{commission.dispatch_text}"
@@ -1328,11 +1339,18 @@ class TaskAgentManager:
             riding = [wake for piece in session.carried for wake in getattr(piece, "wakes", ())]
             if opens and commission.source == "session":
                 riding = [*riding, *await self._ledger.opening_wakes(commission.id)]
+            # Whether a person's words are in it: what she dispatched or the
+            # user said (the message that tells a commission what it is,
+            # unless it was filed for notes), or something kept to be said.
+            # Not where it is only what wake requests brought.
+            nobody = all(isinstance(piece, _Handed) for piece in session.carried) and (
+                not opens or commission.source == "session"
+            )
             if await stopped_meanwhile():
                 # The stop has closed the session already.
                 await self._close_session(session)
                 return False
-            await self._send_text(runtime, session, "prompt", text, opening=opens, wakes=riding)
+            await self._send_text(runtime, session, "prompt", text, opening=opens, wakes=riding, human=not nobody)
             session.ready = True
             # What was passed on while the session was being set up. Like the
             # prompt, it is the user's until the run is seen at work.
@@ -1547,6 +1565,7 @@ class TaskAgentManager:
         *,
         opening: bool = False,
         wakes: Iterable[int] | None = None,
+        human: bool | None = None,
     ) -> None:
         """Send ``prompt`` or ``steer`` text to a session, counting it.
 
@@ -1560,7 +1579,17 @@ class TaskAgentManager:
         from here until the runtime says that this text, by its number,
         is in the session's conversation (``_on_taken``). A session that
         closes before that has them put back.
+
+        ``human`` says whether a person wrote the text; left out, a text
+        that brings wake requests is taken for one nobody wrote (a note
+        from another session, a time that has come), and every other for
+        the user's. The runtime is told only where it is not: a note
+        carries nobody's permissions, and the run it starts is not one
+        the user spoke in.
         """
+        if human is None:
+            human = not isinstance(text, _Handed)
+        said = {} if human else {"human": False}
         session.sent += 1
         number = session.sent
         riding = list(wakes if wakes is not None else getattr(text, "wakes", ()))
@@ -1576,9 +1605,9 @@ class TaskAgentManager:
         try:
             if opening:
                 session.opening_sent = True
-                await runtime.prompt(session.session_id, text, opening=True)
+                await runtime.prompt(session.session_id, text, opening=True, **said)
             else:
-                await getattr(runtime, command)(session.session_id, text)
+                await getattr(runtime, command)(session.session_id, text, **said)
         except BaseException:
             session.sent -= 1
             session.handed.pop(number, None)
@@ -1682,6 +1711,8 @@ class TaskAgentManager:
         if previous == "waiting_user" and not self._closed:
             # What was kept back while it waited for the user may go now.
             self._kick_waker()
+        if commission.status in ENDED_STATUSES and previous not in ENDED_STATUSES and not self._closed:
+            self._spawn(self._return_untaken(commission.id))
         session_id = commission.session_id
         if (
             not self._closed
@@ -1699,6 +1730,14 @@ class TaskAgentManager:
         as a task of its own, which shutting down waits for: waiting here for
         it to come up would hold up every other event meanwhile.
         """
+        session = self._sessions.get(commission_id)
+        # What was sent to the session and not seen taken goes back with it,
+        # however it went (a runtime whose process is gone says so with an
+        # error, and no ``closed`` follows): nothing is left on record as
+        # handed to a session that is not there.
+        back = [wake for wakes in session.handed.values() for wake in wakes] if session is not None else []
+        if session is not None:
+            session.handed = {}
         if commission_id in self._queue or commission_id in self._requeueing:
             # Queued to be taken up again: what was said meanwhile goes along
             # with it, and so do its candidate plugins. It goes on holding
@@ -1707,10 +1746,12 @@ class TaskAgentManager:
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
         else:
-            session = self._sessions.get(commission_id)
             self._discard(commission_id)
             if session is None or not session.keep_notes:
-                self._notes.pop(commission_id, None)
+                dropped = self._notes.pop(commission_id, [])
+                back.extend(wake for text in dropped for wake in getattr(text, "wakes", ()))
+        if back and not self._closed:
+            await self._put_back(back)
         if self._queue and not self._closed:
             self._spawn(self._start_next())
 
@@ -2184,22 +2225,49 @@ class TaskAgentManager:
         await self._close_session(session)
         return True
 
-    async def _put_back(self, wake_ids: Iterable[int]) -> None:
-        """Make wake requests pending again whose text went into a session that closed before taking it.
+    async def _put_back(self, wake_ids: Iterable[int], *, kick: bool = True) -> None:
+        """Make wake requests pending again whose text did not get into a session.
 
-        Kept here until the ledger has it: where it cannot be written
-        this moment, the session is let go all the same, and it is tried
-        again after a growing pause. (What is still kept when the host
-        ends is on record as on its way, which the next process puts
-        right.)
+        It went into one that closed before taking it, or it was not sent
+        after all. Kept here until the ledger has it: where it cannot be
+        written this moment, whoever asked goes on all the same, and it
+        is tried again after a growing pause. (What is still kept when the
+        host ends is on record as on its way, which the next process puts
+        right.) ``kick`` False is for the round that is handing over
+        itself: it says by what it returns when to look again.
         """
         self._unreturned.update(int(item) for item in wake_ids)
-        if await self._return_unreturned():
+        if await self._return_unreturned(kick=kick):
             return
         if self._returning is None or self._returning.done():
             self._returning = self._spawn(self._return_later())
 
-    async def _return_unreturned(self) -> bool:
+    async def _return_untaken(self, commission_id: str) -> None:
+        """A commission is over: what was handed to it and never reached a session is not left on record as handed over.
+
+        What was kept to be said to it when it got a session (it waited
+        for a place, or was being started) is forgotten with it, and no
+        session closes to give it back. The notes among it are pending
+        again, for whatever their session is at next; a stop of everything
+        that is ending the commission has them dropped instead. What a
+        session of it was sent and may yet take stays with that session,
+        which gives it back when it closes.
+        """
+        try:
+            await self._confirm_taken()
+            on_their_way = await self._ledger.wakes_on_their_way(commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the next process puts it right
+            logger.warning("looking for what a commission that is over never took failed", exc_info=True)
+            return
+        session = self._sessions.get(commission_id)
+        held = {wake for wakes in session.handed.values() for wake in wakes} if session is not None else set()
+        back = [wake for wake in on_their_way if wake not in held and wake not in self._unconfirmed]
+        if back:
+            await self._put_back(back)
+
+    async def _return_unreturned(self, *, kick: bool = True) -> bool:
         """Write what is kept to be put back; returns whether nothing is left to write."""
         ids = sorted(self._unreturned)
         if not ids:
@@ -2212,20 +2280,41 @@ class TaskAgentManager:
             logger.warning("putting back what a closed session did not take failed; it is tried again", exc_info=True)
             return False
         self._unreturned.difference_update(ids)
-        self._kick_waker()
+        if kick:
+            self._kick_waker()
         return True
 
     async def _return_later(self) -> None:
         from nekoclaw.host.outbox import retry_delay
 
         failures = 1
-        while (self._unreturned or self._unconfirmed) and not self._closed:
+        # Looked at again after every pause, and after the last write: what
+        # was added while one of them was awaited is not left behind.
+        while (self._unreturned or self._unconfirmed or self._turns_owed) and not self._closed:
             await asyncio.sleep(retry_delay(failures))
             written = await self._return_unreturned()
             written = await self._confirm_taken() and written
+            written = await self._tell_turns_owed() and written
+            failures = 1 if written else failures + 1
+
+    async def _tell_turns_owed(self) -> bool:
+        """Write what the senders of notes are owed for turns that ended while the ledger could not be written."""
+        owed, self._turns_owed = self._turns_owed, []
+        for index, (commission_id, text, state) in enumerate(owed):
+            try:
+                taken = sorted(self._unconfirmed)
+                written = await self._ledger.turn_over(commission_id, word=lambda _note, text=text: text, state=state, taken=taken)
+                self._unconfirmed.difference_update(taken)
+            except asyncio.CancelledError:
+                self._turns_owed = [*owed[index:], *self._turns_owed]
+                raise
+            except Exception:  # noqa: BLE001 - kept, and tried again
+                logger.warning("telling the senders of notes that a turn is over failed again", exc_info=True)
+                self._turns_owed = [*owed[index:], *self._turns_owed]
+                return False
             if written:
-                return
-            failures += 1
+                self._kick_waker()
+        return True
 
     async def _confirm_taken(self) -> bool:
         """Write what is kept to be put on record as taken; returns whether nothing is left to write."""
@@ -2285,9 +2374,9 @@ class TaskAgentManager:
         from config.nekoclaw_settings import SESSION_NOTICE_TEXT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
+        text, state = said.strip(), "over"
         try:
             commission = await self._ledger.get(commission_id)
-            text = said.strip()
             if not text and commission is not None:
                 text = (commission.result_summary or "").strip()
             text = truncate_to_tokens(text, SESSION_NOTICE_TEXT_MAX_TOKENS)
@@ -2298,8 +2387,11 @@ class TaskAgentManager:
             self._unconfirmed.difference_update(taken)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - the sender is told it waited in vain when its time is up
-            logger.warning("telling the senders of notes that a turn is over failed", exc_info=True)
+        except Exception:  # noqa: BLE001 - kept, and told when the ledger can be written again
+            logger.warning("telling the senders of notes that a turn is over failed; it is tried again", exc_info=True)
+            self._turns_owed.append((commission_id, text, state))
+            if self._returning is None or self._returning.done():
+                self._returning = self._spawn(self._return_later())
             return
         if written:
             self._kick_waker()
@@ -3002,6 +3094,10 @@ class TaskAgentManager:
                 # ``glob`` tells names; every other tool that takes a
                 # directory reads the files in it.
                 names_only=payload.get("tool") == "glob",
+                # Among the files the commission works on. Other sessions may
+                # work in the same folder: that makes nothing in it another
+                # session's, and no setting about reading elsewhere applies.
+                inside=category == "workdir_files",
             )
             if ruled is not None:
                 return ruled
@@ -3548,6 +3644,8 @@ class TaskAgentManager:
             return Handover("held", _CLOSING_RETRY_SECONDS)
         chosen = way()
         session = self._sessions.get(commission_id)
+        # Whether the switch and the quota were asked about a turn this starts.
+        counted = False
         if chosen == "wake" and commission.status != "working":
             # Queued in the ledger and in nobody's hands here: not this
             # process's to start.
@@ -3562,6 +3660,7 @@ class TaskAgentManager:
             held = await self._may_start(commission_id)
             if held is not None:
                 return held
+            counted = True
         fired = await self._ledger.wakes_fire(ids, into=commission_id)
         if not fired:
             # Dropped while this looked: there is nothing to say.
@@ -3571,12 +3670,22 @@ class TaskAgentManager:
                 target, [wake for wake in wakes if wake.id in fired], answerable=commission.parent_id is None
             )
             if not text:
-                # What they were to hand over is gone from the record.
+                # What they were to hand over is gone from the record:
+                # dropped with the reason, and not left as handed over, which
+                # the next process would take for something on its way.
+                await self._ledger.wakes_drop(fired, "what it was to hand over is gone from the record")
                 return Handover("dropped")
             # Looked at after everything that was awaited; nothing is
             # awaited from here to where it is handed on.
             if stopped() or in_the_way() or way() != chosen or self._sessions.get(commission_id) is not session:
-                await self._unfire(fired)
+                await self._put_back(fired, kick=False)
+                return Handover("held", _CLOSING_RETRY_SECONDS)
+            if chosen == "steer" and session is not None and session.idle and not counted:
+                # Its run ended while this was awaited (it waits for task
+                # agents it started, say): steered in now, the text would
+                # start a turn that the switch and the quota were not
+                # asked about. Taken back; the next time it is asked first.
+                await self._put_back(fired, kick=False)
                 return Handover("held", _CLOSING_RETRY_SECONDS)
             if any(wake.reason == "message" and wake.id in fired for wake in wakes):
                 # What another session wrote is about to stand in this
@@ -3608,11 +3717,13 @@ class TaskAgentManager:
                 # closed, and could not be taken up this moment. (The
                 # request that was counted for it stays counted, for when
                 # it can be.)
-                await self._unfire(fired)
+                await self._put_back(fired, kick=False)
                 return Handover("held", WAKE_HELD_RETRY_SECONDS)
         except BaseException:
-            # Not handed on after all.
-            await asyncio.shield(self._unfire(fired))
+            # Not handed on after all. Kept until the ledger has it: where
+            # it cannot be written this moment either, a request that
+            # stayed on record as handed over would be read by no round.
+            await asyncio.shield(self._put_back(fired, kick=False))
             raise
         return Handover("handed")
 
@@ -3736,7 +3847,7 @@ class TaskAgentManager:
             # dropped as the stop dropped the others. Or the host is
             # shutting down: nothing is started in it, and the notes wait
             # on record for the next process.
-            await self._unfire(ids)
+            await self._put_back(ids, kick=False)
             await self._ledger.transition(commission.id, "cancelled", reason=_STOPPED_MEANWHILE_REASON)
             return Handover("dropped")
         if prepaid:
@@ -4093,7 +4204,7 @@ class TaskAgentManager:
         return {"message": said}
 
     async def _rule_on_other_session(
-        self, commission_id: str, path: str, *, writes: bool, names_only: bool = False
+        self, commission_id: str, path: str, *, writes: bool, names_only: bool = False, inside: bool = False
     ) -> dict[str, Any] | None:
         """Rule on a path that lies in a place of another session; None when it does not, or when the usual rules apply.
 
@@ -4108,7 +4219,9 @@ class TaskAgentManager:
         link under another name is the file it points at, and a file of
         the same name among the files it works on is a file like any
         other. A second name for a record is refused wherever it lies,
-        among the files the caller itself works on too. Nor is it read
+        among the files the caller itself works on too (``inside``: there
+        that is all that is looked at, a folder several sessions work in
+        being the caller's as much as theirs). Nor is it read
         by way of the directory it is in: a search
         of a directory that holds a session's own directory would open
         the record with the rest, so such a directory is not searched
@@ -4157,14 +4270,20 @@ class TaskAgentManager:
             linked = _has_second_name(path)
             if in_own or in_work or linked:
                 real = os.path.normcase(os.path.realpath(target))
+                try:
+                    found = os.stat(target) if linked else None
+                except OSError:
+                    found = None  # Gone since it was looked at: no record.
                 for _id, _workdir, session_dir in places:
                     for name in kept_files if session_dir else ():
                         kept = Path(session_dir) / name
                         if real == os.path.normcase(os.path.realpath(kept)):
                             record = True
-                        elif linked and not record:
+                        elif found is not None and not record:
                             try:
-                                record = os.path.samefile(target, kept)
+                                # The same file under a second name.
+                                other = os.stat(kept)
+                                record = (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
                             except OSError:
                                 pass  # The record is not there: not the same file.
             holds = (
@@ -4180,9 +4299,10 @@ class TaskAgentManager:
             if in_own:
                 return {"allow": False, "reason": SESSION_WRITE_REFUSED}
             return {"allow": False, "reason": SESSION_RECORD_WRITE_REFUSED} if record else None
-        if not in_own and not in_work:
-            # In no place of another session: the usual rules, unless it is
-            # another session's record under a second name.
+        if inside or (not in_own and not in_work):
+            # Among the caller's own files, or in no place of another
+            # session: the usual rules, unless it is another session's
+            # record under a second name.
             return {"allow": False, "reason": SESSION_RECORD_READ_REFUSED} if record else None
         if await self._permissions.forbidden("outside_read"):
             return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()

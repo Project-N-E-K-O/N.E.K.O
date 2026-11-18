@@ -49,11 +49,14 @@ per-session ``seq`` that increases by one:
 * ``compacted``   - the conversation was summed up. The session's system
   prompt and tool definitions were put together anew after it.
 * ``taken``       - one of the texts the session was given (``prompt``,
-  ``steer``, ``follow_up``) is in its conversation now; ``inputs`` says which,
-  counted from 1 in the order they were given. A text that was given and is
-  dropped before that (an ``abort``, a ``close``) is never told of: a driver
-  that needs to know whether the model will ever see what it sent waits for
-  this, not for the next thing the session puts out.
+  ``steer``, ``follow_up``) is in its conversation for good: where the
+  session keeps a record of its own, the text is written to it, so that a
+  session opened again finds it. ``inputs`` says which, counted from 1 in
+  the order they were given. A text that was given and is dropped before
+  that (an ``abort``, a ``close``, a record that could not be written) is
+  never told of: a driver that needs to know whether the model will ever
+  see what it sent waits for this, not for the next thing the session puts
+  out.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,
@@ -198,18 +201,27 @@ class PromptCommand(_Strict):
     # True for the text that opens a commission: what the session works on
     # from here. A summary of the conversation leaves it as it is.
     opening: bool = False
+    # False for text no person wrote for this session: what another session
+    # sent it, or what the host tells it of a time that has come. It stands
+    # in the conversation like any text, and entitles the run to nothing
+    # that only the user's own words entitle it to.
+    human: bool = True
 
 
 class SteerCommand(_Strict):
     type: Literal["steer"] = "steer"
     session_id: str
     text: str = Field(min_length=1)
+    # See ``PromptCommand.human``.
+    human: bool = True
 
 
 class FollowUpCommand(_Strict):
     type: Literal["follow_up"] = "follow_up"
     session_id: str
     text: str = Field(min_length=1)
+    # See ``PromptCommand.human``.
+    human: bool = True
 
 
 class AbortCommand(_Strict):
