@@ -517,6 +517,33 @@ test('a frame captured across revoke-then-regrant is not sent', async () => {
     assert.equal(h.window.canProactiveVisionRunDuringSpeech(), true, 'consent is back on');
 });
 
+test('a stale frame does not stop the heartbeat restarted by the regrant', async () => {
+    let h;
+    let first = true;
+    h = loadProactive({
+        privacyAllowsVision: true,
+        appScreen: {
+            captureFrameFromStream: async () => {
+                if (first) {
+                    first = false;
+                    // privacy on then off again: the toggle restarts the heartbeat
+                    h.window.appProactive.noteProactiveVisionConsent(false);
+                    h.window.appProactive.noteProactiveVisionConsent(true);
+                    h.window.startProactiveVisionDuringSpeech();
+                }
+                return { dataUrl: 'data:image/jpeg;base64,FRAME' };
+            },
+        },
+    });
+    h.window.startProactiveVisionDuringSpeech();
+    await h.heartbeat().fn();
+    assert.equal(h.frames(), 0, 'the frame from before the revocation is dropped');
+    const restarted = h.heartbeat();
+    assert.ok(restarted, 'the heartbeat started by the regrant keeps running');
+    await restarted.fn();
+    assert.equal(h.frames(), 1);
+});
+
 test('no desktop screenshot is started after a revocation during capture', async () => {
     let backendCalls = 0;
     let h;

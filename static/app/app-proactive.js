@@ -2013,10 +2013,11 @@
             if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
             // A revocation during this capture voids the frame, even if
             // consent is granted again before it would be sent.
+            // Only an actual "not allowed now" stops the heartbeat: after a
+            // revoke-then-regrant a newer heartbeat may already be running.
             var revocationSeqAtStart = proactiveVisionRevocationSeq;
-            var stillAllowed = function () {
-                return revocationSeqAtStart === proactiveVisionRevocationSeq
-                    && canProactiveVisionRunDuringSpeech();
+            var frameStale = function () {
+                return revocationSeqAtStart !== proactiveVisionRevocationSeq;
             };
 
             var rememberedWindowCapture = { required: false, allowed: true };
@@ -2107,11 +2108,12 @@
             }
 
             // Do not start a desktop screenshot once consent is gone.
-            if (!dataUrl && !stillAllowed()) {
+            if (!dataUrl && !canProactiveVisionRunDuringSpeech()) {
                 stopProactiveVisionDuringSpeech();
                 releaseProactiveVisionStream();
                 return;
             }
+            if (!dataUrl && frameStale()) return;
 
             // 后端 pyautogui 兜底
             if (!dataUrl) {
@@ -2139,10 +2141,14 @@
             // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
             // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
             var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
-            var visionDisabled = !stillAllowed();
+            var visionDisabled = !canProactiveVisionRunDuringSpeech();
             if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
                 if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
+                return;
+            }
+            if (frameStale()) {
+                console.log('[ProactiveVision] 采集期间发生过撤权，丢弃这一帧');
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required
