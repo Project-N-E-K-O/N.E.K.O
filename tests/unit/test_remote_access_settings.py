@@ -1,5 +1,6 @@
 """The desktop owner can manage access without granting remote session holders that ability."""
 
+import hashlib
 import os
 import secrets
 import time
@@ -40,7 +41,8 @@ async def test_remote_access_settings_apply_and_preserve_the_owner_boundary(monk
 
     def desktop_headers(*, age=0):
         proof = secrets.token_hex(32)
-        proof_file = runtime_dir / f"remote-access-{proof}.token"
+        digest = hashlib.sha256(proof.encode("ascii")).hexdigest()
+        proof_file = runtime_dir / f"remote-access-{digest}.token"
         proof_file.touch(mode=0o600, exist_ok=False)
         if age:
             timestamp = time.time() - age

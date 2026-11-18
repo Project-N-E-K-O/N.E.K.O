@@ -1,6 +1,7 @@
 """Manage remote access settings from the desktop on the same machine."""
 
 import asyncio
+import hashlib
 import os
 import re
 import stat
@@ -27,7 +28,9 @@ def _consume_desktop_proof(token: str) -> bool:
     ):
         return False
     directory = runtime_state_dir()
-    proof = directory / f"remote-access-{token}.token"
+    # Directory entries must not disclose the bearer token.
+    digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+    proof = directory / f"remote-access-{digest}.token"
     try:
         directory_info = directory.stat()
         info = proof.lstat()
