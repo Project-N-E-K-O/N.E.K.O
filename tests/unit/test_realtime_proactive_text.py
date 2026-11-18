@@ -2479,3 +2479,22 @@ async def test_stepfun_analysis_error_after_discard_keeps_the_newer_frame(monkey
     assert client._proactive_image_consumed is False
     assert client._image_being_analyzed is False
     await client.close()
+
+
+@pytest.mark.unit
+async def test_moderation_block_after_discard_still_notifies_the_frontend(monkeypatch):
+    import utils.screenshot_utils as screenshot_utils
+
+    client = _make_client(api_type="step", model="step-realtime")
+    client.on_status_message = AsyncMock()
+
+    async def blocked_while_revoked(**_kwargs):
+        client.discard_cached_visual_context()
+        raise RuntimeError("censorship: image blocked")
+
+    monkeypatch.setattr(screenshot_utils, "analyze_image_with_vision_model", blocked_while_revoked)
+
+    assert await client._analyze_image_with_vision_model(DUMMY_IMAGE_B64) == ""
+    client.on_status_message.assert_awaited_once()
+    assert "IMAGE_BLOCKED" in client.on_status_message.await_args.args[0]
+    await client.close()

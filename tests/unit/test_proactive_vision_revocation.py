@@ -84,6 +84,38 @@ async def test_non_revocation_keeps_realtime_cached_frame(value):
 
 
 @pytest.mark.unit
+async def test_repeated_consent_false_does_not_clear_manual_share_frames():
+    """consent=false is re-sent on every settings save; only the first one revokes."""
+    client = _realtime_client()
+    manager = SimpleNamespace(
+        lanlan_name="Yui",
+        session=client,
+        _proactive_vision_enabled=True,
+        _proactive_vision_revocation_epoch=0,
+        _latest_independent_visual_frame=None,
+        _prerecord_visual_frames=[],
+    )
+    LLMSessionManager.update_proactive_vision_consent(manager, False)
+
+    # Privacy mode on, manual share keeps sending frames.
+    manual_frame = object()
+    manager._latest_independent_visual_frame = manual_frame
+    manager._prerecord_visual_frames = [manual_frame]
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    discard_at = client._visual_context_discard_at
+
+    LLMSessionManager.update_proactive_vision_consent(manager, False)
+
+    assert manager._latest_independent_visual_frame is manual_frame
+    assert manager._prerecord_visual_frames == [manual_frame]
+    assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    assert client._visual_context_discard_at == discard_at
+    assert manager._proactive_vision_revocation_epoch == 1
+    await client.close()
+
+
+@pytest.mark.unit
 def test_revocation_clears_independent_asr_frame_cache():
     manager = SimpleNamespace(
         lanlan_name="Yui",

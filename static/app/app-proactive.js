@@ -137,14 +137,23 @@
         return isVisionConsentHeldNow();
     }
 
-    // Consent as both this window and the latest saved setting see it; a
+    // Screen consent alone, shared by text-chat vision and stream acquisition;
+    // the speech gate above may add conditions on top of it. Both this
+    // window's value and the latest saved setting must allow it, so a
     // revocation on either side (including a failed local save) wins.
+    // (window.proactiveVisionEnabled is bound to S.proactiveVisionEnabled.)
     function isVisionConsentHeldNow() {
-        var ownValue = typeof window.proactiveVisionEnabled !== 'undefined'
-            ? !!window.proactiveVisionEnabled
-            : !!S.proactiveVisionEnabled;
-        return ownValue && isProactiveVisionEnabledNow();
+        return !!S.proactiveVisionEnabled && isProactiveVisionEnabledNow();
     }
+
+    // Whether proactive vision (speech heartbeat or text-chat screenshots)
+    // still needs the cached screen stream. The single keep-the-stream rule
+    // for app-screen and releaseProactiveVisionStream.
+    function holdsProactiveVisionStream() {
+        if (S.isRecording && canProactiveVisionRunDuringSpeech()) return true;
+        return !!(S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isVisionConsentHeldNow());
+    }
+    mod.holdsProactiveVisionStream = holdsProactiveVisionStream;
     mod.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
 
     // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
@@ -2610,7 +2619,6 @@
             return;
         }
 
-        var privacyBlocksVision = !isVisionConsentHeldNow();
         // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
         // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
         // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。
@@ -2618,15 +2626,9 @@
         // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
         var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
-        // In a call whose heartbeat may still see the screen the stream may be in use: keep it.
-        if (S.isRecording && canProactiveVisionRunDuringSpeech() && !suppressionBlocksVision) {
-            console.log('[主动视觉] 语音模式活跃中，不释放流');
-            return;
-        }
-
-        // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision && !suppressionBlocksVision) {
-            console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
+        // Speech heartbeat or text-chat vision may still use the stream: keep it.
+        if (!suppressionBlocksVision && holdsProactiveVisionStream()) {
+            console.log('[主动视觉] 主动视觉仍在使用屏幕流，不释放流');
             return;
         }
 
@@ -2744,6 +2746,7 @@
     window.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;
     window.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
     window.canProactiveVisionRunDuringSpeech = canProactiveVisionRunDuringSpeech;
+    window.holdsProactiveVisionStream = holdsProactiveVisionStream;
     window.acquireProactiveVisionStream = acquireProactiveVisionStream;
     window.releaseProactiveVisionStream = releaseProactiveVisionStream;
     window.scheduleProactiveChat = scheduleProactiveChat;

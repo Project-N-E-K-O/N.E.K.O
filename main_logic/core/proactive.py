@@ -99,12 +99,17 @@ class ProactiveMixin:
         """Apply live browser consent without granting persisted permission."""
         if not isinstance(enabled, bool):
             return
-        if not enabled and getattr(self, "_proactive_vision_enabled", None) is not False:
+        # The frontend re-sends consent=false on every settings save, sync and
+        # reconnect. Only an actual allowed -> revoked change clears caches:
+        # afterwards they can only hold manual-share frames, which privacy
+        # mode does not stop and proactive turns no longer use.
+        revoked = not enabled and getattr(self, "_proactive_vision_enabled", None) is not False
+        if revoked:
             self._proactive_vision_revocation_epoch = (
                 getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
             )
         self._proactive_vision_enabled = enabled
-        if not enabled:
+        if revoked:
             # Independent ASR keeps its own live-frame cache for the next
             # user turn; frames captured before the revocation must not ride it.
             if hasattr(self, "_latest_independent_visual_frame"):

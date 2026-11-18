@@ -819,14 +819,11 @@
             && window.canProactiveVisionRunDuringSpeech() === true;
     }
 
-    // Whether proactive vision (speech heartbeat or text-chat screenshots) still needs the stream.
+    // Whether proactive vision still needs the stream; the rule lives in
+    // app-proactive (holdsProactiveVisionStream). A missing rule means "no".
     function isProactiveVisionHoldingStream() {
-        if (S.isRecording && canSpeechVisionSeeScreen()) return true;
-        if (!(S.proactiveVisionEnabled && S.proactiveVisionChatEnabled && S.proactiveChatEnabled)) return false;
-        // Another window may have saved a revocation this window has not applied yet.
-        var proactive = window.appProactive;
-        return !(proactive && typeof proactive.isProactiveVisionEnabledNow === 'function')
-            || proactive.isProactiveVisionEnabledNow() === true;
+        return typeof window.holdsProactiveVisionStream === 'function'
+            && window.holdsProactiveVisionStream() === true;
     }
 
     // ======================== scheduleScreenCaptureIdleCheck ========================

@@ -193,6 +193,7 @@ function loadScreen({ gate }) {
         dispatchEvent() {},
         startProactiveVisionDuringSpeech() { started.push('start'); },
         canProactiveVisionRunDuringSpeech: () => gate.value,
+        holdsProactiveVisionStream: () => S.isRecording && gate.value,
         document: {
             getElementById: () => null,
             querySelector: () => null,
@@ -380,6 +381,7 @@ test('a missing gate function counts as "may not see the screen"', async () => {
 
     const screen = loadScreen({ gate: { value: true } });
     delete screen.window.canProactiveVisionRunDuringSpeech;
+    delete screen.window.holdsProactiveVisionStream;
     const stream = fakeStream();
     screen.S.screenCaptureStream = stream;
     await screen.window.stopScreenSharing();
@@ -448,7 +450,7 @@ function loadUserScenario({ privacyAllowsVision }) {
     vm.runInContext(screenSource, window, { filename: 'app-screen.js' });
     window.appScreen.captureFrameFromStream = async () => ({ dataUrl: 'data:image/jpeg;base64,FRAME' });
     return {
-        window, S,
+        window, S, settings,
         trackStops: () => trackStops,
         frames: () => sent.filter((message) => message.action === 'stream_data').length,
         heartbeat: () => intervals.find((timer) => timer.ms === S.proactiveVisionInterval * 1000),
@@ -586,27 +588,19 @@ test('a stream obtained after consent was revoked is released, not kept', async 
 });
 
 test('text-chat vision does not keep the stream after another window revoked', async () => {
-    const h = loadScreen({ gate: { value: false } });
+    // Real app-proactive + app-screen: not in a call, text-chat vision on.
+    const h = loadUserScenario({ privacyAllowsVision: true });
     h.S.isRecording = false;
     h.S.proactiveVisionChatEnabled = true;
-    h.S.proactiveChatEnabled = true;
-    h.window.appProactive = { isProactiveVisionEnabledNow: () => false };
-    const stream = fakeStream();
-    h.S.screenCaptureStream = stream;
-
+    h.settings.proactiveVisionEnabled = false; // saved by another window; S still true
     await h.window.stopScreenSharing();
+    assert.equal(h.trackStops(), 1);
 
-    assert.equal(stream.stopped, 1);
-
-    const kept = loadScreen({ gate: { value: false } });
+    const kept = loadUserScenario({ privacyAllowsVision: true });
     kept.S.isRecording = false;
     kept.S.proactiveVisionChatEnabled = true;
-    kept.S.proactiveChatEnabled = true;
-    kept.window.appProactive = { isProactiveVisionEnabledNow: () => true };
-    const keptStream = fakeStream();
-    kept.S.screenCaptureStream = keptStream;
     await kept.window.stopScreenSharing();
-    assert.equal(keptStream.stopped, 0, 'text vision still holds the stream while allowed');
+    assert.equal(kept.trackStops(), 0, 'text vision still holds the stream while allowed');
 });
 
 test('no native desktop capture is started after a revocation during capture', async () => {
@@ -687,4 +681,23 @@ test('failed save: a late stream is released and text-chat vision does not keep 
     assert.equal(await h.window.acquireProactiveVisionStream(), false);
     assert.equal(stream.stopped, 1);
     assert.equal(h.S.screenCaptureStream, null);
+});
+
+test('failed save: a revocation during the backend probe stops before any stream capture', async () => {
+    for (const probe of ['data:image/jpeg;base64,DESK', null]) {
+        let streamCalls = 0;
+        let h;
+        h = loadProactive({
+            privacyAllowsVision: true,
+            appScreen: {
+                fetchBackendScreenshot: async () => {
+                    h.S.proactiveVisionEnabled = false; // saved value stays true
+                    return { dataUrl: probe };
+                },
+                acquireOrReuseCachedStream: async () => { streamCalls += 1; return null; },
+            },
+        });
+        assert.equal(await h.window.acquireProactiveVisionStream(), false, `probe=${probe}`);
+        assert.equal(streamCalls, 0, `probe=${probe}`);
+    }
 });

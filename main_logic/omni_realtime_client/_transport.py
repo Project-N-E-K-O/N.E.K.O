@@ -1450,14 +1450,13 @@ class _TransportMixin:
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            if (
+            # The frame may have been discarded meanwhile; state may then
+            # already belong to a newer frame, so leave it alone.
+            discarded_meanwhile = (
                 update_turn_state
                 and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
-            ):
-                # The frame was discarded meanwhile; state may already belong
-                # to a newer frame, so leave it alone.
-                return ""
-            if update_turn_state:
+            )
+            if update_turn_state and not discarded_meanwhile:
                 self._image_recognized_this_turn = False
                 self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                 self._latest_image_b64 = None
