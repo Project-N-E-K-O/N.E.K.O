@@ -1893,7 +1893,8 @@ def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
     out = capsys.readouterr().out
     assert exit_code == 0
     assert ("agent kit snapshot is older than this neko-plugin CLI" in out) is warned
-    target = release_cmd._shell_quote(str(plugin_dir))
+    # Some Windows temp paths (e.g. a user name with "!") get the placeholder.
+    target = release_cmd._shell_quote(str(plugin_dir)) or release_cmd._PLUGIN_DIR_PLACEHOLDER
     refresh = f"setup-repo {target} --overwrite --no-readme --no-tests --no-gitignore --no-vscode"
     assert (refresh in out) is warned
 

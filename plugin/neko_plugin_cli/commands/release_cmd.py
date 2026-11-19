@@ -641,6 +641,8 @@ _WINDOWS_SHELL = os.name == "nt"
 # Expanded inside double quotes by cmd (%VAR%, !VAR! with delayed expansion)
 # or PowerShell ($name, ` escapes).
 _WINDOWS_EXPANDING_CHARS = "%!$`"
+# Shown instead of a path no quoting keeps literal; the user fills it in.
+_PLUGIN_DIR_PLACEHOLDER = '"<plugin directory>"'
 
 
 def _shell_quote(value: str) -> str | None:
@@ -706,7 +708,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
         # works for every plugin. --no-* keeps the other support files.
         target = _shell_quote(str(plugin_dir)) if plugin_dir is not None else label
         if target is None:
-            target = '"<plugin directory>"'
+            target = _PLUGIN_DIR_PLACEHOLDER
         refresh = (
             f"neko-plugin setup-repo {target} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"
