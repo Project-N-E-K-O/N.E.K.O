@@ -415,7 +415,7 @@ The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `
 
 These stores are shared, and reading them is not gated per plugin: any enabled plugin can read `conversations` and `frames`, including turns and pictures that came from the user or from another plugin. Nothing here widens what the host already sent to the model — a frame the session never sent never appears — but it does widen who can see it, from the model provider to every plugin the user has enabled. Treat installing a plugin as granting it that visibility, and say so in your own plugin's description if you read these.
 
-`bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
+`bus.memory` contains a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is separate from the character's persistent facts, reflections, and persona. `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool over the character's private memory and returns `{"result": text}`, where `text` is a numbered, token-budgeted block of hits rendered in the character's prompt language, or an empty string when nothing relevant was found.
 
 ### Frames
 

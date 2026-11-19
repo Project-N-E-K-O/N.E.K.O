@@ -110,7 +110,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router 类。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里：插件管理面板和 Agent 的入口列表里都看不到它们（`include_router()` 不会把它们报给宿主），入口的 `timeout` 不会生效（改用宿主默认值），Hosted UI 动作也可能找不到它们。对列在 `__routers__` 里的 router 入口，`plugin.toml` 中 `[[plugin.entries]]` 的配置覆盖和主类上的入口一样生效。
+`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router（类；实例则通过它的 `collect_entries()`）。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里（`include_router()` 不会把它们报给宿主）：除非 `plugin.toml` 里有 `[[plugin.entries]]` 条目声明了它们（这样的条目只带它自己写的字段），插件管理面板和 Agent 的入口列表里都看不到它们；Hosted UI 动作也可能找不到它们；经宿主发起的调用以宿主默认超时为上限（装饰器的 `timeout` 更短时，插件进程仍会按它执行）。对列在 `__routers__` 里的 router 入口，`plugin.toml` 中 `[[plugin.entries]]` 的配置覆盖和主类上的入口一样生效。
 
 用旧版 `neko-plugin build` 打包的插件（打包元数据 schema 4 及更早）里，router 入口可能缺少宿主侧的 handler。宿主无法区分，所以这类插件包第一次启动时都会重新扫描一次入口，并重写打包元数据；之后照常启动，用户不用做什么。如果元数据无法重写（例如插件包目录只读），每次启动都会重新扫描。用当前的 `neko-plugin build` 重新打包可以省掉这次扫描。
 
@@ -210,7 +210,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 这样 `countdown` 入口的实际 ID 变成 `time_countdown`。
 
 ::: warning 不要把 `prefix` 和 `__routers__` 一起用
-router 类列在 `__routers__` 里时（如上面的示例），宿主的静态扫描从类上读取入口 ID，看不到这个前缀。宿主登记的 ID（`countdown`）和运行时的 ID（`time_countdown`）对不上，入口的超时和 `[[plugin.entries]]` 配置覆盖都落不上。列在 `__routers__` 里的 router 类不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。
+router 类列在 `__routers__` 里时（如上面的示例），宿主的静态扫描从类上读取入口 ID，看不到这个前缀。宿主登记的 ID（`countdown`）和运行时的 ID（`time_countdown`）对不上，按运行时 ID 调用时，宿主找不到这个入口的超时和 `[[plugin.entries]]` 配置覆盖。列在 `__routers__` 里的 router 类不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。
 
 这条只针对 router 类。如果 `__routers__` 里放的是 router 实例，扫描会调用它们的 `collect_entries()`，会带上实例上已经设好的前缀（例如 `set_prefix("time_")`）。这时要把同一批实例传给 `self.include_router(router)`；上面 `router_cls()` 的循环只适用于类。
 :::

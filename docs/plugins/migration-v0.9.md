@@ -11,7 +11,7 @@ This historical path name is retained for inbound links. The page is a current m
 | Bus `where_*` helpers and list set operators | Removed | Compose `get()`, `filter()` / `where()`, `sort()`, `limit()`, and `watch()` |
 | `get_message_plane_all` | Removed | Use bounded `await self.bus.messages.get(...)` queries |
 | Bus incremental/local fast paths | Removed | Use the canonical bounded, replayable read/watch pipeline |
-| High-level `self.memory` property | Removed | For recent in-memory user-context records use `self.bus.memory.get(...)`; for read-only persistent memory use `MemoryClient(self.ctx)` (below) |
+| High-level `self.memory` / old SDK `MemoryClient` facade | Removed | Use `self.bus.memory.get(...)` only for recent in-memory user-context records. For persistent memory recall use `ctx.query_memory(...)` (rendered text) or the newer `MemoryClient(self.ctx).search(...)` from `plugin.sdk.plugin` (structured hits) |
 | Extension package type, `[plugin.host]`, and `plugin.sdk.extension` | Removed, no compatibility path | Merge the Router into its owning normal Plugin, or convert the package into a standalone Plugin |
 | `push_message` v1 fields | Deprecated but still translated in current source | Use `parts`, `visibility`, and `ai_behavior`; do not rely on an exact removal release |
 
@@ -84,16 +84,14 @@ The removed bus fast paths were acceleration branches such as BusList `fast_mode
 
 ## Memory
 
-The old high-level `self.memory` property mixed two different concepts. Recent user context comes from the host's snapshot:
+The old SDK `MemoryClient` mixed two different concepts. Recent user context comes from the host's snapshot:
 
 ```python
 # Recent records from one bucket
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surface is the high-level `self.memory` property. `ctx.query_memory(...)` still exists for compatibility, but it reaches a deprecated placeholder endpoint and does not provide semantic recall.
-
-Read-only access to persistent memory is available through `MemoryClient` from `plugin.sdk.plugin`: `MemoryClient(self.ctx)`, then `await client.search(target=..., query=...)` and `await client.get_persona(target=...)`, both returning a `Result`. `target` is a `MemoryTarget` (also exported from `plugin.sdk.plugin`), for example `MemoryTarget(kind="private", character=...)`; `get_persona` supports only `private` targets and returns `CAPABILITY_UNAVAILABLE` for others. While the capability policy is on (`NEKO_PLUGIN_CAPABILITY_POLICY` is not `off`), the host records the calls that reach it as use of the `memory.read` capability; this audit trail is not a complete access log. Memory content is the user's private data: never log it.
+These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the old SDK/runtime `MemoryClient` facade (the `MemoryClient` now exported from `plugin.sdk.plugin` is a different, newer search client). `ctx.query_memory(...)` runs the same hybrid recall as the built-in `recall_memory` tool and returns the hits as rendered text (an empty string when nothing matches). For structured hits use `MemoryClient(self.ctx).search(target=MemoryTarget.private(...), query=...)`, which returns `Ok` / `Err`. `MemoryClient` also has `get_persona(target=...)`, which supports only `private` targets and returns `CAPABILITY_UNAVAILABLE` for others. While the capability policy is on (`NEKO_PLUGIN_CAPABILITY_POLICY` is not `off`), the host records the memory calls that reach it as use of the `memory.read` capability; this audit trail is not a complete access log. Memory content is the user's private data: never log it.
 
 ## `push_message` v2
 

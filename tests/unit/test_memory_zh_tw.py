@@ -4271,8 +4271,8 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
 async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     """The plugin server must not push its own process locale across the boundary.
 
-    ``/search_for_memory`` is a deprecated placeholder endpoint, and the plugin
-    server has no session locale to contribute. Its ``get_global_language_full()``
+    The plugin server has no session locale to contribute to ``/query_memory``.
+    Its ``get_global_language_full()``
     also misses the Steam resolver that only the main server registers, so on a
     Steam=Traditional / system=English machine it resolves to ``en`` and would
     override the memory server's own (correct) resolution.
@@ -4283,13 +4283,15 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     calls = []
 
     class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
         @staticmethod
         def raise_for_status():
             return None
 
-        @staticmethod
-        def json():
-            return {"items": []}
+        def json(self):
+            return self._payload
 
     class Client:
         async def __aenter__(self):
@@ -4298,9 +4300,13 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
         async def __aexit__(self, *_args):
             return None
 
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response({"results": []})
+
         async def get(self, url, **kwargs):
             calls.append((url, kwargs))
-            return Response()
+            return Response({"effective_language": "zh-TW"})
 
     monkeypatch.setattr(
         load_httpx(),
@@ -4314,9 +4320,12 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
         timeout=5,
     )
 
-    assert result == {"result": {"items": []}}
+    assert result == {"result": ""}
     assert calls, "the query must still reach the memory server"
     assert all("params" not in kwargs for _url, kwargs in calls)
+    assert all(
+        "language" not in (kwargs.get("json") or {}) for _url, kwargs in calls
+    )
     # The module must not even hold a handle to the process-locale resolver —
     # re-importing it is how this regression would come back.
     assert not hasattr(memory_query_service, "get_global_language_full")
