@@ -110,7 +110,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router 类。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里：入口的 `timeout` 不会生效（改用宿主默认值），依赖扫描结果的功能（例如 Hosted UI 动作）也可能找不到它们。
+`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router 类。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里：入口的 `timeout` 不会生效（改用宿主默认值），依赖扫描结果的功能（例如 Hosted UI 动作）也可能找不到它们。对列在 `__routers__` 里的 router 入口，`plugin.toml` 中 `[[plugin.entries]]` 的配置覆盖和主类上的入口一样生效。
 
 ---
 
@@ -207,7 +207,11 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 这样 `countdown` 入口的实际 ID 变成 `time_countdown`。
 
-`__routers__` 里列的是 router 类时（如上面的示例），宿主的静态扫描从类上读取入口 ID，不会加上这个前缀，扫描到的 ID（`countdown`）和运行时的 ID（`time_countdown`）就会不一致。对列在 `__routers__` 里的 router（应当是全部 router），不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。大多数情况下不需要前缀——只要确保不同 router 里的入口 ID 不重复就行。
+::: warning 不要把 `prefix` 和 `__routers__` 一起用
+router 类列在 `__routers__` 里时（如上面的示例），宿主的静态扫描从类上读取入口 ID，看不到这个前缀。宿主登记的 ID（`countdown`）和运行时的 ID（`time_countdown`）对不上，入口的超时和 `[[plugin.entries]]` 配置覆盖都落不上。列在 `__routers__` 里的 router 类不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。
+:::
+
+大多数情况下不需要前缀——只要确保不同 router 里的入口 ID 不重复就行。
 
 ---
 

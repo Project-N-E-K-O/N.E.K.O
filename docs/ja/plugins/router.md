@@ -111,7 +111,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` は router をバインドし、そのエントリーポイントを現在のプラグインに登録して実行できるようにします。クラス属性 `__routers__` も必要です。ホストはプラグインをインスタンス化せずにプラグインクラスからエントリーのメタデータを読み取り、`__routers__` に列挙された router クラスだけをスキャンします。`include_router()` に渡しただけの router も実行はできますが、そのエントリーはこの静的スキャンに含まれません。エントリーの `timeout` は適用されず（ホストのデフォルト値が使われる）、スキャン結果を使う機能（Hosted UI のアクションなど）からも見つからない場合があります。
+`self.include_router()` は router をバインドし、そのエントリーポイントを現在のプラグインに登録して実行できるようにします。クラス属性 `__routers__` も必要です。ホストはプラグインをインスタンス化せずにプラグインクラスからエントリーのメタデータを読み取り、`__routers__` に列挙された router クラスだけをスキャンします。`include_router()` に渡しただけの router も実行はできますが、そのエントリーはこの静的スキャンに含まれません。エントリーの `timeout` は適用されず（ホストのデフォルト値が使われる）、スキャン結果を使う機能（Hosted UI のアクションなど）からも見つからない場合があります。`__routers__` に列挙した router のエントリーにも、`plugin.toml` の `[[plugin.entries]]` による設定上書きはメインクラスのエントリーと同じように適用されます。
 
 ---
 
@@ -208,7 +208,11 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 この場合、`countdown` エントリーの実際の ID は `time_countdown` になります。
 
-`__routers__` に router クラスを列挙する場合（上の例のように）、ホストの静的スキャンはクラスからエントリー ID を読み取り、この prefix を付けません。そのため、スキャンされる ID（`countdown`）と実行時の ID（`time_countdown`）が食い違います。`__routers__` に列挙する router（本来はすべての router）では `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。多くの場合、prefix は不要です。router 間でエントリー ID が重複しないようにすれば十分です。
+::: warning `prefix` と `__routers__` を併用しない
+router クラスを `__routers__` に列挙すると（上の例のように）、ホストの静的スキャンはクラスからエントリー ID を読み取り、この prefix を認識しません。ホストが登録する ID（`countdown`）と実行時の ID（`time_countdown`）が一致しなくなり、エントリーのタイムアウトも `[[plugin.entries]]` の設定上書きも適用されません。`__routers__` に列挙する router クラスでは `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。
+:::
+
+多くの場合、prefix は不要です。router 間でエントリー ID が重複しないようにすれば十分です。
 
 ---
 
