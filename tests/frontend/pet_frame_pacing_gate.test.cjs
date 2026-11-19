@@ -926,7 +926,7 @@ test('负数 targetFrameRate 一律归一为 60：Live2D / VRM / MMD 地板都�
     // rAF 路径也走同一解析，不再直接读 window.targetFrameRate
     const vrmSrc = read('static/vrm/vrm-manager.js');
     const loopBody = vrmSrc.slice(vrmSrc.indexOf('startAnimateLoop() {'), vrmSrc.indexOf('_resolveActiveTimerTickFps() {'));
-    assert.match(loopBody, /const targetFps = this\._resolveRafCapFps\(this\._resolveConfiguredTargetFps\(\)\);/);
+    assert.match(loopBody, /const configuredFps = this\._resolveConfiguredTargetFps\(\);\s*const targetFps = this\._resolveRafCapFps\(configuredFps\);/);
     assert.doesNotMatch(loopBody, /typeof window\.targetFrameRate === 'number' \? window\.targetFrameRate : 60/, 'rAF 路径不允许绕过归一化直接读配置');
     sb2.window.targetFrameRate = Infinity;
     assert.equal(vrm._resolveConfiguredTargetFps(), 60, 'Infinity 也归一为 60');
@@ -1652,4 +1652,36 @@ test('frame-pacing：换屏前开始的采样在换屏后超时，不占新屏�
     assert.equal(sb.rafQueue.length, 1, '新屏重测按 1.5s 照常开始，没被旧一轮的重试推到 5s');
     sb.pumpFrames(30, 60);
     assert.equal(pacing.rafCapFps(60), 90);
+}));
+
+test('VRM 真实 animateLoop：放宽后的上限严格执行（低估成 60、rAF 实际 96Hz 时不超过 90fps），正常 60Hz 仍逐帧渲染', withMockTimers((t) => {
+    const run = ({ pet, hz, jitterMs, seconds, seed }) => {
+        const sb = createSandbox({ pet, targetFrameRate: 60 });
+        sb.measureRefresh(60);
+        sb.window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true; // 不起空闲 governor，只看 rAF 节流
+        sb.load(VRM_MANAGER_SRC, 'vrm-manager.js');
+        const mgr = new sb.window.VRMManager();
+        let renders = 0;
+        mgr.renderer = { render() { renders++; } };
+        mgr.scene = {};
+        mgr.camera = {};
+        sb.rafQueue.splice(0);
+        mgr.startAnimateLoop();
+        const stamps = syntheticVsync({ hz, jitterMs, frames: Math.round(hz * seconds), seed, start: sb.now() });
+        sb.pumpAt(stamps);
+        return { renders, frames: stamps.length, fps: renders / seconds };
+    };
+    const under = run({ pet: true, hz: 96, jitterMs: 0.3, seconds: 10, seed: 5 });
+    const normal = run({ pet: true, hz: 60, jitterMs: 1, seconds: 10, seed: 6 });
+    const nonPet = run({ pet: false, hz: 96, jitterMs: 0.3, seconds: 10, seed: 5 });
+    const rows = [
+        `VRM 低估：测成 60、rAF 实际 96Hz → ${under.fps.toFixed(1)}fps`,
+        `VRM 60Hz ±1ms：${normal.renders}/${normal.frames} 帧渲染`,
+        `VRM 非 Pet 96Hz（配置 60，原 0.9 容差路径）→ ${nonPet.fps.toFixed(1)}fps`,
+    ];
+    rows.forEach((r) => (t && t.diagnostic ? t.diagnostic(r) : console.log(r)));
+    assert.ok(under.fps <= 90.5, rows[0] + '：不超过放宽后的上限 90');
+    assert.equal(normal.renders, normal.frames, '60Hz 测准时逐帧渲染，不跳帧');
+    // 非 Pet 不放宽，且仍走原有 0.9 容差路径：96Hz（10.4ms）< 15ms 门槛，恰好隔帧渲染 = 48fps
+    assert.ok(Math.abs(nonPet.fps - 48) < 0.5, rows[2] + '：非 Pet 行为与改前一致');
 }));

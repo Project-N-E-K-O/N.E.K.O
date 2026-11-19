@@ -950,10 +950,15 @@ class VRMManager {
             const now = performance.now();
             // 与定时器路径同一套解析：负数/NaN/Infinity 一律按 60，0 = 不限帧；
             // 配置不明显低于实测刷新率时放宽软件上限（见 _resolveRafCapFps）
-            const targetFps = this._resolveRafCapFps(this._resolveConfiguredTargetFps());
+            const configuredFps = this._resolveConfiguredTargetFps();
+            const targetFps = this._resolveRafCapFps(configuredFps);
+            // 放宽后的上限要严格执行（和 Live2D / MMD 的节流一样不超过它）：下面非 VMC 分支
+            // 留了 0.9 的间隔容差，放宽到 90 时实际可到 100fps；改走累计截止时间。
+            // 正常测准的屏上帧间隔远大于放宽后的间隔，仍逐帧渲染。
+            const loosened = targetFps !== configuredFps;
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
-                if (window.__NEKO_VMC_ACTIVE__ === true) {
+                if (window.__NEKO_VMC_ACTIVE__ === true || loosened) {
                     if (this._nextRenderTime <= 0 || now - this._nextRenderTime > frameInterval * 4) {
                         this._nextRenderTime = now;
                     }
