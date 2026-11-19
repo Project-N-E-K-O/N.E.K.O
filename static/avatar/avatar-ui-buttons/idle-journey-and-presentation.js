@@ -2030,9 +2030,15 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
         && subactionState
         && subactionState.profile === profile
         && subactionState.substate === profile.walkingSubstate);
+    const previousHoverSrc = art.__nekoIdleHoverTier === normalizedTier ? art.__nekoIdleHoverSrc : '';
+    // The CAT1 idle hover art can keep looping while the pointer stays over the cat.
+    const previousDurationMs = previousHoverSrc && normalizedTier === _NEKO_IDLE_TIER_CAT1 && !useSubactionInteractive
+        ? _getNekoCatAppearanceDurationMs(previousHoverSrc)
+        : 0;
+    const hoverCycleEnded = previousDurationMs > 0 && Date.now() - art.__nekoIdleHoverStartedAt >= previousDurationMs;
     const clickSrc = useSubactionInteractive
         ? profile.assets.interactive()
-        : _getNekoIdleReturnClickAssetUrl(normalizedTier);
+        : (!hoverCycleEnded && previousHoverSrc) || _getNekoIdleReturnClickAssetUrl(normalizedTier, options);
     const dispatchHoverObservation = () => {
         // This helper is also reused by autonomous sound presentation. Only a
         // real input adapter may label the presentation as user interaction.
@@ -2060,7 +2066,7 @@ function _playNekoIdleHoverArt(art, tier, options = {}) {
     if (useSubactionInteractive) {
         _pauseNekoIdleCat1Journey(button);
     }
-    if (art.__nekoIdleHoverSrc === clickSrc) {
+    if (!hoverCycleEnded && previousHoverSrc === clickSrc) {
         if (art.__nekoIdleHoverTimer) {
             clearTimeout(art.__nekoIdleHoverTimer);
             art.__nekoIdleHoverTimer = 0;
