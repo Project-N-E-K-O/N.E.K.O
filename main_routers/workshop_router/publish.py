@@ -357,6 +357,25 @@ async def prepare_workshop_upload(request: Request):
         }, status_code=500)
 
 
+def _resolve_workshop_export_child(path: str, workshop_export_dir: str) -> tuple[str, str, bool]:
+    """Resolve ``path`` and check that it is a direct child of WorkshopExport.
+
+    Returns ``(resolved_path, resolved_root, allowed)``. The root itself is
+    never allowed: a containment check alone (``commonpath == root``) accepts
+    the root, and deleting it would wipe every exported item. Comparison uses
+    ``normcase`` so that on Windows a different letter case still counts as the
+    same directory; ``realpath`` drops trailing separators and resolves
+    symlinks, so a link that points back at the root (or outside) is rejected.
+    """
+    resolved = os.path.realpath(os.path.normpath(path))
+    root = os.path.realpath(os.path.normpath(workshop_export_dir))
+    allowed = (
+        os.path.normcase(resolved) != os.path.normcase(root)
+        and os.path.normcase(os.path.dirname(resolved)) == os.path.normcase(root)
+    )
+    return resolved, root, allowed
+
+
 def _delete_content_folder(temp_folder: str) -> None:
     """Delete a temp folder only when no publisher or pair writer owns it."""
     import shutil
@@ -380,27 +399,17 @@ async def cleanup_temp_folder(request: Request):
                 "error": "缺少临时目录路径"
             }, status_code=400)
         
-        # Security: ensure the temporary directory is under WorkshopExport.
+        # Security: only a direct child of WorkshopExport (the item_xxx folder
+        # created by prepare-upload) may be deleted -- never the root itself.
         base_workshop_path = await get_workshop_path_async()
         workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
-        
-        # Normalize with realpath to resolve symlinks and relative paths.
-        temp_folder = os.path.realpath(os.path.normpath(temp_folder))
-        workshop_export_dir = os.path.realpath(os.path.normpath(workshop_export_dir))
-        
-        # Verify containment under WorkshopExport using the more reliable commonpath.
-        try:
-            common_path = os.path.commonpath([temp_folder, workshop_export_dir])
-            if common_path != workshop_export_dir:
-                return JSONResponse({
-                    "success": False,
-                    "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir}"
-                }, status_code=403)
-        except ValueError:
-            # commonpath raises ValueError for paths on different drives.
+        temp_folder, workshop_export_dir, allowed = _resolve_workshop_export_child(
+            temp_folder, workshop_export_dir
+        )
+        if not allowed:
             return JSONResponse({
                 "success": False,
-                "error": "临时目录路径不在允许的范围内（路径验证失败）"
+                "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir} 下的子目录"
             }, status_code=403)
         
         # Delete the temporary directory.
