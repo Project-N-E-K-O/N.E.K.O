@@ -32,6 +32,7 @@ import pytest
 
 import config.nekoclaw_settings as settings
 from config.prompts import prompts_nekoclaw_brain as brain_texts
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
 from nekoclaw.host.conversation import ROLE_CHARACTER, ROLE_USER, RecentConversation, Turn, excerpt_lines
 from nekoclaw.host.reports import tokens_text
 from nekoclaw.host.task_agents import ForkRefused
@@ -824,7 +825,8 @@ async def test_a_commission_that_opens_a_new_session_is_handed_what_was_said_jus
     assert opening.startswith(
         f"Commission {first.id}\nadd a CSV export to the budget app\nWhat the user said: can it export that table\n\n{excerpt}"
     )
-    assert opening.endswith("in English.") and "what is for dinner" not in opening
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
+    assert "what is for dinner" not in opening
     # It is what opens the commission, so a summary leaves it as it is; and it is in the session's record.
     assert excerpt in (Path((await host.ledger.get_session(first.id)).session_dir) / "transcript.jsonl").read_text(
         encoding="utf-8"

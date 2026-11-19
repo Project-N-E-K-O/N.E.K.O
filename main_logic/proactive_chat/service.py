@@ -2694,6 +2694,7 @@ async def handle_proactive_chat(
             master_name=master_name_current,
             log=logger,
             round_id=lifecycle.screenshot_request_id,
+            vision_consent_epoch=vision_consent_epoch,
         )
         if delivery_commit.result is not None:
             return await _end_proactive(

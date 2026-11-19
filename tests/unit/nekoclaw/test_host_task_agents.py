@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
+from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -246,7 +248,7 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     )
     hosts.append(host)
 
-    receipt = await _dispatch(host, "sort the photos")
+    receipt = await _dispatch(host, "sort the photos", lang="zh-TW")
 
     failed = await wait_status(host, receipt.commission_id, "failed")
     assert "could not be started" in failed.status_reason
@@ -255,6 +257,9 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     assert counted == []
     (report,) = await outbox(host, "task_result")
     assert report.payload["status"] == "failed"
+    # She is told, and the HUD shows, in her dialogue's language; the error itself as it came.
+    words = TASK_AGENT_FAILED_TEXTS["zh-TW"]
+    assert report.payload["summary"] == words["start"] + words["error"].format(detail="the runtime process could not be created")
 
 
 async def test_without_a_model_no_task_agent_is_available(hosts, tmp_path):
@@ -1328,6 +1333,11 @@ async def test_kept_text_survives_the_runtime_going_away_before_the_prompt_was_s
     await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
 
     assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
+    # Nothing of the work was taken: she is told it did not start, not that it stopped partway.
+    assert (await host.ledger.get(commission.id)).status_reason == "the runtime process exited"
+    words = TASK_AGENT_FAILED_TEXTS["en"]
+    report = (await outbox(host, "task_result"))[-1]
+    assert report.payload["summary"] == words["start"] + words["error"].format(detail="the runtime process exited")
 
 
 async def test_what_is_passed_on_while_a_run_that_ended_before_its_prompt_is_failed_comes_after_it(hosts, tmp_path):
@@ -1346,9 +1356,9 @@ async def test_what_is_passed_on_while_a_run_that_ended_before_its_prompt_is_fai
     commission = await _kept_after_a_quota_failure(host)
     fail = host.task_agents._fail
 
-    async def fail_with_a_word_meanwhile(commission_id: str, reason: str) -> None:
+    async def fail_with_a_word_meanwhile(commission_id: str, reason: str, **said: Any) -> None:
         await host.task_agents.tell(commission_id, "and drive F: too")
-        await fail(commission_id, reason)
+        await fail(commission_id, reason, **said)
 
     host.task_agents._fail = fail_with_a_word_meanwhile
     await host.task_agents.tell(commission.id, "try again")
@@ -1378,9 +1388,9 @@ async def test_what_a_failed_first_start_held_reaches_a_start_taken_up_while_the
         host.task_agents._model_config = model_config
         raise RuntimeError("no model is configured for task agents")
 
-    async def fail_then_spoken_to(commission_id: str, reason: str) -> None:
+    async def fail_then_spoken_to(commission_id: str, reason: str, **said: Any) -> None:
         host.task_agents._fail = fail
-        await fail(commission_id, reason)
+        await fail(commission_id, reason, **said)
         await host.task_agents.tell(commission_id, "once more")
         await wait_until(lambda: len(llm.requests) == 1, what="the next start's model request")
 
@@ -1560,10 +1570,10 @@ async def test_what_is_passed_on_while_a_quota_failure_is_written_comes_before_t
     host.task_agents._meter = meter
     fail = host.task_agents._fail
 
-    async def fail_while_told(commission_id: str, reason: str) -> None:
+    async def fail_while_told(commission_id: str, reason: str, **said: Any) -> None:
         # The user adds something while the failure is being written.
         host.task_agents._notes.setdefault(commission_id, []).append("and skip the drafts")
-        await fail(commission_id, reason)
+        await fail(commission_id, reason, **said)
 
     host.task_agents._fail = fail_while_told
     commission = await _filed(host, "sort the photos")
@@ -2208,6 +2218,48 @@ async def test_an_answer_while_a_child_result_keeps_the_parent_busy_waits_for_th
     assert {"role": "user", "content": "by month"} in parent.requests[3]
 
 
+async def test_a_child_that_fails_for_the_host_tells_its_parent_the_reason_on_record(hosts, tmp_path):
+    parent_release, parent_wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the files", "prompt": "Count the files in the folder."}), finish("tool_calls")],
+            # Held until the child has failed, so its result is in the next request.
+            [parent_wait, call("list_agents", {}, "c2"), finish("tool_calls")],
+            _report("ready", "the count failed"),
+        ]
+    )
+    child = ScriptedLLM([[say("3 files"), finish()]])
+    lead: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        # The parent's requests are counted; the child has nothing left.
+        lead[:1] = lead[:1] or [commission_id]
+        return commission_id == lead[0]
+
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child, task_agent_meter=meter)
+
+    receipt = await _dispatch(host, "tell me how many files are in the folder", lang="ja")
+
+    await wait_until(lambda: _children(host, receipt.commission_id), what="the child task agent being filed")
+    (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
+    await wait_status(host, sub.id, "failed")
+    # The failure is on record before the parent is told: released only once
+    # the result has gone to its session (sent there in the same step as it
+    # is counted), so the parent's next request has it.
+    parent_session = host.task_agents._sessions[receipt.commission_id]
+    await wait_until(lambda: parent_session.sent >= 2, what="the child's result being sent to the parent")
+    parent_release.set()
+    await wait_status(host, receipt.commission_id, "done")
+    # What a parent is told is not for the user: the reason as it is on record, untranslated.
+    told = json.dumps(parent.requests[-1], ensure_ascii=False).replace("\\n", "\n")
+    # (Framed by the host, as everything a task agent hands back is: indented between two marker lines.)
+    assert "[child task agent agent-1 finished: failed]" in told
+    assert "\n    the free daily quota of the agent model is used up\n" in told
+    assert TASK_AGENT_FAILED_TEXTS["ja"]["quota"] not in told
+    # Only the commission she gave is reported to her.
+    assert [report.payload["task_id"] for report in await outbox(host, "task_result")] == [receipt.commission_id]
+
+
 async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hosts, tmp_path):
     parent = ScriptedLLM(
         [
@@ -2294,7 +2346,7 @@ async def test_what_a_task_agent_hands_to_one_it_starts_reaches_it_whole(hosts, 
     # it was told that the other was started.
     opening = child.requests[0][-1]["content"]
     assert opening.startswith(f"Your part: count the files\n{handed}")
-    assert opening.endswith("in English.")
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
 
 
 @pytest.mark.parametrize("where", ["outside", "inside"])
@@ -3057,6 +3109,88 @@ async def test_a_run_that_ends_lets_go_of_the_browser_and_of_what_was_allowed_on
     assert await _status(host, commission.id) == status
     assert host.leases.occupied() == {}
     assert host.permissions.run_grants(commission.id) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("event", "said", "detail", "reason"),
+    [
+        # Stopped on an error that names nothing.
+        ({"kind": "ended", "reason": "error", "inputs": 1}, "run", "", "the run failed"),
+        ({"kind": "ended", "reason": "error", "inputs": 1, "error": "the model cannot be reached"},
+         "run", "the model cannot be reached", "the model cannot be reached"),
+        # Its work was refused: none of it was taken, so it did not start.
+        ({"kind": "error", "command": "prompt", "message": "the session is busy"},
+         "start", "the session is busy", "the session is busy"),
+        # Refused without a word: the host's own fallback is for the record only.
+        ({"kind": "error", "command": "prompt"}, "start", "", "the runtime rejected the command"),
+    ],
+)
+async def test_how_a_run_failed_is_said_in_her_language_and_kept_as_it_was(hosts, tmp_path, event, said, detail, reason):
+    host, runtimes = _recording_host(hosts, tmp_path)
+    commission = await _filed(host, "tidy the desktop", lang="ja")
+    assert await host.task_agents.submit(commission)
+    runtime = runtimes[0]
+    assert runtime.sent[-1][:2] == ("prompt", commission.id)
+
+    event = dict(event)
+    runtime.say(commission.id, event.pop("kind"), **event)
+
+    failed = await wait_status(host, commission.id, "failed")
+    assert failed.status_reason == reason
+    words = TASK_AGENT_FAILED_TEXTS["ja"]
+    expected = words[said] + (words["error"].format(detail=detail) if detail else "")
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["summary"] == expected == failed.result_summary
+    # Nothing of the English record reaches her when the error named nothing.
+    if not detail:
+        assert reason not in report.payload["summary"]
+
+
+async def test_work_refused_after_some_was_taken_is_said_to_have_stopped_partway(hosts, tmp_path):
+    host, runtimes = _recording_host(hosts, tmp_path)
+    commission = await _filed(host, "tidy the desktop", lang="zh")
+    assert await host.task_agents.submit(commission)
+    # As when an answer went to it after its work: two texts sent, the second refused.
+    host.task_agents._sessions[commission.id].sent = 2
+
+    runtimes[0].say(commission.id, "error", command="prompt", message="the session is busy")
+
+    await wait_status(host, commission.id, "failed")
+    words = TASK_AGENT_FAILED_TEXTS["zh"]
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["summary"] == words["run"] + words["error"].format(detail="the session is busy")
+
+
+@pytest.mark.parametrize(("refused", "said"), [("prompt", "start"), ("steer", "run")])
+async def test_a_start_that_fails_once_its_work_went_through_is_said_to_have_stopped_partway(
+    hosts, tmp_path, monkeypatch, refused, said
+):
+    host, runtimes = _recording_host(hosts, tmp_path)
+    commission = await _filed(host, "tidy the desktop", lang="zh")
+    told, steered = RecordingRuntime.prompt, RecordingRuntime.steer
+
+    async def prompt(self: Any, session_id: str, text: str, *, opening: bool = False, serial: int | None = None) -> None:
+        if refused == "prompt":
+            raise RuntimeError("the runtime went away")
+        await told(self, session_id, text, opening=opening, serial=serial)
+        # Passed on while the work was on its way: sent after it.
+        host.task_agents._notes.setdefault(commission.id, []).append("the downloads too")
+
+    async def steer(self: Any, session_id: str, text: str, *, serial: int | None = None) -> None:
+        if refused == "steer":
+            raise RuntimeError("the runtime went away")
+        await steered(self, session_id, text, serial=serial)
+
+    monkeypatch.setattr(RecordingRuntime, "prompt", prompt)
+    monkeypatch.setattr(RecordingRuntime, "steer", steer)
+    await host.task_agents.submit(commission)
+
+    failed = await wait_status(host, commission.id, "failed")
+    assert failed.status_reason == "the task agent could not be started: the runtime went away"
+    assert [kind for kind, _session, _text in runtimes[0].sent] == (["prompt"] if refused == "steer" else [])
+    words = TASK_AGENT_FAILED_TEXTS["zh"]
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["summary"] == words[said] + words["error"].format(detail="the runtime went away")
 
 
 async def test_a_session_closed_under_a_commission_that_goes_on_ends_its_run_too(hosts, tmp_path):

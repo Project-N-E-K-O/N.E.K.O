@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -25,6 +26,7 @@ from utils.openai_tts import (
     build_openai_tts_payload,
     openai_tts_base_url,
     openai_tts_extra_body,
+    openai_tts_pcm_format,
     openai_tts_sdk_options,
     openai_tts_speech_url,
 )
@@ -120,6 +122,56 @@ def test_siliconflow_pins_streaming_pcm_sample_rate_without_polluting_other_prov
         "stream": True,
     }
     assert openai_tts_extra_body("https://speech.example.com/v1") == {}
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://api.fish.audio/compat/v1",
+        "https://API.FISH.AUDIO/compat/v1/audio/speech",
+    ],
+)
+def test_fish_audio_pins_pcm_sample_rate(endpoint):
+    assert openai_tts_extra_body(endpoint) == {"sample_rate": OPENAI_TTS_PCM_SAMPLE_RATE}
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://api.openai.com/v1",
+        "https://speech.example.com/v1",
+        "https://api.fish.audio.example.com/v1",
+        "https://proxy.example.com/api.fish.audio/v1",
+        "",
+    ],
+)
+def test_strict_openai_compatible_hosts_get_no_extensions(endpoint):
+    assert openai_tts_extra_body(endpoint) == {}
+
+
+@pytest.mark.parametrize(
+    ("content_type", "expected"),
+    [
+        ("audio/pcm; rate=44100", (44100, 1, False)),
+        ("audio/pcm;rate=24000", (24000, 1, False)),
+        ('audio/L16; rate="16000"; channels=2', (16000, 2, True)),
+        ("Audio/L16; rate=24000", (24000, 1, True)),
+        ("audio/pcm; RATE=22050", (22050, 1, False)),
+        ("audio/pcm; sample_rate=32000", (32000, 1, False)),
+        ("audio/pcm; rate=abc; sample_rate=44100", (44100, 1, False)),
+        ("audio/pcm", (None, 1, False)),
+        ("application/octet-stream", (None, 1, False)),
+        ("", (None, 1, False)),
+        (None, (None, 1, False)),
+        ("audio/pcm; rate=abc; channels=x", (None, 1, False)),
+        ("audio/pcm; rate=1; channels=0", (None, 1, False)),
+        # Malformed RFC 2231 continuations make the stdlib parser raise.
+        ("audio/pcm; rate*=abc; rate*0=x", (None, 1, False)),
+        ("audio/L16; rate*=abc; rate*0=x", (None, 1, True)),
+    ],
+)
+def test_openai_tts_pcm_format_reads_content_type(content_type, expected):
+    assert openai_tts_pcm_format(content_type) == expected
 
 
 class _CustomTtsConfigManager:
@@ -1270,12 +1322,19 @@ def _wait_for_item(q, predicate, timeout=5.0):
     raise AssertionError(f"timed out waiting for queue item; seen={seen!r}")
 
 
-def _install_fake_openai(monkeypatch, chunks):
+def _install_fake_openai(monkeypatch, chunks, headers=None, openai_base_url_env=None):
     import openai
 
+    # The fake resolves base_url like the SDK; keep the runner's environment out of it.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    if openai_base_url_env is not None:
+        monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url_env)
     clients = []
 
     class _FakeStreamingResponse:
+        def __init__(self):
+            self.headers = httpx.Headers(headers or {})
+
         async def __aenter__(self):
             return self
 
@@ -1298,6 +1357,12 @@ def _install_fake_openai(monkeypatch, chunks):
     class _FakeAsyncOpenAI:
         def __init__(self, **kwargs):
             self.client_kwargs = kwargs
+            # Mirror the SDK: an explicit base_url wins, then OPENAI_BASE_URL.
+            self.base_url = httpx.URL(
+                kwargs.get("base_url")
+                or os.environ.get("OPENAI_BASE_URL")
+                or "https://api.openai.com/v1/"
+            )
             self.create_calls = []
             self.closed = False
             self.audio = SimpleNamespace(
@@ -1331,8 +1396,15 @@ def _run_worker_once(
     model=None,
     voice_id="character-voice",
     audio_api_key="sk-test",
+    headers=None,
+    openai_base_url_env=None,
 ):
-    clients = _install_fake_openai(monkeypatch, chunks)
+    clients = _install_fake_openai(
+        monkeypatch,
+        chunks,
+        headers=headers,
+        openai_base_url_env=openai_base_url_env,
+    )
     request_queue = queue.Queue()
     response_queue = queue.Queue()
     kwargs = {}
@@ -1710,3 +1782,280 @@ async def test_connectivity_dispatches_siliconflow_compatible_tts_probe(monkeypa
         "sample_rate": 24000,
         "stream": True,
     }
+
+
+def _collect_worker_audio(response_queue, timeout=5.0):
+    """Gather resampled PCM bytes until the sentence finishes."""
+
+    audio = []
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            item = response_queue.get(timeout=max(0.01, deadline - time.time()))
+        except queue.Empty:
+            continue
+        if isinstance(item, (bytes, bytearray)):
+            audio.append(bytes(item))
+        elif isinstance(item, tuple) and item[0] == "__tts_sentence_done__":
+            return b"".join(audio)
+        elif isinstance(item, tuple) and item[0] == "__error__":
+            raise AssertionError(item)
+    raise AssertionError("timed out waiting for sentence completion")
+
+
+def _stop_worker(request_queue, thread):
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def _synthetic_tone(sample_rate, seconds=1.0, channels=1):
+    t = np.arange(int(sample_rate * seconds)) / sample_rate
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype("<i2")
+    if channels > 1:
+        tone = np.repeat(tone, channels)
+    return tone.tobytes()
+
+
+@pytest.mark.parametrize(
+    ("headers", "source_rate"),
+    [
+        ({"content-type": "audio/pcm; rate=44100"}, 44100),
+        ({"content-type": "audio/pcm; rate=24000"}, 24000),
+        ({"content-type": "audio/pcm"}, 24000),
+        ({}, 24000),
+    ],
+)
+def test_openai_tts_worker_resamples_from_content_type_rate(headers, source_rate, monkeypatch):
+    pcm = _synthetic_tone(source_rate)
+    # Uneven transport chunks exercise the cross-chunk sample alignment.
+    chunks = [pcm[:4095], pcm[4095:20001], pcm[20001:]]
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        chunks,
+        base_url="https://speech.example.com/v1",
+        headers=headers,
+    )
+    try:
+        audio = _collect_worker_audio(response_queue)
+    finally:
+        _stop_worker(request_queue, thread)
+
+    # One second of source audio must stay one second at 48 kHz regardless of the source rate.
+    output_samples = len(audio) // 2
+    assert abs(output_samples - 48000) <= 48
+
+
+def test_openai_tts_worker_downmixes_multichannel_pcm(monkeypatch):
+    pcm = _synthetic_tone(44100, channels=2)
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [pcm[:4097], pcm[4097:]],
+        base_url="https://speech.example.com/v1",
+        headers={"content-type": "audio/pcm; rate=44100; channels=2"},
+    )
+    try:
+        audio = _collect_worker_audio(response_queue)
+    finally:
+        _stop_worker(request_queue, thread)
+
+    assert abs(len(audio) // 2 - 48000) <= 48
+
+
+def test_openai_pcm_to_mono_averages_interleaved_frames():
+    stereo = np.array([100, 300, -100, -303, 32767, 32767], dtype="<i2").tobytes()
+    mono = openai_worker_module._openai_pcm_to_mono(stereo, 2)
+    assert mono.dtype == np.int16
+    assert mono.tolist() == [200, -202, 32767]
+
+
+def test_openai_pcm_to_mono_decodes_big_endian_l16():
+    stereo_be = bytes([0x01, 0x00, 0x03, 0x00])
+    assert openai_worker_module._openai_pcm_to_mono(stereo_be, 2, big_endian=True).tolist() == [512]
+    assert openai_worker_module._openai_pcm_to_mono(stereo_be, 1, big_endian=True).tolist() == [256, 768]
+    assert openai_worker_module._openai_pcm_to_mono(stereo_be, 1).tolist() == [1, 3]
+
+
+def test_openai_tts_worker_decodes_audio_l16_as_big_endian(monkeypatch):
+    decoded = []
+
+    def fake_resample(audio, _src_rate, _dst_rate, _resampler, *, last=False):
+        if not last:
+            decoded.append(audio.copy())
+        return b"" if last else audio.astype("<i2").tobytes()
+
+    monkeypatch.setattr(openai_worker_module, "_resample_audio", fake_resample)
+    samples = np.array([256, -2, 1000], dtype=">i2").tobytes()
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [samples[:3], samples[3:]],
+        base_url="https://speech.example.com/v1",
+        headers={"content-type": "audio/L16; rate=24000"},
+    )
+    try:
+        _collect_worker_audio(response_queue)
+    finally:
+        _stop_worker(request_queue, thread)
+
+    assert np.concatenate(decoded).tolist() == [256, -2, 1000]
+
+
+def test_native_worker_derives_extensions_from_sdk_base_url_env(monkeypatch):
+    monkeypatch.setattr(
+        openai_worker_module,
+        "_resample_audio",
+        lambda audio, *_args, last=False: b"" if last else audio,
+    )
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00"],
+        openai_base_url_env="https://api.fish.audio/compat/v1",
+    )
+    try:
+        _wait_for_item(response_queue, lambda item: isinstance(item, np.ndarray))
+    finally:
+        _stop_worker(request_queue, thread)
+
+    assert "base_url" not in clients[0].client_kwargs
+    assert clients[0].create_calls[0]["extra_body"] == {"sample_rate": 24000}
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_fragment"),
+    [
+        ({}, "has no rate"),
+        ({"content-type": "audio/pcm; rate=44100"}, "from Content-Type"),
+    ],
+)
+def test_openai_tts_worker_logs_pcm_format_once_without_content(
+    headers, expected_fragment, monkeypatch
+):
+    messages = []
+
+    def capture(message, *args, **_kwargs):
+        messages.append(message % args)
+
+    monkeypatch.setattr(openai_worker_module.logger, "info", capture)
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00" * 64],
+        base_url="https://user:secret@speech.example.com/v1?token=signed",
+        headers=headers,
+    )
+    try:
+        _collect_worker_audio(response_queue)
+        request_queue.put(("speech-2", "second sentence."))
+        request_queue.put((None, None))
+        _collect_worker_audio(response_queue)
+    finally:
+        _stop_worker(request_queue, thread)
+
+    format_logs = [m for m in messages if "PCM" in m]
+    assert len(format_logs) == 1
+    assert expected_fragment in format_logs[0]
+    assert "host=speech.example.com" in format_logs[0]
+    assert "secret" not in format_logs[0]
+    assert "signed" not in format_logs[0]
+    assert "hello world" not in format_logs[0]
+
+
+def test_custom_worker_sends_fish_audio_sample_rate(monkeypatch):
+    monkeypatch.setattr(
+        openai_worker_module,
+        "_resample_audio",
+        lambda audio, *_args, last=False: b"" if last else audio,
+    )
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00"],
+        base_url="https://api.fish.audio/compat/v1",
+        model="s1",
+    )
+    try:
+        _wait_for_item(response_queue, lambda item: isinstance(item, np.ndarray))
+    finally:
+        _stop_worker(request_queue, thread)
+
+    assert clients[0].create_calls == [{
+        "model": "s1",
+        "voice": "character-voice",
+        "input": "hello world.",
+        "response_format": "pcm",
+        "extra_body": {"sample_rate": 24000},
+    }]
+
+
+@pytest.mark.asyncio
+async def test_connectivity_probe_sends_fish_audio_sample_rate(monkeypatch):
+    requests = []
+
+    async def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, content=b"\x00\x00")
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+
+    result = await _test_connectivity_candidates(
+        ["https://api.fish.audio/compat/v1"],
+        "sk-probe",
+        "s1",
+        "tts",
+        False,
+        sub_type="openai_tts",
+        voice_id="fish-voice",
+    )
+
+    assert result["success"] is True
+    assert str(requests[0].url) == "https://api.fish.audio/compat/v1/audio/speech"
+    assert json.loads(requests[0].content) == {
+        "model": "s1",
+        "input": "测试",
+        "voice": "fish-voice",
+        "response_format": "pcm",
+        "sample_rate": 24000,
+    }
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "content_type", "expect_warning"),
+    [
+        ("https://api.fish.audio/compat/v1", "audio/pcm; rate=44100", True),
+        ("https://api.fish.audio/compat/v1", "audio/pcm; rate=24000", False),
+        ("https://api.fish.audio/compat/v1", "audio/pcm", False),
+        ("https://speech.example.com/v1", "audio/pcm; rate=44100", False),
+    ],
+)
+def test_openai_tts_worker_warns_when_header_contradicts_pinned_rate(
+    endpoint, content_type, expect_warning, monkeypatch
+):
+    warnings = []
+
+    def capture(message, *args, **_kwargs):
+        warnings.append(message % args)
+
+    monkeypatch.setattr(openai_worker_module.logger, "warning", capture)
+    _, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00" * 64],
+        base_url=endpoint,
+        headers={"content-type": content_type},
+    )
+    try:
+        _collect_worker_audio(response_queue)
+    finally:
+        _stop_worker(request_queue, thread)
+
+    mismatch = [m for m in warnings if "differs from requested" in m]
+    if expect_warning:
+        assert mismatch == [
+            "OpenAI TTS PCM Content-Type rate differs from requested sample_rate: "
+            "host=api.fish.audio rate=44100 requested=24000"
+        ]
+    else:
+        assert mismatch == []
