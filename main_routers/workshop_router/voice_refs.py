@@ -195,8 +195,9 @@ async def upload_reference_audio(request: Request):
                 "error": "缺少内容目录",
             }, status_code=400)
 
-        # Only the item_xxx folder created by prepare-upload (a direct child of
-        # WorkshopExport) may hold a reference pair -- never the root itself.
+        # Only a direct child of WorkshopExport (any name; in practice the
+        # item_xxx folder created by prepare-upload) may hold a reference
+        # pair -- never the root itself or anything nested deeper.
         # This check never calls commonpath, so paths on another Windows drive
         # are rejected with 403 instead of escaping as a 500 ValueError.
         content_folder, workshop_export_dir, allowed = _resolve_workshop_export_child(
@@ -288,9 +289,10 @@ async def upload_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"上传参考语音失败: {e}")
+        # OSError messages carry server paths; keep them in the log only.
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "参考语音上传失败",
         }, status_code=500)
 
 
@@ -339,9 +341,10 @@ async def remove_reference_audio(request: Request):
         }, status_code=409)
     except Exception as e:
         logger.error(f"删除参考语音失败: {e}")
+        # OSError messages carry server paths; keep them in the log only.
         return JSONResponse({
             "success": False,
-            "error": str(e),
+            "error": "参考语音清理失败",
         }, status_code=500)
 
 

@@ -139,10 +139,13 @@ async def test_symlink_back_to_root_is_rejected(export_root, tmp_path, call):
     except OSError:
         pytest.skip('symlink creation not permitted')
 
-    status, body = await call(str(link))
+    try:
+        status, body = await call(str(link))
 
-    assert status == 403, body
-    link.unlink()
+        assert status == 403, body
+    finally:
+        # Never leave a link back to the root behind, even on failure.
+        link.unlink()
     _assert_root_untouched(export_root)
 
 
@@ -151,12 +154,14 @@ async def test_other_drive_is_403_not_500(export_root, tmp_path, monkeypatch, ca
     """On Windows ``commonpath`` raises ValueError across drives; that must stay a 403.
 
     This is a simulation (CI runs this on Linux): it proves the routes no
-    longer depend on ``commonpath``, not real Windows drive handling.
+    longer depend on ``_assert_under_base`` / ``commonpath``, not real
+    Windows drive handling. Only this module's reference is patched, so the
+    shared ``os.path`` module stays untouched.
     """
-    def _cross_drive(_paths):
+    def _cross_drive(_path, _base):
         raise ValueError("Paths don't have the same drive")
 
-    monkeypatch.setattr(os.path, 'commonpath', _cross_drive)
+    monkeypatch.setattr(voice_refs, '_assert_under_base', _cross_drive)
     outside = tmp_path / 'other_drive'
     outside.mkdir()
 
@@ -193,3 +198,26 @@ async def test_remove_from_item_folder_still_works(export_root):
     assert not (item / WORKSHOP_VOICE_MANIFEST_NAME).exists()
     assert not (item / audio_name).exists()
     _assert_root_untouched(export_root)
+
+
+@pytest.mark.parametrize(
+    'call, worker',
+    [(_upload, '_replace_voice_reference'), (_remove, '_remove_voice_reference')],
+    ids=['upload', 'remove'],
+)
+async def test_unexpected_error_does_not_echo_server_paths(
+    export_root, tmp_path, monkeypatch, call, worker
+):
+    """An OSError message carries server paths; the 500 body must not."""
+    item = export_root / 'item_aaa'
+
+    def _boom(*_args, **_kwargs):
+        raise OSError(f'[Errno 13] Permission denied: {item}')
+
+    monkeypatch.setattr(voice_refs, worker, _boom)
+
+    status, body = await call(str(item))
+
+    assert status == 500, body
+    assert body['success'] is False
+    assert str(tmp_path) not in body['error']
