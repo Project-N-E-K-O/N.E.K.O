@@ -466,3 +466,46 @@ def test_old_screenshot_cleanup_cannot_clear_new_future_or_trigger_fallback(monk
         assert manager._proactive_vision_revocation_epoch == 1
 
     asyncio.run(run())
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('host,expected_capture', [
+    ('127.0.0.1', True),
+    ('::1', True),
+    ('localhost', True),
+    ('::ffff:127.0.0.1', True),
+    ('::ffff:192.168.1.2', False),
+    ('192.168.1.2', False),
+    ('testclient', False),
+])
+def test_backend_fallback_accepts_ipv4_mapped_loopback_peers(monkeypatch, host, expected_capture):
+    """Dual-stack listeners report IPv4 loopback peers as ::ffff:127.0.0.1 (#3795)."""
+    from unittest.mock import AsyncMock, Mock
+    from main_logic import core as core_facade
+    from main_logic.core import proactive
+
+    read = AsyncMock(return_value={'proactiveVisionEnabled': True})
+    capture = Mock(return_value=Image.new('RGB', (320, 180), (20, 80, 180)))
+    monkeypatch.setattr(core_facade, 'aload_global_conversation_settings', read)
+    monkeypatch.setattr(proactive, 'capture_desktop_screenshot', capture)
+
+    async def run():
+        fake = SimpleNamespace(_screenshot_future=None, lanlan_name='Repro')
+
+        async def send(_payload):
+            # Frontend never answers, so the request times out into the fallback branch.
+            return None
+
+        fake.websocket = SimpleNamespace(send_json=send, client=SimpleNamespace(host=host))
+        return await LLMSessionManager.request_fresh_screenshot(
+            fake, timeout=0.01, allow_backend_fallback=True,
+        )
+
+    fresh = asyncio.run(run())
+    assert fresh.declined is False
+    assert capture.call_count == int(expected_capture)
+    if expected_capture:
+        assert fresh.source == 'backend_fallback'
+        assert fresh.b64
+    else:
+        assert not fresh.b64

@@ -1,24 +1,16 @@
 """Access checks for APIs that expose resources on the backend machine."""
 
-import ipaddress
-
 from fastapi import Request
 
 from main_logic.activity.system_signals import is_remote_backend_deployment
 from utils.deployment import has_forwarding_metadata, is_behind_proxy
+from utils.loopback import is_loopback_peer_host
 
 
 def is_loopback_request(request: Request) -> bool:
     """Check the request peer address without imposing deployment policy."""
     client_host = request.client.host if request.client else ""
-    if client_host == "localhost":
-        return True
-    try:
-        address = ipaddress.ip_address(str(client_host or ""))
-    except ValueError:
-        return False
-    mapped = getattr(address, "ipv4_mapped", None)
-    return (mapped or address).is_loopback
+    return is_loopback_peer_host(client_host)
 
 
 def is_local_oauth_status_request(request: Request) -> bool:
