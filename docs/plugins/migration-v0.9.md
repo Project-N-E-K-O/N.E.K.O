@@ -11,7 +11,7 @@ This historical path name is retained for inbound links. The page is a current m
 | Bus `where_*` helpers and list set operators | Removed | Compose `get()`, `filter()` / `where()`, `sort()`, `limit()`, and `watch()` |
 | `get_message_plane_all` | Removed | Use bounded `await self.bus.messages.get(...)` queries |
 | Bus incremental/local fast paths | Removed | Use the canonical bounded, replayable read/watch pipeline |
-| High-level `self.memory` / SDK `MemoryClient` | Removed | Use `self.bus.memory.get(...)` only for recent in-memory user-context records; there is no plugin SDK replacement for persistent semantic recall |
+| High-level `self.memory` property | Removed | For recent in-memory user-context records use `self.bus.memory.get(...)`; for read-only persistent memory use `MemoryClient(self.ctx)` (below) |
 | Extension package type, `[plugin.host]`, and `plugin.sdk.extension` | Removed, no compatibility path | Merge the Router into its owning normal Plugin, or convert the package into a standalone Plugin |
 | `push_message` v1 fields | Deprecated but still translated in current source | Use `parts`, `visibility`, and `ai_behavior`; do not rely on an exact removal release |
 
@@ -34,7 +34,7 @@ class MyPlugin(NekoPluginBase):
         return Ok({"status": "done"})
 ```
 
-Extension has no compatibility shim. Remove `type = "extension"` and `[plugin.host]`, then either move the Router module into its former host and call `self.include_router(router)`, or turn it into a normal `NekoPluginBase` package. Replace imports from `plugin.sdk.extension` with the corresponding public symbols from `plugin.sdk.plugin`. `PluginRouter` remains supported only for organizing code inside a normal Plugin.
+Extension has no compatibility shim. Remove `type = "extension"` and `[plugin.host]`, then either move the Router module into its former host, list the router class in the host's `__routers__`, and call `self.include_router(router)`, or turn it into a normal `NekoPluginBase` package. Replace imports from `plugin.sdk.extension` with the corresponding public symbols from `plugin.sdk.plugin`. `PluginRouter` remains supported only for organizing code inside a normal Plugin.
 
 ## Result imports
 
@@ -84,14 +84,16 @@ The removed bus fast paths were acceleration branches such as BusList `fast_mode
 
 ## Memory
 
-The old SDK `MemoryClient` mixed two different concepts. The supported replacement is the host's recent user-context snapshot:
+The old high-level `self.memory` property mixed two different concepts. Recent user context comes from the host's snapshot:
 
 ```python
 # Recent records from one bucket
 records = await self.bus.memory.get(bucket_id="default", limit=20)
 ```
 
-These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surfaces are the high-level `self.memory` property and the SDK/runtime `MemoryClient` facade. `ctx.query_memory(...)` still exists for compatibility, but it reaches a deprecated placeholder endpoint and does not provide semantic recall. There is currently no public plugin SDK operation for structured persistent-memory recall.
+These records are bounded, in-memory user-utterance events with a one-hour TTL. They are not the character's persistent facts, reflections, or persona. Memory record reads and typed records remain available through `self.bus.memory`; the removed surface is the high-level `self.memory` property. `ctx.query_memory(...)` still exists for compatibility, but it reaches a deprecated placeholder endpoint and does not provide semantic recall.
+
+Read-only access to persistent memory is available through `MemoryClient` from `plugin.sdk.plugin`: `MemoryClient(self.ctx)`, then `await client.search(target=..., query=...)` and `await client.get_persona(target=...)`, both returning a `Result`. The host records these calls as use of the `memory.read` capability. Memory content is the user's private data: never log it.
 
 ## `push_message` v2
 

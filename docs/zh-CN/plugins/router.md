@@ -6,10 +6,10 @@
 
 ## 什么时候需要 Router
 
-- 你的插件有 5 个以上入口点
+- 你的插件有大约 5 个以上入口点
 - 不同入口点属于不同的功能模块（比如"天气"、"路线"、"美食"）
 - 你想让多人协作开发同一个插件，各自负责不同模块
-- 代码超过 300 行，想拆分文件
+- 主模块超过几百行，想拆分文件
 
 如果你的插件只有 1-3 个入口点，直接写在主文件里就好，不需要 Router。
 
@@ -94,13 +94,15 @@ from .routers import CountdownRouter, WeatherRouter
 
 @neko_plugin
 class LifeKitPlugin(NekoPluginBase):
+    # 在这里列出所有 router 类：宿主从这里扫描 router 入口
+    __routers__ = [CountdownRouter, WeatherRouter]
 
     def __init__(self, ctx):
         super().__init__(ctx)
 
         # 注册 routers — 必须在 __init__ 中
-        self.include_router(CountdownRouter())
-        self.include_router(WeatherRouter())
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 
     @lifecycle(id="startup")
     async def on_startup(self):
@@ -108,7 +110,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` 把 router 中定义的所有入口点注册到当前插件下。
+`self.include_router()` 绑定 router，并把其中的入口点注册到当前插件下，使它们可以运行。`__routers__` 类属性同样必须写：宿主不实例化插件就从插件类读取入口元数据，而且只扫描 `__routers__` 里列出的 router 类。只传给 `include_router()` 的 router 仍然能运行，但它的入口不在这次静态扫描里：入口的 `timeout` 不会生效（改用宿主默认值），依赖扫描结果的功能（例如 Hosted UI 动作）也可能找不到它们。
 
 ---
 
@@ -159,7 +161,7 @@ class MyRouter(PluginRouter):
 
 Router 不是独立进程，它和主插件运行在同一个进程中，共享所有资源。
 
-Router 也不是 manifest 加载入口：`[plugin].entry` 必须解析到所属的 `NekoPluginBase` 类。把它指向 `PluginRouter` 子类会被宿主拒绝。`include_router()` 负责绑定并收集入口；Router 类上虽然存在 `on_mount` / `on_unmount` 方法，但这条基类挂载路径不会自动调用它们。
+Router 也不是 manifest 加载入口：`[plugin].entry` 必须解析到所属的 `NekoPluginBase` 类。把它指向 `PluginRouter` 子类会被宿主拒绝。`include_router()` 负责绑定并收集入口。Router 类上的 `on_mount` / `on_unmount` 不会被宿主调用；不要覆盖它们，也不要把初始化或清理写在里面。
 
 ---
 
@@ -205,7 +207,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 这样 `countdown` 入口的实际 ID 变成 `time_countdown`。
 
-大多数情况下不需要前缀——只要确保不同 router 里的入口 ID 不重复就行。
+宿主对 `__routers__` 的静态扫描从 router 类读取入口 ID，不会加上这个前缀，扫描到的 ID（`countdown`）和运行时的 ID（`time_countdown`）就会不一致。对列在 `__routers__` 里的 router（应当是全部 router），不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。大多数情况下不需要前缀——只要确保不同 router 里的入口 ID 不重复就行。
 
 ---
 
@@ -267,10 +269,12 @@ from .routers.math import MathRouter
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
+    __routers__ = [GreetRouter, MathRouter]
+
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.include_router(GreetRouter())
-        self.include_router(MathRouter())
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 ```
 
 这个插件在面板中会显示三个入口点：`hello`、`add`、`divide`。

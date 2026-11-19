@@ -6,10 +6,10 @@ As your plugin grows, putting all entry points in one `__init__.py` becomes hard
 
 ## When you need Router
 
-- Your plugin has 5+ entry points
+- Your plugin has about five or more entry points
 - Different entries belong to different feature areas (e.g. "weather", "routes", "food")
 - Multiple people are working on the same plugin, each owning a module
-- Code exceeds 300 lines and you want to split files
+- The main module grows past a few hundred lines and you want to split files
 
 If your plugin only has 1-3 entry points, just write them in the main file. No Router needed.
 
@@ -94,13 +94,15 @@ from .routers import CountdownRouter, WeatherRouter
 
 @neko_plugin
 class LifeKitPlugin(NekoPluginBase):
+    # List every router class here: the host scans router entries from it
+    __routers__ = [CountdownRouter, WeatherRouter]
 
     def __init__(self, ctx):
         super().__init__(ctx)
 
         # Register routers — must be in __init__
-        self.include_router(CountdownRouter())
-        self.include_router(WeatherRouter())
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 
     @lifecycle(id="startup")
     async def on_startup(self):
@@ -108,7 +110,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` registers all entry points from the router under the current plugin.
+`self.include_router()` binds the router and registers its entry points under the current plugin, so they run. The `__routers__` class attribute is also required: the host reads entry metadata from the plugin class without instantiating it, and only scans router classes listed in `__routers__`. A router that is only passed to `include_router()` still runs, but its entries are missing from that static scan: their `timeout` is not applied (the host default is used instead) and features that use the scanned entry list, such as Hosted UI actions, may not find them.
 
 ---
 
@@ -159,7 +161,7 @@ class MyRouter(PluginRouter):
 
 A router is not a separate process. It runs in the same process as the main plugin and shares all resources.
 
-It is also not a manifest entry point: `[plugin].entry` must resolve to the owning `NekoPluginBase` class. Pointing it at a `PluginRouter` subclass is rejected by the host. `include_router()` performs binding and entry collection; the `on_mount` / `on_unmount` methods present on the router class are not automatically called by this base-class path.
+It is also not a manifest entry point: `[plugin].entry` must resolve to the owning `NekoPluginBase` class. Pointing it at a `PluginRouter` subclass is rejected by the host. `include_router()` performs binding and entry collection. The `on_mount` / `on_unmount` methods on the router class are never called by the host; do not override them or put setup or cleanup there.
 
 ---
 
@@ -205,7 +207,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 Now the `countdown` entry's actual ID becomes `time_countdown`.
 
-Most of the time you don't need prefixes — just make sure entry IDs don't collide across routers.
+The host's static scan of `__routers__` reads entry IDs from the router class and does not apply this prefix, so the scanned ID (`countdown`) and the runtime ID (`time_countdown`) would differ. For routers listed in `__routers__` (which should be all of them), do not use `prefix`: write the namespace into the entry IDs instead (for example `id="time_countdown"`). Most of the time you don't need prefixes — just make sure entry IDs don't collide across routers.
 
 ---
 
@@ -267,10 +269,12 @@ from .routers.math import MathRouter
 
 @neko_plugin
 class MyPlugin(NekoPluginBase):
+    __routers__ = [GreetRouter, MathRouter]
+
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.include_router(GreetRouter())
-        self.include_router(MathRouter())
+        for router_cls in self.__routers__:
+            self.include_router(router_cls())
 ```
 
 This plugin shows three entry points in the panel: `hello`, `add`, `divide`.

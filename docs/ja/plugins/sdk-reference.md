@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` は、追加設定なしでログと実行時設定を提供します：
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -93,6 +93,8 @@ async with unwrap(await self.db.session()) as session:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` はユーザーの言語に従いません。`locale=` を渡さない場合、プラグインの `default_locale`、`en` の順に探し、最後に `default` 引数またはキー名を返します。ホストが登録するユーザー向け文字列（プラグインやエントリーの名前、説明、スキーマのラベル、UI アクションのラベル）には `tr("key", default="...")` を使ってください。こちらはホストがユーザーごとの言語で解決します。
 
 ### メソッド
 
@@ -202,7 +204,7 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 
 大規模または機能分割された通常 Plugin を整理するために `PluginRouter` を mount します。
 
-関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできず、この mount path は `on_mount` / `on_unmount` を自動実行しません。
+各 router クラスはプラグインのクラス属性 `__routers__` にも列挙してください。ホストの静的エントリースキャンはこのリストだけを読みます（[PluginRouter](./router) を参照）。関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできません。`on_mount` / `on_unmount` はホストから呼ばれないため、オーバーライドしないでください。
 
 #### Hosted/static UI と list action
 
@@ -353,7 +355,7 @@ chain.allows("memory.read")
 
 ## PluginStore（永続ストレージ）
 
-`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。
+`self.store` 経由でアクセスします（ホストがプラグイン構築時に事前生成して注入するため、自分でインスタンス化する必要はありません）。`plugin.toml` の `[plugin.store]` で `enabled = true` にしない限り無効で、無効の間は `set()` は何も保存せず、`get()` はデフォルト値を返します。
 
 `PluginStore` のすべてのメソッドは `Result` を返すため、`unwrap_or(...)` で展開してください。
 

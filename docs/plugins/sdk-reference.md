@@ -59,7 +59,7 @@ class MyPlugin(NekoPluginBase):
 `NekoPluginBase` provides logging and configuration without extra setup:
 
 ```python
-self.logger.info("Processing request: {}", request_id)
+self.logger.info("Processing request: %s", request_id)
 timeout = await self.config.get_int("my_settings.timeout", default=30)
 ```
 
@@ -98,6 +98,13 @@ and use `self.i18n.t(...)`:
 ```python
 message = self.i18n.t("greeting", name="Alice")
 ```
+
+`self.i18n.t(...)` does not follow the user's language: without `locale=` it
+looks up the plugin's `default_locale`, then `en`, then falls back to the
+`default` argument or the key. For user-facing strings that the host
+registers (plugin and entry names, descriptions, schema labels, UI action
+labels), use `tr("key", default="...")`, which the host resolves for each
+user's locale.
 
 ### Methods
 
@@ -207,7 +214,7 @@ self.register_static_ui("static")  # serves <plugin_dir>/static/index.html
 
 Mount a `PluginRouter` to organize a large or feature-split normal plugin.
 
-Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`, and this mount path does not automatically invoke `on_mount` / `on_unmount`.
+Also list every router class in the plugin class attribute `__routers__`: the host's static entry scan only reads that list (see [PluginRouter](./router)). Related methods are `exclude_router(router_or_name) -> bool`, `get_router(name)`, and `list_routers()`. A Router cannot be the manifest `[plugin].entry`. `on_mount` / `on_unmount` are never called by the host; do not override them.
 
 #### Hosted/static UI and list actions
 
@@ -358,7 +365,7 @@ The host records cross-plugin calls and capability use for audit (identifiers an
 
 ## PluginStore (Persistent Storage)
 
-Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself).
+Access via `self.store` (the host pre-builds and injects it at plugin construction time — you do not instantiate `PluginStore` yourself). It is disabled unless `plugin.toml` has `[plugin.store]` with `enabled = true`; while disabled, `set()` stores nothing and `get()` returns the default.
 
 All `PluginStore` methods return a `Result`; unwrap with `unwrap_or(...)`.
 
