@@ -3071,7 +3071,7 @@ async def test_a_run_that_ends_lets_go_of_the_browser_and_of_what_was_allowed_on
         ({"kind": "error", "command": "prompt"}, "start", "", "the runtime rejected the command"),
     ],
 )
-async def test_how_a_run_failed_is_said_in_her_language_and_kept_as_it_was(hosts, tmp_path, event, said, detail, reason):
+async def test_how_a_run_failed_is_told_to_her_in_english_shown_in_her_language_and_kept_as_it_was(hosts, tmp_path, event, said, detail, reason):
     host, runtimes = _recording_host(hosts, tmp_path)
     commission = await _filed(host, "tidy the desktop", lang="ja")
     assert await host.task_agents.submit(commission)

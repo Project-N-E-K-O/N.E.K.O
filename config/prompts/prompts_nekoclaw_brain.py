@@ -651,23 +651,32 @@ HOST_RESTART_FAILED_TEXT = {
 
 # What she is told of a commission of hers that failed for a reason of the
 # host's own rather than the task agent's report: the familiar's model ran out
-# of quota (``quota``), the familiar could not start on it (``start``), or its
-# run stopped on an error (``run``). In English, as the host tells a model what
+# of quota before the familiar started on it (``quota``) or partway through
+# (``quota_run``), the familiar could not start on it (``start``), or its run
+# stopped on an error (``run``). In English, as the host tells a model what
 # happened; she tells the user in her own words. Rendered with str.format
 # (why); when the error itself is known, TASK_AGENT_FAILED_ERROR follows, the
 # error as it came. What the HUD shows is TASK_AGENT_FAILED_TEXTS.
 #
-# ``quota`` names no period, price or plan: the quota is not hers to look
-# after, and nothing she did used it up. It is not said at once but with her
-# next turn, and nothing is shown for it (the frontend has its own notice of
-# the quota). It says the task can be dispatched again later, so that she
-# goes on dispatching tasks afterwards rather than take this as a reason not
-# to.
+# The two for the quota name no period, price or plan: the quota is not hers
+# to look after, and nothing she did used it up. They are not said at once
+# but with her next turn, and nothing is shown for them (the frontend has its
+# own notice of the quota). They say the task can be dispatched again later,
+# so that she goes on dispatching tasks afterwards rather than take this as a
+# reason not to. Partway through, the familiar may have done part of it (moved
+# files, sent something): dispatched again, it is to go on from there, not do
+# that part twice.
 TASK_AGENT_FAILED_NOTICE = "This task was not finished: {why}"
 TASK_AGENT_FAILED_WHY = {
     "quota": (
-        "the familiar's model ran out of quota. Nothing was wrong with the task itself or with how it "
-        "was dispatched. The quota comes back after a while, so this task can be dispatched again later."
+        "the familiar's model ran out of quota before it started on it. Nothing was wrong with the task "
+        "itself or with how it was dispatched. The quota comes back after a while, so this task can be "
+        "dispatched again later."
+    ),
+    "quota_run": (
+        "the familiar's model ran out of quota partway through, so part of it may already be done. Nothing "
+        "was wrong with the task itself or with how it was dispatched. The quota comes back after a while, "
+        "so this task can be dispatched again later, to go on from where it stopped rather than start over."
     ),
     "start": "the familiar could not start on it.",
     "run": "the familiar stopped on an error partway through.",

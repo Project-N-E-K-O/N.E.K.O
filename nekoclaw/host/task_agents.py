@@ -120,9 +120,13 @@ _REACHED = "nekoclaw/reached"
 _THEN = "nekoclaw/then"
 _CAUGHT_UP_SECONDS = 10.0
 _SHUT_DOWN_REASON = "the host was shut down"
-# She reads it when she asks how the commission went: it names no period,
-# price or plan (``TASK_AGENT_FAILED_WHY``).
+# She reads them when she asks how the commission went: they name no period,
+# price or plan (``TASK_AGENT_FAILED_WHY``). The first is before the task
+# agent made a request for the commission, the second after it made some.
 _QUOTA_REASON = "the task agent's model ran out of quota"
+_QUOTA_RUN_REASON = "the task agent's model ran out of quota partway through"
+# Failures of the host's own that she is not woken for and that nothing shows.
+_QUIET_FAILURES = ("quota", "quota_run")
 _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 _USAGE_REASON = "it used as many tokens as one commission may, and the user allowed no more"
 # The kinds of session the host sums up while they are idle: those that go
@@ -2733,7 +2737,8 @@ class TaskAgentManager:
             return
         if allowed:
             return
-        await self._fail(commission_id, _QUOTA_REASON, said="quota")
+        # After requests of its own: some of the work may be done.
+        await self._fail(commission_id, _QUOTA_RUN_REASON, said="quota_run")
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
@@ -2806,9 +2811,11 @@ class TaskAgentManager:
         """End a commission as failed for a reason of the host's own.
 
         ``reason`` is what goes on record, in English. ``said`` says what
-        it was: ``quota`` (the task agent's model ran out of quota),
-        ``start`` (the task agent could not start on it: nothing of it was
-        taken) or ``run`` (its run stopped on an error). She is told that,
+        it was: ``quota`` (the task agent's model ran out of quota before
+        it made a request for it), ``quota_run`` (the same, after it made
+        some: part of the work may be done), ``start`` (the task agent
+        could not start on it: nothing of it was taken) or ``run`` (its run
+        stopped on an error). She is told that,
         in English, as the host tells a model what happened
         (``TASK_AGENT_FAILED_NOTICE``), with ``detail``, the error as it
         came, when there is one; the HUD shows it in her dialogue's language
@@ -2826,7 +2833,7 @@ class TaskAgentManager:
         if commission is not None and commission.parent_id is None:
             error = texts.TASK_AGENT_FAILED_ERROR.format(detail=detail) if detail else ""
             told = texts.TASK_AGENT_FAILED_NOTICE.format(why=texts.TASK_AGENT_FAILED_WHY[said]) + error
-            if said != "quota":
+            if said not in _QUIET_FAILURES:
                 words = _texts(texts.TASK_AGENT_FAILED_TEXTS, commission.lang or "en")
                 shown = words[said] + (words["error"].format(detail=detail) if detail else "")
         await self._end(
@@ -2835,7 +2842,7 @@ class TaskAgentManager:
             reason=reason,
             text=told,
             shown=shown,
-            quiet=said == "quota",
+            quiet=said in _QUIET_FAILURES,
             result_summary=self._summary(told),
         )
 

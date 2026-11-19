@@ -227,7 +227,9 @@ class Reporter:
             "channel": channel,
             "status": status,
             "success": success,
-            "text": truncate_to_tokens(shown, TASK_SUMMARY_MAX_TOKENS) if shown is not None else summary,
+            # Never empty where the summary is not: the main server hands her
+            # nothing of a report without text.
+            "text": truncate_to_tokens(shown, TASK_SUMMARY_MAX_TOKENS) if shown else summary,
             "summary": summary,
             "detail": truncate_to_tokens(detail, TASK_LARGE_DETAIL_MAX_TOKENS) if detail else "",
             "error_message": truncate_to_tokens(error_message, TASK_ERROR_MAX_TOKENS) if error_message else "",

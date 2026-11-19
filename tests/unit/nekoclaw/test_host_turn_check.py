@@ -1170,6 +1170,8 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     for word in ("free", "daily", "day", "today", "tomorrow"):
         assert word not in said.lower().split() and word not in failed.status_reason.split()
     assert said.endswith("can be dispatched again later.")
+    # Not one request went out for it: nothing of it is done.
+    assert "before it started on it" in said and "may already be done" not in said
     # Counted before the first prompt: not one request went to the model,
     # and the session started for it is closed.
     assert llm.requests == []
@@ -1235,6 +1237,21 @@ async def test_the_main_server_takes_a_quota_failure_without_waking_her_or_showi
         assert shown == [row.payload["text"]] and row.payload["text"] != row.payload["summary"]
 
 
+async def test_a_report_whose_shown_words_are_empty_shows_its_summary(hosts, tmp_path):
+    host = _task_agent_host(hosts, tmp_path, ScriptedLLM([]))
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort the photos", dispatch_text="sort the photos", source="dispatch"
+    )
+
+    _kind, payload = host.reporter.task_result_report(
+        commission, channel="task_agent", success=False, summary="told", shown="", status="failed"
+    )
+
+    # The main server hands her nothing of a report without text.
+    assert payload["text"] == payload["summary"] == "told"
+    assert "visibility" not in payload
+
+
 async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_request(hosts, tmp_path):
     left = [True, True, False]
 
@@ -1248,9 +1265,16 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
     failed = await wait_status(host, receipt.commission_id, "failed")
 
-    assert failed.status_reason == "the task agent's model ran out of quota"
+    assert failed.status_reason == "the task agent's model ran out of quota partway through"
     (report,) = await outbox(host, "task_result")
-    assert report.payload["summary"] == TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota"])
+    # It had made requests of its own: she is told part of it may be done, so that when she
+    # dispatches it again it goes on from there; as quietly as when it never started.
+    said = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota_run"])
+    assert report.payload["summary"] == report.payload["text"] == failed.result_summary == said
+    assert "part of it may already be done" in said and said.endswith("rather than start over.")
+    assert "can be dispatched again later" in said
+    for word in ("free", "daily", "day", "today", "tomorrow"):
+        assert word not in said.lower().split() and word not in failed.status_reason.split()
     assert (report.payload["delivery_mode"], report.payload["visibility"]) == ("passive", [])
     # The first request was paid for before it was sent, the second as its
     # usage came in; the third found nothing left. The request already under
