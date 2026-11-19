@@ -735,3 +735,32 @@ async def test_a_copy_whose_place_was_taken_while_it_was_made_is_removed(hosts, 
     assert (await host.ledger.get_session(photos.session_id)).status != "cleared"
     assert scripts[QUESTION].requests == []
     release.set()
+
+
+async def test_a_copy_whose_files_cannot_be_removed_is_not_put_on_record_as_cleared(hosts, tmp_path, monkeypatch):
+    # Put on record as cleared, a copy whose files are still there would be passed over by the
+    # removal of old sessions for good. It stays as it is, for that removal.
+    import shutil
+
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts, max_task_agents=2)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    manager = host.task_agents
+    fork = manager.fork_session
+
+    async def and_the_place_is_taken(session_id: str, **kwargs: Any) -> Any:
+        copy = await fork(session_id, **kwargs)
+        manager._max_concurrent = 1
+        return copy
+
+    manager.fork_session = and_the_place_is_taken
+    monkeypatch.setattr(shutil, "rmtree", lambda *args, **kwargs: None)
+    with pytest.raises(RuntimeError):
+        await _ask(host, asker)
+    [child] = await host.ledger.select(parent_id=asker.id)
+    copy = await host.ledger.get_session(child.session_id)
+    assert copy.status != "cleared" and Path(copy.session_dir).exists()
+    release.set()

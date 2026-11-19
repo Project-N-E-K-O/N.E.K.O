@@ -6120,14 +6120,29 @@ class TaskAgentManager:
         Nothing was said in it, and nobody will: it would only wait to be
         removed with the session it was copied from. Its files are claimed
         as any removal claims them (``hold_files``); one that is in use
-        after all is left to that.
+        after all is left to that. It is put on record as cleared only once
+        its files are seen to be gone: one whose files could not be removed
+        is left as it is, for the removal of old sessions, which passes over
+        none that is not on record as cleared.
         """
+        import os
+        import shutil
+
         if not self.hold_files(copy.id):
             return
         try:
-            await self._ledger.mark_session_cleared(copy.id)
-            if copy.session_dir:
-                await self._remove_fork_dir(copy.id, copy.session_dir)
+            target = copy.session_dir
+
+            def removed() -> bool:
+                if not target:
+                    return True
+                shutil.rmtree(target, True)
+                return not os.path.lexists(str(target))
+
+            if await asyncio.to_thread(removed):
+                await self._ledger.mark_session_cleared(copy.id)
+            else:
+                logger.warning("the copy %s made for a question could not be removed; it is removed with old sessions", copy.id)
         finally:
             self.release_files(copy.id)
 

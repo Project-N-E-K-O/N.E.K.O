@@ -2525,6 +2525,9 @@ async def test_a_call_of_a_turn_that_is_over_is_handed_nothing_though_the_run_go
         await runtime.steer("s1", "a note for the next turn")
         assert await asyncio.wait_for(stale, 5.0) == []
         assert [str(queued) for queued in session.queue] == ["a note for the next turn"]
+        # Nor is a call of that turn that comes in only now, with the note queued already.
+        assert await asyncio.wait_for(runtime._take_input(session, 30.0), 5.0) == []
+        assert [str(queued) for queued in session.queue] == ["a note for the next turn"]
     finally:
         hold.set()
         stale.cancel()

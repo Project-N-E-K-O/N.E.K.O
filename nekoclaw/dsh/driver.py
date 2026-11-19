@@ -214,6 +214,9 @@ class _Session:
     # a call is handed nothing once the turn it was made in is over, though
     # the run goes on (what came meanwhile is the next turn's).
     turns: int = 0
+    # Whether a turn is with dsh right now: a call that comes in between two
+    # turns is a late one of the turn before, and is handed nothing either.
+    in_turn: bool = False
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
     # Whether it is offered the subagent tool, which its first message then tells of.
@@ -1147,7 +1150,12 @@ class DshRuntime:
     async def _take_input(self, session: _Session, seconds: float) -> list[str]:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""
         # The run the call belongs to: the one under way as it is made. And
-        # the turn: a call is made while dsh is at one.
+        # the turn: a call is made while dsh is at one. One that comes in
+        # while none is (dsh answered the request, and the run writes things
+        # down before it sends the next) is a late call of the turn before:
+        # what is queued by now is the next turn's.
+        if not session.in_turn:
+            return []
         of_run = session.runs if session.run is not None else None
         of_turn = session.turns
         waited_out = False
@@ -1359,6 +1367,7 @@ class DshRuntime:
                 if first:
                     work = self._first_message(session, work)
                 try:
+                    session.in_turn = True
                     try:
                         answer = await process.connection.request(
                             "session/prompt",
@@ -1368,6 +1377,7 @@ class DshRuntime:
                         # The turn is over however it ended: no call of it
                         # is handed anything from here on. (The answers its
                         # calls were handed are settled below all the same.)
+                        session.in_turn = False
                         session.turns += 1
                 except AcpClosed:
                     # The process is gone; that is announced where it was noticed.
