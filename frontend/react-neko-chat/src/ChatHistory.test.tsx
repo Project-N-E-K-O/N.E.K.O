@@ -34,7 +34,7 @@ it('searches literal text, locates context and returns to the same result page',
   expect(target.closest('[hidden]')).toBeNull();
   expect(target.dataset.historyId).toBe('5');
   fireEvent.click(screen.getByText('back'));
-  await waitFor(() => expect(contextButton).toHaveFocus());
+  await waitFor(() => expect(screen.getByText('context')).toHaveFocus());
   await screen.findByText('context');
   expect(document.querySelector('.history-results:not([hidden]) [data-history-id="5"]')).not.toBeNull();
 });
