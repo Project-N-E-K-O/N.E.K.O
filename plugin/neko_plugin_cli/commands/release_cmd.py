@@ -268,6 +268,8 @@ def _diagnose_agent_kit(plugin_dir: Path) -> list[Issue]:
             if Version(stamp) >= Version(current):
                 return []
         except InvalidVersion:
+            # An unparseable stamp cannot prove the snapshot is current, so
+            # fall through to the warning like a missing one.
             pass
     generated_by = stamp or "?"
     return [
