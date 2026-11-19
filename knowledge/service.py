@@ -209,8 +209,13 @@ class ImportJob:
     archive_sha256: str = ""
     result: dict[str, Any] | None = None
     seed_vectors: list[dict] = field(default_factory=list, repr=False, compare=False)
+    # Keep the persisted format only to reject retries of retired text exports;
+    # every newly admitted export is a complete v2 package.
     export_format: int = 2
     export_version: str = "1"
+    # A completed export can be removed while the worker's final flush waits.
+    # This in-memory marker prevents that late flush from reviving its record.
+    export_deleted: bool = field(default=False, repr=False, compare=False)
     frozen_input: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     gate: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -504,6 +509,8 @@ class KnowledgeService:
     async def _persist_job(self, job: ImportJob) -> None:
         """Serialize writes so a late queued snapshot cannot replace terminal facts."""
         async with self._job_persist_lock:
+            if job.export_deleted:
+                return
             await self._thread(atomic_write_json, self.root / "jobs" / (job.job_id + ".json"), self._job_record(job))
 
     def _reconcile_blocking(self, registry: Registry) -> tuple[list[str], Registry]:
@@ -753,7 +760,8 @@ class KnowledgeService:
 
         return await self._locked(run)
 
-    async def remove_pack(self, pack_id: str) -> dict[str, Any]:
+    async def remove_pack(self, pack_id: str, *, _retain_sources: bool = False) -> dict[str, Any]:
+        """Remove the pack row; only last-document removal keeps visible history."""
         # Nothing is marked up front, so a failed removal has nothing to undo.
         # While this removal is pending, earlier imports of the pack yield (one
         # may be holding the lock this removal waits for); once it succeeds,
@@ -770,7 +778,7 @@ class KnowledgeService:
                 raise KnowledgeUnavailable("not_found")
             return record, ""
 
-        return await self._remove(pack_id, None, decide)
+        return await self._remove(pack_id, None, decide, retain_sources=_retain_sources)
 
     async def remove_subscription(
         self, pack_id: str, identity: tuple[str, str, str], releases: frozenset[Release]
@@ -834,6 +842,8 @@ class KnowledgeService:
         pack_id: str,
         releases: frozenset[Release] | None,
         decide: Callable[[PackRecord | None], tuple[PackRecord | None, str]],
+        *,
+        retain_sources: bool = False,
     ) -> dict[str, Any]:
         """Remove ``pack_id`` as ``decide`` rules under the lock, overriding the
         imports it covers (``releases``; ``None`` covers every import of the pack).
@@ -849,6 +859,10 @@ class KnowledgeService:
             record, kept = decide(self._registry.packs.get(pack_id))
             registry = self._registry.without_pack(pack_id) if record is not None else None
             if registry is not None:
+                # Commit the history-list preference before removing the active
+                # registry entry. A failure leaves that active row authoritative;
+                # no post-commit sidecar error can turn removal into a failure.
+                await self._thread(self._sources.set_retained, pack_id, retain_sources)
                 await self._thread(save_registry, self.root, registry)
             marks = dict(self._removed_at.get(pack_id, {}))
             for key in releases if releases is not None else (None,):
@@ -1056,7 +1070,7 @@ class KnowledgeService:
             return result
         # An empty schema-v1 pack is invalid. Removing its last source uses the
         # existing pack-removal ordering while leaving every retained revision.
-        await self.remove_pack(pack_id)
+        await self.remove_pack(pack_id, _retain_sources=True)
         stamp = utc_now()
         job = ImportJob(uuid.uuid4().hex, pack_id, "active", stamp, stamp, kind="import_commit")
         self._remember_job(job)
@@ -1119,19 +1133,29 @@ class KnowledgeService:
                     stage.unlink(missing_ok=True)
                     raise KnowledgePackError("artifact_hash_mismatch")
                 stage.replace(output)
-            await self._thread(retain)
-            canonical = await self._thread(lambda: canonical_pack_bytes(parse_pack(checked["pack"])))
-            options.update(archive_sha256=digest, artifact_sha256=digest, seed_vectors=checked["seed_vectors"])
-            return await self.import_pack(canonical, subscription=subscription, _options=options)
+            async def retain_and_admit():
+                # Export deletion uses the same mutation lock. Keep the exact
+                # ZIP alive until its import job owns the recovery reference;
+                # otherwise deletion could slip between retaining and admission.
+                await self._thread(retain)
+                canonical = await self._thread(lambda: canonical_pack_bytes(parse_pack(checked["pack"])))
+                options.update(archive_sha256=digest, artifact_sha256=digest, seed_vectors=checked["seed_vectors"])
+                return await self.import_pack(canonical, subscription=subscription, _options=options)
+
+            return await self._locked(retain_and_admit, wait=True)
         finally:
             if temporary is not None:
                 with contextlib.suppress(OSError):
                     await self._thread(temporary.unlink, missing_ok=True)
 
-    async def export_pack(self, pack_id: str, *, format_version: int = 2, version: str = "1") -> dict[str, Any]:
-        """Queue export on the existing worker, without computing any vectors."""
+    async def export_pack(self, pack_id: str, *, format_version: int = 2,
+                          _retry_version: str | None = None) -> dict[str, Any]:
+        """Queue v2 with a server-owned release version, frozen across retries."""
         self._require_ready()
-        if type(format_version) is not int or format_version not in {1, 2} or not isinstance(version, str):
+        # Retired clients may still send a format selector. Refuse v1 instead
+        # of silently producing a different file from the one they requested.
+        if (type(format_version) is not int or format_version != 2
+                or (_retry_version is not None and not isinstance(_retry_version, str))):
             raise KnowledgePackError("invalid_request")
         record = self._registry.packs.get(pack_id)
         if record is None:
@@ -1142,9 +1166,14 @@ class KnowledgeService:
         if len(active) >= MAX_PENDING_IMPORTS:
             raise KnowledgePackError("knowledge_busy")
         stamp = utc_now()
-        job = ImportJob(uuid.uuid4().hex, pack_id, "queued", stamp, stamp,
+        job_id = uuid.uuid4().hex
+        # Reuse the existing unique task identity instead of maintaining a
+        # counter that could reset after task cleanup, restore or pack import.
+        # Persist this value before queueing; only retry_job supplies an old one.
+        version = _retry_version if _retry_version is not None else f"auto-{job_id}"
+        job = ImportJob(job_id, pack_id, "queued", stamp, stamp,
                         kind="pack_export", staged_sha256=record.pack_sha256,
-                        export_format=format_version, export_version=version)
+                        export_version=version)
         self._request_seq += 1
         job.arrived_at = self._request_seq
         self._remember_job(job)
@@ -1160,6 +1189,11 @@ class KnowledgeService:
     async def _export_job(self, job: ImportJob) -> None:
         """Snapshot under the mutation lock, then serialize after releasing it."""
         from .archive import export_archive
+
+        # Durable jobs are another input boundary: an old text-export task
+        # cannot bypass admission by reaching the worker or retry path.
+        if type(job.export_format) is not int or job.export_format != 2:
+            raise KnowledgePackError("invalid_request")
 
         async def snapshot():
             record = self._registry.packs.get(job.pack_id)
@@ -1188,7 +1222,7 @@ class KnowledgeService:
                 return True
         job.result = await self._thread(export_archive, self.root / "artifacts", payload,
                                         version=job.export_version, specification=spec,
-                                        vectors=vectors, format_version=job.export_format,
+                                        vectors=vectors, created_at=job.created_at,
                                         check_cancelled=check, commit_gate=commit_gate)
         job.published = True
 
@@ -1199,11 +1233,28 @@ class KnowledgeService:
         if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_id):
             raise KnowledgePackError("invalid_request")
         folder = self.root / "artifacts"
-        for suffix in (".neko-knowledge.zip", ".neko-knowledge.json"):
-            path = folder / (artifact_id + suffix)
-            if path.is_file() and not path.is_symlink() and path.resolve().parent == folder.resolve():
-                return path
+        # The download surface serves complete packages only. Previously
+        # exported JSON files stay on disk without reviving their old route.
+        path = folder / (artifact_id + ".neko-knowledge.zip")
+        if path.is_file() and not path.is_symlink() and path.resolve().parent == folder.resolve():
+            return path
         raise KnowledgePackError("not_found")
+
+    async def artifact_download(self, artifact_id: str) -> tuple[Path, str]:
+        """Resolve artifact bytes and their readable download metadata off-loop."""
+        from .archive import archive_download_filename
+
+        # Snapshot retained job metadata before entering a thread. The archive
+        # supplies its frozen name even if today's pack has changed or vanished.
+        created_at = next((job.created_at for job in self._jobs.values()
+                           if job.kind == "pack_export" and isinstance(job.result, dict)
+                           and job.result.get("artifact_id") == artifact_id), None)
+
+        def read():
+            path = self.artifact_path(artifact_id)
+            return path, archive_download_filename(path, created_at=created_at)
+
+        return await self._thread(read)
 
     async def import_pack(
         self, raw: bytes | Path, *, subscription: KnowledgeSubscription | None = None,
@@ -1666,6 +1717,69 @@ class KnowledgeService:
         task.add_done_callback(_consume)
         return True
 
+    async def delete_export(self, job_id: str) -> dict[str, Any]:
+        """Remove one completed local export, retaining any shared recovery ZIP."""
+        import re
+
+        if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+            raise KnowledgePackError("invalid_request")
+
+        async def run():
+            job = self._jobs.get(job_id)
+            if (job is None or job.kind != "pack_export" or job.state != "active"
+                    or not isinstance(job.result, dict)):
+                raise KnowledgePackError("invalid_request")
+            artifact_id = job.result.get("artifact_id")
+            if not isinstance(artifact_id, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_id):
+                raise KnowledgePackError("invalid_request")
+
+            def references(value):
+                return (value.get("archive_sha256") == artifact_id
+                        or isinstance(value.get("result"), dict)
+                        and value["result"].get("artifact_id") == artifact_id)
+
+            async with self._job_persist_lock:
+                retained = (any(record.archive_sha256 == artifact_id for record in self._registry.packs.values())
+                            or any(other.job_id != job_id and references(self._job_record(other))
+                                   for other in self._jobs.values()))
+
+                def remove():
+                    protected = retained
+                    # The bounded in-memory task window can evict records that
+                    # remain recoverable on disk. Honor those references too;
+                    # do not change the existing history-retention policy.
+                    for record_path in (self.root / "jobs").glob("*.json"):
+                        if record_path.name.endswith(".pack.json") or record_path.stem == job_id:
+                            continue
+                        with record_path.open("rb") as stream:
+                            raw = stream.read(128 * 1024 + 1)
+                        if len(raw) > 128 * 1024:
+                            continue
+                        try:
+                            value = json.loads(raw)
+                        except (ValueError, UnicodeError):
+                            continue
+                        if isinstance(value, dict) and references(value):
+                            protected = True
+                            break
+                    path = self.root / "artifacts" / (artifact_id + ".neko-knowledge.zip")
+                    if not protected:
+                        if path.is_symlink():
+                            raise KnowledgePackError("invalid_request")
+                        # Missing files are already cleaned. If the later task
+                        # unlink fails, preserve the card and allow a retry to
+                        # finish rather than report success before persistence.
+                        path.unlink(missing_ok=True)
+                    (self.root / "jobs" / (job_id + ".json")).unlink(missing_ok=True)
+                    return protected
+
+                retained = await self._thread(remove)
+                job.export_deleted = True
+                self._jobs.pop(job_id, None)
+                return {"ok": True, "job_id": job_id, "artifact_retained": retained}
+
+        return await self._locked(run)
+
     async def retry_job(self, job_id: str) -> dict[str, Any]:
         """Retry the original frozen source selection, never today's document set."""
         job = self._jobs.get(job_id)
@@ -1675,7 +1789,7 @@ class KnowledgeService:
             record = self._registry.packs.get(job.pack_id)
             if record is None or record.pack_sha256 != job.staged_sha256:
                 raise KnowledgePackError("pack_changed")
-            return await self.export_pack(job.pack_id, format_version=job.export_format, version=job.export_version)
+            return await self.export_pack(job.pack_id, format_version=job.export_format, _retry_version=job.export_version)
         options = {"kind": job.kind, "origin": job.origin, "enabled": job.initial_enabled, "frozen_input": job.frozen_input}
         if job.archive_sha256:
             path = self.artifact_path(job.archive_sha256)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from datetime import datetime
 import hashlib
 import json
 import math
@@ -12,6 +13,7 @@ import re
 import struct
 import tempfile
 from typing import Callable
+import unicodedata
 import zipfile
 
 from utils.knowledge_package import (
@@ -23,6 +25,48 @@ from utils.knowledge_package import (
 from .models import KnowledgePackError, canonical_pack_bytes, parse_pack
 
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}")
+
+
+def export_filename(name: str, *, created_at: str | None = None) -> str:
+    """Keep download names readable and valid across desktop file systems."""
+    # The suffix keeps this separate from the immutable hash-named storage path.
+    # Use the task timestamp rather than download time, so repeated downloads
+    # of a retained artifact keep the same suggested name.
+    stamp = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if created_at else datetime.now().astimezone()
+    tail = stamp.astimezone().strftime("_%Y-%m-%d_%H-%M-%S") + PACKAGE_SUFFIX
+    clean = "".join(char for char in unicodedata.normalize("NFC", name)
+                    if not unicodedata.category(char).startswith("C"))
+    clean = re.sub(r'[<>:"/\\|?*]+', "_", clean)
+    clean = " ".join(clean.split()).strip(" ._") or "knowledge-pack"
+    # Windows reserves device names even before an extension, such as CON.txt.
+    if re.fullmatch(r"(?:CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³])", clean.split(".", 1)[0].rstrip(" "), re.I):
+        clean = "_" + clean
+    # Bound UTF-8 bytes, not characters: CJK names must fit a 255-byte component
+    # too. The margin also avoids platform-specific filename conversion limits.
+    budget = 240 - len(tail.encode("utf-8"))
+    clean = clean.encode("utf-8")[:budget].decode("utf-8", errors="ignore").rstrip(" .") or "knowledge-pack"
+    return clean + tail
+
+
+def archive_download_filename(path: Path, *, created_at: str | None = None) -> str:
+    """Name retained exports from their frozen manifest, never a mutable pack."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo("manifest.json")
+            with archive.open(info) as stream:
+                raw = stream.read(64 * 1024 + 1)
+            if len(raw) > 64 * 1024:
+                raise ValueError("oversized manifest")
+            name = json.loads(raw)["name"]
+            if not isinstance(name, str):
+                raise ValueError("invalid manifest name")
+            stamp = created_at or datetime(*info.date_time).astimezone().isoformat()
+        return export_filename(name, created_at=stamp)
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+        # A damaged local artifact can still be downloaded for inspection. Do
+        # not reveal its hash or revive user-supplied paths as a fallback name.
+        stamp = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
+        return export_filename("knowledge-pack", created_at=stamp)
 
 
 def read_archive(path: Path, *, expected_spec: dict | None = None) -> dict:
@@ -70,72 +114,72 @@ def _descriptor(raw: bytes) -> dict:
 
 def export_archive(output_dir: Path, pack_payload: dict, *, version: str = "1",
                    specification: dict | None = None, vectors: list[dict] | None = None,
-                   format_version: int = 2, check_cancelled: Callable[[], None] | None = None,
+                   created_at: str | None = None,
+                   check_cancelled: Callable[[], None] | None = None,
                    commit_gate: Callable[[], bool] | None = None) -> dict:
-    """Freeze a pack plus its existing vectors; never load or call an encoder."""
-    if not isinstance(version, str) or not _VERSION.fullmatch(version) or type(format_version) is not int or format_version not in {1, 2}:
+    """Freeze one complete v2 package; never load or call an encoder."""
+    if not isinstance(version, str) or not _VERSION.fullmatch(version):
         raise KnowledgePackError("invalid_request")
     pack = parse_pack(pack_payload)
+    filename = export_filename(pack.source.name, created_at=created_at)
     raw_pack = canonical_pack_bytes(pack)
     if len(raw_pack) > DEFAULT_LIMITS.max_pack_bytes:
         raise KnowledgePackError("pack_too_large")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    descriptor, filename = tempfile.mkstemp(prefix=".pack-export-", dir=output_dir)
+    descriptor, temporary = tempfile.mkstemp(prefix=".pack-export-", dir=output_dir)
     os.close(descriptor)
-    stage = Path(filename)
-    suffix = ".neko-knowledge.json" if format_version == 1 else PACKAGE_SUFFIX
+    stage = Path(temporary)
     warnings = []
     try:
         if check_cancelled:
             check_cancelled()
-        if format_version == 1:
-            stage.write_bytes(raw_pack)
-        else:
-            if specification is None:
-                raise KnowledgePackError("embedding_unavailable")
-            spec = validate_specification(specification)
-            if not vectors or len(vectors) > DEFAULT_LIMITS.max_chunks:
+        # Exports are complete packages. Missing vectors must never silently
+        # fall back to the retired text-only JSON export.
+        if specification is None:
+            raise KnowledgePackError("embedding_unavailable")
+        spec = validate_specification(specification)
+        if not vectors or len(vectors) > DEFAULT_LIMITS.max_chunks:
+            raise KnowledgePackError("vectors_not_ready")
+        dim = spec["dimension"]
+        rows, size, vector_digest = [], 0, hashlib.sha256()
+        for row in vectors:
+            if check_cancelled:
+                check_cancelled()
+            blob = row.get("vector")
+            if not isinstance(blob, bytes) or len(blob) != dim * 4:
                 raise KnowledgePackError("vectors_not_ready")
-            dim = spec["dimension"]
-            rows, size, vector_digest = [], 0, hashlib.sha256()
-            for row in vectors:
-                if check_cancelled:
-                    check_cancelled()
-                blob = row.get("vector")
-                if not isinstance(blob, bytes) or len(blob) != dim * 4:
-                    raise KnowledgePackError("vectors_not_ready")
-                item = {key: row[key] for key in ("entry_title", "chunk_index", "text_hash", "embedding_text")}
-                rows.append(canonical_json(item) + b"\n")
-                vector_digest.update(blob)
-                size += len(blob)
-            raw_chunks = b"".join(rows)
-            files = {"pack.json": _descriptor(raw_pack), "chunks.jsonl": _descriptor(raw_chunks),
-                     "vectors.f32": {"bytes": size, "sha256": vector_digest.hexdigest()}}
-            if sum(item["bytes"] for item in files.values()) > DEFAULT_LIMITS.max_expanded_bytes:
-                raise KnowledgePackError("package_expanded_too_large")
-            manifest = {"format": PACKAGE_FORMAT, "format_version": FORMAT_VERSION,
-                        "package_id": pack.pack_id, "name": pack.source.name, "version": version,
-                        "source": {"author": pack.source.name, "license": pack.source.license, "url": pack.source.homepage},
-                        "chunking_version": CHUNKING_VERSION, "embedding_spec": spec,
-                        "counts": {"documents": len(pack.entries), "chunks": len(vectors)}, "files": files}
-            with zipfile.ZipFile(stage, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as archive:
-                archive.writestr("manifest.json", canonical_json(manifest))
-                archive.writestr("pack.json", raw_pack)
-                archive.writestr("chunks.jsonl", raw_chunks)
-                # Vectors remain packed float32 throughout export. Do not turn
-                # a large library into millions of temporary Python floats.
-                with archive.open("vectors.f32", "w") as stream:
-                    for row in vectors:
-                        if check_cancelled:
-                            check_cancelled()
-                        stream.write(row["vector"])
-            validate_package(stage, expected_spec=spec)
+            item = {key: row[key] for key in ("entry_title", "chunk_index", "text_hash", "embedding_text")}
+            rows.append(canonical_json(item) + b"\n")
+            vector_digest.update(blob)
+            size += len(blob)
+        raw_chunks = b"".join(rows)
+        files = {"pack.json": _descriptor(raw_pack), "chunks.jsonl": _descriptor(raw_chunks),
+                 "vectors.f32": {"bytes": size, "sha256": vector_digest.hexdigest()}}
+        if sum(item["bytes"] for item in files.values()) > DEFAULT_LIMITS.max_expanded_bytes:
+            raise KnowledgePackError("package_expanded_too_large")
+        manifest = {"format": PACKAGE_FORMAT, "format_version": FORMAT_VERSION,
+                    "package_id": pack.pack_id, "name": pack.source.name, "version": version,
+                    "source": {"author": pack.source.name, "license": pack.source.license, "url": pack.source.homepage},
+                    "chunking_version": CHUNKING_VERSION, "embedding_spec": spec,
+                    "counts": {"documents": len(pack.entries), "chunks": len(vectors)}, "files": files}
+        with zipfile.ZipFile(stage, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=False) as archive:
+            archive.writestr("manifest.json", canonical_json(manifest))
+            archive.writestr("pack.json", raw_pack)
+            archive.writestr("chunks.jsonl", raw_chunks)
+            # Vectors remain packed float32 throughout export. Do not turn
+            # a large library into millions of temporary Python floats.
+            with archive.open("vectors.f32", "w") as stream:
+                for row in vectors:
+                    if check_cancelled:
+                        check_cancelled()
+                    stream.write(row["vector"])
+        validate_package(stage, expected_spec=spec)
         digest, size = hash_file(stage, DEFAULT_LIMITS.max_archive_bytes)
         if check_cancelled:
             check_cancelled()
         _sync(stage)
-        target = output_dir / (digest + suffix)
+        target = output_dir / (digest + PACKAGE_SUFFIX)
         # The owner seals cancellation under its task lock only after durable
         # staging, just before publication. A cancellation accepted during
         # fsync must never publish a supposedly cancelled artifact.
@@ -162,8 +206,10 @@ def export_archive(output_dir: Path, pack_payload: dict, *, version: str = "1",
             except OSError:
                 warnings.append("storage_sync_unconfirmed")
         result = {"artifact_id": digest, "sha256": digest, "bytes": size,
-                  "filename": f"{pack.pack_id}.{version}{suffix}", "format_version": format_version,
-                  "pack_id": pack.pack_id, "version": version}
+                  "filename": filename, "format_version": FORMAT_VERSION,
+                  # Display metadata is frozen beside the task, not added to
+                  # the archive or resolved from a later mutable pack name.
+                  "name": pack.source.name, "pack_id": pack.pack_id, "version": version}
         if warnings:
             result["warnings"] = warnings
         return result

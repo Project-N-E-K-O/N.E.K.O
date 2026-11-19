@@ -6,6 +6,7 @@ import math
 import stat
 import struct
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -149,8 +150,8 @@ def test_archive_installs_only_real_compatible_prefixes(tmp_path, target_dim, qu
     assert read_archive(source)["seed_vectors"] == []
 
 
-def test_export_reuses_existing_packed_vectors_and_keeps_v1_available(tmp_path):
-    """Both exports use the same text; v2 takes bytes from the existing index."""
+def test_export_reuses_existing_packed_vectors_in_one_complete_archive(tmp_path):
+    """The only export preserves text and vectors in the validated v2 contract."""
     from knowledge.archive import export_archive
 
     source = make_archive(tmp_path / "source.zip")
@@ -158,14 +159,36 @@ def test_export_reuses_existing_packed_vectors_and_keeps_v1_available(tmp_path):
     with zipfile.ZipFile(source) as archive:
         rows = [{**checked.chunks[0], "vector": archive.read("vectors.f32")}]
     output = tmp_path / "artifacts"
-    v2 = export_archive(output, checked.pack, specification=specification(), vectors=rows, version="2.0.0")
+    created_at = "2026-11-19T07:30:42Z"
+    v2 = export_archive(output, checked.pack, specification=specification(), vectors=rows, version="2.0.0", created_at=created_at)
     artifact = output / (v2["sha256"] + package.PACKAGE_SUFFIX)
     assert package.validate_package(artifact).pack == checked.pack
-    v1 = export_archive(output, checked.pack, format_version=1)
-    text_artifact = output / (v1["sha256"] + ".neko-knowledge.json")
-    assert json.loads(text_artifact.read_bytes()) == checked.pack
+    assert v2["format_version"] == 2
+    assert v2["name"] == "Example"
+    assert v2["filename"].endswith(package.PACKAGE_SUFFIX)
+    local_time = datetime.fromisoformat(created_at.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+    assert v2["filename"] == f"Example_{local_time}{package.PACKAGE_SUFFIX}"
+    assert checked.pack["pack_id"] not in v2["filename"]
+    assert not list(output.glob("*.neko-knowledge.json"))
+    with zipfile.ZipFile(artifact) as archive:
+        assert archive.read("vectors.f32") == rows[0]["vector"]
     assert not artifact.read_bytes().startswith(b"{")
     assert v2["bytes"] == artifact.stat().st_size
+
+
+@pytest.mark.parametrize("name", ["My notes", "日本語の資料", '../CON.txt:*?\r\n', "CON.txt", "資料" * 200, "..."])
+def test_export_filename_is_portable_without_losing_unicode(name):
+    """Readable download names cannot become paths or Windows device names."""
+    from knowledge.archive import export_filename
+
+    filename = export_filename(name, created_at="2026-11-19T07:30:42Z")
+    assert filename.endswith(package.PACKAGE_SUFFIX)
+    assert len(filename.encode("utf-8")) <= 240
+    assert not any(char in filename for char in '<>:"/\\|?*\r\n')
+    assert not filename.startswith(".") and not filename.endswith((".", " "))
+    assert filename.split(".", 1)[0].upper() not in {"CON", "PRN", "AUX", "NUL"}
+    if name == "日本語の資料":
+        assert filename.startswith(name + "_")
 
 
 def test_incomplete_vectors_do_not_publish_a_v2_archive(tmp_path):
@@ -203,9 +226,11 @@ def test_export_refuses_publication_when_final_task_gate_is_cancelled(tmp_path):
     from knowledge.archive import export_archive
 
     checked = package.validate_package(make_archive(tmp_path / "source.zip"))
+    with zipfile.ZipFile(tmp_path / "source.zip") as archive:
+        rows = [{**checked.chunks[0], "vector": archive.read("vectors.f32")}]
     output = tmp_path / "artifacts"
     with pytest.raises(InterruptedError, match="cancelled"):
-        export_archive(output, checked.pack, format_version=1, commit_gate=lambda: False)
+        export_archive(output, checked.pack, specification=specification(), vectors=rows, commit_gate=lambda: False)
     assert not list(output.iterdir())
 
 

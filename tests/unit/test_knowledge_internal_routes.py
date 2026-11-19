@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
+from urllib.parse import unquote
 
 import httpx
 import pytest
@@ -139,6 +141,112 @@ async def test_invalid_requests_are_rejected(client):
         headers={"Content-Type": "application/json"},
     )
     assert too_large.status_code == 413
+
+
+async def test_export_route_admits_only_complete_package_requests(client, monkeypatch):
+    """Neither a retired selector nor a wrong JSON type can reach export."""
+    http, service = client
+    calls = []
+
+    async def export(pack_id, *, format_version):
+        calls.append((pack_id, format_version))
+        return {"ok": True}
+
+    monkeypatch.setattr(service, "export_pack", export)
+    for version in (1, True, 2.0, "2", None):
+        response = await http.post("/internal/knowledge/packs/export", json={"pack_id": "route-pack", "format_version": version})
+        assert response.status_code == 400 and response.json()["reason"] == "invalid_request"
+    assert not calls
+    for manual in ("1.0.0", "arbitrary input", 1, None):
+        response = await http.post("/internal/knowledge/packs/export", json={"pack_id": "route-pack", "version": manual})
+        assert response.status_code == 400 and response.json()["reason"] == "invalid_request"
+    assert not calls
+    for extra in ({}, {"format_version": 2}):
+        response = await http.post("/internal/knowledge/packs/export", json={"pack_id": "route-pack", **extra})
+        assert response.status_code == 200
+    assert calls == [("route-pack", 2)] * 2
+
+
+async def test_delete_export_route_validates_body_and_removes_the_completed_card(client):
+    """The public action accepts a job identity, never a client file path."""
+    from knowledge.registry import utc_now
+    from knowledge.service import ImportJob
+
+    http, service = client
+    job_id, digest = "a" * 32, "b" * 64
+    stamp = utc_now()
+    job = ImportJob(job_id, "route-pack", "active", stamp, stamp,
+                    kind="pack_export", result={"artifact_id": digest})
+    service._remember_job(job)
+    await service._persist_job(job)
+    artifact = service.root / "artifacts" / (digest + ".neko-knowledge.zip")
+    artifact.parent.mkdir(exist_ok=True)
+    artifact.write_bytes(b"synthetic export")
+    for body in ({}, {"job_id": None}, {"job_id": job_id, "filename": "private"}):
+        response = await http.post("/internal/knowledge/packs/exports/delete", json=body)
+        assert response.status_code == 400 and response.json()["reason"] == "invalid_request"
+    refused = await http.post("/internal/knowledge/packs/exports/delete", json={"job_id": "../private"})
+    assert refused.json()["ok"] is False and refused.json()["reason"] == "invalid_request"
+    assert artifact.exists() and job_id in service._jobs
+    response = await http.post("/internal/knowledge/packs/exports/delete", json={"job_id": job_id})
+    assert response.json()["ok"] is True and response.json()["job_id"] == job_id
+    assert response.json()["artifact_retained"] is False
+    assert not artifact.exists() and job_id not in service._jobs
+
+
+async def test_artifact_route_serves_zip_and_preserves_retired_json_without_serving_it(client):
+    """Removing the JSON download path must not delete historical bytes."""
+    from tests.unit.test_knowledge_archive_v2 import make_archive
+
+    http, service = client
+    folder = service.root / "artifacts"
+    folder.mkdir()
+    text = json.dumps(PACK).encode()
+    legacy_id = hashlib.sha256(text).hexdigest()
+    legacy = folder / (legacy_id + ".neko-knowledge.json")
+    legacy.write_bytes(text)
+    source = make_archive(service.root / "source.zip").read_bytes()
+    artifact_id = hashlib.sha256(source).hexdigest()
+    (folder / (artifact_id + ".neko-knowledge.zip")).write_bytes(source)
+    refused = await http.get("/internal/knowledge/packs/artifacts", params={"artifact_id": legacy_id})
+    assert refused.status_code == 404
+    assert legacy.read_bytes() == text
+    response = await http.get("/internal/knowledge/packs/artifacts", params={"artifact_id": artifact_id})
+    assert response.status_code == 200 and response.content == source
+    assert response.headers["content-type"] == "application/zip"
+    assert ".neko-knowledge.zip" in response.headers["content-disposition"]
+
+
+async def test_artifact_download_uses_frozen_readable_name_for_old_and_new_results(client):
+    """HTTP and UI names agree without renaming stored archives or old tasks."""
+    from tests.unit.test_knowledge_subsystem import _import, _pack
+    from tests.unit.test_knowledge_unified_core import _finished, _prepare_export_vectors
+
+    http, service = client
+    payload = _pack()
+    payload["source"]["name"] = "我的资料"
+    await _import(service, payload)
+    _prepare_export_vectors(service, payload["pack_id"])
+    finished = await _finished(service, await service.export_pack(payload["pack_id"]))
+    result = finished["result"]
+    filename = result["filename"]
+    assert filename.startswith("我的资料_")
+    assert result["version"] not in filename and result["sha256"] not in filename
+    path = service.artifact_path(result["artifact_id"])
+    assert path.name == result["sha256"] + ".neko-knowledge.zip"
+    before = path.read_bytes()
+    # Simulate pre-improvement metadata and then replace today's pack name.
+    # The immutable ZIP remains the authority for this old export's title.
+    old_name = payload["pack_id"] + "." + result["version"] + ".neko-knowledge.zip"
+    service._jobs[finished["job_id"]].result["filename"] = old_name
+    payload["source"]["name"] = "Renamed current pack"
+    await _import(service, payload)
+    response = await http.get("/internal/knowledge/packs/artifacts", params={"artifact_id": result["artifact_id"]})
+    assert response.status_code == 200 and response.content == before
+    disposition = response.headers["content-disposition"]
+    assert unquote(disposition.split("filename*=utf-8''", 1)[1]) == filename
+    assert service._jobs[finished["job_id"]].result["filename"] == old_name
+    assert path.read_bytes() == before
 
 
 async def test_unexpected_knowledge_errors_stay_inside_the_handler(client, monkeypatch):

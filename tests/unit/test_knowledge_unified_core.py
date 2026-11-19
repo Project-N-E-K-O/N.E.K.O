@@ -9,6 +9,7 @@ import subprocess
 import sys
 import logging
 import threading
+import struct
 from pathlib import Path
 
 import pytest
@@ -93,6 +94,88 @@ async def test_sources_share_existing_pack_search_and_retain_all_versions(tmp_pa
         await service.stop()
 
 
+@pytest.mark.parametrize("restore_last_source_first", [False, True])
+async def test_removed_source_pack_stays_absent_after_refresh_and_restart_without_deleting_history(tmp_path, restore_last_source_first):
+    """Pack removal hides its row; last-document history remains a separate choice."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"First lighthouse reference.", name="References"))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        changed = (await service.preview_source("notes.txt", b"Second lighthouse reference.",
+                                               pack_id=pack_id, doc_id=value["doc_id"]))["preview"]
+        await _finished(service, await service.commit_source(changed["preview_id"], changed["sha256"]))
+        _prepare_export_vectors(service, pack_id)
+        exported = await _finished(service, await service.export_pack(pack_id))
+        assert exported["state"] == "active"
+        artifact = service.artifact_path(exported["result"]["artifact_id"])
+        preserved = {path: path.read_bytes() for path in (tmp_path / "sources" / pack_id).rglob("*")
+                     if path.is_file() and ("originals" in path.parts or "versions" in path.parts)}
+        preserved[artifact] = artifact.read_bytes()
+        if restore_last_source_first:
+            await service.remove_source(pack_id, value["doc_id"])
+            assert (await service.list_packs())[0]["retained"] is True
+            await service.stop()
+            service = KnowledgeService(tmp_path)
+            await service.start()
+            assert (await service.list_packs())[0]["retained"] is True
+            await _finished(service, await service.restore_source(pack_id, value["doc_id"], 1))
+        await service.remove_pack(pack_id)
+        assert not any(row["pack_id"] == pack_id for row in await service.list_packs())
+        assert all(path.read_bytes() == raw for path, raw in preserved.items())
+        assert list((tmp_path / "history" / pack_id).glob("*.json"))
+        # Pre-fix removals left a source manifest without a visibility flag.
+        # Retained originals alone must not resurrect those browser rows.
+        manifest = tmp_path / "sources" / pack_id / "manifest.json"
+        data = json.loads(manifest.read_text())
+        data.pop("retained", None)
+        manifest.write_text(json.dumps(data))
+    finally:
+        await service.stop()
+    reopened = KnowledgeService(tmp_path)
+    await reopened.start()
+    try:
+        assert not any(row["pack_id"] == pack_id for row in await reopened.list_packs())
+        assert all(path.read_bytes() == raw for path, raw in preserved.items())
+    finally:
+        await reopened.stop()
+
+
+@pytest.mark.parametrize("failed_write", ["sidecar", "registry"])
+@pytest.mark.parametrize("remove_last_source", [False, True])
+async def test_failed_source_pack_removal_keeps_the_active_registry_row(tmp_path, monkeypatch, failed_write, remove_last_source):
+    """Visibility metadata cannot hide an active pack when removal does not commit."""
+    from knowledge import service as module
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"Lighthouse reference."))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        original = next((tmp_path / "sources" / pack_id / "originals").rglob("original"))
+
+        def refuse(*_args):
+            raise OSError("synthetic write failure")
+
+        if failed_write == "sidecar":
+            monkeypatch.setattr(service._sources, "set_retained", refuse)
+        else:
+            monkeypatch.setattr(module, "save_registry", refuse)
+        with pytest.raises(OSError, match="synthetic write failure"):
+            if remove_last_source:
+                await service.remove_source(pack_id, value["doc_id"])
+            else:
+                await service.remove_pack(pack_id)
+        rows = await service.list_packs()
+        assert len(rows) == 1 and rows[0]["pack_id"] == pack_id and not rows[0]["retained"]
+        assert pack_id in load_registry(tmp_path).packs
+        assert original.read_bytes() == b"Lighthouse reference."
+    finally:
+        await service.stop()
+
+
 def _docx(body):
     """Use an isolated minimal OOXML document with checked required members."""
     stream = io.BytesIO()
@@ -135,6 +218,19 @@ class _PackageEmbedder:
         raise EmbedDeferred(retry_after_ms=1)
 
 
+def _prepare_export_vectors(service, pack_id):
+    """Seed checked synthetic vectors so export tests never load an encoder."""
+    service.embedder = _PackageEmbedder()
+    spec = service.embedder.spec()
+    pending = service._store.pending_chunks(model_id=spec["model_id"], pack_ids=[pack_id], limit=10000)
+    vector = struct.pack("<64f", 1.0, *([0.0] * 63))
+    stored, failed = service._store.store_vectors(
+        model_id=spec["model_id"], rows=[(chunk_id, text_hash, vector) for chunk_id, text_hash, _ in pending],
+        specification=spec,
+    )
+    assert stored == len(pending) and failed == 0
+
+
 async def _manual_index(service):
     """Leave the real import runner alive while controlling index rounds."""
     service._tasks[1].cancel()
@@ -166,7 +262,7 @@ async def test_portable_vectors_survive_export_and_deleted_index_without_encodin
         imported = await service.import_pack(make_archive(tmp_path / "source.zip"))
         assert (await _finished(service, imported))["state"] == "active"
         assert len(service._store.vectors_for_pack("imp.example", service.embedder.model_id())) == 1
-        exported = await service.export_pack("imp.example", format_version=2, version="2")
+        exported = await service.export_pack("imp.example", format_version=2)
         finished = await _finished(service, exported)
         assert finished["state"] == "active"
         assert service.artifact_path(finished["result"]["artifact_id"]).suffix == ".zip"
@@ -185,7 +281,250 @@ async def test_portable_vectors_survive_export_and_deleted_index_without_encodin
         await reopened.stop()
 
 
-async def test_text_export_works_without_encoder_and_post_commit_failure_stays_active(tmp_path, monkeypatch):
+async def test_export_versions_are_unique_and_survive_restart_before_retry(tmp_path):
+    """Fresh exports receive unique versions; persisted retries keep their release."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        versions = []
+        for _ in range(2):
+            finished = await _finished(service, await service.export_pack("demo-memes"))
+            assert finished["state"] == "active"
+            result = finished["result"]
+            versions.append(result["version"])
+            assert result["filename"].startswith("Demo_")
+            assert result["version"] not in result["filename"]
+            with zipfile.ZipFile(service.artifact_path(result["artifact_id"])) as archive:
+                assert json.loads(archive.read("manifest.json"))["version"] == result["version"]
+        assert versions[0] != versions[1]
+        # Cancel before the worker takes the task, then cross a real restart.
+        queued = await service.export_pack("demo-memes")
+        assert await service.cancel_job(queued["job_id"])
+        version = service._jobs[queued["job_id"]].export_version
+        record = json.loads((tmp_path / "jobs" / (queued["job_id"] + ".json")).read_text())
+        assert record["export_version"] == version and version not in versions
+    finally:
+        await service.stop()
+    reopened = KnowledgeService(tmp_path, embedder=_PackageEmbedder())
+    await reopened.start()
+    try:
+        assert reopened._jobs[queued["job_id"]].export_version == version
+        retried = await _finished(reopened, await reopened.retry_job(queued["job_id"]))
+        assert retried["state"] == "active" and retried["job_id"] != queued["job_id"]
+        assert retried["result"]["version"] == version
+        with zipfile.ZipFile(reopened.artifact_path(retried["result"]["artifact_id"])) as archive:
+            assert json.loads(archive.read("manifest.json"))["version"] == version
+    finally:
+        await reopened.stop()
+
+
+async def test_delete_export_removes_its_record_and_zip_without_losing_the_library(tmp_path):
+    """The explicit delete cleans one output, never its source pack or history."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        value = (await service.preview_source("notes.txt", b"Lighthouse reference.", name="References"))["preview"]
+        await _finished(service, await service.commit_source(value["preview_id"], value["sha256"]))
+        pack_id = (await service.list_packs())[0]["pack_id"]
+        _prepare_export_vectors(service, pack_id)
+        exported = await _finished(service, await service.export_pack(pack_id))
+        path = service.artifact_path(exported["result"]["artifact_id"])
+        sources = {item: item.read_bytes() for item in (tmp_path / "sources").rglob("*") if item.is_file()}
+        registry = (tmp_path / "registry.json").read_bytes()
+        response = await service.delete_export(exported["job_id"])
+        assert response == {"ok": True, "job_id": exported["job_id"], "artifact_retained": False}
+        assert not path.exists() and not (tmp_path / "jobs" / (exported["job_id"] + ".json")).exists()
+        assert not any(job["job_id"] == exported["job_id"] for job in service.list_jobs())
+        assert (tmp_path / "registry.json").read_bytes() == registry
+        assert all(item.read_bytes() == raw for item, raw in sources.items())
+    finally:
+        await service.stop()
+    reopened = KnowledgeService(tmp_path)
+    await reopened.start()
+    try:
+        assert not any(job["job_id"] == exported["job_id"] for job in reopened.list_jobs())
+        assert any(pack["pack_id"] == pack_id for pack in await reopened.list_packs())
+    finally:
+        await reopened.stop()
+
+
+@pytest.mark.parametrize("owner", ["registry", "other_export", "evicted_import"])
+async def test_delete_export_keeps_zip_referenced_by_library_or_retained_tasks(tmp_path, owner):
+    """Even a disk-only recovery task protects its immutable input archive."""
+    from dataclasses import replace
+    from knowledge.service import ImportJob
+    from knowledge.registry import save_registry, utc_now
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        exported = await _finished(service, await service.export_pack("demo-memes"))
+        digest = exported["result"]["artifact_id"]
+        path = service.artifact_path(digest)
+        before = path.read_bytes()
+        if owner == "registry":
+            service._registry = service._registry.with_pack(replace(service._registry.packs["demo-memes"], archive_sha256=digest))
+            save_registry(tmp_path, service._registry)
+        else:
+            stamp = utc_now()
+            other = ImportJob("d" * 32, "demo-memes", "failed", stamp, stamp)
+            if owner == "other_export":
+                other.kind, other.state, other.result = "pack_export", "active", dict(exported["result"])
+            else:
+                other.archive_sha256 = digest
+            service._remember_job(other)
+            await service._persist_job(other)
+            if owner == "evicted_import":
+                service._jobs.pop(other.job_id)
+        assert (await service.delete_export(exported["job_id"]))["artifact_retained"] is True
+        assert path.read_bytes() == before
+        assert not (tmp_path / "jobs" / (exported["job_id"] + ".json")).exists()
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("failed_part", ["artifact", "record"])
+async def test_failed_export_delete_stays_visible_and_can_be_retried(tmp_path, monkeypatch, failed_part):
+    """No I/O failure may be reported as successful durable deletion."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        exported = await _finished(service, await service.export_pack("demo-memes"))
+        artifact = service.artifact_path(exported["result"]["artifact_id"])
+        record = tmp_path / "jobs" / (exported["job_id"] + ".json")
+        failed = artifact if failed_part == "artifact" else record
+        unlink = Path.unlink
+
+        def refuse(path, *args, **kwargs):
+            if path == failed:
+                raise OSError("synthetic deletion failure")
+            return unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", refuse)
+            with pytest.raises(OSError, match="synthetic deletion failure"):
+                await service.delete_export(exported["job_id"])
+        assert any(job["job_id"] == exported["job_id"] for job in service.list_jobs()) and record.exists()
+        assert artifact.exists() is (failed_part == "artifact")
+        assert (await service.delete_export(exported["job_id"]))["ok"]
+        assert not artifact.exists() and not record.exists()
+    finally:
+        await service.stop()
+
+
+async def test_export_delete_cannot_be_revived_by_a_late_worker_flush(tmp_path, monkeypatch):
+    """Delete after active is visible but before the worker persists its end."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    reached, resume = asyncio.Event(), asyncio.Event()
+    original = service._persist_job
+
+    async def pause(job):
+        if job.kind == "pack_export" and job.state == "active":
+            reached.set()
+            await resume.wait()
+        await original(job)
+
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        monkeypatch.setattr(service, "_persist_job", pause)
+        exported = await service.export_pack("demo-memes")
+        await asyncio.wait_for(reached.wait(), 3)
+        await service.delete_export(exported["job_id"])
+        resume.set()
+    finally:
+        resume.set()
+        await service.stop()
+    assert not (tmp_path / "jobs" / (exported["job_id"] + ".json")).exists()
+
+
+async def test_export_delete_waits_until_archive_import_owns_its_recovery_reference(tmp_path, monkeypatch):
+    """Deletion cannot unlink between retaining a ZIP and admitting its import."""
+    from knowledge import service as module
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    reached, resume = threading.Event(), threading.Event()
+    original = module.canonical_pack_bytes
+    importing = deleting = None
+
+    def pause(pack):
+        reached.set()
+        if not resume.wait(5):
+            raise TimeoutError("archive admission coordination timed out")
+        return original(pack)
+
+    try:
+        await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
+        exported = await _finished(service, await service.export_pack("demo-memes"))
+        artifact = service.artifact_path(exported["result"]["artifact_id"])
+        # Force the re-import through a job instead of the unchanged-pack fast path.
+        await service.remove_pack("demo-memes")
+        monkeypatch.setattr(module, "canonical_pack_bytes", pause)
+        importing = asyncio.create_task(service.import_pack(artifact))
+        assert await asyncio.to_thread(reached.wait, 3)
+        deleting = asyncio.create_task(service.delete_export(exported["job_id"]))
+        await asyncio.sleep(0)
+        assert not deleting.done() and artifact.exists()
+        resume.set()
+        imported = await importing
+        assert (await deleting)["artifact_retained"] is True
+        assert (await _finished(service, imported))["state"] == "active"
+        assert artifact.exists()
+        assert service._registry.packs["demo-memes"].archive_sha256 == exported["result"]["artifact_id"]
+    finally:
+        resume.set()
+        for task in (importing, deleting):
+            if task is not None:
+                await asyncio.gather(task, return_exceptions=True)
+        await service.stop()
+
+
+@pytest.mark.parametrize("case", ["invalid_id", "missing", "import", "queued", "failed", "no_result", "invalid_artifact"])
+async def test_delete_export_refuses_anything_except_a_completed_output(tmp_path, case):
+    """Untrusted identifiers and ordinary import tasks cannot delete files."""
+    from knowledge.models import KnowledgePackError
+    from knowledge.registry import utc_now
+    from knowledge.service import ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        job_id, digest = "a" * 32, "b" * 64
+        stamp = utc_now()
+        job = ImportJob(job_id, "demo-memes", "active", stamp, stamp,
+                        kind="pack_export", result={"artifact_id": digest})
+        if case == "import":
+            job.kind = "pack_import"
+        elif case in {"queued", "failed"}:
+            job.state = case
+        elif case == "no_result":
+            job.result = None
+        elif case == "invalid_artifact":
+            job.result["artifact_id"] = "../../private"
+        if case != "missing":
+            service._remember_job(job)
+            await service._persist_job(job)
+        artifact = tmp_path / "artifacts" / (digest + ".neko-knowledge.zip")
+        artifact.parent.mkdir(exist_ok=True)
+        artifact.write_bytes(b"untouched")
+        with pytest.raises(KnowledgePackError, match="invalid_request"):
+            await service.delete_export("../../private" if case == "invalid_id" else job_id)
+        assert artifact.read_bytes() == b"untouched"
+        assert case == "missing" or job_id in service._jobs
+    finally:
+        await service.stop()
+
+
+async def test_incomplete_export_fails_without_losing_a_committed_text_import(tmp_path, monkeypatch):
     service = KnowledgeService(tmp_path)
     await service.start()
     try:
@@ -197,11 +536,66 @@ async def test_text_export_works_without_encoder_and_post_commit_failure_stays_a
         finished = await _finished(service, imported)
         assert finished["state"] == "active" and not finished["reason"]
         assert (await service.query(query="rubber duck debugging"))["result"] == "matched"
-        exported = await service.export_pack("demo-memes", format_version=1)
+        # JSON imports remain usable without a model, but their incomplete
+        # vectors cannot become a silently downgraded text-only export.
+        exported = await service.export_pack("demo-memes")
         finished = await _finished(service, exported)
-        assert finished["state"] == "active" and finished["result"]["format_version"] == 1
+        assert finished["state"] == "failed" and finished["reason"] == "embedding_unavailable"
+        assert not list((tmp_path / "artifacts").iterdir())
+        version = service._jobs[exported["job_id"]].export_version
+        _prepare_export_vectors(service, "demo-memes")
+        retried = await _finished(service, await service.retry_job(exported["job_id"]))
+        assert retried["state"] == "active" and retried["result"]["version"] == version
     finally:
         await service.stop()
+
+
+@pytest.mark.parametrize("format_version", [1, True, 2.0, "2", None])
+async def test_service_refuses_retired_or_invalid_export_formats_before_queueing(tmp_path, format_version):
+    """Direct callers cannot recover the retired text-only export path."""
+    from knowledge.models import KnowledgePackError
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        before = service.list_jobs()
+        with pytest.raises(KnowledgePackError, match="invalid_request"):
+            await service.export_pack("demo-memes", format_version=format_version)
+        assert service.list_jobs() == before
+        assert not list((tmp_path / "artifacts").glob("*"))
+    finally:
+        await service.stop()
+
+
+async def test_retired_persisted_export_cannot_resume_or_retry_as_another_format(tmp_path):
+    """A retained v1 task stays inspectable but cannot create a new artifact."""
+    from knowledge.models import KnowledgePackError
+    from knowledge.registry import utc_now
+    from knowledge.service import ImportJob
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _import(service, _pack())
+        stamp = utc_now()
+        legacy = ImportJob("e" * 32, "demo-memes", "cancelled", stamp, stamp, kind="pack_export", export_format=1,
+                           staged_sha256=service._registry.packs["demo-memes"].pack_sha256)
+        service._remember_job(legacy)
+        await service._persist_job(legacy)
+    finally:
+        await service.stop()
+    reopened = KnowledgeService(tmp_path)
+    await reopened.start()
+    try:
+        assert any(row["job_id"] == legacy.job_id for row in reopened.list_jobs())
+        with pytest.raises(KnowledgePackError, match="invalid_request"):
+            await reopened.retry_job(legacy.job_id)
+        with pytest.raises(KnowledgePackError, match="invalid_request"):
+            await reopened._export_job(reopened._jobs[legacy.job_id])
+        assert not list((tmp_path / "artifacts").glob("*"))
+    finally:
+        await reopened.stop()
 
 
 async def test_killed_source_commit_retries_frozen_input_without_new_version(tmp_path):
@@ -387,6 +781,7 @@ async def test_export_cancel_is_exclusive_with_artifact_publication(tmp_path, mo
     reached, proceed = threading.Event(), threading.Event()
     try:
         await _import(service, _pack())
+        _prepare_export_vectors(service, "demo-memes")
         sync, replace = archive._sync, archive.os.replace
 
         def pause():
@@ -408,14 +803,20 @@ async def test_export_cancel_is_exclusive_with_artifact_publication(tmp_path, mo
 
         monkeypatch.setattr(archive, "_sync", during_sync)
         monkeypatch.setattr(archive.os, "replace", during_replace)
-        queued = await service.export_pack("demo-memes", format_version=1)
+        queued = await service.export_pack("demo-memes")
+        version = service._jobs[queued["job_id"]].export_version
         assert await asyncio.to_thread(reached.wait, 3)
         assert await service.cancel_job(queued["job_id"]) is (phase == "sync")
         proceed.set()
         finished = await _finished(service, queued)
         assert finished["state"] == ("cancelled" if phase == "sync" else "active")
-        artifacts = list((tmp_path / "artifacts").glob("*.neko-knowledge.json"))
+        artifacts = list((tmp_path / "artifacts").glob("*.neko-knowledge.zip"))
         assert len(artifacts) == (0 if phase == "sync" else 1)
+        if phase == "sync":
+            # Retrying an admitted v2 task retains the sole complete format.
+            retried = await _finished(service, await service.retry_job(queued["job_id"]))
+            assert retried["state"] == "active" and retried["result"]["format_version"] == 2
+            assert retried["result"]["version"] == version
     finally:
         proceed.set()
         await service.stop()

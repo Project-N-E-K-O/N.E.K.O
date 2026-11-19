@@ -212,6 +212,18 @@ async def test_write_bodies_are_streamed_through_unparsed(proxy, memory_server):
     assert b'{"schema_version": 1}' in forwarded.content
 
 
+async def test_export_delete_reaches_memory_with_the_existing_write_protection(proxy, memory_server):
+    """Export cleanup must traverse the same authenticated proxy as imports."""
+    client = memory_server(lambda request: httpx.Response(200, json={"ok": True, "artifact_retained": False}))
+    body = {"job_id": "a" * 32}
+    refused = await proxy.post("/api/public-knowledge/packs/exports/delete", json=body)
+    assert refused.status_code == 403 and not client.requests
+    response = await proxy.post("/api/public-knowledge/packs/exports/delete", headers=_AUTH, json=body)
+    assert response.json() == {"ok": True, "artifact_retained": False}
+    assert client.requests[0].url.path == "/internal/knowledge/packs/exports/delete"
+    assert json.loads(client.requests[0].content) == body
+
+
 async def test_oversized_bodies_are_refused(proxy, memory_server, monkeypatch):
     client = memory_server(lambda request: httpx.Response(200, json={"ok": True}))
     monkeypatch.setitem(public_knowledge_router.WRITE_PATHS, "packs/remove", 16)

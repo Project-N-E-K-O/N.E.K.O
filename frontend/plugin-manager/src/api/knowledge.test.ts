@@ -187,7 +187,7 @@ describe('knowledge API client', () => {
     const blob = new Blob(['archive'], { type: 'application/zip' })
     axiosMocks.request.mockResolvedValue({ data: blob })
     const { knowledgeApi } = await loadKnowledgeApi()
-    await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toBe(blob)
+    await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toEqual({ blob, filename: '' })
     expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({
       url: '/market/knowledge/packs/artifacts', method: 'GET', responseType: 'blob',
       params: { artifact_id: 'a'.repeat(64), token: 'fixture-token' },
@@ -198,16 +198,51 @@ describe('knowledge API client', () => {
     const blob = new Blob(['archive'])
     axiosMocks.get.mockResolvedValueOnce({ data: { bridge_token: 'stale' } }).mockResolvedValueOnce({ data: { bridge_token: 'fresh' } })
     axiosMocks.request.mockRejectedValueOnce(httpError(403, new Blob([JSON.stringify({ detail: { code: 'invalid_bridge_token' } })])))
-      .mockResolvedValueOnce({ data: blob })
+      .mockResolvedValueOnce({ data: blob, headers: { 'content-disposition': 'attachment; filename="Notes_2026-11-19_15-30-42.neko-knowledge.zip"' } })
     const { knowledgeApi } = await loadKnowledgeApi()
-    await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toBe(blob)
+    await expect(knowledgeApi.artifact('a'.repeat(64))).resolves.toEqual({ blob, filename: 'Notes_2026-11-19_15-30-42.neko-knowledge.zip' })
     expect(axiosMocks.request.mock.calls[1]![0].params.token).toBe('fresh')
   })
+
+  it('uses the readable Unicode filename in the download response', async () => {
+    const blob = new Blob(['archive'], { type: 'application/zip' })
+    const filename = '历史资料_2026-11-19_15-30-42.neko-knowledge.zip'
+    axiosMocks.request.mockResolvedValue({ data: blob, headers: {
+      'content-disposition': `attachment; filename*=utf-8''${encodeURIComponent(filename)}`,
+    } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    const result = await knowledgeApi.artifact('a'.repeat(64))
+    expect(result.blob).toBe(blob)
+    expect(result.filename).toBe(filename)
+  })
+
+  it.each(["attachment; filename*=utf-8''%E4%ZZ", 'attachment; filename="../notes.neko-knowledge.zip"',
+    "attachment; filename*=utf-8''notes%0D%0A.neko-knowledge.zip"])(
+    'does not use malformed or unsafe response filenames: %s', async disposition => {
+      axiosMocks.request.mockResolvedValue({ data: new Blob(['archive']), headers: { 'content-disposition': disposition } })
+      const { knowledgeApi } = await loadKnowledgeApi()
+      expect((await knowledgeApi.artifact('a'.repeat(64))).filename).toBe('')
+    },
+  )
 
   it('does not download a successful-HTTP JSON failure as an artifact', async () => {
     axiosMocks.request.mockResolvedValue({ data: new Blob([JSON.stringify({ ok: false, reason: 'vectors_not_ready' })], { type: 'application/json' }) })
     const { knowledgeApi } = await loadKnowledgeApi()
     await expect(knowledgeApi.artifact('a'.repeat(64))).rejects.toMatchObject({ reason: 'vectors_not_ready' })
+  })
+
+  it('rejects a text JSON pack returned instead of the finished ZIP', async () => {
+    axiosMocks.request.mockResolvedValue({ data: new Blob(['{"pack_id":"p1"}'], { type: 'application/json' }) })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await expect(knowledgeApi.artifact('a'.repeat(64))).rejects.toMatchObject({ reason: 'knowledge_invalid_response' })
+  })
+
+  it('does not forward custom release versions from an untyped caller', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true, state: 'queued' } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    const input = { pack_id: 'p1', version: 'user-entered', format_version: 1 }
+    await knowledgeApi.exportPack(input)
+    expect(axiosMocks.request.mock.calls[0]![0].data).toEqual({ pack_id: 'p1', format_version: 2 })
   })
 
   it('uses the archive size limit and ZIP media type for finished packages', async () => {
@@ -234,7 +269,8 @@ describe('knowledge API client', () => {
     ['commitSource', [{ preview_id: 'preview-1', sha256: 'digest', enabled: false }], 'sources/commit', { preview_id: 'preview-1', sha256: 'digest', enabled: false }],
     ['removeSource', [{ pack_id: 'p1', doc_id: 'doc-1' }], 'sources/remove', { pack_id: 'p1', doc_id: 'doc-1' }],
     ['restoreSource', [{ pack_id: 'p1', doc_id: 'doc-1', version: 1 }], 'sources/restore', { pack_id: 'p1', doc_id: 'doc-1', version: 1 }],
-    ['exportPack', [{ pack_id: 'p1', format_version: 2 }], 'packs/export', { pack_id: 'p1', format_version: 2 }],
+    ['exportPack', [{ pack_id: 'p1' }], 'packs/export', { pack_id: 'p1', format_version: 2 }],
+    ['deleteExport', [{ job_id: 'export-1' }], 'packs/exports/delete', { job_id: 'export-1' }],
     ['publish', [{ pack_id: 'p1', artifact_id: 'artifact', client_request_id: 'request', publish_confirmed: true, title: 'Pack', description: '' }], 'publish', { pack_id: 'p1', artifact_id: 'artifact', client_request_id: 'request', publish_confirmed: true, title: 'Pack', description: '' }],
     ['setEntryDisabled', [{ pack_id: 'p1', title: 'T', disabled: true }], 'entry/disabled', { pack_id: 'p1', title: 'T', disabled: true }],
     ['cancelPackJob', [{ job_id: 'j1' }], 'packs/jobs/cancel', { job_id: 'j1' }],

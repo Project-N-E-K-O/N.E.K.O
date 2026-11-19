@@ -59,20 +59,25 @@ def test_reads_drop_the_token_and_reach_main(bridge):
     assert seen[0].headers["x-knowledge-query"] == "%E7%8C%AB"
 
 
-def test_writes_carry_main_csrf_and_stream_the_body(bridge, monkeypatch):
+@pytest.mark.parametrize("path, body", [
+    ("packs/import", b'{"schema_version": 1}'),
+    ("packs/exports/delete", b'{"job_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'),
+])
+def test_writes_carry_main_csrf_and_stream_the_body(bridge, monkeypatch, path, body):
     import config
 
     monkeypatch.setattr(config, "AUTOSTART_CSRF_TOKEN", "csrf-for-test", raising=False)
     client, seen = bridge
-    body = b'{"schema_version": 1}'
     response = client.post(
-        "/market/knowledge/packs/import",
+        "/market/knowledge/" + path,
         params={"token": get_bridge_token()},
         content=body,
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 200
     forwarded = seen[0]
+    assert forwarded.url.path == "/api/public-knowledge/" + path
+    assert "token" not in forwarded.url.params
     assert forwarded.headers["X-CSRF-Token"] == "csrf-for-test"
     assert forwarded.headers["Origin"].startswith("http://127.0.0.1:")
     assert forwarded.content == body

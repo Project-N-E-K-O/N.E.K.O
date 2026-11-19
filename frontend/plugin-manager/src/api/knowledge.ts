@@ -253,9 +253,15 @@ export interface KnowledgeArtifact {
   sha256: string
   bytes: number
   filename: string
-  format_version: 1 | 2
+  format_version: 2
   pack_id: string
   version: string
+  name?: string
+}
+
+export interface KnowledgeArtifactDownload {
+  blob: Blob
+  filename: string
 }
 
 export interface KnowledgeDocument {
@@ -396,6 +402,7 @@ interface RequestOptions {
   data?: unknown
   headers?: Record<string, string>
   responseType?: 'blob'
+  onHeaders?: (headers: Record<string, unknown>) => void
 }
 
 /** Binary downloads still expose JSON errors and refresh an expired bridge token. */
@@ -426,7 +433,18 @@ async function executeRequest<T extends KnowledgeEnvelope>(
       ? KNOWLEDGE_MUTATION_REQUEST_TIMEOUT_MS
       : KNOWLEDGE_GET_REQUEST_TIMEOUT_MS,
   })
+  options.onHeaders?.(response.headers || {})
   return response.data
+}
+
+/** Honor the server's frozen Unicode filename, never a path from a header. */
+function artifactFilename(disposition: string): string {
+  const encoded = /filename\*\s*=\s*utf-8''([^;]+)/i.exec(disposition)?.[1]
+  const plain = /filename\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(disposition)
+  let name = ''
+  try { name = encoded ? decodeURIComponent(encoded.trim()) : plain?.[1] || plain?.[2] || '' } catch { return '' }
+  const hasControl = [...name].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+  return /[\\/]/.test(name) || hasControl || !name.endsWith('.neko-knowledge.zip') ? '' : name
 }
 
 async function request<T extends KnowledgeEnvelope>(
@@ -555,21 +573,31 @@ export const knowledgeApi = {
   removeSource: (data: { pack_id: string; doc_id: string }) => post<KnowledgeImportResponse>('sources/remove', data),
   restoreSource: (data: { pack_id: string; doc_id: string; version: number }) =>
     post<KnowledgeImportResponse>('sources/restore', data),
-  exportPack: (data: { pack_id: string; format_version: 1 | 2; version?: string }) =>
-    post<KnowledgeImportResponse>('packs/export', data),
-  artifact: async (artifact_id: string): Promise<Blob> => {
+  // The server assigns the release version. Whitelist the pack identity so an
+  // untyped caller cannot forward editable versions or change the ZIP format.
+  exportPack: (data: { pack_id: string }) =>
+    post<KnowledgeImportResponse>('packs/export', { pack_id: data.pack_id, format_version: 2 }),
+  deleteExport: (data: { job_id: string }) =>
+    post<KnowledgeEnvelope & { job_id: string; artifact_retained: boolean }>('packs/exports/delete', data),
+  artifact: async (artifact_id: string): Promise<KnowledgeArtifactDownload> => {
+    let filename = ''
     const blob = await request<KnowledgeEnvelope & Blob>('packs/artifacts', {
       params: { artifact_id }, responseType: 'blob',
+      // Keep the response name through the same authenticated/retrying transport.
+      onHeaders: headers => { filename = artifactFilename(String(headers['content-disposition'] || '')) },
     })
     if (!(blob instanceof Blob)) throw new KnowledgeApiError('knowledge_invalid_response')
-    if (blob.type.split(';', 1)[0] === 'application/json' && blob.size <= 64 * 1024) {
-      // Small JSON error envelopes may retain HTTP 200 through a proxy. A real
-      // v1 JSON pack has no `ok: false` field and remains a valid download.
+    if (blob.type.split(';', 1)[0] === 'application/json') {
+      // Exports are ZIPs. JSON is an error envelope, never a text-pack download;
+      // bound decoding while preserving the server's actionable failure reason.
       let envelope: KnowledgeEnvelope | null = null
-      try { envelope = JSON.parse(await blob.text()) as KnowledgeEnvelope } catch { /* Keep malformed JSON for the pack validator. */ }
+      if (blob.size <= 64 * 1024) {
+        try { envelope = JSON.parse(await blob.text()) as KnowledgeEnvelope } catch { /* Use the invalid-response reason below. */ }
+      }
       if (envelope?.ok === false) throw new KnowledgeApiError(String(envelope.reason || 'operation_failed'))
+      throw new KnowledgeApiError('knowledge_invalid_response')
     }
-    return blob
+    return { blob, filename }
   },
   publish: (data: { pack_id: string; artifact_id: string; publish_confirmed: true; client_request_id: string; title: string; description: string }) =>
     post<KnowledgeEnvelope & { share: { id: number } }>('publish', data),

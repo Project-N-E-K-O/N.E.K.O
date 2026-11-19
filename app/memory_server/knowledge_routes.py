@@ -576,6 +576,16 @@ async def knowledge_retry_job(request: Request):
     return await _call(lambda svc: svc.retry_job(job_id))
 
 
+@router.post("/packs/exports/delete")
+async def knowledge_delete_export(request: Request):
+    """Delete a completed local export through the existing mutation boundary."""
+    payload = await _json_object(request)
+    job_id = payload.get("job_id") if payload else None
+    if payload is None or set(payload) != {"job_id"} or not isinstance(job_id, str) or not job_id:
+        return _failure("invalid_request", 400)
+    return await _call(lambda svc: svc.delete_export(job_id))
+
+
 @router.post("/entry/disabled")
 async def knowledge_entry_disabled(request: Request):
     payload = await _json_object(request)
@@ -668,9 +678,12 @@ async def knowledge_source_restore(request: Request):
 @router.post("/packs/export")
 async def knowledge_pack_export(request: Request):
     payload = await _json_object(request)
-    if payload is None or not _pack_id(payload) or type(payload.get("format_version", 2)) is not int:
+    # Both the ZIP format and release-version policy belong to the server.
+    # Refuse caller-supplied versions instead of silently ignoring manual input.
+    if (payload is None or not _pack_id(payload) or type(payload.get("format_version", 2)) is not int
+            or payload.get("format_version", 2) != 2 or "version" in payload):
         return _failure("invalid_request", 400)
-    return await _call(lambda svc: svc.export_pack(_pack_id(payload), format_version=payload.get("format_version", 2), version=payload.get("version", "1")))
+    return await _call(lambda svc: svc.export_pack(_pack_id(payload), format_version=payload.get("format_version", 2)))
 
 
 @router.get("/packs/artifacts")
@@ -679,10 +692,10 @@ async def knowledge_pack_artifact(artifact_id: str = Query(...)):
     if service is None:
         return _failure("knowledge_starting", 503)
     try:
-        path = await service._thread(service.artifact_path, artifact_id)
+        path, filename = await service.artifact_download(artifact_id)
     except KnowledgePackError as error:
         return _failure(error.reason, 404)
-    return FileResponse(path, filename=path.name, media_type="application/zip" if path.suffix == ".zip" else "application/json")
+    return FileResponse(path, filename=filename, media_type="application/zip")
 
 
 @router.post("/packs/index-policy")

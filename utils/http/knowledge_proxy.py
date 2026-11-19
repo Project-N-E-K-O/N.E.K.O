@@ -58,6 +58,7 @@ WRITE_PATHS: dict[str, int] = {
     "packs/remove": JSON_BODY_MAX_BYTES,
     "packs/enabled": JSON_BODY_MAX_BYTES,
     "packs/export": JSON_BODY_MAX_BYTES,
+    "packs/exports/delete": JSON_BODY_MAX_BYTES,
     "sources/preview": SOURCE_BODY_MAX_BYTES,
     "sources/commit": JSON_BODY_MAX_BYTES,
     "sources/remove": JSON_BODY_MAX_BYTES,

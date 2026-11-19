@@ -126,16 +126,28 @@ class SourceStore:
                 if (versions := self.versions(pack_id, identity))]
 
     def retained_packs(self) -> list[dict]:
-        """History groups remain discoverable after their last source is removed."""
+        """Only explicitly retained empty groups remain in the pack browser."""
         values = []
         for path in self.root.glob("*/manifest.json"):
             try:
                 value = self.read(path)
-                if pack_id_is_valid(value.get("pack_id")):
+                if isinstance(value, dict) and value.get("retained") is True and pack_id_is_valid(value.get("pack_id")):
                     values.append(value)
             except (KnowledgePackError, ValueError):
                 continue
         return values
+
+    def set_retained(self, pack_id: str, retained: bool) -> None:
+        """Change history-row visibility without deleting originals or versions."""
+        path = self.directory(pack_id) / "manifest.json"
+        try:
+            value = self.read(path)
+        except KnowledgePackError as error:
+            if error.reason == "source_not_found":
+                return  # Ordinary installed packages have no source sidecar.
+            raise
+        if value.get("retained", False) != retained:
+            atomic_write_json(path, {**value, "retained": retained})
 
     def documents(self, pack, pack_id: str) -> list[dict]:
         """Recover source selection from the sole committed pack authority."""

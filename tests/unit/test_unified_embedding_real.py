@@ -80,7 +80,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         assert all(size <= 1024 for size in await asyncio.to_thread(
             encoder.count_tokens, [row["embedding_text"] for row in rows]))
         before_export = len(calls)
-        exported = await _terminal(library, await library.export_pack(pack["pack_id"], format_version=2, version="1.0.0"))
+        exported = await _terminal(library, await library.export_pack(pack["pack_id"], format_version=2))
         archive = library.artifact_path(exported["result"]["artifact_id"])
         checked = await asyncio.to_thread(validate_package, archive, expected_spec=spec)
         assert checked.semantic_available and len(checked.chunks) == len(rows)

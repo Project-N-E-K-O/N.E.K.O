@@ -24,21 +24,61 @@
       </template>
 
       <section class="export-panel">
-        <h3>{{ t('knowledge.exportTitle') }}</h3>
-        <p v-if="!pack.retained">{{ t('knowledge.exportScope') }}</p>
-        <el-input v-if="!pack.retained" v-model="exportVersion" :aria-label="t('knowledge.sourceVersion')" maxlength="100" class="export-version" />
-        <div v-if="!pack.retained" class="export-actions">
-          <el-button :loading="exporting === 1" :disabled="exporting !== null" @click="exportPack(1)">{{ t('knowledge.exportText') }}</el-button>
-          <el-button type="primary" :loading="exporting === 2" :disabled="exporting !== null || pack.vector_state !== 'complete'" @click="exportPack(2)">{{ t('knowledge.exportVectors') }}</el-button>
-        </div>
-        <p v-if="!pack.retained && pack.vector_state !== 'complete'" class="muted">{{ t('knowledge.exportVectorWaiting') }}</p>
-        <div v-for="job in exports" :key="job.job_id" class="artifact-row">
-          <span>{{ job.result?.filename || job.job_id }}</span>
-          <template v-if="job.state === 'active' && job.result?.artifact_id">
-            <el-button :loading="downloading === job.job_id" @click="download(job)">{{ t('knowledge.downloadExport') }}</el-button>
-            <el-button v-if="job.result.format_version === 2" type="primary" plain @click="preparePublication(job)">{{ t('knowledge.publishMarket') }}</el-button>
+        <div class="export-create">
+          <div class="export-heading">
+            <span class="export-icon" aria-hidden="true"><el-icon :size="22"><FolderOpened /></el-icon></span>
+            <div class="export-heading-copy">
+              <h3>{{ t('knowledge.exportTitle') }}</h3>
+              <p>{{ t('knowledge.exportScope') }}</p>
+            </div>
+            <div v-if="!pack.retained" class="export-actions">
+              <!-- Export still uses the existing task and vector-readiness gate. -->
+              <el-button type="primary" :loading="exporting" :disabled="exporting || pack.vector_state !== 'complete'" @click="exportPack()">
+                <el-icon><Download /></el-icon><span>{{ t('knowledge.exportPackage') }}</span>
+              </el-button>
+            </div>
+          </div>
+          <template v-if="!pack.retained">
+            <div class="export-readiness" :class="{ 'is-ready': pack.vector_state === 'complete' }" role="status">
+              <el-icon><CircleCheck v-if="pack.vector_state === 'complete'" /><Clock v-else /></el-icon>
+              <span>{{ t(pack.vector_state === 'complete' ? 'knowledge.exportReadyHint' : 'knowledge.exportVectorWaiting') }}</span>
+            </div>
+            <p class="export-version-hint">{{ t('knowledge.exportAutoVersionHint') }}</p>
           </template>
-          <el-tag v-else effect="plain">{{ t(`knowledge.${job.state === 'queued' ? 'jobQueued' : job.state === 'building' ? 'jobBuilding' : job.state === 'failed' ? 'jobFailed' : 'jobCancelled'}`) }}</el-tag>
+        </div>
+        <div class="export-history-heading">
+          <h4>{{ t('knowledge.exportHistoryTitle') }}</h4>
+          <span class="export-count">{{ exports.length }}</span>
+        </div>
+        <div v-if="!exports.length" class="export-empty">
+          <el-icon :size="24" aria-hidden="true"><Document /></el-icon>
+          <span>{{ t('knowledge.exportEmpty') }}</span>
+        </div>
+        <div class="export-history">
+          <article v-for="job in exports" :key="job.job_id" class="artifact-row">
+            <span class="artifact-icon" aria-hidden="true"><el-icon :size="22"><Document /></el-icon></span>
+            <div class="artifact-info">
+              <!-- Opaque task/release identities remain protocol metadata, never card titles. -->
+              <div class="artifact-name">{{ job.result?.name || pack.source.name || t('knowledge.pack') }}</div>
+              <div class="artifact-meta">
+                <time :datetime="job.created_at" :title="t('knowledge.exportTime')">{{ formatTime(job.created_at, true) }}</time>
+                <span v-if="job.result" :title="t('knowledge.exportSize')">{{ formatSize(job.result.bytes) }}</span>
+                <span v-if="job.result" class="artifact-format">ZIP</span>
+              </div>
+            </div>
+            <el-tag class="artifact-status" :type="job.state === 'active' ? 'success' : job.state === 'failed' ? 'danger' : 'info'" effect="light">
+              {{ t(job.state === 'active' ? 'knowledge.exportCompleted' : `knowledge.${job.state === 'queued' ? 'jobQueued' : job.state === 'building' ? 'jobBuilding' : job.state === 'failed' ? 'jobFailed' : 'jobCancelled'}`) }}
+            </el-tag>
+            <div v-if="job.state === 'active' && job.result?.artifact_id" class="artifact-actions">
+              <el-button type="primary" :loading="downloading === job.job_id" :disabled="deleting === job.job_id" @click="download(job)">
+                <el-icon><Download /></el-icon><span>{{ t('knowledge.downloadExport') }}</span>
+              </el-button>
+              <el-button plain :disabled="deleting === job.job_id" @click="preparePublication(job)">{{ t('knowledge.publishMarket') }}</el-button>
+              <el-button class="artifact-delete" type="danger" text :loading="deleting === job.job_id"
+                :disabled="downloading === job.job_id || publishing || (publicationOpen && publicationJob?.job_id === job.job_id)"
+                @click="deleteExport(job)">{{ t('knowledge.deleteExport') }}</el-button>
+            </div>
+          </article>
         </div>
       </section>
     </template>
@@ -53,7 +93,7 @@
     </el-dialog>
     <el-dialog v-model="publicationOpen" :title="t('knowledge.publishMarket')" append-to-body width="min(640px, 94vw)" :close-on-click-modal="!publishing" :close-on-press-escape="!publishing" :show-close="!publishing">
       <el-alert type="warning" :closable="false" show-icon :title="t('knowledge.publishDisclosure')" />
-      <p>{{ publicationJob?.result?.filename }}</p>
+      <p class="publication-pack-name">{{ publicationJob?.result?.name || pack?.source.name || t('knowledge.pack') }}</p>
       <el-form label-position="top">
         <el-form-item :label="t('knowledge.publishTitle')"><el-input v-model="publicationTitle" :disabled="publicationStarted" maxlength="120" /></el-form-item>
         <el-form-item :label="t('knowledge.publishDescription')"><el-input v-model="publicationDescription" :disabled="publicationStarted" type="textarea" maxlength="2000" :rows="4" /></el-form-item>
@@ -70,6 +110,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { CircleCheck, Clock, Document, Download, FolderOpened } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
 import { createKnowledgePublicationId, knowledgeApi, knowledgeFailureReason, type KnowledgeDocument, type KnowledgeDocumentVersion, type KnowledgePack, type KnowledgePackJob } from '@/api/knowledge'
@@ -77,7 +118,7 @@ import KnowledgeSourceImport from './KnowledgeSourceImport.vue'
 
 const props = defineProps<{ modelValue: boolean; pack: KnowledgePack | null; jobs: KnowledgePackJob[] }>()
 const emit = defineEmits<{ 'update:modelValue': [boolean]; updated: [] }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const documents = ref<KnowledgeDocument[]>([])
 const loading = ref(false)
 const mutating = ref(false)
@@ -89,9 +130,11 @@ const historyOpen = ref(false)
 const historySource = ref<KnowledgeDocument | null>(null)
 const versions = ref<KnowledgeDocumentVersion[]>([])
 const versionsLoading = ref(false)
-const exporting = ref<1 | 2 | null>(null)
-const exportVersion = ref('1')
+const exporting = ref(false)
 const downloading = ref('')
+const deleting = ref('')
+// A successful durable deletion must not reappear while parent polling catches up.
+const deletedExports = ref(new Set<string>())
 const publicationOpen = ref(false)
 const publicationJob = ref<KnowledgePackJob | null>(null)
 const publicationTitle = ref('')
@@ -102,7 +145,10 @@ const publishing = ref(false)
 let publicationId = ''
 let generation = 0
 let historyGeneration = 0
-const exports = computed(() => props.jobs.filter(job => job.kind === 'pack_export' && job.pack_id === props.pack?.pack_id))
+// Retain old tasks on disk without exposing a retired JSON artifact's download.
+const exports = computed(() => props.jobs.filter(job => job.kind === 'pack_export'
+  && job.pack_id === props.pack?.pack_id && !deletedExports.value.has(job.job_id)
+  && (!job.result || job.result.format_version === 2)))
 
 watch([() => props.modelValue, () => props.pack?.pack_id], () => {
   generation += 1
@@ -110,7 +156,6 @@ watch([() => props.modelValue, () => props.pack?.pack_id], () => {
   documents.value = []
   historyOpen.value = false
   sourceDialog.value = false
-  exportVersion.value = '1'
   if (props.modelValue && props.pack) void loadDocuments()
 }, { immediate: true })
 watch(() => props.jobs.map(job => `${job.job_id}:${job.state}`).join('|'), () => {
@@ -119,7 +164,13 @@ watch(() => props.jobs.map(job => `${job.job_id}:${job.state}`).join('|'), () =>
 onBeforeUnmount(() => { generation += 1; historyGeneration += 1 })
 
 function failure(error: unknown) { ElMessage.error(t(`knowledge.reasons.${knowledgeFailureReason(error)}`)) }
-function formatTime(value: string) { const date = dayjs(value); return date.isValid() ? date.format('YYYY-MM-DD HH:mm') : '—' }
+function formatTime(value: string, seconds = false) { const date = value ? dayjs(value) : null; return date?.isValid() ? date.format(seconds ? 'YYYY-MM-DD HH:mm:ss' : 'YYYY-MM-DD HH:mm') : '—' }
+function formatSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  const unit = bytes >= 1024 * 1024 ? 'MiB' : bytes >= 1024 ? 'KiB' : 'B'
+  const size = unit === 'MiB' ? bytes / (1024 * 1024) : unit === 'KiB' ? bytes / 1024 : bytes
+  return `${new Intl.NumberFormat(locale.value, { maximumFractionDigits: 1 }).format(size)} ${unit}`
+}
 
 async function loadDocuments() {
   // Local source ownership is a fact about this installation, not the origin label.
@@ -187,26 +238,29 @@ async function restore(version: KnowledgeDocumentVersion) {
   finally { mutating.value = false }
 }
 
-async function exportPack(format_version: 1 | 2) {
-  if (!props.pack || exporting.value !== null) return
-  exporting.value = format_version
+async function exportPack() {
+  if (!props.pack || exporting.value || props.pack.vector_state !== 'complete') return
+  exporting.value = true
   try {
-    await knowledgeApi.exportPack({ pack_id: props.pack.pack_id, format_version, version: exportVersion.value.trim() || '1' })
+    // Release versions belong to the durable server task, not editable UI state.
+    await knowledgeApi.exportPack({ pack_id: props.pack.pack_id })
     ElMessage.success(t('knowledge.exportQueued'))
     emit('updated')
   } catch (error) { failure(error) }
-  finally { exporting.value = null }
+  finally { exporting.value = false }
 }
 
 async function download(job: KnowledgePackJob) {
-  if (!job.result || downloading.value) return
+  if (!job.result || downloading.value || deleting.value === job.job_id) return
   downloading.value = job.job_id
   try {
-    const blob = await knowledgeApi.artifact(job.result.artifact_id)
+    const { blob, filename } = await knowledgeApi.artifact(job.result.artifact_id)
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = job.result.filename
+    // The response names the immutable artifact, including older exports whose
+    // task records still contain internal identifiers in their old filenames.
+    link.download = filename || job.result.filename
     link.click()
     // Let the browser start reading before releasing the local object URL.
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
@@ -214,13 +268,34 @@ async function download(job: KnowledgePackJob) {
   finally { downloading.value = '' }
 }
 
+async function deleteExport(job: KnowledgePackJob) {
+  if (job.state !== 'active' || !job.result?.artifact_id || deleting.value || downloading.value === job.job_id
+    || publishing.value || (publicationOpen.value && publicationJob.value?.job_id === job.job_id)) return
+  // Reserve this row before confirmation to prevent duplicate dialogs/actions.
+  deleting.value = job.job_id
+  try {
+    try {
+      await ElMessageBox.confirm(t('knowledge.deleteExportConfirm', {
+        name: job.result.name || props.pack?.source.name || t('knowledge.pack'), time: formatTime(job.created_at, true),
+      }), t('knowledge.deleteExportTitle'), {
+        type: 'warning', confirmButtonText: t('knowledge.deleteExport'), cancelButtonText: t('common.cancel'),
+      })
+    } catch { return }
+    const result = await knowledgeApi.deleteExport({ job_id: job.job_id })
+    deletedExports.value.add(job.job_id)
+    ElMessage.success(t(result.artifact_retained ? 'knowledge.exportDeletedRetained' : 'knowledge.exportDeleted'))
+    emit('updated')
+  } catch (error) { failure(error) }
+  finally { deleting.value = '' }
+}
+
 function preparePublication(job: KnowledgePackJob) {
-  if (!job.result) return
+  if (!job.result || deleting.value === job.job_id) return
   if (publicationJob.value?.result?.artifact_id !== job.result.artifact_id) {
     publicationJob.value = job
     publicationId = createKnowledgePublicationId()
     // The market title limit is narrower than the local source display name.
-    publicationTitle.value = (props.pack?.source.name || job.pack_id).slice(0, 120)
+    publicationTitle.value = (job.result.name || props.pack?.source.name || job.pack_id).slice(0, 120)
     publicationDescription.value = ''
     publicationStarted.value = false
   }
@@ -248,9 +323,48 @@ async function publish() {
 </script>
 
 <style scoped>
-.pack-summary, .export-actions, .artifact-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.export-panel { margin-top: 24px; border-top: 1px solid var(--el-border-color-lighter); padding-top: 12px; }
-.export-version { max-width: 220px; margin-bottom: 12px; }
-.artifact-row { justify-content: space-between; margin-top: 12px; overflow-wrap: anywhere; }
-.muted { color: var(--el-text-color-secondary); font-size: 13px; }
+.pack-summary { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.export-panel { margin-top: 28px; color: var(--el-text-color-primary); }
+.export-create { padding: 20px; border: 1px solid var(--el-color-primary-light-7); border-radius: 16px; background: var(--el-color-primary-light-9); }
+.export-heading { display: flex; align-items: flex-start; gap: 14px; }
+.export-icon, .artifact-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 44px; height: 44px; border-radius: 12px; background: var(--el-bg-color); color: var(--el-color-primary); }
+.export-heading-copy { flex: 1; min-width: 0; }
+.export-heading h3 { margin: 0 0 7px; font-size: 17px; font-weight: 600; line-height: 1.4; }
+.export-heading p { margin: 0; color: var(--el-text-color-regular); font-size: 13px; line-height: 1.65; }
+.export-actions { flex: 0 0 auto; padding-top: 2px; }
+.export-actions .el-button, .artifact-actions .el-button { min-height: 36px; border-radius: 10px; }
+.export-actions .el-icon, .artifact-actions .el-icon { margin-right: 6px; }
+.export-readiness { display: flex; align-items: flex-start; gap: 7px; margin-top: 18px; color: var(--el-text-color-regular); font-size: 13px; line-height: 1.6; }
+.export-readiness .el-icon { flex-shrink: 0; margin-top: 3px; }
+.export-readiness.is-ready { color: var(--el-text-color-regular); }
+.export-readiness.is-ready .el-icon { color: var(--el-color-success); }
+.export-version-hint { margin: 6px 0 0 21px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
+.export-history-heading { display: flex; align-items: center; gap: 8px; margin: 26px 0 12px; }
+.export-history-heading h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.export-count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 7px; background: var(--el-fill-color); color: var(--el-text-color-secondary); font-size: 12px; }
+.export-history { display: grid; gap: 12px; }
+.artifact-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 16px; border: 1px solid var(--el-border-color-lighter); border-radius: 14px; background: var(--el-bg-color); }
+.artifact-icon { width: 40px; height: 44px; border-radius: 10px; background: var(--el-fill-color-light); }
+.artifact-info { min-width: 0; }
+.artifact-name, .publication-pack-name { font-size: 14px; font-weight: 600; line-height: 1.55; overflow-wrap: anywhere; }
+.artifact-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 7px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
+.artifact-format { padding: 0 5px; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; font-size: 10px; letter-spacing: .5px; }
+.artifact-status { margin-top: 1px; }
+.artifact-status.el-tag--success { color: var(--el-text-color-regular); }
+.artifact-actions { grid-column: 2 / -1; display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
+.artifact-actions .el-button + .el-button { margin-left: 0; }
+.export-empty { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 26px 18px; border: 1px dashed var(--el-border-color); border-radius: 14px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; }
+@media (max-width: 600px) {
+  .export-create { padding: 16px; }
+  .export-heading { flex-wrap: wrap; gap: 12px; }
+  .export-icon { width: 38px; height: 38px; }
+  .export-heading-copy { flex-basis: calc(100% - 50px); }
+  .export-actions { width: 100%; padding-top: 4px; }
+  .export-actions .el-button { width: 100%; }
+  .artifact-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 14px; }
+  .artifact-icon { display: none; }
+  .artifact-actions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .artifact-actions .el-button { flex: 1; min-width: 0; height: auto; white-space: normal; }
+  .artifact-actions .artifact-delete { grid-column: 1 / -1; justify-self: end; }
+}
 </style>
