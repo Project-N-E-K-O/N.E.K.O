@@ -1622,6 +1622,15 @@ def _host_internal_import(node: ast.Import | ast.ImportFrom) -> str:
         if node.level or not node.module:
             return ""
         modules = [node.module]
+        # ``from plugin import core`` / ``from plugin.sdk import shared`` name
+        # the internal module in the imported names. Everything ``plugin``
+        # exports besides ``sdk`` and ``plugins`` is host runtime; under
+        # ``plugin.sdk`` only ``shared`` is internal (SDK_VERSION etc. are public).
+        if node.module == "plugin":
+            modules = [f"plugin.{alias.name}" for alias in node.names if alias.name not in {"sdk", "plugins"}]
+        elif node.module == "plugin.sdk":
+            modules = [f"plugin.sdk.{alias.name}" for alias in node.names if alias.name == "shared"]
+            return modules[0] if modules else ""
     else:
         modules = [alias.name for alias in node.names]
     for module in modules:
@@ -1646,6 +1655,11 @@ def _calls_in_own_scope(function: ast.AsyncFunctionDef) -> list[ast.Call]:
     while pending:
         node = pending.pop()
         if isinstance(node, _NESTED_SCOPE_NODES):
+            continue
+        if isinstance(node, ast.GeneratorExp):
+            # Only the first iterable runs on creation; the rest runs lazily
+            # wherever the generator is consumed (often a worker thread).
+            pending.append(node.generators[0].iter)
             continue
         if isinstance(node, ast.Call):
             calls.append(node)

@@ -103,7 +103,8 @@ CASES = [
         "from utils.config_manager import get_config_manager\nimport plugin.core.host\n",
         "from plugin.sdk.plugin import neko_plugin\n"
         "from plugin.sdk.adapter.gateway_models import GatewayRequest\n"
-        "from plugin.sdk import SDK_VERSION\n"
+        "from plugin.sdk import SDK_VERSION, plugin\n"
+        "from plugin import sdk, plugins\n"
         "from plugin.plugins.adv_demo.helpers import helper\n"
         "from .local import thing\n",
         2,
@@ -116,6 +117,7 @@ CASES = [
         "async def f(url):\n"
         "    await asyncio.sleep(1)\n"
         "    await asyncio.to_thread(lambda: requests.get(url))\n"
+        "    await asyncio.to_thread(list, (requests.get(u) for u in [url]))\n"
         "    def inner():\n        time.sleep(1)\n"
         "    return inner\n",
         7,
@@ -145,12 +147,16 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
         tmp_path,
         "from utils.config_manager import get_config_manager\n"
         "import plugin.core.host\n"
-        "from plugin.sdk.shared.core.router import PluginRouter\n",
+        "from plugin.sdk.shared.core.router import PluginRouter\n"
+        "from plugin import core\n"
+        "from plugin.sdk import SDK_VERSION, shared\n",
     )
     assert messages == [
         "host-import: worker.py:1 utils.config_manager -> AGENTS.md #2",
         "host-import: worker.py:2 plugin.core.host -> AGENTS.md #2",
         "host-import: worker.py:3 plugin.sdk.shared.core.router -> AGENTS.md #2",
+        "host-import: worker.py:4 plugin.core -> AGENTS.md #2",
+        "host-import: worker.py:5 plugin.sdk.shared -> AGENTS.md #2",
     ]
 
 
@@ -286,3 +292,11 @@ def test_ruff_lint_spec_is_unchanged() -> None:
         version="0.12.4",
         args=("--target-version", "py311", "--line-length", "120", "--select", "E4,E7,E9,F,I"),
     )
+
+
+def test_generator_first_iterable_runs_on_the_loop(tmp_path: Path) -> None:
+    messages = _advisories(
+        tmp_path,
+        "import requests\nasync def f(url):\n    return list(x for x in requests.get(url).json())\n",
+    )
+    assert messages == ["async-blocking: worker.py:3 f(): requests.get() -> AGENTS.md #7"]
