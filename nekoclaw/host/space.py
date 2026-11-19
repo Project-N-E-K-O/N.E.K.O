@@ -840,6 +840,9 @@ _WORD_BREAKS = re.compile(r"[\s`'\"“”‘’<>()\[\]{}，。；：、！？�
 # would be read against the working directory, on another drive.
 _PLAIN_PATH = re.compile(r"(?:(?<![A-Za-z0-9])[A-Za-z]:(?=[/\\]))?[A-Za-z0-9_.~\-/\\]+")
 _WEB_ADDRESS = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
+# What is set in quotes, on one line: a path there may hold spaces. Not
+# single quotes, which are as often an apostrophe.
+_QUOTED = re.compile(r"`([^`\n]+)`|\"([^\"\n]+)\"|“([^”\n]+)”|「([^」\n]+)」|『([^』\n]+)』")
 _HAS_EXTENSION = re.compile(r"[^./\\]\.[A-Za-z0-9_]{1,8}$")
 # The number of a version, which is written like a file with an extension.
 _A_NUMBER = re.compile(r"[0-9.]+")
@@ -862,23 +865,31 @@ def paths_named_in(text: Any) -> list[str]:
 
     # An address of the web is no file, whatever it ends in.
     said = _WEB_ADDRESS.sub(" ", str(text or ""))
+    # A path in quotes is taken whole (``data/old report.csv``), and what
+    # is in the quotes is not taken apart: a part of it is no file named.
+    # Blanked out as long as they were, so that the rest stands where it did.
+    quoted = [
+        (match.start(), next(group for group in match.groups() if group is not None).strip())
+        for match in _QUOTED.finditer(said)
+    ]
+    said = _QUOTED.sub(lambda match: " " * len(match.group(0)), said)
 
     def whole(run: re.Match[str]) -> bool:
         # Not the end of a path with words of another script in it
         # (``notes/旧report.csv``): what follows the last separator before
         # it is not a file of its own name. That path is a word as white
         # space and punctuation set it apart, and is looked at as such.
-        # It is when the words right before it follow a separator. Nor the
-        # rest of one after the colon of a drive that was not taken with it.
-        if run.start() > 0 and said[run.start() - 1] == ":" and run.group(0)[0] in "/\\":
-            return False
+        # It is when the words right before it follow a separator. (A path
+        # with the letter of its drive is one run: see ``_PLAIN_PATH``.)
         before = run.start()
         while before > 0 and not said[before - 1].isascii() and not _WORD_BREAKS.match(said[before - 1]):
             before -= 1
         return before == run.start() or before == 0 or said[before - 1] not in "/\\"
 
     found: list[str] = []
-    for word in [*(run.group(0) for run in _PLAIN_PATH.finditer(said) if whole(run)), *_WORD_BREAKS.split(said)]:
+    # In the order they are written.
+    runs = sorted([*quoted, *((run.start(), run.group(0)) for run in _PLAIN_PATH.finditer(said) if whole(run))])
+    for word in [*(item for _at, item in runs), *_WORD_BREAKS.split(said)]:
         word = word.rstrip(".,;:!?…")
         if len(word) < 3 or word in found or _A_NUMBER.fullmatch(word):
             continue

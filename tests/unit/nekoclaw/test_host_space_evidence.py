@@ -616,7 +616,12 @@ def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
     # A path with the letter of its drive is taken whole, and not what follows the colon by itself.
     assert paths_named_in("Check C:/repo/app.py") == ["C:/repo/app.py"]
     assert paths_named_in("检查D:\\work\\app.py再改") == ["D:\\work\\app.py", "检查D:\\work\\app.py再改"]
-    assert paths_named_in("see abcC:/repo/app.py") == ["abcC:/repo/app.py"]
+    # A whole path after a colon is still one.
+    assert paths_named_in("入口:/home/me/repo/app.py") == ["/home/me/repo/app.py", "入口:/home/me/repo/app.py"]
+    # A path in quotes is taken whole, spaces and all, and not taken apart.
+    assert paths_named_in("Read `data/old report.csv` first.") == ["data/old report.csv"]
+    assert paths_named_in("先看“D:/My Work/app.py”再改") == ["D:/My Work/app.py"]
+    assert paths_named_in("It's in `config` and \"src/app.py\"") == ["src/app.py"]
     assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
 
 
