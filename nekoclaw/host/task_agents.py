@@ -131,7 +131,14 @@ _REACHED = "nekoclaw/reached"
 _THEN = "nekoclaw/then"
 _CAUGHT_UP_SECONDS = 10.0
 _SHUT_DOWN_REASON = "the host was shut down"
-_QUOTA_REASON = "the free daily quota of the agent model is used up"
+# She reads them when she asks how the commission went: they name no period,
+# price or plan (``TASK_AGENT_FAILED_WHY``). The first is before a task agent
+# was ever at work on the commission, the second once one was (in this run,
+# or in an earlier one it is taken up again after).
+_QUOTA_REASON = "the task agent's model ran out of quota"
+_QUOTA_RUN_REASON = "the task agent's model ran out of quota partway through"
+# Failures of the host's own that she is not woken for and that nothing shows.
+_QUIET_FAILURES = ("quota", "quota_run")
 _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 _WOKEN_REASON = "it rested; what it waited for takes it up again"
 _ASK_NOT_HANDED_OVER_REASON = "the question could not be handed to the copy that was to answer it"
@@ -2044,7 +2051,14 @@ class TaskAgentManager:
                 # does: a new session of the same commission started before
                 # that would be released by it.
                 self._keep_unsent(session)
-                await self._fail(commission.id, _QUOTA_REASON, said="quota")
+                # Taken up again after it was at work on it before (its quota
+                # ran out then, say): part of it may be done, and what she is
+                # told, and keeps, must not say it never started.
+                await self._fail(
+                    commission.id,
+                    _QUOTA_RUN_REASON if opened else _QUOTA_REASON,
+                    said="quota_run" if opened else "quota",
+                )
                 await self._close_session(session)
                 # What was passed on while the failure was being written.
                 self._keep_unsent(session)
@@ -3933,7 +3947,8 @@ class TaskAgentManager:
         self._note_quota(bool(allowed))
         if allowed:
             return
-        await self._fail(commission_id, _QUOTA_REASON, said="quota")
+        # After requests of its own: some of the work may be done.
+        await self._fail(commission_id, _QUOTA_RUN_REASON, said="quota_run")
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
@@ -4017,24 +4032,42 @@ class TaskAgentManager:
     async def _fail(self, commission_id: str, reason: str, *, said: str, detail: str = "") -> None:
         """End a commission as failed for a reason of the host's own.
 
-        ``reason`` is what goes on record, in English. What she is told,
-        which the HUD also shows as it is, is in the commission's language,
-        like everything else the host writes for her: ``said`` picks it,
-        ``quota`` (the free daily quota ran out), ``start`` (the task agent
+        ``reason`` is what goes on record, in English. ``said`` says what
+        it was: ``quota`` (the task agent's model ran out of quota before a
+        task agent was ever at work on it), ``quota_run`` (the same, once
+        one was, now or before it was taken up again: part of the work may
+        be done), ``start`` (the task agent
         could not start on it: nothing of it was taken) or ``run`` (its run
-        stopped on an error); ``detail``, the error as it came, follows when
-        there is one. A task agent that started the commission is told the
+        stopped on an error). She is told that,
+        in English, as the host tells a model what happened
+        (``TASK_AGENT_FAILED_NOTICE``), with ``detail``, the error as it
+        came, when there is one; the HUD shows it in her dialogue's language
+        (``TASK_AGENT_FAILED_TEXTS``). Running out of quota is nothing she
+        can do anything about there and then: she is not woken for it and
+        nothing is shown (``quiet``), and the frontend has its own notice of
+        the quota. A task agent that started the commission is told the
         reason on record: that is not for the user.
         """
-        from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
+        from config.prompts import prompts_nekoclaw_brain as texts
         from nekoclaw.host.task_brain import _texts
 
-        text = reason
+        told, shown = reason, None
         commission = await self._ledger.get(commission_id)
         if commission is not None and commission.parent_id is None:
-            words = _texts(TASK_AGENT_FAILED_TEXTS, commission.lang or "en")
-            text = words[said] + (words["error"].format(detail=detail) if detail else "")
-        await self._end(commission_id, "failed", reason=reason, text=text, result_summary=self._summary(text))
+            error = texts.TASK_AGENT_FAILED_ERROR.format(detail=detail) if detail else ""
+            told = texts.TASK_AGENT_FAILED_NOTICE.format(why=texts.TASK_AGENT_FAILED_WHY[said]) + error
+            if said not in _QUIET_FAILURES:
+                words = _texts(texts.TASK_AGENT_FAILED_TEXTS, commission.lang or "en")
+                shown = words[said] + (words["error"].format(detail=detail) if detail else "")
+        await self._end(
+            commission_id,
+            "failed",
+            reason=reason,
+            text=told,
+            shown=shown,
+            quiet=said in _QUIET_FAILURES,
+            result_summary=self._summary(told),
+        )
 
     async def _end(
         self,
@@ -4043,6 +4076,8 @@ class TaskAgentManager:
         *,
         reason: str,
         text: str,
+        shown: str | None = None,
+        quiet: bool = False,
         suggested_delivery: Any = None,
         unless: Callable[[], bool] | None = None,
         **values: Any,
@@ -4052,6 +4087,11 @@ class TaskAgentManager:
         A report to her is stored in the same transaction as the status
         change, so a crash in between cannot leave a finished commission
         that is never reported. A parent task agent is told after the change.
+        ``text`` is what she, or the parent, is told; ``shown``, what the
+        HUD shows instead, when that differs. ``quiet``: she is not woken
+        for it but told later (passive: with the user's next turn in a text
+        chat, at the next session swap in a voice chat), and nothing is
+        shown.
         Returns whether the change was made.
 
         ``unless`` is asked once the commission is read, which may take a
@@ -4078,17 +4118,21 @@ class TaskAgentManager:
             delivery = commission.delivery or (
                 suggested_delivery if suggested_delivery in ("proactive", "passive", "silent") else unasked
             )
+            if quiet and delivery != "silent":
+                delivery = "passive"
             report = self._reporter.task_result_report(
                 commission,
                 channel=CHANNEL_TASK_AGENT,
                 success=target == "done",
                 summary=text,
+                shown=shown,
                 detail=text,
                 error_message=text if target == "failed" else "",
                 status=_STATUS_TO_REPORT.get(target, target),
                 source_kind="task_agent",
                 source_name=commission.title,
                 delivery_mode=delivery,
+                visibility=[] if quiet else None,
             )
         moved = await self._reporter.transition(commission_id, target, reason=reason, report=report, **values)
         if not moved.applied or moved.commission is None:

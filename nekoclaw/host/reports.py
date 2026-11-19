@@ -197,6 +197,7 @@ class Reporter:
         success: bool,
         summary: str,
         status: str,
+        shown: str | None = None,
         detail: str = "",
         error_message: str = "",
         source_kind: str = "",
@@ -204,11 +205,15 @@ class Reporter:
         delivery_mode: str = "proactive",
         result_kind: str = "task_result",
         expires_in_s: float | None = None,
+        visibility: list[str] | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         """Build the ``(kind, payload)`` row that reports how a commission ended.
 
         Stores nothing. Returns None for a silent commission and for one
         started by another task agent, which are not reported to her.
+        ``shown`` is what the HUD shows, when that is not ``summary``.
+        ``visibility``, when given, says where it is shown as it is written
+        (``[]``: nowhere); without it the main server shows it on the HUD.
         """
         if commission.parent_id is not None or delivery_mode == "silent":
             return None
@@ -222,7 +227,9 @@ class Reporter:
             "channel": channel,
             "status": status,
             "success": success,
-            "text": summary,
+            # Never empty where the summary is not: the main server hands her
+            # nothing of a report without text.
+            "text": truncate_to_tokens(shown, TASK_SUMMARY_MAX_TOKENS) if shown else summary,
             "summary": summary,
             "detail": truncate_to_tokens(detail, TASK_LARGE_DETAIL_MAX_TOKENS) if detail else "",
             "error_message": truncate_to_tokens(error_message, TASK_ERROR_MAX_TOKENS) if error_message else "",
@@ -234,6 +241,8 @@ class Reporter:
             "expires_in_s": expires_in_s,
             "title": commission.title,
         }
+        if visibility is not None:
+            payload["visibility"] = list(visibility)
         return KIND_TASK_RESULT, payload
 
     async def task_result(
@@ -244,6 +253,7 @@ class Reporter:
         success: bool,
         summary: str,
         status: str,
+        shown: str | None = None,
         detail: str = "",
         error_message: str = "",
         source_kind: str = "",
@@ -251,6 +261,7 @@ class Reporter:
         delivery_mode: str = "proactive",
         result_kind: str = "task_result",
         expires_in_s: float | None = None,
+        visibility: list[str] | None = None,
     ) -> int | None:
         """Report how a commission ended. Nothing is stored for a silent one.
 
@@ -263,6 +274,7 @@ class Reporter:
             success=success,
             summary=summary,
             status=status,
+            shown=shown,
             detail=detail,
             error_message=error_message,
             source_kind=source_kind,
@@ -270,6 +282,7 @@ class Reporter:
             delivery_mode=delivery_mode,
             result_kind=result_kind,
             expires_in_s=expires_in_s,
+            visibility=visibility,
         )
         if report is None:
             return None
