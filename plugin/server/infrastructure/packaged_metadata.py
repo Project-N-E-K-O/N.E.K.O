@@ -44,7 +44,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from plugin._types.version import SDK_VERSION
 from plugin._types.packaged_metadata import (
@@ -802,6 +802,39 @@ def read_packaged_metadata(plugin_dir: Path) -> PackagedPluginMetadata | None:
                 else None
             )
     return _validate_metadata_snapshot(meta_path, plugin_dir, raw, meta_stat, encoded)
+
+
+def packaged_entries_without_handlers(
+    packaged: PackagedPluginMetadata,
+    configured_entry_ids: Iterable[str] = (),
+) -> list[str]:
+    """Plugin-entry ids the packaged entry list advertises but no handler backs.
+
+    The packaging scan registers a handler for every decorated entry, on the
+    plugin class and on ``__routers__`` alike, so a current artifact only lists
+    a handler-less entry when the manifest declares it without any decorator
+    behind it (``configured_entry_ids``). Anything else means the artifact was
+    built before router entries were registered on the host: reusing it would
+    leave those entries without their host-side timeout, which ``/runs`` then
+    replaces with the global default.
+    """
+    handler_ids = {
+        str(meta.get("id") or "")
+        for meta in packaged.handlers.values()
+        if (meta.get("event_type") or "plugin_entry") == "plugin_entry"
+    }
+    configured = {str(entry_id) for entry_id in configured_entry_ids}
+    missing: list[str] = []
+    for entry in packaged.entries:
+        if (entry.get("event_type") or "plugin_entry") != "plugin_entry":
+            continue
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id:
+            continue
+        if entry_id in handler_ids or entry_id in configured:
+            continue
+        missing.append(entry_id)
+    return missing
 
 
 def _read_packaged_metadata_from(

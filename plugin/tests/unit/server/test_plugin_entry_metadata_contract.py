@@ -907,3 +907,191 @@ def test_a_broken_router_does_not_drop_entries_of_other_routers(isolated_registr
     assert state.event_handlers["contract.slow"].meta.timeout == 120
     preview_ids = {e["id"] for e in registry._extract_entries_preview("contract", Plugin, {}, {})}
     assert "slow" in preview_ids
+
+
+def _router_plugin():
+    """A plugin whose only entry lives on a ``__routers__`` router (#3066)."""
+    from plugin.sdk.plugin import PluginRouter
+
+    class SlowRouter(PluginRouter):
+        @plugin_entry(id="slow", name="Slow", timeout=5)
+        async def slow(self):
+            pass
+
+    class Plugin:
+        __routers__ = [SlowRouter]
+
+    return Plugin
+
+
+@pytest.mark.parametrize("configured_timeout", [2, 100])
+def test_manifest_overrides_reach_router_entry_handlers_without_a_warning(
+    isolated_registry, monkeypatch, configured_timeout
+):
+    """A ``[[entries]]`` override on a router id lands on the host handler, not only on the preview."""
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        registry,
+        "logger",
+        SimpleNamespace(
+            warning=lambda message, *args, **_: warnings.append(message.format(*args)),
+            debug=lambda *_, **__: None,
+            info=lambda *_, **__: None,
+        ),
+    )
+    plugin = _router_plugin()
+    config = {"entries": [{"id": "slow", "name": "Configured", "timeout": configured_timeout}]}
+
+    registry.scan_static_metadata("contract", plugin, config, {})
+
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        meta = state.event_handlers[key].meta
+        assert meta.timeout == configured_timeout
+        assert meta.name == "Configured"
+    assert not [w for w in warnings if "has no handler" in w], warnings
+    listed: list = []
+    query_service._append_entries_from_preview(
+        plugin_id="contract",
+        plugin_meta={
+            "entries_preview": registry._extract_entries_preview("contract", plugin, config, {})
+        },
+        entries=listed,
+        seen=set(),
+    )
+    running, _ = query_service._build_entries_from_handlers(
+        plugin_id="contract", handlers_snapshot=dict(state.event_handlers)
+    )
+    assert running == listed
+
+
+@pytest.mark.parametrize("configured_timeout", [2, 100])
+async def test_runs_without_ctx_timeout_use_the_configured_router_entry_timeout(
+    isolated_registry, configured_timeout
+):
+    """``/runs`` without ``_ctx.entry_timeout`` reads the handler table; a router entry must be in it."""
+    from plugin.runs import trigger_service
+
+    class Host:
+        def __init__(self):
+            self.timeouts: list = []
+
+        async def trigger(self, entry_id, args, timeout):
+            self.timeouts.append(timeout)
+            return {"ok": True}
+
+    config = {"entries": [{"id": "slow", "timeout": configured_timeout}]}
+    registry.scan_static_metadata("contract", _router_plugin(), config, {})
+    host = Host()
+    await trigger_service._execute_trigger(
+        host=host, plugin_id="contract", entry_id="slow", args={}, trace_id="t"
+    )
+    assert host.timeouts == [configured_timeout]
+
+
+def _write_router_package(plugin_dir: Path, manifest_extra: str = "") -> dict:
+    from plugin.neko_plugin_cli.core.metadata_probe import derive_plugin_metadata
+
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.toml").write_text(
+        '[plugin]\nid="contract"\nname="Contract"\nversion="1.0.0"\ntype="plugin"\n'
+        'entry="plugin.plugins.contract:ContractPlugin"\n' + manifest_extra,
+        encoding="utf-8",
+    )
+    (plugin_dir / "__init__.py").write_text(
+        "from plugin.sdk.plugin import NekoPluginBase, PluginRouter, neko_plugin, plugin_entry\n"
+        "class SlowRouter(PluginRouter):\n"
+        '    @plugin_entry(id="slow", timeout=120)\n'
+        "    async def slow(self): return {}\n"
+        "@neko_plugin\nclass ContractPlugin(NekoPluginBase):\n"
+        "    __routers__ = [SlowRouter]\n"
+        '    @plugin_entry(id="fast", timeout=3)\n'
+        "    async def fast(self): return {}\n",
+        encoding="utf-8",
+    )
+    return derive_plugin_metadata(plugin_dir)
+
+
+def test_packaged_metadata_without_router_handlers_is_not_reused(
+    tmp_path: Path, isolated_registry
+):
+    """An artifact built before #3522 lists router entries without handlers; starting must rescan.
+
+    Reusing it would install no host handler for the router entry, so ``/runs``
+    falls back to the global default timeout again.
+    """
+    from plugin.server.application.plugins.lifecycle_service import (
+        _read_packaged_isolated_metadata,
+    )
+    from plugin.server.infrastructure import packaged_metadata
+
+    plugin_dir = tmp_path / "contract"
+    payload = _write_router_package(plugin_dir)
+    assert payload["handlers"]["contract.slow"]["timeout"] == 120
+    meta_path = plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME
+    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+
+    def load():
+        return _read_packaged_isolated_metadata(
+            plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
+        )
+
+    meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load()
+    assert loaded is not None
+    metadata_scanner.install_isolated_plugin_metadata("contract", loaded)
+    assert state.event_handlers["contract.slow"].meta.timeout == 120
+
+    stale = copy.deepcopy(payload)
+    for key in ("contract.slow", "contract:plugin_entry:slow"):
+        del stale["handlers"][key]
+    meta_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert packaged_metadata.read_packaged_metadata(plugin_dir) is not None
+    assert load() is None
+
+
+def test_manifest_only_entries_do_not_refuse_packaged_metadata(tmp_path: Path, isolated_registry):
+    """A manifest entry with no decorator behind it never gets a handler; that alone is not staleness."""
+    from plugin.server.application.plugins.lifecycle_service import (
+        _read_packaged_isolated_metadata,
+    )
+    from plugin.server.infrastructure import packaged_metadata
+
+    plugin_dir = tmp_path / "contract"
+    payload = _write_router_package(plugin_dir, '[[entries]]\nid="ghost"\nname="Ghost"\n')
+    assert "ghost" in {entry["id"] for entry in payload["entries"]}
+    assert "contract.ghost" not in payload["handlers"]
+    (plugin_dir / packaged_metadata.PACKAGED_METADATA_FILENAME).write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    config = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+    assert _read_packaged_isolated_metadata(
+        plugin_dir / "plugin.toml", "contract", conf=config, pdata=config["plugin"]
+    ) is not None
+
+
+def test_lifekit_router_entries_list_the_same_from_handlers_as_from_preview(isolated_registry):
+    """lifekit's router entries now list from host handlers; no preview field may change or vanish."""
+    lifekit_meta = (
+        Path(__file__).resolve().parents[3] / "plugins" / "lifekit" / "plugin.meta.json"
+    )
+    payload = json.loads(lifekit_meta.read_text(encoding="utf-8"))
+    metadata_scanner.install_isolated_plugin_metadata(
+        "lifekit",
+        metadata_scanner.IsolatedPluginMetadata(
+            payload["entries"], payload["handlers"], payload["entry_methods"]
+        ),
+    )
+    running, _ = query_service._build_entries_from_handlers(
+        plugin_id="lifekit", handlers_snapshot=dict(state.event_handlers)
+    )
+    listed: list = []
+    query_service._append_entries_from_preview(
+        plugin_id="lifekit",
+        plugin_meta={"entries_preview": payload["entries"]},
+        entries=listed,
+        seen=set(),
+    )
+    by_id = {entry["id"]: entry for entry in running}
+    assert set(by_id) == {entry["id"] for entry in listed}
+    for preview_entry in listed:
+        assert by_id[preview_entry["id"]] == preview_entry

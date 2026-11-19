@@ -261,6 +261,11 @@ class MyPlugin(NekoPluginBase):
   Hosted UI cannot call them. The scan reads entry ids from the class and does
   not apply a router `prefix`, so routers listed this way should not use
   `prefix`: write the namespace into the entry ids instead.
+- Router entries listed in `__routers__` get host handlers like main-class
+  entries, so `[[entries]]` overrides in `plugin.toml` apply to them too. A
+  package built by an older `neko-plugin build` may list router entries
+  without handlers; the host then rescans the plugin on every start. Rebuild
+  it with `neko-plugin build`.
 - Until `include_router` binds it, a router's `ctx`, `config`, and `store` are
   `None`. A router has no `push_message`, `data_path`, or `i18n`; use
   `self.main_plugin`.

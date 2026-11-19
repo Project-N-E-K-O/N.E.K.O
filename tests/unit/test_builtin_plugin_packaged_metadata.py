@@ -37,7 +37,9 @@ had rewritten with CRLF.
 
 from __future__ import annotations
 
+import json
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -177,3 +179,40 @@ def test_builtin_plugin_packaged_metadata_matches_source_tree():
         "--keep-staging` and copy the staged plugin.meta.json back into "
         "plugin/plugins/<plugin>/."
     )
+
+
+def test_builtin_plugin_packaged_metadata_backs_every_entry_with_a_handler():
+    """Every packaged entry needs a host handler, router entries included (#3066).
+
+    The source fingerprint above cannot see this: ``plugin.meta.json`` built
+    before router entries were registered on the host still matches its
+    sources, but lists those entries without handlers. The start path refuses
+    such a file and rescans the plugin on every start, so a shipped one only
+    costs time, yet it means the file was not rebuilt. Manifest-only
+    ``[[entries]]`` with no decorator behind them are the one legitimate gap.
+
+    To fix a failure, rebuild the plugin as described in the module docstring.
+    """
+    from plugin.server.infrastructure.packaged_metadata import (
+        PackagedPluginMetadata,
+        packaged_entries_without_handlers,
+    )
+
+    unbacked: dict[str, list[str]] = {}
+    for plugin_dir in sorted(p for p in PLUGINS_DIR.iterdir() if p.is_dir()):
+        meta_path = plugin_dir / "plugin.meta.json"
+        if not meta_path.is_file():
+            continue
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+        manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+        configured = [
+            str(entry.get("id") or "") if isinstance(entry, dict) else str(entry)
+            for entry in manifest.get("entries") or []
+        ]
+        missing = packaged_entries_without_handlers(
+            PackagedPluginMetadata(entries=raw["entries"], handlers=raw["handlers"]),
+            configured,
+        )
+        if missing:
+            unbacked[plugin_dir.name] = missing
+    assert not unbacked, f"packaged entries without host handlers: {unbacked}"

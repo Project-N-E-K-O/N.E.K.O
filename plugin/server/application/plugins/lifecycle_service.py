@@ -70,6 +70,7 @@ from plugin.server.application.plugins._metadata_scan_settings import (
 from plugin.server.infrastructure.packaged_metadata import (
     SourceTreeSnapshot,
     entries_config_digest,
+    packaged_entries_without_handlers,
     packaged_metadata_needs_rebuild,
     read_packaged_metadata,
     refresh_stale_packaged_metadata,
@@ -334,11 +335,34 @@ def _read_packaged_isolated_metadata(
             plugin_id,
         )
         return None
+    conf_dict = dict(conf) if isinstance(conf, Mapping) else {}
+    pdata_dict = dict(pdata) if isinstance(pdata, Mapping) else {}
+    # Artifacts built before router entries were registered on the host list
+    # those entries without handlers; reusing one would bring that gap back
+    # (#3066). The digest gate above already pinned the effective entries
+    # table to the packaged one, so manifest-only ids are the only legitimate
+    # handler-less entries.
+    unbacked = packaged_entries_without_handlers(
+        packaged,
+        (
+            str(entry.get("id") or "") if isinstance(entry, Mapping) else str(entry)
+            for entry in _effective_entries(conf_dict, pdata_dict)
+        ),
+    )
+    if unbacked:
+        logger.info(
+            "packaged metadata lists entries without handlers, likely built "
+            "before router entries were registered; rescanning (rebuild with "
+            "'neko-plugin build' to refresh it): plugin_id={}, entries={}",
+            plugin_id,
+            len(unbacked),
+        )
+        return None
     return IsolatedPluginMetadata(
         entries_preview=_overlay_entry_declaration(
             packaged.entries,
-            dict(conf) if isinstance(conf, Mapping) else {},
-            dict(pdata) if isinstance(pdata, Mapping) else {},
+            conf_dict,
+            pdata_dict,
         ),
         handlers=dict(packaged.handlers),
         entry_methods=dict(packaged.entry_methods),
