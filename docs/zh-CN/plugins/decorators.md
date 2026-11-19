@@ -113,7 +113,7 @@ async def on_config_change(self, old_config, new_config, mode):
 
 SDK 仍兼容 `reload` 生命周期 ID，但插件管理器的重载按钮会重启进程，不会分派该事件。通过 `await self.ctx.update_own_config(...)` 或 `await self.config.update(...)` 更新配置时，也不会向同一进程回派 `config_change`；调用后应主动刷新派生状态。
 
-`startup`、入口调用和 `shutdown` 各自运行在独立的事件循环里（`asyncio.run`）。在 `startup` 里用 `asyncio.create_task` 创建的任务会在 `startup` 返回时被取消；在一个阶段创建的异步 client 或 session 不能在另一个阶段使用或关闭。异步 client 应在使用它的那次调用里创建（`async with ...`）。
+`startup`、`shutdown` 和每次定时器触发各自运行在独立的事件循环里（`asyncio.run`）；所有入口调用共用另一个长期运行的命令循环。在 `startup` 里用 `asyncio.create_task` 创建的任务会在 `startup` 返回时被取消；在一个阶段创建的异步 client 或 session 不能在另一个阶段使用或关闭。异步 client 应在使用它的那次调用里创建（`async with ...`）。
 
 ## @timer_interval
 

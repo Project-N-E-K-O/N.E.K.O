@@ -112,7 +112,7 @@ async def on_config_change(self, old_config, new_config, mode):
 
 SDK は互換性のため `reload` ID を受け付けますが、Plugin Manager の再読み込みボタンはプロセスを再起動するため、このイベントを通知しません。`await self.ctx.update_own_config(...)` または `await self.config.update(...)` で設定を更新した場合も、同じプロセスには `config_change` が通知されません。呼び出し後に派生状態を更新してください。
 
-`startup`、エントリー呼び出し、`shutdown` はそれぞれ別のイベントループ（`asyncio.run`）で実行されます。`startup` 内で `asyncio.create_task` で作成したタスクは `startup` が戻った時点でキャンセルされ、あるフェーズで作成した非同期 client や session は別のフェーズでは使用もクローズもできません。非同期 client はそれを使う呼び出しの中で作成してください（`async with ...`）。
+`startup`、`shutdown`、タイマーの各実行はそれぞれ別のイベントループ（`asyncio.run`）で実行され、すべてのエントリー呼び出しはそれとは別の長期間動くコマンドループを共有します。`startup` 内で `asyncio.create_task` で作成したタスクは `startup` が戻った時点でキャンセルされ、あるフェーズで作成した非同期 client や session は別のフェーズでは使用もクローズもできません。非同期 client はそれを使う呼び出しの中で作成してください（`async with ...`）。
 
 ## @timer_interval
 

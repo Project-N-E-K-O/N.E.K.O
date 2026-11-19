@@ -118,7 +118,7 @@ configuration through `await self.ctx.update_own_config(...)` or
 `await self.config.update(...)` also does not dispatch `config_change` back to
 the same process; refresh derived state after the call.
 
-`startup`, entry calls, and `shutdown` each run in their own event loop (`asyncio.run`). A task created with `asyncio.create_task` in `startup` is cancelled when `startup` returns, and an async client or session created in one phase cannot be used or closed in another. Create async clients inside the call that uses them (`async with ...`).
+`startup`, `shutdown`, and each timer tick run in their own event loop (`asyncio.run`); all entry calls share one long-running command loop that is separate from them. A task created with `asyncio.create_task` in `startup` is cancelled when `startup` returns, and an async client or session created in one phase cannot be used or closed in another. Create async clients inside the call that uses them (`async with ...`).
 
 ## @timer_interval
 

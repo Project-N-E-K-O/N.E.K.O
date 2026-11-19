@@ -55,11 +55,9 @@ on a best-effort basis.
 What the helper *doesn't* do: auto-recover after a `main_server` restart
 or first-boot race. Registration is fired once at plugin startup; if
 `main_server` was unreachable then, the tool stays invisible to the
-model until the plugin reloads, or until the tool is removed with
-`unregister_llm_tool(name)` and registered again with `register_llm_tool`
-(registering a name that is still registered locally raises
-`EntryConflictError` before the host is notified). The "What Happens When main_server Restarts" section near
-the end of this page covers the resilience pattern in detail.
+model until the plugin reloads or the tool is registered again. How to
+do that safely is in the "What Happens When main_server Restarts" section near
+the end of this page.
 
 The rest of this document explains the underlying HTTP contract and
 when you might need to reach for it directly.
@@ -306,19 +304,33 @@ callback routing, and cleanup.
 
 ⚠️ **Important**: `tool_registry` is an in-memory attribute on
 `LLMSessionManager`, so **everything is lost when main_server
-restarts**. For an `@llm_tool` plugin, reload the plugin, or call
-`self.unregister_llm_tool(name)` and then `self.register_llm_tool(...)`
-(see TL;DR). A raw HTTP integration
-must handle this itself:
+restarts**.
 
-- **Plugin outlives main_server** (more common): the plugin needs to
-  detect the heartbeat / connection drop and **re-register** when
-  main_server comes back up. The simplest approach is a background task
-  that periodically `GET /api/tools?role=...` to verify the tool is
-  still there, and re-register if not.
-- **Plugin lifetime tied to main_server**: as long as the plugin's
-  startup hook runs `register_with_retry`, restart means plugin restart
-  too, so registration happens naturally.
+For an `@llm_tool` plugin, recovery has to be triggered by the user (or
+by an entry the user calls): a plugin has no supported way to detect that
+main_server restarted, and it must not poll main_server itself.
+
+- Preferred: reload the plugin. The new process registers every
+  `@llm_tool` again.
+- Without a reload: call `self.unregister_llm_tool(name)`, then
+  `self.register_llm_tool(...)` (registering a name that is still
+  registered locally raises `EntryConflictError` before the host is
+  notified). Pass every argument of the original registration again,
+  especially `role` and `reply_tail`: they default to `role=None`
+  (visible to every character) and `reply_tail=False`.
+
+A raw HTTP integration running outside the plugin process must handle
+this itself:
+
+- **Integration outlives main_server** (more common): the external
+  process needs to detect the heartbeat / connection drop and
+  **re-register** when main_server comes back up. The simplest approach
+  is a background task in that process that periodically
+  `GET /api/tools?role=...` to verify the tool is still there, and
+  re-registers if not.
+- **Integration lifetime tied to main_server**: if the external process
+  runs `register_with_retry` when it starts and is restarted together
+  with main_server, registration happens naturally.
 
 ## Switching Nekos
 
@@ -469,8 +481,8 @@ plugin doesn't crash — only that one tool call fails.
 - The IPC notification (`LLM_TOOL_REGISTER`) is buffered on the
   plugin's host queue. If `main_server` is not yet up when the
   notification arrives, the registration call fails and the host
-  logs a warning — once `main_server` is healthy, reload the plugin, or
-  call `unregister_llm_tool(name)` and then `register_llm_tool(...)`.
+  logs a warning — once `main_server` is healthy, recover as described in
+  "What Happens When main_server Restarts".
 - On plugin stop, `lifecycle_service.stop_plugin` calls
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools`,
   which POSTs `/api/tools/clear` with body

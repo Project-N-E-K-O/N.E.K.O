@@ -110,7 +110,7 @@ class LifeKitPlugin(NekoPluginBase):
         return Ok({"status": "ready"})
 ```
 
-`self.include_router()` binds the router and registers its entry points under the current plugin, so they run. The `__routers__` class attribute is also required: the host reads entry metadata from the plugin class without instantiating it, and only scans router classes listed in `__routers__`. A router that is only passed to `include_router()` still runs, but its entries are missing from that static scan: their `timeout` is not applied (the host default is used instead) and features that use the scanned entry list, such as Hosted UI actions, may not find them. For router entries in `__routers__`, `[[plugin.entries]]` overrides in `plugin.toml` apply the same way as for entries on the main class.
+`self.include_router()` binds the router and registers its entry points under the current plugin, so they run. The `__routers__` class attribute is also required: the host reads entry metadata from the plugin class without instantiating it, and only scans router classes listed in `__routers__`. A router that is only passed to `include_router()` still runs, but its entries are missing from that static scan: they do not appear in the Plugin Manager's or the Agent's entry lists (`include_router()` does not report them to the host), their `timeout` is not applied (the host default is used instead), and Hosted UI actions may not find them. For router entries in `__routers__`, `[[plugin.entries]]` overrides in `plugin.toml` apply the same way as for entries on the main class.
 
 ---
 
@@ -209,6 +209,8 @@ Now the `countdown` entry's actual ID becomes `time_countdown`.
 
 ::: warning Do not combine `prefix` with `__routers__`
 When a router class is listed in `__routers__` (as in the examples above), the host's static scan reads entry IDs from the class and does not see the prefix. The ID the host registers (`countdown`) then differs from the runtime ID (`time_countdown`), so the entry's timeout and its `[[plugin.entries]]` overrides do not apply. For router classes listed in `__routers__`, do not use `prefix`: write the namespace into the entry IDs instead (for example `id="time_countdown"`).
+
+This applies to router classes. If `__routers__` lists router instances, the scan uses their `collect_entries()`, which includes a prefix already set on the instance (for example with `set_prefix("time_")`). In that case pass the same instances to `self.include_router(router)`; the `router_cls()` loop above only works for classes.
 :::
 
 Most of the time you don't need prefixes — just make sure entry IDs don't collide across routers.

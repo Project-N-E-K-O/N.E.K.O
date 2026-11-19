@@ -53,10 +53,8 @@ class WeatherPlugin(NekoPluginBase):
 helper が **やらない** こと：`main_server` の再起動や初回起動レースからの
 自動復旧。登録はプラグインスタートアップ時に一度だけ発火し、その瞬間
 `main_server` が到達不能ならツールはモデルから不可視のままです —
-プラグインを reload するか、`unregister_llm_tool(name)` で外してから
-`register_llm_tool` で登録し直すまで復活しません（ローカルに同名ツールが
-残ったまま登録すると、ホストへ通知する前に `EntryConflictError` になります）。本ページ末尾の "What Happens When main_server Restarts"
-セクションが resilience パターンを詳述しています。
+プラグインを reload するか、ツールを登録し直すまで復活しません。安全な手順は
+本ページ末尾の「main_server 再起動時の挙動」を参照してください。
 
 このドキュメントの残りは下層の HTTP コントラクトと、それを直接叩く必要が
 ある場面を説明します。
@@ -296,18 +294,30 @@ async def unregister_on_shutdown():
 ## main_server 再起動時の挙動
 
 ⚠️ **重要**：`tool_registry` は `LLMSessionManager` のインメモリ属性
-なので、**main_server 再起動で全部失われます**。`@llm_tool` を使う
-プラグインなら、プラグインを再読み込みするか、`self.unregister_llm_tool(name)`
-の後に `self.register_llm_tool(...)` を呼んでください（TL;DR を参照）。生 HTTP の連携は自分で対応が
-必要：
+なので、**main_server 再起動で全部失われます**。
 
-- **プラグインが main_server より長生き**（より一般的）：プラグインは
+`@llm_tool` を使うプラグインの復旧は、ユーザー（またはユーザーが呼ぶエントリー）
+が起点になります。プラグインには main_server の再起動を検知する正規の手段がなく、
+main_server を自分でポーリングしてもいけません。
+
+- 推奨：プラグインを再読み込みする。新しいプロセスがすべての `@llm_tool` を
+  登録し直します。
+- 再読み込みしない場合：`self.unregister_llm_tool(name)` の後に
+  `self.register_llm_tool(...)` を呼ぶ（ローカルに同名ツールが残ったまま
+  登録すると、ホストへ通知する前に `EntryConflictError` になります）。元の
+  登録時の引数はすべて渡し直してください。特に `role` と `reply_tail` は、
+  省略するとデフォルトの `role=None`（全キャラクターから見える）と
+  `reply_tail=False` になります。
+
+プラグインプロセスの外で動く生 HTTP の連携は、自分で対応が必要です：
+
+- **連携が main_server より長生き**（より一般的）：外部プロセスは
   ハートビート / 接続切断を監視し、復旧後に **再登録** する必要があり
-  ます。最も簡単な方法はバックグラウンドタスクで定期的に
+  ます。最も簡単な方法は、その外部プロセスのバックグラウンドタスクで定期的に
   `GET /api/tools?role=...` を確認し、無ければ再登録すること
-- **プラグインが main_server と運命共同体**：プラグイン起動フックで
-  `register_with_retry` を呼んでいれば、main_server 再起動時に
-  プラグインも再起動するので、自動的に再登録される
+- **連携が main_server と運命共同体**：外部プロセスが起動時に
+  `register_with_retry` を呼び、main_server と一緒に再起動されるなら、
+  自動的に再登録される
 
 ## 猫娘切り替え
 
@@ -450,8 +460,7 @@ handler 内で `raise` した場合も LLM にエラーが返されます（例�
 - IPC 通知（`LLM_TOOL_REGISTER`）はプラグインホストキューに buffer
   されます。通知到着時 `main_server` がまだ起動していない場合、登録呼び
   出しは失敗してホスト側で warning ログが出ます — `main_server` が
-  起動した後にプラグインを reload するか、`unregister_llm_tool(name)` の後に
-  `register_llm_tool(...)` を呼んでください。
+  起動した後に「main_server 再起動時の挙動」の手順で復旧してください。
 - プラグイン停止時、`lifecycle_service.stop_plugin` が
   `plugin/server/messaging/llm_tool_registry.py::clear_plugin_tools` を
   呼び、`POST /api/tools/clear` をボディ
