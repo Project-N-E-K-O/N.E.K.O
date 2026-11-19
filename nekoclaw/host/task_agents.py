@@ -6040,43 +6040,47 @@ class TaskAgentManager:
             # Everything is being stopped, the caller with it (see
             # ``_cb_session_send``): nothing is started for it now.
             raise RuntimeError(refusals["over"])
-        asked, refusal, wait = await self._ledger.ask_add(
-            from_session=str(caller.session_id),
-            from_commission=caller.id,
-            to_session=target.id,
-            body=question,
-            per_hour=settings.SESSION_MESSAGES_PER_HOUR,
-            asks_per_hour=settings.SESSION_ASKS_PER_HOUR,
-        )
-        if asked is None:
-            limit = settings.SESSION_ASKS_PER_HOUR if refusal == "too_many_asks" else settings.SESSION_MESSAGES_PER_HOUR
-            raise RuntimeError(refusals[refusal].format(name=target.name, wait=math.ceil(wait), limit=limit))
         filed: list[Commission] = []
         copies: list[Session] = []
 
-        async def not_asked() -> None:
-            # Counted against nothing: it was not asked.
-            try:
-                await self._ledger.message_void(asked.id, _ASK_NOT_ASKED_REASON)
-            except Exception:  # noqa: BLE001 - it counts for the hour, which is all that is lost
-                logger.warning("taking a question that was not asked out of the count failed", exc_info=True)
+        async def hand_over() -> str:
+            # Counted, copied, filed, given the copy and handed over in a
+            # task of its own, which whoever asked does not cut short (a
+            # tool call of dsh that is given up is cancelled, the copy may
+            # take a minute): a question counted and then left would count
+            # against what may be asked with nothing asked; a commission
+            # left queued here would be started by nobody, and the one that
+            # asked would wait for its answer for ever; a copy left on its
+            # own would wait to be removed with old sessions. Where a step
+            # fails, the commission that was filed is ended and the copy
+            # removed. One that was not asked does not count against what
+            # may be asked. Returns why it was not asked, as whoever asked
+            # is told; nothing where it was handed over.
+            asked, refusal, wait = await self._ledger.ask_add(
+                from_session=str(caller.session_id),
+                from_commission=caller.id,
+                to_session=target.id,
+                body=question,
+                per_hour=settings.SESSION_MESSAGES_PER_HOUR,
+                asks_per_hour=settings.SESSION_ASKS_PER_HOUR,
+            )
+            if asked is None:
+                limit = settings.SESSION_ASKS_PER_HOUR if refusal == "too_many_asks" else settings.SESSION_MESSAGES_PER_HOUR
+                return refusals[refusal].format(name=target.name, wait=math.ceil(wait), limit=limit)
 
-        async def hand_over() -> tuple[str, str]:
-            # Copied, filed, given the copy and handed over in a task of its
-            # own, which whoever asked does not cut short (a tool call of
-            # dsh that is given up is cancelled, the copy may take a
-            # minute): a commission left queued here would be started by
-            # nobody, and the one that asked would wait for its answer for
-            # ever; a copy left on its own would wait to be removed with
-            # old sessions. Where a step fails, the commission that was
-            # filed is ended and the copy removed. One that was not asked
-            # does not count against what may be asked.
+            async def not_asked() -> None:
+                # Counted against nothing: it was not asked.
+                try:
+                    await self._ledger.message_void(asked.id, _ASK_NOT_ASKED_REASON)
+                except Exception:  # noqa: BLE001 - it counts for the hour, which is all that is lost
+                    logger.warning("taking a question that was not asked out of the count failed", exc_info=True)
+
             try:
                 try:
                     copy = await self.fork_session(target.id)
                 except ForkRefused as exc:
                     await not_asked()
-                    return "no_copy", str(exc)
+                    return refusals["no_copy"].format(name=target.name, reason=str(exc))
                 copies.append(copy)
                 _lead, members = await self._team(caller.id)
                 taken = {member.name for member in members}
@@ -6108,7 +6112,7 @@ class TaskAgentManager:
                     await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
                     await self._discard_copy(copy)
                     await not_asked()
-                    return "over", ""
+                    return refusals["over"].format(name=target.name)
                 await self._ledger.append_event(
                     caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
                 )
@@ -6116,10 +6120,10 @@ class TaskAgentManager:
                 # its place was taken while the copy was made. Whoever asked
                 # is told so by this call alone: ``submit`` tells nobody.)
                 if await self.submit(child, wait=False):
-                    return "", ""
+                    return ""
                 await self._discard_copy(copy)
                 await not_asked()
-                return "no_place", ""
+                return refusals["no_place"].format(name=target.name)
             except BaseException:
                 if filed:
                     try:
@@ -6144,9 +6148,9 @@ class TaskAgentManager:
                 await not_asked()
                 raise
 
-        refusal, reason = await asyncio.shield(self._spawn(hand_over()))
-        if refusal:
-            raise RuntimeError(refusals[refusal].format(name=target.name, reason=reason))
+        refused = await asyncio.shield(self._spawn(hand_over()))
+        if refused:
+            raise RuntimeError(refused)
         return {"message": words.ASK_QUEUED.format(name=target.name)}
 
     async def _discard_copy(self, copy: Session) -> None:

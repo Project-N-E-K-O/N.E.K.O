@@ -845,6 +845,43 @@ async def test_a_question_whose_asker_is_cancelled_while_the_copy_is_made_is_ans
     release.set()
 
 
+async def test_a_question_whose_asker_is_cancelled_while_it_is_counted_is_asked_all_the_same(hosts, tmp_path):
+    # The ledger writes in a thread of its own, which a cancelled caller does not stop: a
+    # question counted for an asker that gave up the call is still asked (or not counted),
+    # and is not left counting against what may be asked with nothing asked.
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    ask_add, entered, go_on = host.ledger.ask_add, asyncio.Event(), asyncio.Event()
+
+    async def written_behind_the_caller(**kwargs: Any) -> Any:
+        writing = asyncio.ensure_future(ask_add(**kwargs))
+        entered.set()
+        await go_on.wait()
+        return await writing
+
+    host.ledger.ask_add = written_behind_the_caller  # type: ignore[method-assign]
+    told = _steered_into(host, asker.id)
+    asking = asyncio.ensure_future(_ask(host, asker))
+    await asyncio.wait_for(entered.wait(), 5)
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+    go_on.set()
+    await wait_until(lambda: _children_of(host, asker.id), what="the question being filed")
+    [child] = await host.ledger.select(parent_id=asker.id)
+    child = await wait_status(host, child.id, "done", "failed", "cancelled", "blocked")
+    assert child.status == "done"
+    await wait_until(lambda: any("An answer." in text for text in told), what="the answer reaching the asker")
+    asked = await host.ledger.run(
+        lambda conn: [tuple(row) for row in conn.execute("SELECT kind, status FROM messages WHERE kind = 'ask'")]
+    )
+    assert asked == [("ask", "delivered")]
+    release.set()
+
+
 async def test_whether_the_asker_was_stopped_is_asked_again_where_the_ledger_cannot_be_read_at_first(hosts, tmp_path):
     release, held = _held()
     scripts = {PHOTOS: _photos(), BUILD: held}
