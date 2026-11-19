@@ -249,9 +249,12 @@ def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bo
 
 def _diagnose_agent_kit(plugin_dir: Path) -> list[Issue]:
     """A warning only: a stale or unstamped skill snapshot never fails check."""
-    entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / agent_kit.SKILL_ENTRY_NAME
+    relative = agent_kit.SKILL_TARGET_DIR / agent_kit.SKILL_ENTRY_NAME
+    entry = plugin_dir / relative
     try:
-        has_snapshot = entry.is_file()
+        # A linked snapshot (e.g. a shared skill folder) is the user's to
+        # update: setup-repo never writes through links, so stay silent.
+        has_snapshot = entry.is_file() and not agent_kit.passes_through_symlink(plugin_dir, relative)
     except OSError:
         # Cannot even look (e.g. permissions): an advisory check stays silent.
         has_snapshot = False
@@ -640,13 +643,14 @@ _WINDOWS_SHELL = os.name == "nt"
 def _shell_quote(value: str) -> str | None:
     """Quote one argument of a command the user copies into their shell.
 
-    None when no quoting keeps it literal: cmd expands %VAR% even inside
+    None when no quoting keeps it literal for every Windows shell: cmd
+    expands %VAR% and PowerShell expands $name and ` escapes even inside
     double quotes, which could point the command at another directory.
     """
     if not _WINDOWS_SHELL:
         # POSIX shells expand $ and ` inside double quotes.
         return shlex.quote(value)
-    return None if "%" in value else f'"{value}"'
+    return None if any(char in value for char in "%$`") else f'"{value}"'
 
 
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:

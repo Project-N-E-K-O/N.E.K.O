@@ -1905,6 +1905,9 @@ def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
 
     assert release_cmd._shell_quote(r"C:\work\demo dir") == r'"C:\work\demo dir"'
     assert release_cmd._shell_quote(r"C:\work\%K%\demo") is None
+    # PowerShell expands these inside double quotes.
+    assert release_cmd._shell_quote(r"C:\work\$tmp\demo") is None
+    assert release_cmd._shell_quote("C:\\work\\a`b\\demo") is None
     fix = release_cmd._suggest_fix(
         "agent kit snapshot is older than this neko-plugin CLI: ...",
         plugin_id="demo",
@@ -2000,6 +2003,28 @@ def test_setup_repo_overwrite_never_writes_through_a_linked_skill_folder(
     assert sorted(path.name for path in (shared / "neko-plugin").iterdir()) == ["SKILL.md"]
     assert (plugin_dir / "AGENTS.md").is_file()
     assert ".agents/skills" not in capsys.readouterr().out
+
+
+def test_check_leaves_a_linked_skill_snapshot_to_its_owner(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "linked_snapshot")
+    shared = tmp_path / "shared-skills"
+    (shared / "neko-plugin").mkdir(parents=True)
+    (shared / "neko-plugin" / "SKILL.md").write_text("# unstamped shared skill\n", encoding="utf-8")
+    (plugin_dir / ".agents").mkdir()
+    try:
+        (plugin_dir / ".agents" / "skills").symlink_to(shared, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available here")
+
+    # check already rejects the link itself; a refresh hint on top could never
+    # clear, because setup-repo --overwrite skips linked targets.
+    neko_plugin_cli.main(["check", str(plugin_dir)])
+    captured = capsys.readouterr()
+    assert "must not contain symbolic links" in captured.err
+    assert "agent kit snapshot" not in captured.out
 
 
 def test_check_ignores_an_agent_kit_it_cannot_inspect(

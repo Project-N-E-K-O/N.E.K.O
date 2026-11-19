@@ -138,6 +138,8 @@ def snapshot_cli_version(skill_entry: str) -> str | None:
     Only the two places _stamp_skill_entry writes are read, so the same text
     elsewhere (a description, the body) is never mistaken for the stamp.
     """
+    # A BOM (e.g. from a Windows editor) would hide the frontmatter.
+    skill_entry = skill_entry.removeprefix("\ufeff")
     frontmatter = _FRONTMATTER_RE.match(skill_entry)
     position = 0
     if frontmatter is not None:
@@ -151,6 +153,16 @@ def snapshot_cli_version(skill_entry: str) -> str | None:
                 break
     comment = _COMMENT_STAMP_RE.match(skill_entry, position)
     return comment.group(1) if comment else None
+
+
+def passes_through_symlink(root: Path, relative: Path) -> bool:
+    """Whether root/relative, or any directory between root and it, is a link."""
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def source_url(relative: Path) -> str | None:

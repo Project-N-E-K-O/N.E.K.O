@@ -135,6 +135,13 @@ def test_stamp_never_edits_an_existing_metadata_map(authored: str) -> None:
     )
 
 
+def test_stamp_is_read_through_a_byte_order_mark() -> None:
+    stamped = agent_kit._stamp_skill_entry("---\nname: x\n---\nbody\n")
+
+    assert agent_kit.snapshot_cli_version("\ufeff" + stamped) == agent_kit.CLI_VERSION
+    assert agent_kit.snapshot_cli_version("\ufeff" + agent_kit._stamp_skill_entry("# x\n")) == agent_kit.CLI_VERSION
+
+
 def test_stamp_is_read_only_where_it_is_written() -> None:
     lookalike = "---\nname: x\ndescription: >\n  neko-plugin-cli-version: 0.0.1\n---\nneko-plugin-cli-version: 0.0.1\n"
 
