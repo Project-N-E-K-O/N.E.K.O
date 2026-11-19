@@ -38,6 +38,8 @@ _RESULT_CODES = frozenset({
     "PLUGIN_EXECUTION_FAILED", "DEADLINE_EXCEEDED", "OPERATION_TIMEOUT", "CANCELLED",
     "CONNECTION_CLOSED", "TRANSPORT_ERROR", "TRANSPORT_TIMEOUT", "BUSY",
     "SERIALIZATION_FAILED", "PLUGIN_UNAVAILABLE", "PLUGIN_NOT_READY",
+    "CALL_DEPTH_EXCEEDED", "REQUEST_FAILED", "INVALID_REQUEST", "UNKNOWN_OPERATION",
+    "INTERNAL_ERROR", "PLUGIN_OUTPUT_SCHEMA_VIOLATION",
 })
 _DEDUP_SECONDS = 60.0
 _last_written: dict[tuple, float] = {}
@@ -61,7 +63,8 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
     try:
         if record.get("decision") != "approved":
             return frozenset(), True
-        approved = record.get("approved_capabilities")  # missing field = malformed
+        # Missing means none, as in consent_policy.derive_consent; a wrong type is malformed.
+        approved = record.get("approved_capabilities") or []
         if not isinstance(approved, list) or not all(isinstance(c, str) for c in approved):
             return frozenset(), False  # malformed record: unknown, for this plugin only
         return frozenset(approved), True
@@ -72,13 +75,14 @@ def granted_capabilities(plugin_id: str) -> tuple[frozenset[str], bool]:
 def link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink | None:
     """Link for a PLUGIN_TO_PLUGIN delivery; ``caller`` is the connection identity.
 
-    Never raises: on failure the delivery goes ahead without a link.
+    Never raises: on failure the chain starts at the caller.
     """
     try:
         return _link_for_plugin_call(caller, parent_request_id)
     except Exception as exc:
         logger.warning("call-chain link failed: error_type={}", type(exc).__name__)
-        return None
+        # Keep the caller on the chain rather than looking host-initiated.
+        return CallLink(Origin("plugin_self"), caller=caller)
 
 
 def _link_for_plugin_call(caller: str, parent_request_id: object) -> CallLink:
@@ -139,7 +143,9 @@ def result_code(exc: BaseException | None) -> str:
     return "TIMEOUT" if isinstance(exc, TimeoutError) else "ERROR"
 
 
-_IDENTIFIER = re.compile(r"[A-Za-z0-9_.:\-]{1,128}")
+# Word characters (Unicode, so Chinese entry ids pass), ``.:/-``, or empty;
+# no whitespace, quotes or control characters that could fake a log line.
+_IDENTIFIER = re.compile(r"[\w.:/\-]{0,128}")
 
 
 def _identifier(value: str) -> str:

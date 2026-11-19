@@ -194,8 +194,8 @@ SDK 侧的同步预检（`push_message` 先看 `ctx.call_chain.allows("messages.
 ### 3.9 本机只读的审计接口
 
 - 路由：`GET /plugin-audit/call-chain`，新文件 `plugin/server/routes/plugin_audit.py`，在 `build_plugin_server_app`（`plugin/server/http_app.py:277`）里 `include_router`。
-- 不带参数，返回环形缓冲里最近的最多 1000 条（新的在前，不读盘）：`{"mode", "entries": [...], "dropped", "registry_full"}`。
-- 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。带转发头的代理请求会被拒；但如果反向代理把请求转成不带转发头的本机连接，应用分不出来，所以**部署时不要把这个路由暴露给非本机客户端**。带 `Origin` 或 `Sec-Fetch-*` 头的请求（浏览器页面发起的；同源 GET 不带 `Origin`，但会带 `Sec-Fetch-*`）也一律 403，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
+- 不带参数，返回两个环形缓冲里现存的全部记录（转发最多 1000 条加判定最多 500 条，新的在前，不读盘；不再二次截断，免得判定被转发挤掉）：`{"mode", "entries": [...], "dropped", "registry_full"}`。
+- 鉴权：插件服务只绑 `127.0.0.1`（`plugin/user_plugin_server.py:172`）。路由再加一个严格本机依赖：复用 `plugin/server/infrastructure/mutation_auth.py:115` 的 `_local_request`（客户端是回环地址、Host 是回环、没有转发头），不满足就 403。带转发头的代理请求会被拒；但如果反向代理把请求转成不带转发头的本机连接，应用分不出来，所以**部署时不要把这个路由暴露给非本机客户端**。带 `Origin` 的请求、以及 `Sec-Fetch-Site` 不是 `none` 的请求（浏览器页面发起的；同源 GET 不带 `Origin`，但会带 `Sec-Fetch-Site: same-origin`）也一律 403；Node、Electron 主进程的 fetch 只带 `Sec-Fetch-Mode`，不受影响，所以即使 CORS 放行了本机前端的来源，页面也读不到它；只给本机的命令行和脚本用。
 - 开关 `off` 时返回 `mode: "off"` 和空列表。
 
 ### 3.10 错误码 `CAPABILITY_NOT_GRANTED`

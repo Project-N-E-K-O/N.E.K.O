@@ -1030,7 +1030,9 @@ class ServerLifecycleService:
         try:
             from plugin.server.application.plugins import call_audit
 
-            if not await asyncio.to_thread(call_audit.close, 1.0):
+            # Tagged with this run, so if it is still waiting for the lock
+            # after a restart has reopened the audit, it does nothing.
+            if not await asyncio.to_thread(call_audit.close, 1.0, call_audit.generation()):
                 logger.warning("plugin call audit flush did not finish before shutdown")
         except Exception as exc:
             logger.warning("plugin call audit flush failed: error_type={}", type(exc).__name__)

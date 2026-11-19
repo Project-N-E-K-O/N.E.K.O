@@ -126,6 +126,9 @@ async def test_observe_failures_never_change_the_call(gate, monkeypatch, broken)
     if broken == "consent":  # the check ran and recorded the failed read
         (entry,) = call_audit.entries()
         assert "consent_unavailable" in entry["flags"]
+    if broken == "lookup":  # a failed link keeps the caller instead of looking host-initiated
+        link = capability_gate.link_for_plugin_call("b", "r1")
+        assert (link.caller, link.origin.kind) == ("b", "plugin_self")
 
 
 async def test_off_calls_nothing(gate, monkeypatch):
@@ -232,6 +235,14 @@ def test_audit_close_is_bounded_when_the_disk_is_stuck(gate, monkeypatch):
     assert call_audit._listener is not None
 
 
+def test_a_close_issued_before_a_restart_leaves_the_new_run_open(gate):
+    stale = call_audit.generation()
+    call_audit.reopen()  # restart wins the race against the old shutdown's close
+    assert call_audit.close(0.1, stale) is True
+    call_audit.record({"kind": "forward", "n": "after"})
+    assert call_audit._listener is not None and not call_audit._closed
+
+
 def test_unwritable_audit_file_is_counted_as_dropped(gate, monkeypatch):
     blocker = gate / "not-a-dir"
     blocker.write_text("x")
@@ -262,6 +273,9 @@ def test_failed_rights_lookup_does_not_leak_the_registration(gate, monkeypatch):
         ("127.0.0.1", "http://127.0.0.1:48916", {"Origin": "http://127.0.0.1:48911"}, 403),
         # A same-origin page omits Origin on GET but sends fetch metadata.
         ("127.0.0.1", "http://127.0.0.1:48916", {"Sec-Fetch-Site": "same-origin"}, 403),
+        # Node / Electron fetch sends Sec-Fetch-Mode only; a typed URL sends Site: none.
+        ("127.0.0.1", "http://127.0.0.1:48916", {"Sec-Fetch-Mode": "cors"}, 200),
+        ("127.0.0.1", "http://127.0.0.1:48916", {"Sec-Fetch-Site": "none"}, 200),
     ],
 )
 async def test_audit_route_is_local_only(gate, client, base, headers, status):
@@ -358,15 +372,21 @@ def test_audit_keeps_only_identifier_shaped_event_names_and_valid_grants(gate, m
     capability_gate.end_call(record, "ok", 0)
     (forward,) = call_audit.entries()
     assert forward["event_id"] == "<invalid>" and "hello" not in json.dumps(forward)
+    for event_id in ("", "搜索", "tools/search"):  # empty (voice dispatch), Unicode, path-like
+        capability_gate.end_call(capability_gate.begin_call("a", "r2", "plugin_entry", event_id, None), "ok", 0)
+        assert call_audit.entries()[0]["event_id"] == event_id
+    depth_error = RuntimeError()
+    depth_error.code = "CALL_DEPTH_EXCEEDED"
+    assert capability_gate.result_code(depth_error) == "CALL_DEPTH_EXCEEDED"
     monkeypatch.setattr(capability_gate, "granted_capabilities", _REAL_GRANTED)
     monkeypatch.setattr(plugin_consent.consent_store, "read",
                         lambda plugin_id: {"decision": "approved", "approved_capabilities": {"memory.read": False}})
     assert capability_gate.granted_capabilities("a") == (frozenset(), False)
     monkeypatch.setattr(plugin_consent.consent_store, "read", lambda plugin_id: {"decision": "approved"})
-    assert capability_gate.granted_capabilities("a") == (frozenset(), False)  # field missing
+    assert capability_gate.granted_capabilities("a") == (frozenset(), True)  # missing = none, as derive_consent
 
 
-async def test_audit_route_caps_the_response(gate, monkeypatch):
+async def test_audit_route_returns_every_retained_entry(gate, monkeypatch):
     # Identical timestamps: order comes from write order, not the clock.
     class Frozen:
         @staticmethod
@@ -375,6 +395,7 @@ async def test_audit_route_caps_the_response(gate, monkeypatch):
             return datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     monkeypatch.setattr(call_audit, "datetime", Frozen)
+    call_audit.record({"kind": "decision", "verdict": "would_deny", "n": "old"})
     for index in range(1000):
         call_audit.record({"kind": "forward", "n": index})
     call_audit.record({"kind": "decision", "verdict": "would_deny"})
@@ -383,4 +404,6 @@ async def test_audit_route_caps_the_response(gate, monkeypatch):
     transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 50000))
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:48916") as http:
         body = (await http.get("/plugin-audit/call-chain")).json()
-    assert len(body["entries"]) == 1000 and body["entries"][0]["kind"] == "decision"
+    assert len(body["entries"]) == 1002 and body["entries"][0]["kind"] == "decision"
+    # A decision older than a full ring of forwards is still returned.
+    assert body["entries"][-1] == {**body["entries"][-1], "kind": "decision", "n": "old"}

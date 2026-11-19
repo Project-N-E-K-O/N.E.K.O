@@ -32,6 +32,7 @@ _decision_ring: deque[tuple[int, dict]] = deque(maxlen=500)
 _listener: logging.handlers.QueueListener | None = None
 _lock = threading.Lock()
 _closed = False
+_generation = 0  # bumped by reopen(); a close() issued for an older run is ignored
 _abandoned: logging.handlers.QueueListener | None = None  # writer a timed-out close left behind
 dropped = 0  # records not written (queue full, unwritable file, after close); may race
 
@@ -132,7 +133,12 @@ def entries() -> list[dict]:
     return [item for _, item in sorted([*_ring, *_decision_ring], key=lambda pair: pair[0], reverse=True)]
 
 
-def close(timeout: float = 1.0) -> bool:
+def generation() -> int:
+    """Pass to ``close`` so a late close cannot shut a writer reopened since."""
+    return _generation
+
+
+def close(timeout: float = 1.0, generation: int | None = None) -> bool:
     """Flush what is queued within ``timeout`` and stop writing to the file.
 
     Bounded on purpose (``QueueListener.stop`` waits without a limit and
@@ -141,6 +147,8 @@ def close(timeout: float = 1.0) -> bool:
     """
     global _listener, _closed, _abandoned
     with _lock:
+        if generation is not None and generation != _generation:
+            return True  # issued before a reopen(): the new run is not ours to close
         _closed = True
         if _listener is not None:
             # Until it is seen exiting, the closing writer still owns the file.
@@ -161,6 +169,9 @@ def close(timeout: float = 1.0) -> bool:
         listener._thread.join(min(0.05, max(0.0, deadline - time.monotonic())))
     if listener._thread.is_alive():
         # logging.shutdown() at exit would wait on the stuck handler's lock.
+        # logging._lock / _handlerList are CPython internals (a list of weakrefs
+        # to every handler, as of the 3.11 this project runs on);
+        # test_audit_close_is_bounded_when_the_disk_is_stuck fails if that changes.
         with logging._lock:
             logging._handlerList[:] = [
                 ref for ref in logging._handlerList if ref() not in listener.handlers
@@ -176,6 +187,7 @@ def close(timeout: float = 1.0) -> bool:
 
 def reopen() -> None:
     """Accept file writes again after a shutdown (the server can restart in-process)."""
-    global _closed
+    global _closed, _generation
     with _lock:
+        _generation += 1
         _closed = False
