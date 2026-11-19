@@ -1862,6 +1862,51 @@ def test_setup_repo_adds_agent_kit_and_preserves_existing_files_unless_overwrite
     ]
 
 
+@pytest.mark.parametrize(
+    ("stamp", "warned"),
+    [
+        (None, False),  # no snapshot at all: nothing to refresh
+        ("", True),  # snapshot without a stamp (generated before stamping)
+        ("0.0.1", True),
+        ("current", False),
+        ("99.0.0", False),
+    ],
+)
+def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stamp: str | None,
+    warned: bool,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "kit_demo")
+    if stamp is not None:
+        skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+        skill_entry.parent.mkdir(parents=True)
+        version = agent_kit.CLI_VERSION if stamp == "current" else stamp
+        header = f'---\nname: neko-plugin\nmetadata:\n  neko-plugin-cli-version: "{version}"\n---\n' if version else ""
+        skill_entry.write_text(f"{header}# skill\n", encoding="utf-8")
+
+    exit_code = neko_plugin_cli.main(["check", str(plugin_dir)])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert ("agent kit snapshot is older than this neko-plugin CLI" in out) is warned
+    refresh = f'setup-repo "{plugin_dir}" --overwrite --no-readme --no-tests --no-gitignore --no-vscode'
+    assert (refresh in out) is warned
+
+
+def test_check_does_not_flag_a_freshly_generated_agent_kit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "fresh_kit")
+    assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
 def test_setup_repo_upgrade_github_actions_adds_only_managed_action_files(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

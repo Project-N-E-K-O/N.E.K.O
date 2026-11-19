@@ -103,6 +103,27 @@ def test_agents_template_points_at_snapshotted_references() -> None:
         assert agent_kit.SKILL_TARGET_DIR / "references" / name in files
 
 
+def test_snapshot_skill_entry_is_stamped_with_the_cli_version() -> None:
+    from plugin.neko_plugin_cli import __version__
+
+    authored = (agent_kit._kit_root() / "SKILL.md").read_text(encoding="utf-8")
+    stamped = agent_kit.skill_files()[agent_kit.SKILL_TARGET_DIR / "SKILL.md"]
+
+    # Injected while rendering; the authored file stays unstamped.
+    assert agent_kit.snapshot_cli_version(authored) is None
+    assert agent_kit.snapshot_cli_version(stamped) == __version__
+    frontmatter = stamped.split("---\n")[1]
+    assert f'metadata:\n  neko-plugin-cli-version: "{__version__}"\n' in frontmatter
+    assert stamped.replace(f'metadata:\n  neko-plugin-cli-version: "{__version__}"\n', "") == authored
+
+
+def test_stamp_joins_an_existing_frontmatter_metadata_map() -> None:
+    stamped = agent_kit._stamp_skill_entry("---\nname: x\nmetadata:\n  owner: y\n---\nbody\n")
+
+    assert stamped.count("metadata:") == 1
+    assert agent_kit.snapshot_cli_version(stamped) == agent_kit.CLI_VERSION
+
+
 def test_kit_root_prefers_authored_source_over_staged_copy() -> None:
     # A stale staged copy from a previous prepare must not shadow source edits.
     cli_root = Path(agent_kit.__file__).resolve().parents[1]
@@ -117,7 +138,9 @@ def test_kit_skips_caches_and_dot_files_and_reads_fresh(
     monkeypatch.setattr(agent_kit, "_kit_root", lambda: kit)
 
     assert agent_kit.skill_files() == {
-        agent_kit.SKILL_TARGET_DIR / "SKILL.md": "skill v1\n",
+        agent_kit.SKILL_TARGET_DIR / "SKILL.md": (
+            f'<!-- neko-plugin-cli-version: "{agent_kit.CLI_VERSION}" -->\nskill v1\n'
+        ),
         agent_kit.SKILL_TARGET_DIR / "references" / "topic.md": "reference v1\n",
     }
 

@@ -23,6 +23,8 @@ import re
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+from .. import __version__ as CLI_VERSION
+
 SKILL_NAME = "neko-plugin"
 SKILL_TARGET_DIR = Path(".agents") / "skills" / SKILL_NAME
 SKILL_ENTRY_NAME = "SKILL.md"
@@ -34,6 +36,14 @@ CLAUDE_TEMPLATE_NAME = "CLAUDE.md.tmpl"
 # editor swap files.
 SKILL_IGNORE_PATTERNS = (".*", "__pycache__", "*.pyc", "*.pyo")
 
+# Written into the snapshot's SKILL.md (Agent Skills ``metadata``) when it is
+# rendered, never into the authored file, so check can flag stale snapshots.
+SNAPSHOT_VERSION_KEY = "neko-plugin-cli-version"
+_SNAPSHOT_VERSION_RE = re.compile(
+    rf"^\s*(?:<!--\s*)?{SNAPSHOT_VERSION_KEY}:\s*\"?([^\"\s]+?)\"?\s*(?:-->)?\s*$",
+    re.MULTILINE,
+)
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)^---[ \t]*\r?$", re.DOTALL | re.MULTILINE)
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 _MISSING_HINT = (
     f"Source checkouts keep it under .agent/skills/{SKILL_NAME}; desktop builds "
@@ -101,6 +111,26 @@ def render_agents_md(
     )
 
 
+def _stamp_skill_entry(text: str) -> str:
+    stamp = f'{SNAPSHOT_VERSION_KEY}: "{CLI_VERSION}"'
+    frontmatter = _FRONTMATTER_RE.match(text)
+    if frontmatter is None:
+        return f"<!-- {stamp} -->\n{text}"
+    body = frontmatter.group(1)
+    metadata = re.search(r"^metadata:[ \t]*\r?\n", body, re.MULTILINE)
+    if metadata is not None:
+        insert_at = frontmatter.start(1) + metadata.end()
+        return f"{text[:insert_at]}  {stamp}\n{text[insert_at:]}"
+    insert_at = frontmatter.end(1)
+    return f"{text[:insert_at]}metadata:\n  {stamp}\n{text[insert_at:]}"
+
+
+def snapshot_cli_version(skill_entry: str) -> str | None:
+    """CLI version stamped into a snapshot's SKILL.md, or None if unstamped."""
+    match = _SNAPSHOT_VERSION_RE.search(skill_entry)
+    return match.group(1) if match else None
+
+
 def render_claude_md() -> str:
     return _read_guide(CLAUDE_TEMPLATE_NAME)
 
@@ -128,4 +158,6 @@ def skill_files() -> dict[Path, str]:
         if any(is_ignored_skill_part(part) for part in relative.parts):
             continue
         files[SKILL_TARGET_DIR / relative] = _read_text(path, _MISSING_HINT)
+    entry = SKILL_TARGET_DIR / SKILL_ENTRY_NAME
+    files[entry] = _stamp_skill_entry(files[entry])
     return files
