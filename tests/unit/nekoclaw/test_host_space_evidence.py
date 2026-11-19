@@ -604,6 +604,15 @@ def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
         "Python3.11",
         "修改config/app.yaml后要先跑tests/test_app.py",
     ]
+    # The end of a path with words of another script in it is no file of its own name: the path is
+    # looked at whole. A file named by itself next to Chinese still is one.
+    assert paths_named_in("看 notes/旧report.csv 和 data/新/app.py") == [
+        "notes/",
+        "data/",
+        "notes/旧report.csv",
+        "data/新/app.py",
+    ]
+    assert paths_named_in("先读report.csv再改") == ["report.csv"]
     assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
 
 
@@ -2683,6 +2692,39 @@ async def test_a_file_the_first_text_taken_along_found_gone_is_not_brought_back_
     said = entry.read_text(encoding="utf-8")
     assert "Videos may have no date." in said and "It reads config.toml first." in said
     assert app not in _rests_on(entry)[0]
+
+
+async def test_a_file_nothing_was_told_of_for_one_text_taken_along_speaks_again_once_the_next_finds_it(
+    space, root, workdir, monkeypatch
+):
+    app = _where(workdir / "src" / "app.py")
+    await space.touch_project("Budget app")
+    there = _commission(workdir, id="c0", project="Budget app")
+    # In the project: an entry with the first text, which expired; a guess with the second.
+    await space.submit(there, _lesson("Old entry", "Text A.", "verified", ["src/app.py"]))
+    (workdir / "src" / "app.py").unlink()
+    await space.check_evidence()
+    (workdir / "src" / "app.py").write_text("print('app')\n", encoding="utf-8")
+    await space.submit(there, _lesson("Other guess", "Text B.", "inferred", ["src/app.py"]))
+    # Where this commission was: the three texts, seen, resting on the file.
+    for text in ("Text A.", "Text B.", "Text C."):
+        assert (await space.submit(_commission(workdir), _lesson("Mixed", text, "inferred", ["src/app.py"]))).startswith(
+            "not in effect yet"
+        )
+    waiting = _memory(root) / "mixed.md"
+    waiting.write_text(
+        waiting.read_text(encoding="utf-8").replace("confidence: inferred", "confidence: observed"), encoding="utf-8"
+    )
+
+    # There as what waited is looked at; nothing told of it as the entry that expired is written with the
+    # first text; found again as the second goes into the guess.
+    looks = _told_in_turn(monkeypatch, app, ["as it is", None])
+
+    await space.refile_entries("c1", DEFAULT_PROJECT, "Budget app")
+
+    # The third text goes with the file as the last look found it: there. Seen, so in effect.
+    assert len(looks) >= 3
+    assert "mixed" in _in_effect(root, "Budget app") and "status" not in _head(_memory(root, "Budget app") / "mixed.md")
 
 
 async def test_an_entry_that_expired_goes_with_its_commission_and_gets_no_line(space, root, workdir):
@@ -4856,6 +4898,34 @@ async def test_a_note_whose_files_are_on_a_share_that_does_not_answer_is_kept_wi
     # Filed again once the share answers, the file is found and the note takes effect.
     reply = await space.submit(_commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py"]))
     assert reply == "kept in project _daily as entry-point.md"
+
+
+async def test_a_look_nobody_waits_for_any_more_asks_about_no_further_file(space, root, workdir, monkeypatch):
+    from nekoclaw.host import space as module
+
+    answered = _unanswered(monkeypatch, "evidence_of", lambda raw, *rest, **how: raw == ["src/app.py"])
+    blocked = module.evidence_of
+    asked: list[list[str]] = []
+
+    def recorded(raw: Any, *rest: Any, **how: Any) -> Any:
+        asked.append(list(raw))
+        return blocked(raw, *rest, **how)
+
+    monkeypatch.setattr(module, "evidence_of", recorded)
+    try:
+        reply = await asyncio.wait_for(
+            space.submit(
+                _commission(workdir), _lesson("Entry point", "The app starts in app.py.", "observed", ["src/app.py", "README.md"])
+            ),
+            30,
+        )
+        assert reply.startswith("not in effect yet")
+    finally:
+        answered.set()
+    await _until(lambda: not module._OUT)
+
+    # The first file answered once nobody waited; the second was not asked about after that.
+    assert ["src/app.py"] in asked and ["README.md"] not in asked
 
 
 async def test_a_review_whose_files_are_on_a_share_that_does_not_answer_keeps_its_entry_without_them(space, root, workdir, monkeypatch):

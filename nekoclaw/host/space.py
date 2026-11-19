@@ -860,8 +860,20 @@ def paths_named_in(text: Any) -> list[str]:
 
     # An address of the web is no file, whatever it ends in.
     said = _WEB_ADDRESS.sub(" ", str(text or ""))
+
+    def whole(run: re.Match[str]) -> bool:
+        # Not the end of a path with words of another script in it
+        # (``notes/旧report.csv``): what follows the last separator before
+        # it is not a file of its own name. That path is a word as white
+        # space and punctuation set it apart, and is looked at as such.
+        # It is when the words right before it follow a separator.
+        before = run.start()
+        while before > 0 and not said[before - 1].isascii() and not _WORD_BREAKS.match(said[before - 1]):
+            before -= 1
+        return before == run.start() or before == 0 or said[before - 1] not in "/\\"
+
     found: list[str] = []
-    for word in [*_PLAIN_PATH.findall(said), *_WORD_BREAKS.split(said)]:
+    for word in [*(run.group(0) for run in _PLAIN_PATH.finditer(said) if whole(run)), *_WORD_BREAKS.split(said)]:
         word = word.rstrip(".,;:!?…")
         if len(word) < 3 or word in found or _A_NUMBER.fullmatch(word):
             continue
@@ -1071,6 +1083,12 @@ async def _asked_off_the_loop(places: Iterable[str], look: Callable[[Callable[[I
 
     def at(now: Iterable[str]) -> None:
         with _ASKING:
+            if question.given_up:
+                # Nobody waits for it any more: the file it was at has
+                # answered by now, and nothing more is asked. What may be
+                # looked at could have changed since (the user may have
+                # taken back reading outside the working directories).
+                raise _NobodyWaits
             question.at = frozenset(now)
 
     try:
@@ -1086,6 +1104,10 @@ async def _asked_off_the_loop(places: Iterable[str], look: Callable[[Callable[[I
         # Also when whoever asked was stopped: the thread is still at it.
         _give_up(question)
         raise
+
+
+class _NobodyWaits(Exception):
+    """Ends a look for files that nobody waits for any more; see ``_asked_off_the_loop``."""
 
 
 def _not_looked_at(named: list[str], looked_at: int | None = None) -> list[tuple[str, str]]:
@@ -4050,7 +4072,7 @@ class TaskAgentSpace:
             # did not speak for it (nothing was told of it) speaks for
             # nothing and stays on record.
             rested = [item for item in rested if item not in gone]
-            untold = [item for item in rested if item in untold or item not in spoke]
+            untold = [item for item in rested if item not in spoke]
         self._discard_as_read(path, before)
         return list(dict.fromkeys(went))
 
