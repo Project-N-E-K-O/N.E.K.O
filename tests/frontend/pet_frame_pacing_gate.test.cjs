@@ -1349,7 +1349,7 @@ test('契约：Pixi743Ticker 复刻与 static/libs/pixi.min.js 的 Ticker 实现
     assert.ok(PIXI_MIN_SRC.includes('get maxFPS(){return this._minElapsedMS?Math.round(1e3/this._minElapsedMS):0}'));
 });
 
-test('frame-pacing.rafCapFps：仅 Pet + 刷新率已测出 + 配置 ≥ 刷新率时放宽到 max(配置, 刷新率×1.5)，其余原样', withMockTimers(() => {
+test('frame-pacing.rafCapFps：仅 Pet + 刷新率已测出 + 配置 ≥ 刷新率×0.9 时放宽到 max(配置, 刷新率×1.5)，其余原样', withMockTimers(() => {
     const sb = createSandbox({ pet: true, targetFrameRate: 60 });
     const pacing = sb.window.nekoFramePacing;
     assert.equal(pacing.rafCapFps(60), 60, '刷新率未测出：原样');
@@ -1360,7 +1360,11 @@ test('frame-pacing.rafCapFps：仅 Pet + 刷新率已测出 + 配置 ≥ 刷新�
     assert.equal(pacing.rafCapFps(), 90, '不传参数按 window.targetFrameRate');
     assert.equal(pacing.rafCapFps(75), 90, '高于刷新率 → 90');
     assert.equal(pacing.rafCapFps(240), 240, '配置本身已高于余量：原样（只放宽、不收紧）');
-    assert.equal(pacing.rafCapFps(59), 59, '低于刷新率：原样');
+    assert.equal(pacing.rafCapFps(59), 90, '略低于刷新率（≥ ×0.9，总闸留在 rAF）：同样放宽');
+    assert.equal(pacing.rafCapFps(54), 90, '恰好 ×0.9：放宽');
+    assert.equal(pacing.rafCapFps(53), 53, '明显低于刷新率（总闸切定时器）：原样');
+    assert.equal(pacing.activeTimerTickFps(53), 53, '两道判定同一阈值：原样的一侧正好是定时器驱动');
+    assert.equal(pacing.activeTimerTickFps(54), null, '放宽的一侧正好留在 rAF');
     assert.equal(pacing.rafCapFps(30), 30, '地板 30：原样');
     assert.equal(pacing.rafCapFps(0), 0, '0 = 不限帧：原样');
     sb.window.dispatchEvent({ type: 'electron-display-changed' });
@@ -1456,18 +1460,16 @@ test('刷新率被低估时（采样时 rAF 被降频），放宽后的上限仍
     }
 }));
 
-test('Live2D：配置低于刷新率 / 刷新率未知 / 非 Pet 时 maxFPS 照旧', withMockTimers(() => {
-    // 55 ≥ 60×0.9，留在 rAF；55 < 60，保持软件节流
-    const sb = createSandbox({ pet: true, targetFrameRate: 55 });
+test('Live2D：配置明显低于刷新率 / 刷新率未知 / 非 Pet 时 maxFPS 照旧', withMockTimers(() => {
+    // 45 < 60×0.9：活动态由总闸切定时器驱动；退出定时器时要恢复的 rAF 上限保持 45
+    const sb = createSandbox({ pet: true, targetFrameRate: 45 });
     sb.measureRefresh(60);
     const a = setupLive2D(sb);
     a.mgr._isDraggingModel = true;
     a.mgr.boostInteractiveFPS();
-    assert.ok(!a.mgr._idleTickMode, '留在 rAF');
-    assert.equal(a.app.ticker.maxFPS, 55);
-    assert.equal(a.shared.maxFPS, 55);
-    a.mgr._applyRafMaxFps(30);
-    assert.equal(a.app.ticker.maxFPS, 30, '地板 30 照旧');
+    assert.equal(a.mgr._idleTickMode, true, '定时器驱动');
+    assert.equal(a.mgr._idleTickSavedMaxFPS, 45, '待恢复的 rAF 上限照旧');
+    assert.equal(a.mgr._resolveRafCapFps(30), 30, '地板 30 照旧');
 
     const sb2 = createSandbox({ pet: true, targetFrameRate: 60 }); // 不测刷新率
     const b = setupLive2D(sb2);
@@ -1542,12 +1544,12 @@ test('MMD Pet：60@60Hz rAF 路径放宽节流；合成抖动时间戳下改前�
 }));
 
 test('MMD：配置低于刷新率时照旧节流；刷新率变化时 frameTime 跟着重判，targetFPS 保持配置值', withMockTimers(() => {
-    const sb = createSandbox({ pet: true, targetFrameRate: 55 });
+    const sb = createSandbox({ pet: true, targetFrameRate: 45 });
     sb.measureRefresh(60);
     const { core } = setupMMD(sb);
     core._refreshTargetFps();
-    assert.equal(core.targetFPS, 55);
-    assert.equal(core.frameTime, 1000 / 55);
+    assert.equal(core.targetFPS, 45);
+    assert.equal(core.frameTime, 1000 / 45);
     sb.window.targetFrameRate = 60;
     core._refreshTargetFps();
     assert.equal(core.targetFPS, 60);
@@ -1564,9 +1566,73 @@ test('VRM：rAF 上限与 Live2D / MMD 同一判定', withMockTimers(() => {
     assert.equal(mgr._resolveRafCapFps(60), 60, '刷新率未知：原样');
     sb.measureRefresh(60);
     assert.equal(mgr._resolveRafCapFps(60), 90);
-    assert.equal(mgr._resolveRafCapFps(55), 55);
+    assert.equal(mgr._resolveRafCapFps(45), 45);
     assert.equal(mgr._resolveRafCapFps(0), 0);
     const np = createSandbox({ pet: false, targetFrameRate: 60 });
     np.measureRefresh(60);
     assert.equal(setupVRM(np)._resolveRafCapFps(60), 60);
+}));
+
+test('刷新率被测高 1Hz（60Hz 屏测成 61）：配置 60 仍放宽，不落进「留在 rAF 但不放宽」的空档', withMockTimers((t) => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    sb.measureRefresh(61);
+    const pacing = sb.window.nekoFramePacing;
+    assert.equal(pacing.getDisplayRefreshHz(), 61);
+    assert.equal(pacing.activeTimerTickFps(60), null, '60 ≥ 61×0.9：留在 rAF');
+    assert.equal(pacing.rafCapFps(60), 92, '同时放宽到 round(61×1.5)');
+    const { mgr, app } = setupLive2D(sb);
+    mgr._isDraggingModel = true;
+    mgr.boostInteractiveFPS();
+    assert.ok(!mgr._idleTickMode);
+    assert.equal(app.ticker.maxFPS, 92);
+    const stamps = syntheticVsync({ hz: 60, jitterMs: 1, frames: 3600, seed: 11 });
+    const before = pixiSkipStats(60, stamps);
+    const after = pixiSkipStats(app.ticker.maxFPS, stamps);
+    const msg = `测成 61Hz、真实 60Hz ±1ms：不放宽跳帧 ${(100 * before.skipRate).toFixed(2)}%，放宽后 ${(100 * after.skipRate).toFixed(2)}%`;
+    (t && t.diagnostic ? t.diagnostic(msg) : console.log(msg));
+    assert.ok(before.skipped > 0);
+    assert.equal(after.skipped, 0);
+    for (const sbx of [sb]) {
+        const mmd = setupMMD(sbx).core;
+        mmd._refreshTargetFps();
+        assert.equal(mmd.frameTime, 1000 / 92, 'MMD 同一判定');
+        assert.equal(setupVRM(sbx)._resolveRafCapFps(60), 92, 'VRM 同一判定');
+    }
+}));
+
+test('frame-pacing：采样超时后按退避重试（每块屏最多 2 次），成功后放宽恢复', withMockTimers(() => {
+    const sb = createSandbox({ pet: true, targetFrameRate: 60 });
+    const pacing = sb.window.nekoFramePacing;
+    sb.measureRefresh(60);
+    assert.equal(pacing.rafCapFps(60), 90);
+    // 换屏后窗口被挡住：rAF 一帧都不来
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.tick(1500);
+    sb.tick(3000);
+    assert.equal(pacing.getDisplayRefreshHz(), null, '第一次超时');
+    sb.tick(5000);
+    sb.tick(3000);
+    assert.equal(pacing.getDisplayRefreshHz(), null, '第一次重试也超时');
+    // 第二次重试时 rAF 恢复
+    sb.tick(5000);
+    sb.pumpFrames(30, 60);
+    assert.equal(pacing.getDisplayRefreshHz(), 60, '重试成功');
+    assert.equal(pacing.rafCapFps(60), 90);
+
+    // 重试次数有上限：一直测不到时，两次重试后不再排定时器
+    // （rAF 不来时每一轮采样都在 rafQueue 里留一个请求，用它数轮次）
+    sb.rafQueue.splice(0);
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.tick(1500);
+    for (let i = 0; i < 3; i++) { sb.tick(3000); sb.tick(5000); }
+    assert.equal(sb.rafQueue.length, 3, '首测 + 2 次重试');
+    sb.tick(60000);
+    assert.equal(sb.rafQueue.length, 3, '超过重试上限后不再采样');
+    assert.equal(pacing.rafCapFps(60), 60, '测不到：保持配置上限');
+    // 再换一次屏：重试额度按屏重新计
+    sb.rafQueue.splice(0);
+    sb.window.dispatchEvent({ type: 'electron-display-changed' });
+    sb.tick(1500);
+    for (let i = 0; i < 3; i++) { sb.tick(3000); sb.tick(5000); }
+    assert.equal(sb.rafQueue.length, 3, '新屏同样首测 + 2 次重试');
 }));

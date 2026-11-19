@@ -379,7 +379,7 @@ class Live2DManager {
                 this._lastPIXIContext = { ...requestedInitContext };
                 if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
                     // 经归一化再写：已存的负数/非法配置不能直接进 PIXI maxFPS；
-                    // 再过一遍刷新率判定（配置 ≥ 刷新率时放宽软件上限，见 _resolveRafCapFps）
+                    // 再过一遍刷新率判定（配置不明显低于刷新率时放宽软件上限，见 _resolveRafCapFps）
                     this.pixi_app.ticker.maxFPS = this._resolveRafCapFps(this._resolveConfiguredTargetFps());
                 }
                 // 包装 ticker.stop/start：外部代码（app-character / live2d-model 等）直接
@@ -810,10 +810,10 @@ class Live2DManager {
         return Number.isFinite(fps) && fps > 0 ? fps : null;
     }
 
-    // rAF 驱动下实际交给 PIXI maxFPS 的上限：配置帧率 ≥ 实测显示器刷新率时放宽到 max(配置, 刷新率×1.5)，
+    // rAF 驱动下实际交给 PIXI maxFPS 的上限：配置帧率 ≥ 实测刷新率×0.9（即总闸让它留在 rAF）时放宽到 max(配置, 刷新率×1.5)，
     // 显示器本身就是上限。PIXI 7 Ticker 节流先把帧间隔截成整数 ms 再和 1000/maxFPS 比，
     // 60Hz 屏 + maxFPS=60 时 16.6ms 截成 16 < 16.667，整帧被跳、下一帧双倍 delta。
-    // 非 Pet / 刷新率未测出 / 换屏后未重测 / 配置低于刷新率：原样返回（由 frame-pacing.js 判定）。
+    // 非 Pet / 刷新率未测出 / 换屏后未重测 / 配置明显低于刷新率：原样返回（由 frame-pacing.js 判定）。
     _resolveRafCapFps(fps) {
         const requested = Number(fps);
         const pacing = window.nekoFramePacing;
