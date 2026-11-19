@@ -32,6 +32,7 @@ import pytest
 from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime.model import is_context_overflow, window_from_overflow
 from nekoclaw.runtime.protocol import ModelConfig
+from nekoclaw.runtime import snapshot as snapshots
 from nekoclaw.runtime.snapshot import (
     REASON_COMPACTED,
     REASON_MOVED,
@@ -119,15 +120,19 @@ def test_a_snapshot_is_read_back_as_it_was_written(tmp_path: Path) -> None:
     [
         "{not json",
         "[]",
-        json.dumps({"version": 2, "system": "s", "tools": []}),
-        json.dumps({"version": 1, "system": "", "tools": []}),
-        json.dumps({"version": 1, "system": "s", "tools": "read"}),
-        json.dumps({"version": 1, "system": "s", "tools": ["read"]}),
-        json.dumps({"version": 1, "system": "s", "tools": [{"name": "read", "description": "d"}]}),
-        json.dumps({"version": 1, "system": "s", "tools": [{"name": "", "description": "d", "parameters": {}}]}),
+        # Of another version. Version 1 named the language of the commission a
+        # session was opened for in its system prompt, and its report tool told
+        # the model to use the language of the user's request.
+        json.dumps({"version": snapshots._VERSION + 1, "system": "s", "tools": []}),
+        json.dumps({"version": 1, "system": "s", "tools": []}),
+        json.dumps({"version": snapshots._VERSION, "system": "", "tools": []}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": "read"}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": ["read"]}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": [{"name": "read", "description": "d"}]}),
+        json.dumps({"version": snapshots._VERSION, "system": "s", "tools": [{"name": "", "description": "d", "parameters": {}}]}),
         json.dumps(
             {
-                "version": 1,
+                "version": snapshots._VERSION,
                 "system": "s",
                 "tools": [{"name": "a", "description": "d", "parameters": {}}] * 2,
             }
@@ -152,15 +157,15 @@ async def test_a_session_keeps_what_it_was_opened_with_and_begins_its_requests_t
     await _ask(session, events, "First commission.")
     await session.close()
 
-    spec = make_spec(tmp_path, instructions="Space index: three entries by now.", reply_language="Japanese")
+    spec = make_spec(tmp_path, instructions="Space index: three entries by now.")
     saved = _saved(spec)
-    assert saved["version"] == 1 and saved["reason"] == REASON_OPENED
+    assert saved["version"] == snapshots._VERSION and saved["reason"] == REASON_OPENED
     assert saved["system"] == _system_of(first_llm.requests[0])
     assert "Space index: nothing yet." in saved["system"]
     assert [tool["name"] for tool in saved["tools"]] == _tool_names(first_llm.overrides[0])
 
-    # Opened for the next commission, with other instructions and another
-    # language by now: the system prompt and the tools are those of before.
+    # Opened for the next commission, with other instructions by now: the
+    # system prompt and the tools are those of before.
     second_llm = ScriptedLLM([[say("Done again."), finish()]])
     session, events = await open_session(spec, second_llm)
     try:

@@ -714,7 +714,6 @@ class TaskAgentSession(SessionInbox):
             tool_names=[tool.name for tool in self._executors],
             workdir=str(self._workdir),
             platform=self._platform,
-            reply_language=spec.reply_language,
             instructions=spec.instructions,
         )
         self._wire_tools = list(self._executors)
