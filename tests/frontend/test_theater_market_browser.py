@@ -340,7 +340,16 @@ def test_theater_invitation_keeps_an_existing_market_window_on_non_accept_outcom
 
 
 def _selector_api_stubs(context):
-    """Keep selector pages offline: empty library, no active session."""
+    """Keep selector pages offline: empty library, no active session; count focus requests."""
+    context.add_init_script("""
+        window.__focusCalls = 0;
+        const nativeFocus = window.focus.bind(window);
+        window.focus = () => { window.__focusCalls += 1; return nativeFocus(); };
+        window.__restoreRequests = 0;
+        window.addEventListener('message', event => {
+            if (event.data && event.data.type === 'neko:restore-window') window.__restoreRequests += 1;
+        });
+    """)
     context.route('**/api/theater-numeric/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
     context.route('**/api/theater-numeric/memory/stories', lambda route: route.fulfill(json={'ok': True, 'stories': []}))
     context.route('**/api/theater-numeric/session/active**', lambda route: route.fulfill(
@@ -377,6 +386,8 @@ def test_market_window_back_focuses_existing_selector_and_closes_itself(page, ru
     _click_and_expect_close(market, '#theater-market-back-link')
     assert not selector.is_closed()
     assert selector.url == running_server + '/theater'
+    assert selector.evaluate('window.__focusCalls') >= 1
+    selector.wait_for_function('() => window.__restoreRequests >= 1')
     assert len(page.context.pages) == 2  # host plus the one selector
 
 
@@ -392,7 +403,30 @@ def test_market_window_back_prefers_a_selector_opener(page, running_server):
     expect(market.get_by_role('link', name='返回选择剧本')).to_be_visible()
     _click_and_expect_close(market, '#theater-market-back-link')
     assert page.url == running_server + '/theater'
+    assert page.evaluate('window.__focusCalls') >= 1
+    page.wait_for_function('() => window.__restoreRequests >= 1')
     assert len(page.context.pages) == 1
+
+
+@pytest.mark.frontend
+def test_market_window_back_focuses_selector_registered_by_another_window(page, running_server):
+    """Invite accepted in a window that never opened the selector (e.g. /chat vs main page)."""
+    _selector_api_stubs(page.context)
+    page.goto(running_server + '/theater')
+    page.evaluate("window.name = 'neko_theater'")
+    page.reload()
+    expect(page.locator('[data-theater-selector-app]')).to_be_visible()
+    page.wait_for_function("() => !!localStorage.getItem('neko:named-window:neko_theater')")
+    other = page.context.new_page()
+    _host_with_window_registry(other, running_server)
+    with other.expect_popup() as opened_market:
+        other.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    _click_and_expect_close(market, '#theater-market-back-link')
+    page.wait_for_function('() => window.__focusCalls >= 1')
+    assert page.url == running_server + '/theater'
+    assert len(page.context.pages) == 2  # the selector and the other host window
 
 
 @pytest.mark.frontend

@@ -6,6 +6,10 @@
     var base = '/api/theater-market/launch';
     var MARKET_WINDOW_NAME = 'neko_theater_market';
     var SELECTOR_WINDOW_NAME = 'neko_theater';
+    var NAMED_WINDOW_KEY_PREFIX = 'neko:named-window:';
+    var NAMED_WINDOW_FOCUS_KEY_PREFIX = 'neko:named-window-focus:';
+    var NAMED_WINDOW_CHANNEL = 'neko:named-window';
+    var NAMED_WINDOW_TTL_MS = 5000;
     var connecting = false;
     var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('neko_page_channel') : null;
     function label(key) { return window.t ? window.t('theater.' + key) : key; }
@@ -102,7 +106,30 @@
             return false;
         }
     }
+    // Same shared named-window protocol as common_dialogs.js openOrFocusWindow: a selector
+    // opened by another window (e.g. main page while the invite came from /chat) is only
+    // reachable through its registry heartbeat and focus broadcast.
+    function requestRegisteredSelectorFocus() {
+        try {
+            var record = JSON.parse(window.localStorage.getItem(NAMED_WINDOW_KEY_PREFIX + SELECTOR_WINDOW_NAME) || 'null');
+            if (!record || !(Date.now() - Number(record.timestamp) < NAMED_WINDOW_TTL_MS)) return false;
+        } catch (_) {
+            return false;
+        }
+        var message = {type: 'neko:named-window-focus', windowName: SELECTOR_WINDOW_NAME, payload: null, timestamp: Date.now()};
+        try {
+            var namedChannel = new BroadcastChannel(NAMED_WINDOW_CHANNEL);
+            namedChannel.postMessage(message);
+            namedChannel.close();
+        } catch (_) {}
+        try { window.localStorage.setItem(NAMED_WINDOW_FOCUS_KEY_PREFIX + SELECTOR_WINDOW_NAME, JSON.stringify(message)); } catch (_) {}
+        return true;
+    }
     function closeMarketWindow() {
+        // If the window refuses to close, still leave the user on a working selector.
+        window.setTimeout(function () {
+            if (!window.closed) window.location.assign('/theater');
+        }, 1500);
         var host = window.nekoHost;
         if (!host || typeof host.closeWindow !== 'function') {
             window.close();
@@ -113,7 +140,9 @@
         }, function () { window.close(); });
     }
     function returnToSelector(event) {
-        if (window.name !== MARKET_WINDOW_NAME || !focusExistingSelector()) return;
+        if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        if (window.name !== MARKET_WINDOW_NAME) return;
+        if (!focusExistingSelector() && !requestRegisteredSelectorFocus()) return;
         event.preventDefault();
         closeMarketWindow();
     }
