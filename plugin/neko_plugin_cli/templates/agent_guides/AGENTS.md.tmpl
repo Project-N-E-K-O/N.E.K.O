@@ -84,7 +84,8 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
 - Periodic work: `@timer_interval(id=..., seconds=...)`, run in its own thread
   with a fresh loop per tick.
 - Entries time out after 10 s by default (raise `timeout=` for LLM calls);
-  calls to other plugins are capped at 60 s, with no cycle detection.
+  calls to other plugins are capped at 60 s, with no cycle detection
+  (`self.ctx.call_chain` shows who called you).
 - Reload starts a new process (memory is lost; persist with `data_path`). A
   crashed plugin is not restarted automatically.
 
