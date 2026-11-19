@@ -115,14 +115,19 @@ SESSION_KINDS: tuple[str, ...] = ("project", "single", "child", "fork")
 
 # "session": filed for a session that another session wrote to while no
 # commission was under way in it; what was written is what it is about.
-SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent", "session")
+# "ask": a copy of a session answers a question another session asked it
+# (``ask_session``); a commission under the one that asked.
+SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent", "session", "ask")
 ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 
 # "note": what a task agent wrote to another session. "done": the host
 # telling the sender that the turn its note began is over. (That no such
 # word came in time is told from the wake request that says so, with no
 # message of its own.)
-MESSAGE_KINDS: tuple[str, ...] = ("note", "done")
+# "ask": a question one session asked another (``ask_session``). Kept only to
+# count what a session may ask: it is never handed over, and is written as
+# delivered (a copy of the other session answers it).
+MESSAGE_KINDS: tuple[str, ...] = ("note", "done", "ask")
 MESSAGE_STATUSES: tuple[str, ...] = ("queued", "delivered", "void")
 # "message": a row of ``messages`` is to be handed over. "timer": a task
 # agent asked to be woken then. "notice_expiry": the sender of a note that
@@ -705,6 +710,23 @@ def body_hash(text: str) -> str:
     import hashlib
 
     return hashlib.sha256(" ".join(str(text).split()).encode("utf-8")).hexdigest()
+
+
+def _hour_used(conn: sqlite3.Connection, from_session: str, kinds: tuple[str, ...], now: float, limit: int) -> float | None:
+    """Return in how many seconds a session may write again, when it wrote ``limit`` of these kinds within the hour; else None.
+
+    What was written in the hour before ``now``, and, as a clock that was
+    set back by a little leaves it, in the hour after (see ``message_add``).
+    """
+    marks = ", ".join("?" for _ in kinds)
+    sent = conn.execute(
+        f"SELECT COUNT(*) AS n, MIN(created_at) AS first FROM messages "
+        f"WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ?",
+        (from_session, *kinds, now - 3600.0, now + 3600.0),
+    ).fetchone()
+    if sent is None or sent["n"] < limit:
+        return None
+    return min(3600.0, max(0.0, float(sent["first"]) + 3600.0 - now))
 
 
 def _dump(value: Any) -> str:
@@ -1915,13 +1937,10 @@ class Ledger:
                 # (Never longer than the whole of it: a note of a time to
                 # come is no further back than now.)
                 return None, "too_soon", min(limits.target_interval, limits.target_interval - (now - last["at"]))
-            sent = conn.execute(
-                "SELECT COUNT(*) AS n, MIN(created_at) AS first FROM messages "
-                "WHERE from_session = ? AND kind = 'note' AND created_at >= ? AND created_at <= ?",
-                (from_session, now - 3600.0, now + 3600.0),
-            ).fetchone()
-            if sent is not None and sent["n"] >= limits.per_hour:
-                return None, "too_many", min(3600.0, max(0.0, float(sent["first"]) + 3600.0 - now))
+            # (The questions it asked count as well: ``ask_add``.)
+            wait = _hour_used(conn, from_session, ("note", "ask"), now, limits.per_hour)
+            if wait is not None:
+                return None, "too_many", wait
             # The notes that wait, and not what else waits for the session
             # (word that a turn is over is a message too).
             waiting = conn.execute(
@@ -1999,6 +2018,57 @@ class Ledger:
 
         loop = asyncio.get_running_loop()
         return await self.run(work, written=on_record)
+
+    async def ask_add(
+        self,
+        *,
+        from_session: str,
+        from_commission: str,
+        to_session: str,
+        body: str,
+        per_hour: int,
+        asks_per_hour: int,
+    ) -> tuple[Message | None, str, float]:
+        """Put on record that a session asks another a question; ``(message, refusal, wait)``.
+
+        Counted from what is on record, as a note is (``message_add``):
+        ``refusal`` is ``"over"`` (the commission that asks is not under
+        way any more), ``"too_many"`` (the session wrote ``per_hour``
+        notes and questions within the hour), ``"too_many_asks"`` (it
+        asked ``asks_per_hour`` questions within the hour), or empty with
+        the message; ``wait`` says how many seconds are left. Written as
+        delivered: nothing hands it over, a copy of the other session
+        answers it (``TaskAgentManager._cb_session_ask``).
+        """
+
+        def work(conn: sqlite3.Connection) -> tuple[Message | None, str, float]:
+            now = self._clock()
+            writer = conn.execute("SELECT status FROM commissions WHERE id = ?", (from_commission,)).fetchone()
+            if writer is None or writer["status"] not in ("working", "waiting_user"):
+                return None, "over", 0.0
+            wait = _hour_used(conn, from_session, ("note", "ask"), now, per_hour)
+            if wait is not None:
+                return None, "too_many", wait
+            wait = _hour_used(conn, from_session, ("ask",), now, asks_per_hour)
+            if wait is not None:
+                return None, "too_many_asks", wait
+            message = self._message_insert(
+                conn,
+                {
+                    "from_session": from_session,
+                    "from_commission": from_commission,
+                    "to_session": to_session,
+                    "kind": "ask",
+                    "body": body,
+                    "status": "delivered",
+                    "created_at": now,
+                    "delivered_at": now,
+                },
+            )
+            self._event(conn, from_commission, "session_asked", {"message_id": message.id, "to_session": to_session})
+            return message, "", 0.0
+
+        return await self.run(work)
 
     async def message_get(self, message_id: int) -> Message | None:
         return await self.run(

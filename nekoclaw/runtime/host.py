@@ -128,7 +128,14 @@ The four ``subagent_*`` callbacks are offered together or not at all;
     Payload: ``{"delay_seconds": int, "note": str}``. Result: ``{"message":
     str}``: when the session is woken. The host starts it again then.
 
-Each of these four is offered when its callback is there.
+``session_ask``  (tool ``ask_session``)
+    Payload: ``{"session": str, "question": str}``. Result: ``{"message":
+    str}``: that the question is asked. A copy of the other session's
+    conversation answers it, and the answer comes back later, framed by
+    the host, as a message. A question that is not asked raises with the
+    reason.
+
+Each of these five is offered when its callback is there.
 
 ``budget``  (no tool)
     Asked before every model request of a run, between two steps: whether
@@ -162,6 +169,7 @@ SESSION_CALLS: tuple[str, ...] = (
     "session_read",
     "session_send",
     "wake_schedule",
+    "session_ask",
 )
 
 HOST_CALLS: tuple[str, ...] = (
@@ -208,6 +216,7 @@ class HostCallbacks:
     session_read: HostCallback | None = None
     session_send: HostCallback | None = None
     wake_schedule: HostCallback | None = None
+    session_ask: HostCallback | None = None
     budget: HostCallback | None = None
 
     @property

@@ -18,10 +18,10 @@ Each tool here is offered only when the host injected the callback it needs
 (see ``nekoclaw.runtime.host``). Result texts of the dsh tools follow dsh
 ``packages/interaction/tool-ask-user`` and ``packages/subagent``.
 
-The four tools that reach other sessions and set a wake (``list_sessions``,
-``read_session``, ``message_session``, ``schedule_wake``) hand back what the
-host worded: it is the host that knows the sessions, counts what may be
-sent, and frames what another session left.
+The five tools that reach other sessions and set a wake (``list_sessions``,
+``read_session``, ``message_session``, ``schedule_wake``, ``ask_session``)
+hand back what the host worded: it is the host that knows the sessions,
+counts what may be sent, and frames what another session left.
 """
 
 from __future__ import annotations
@@ -276,5 +276,16 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
             return said(await ask_host("wake_schedule", {"delay_seconds": delay, "note": note}, call), "message")
 
         tools.append(define_tool(schemas["schedule_wake"], schedule_wake))
+
+    if "session_ask" in capabilities:
+
+        async def ask_session(args: dict[str, Any], call: ToolCallInfo) -> str:
+            session = str(args["session"]).strip()
+            question = str(args["question"])
+            if not session or not question.strip():
+                raise ToolError("session and question must be non-empty strings")
+            return said(await ask_host("session_ask", {"session": session, "question": question}, call), "message")
+
+        tools.append(define_tool(schemas["ask_session"], ask_session))
 
     return tools

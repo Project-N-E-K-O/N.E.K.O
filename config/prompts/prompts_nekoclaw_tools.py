@@ -828,6 +828,35 @@ NEKOCLAW_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             'required': ['to', 'message'],
         },
     },
+    'ask_session': {
+        'name': 'ask_session',
+        'description': (
+            'Ask another session a question about its work, without disturbing it. A temporary copy '
+            'of its conversation answers from all it knows there; the copy reads files and changes '
+            'nothing, and the session itself is not told. Returns at once; the answer comes back '
+            'later as a message: go on with other work, or end your turn to wait for it. Only a '
+            'session with a commission under way can be asked; read_session reads what any session '
+            'left, and is cheaper: every question carries that session\'s whole conversation. Put all '
+            'you want to know in one question.'
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'session': {
+                    'type': 'string',
+                    'description': 'Name or id of the session, from list_sessions.',
+                },
+                'question': {
+                    'type': 'string',
+                    'description': (
+                        'Complete in itself: what you want to know, and why. The copy knows what '
+                        'that session knows, not what you know.'
+                    ),
+                },
+            },
+            'required': ['session', 'question'],
+        },
+    },
     'read_session': {
         'name': 'read_session',
         'description': (

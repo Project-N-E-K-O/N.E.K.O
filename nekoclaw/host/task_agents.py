@@ -135,9 +135,11 @@ _QUOTA_REASON = "the free daily quota of the agent model is used up"
 _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 _WOKEN_REASON = "it rested; what it waited for takes it up again"
 # Tools a task agent that another task agent started is not offered: it
-# starts none itself, writes to its own team only, and hands its result back
-# when its part is done instead of waiting to be woken.
-_CHILD_DISABLED_TOOLS = ("subagent", "message_session", "schedule_wake")
+# starts none itself, writes to its own team only (and asks other sessions
+# nothing), and hands its result back when its part is done instead of
+# waiting to be woken. The same holds for a copy of a session that answers a
+# question (``_cb_session_ask``), which is started under the one that asked.
+_CHILD_DISABLED_TOOLS = ("subagent", "message_session", "schedule_wake", "ask_session")
 # How long what is to be handed to a session waits for that session's
 # runtime to have closed it, when it is closing this moment.
 _CLOSING_RETRY_SECONDS = 1.0
@@ -1137,6 +1139,7 @@ class TaskAgentManager:
             session_read=self._cb_session_read,
             session_send=self._cb_session_send,
             wake_schedule=self._cb_wake_schedule,
+            session_ask=self._cb_session_ask,
             budget=self._cb_budget,
         )
 
@@ -1565,7 +1568,11 @@ class TaskAgentManager:
         from utils.tokenize import truncate_to_tokens
 
         whole = ""
-        if commission.parent_id is not None:
+        if commission.source == "ask":
+            # A question another session asked, framed: not cut either.
+            whole = await self._opening_of_question(commission)
+            parts = []
+        elif commission.parent_id is not None:
             whole = texts.TASK_AGENT_CHILD_COMMISSION_TEMPLATE.format(
                 description=commission.title, dispatch_text=commission.dispatch_text
             )
@@ -1613,6 +1620,33 @@ class TaskAgentManager:
             # the language of the commission it was first opened for.
             opening += "\n\n" + REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", language)
         return opening
+
+    async def _opening_of_question(self, commission: Commission) -> str:
+        """Return what opens the commission in which a copy of a session answers a question another session asked it.
+
+        The question is what the commission was filed with; who asked is
+        the session of the commission it was filed under.
+        """
+        import secrets
+
+        from config.nekoclaw_settings import SESSION_ASK_MAX_REQUESTS
+        from config.prompts import prompts_nekoclaw_sessions as words
+
+        asker = await self._ledger.get(commission.parent_id) if commission.parent_id else None
+        place = await self._ledger.get_session(asker.session_id) if asker is not None and asker.session_id else None
+        copy = await self._ledger.get_session(commission.session_id) if commission.session_id else None
+        lanlan = place.lanlan_name if place is not None else commission.lanlan_name
+        whose = (
+            words.SESSION_WHOSE if copy is None or copy.lanlan_name == lanlan else words.SESSION_WHOSE_OTHER
+        ).format(lanlan_name=lanlan)
+        nonce = secrets.token_hex(8)
+        intro = words.ASK_OPENING_FRAME.format(
+            asker=place.name if place is not None else commission.parent_id,
+            whose=whose,
+            requests=SESSION_ASK_MAX_REQUESTS,
+            nonce=nonce,
+        )
+        return words.frame(intro, commission.dispatch_text, nonce)
 
     async def _opening_of_notes(self, commission: Commission) -> str:
         """Return what opens a commission that was filed for notes from other sessions: what it is, and the notes, framed.
@@ -2031,7 +2065,9 @@ class TaskAgentManager:
             # what wake requests brought; nor is it for the message that
             # says once more what the commission is, to a session that was
             # at another one since or holds nothing of it: nobody spoke now.
-            said_first = opens and not opened and commission.source != "session"
+            # (A question another session asked, which a copy answers, is
+            # what a model wrote.)
+            said_first = opens and not opened and commission.source not in ("session", "ask")
             nobody = not said_first and all(isinstance(piece, _Handed) for piece in session.carried)
             await self._send_text(runtime, session, "prompt", text, opening=opens, wakes=riding, human=not nobody)
             session.ready = True
@@ -2102,8 +2138,9 @@ class TaskAgentManager:
         written by one session at a time. Its token for the gateway
         calls nothing either (``_start``).
         """
-        from config.nekoclaw_settings import TASK_AGENT_FORK_WITHHELD_TOOLS
+        from config.nekoclaw_settings import SESSION_ASK_MAX_REQUESTS, TASK_AGENT_FORK_WITHHELD_TOOLS
         from nekoclaw.runtime import TaskAgentSpec
+        from nekoclaw.runtime.protocol import RuntimeLimits
 
         image_retention: dict[str, int] = {}
         image_pools: dict[str, str] = {}
@@ -2120,6 +2157,8 @@ class TaskAgentManager:
         withheld = set(_CHILD_DISABLED_TOOLS) if commission.parent_id is not None else set()
         if kept.kind == "fork":
             withheld.update(TASK_AGENT_FORK_WITHHELD_TOOLS)
+        # A copy that answers a question makes no more requests than this.
+        limits = RuntimeLimits(max_turns=SESSION_ASK_MAX_REQUESTS) if commission.source == "ask" else RuntimeLimits()
         return TaskAgentSpec(
             session_id=kept.id,
             workdir=workdir,
@@ -2132,6 +2171,7 @@ class TaskAgentManager:
             image_retention=image_retention,
             image_pools=image_pools,
             gateway=gateway,
+            limits=limits,
         )
 
     async def _leave_cleared(self, session: _Session) -> None:
@@ -3987,11 +4027,19 @@ class TaskAgentManager:
         # the host says whose it is, and frames it so that nothing in it
         # reads as words of the host or of the user.
         nonce = secrets.token_hex(8)
-        message = words.frame(
-            words.CHILD_RESULT_FRAME.format(name=commission.name or commission.id, status=status, nonce=nonce),
-            truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.CHILD_RESULT_NOTHING,
-            nonce,
-        )
+        if commission.source == "ask":
+            # The answer of a copy of another session: named by that session.
+            message = words.frame(
+                words.ASK_ANSWER_FRAME.format(name=await self._asked_name(commission), status=status, nonce=nonce),
+                truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.ASK_ANSWER_NOTHING,
+                nonce,
+            )
+        else:
+            message = words.frame(
+                words.CHILD_RESULT_FRAME.format(name=commission.name or commission.id, status=status, nonce=nonce),
+                truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.CHILD_RESULT_NOTHING,
+                nonce,
+            )
         parent = self._sessions.get(parent_id)
         if parent is None:
             await self._wake_closed_parent(parent_id, message)
@@ -5802,6 +5850,112 @@ class TaskAgentManager:
         elif asked > delay:
             said += words.WAKE_SET_CAPPED.format(days=round(settings.WAKE_MAX_DELAY_SECONDS / 86400))
         return {"message": said}
+
+    async def _cb_session_ask(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Have a copy of another session answer a question; the answer comes back as a message.
+
+        The other session must have a commission under way (one at work,
+        resting, or waiting for its user): one that is done is read with
+        ``read_session``. A copy of what was said in it is made
+        (``fork_session``), and a commission is filed in the copy under
+        the one that asks, the way a task agent another one starts is:
+        it starts now or not at all, what it uses counts with the one that
+        asks, it is stopped with it, and what it answers comes back to it
+        framed (``_tell_parent``). The copy has none of the tools that
+        write, run commands or call capabilities, nor those that reach
+        other sessions, and makes no more than ``SESSION_ASK_MAX_REQUESTS``
+        requests. What a session may ask is counted with the notes it
+        writes, and on its own (``Ledger.ask_add``).
+        """
+        import math
+
+        from config import nekoclaw_settings as settings
+        from config.prompts import prompts_nekoclaw_sessions as words
+        from nekoclaw.host.task_brain import _texts
+        from utils.tokenize import acount_tokens
+
+        refusals = words.ASK_REFUSALS
+        caller = await self._caller(session_id)
+        if caller.parent_id is not None:
+            raise RuntimeError(refusals["from_child"])
+        available, _reason = await self.available()
+        if not available:
+            raise RuntimeError(refusals["switched_off"])
+        target = await self._session_named(str(payload.get("session") or ""))
+        if target.id == caller.session_id:
+            raise RuntimeError(refusals["self"])
+        if target.kind not in _ADDRESSED_KINDS:
+            raise RuntimeError(refusals["child"].format(name=target.name))
+        if target.status == "cleared":
+            raise RuntimeError(refusals["cleared"].format(name=target.name))
+        if target.runtime == RUNTIME_DSH:
+            raise RuntimeError(refusals["dsh"].format(name=target.name))
+        if not await self._ledger.select(session_id=target.id, statuses=_STILL_WORKING, limit=1):
+            raise RuntimeError(refusals["not_at_work"].format(name=target.name))
+        question = str(payload.get("question") or "").strip()
+        tokens = await acount_tokens(question)
+        if tokens > settings.SESSION_MESSAGE_MAX_TOKENS:
+            raise RuntimeError(refusals["too_long"].format(tokens=tokens, limit=settings.SESSION_MESSAGE_MAX_TOKENS))
+        if getattr(self._waker, "stopping", False):
+            # Everything is being stopped, the caller with it (see
+            # ``_cb_session_send``): nothing is started for it now.
+            raise RuntimeError(refusals["over"])
+        asked, refusal, wait = await self._ledger.ask_add(
+            from_session=str(caller.session_id),
+            from_commission=caller.id,
+            to_session=target.id,
+            body=question,
+            per_hour=settings.SESSION_MESSAGES_PER_HOUR,
+            asks_per_hour=settings.SESSION_ASKS_PER_HOUR,
+        )
+        if asked is None:
+            limit = settings.SESSION_ASKS_PER_HOUR if refusal == "too_many_asks" else settings.SESSION_MESSAGES_PER_HOUR
+            raise RuntimeError(refusals[refusal].format(name=target.name, wait=math.ceil(wait), limit=limit))
+        try:
+            copy = await self.fork_session(target.id)
+        except ForkRefused as exc:
+            raise RuntimeError(refusals["no_copy"].format(name=target.name, reason=exc)) from exc
+        _lead, members = await self._team(caller.id)
+        taken = {member.name for member in members}
+        number = 1
+        while f"ask-{number}" in taken:
+            number += 1
+        child, _created = await self._ledger.create(
+            lanlan_name=caller.lanlan_name,
+            title=_texts(words.SESSION_ASK_TITLE, caller.lang).format(name=target.name),
+            dispatch_text=question,
+            user_text="",
+            source="ask",
+            route="task_agent",
+            parent_id=caller.id,
+            name=f"ask-{number}",
+            project=copy.project,
+            workdir=copy.workdir,
+            conversation_id=caller.conversation_id,
+            lang=caller.lang,
+        )
+        # Worked on in the copy: given it before it is handed over.
+        child = await self._ledger.update(child.id, session_id=copy.id)
+        # As for a task agent it starts (``_cb_subagent_start``): one that
+        # was stopped meanwhile starts nothing.
+        current = await self._ledger.get(caller.id)
+        if current is None or current.status not in ("working", "waiting_user"):
+            await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+            raise RuntimeError(refusals["over"])
+        await self._ledger.append_event(
+            caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
+        )
+        if not await self.submit(child, wait=False):
+            raise RuntimeError(refusals["no_place"])
+        return {"message": words.ASK_QUEUED.format(name=target.name)}
+
+    async def _asked_name(self, commission: Commission) -> str:
+        """Return the name of the session a copy answers for (``_cb_session_ask``)."""
+        copy = await self._ledger.get_session(commission.session_id) if commission.session_id else None
+        source = await self._ledger.get_session(copy.forked_from) if copy is not None and copy.forked_from else None
+        if source is not None:
+            return source.name
+        return copy.name if copy is not None else commission.name or commission.id
 
     async def _rule_on_other_session(
         self, commission_id: str, path: str, *, writes: bool, names_only: bool = False, inside: bool = False

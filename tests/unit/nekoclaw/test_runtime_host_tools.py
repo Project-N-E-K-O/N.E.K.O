@@ -359,11 +359,13 @@ async def test_the_session_tools_hand_on_what_the_model_asked_and_say_what_the_h
     read: list = []
     sent: list = []
     woken: list = []
+    asked: list = []
     host = HostCallbacks(
         session_list=_recording({"text": "Sessions: none"}, listed),
         session_read=_recording({"text": "its record"}, read),
         session_send=_recording({"message": 'Queued for "site".'}, sent),
         wake_schedule=_recording({"message": "A wake is set."}, woken),
+        session_ask=_recording({"message": 'Asked "site".'}, asked),
     )
     events, _llm = await _run(
         tmp_path,
@@ -374,6 +376,7 @@ async def test_the_session_tools_hand_on_what_the_model_asked_and_say_what_the_h
             call("read_session", {"session": "site"}, "c3", index=2),
             call("message_session", {"to": "site", "message": "where is the build?", "notify_when_done": True}, "c4", index=3),
             call("schedule_wake", {"delay_seconds": 900, "note": " is it up "}, "c5", index=4),
+            call("ask_session", {"session": " site ", "question": "which port does it use?"}, "c6", index=5),
             finish("tool_calls"),
         ],
     )
@@ -385,6 +388,7 @@ async def test_the_session_tools_hand_on_what_the_model_asked_and_say_what_the_h
     ]
     assert sent == [("s1", {"to": "site", "message": "where is the build?", "notify_when_done": True})]
     assert woken == [("s1", {"delay_seconds": 900, "note": "is it up"})]
+    assert asked == [("s1", {"session": "site", "question": "which port does it use?"})]
     # By the call each one ends: those that run side by side end in the order they finish.
     ends = {end["tool_call_id"]: end for end in events.of("tool_end")}
     assert {key: end["text"] for key, end in ends.items()} == {
@@ -393,8 +397,9 @@ async def test_the_session_tools_hand_on_what_the_model_asked_and_say_what_the_h
         "c3": "its record",
         "c4": 'Queued for "site".',
         "c5": "A wake is set.",
+        "c6": 'Asked "site".',
     }
-    assert len(events.of("tool_end")) == 5 and not any(end["is_error"] for end in ends.values())
+    assert len(events.of("tool_end")) == 6 and not any(end["is_error"] for end in ends.values())
 
 
 async def test_the_session_tools_refuse_what_makes_no_sense_before_the_host_is_asked(tmp_path: Path) -> None:
@@ -404,6 +409,7 @@ async def test_the_session_tools_refuse_what_makes_no_sense_before_the_host_is_a
         session_read=_recording({"text": "x"}, asked),
         session_send=_recording({"message": "x"}, asked),
         wake_schedule=_recording({"message": "x"}, asked),
+        session_ask=_recording({"message": "x"}, asked),
     )
     events, _llm = await _run(
         tmp_path,
@@ -415,30 +421,37 @@ async def test_the_session_tools_refuse_what_makes_no_sense_before_the_host_is_a
             call("message_session", {"to": "site", "message": "   "}, "c4", index=3),
             call("schedule_wake", {"delay_seconds": 0, "note": "x"}, "c5", index=4),
             call("schedule_wake", {"delay_seconds": 900, "note": "  "}, "c6", index=5),
+            call("ask_session", {"session": "  ", "question": "which port?"}, "c7", index=6),
+            call("ask_session", {"session": "site", "question": " "}, "c8", index=7),
             finish("tool_calls"),
         ],
     )
 
     assert asked == []
     ends = {end["tool_call_id"]: end for end in events.of("tool_end")}
-    assert all(end["is_error"] for end in ends.values()) and len(events.of("tool_end")) == 6 == len(ends)
+    assert all(end["is_error"] for end in ends.values()) and len(events.of("tool_end")) == 8 == len(ends)
     assert "page must be 1 or more" in ends["c1"]["text"]
     assert "needs query" in ends["c2"]["text"]
     assert "at must be a position" in ends["c3"]["text"]
     assert "non-empty" in ends["c4"]["text"]
     assert "positive number of seconds" in ends["c5"]["text"]
     assert "note must say" in ends["c6"]["text"]
+    assert "non-empty" in ends["c7"]["text"] and "non-empty" in ends["c8"]["text"]
 
 
 async def test_each_session_tool_is_offered_with_its_callback_and_withheld_when_disabled(tmp_path: Path) -> None:
     llm = ScriptedLLM([[say("done"), finish()]])
-    host = HostCallbacks(session_list=_recording({"text": "x"}), wake_schedule=_recording({"message": "x"}))
+    host = HostCallbacks(
+        session_list=_recording({"text": "x"}),
+        wake_schedule=_recording({"message": "x"}),
+        session_ask=_recording({"message": "x"}),
+    )
     session, events = await open_session(make_spec(tmp_path, disabled_tools=["schedule_wake"]), llm, host)
     try:
         offered = set(events.of("started")[0]["tools"])
     finally:
         await session.close()
-    assert "list_sessions" in offered
+    assert {"list_sessions", "ask_session"} <= offered
     assert not offered & {"read_session", "message_session", "schedule_wake"}
 
 

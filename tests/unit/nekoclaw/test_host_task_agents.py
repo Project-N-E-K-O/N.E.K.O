@@ -980,7 +980,7 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     await wait_status(host, second.id, "working")
     told = await host.task_agents.tell(second.id, "and skip the drafts")
     await host.task_agents._tell_parent(
-        SimpleNamespace(parent_id=second.id, name="agent-9", id="child"), "completed", "drafts listed"
+        SimpleNamespace(parent_id=second.id, name="agent-9", id="child", source="task_agent"), "completed", "drafts listed"
     )
     release.set()
 
@@ -2219,7 +2219,7 @@ async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hos
     assert sub.lanlan_name == "Lan"
     # The child got its part as its work and may not start task agents itself.
     child_spec = next(spec for spec in specs if not spec.top_level)
-    assert sorted(child_spec.disabled_tools) == ["message_session", "schedule_wake", "subagent"]
+    assert sorted(child_spec.disabled_tools) == ["ask_session", "message_session", "schedule_wake", "subagent"]
     assert child.requests[0][-1]["content"].startswith("Your part: count the files\nCount the files in the folder.")
     assert "another task agent" in child.requests[0][0]["content"]
     assert "You work for Lan" not in child.requests[0][0]["content"]
