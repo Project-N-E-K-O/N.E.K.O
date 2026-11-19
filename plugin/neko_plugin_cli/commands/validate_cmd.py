@@ -1368,3 +1368,180 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
     shown = ", ".join(str(path.relative_to(plugin_dir)) for path in links[:5])
     suffix = f" (+{len(links) - 5} more)" if len(links) > 5 else ""
     issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
+
+
+# --- Advisory checks -------------------------------------------------------
+#
+# ``neko-plugin check`` (without --release) reports these as "advisory"
+# issues: they print but never change the exit code, and lint, precheck,
+# ``check --release`` and the Market workflows do not run them. Each matcher
+# covers only the plain spelling plugin code actually uses; aliases and
+# dynamically built calls are deliberately out of scope.
+
+_ADVISORY_SKIPPED_TOP_DIRS = frozenset({"tests"})
+# Top-level host packages a plugin process can import because the N.E.K.O
+# root is on sys.path. ``plugin.*`` is handled separately.
+_HOST_INTERNAL_ROOTS = frozenset({"utils", "config", "main_logic", "main_routers", "memory"})
+# Public SDK facades (see plugin/sdk/__init__.py); ``plugin.plugins.*`` is
+# plugin code, not the host.
+_PUBLIC_PLUGIN_MODULE_PREFIXES = ("plugin.sdk.plugin", "plugin.sdk.adapter", "plugin.plugins")
+_PICKLE_LOAD_FUNCS = frozenset({"load", "loads", "Unpickler"})
+_REQUESTS_BLOCKING_FUNCS = frozenset({"get", "post", "put", "patch", "delete", "head", "options", "request"})
+_SUBPROCESS_BLOCKING_FUNCS = frozenset({"run", "call", "check_call", "check_output"})
+_NESTED_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _tri(english: str, chinese: str, japanese: str) -> str:
+    return f"{english} / {chinese} / {japanese}"
+
+
+def collect_advisory_issues(plugin_dir: Path) -> list[tuple[str, str]]:
+    """Non-blocking hints for AGENTS.md hard constraints 2, 4, 7 and 10.
+
+    Files that do not parse are skipped: validate_plugin_dir already reports
+    them as errors.
+    """
+    issues: list[tuple[str, str]] = []
+    for path in _plugin_python_files(plugin_dir):
+        relative = path.relative_to(plugin_dir)
+        if relative.parts[0] in _ADVISORY_SKIPPED_TOP_DIRS:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
+        for lineno, message in sorted(_advisory_findings(tree), key=lambda item: item[0]):
+            issues.append(("advisory", f"{relative}:{lineno}: {message}"))
+    return issues
+
+
+def _advisory_findings(tree: ast.Module) -> list[tuple[int, str]]:
+    findings: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            message = _advisory_call_message(node)
+            if message:
+                findings.append((node.lineno, message))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = _host_internal_import(node)
+            if module:
+                findings.append((node.lineno, _advisory_internal_import_message(module)))
+        elif isinstance(node, ast.AsyncFunctionDef):
+            for call in _calls_in_own_scope(node):
+                blocking = _blocking_call_name(call)
+                if blocking:
+                    findings.append((call.lineno, _advisory_blocking_message(blocking, node.name)))
+    return findings
+
+
+def _advisory_call_message(node: ast.Call) -> str:
+    func = node.func
+    if isinstance(func, ast.Name):
+        if func.id == "print":
+            return _tri(
+                "print() never reaches the plugin log; use self.logger (AGENTS.md constraint 4)",
+                "print() 不会进入插件日志，请用 self.logger（AGENTS.md 硬约束 4）",
+                "print() はプラグインログに残りません。self.logger を使ってください（AGENTS.md 制約 4）",
+            )
+        if func.id in {"eval", "exec"}:
+            return _tri(
+                f"{func.id}() runs arbitrary code (AGENTS.md constraint 10)",
+                f"{func.id}() 会执行任意代码（AGENTS.md 硬约束 10）",
+                f"{func.id}() は任意のコードを実行します（AGENTS.md 制約 10）",
+            )
+    if (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "pickle"
+        and func.attr in _PICKLE_LOAD_FUNCS
+    ):
+        return _tri(
+            f"pickle.{func.attr} can run code from the data it reads (AGENTS.md constraint 10)",
+            f"pickle.{func.attr} 可能执行所读数据中的代码（AGENTS.md 硬约束 10）",
+            f"pickle.{func.attr} は読み込むデータ内のコードを実行し得ます（AGENTS.md 制約 10）",
+        )
+    for keyword in node.keywords:
+        if not isinstance(keyword.value, ast.Constant):
+            continue
+        if keyword.arg == "shell" and keyword.value.value is True:
+            return _tri(
+                "shell=True passes the command through a shell; pass an argument list (AGENTS.md constraint 10)",
+                "shell=True 会经由 shell 执行命令，请改传参数列表（AGENTS.md 硬约束 10）",
+                "shell=True はシェル経由でコマンドを実行します。引数リストを渡してください（AGENTS.md 制約 10）",
+            )
+        if keyword.arg == "verify" and keyword.value.value is False:
+            return _tri(
+                "verify=False disables TLS certificate checks (AGENTS.md constraint 10)",
+                "verify=False 会关闭 TLS 证书校验（AGENTS.md 硬约束 10）",
+                "verify=False は TLS 証明書の検証を無効にします（AGENTS.md 制約 10）",
+            )
+    return ""
+
+
+def _host_internal_import(node: ast.Import | ast.ImportFrom) -> str:
+    if isinstance(node, ast.ImportFrom):
+        if node.level or not node.module:
+            return ""
+        modules = [node.module]
+    else:
+        modules = [alias.name for alias in node.names]
+    for module in modules:
+        root = module.split(".", 1)[0]
+        if root in _HOST_INTERNAL_ROOTS:
+            return module
+        if root != "plugin" or module in {"plugin", "plugin.sdk"}:
+            continue
+        if not any(
+            module == prefix or module.startswith(prefix + ".")
+            for prefix in _PUBLIC_PLUGIN_MODULE_PREFIXES
+        ):
+            return module
+    return ""
+
+
+def _advisory_internal_import_message(module: str) -> str:
+    return _tri(
+        f"'{module}' is a N.E.K.O host internal; use plugin.sdk.plugin or plugin.sdk.adapter (AGENTS.md constraint 2)",
+        f"'{module}' 是 N.E.K.O 宿主内部模块，请改用 plugin.sdk.plugin 或 plugin.sdk.adapter（AGENTS.md 硬约束 2）",
+        f"'{module}' は N.E.K.O ホストの内部モジュールです。plugin.sdk.plugin または plugin.sdk.adapter を使ってください（AGENTS.md 制約 2）",
+    )
+
+
+def _calls_in_own_scope(function: ast.AsyncFunctionDef) -> list[ast.Call]:
+    """Calls that run on the event loop: nested defs, lambdas and classes are
+    skipped (``asyncio.to_thread(lambda: ...)`` is the recommended fix)."""
+    calls: list[ast.Call] = []
+    pending: list[ast.AST] = [*function.body]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _NESTED_SCOPE_NODES):
+            continue
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    return calls
+
+
+def _blocking_call_name(call: ast.Call) -> str:
+    func = call.func
+    if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+        return ""
+    owner, name = func.value.id, func.attr
+    if (
+        (owner == "time" and name == "sleep")
+        or (owner == "requests" and name in _REQUESTS_BLOCKING_FUNCS)
+        or (owner == "subprocess" and name in _SUBPROCESS_BLOCKING_FUNCS)
+    ):
+        return f"{owner}.{name}"
+    return ""
+
+
+def _advisory_blocking_message(call_name: str, function_name: str) -> str:
+    return _tri(
+        f"{call_name}() blocks the event loop in async def {function_name}; "
+        "use an async library or await asyncio.to_thread(...) (AGENTS.md constraint 7)",
+        f"{call_name}() 会在 async def {function_name} 中阻塞事件循环；"
+        "请用异步库或 await asyncio.to_thread(...)（AGENTS.md 硬约束 7）",
+        f"{call_name}() は async def {function_name} 内でイベントループをブロックします。"
+        "非同期ライブラリか await asyncio.to_thread(...) を使ってください（AGENTS.md 制約 7）",
+    )
