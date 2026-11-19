@@ -7,7 +7,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - S: default choice for ordinary plugin work.
 - A: use when the capability is required.
 - B: advanced surface for complex plugins; keep usage narrow and documented.
-- C: compatibility/legacy surface; avoid for new work unless preserving behavior.
+- C: compatibility/legacy surface, or public but currently without effect; avoid for new work unless preserving behavior.
 - D: internal read-only platform surface; do not import from plugin workspaces.
 
 ## Calling Conventions
@@ -113,11 +113,11 @@ Source: [base.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sd
 - S `@neko_plugin`: Marks a class as a plugin class. Use the CLI scaffold's pattern; do not hand-set plugin metadata attrs.
 - S `@plugin_entry(id=None, name=None, description="", input_schema=None, params=None, kind="action", auto_start=False, persist=None, model_validate=True, timeout=None, llm_result_fields=None, llm_result_model=None, fields=None, metadata=None, quick_action=False, output_schema=None, strict_output=False)`: Registers a user/agent-callable entry. Runtime-triggered handlers must be `async def`; use `tr()` for names/descriptions. A Pydantic return annotation declares the return contract and is validated at runtime (`strict_output=True` makes violations fail the call); an explicit `output_schema` is published only.
 - A `@lifecycle(id="startup|shutdown|reload|freeze|unfreeze|config_change", name=None, description="", metadata=None)`: Registers lifecycle handlers. Use for startup/shutdown/config behavior, not for user-callable work.
-- D `@message(id, name=None, description="", input_schema=None, source=None, metadata=None)`: Registers a message handler, but the host does not dispatch host messages to it today; it runs only if another plugin calls `<plugin_id>:message:<id>` with `call_event`. Do not build features on it.
+- C `@message(id, name=None, description="", input_schema=None, source=None, metadata=None)`: Registers a message handler, but the host does not dispatch host messages to it today; it runs only if another plugin calls `<plugin_id>:message:<id>` with `call_event`. Do not build features on it.
 - S `@timer_interval(id, seconds, name=None, description="", auto_start=True, metadata=None)`: Periodic work (`runtime-model.md`). Bound your own network calls: ticks have no timeout.
 - B `@custom_event(event_type, id, name=None, description="", input_schema=None, kind="custom", auto_start=False, trigger_method="message", metadata=None)`: Registers a non-standard event type. Use only when built-in entry/message/timer/lifecycle categories do not fit.
 - B `@on_event(event_type, id=None, name=None, description="", input_schema=None, kind="action", auto_start=False, persist=None, mode=None, seconds=None, extra=None, metadata=None)`: Low-level event registration. Prefer specialized decorators unless you need exact event metadata control.
-- D `@hook(...)`, `@before_entry(...)`, `@after_entry(...)`, `@around_entry(...)`, `@replace_entry(...)`: Record hook metadata only. No executor runs them today (`collect_entries` ignores `wrap_with_hooks`), so they have no effect; put the logic in the entry or a helper it calls.
+- C `@hook(...)`, `@before_entry(...)`, `@after_entry(...)`, `@around_entry(...)`, `@replace_entry(...)`: Record hook metadata only. No executor runs them today (`collect_entries` ignores `wrap_with_hooks`), so they have no effect; put the logic in the entry or a helper it calls.
 - A `@quick_action(icon=None, priority=0)`: Marks an entry for quick-action presentation. Prefer explicit UX intent rather than blanket use.
 -  `plugin.entry(...)`: Namespace alias for `plugin_entry`. Use when it improves readability in classes with many SDK decorators.
 - A `plugin.lifecycle(...)`, `plugin.message(...)`, `plugin.timer(...)`: Namespace aliases for lifecycle/message/timer decorators. Equivalent to top-level decorators.
@@ -218,7 +218,7 @@ Source: [base.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sd
 - B `iter_handlers()`, `collect_entries()`: Returns router entry handlers. Mostly host/test facing.
 - B `get_plugin_attr(name, default=None)`, `has_plugin_attr(name)`, `get_dependency(name, default=None)`: Accesses main-plugin attributes from a router. Prefer explicit constructor dependencies when possible.
 - B `report_status(status)`: Delegates status reporting to the main plugin. Use for router-local status updates.
-- D `on_mount()`, `on_unmount()`: Never called by the host today; do not put setup or cleanup there.
+- C `on_mount()`, `on_unmount()`: Never called by the host today; do not put setup or cleanup there.
 - C `add_entry(...)`, `remove_entry(...)`, `list_entries()`: Async, return `Result`; entries added this way are missing from the host's static scan (timeouts, entry list). Use `@plugin_entry` on the router instead.
 - B `RouteHandler`, `PluginRouterError`, `EntryConflictError`: Router typing/error surfaces. Use for precise router tests and dynamic entry errors.
 

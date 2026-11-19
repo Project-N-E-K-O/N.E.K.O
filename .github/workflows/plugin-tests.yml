@@ -1,6 +1,7 @@
 name: Plugin Tests
 
-# The plugin-subsystem pytest gate. Scoped to plugin/** on purpose: plugin PRs
+# The plugin-subsystem pytest gate. Scoped to plugin/** (plus the neko-plugin
+# skill, whose text guards live in plugin/tests) on purpose: plugin PRs
 # historically shipped with no test gate at all, which let silent drift
 # accumulate (e.g. #1464's ocr_reader → ocr_window_scanner extraction broke
 # monkeypatch namespaces in 4 tests, #1480's install_source field broke the

@@ -62,8 +62,8 @@ Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
   `[plugin.store] enabled = true`, yet `set` still returns `Ok`.
 - `push_message` targets a character only via `target_lanlan=`: keep
   `_ctx["lanlan_name"]` from the entry (timers and threads have no `_ctx`).
-- Hook decorators (`before_entry`, `hook`, ...) and `@message` handlers are
-  never run by the host today: do not rely on them.
+- Hook decorators (`before_entry`, `hook`, ...) never run today; `@message`
+  handlers get no host messages (only another plugin's `call_event`).
 - Routers: list them in `__routers__` and `include_router` them in `__init__`;
   `@ui.context` works only on the main class. Hosted TSX: write
   `props.api.call(...)`, and use `useConfirm()`, not a `confirm` prop.

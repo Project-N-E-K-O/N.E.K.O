@@ -191,12 +191,14 @@ class SearchPlugin(NekoPluginBase):
 - **Timeouts**: the decorator `timeout`, the caller's timeout, and the run or
   RPC deadline all apply; the smallest wins. Details and the `<= 0` rules in
   `runtime-model.md`.
-- **Argument binding**: without `params=Model`, a missing required argument
-  raises `TypeError`, and so does an unexpected one unless the handler takes
-  `**_` (which only absorbs extras; give optional arguments defaults). With
-  `params=Model`, the model validates first. Keys outside the model are
-  dropped unless the model keeps extras (`extra="allow"`) or the handler takes
-  `**kwargs`, which receives them unvalidated: read input from the model.
+- **Argument binding**: without a params model (`params=Model`, or a single
+  parameter annotated with a Pydantic model, which is inferred as one), a
+  missing required argument raises `TypeError`, and so does an unexpected one
+  unless the handler takes `**_` (which only absorbs extras; give optional
+  arguments defaults). With a params model, the model validates first and
+  ignores unknown keys by default (`extra="allow"` keeps them). The handler
+  still receives raw, unvalidated values for any other parameter it names, and
+  all of them with `**kwargs`: read input from the model.
 - **Registration**: methods whose name starts with `_` are never entries.
   Entry, timer, and lifecycle ids share one namespace; a duplicate id silently
   replaces the earlier handler.
@@ -258,7 +260,9 @@ class MyPlugin(NekoPluginBase):
 - List every router class in `__routers__`. `include_router` alone runs the
   entries, but the host's static scan reads `__routers__`: without it router
   entries fall back to a 30 s timeout, are missing from the entry list, and
-  Hosted UI cannot call them.
+  Hosted UI cannot call them. The scan reads entry ids from the class and does
+  not apply a router `prefix`, so routers listed this way should not use
+  `prefix`: write the namespace into the entry ids instead.
 - Until `include_router` binds it, a router's `ctx`, `config`, and `store` are
   `None`. A router has no `push_message`, `data_path`, or `i18n`; use
   `self.main_plugin`.
@@ -266,8 +270,8 @@ class MyPlugin(NekoPluginBase):
   entries.
 - Ids: an id that does not already start with the router's `prefix` gets it.
   Two decorated entries with one id in a router raise `EntryConflictError`.
-  Across the class and routers, a `@plugin_entry` wins over a timer or
-  lifecycle handler with the same id; among the same kind the main class wins,
+  Across the class and routers, a `@plugin_entry` wins over any other handler
+  (timer, lifecycle, ...) with the same id; otherwise the main class wins,
   then the later router.
   Router names are not checked for duplicates.
 - `on_mount`/`on_unmount` are never called, and entries added at runtime with
