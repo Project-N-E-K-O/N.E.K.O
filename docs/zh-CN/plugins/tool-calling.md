@@ -279,6 +279,10 @@ async def unregister_on_shutdown():
   前抛 `EntryConflictError`）。原来注册时的参数都要重新传一遍，尤其是 `role`
   和 `reply_tail`：默认值是 `role=None`（对所有角色可见）和 `reply_tail=False`。
 
+无论哪种做法，注册只会落到注册到达时已经存在会话管理器的角色上。如果还没有
+匹配的角色（还没有加载任何角色，或 `role` 指定的角色不可用），这次注册不会被
+记录，之后角色出现时工具也不会自动出现：等角色可用后再恢复。
+
 运行在插件进程之外的原始 HTTP 集成需要自己应对：
 
 - **集成比 main_server 长寿**（更常见）：外部进程需要监听 main_server
