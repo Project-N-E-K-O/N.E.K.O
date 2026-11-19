@@ -27,7 +27,15 @@ import pytest
 from nekoclaw.host.decision import TIER_CONSOLIDATE
 from nekoclaw.host.ledger import Ledger
 from nekoclaw.host.paths import HostPaths
-from nekoclaw.host.space import ENTRY_ACTIVE, ENTRY_EXPIRED, ENTRY_PENDING, TaskAgentSpace
+from nekoclaw.host.space import (
+    ENTRY_ACTIVE,
+    ENTRY_EXPIRED,
+    ENTRY_PENDING,
+    TaskAgentSpace,
+    _LineToPut,
+    _NotAsWritten,
+    _text_mark,
+)
 from nekoclaw.host.space_keeper import SpaceKeeper, _consolidate_messages
 
 DAY = 86400.0
@@ -1507,7 +1515,10 @@ async def test_a_merged_guess_dated_in_the_same_round_still_takes_effect_later(w
     )
     await world.tidy()
     monkeypatch.undo()
-    assert "2027-01-14" in (world.memory() / f"{first}.md").read_text(encoding="utf-8")
+    dated = (world.memory() / f"{first}.md").read_text(encoding="utf-8")
+    assert "2027-01-14" in dated
+    assert (await world.entry(first)).status == ENTRY_PENDING
+    assert world.space._unsettled == {(None, first): _text_mark(dated)}
     world.llm.answer = {"operations": []}
 
     await world.tidy()
@@ -1675,8 +1686,8 @@ async def test_a_merged_guess_whose_first_settling_failed_is_settled_by_a_later_
 
 async def test_a_line_left_to_be_added_is_added_only_for_an_entry_in_effect(world):
     waiting = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
-    world.space._relines[(None, waiting)] = None
-    world.space._relines[(None, "gone")] = None
+    world.space._relines[(None, waiting)] = _LineToPut(missing=True)
+    world.space._relines[(None, "gone")] = _LineToPut(missing=True)
 
     await world.space.settle_tidied(None)
 
@@ -1715,3 +1726,229 @@ async def test_a_line_added_later_has_the_title_tidying_gave_meanwhile(world, mo
     index = await world.space.read_index(None)
     assert f"[Make needs the root in src](memory/{first}.md)" in index
     assert f"[Make needs the root](memory/{first}.md)" not in index
+
+
+def _fails_once(monkeypatch: Any, name: str) -> list[bool]:
+    """Have the first call of a method of the space fail as a file held by another program would; returns whether it did."""
+    method = getattr(TaskAgentSpace, name)
+    failed: list[bool] = []
+
+    def once(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if not failed:
+            failed.append(True)
+            raise OSError("held by another program")
+        return method(self, *args, **kwargs)
+
+    monkeypatch.setattr(TaskAgentSpace, name, once)
+    return failed
+
+
+async def test_a_date_whose_line_failed_is_put_right_after_a_title_was_given_too(world, monkeypatch):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Server mirror", "The mirror is at mirror.local.")
+    failed = _fails_once(monkeypatch, "_index_reline")
+    world.answer(
+        lambda shown: [
+            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"},
+            {"op": "retitle", "entry": shown["Server down"], "apart_from": shown["Server mirror"], "title": "Server down staging"},
+        ]
+    )
+    await world.tidy()
+    assert failed
+    assert f"[Server down staging](memory/{one}.md) — The staging server was down yesterday." in await world.space.read_index(None)
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    assert f"- [Server down staging](memory/{one}.md) — The staging server was down 2027-01-14." in await world.space.read_index(None)
+
+
+async def test_two_dates_whose_first_line_failed_are_both_put_into_it(world, monkeypatch):
+    one = await world.active("Server down", "The server was down yesterday and back today.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    failed = _fails_once(monkeypatch, "_index_reline")
+    world.answer(
+        lambda shown: [
+            {"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"},
+            {"op": "date", "entry": shown["Server down"], "old": "today", "new": "2027-01-15"},
+        ]
+    )
+    await world.tidy()
+    assert failed
+    assert (await world.entry(one)).description == "The server was down 2027-01-14 and back 2027-01-15."
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    assert f"- [Server down](memory/{one}.md) — The server was down 2027-01-14 and back 2027-01-15." in await world.space.read_index(
+        None
+    )
+
+
+async def _retitle_left_in_the_line(world: Any, monkeypatch: Any) -> str:
+    """A title put into the line of an entry that could not be written, and could not be taken out of the line again."""
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    edit_as_shown = TaskAgentSpace._edit_as_shown
+
+    def held(self: Any, path: Path, *args: Any) -> Any:
+        if path.stem == one:
+            raise OSError("held by another program")
+        return edit_as_shown(self, path, *args)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_as_shown", held)
+    failed = _fails_once(monkeypatch, "_index_reline")
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
+    )
+    await world.tidy()
+    monkeypatch.undo()
+    assert failed
+    assert f"[Tests in parallel](memory/{one}.md)" in await world.space.read_index(None)
+    world.llm.answer = {"operations": []}
+    return one
+
+
+async def test_a_title_left_in_a_line_is_taken_out_by_a_later_round(world, monkeypatch):
+    one = await _retitle_left_in_the_line(world, monkeypatch)
+
+    await world.tidy()
+
+    index = await world.space.read_index(None)
+    assert f"[Tests](memory/{one}.md)" in index and "Tests in parallel" not in index
+
+
+async def test_a_title_left_in_a_line_stays_once_the_user_gave_the_entry_that_title(world, monkeypatch):
+    one = await _retitle_left_in_the_line(world, monkeypatch)
+    path = world.memory() / f"{one}.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("name: Tests\n", "name: Tests in parallel\n"), encoding="utf-8")
+    assert (await world.entry(one)).title == "Tests in parallel"
+
+    await world.tidy()
+
+    assert f"[Tests in parallel](memory/{one}.md)" in await world.space.read_index(None)
+
+
+async def test_a_title_put_back_is_the_line_before_it_was_written_though_it_was_written_twice(world, monkeypatch):
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    edit_as_shown, put_text = TaskAgentSpace._edit_as_shown, TaskAgentSpace._put_text
+    again: list[bool] = []
+
+    def held(self: Any, path: Path, *args: Any) -> Any:
+        if path.stem == one:
+            raise OSError("held by another program")
+        return edit_as_shown(self, path, *args)
+
+    def saved_right_after(path: Path, text: str) -> bool:
+        seen = put_text(path, text)
+        if path.name == "MEMORY.md" and "Tests in parallel" in text and not again:
+            # Something else saved it right after: it is written again.
+            again.append(True)
+            raise _NotAsWritten("saved right after")
+        return seen
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_as_shown", held)
+    monkeypatch.setattr(TaskAgentSpace, "_put_text", staticmethod(saved_right_after))
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
+    )
+
+    await world.tidy()
+
+    assert again
+    index = await world.space.read_index(None)
+    assert f"[Tests](memory/{one}.md)" in index and "Tests in parallel" not in index
+
+
+async def test_an_entry_kept_from_a_merge_gets_no_line_the_user_took_out(world, monkeypatch):
+    one = await world.active("Build with make", "Run make in the root.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    index_path = world.memory().parent / "MEMORY.md"
+    text = index_path.read_text(encoding="utf-8")
+    index_path.write_text("\n".join(item for item in text.split("\n") if f"memory/{other}.md" not in item), encoding="utf-8")
+    target = world.memory() / f"{one}.md"
+    index_remove = TaskAgentSpace._index_remove
+    saved: list[bool] = []
+
+    def saved_meanwhile(self: Any, index: Path, line_of: str) -> None:
+        index_remove(self, index, line_of)
+        if line_of == f"memory/{other}.md":
+            saved.append(True)
+            target.write_text(target.read_text(encoding="utf-8").split("## ")[0].rstrip() + "\n\nSaved by hand.\n", encoding="utf-8")
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_remove", saved_meanwhile)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+
+    await world.tidy()
+
+    assert saved
+    assert (world.memory() / f"{other}.md").exists()
+    assert f"memory/{other}.md" not in await world.space.read_index(None)
+
+
+async def test_a_date_is_not_put_inside_a_longer_word_of_another_alphabet(world):
+    # "Вчера" stands in neither: at the end of one word, at the start of another.
+    one = await world.active("Миграция", "Миграция завершилась позавчера, отчёт вчерашний.")
+    await world.active("Зеркало", "Зеркало на mirror.local.")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Миграция"], "old": "вчера", "new": "2027-01-14"}])
+
+    await world.tidy()
+
+    assert "Миграция завершилась позавчера, отчёт вчерашний." in (world.memory() / f"{one}.md").read_text(encoding="utf-8")
+
+
+async def test_a_date_is_put_for_a_word_of_another_alphabet(world):
+    one = await world.active("Миграция", "Миграция завершилась вчера.")
+    await world.active("Зеркало", "Зеркало на mirror.local.")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Миграция"], "old": "вчера", "new": "2027-01-14"}])
+
+    await world.tidy()
+
+    assert "Миграция завершилась 2027-01-14." in (world.memory() / f"{one}.md").read_text(encoding="utf-8")
+
+
+def _without_line(world: Any, entry_id: str) -> None:
+    """Take the line of an entry out of the index, as the user may."""
+    index = world.memory().parent / "MEMORY.md"
+    text = index.read_text(encoding="utf-8")
+    index.write_text("\n".join(item for item in text.split("\n") if f"memory/{entry_id}.md" not in item), encoding="utf-8")
+
+
+async def test_an_entry_saved_as_it_was_merged_away_gets_no_line_the_user_took_out(world, monkeypatch):
+    await world.active("Build with make", "Run make in the root.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    _without_line(world, other)
+    source = world.memory() / f"{other}.md"
+    discard_as_read = TaskAgentSpace._discard_as_read
+    saved: list[bool] = []
+
+    def saved_meanwhile(self: Any, path: Path, before: Any) -> bool:
+        if path == source:
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+        return discard_as_read(self, path, before)
+
+    monkeypatch.setattr(TaskAgentSpace, "_discard_as_read", saved_meanwhile)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+
+    await world.tidy()
+
+    assert saved and source.exists()
+    assert f"memory/{other}.md" not in await world.space.read_index(None)
+
+
+async def test_a_date_whose_line_failed_adds_no_line_the_user_took_out_since(world, monkeypatch):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    failed = _fails_once(monkeypatch, "_index_reline")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
+    await world.tidy()
+    assert failed and world.space._relines
+    _without_line(world, one)
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    assert f"memory/{one}.md" not in await world.space.read_index(None)
+    assert world.space._relines == {}

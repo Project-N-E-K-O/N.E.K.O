@@ -1901,13 +1901,57 @@ def _added_to(name: str, title: str, own: str) -> bool:
 def _as_words(words: str) -> re.Pattern[str]:
     """Return a pattern that finds ``words`` where they stand as words of their own.
 
-    Not inside a longer run of Latin letters and digits ("today" in
-    "todayTotal"). Text that puts no spaces between words (Chinese,
+    Not inside a longer run of letters and digits of a script that puts
+    spaces between words ("today" in "todayTotal", "вчера" in
+    "позавчера"). Text that puts no spaces between words (Chinese,
     Japanese) is matched where it stands.
     """
-    before = r"(?<![A-Za-z0-9_])" if words[:1].isascii() and words[:1].isalnum() else ""
-    after = r"(?![A-Za-z0-9_])" if words[-1:].isascii() and words[-1:].isalnum() else ""
+    from nekoclaw.host.selection import _PAIRED_RANGES
+
+    letter = rf"[^\W{_PAIRED_RANGES}]"
+    before = rf"(?<!{letter})" if _spaced_letter(words[:1]) else ""
+    after = rf"(?!{letter})" if _spaced_letter(words[-1:]) else ""
     return re.compile(before + re.escape(words) + after)
+
+
+@dataclass
+class _LineToPut:
+    """What tidying could not write into the line of an entry in its index; see ``TaskAgentSpace.settle_tidied``."""
+
+    # It has no line, and is to be given one.
+    missing: bool = False
+    # Descriptions the host wrote into its line, which the entry no longer
+    # says: the line is to say what it says now.
+    described: set[str] = field(default_factory=set)
+    # Titles tidying put into its line and could not take out again, each
+    # with what the line called it before and what the entry was called.
+    titled: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+
+def _link_title(line: str) -> str | None:
+    """Return what a line of an index calls the entry it links, or None for a line with no link."""
+    link = line.find("](")
+    opening = line.rfind("[", 0, link)
+    return line[opening + 1 : link] if link >= 0 and opening >= 0 else None
+
+
+def _line_put_right(line: str, target: str, title: str, described: str, put: _LineToPut) -> str:
+    """Return a line of an index that links ``target`` as it is to be by ``put``, for an entry of ``title`` and ``described``.
+
+    Only what the host wrote is changed: a description the user wrote, or a
+    title the user gave, stays.
+    """
+    shown = _link_title(line)
+    if shown is None:
+        return line
+    if any(line == _index_line(shown, target, item) for item in put.described):
+        line = _index_line(shown, target, described)
+    back = put.titled.get(shown)
+    if back is not None and back[1] == title:
+        # Put in by tidying, and the entry is still called what it was.
+        link = line.find("](")
+        line = line[: line.rfind("[", 0, link) + 1] + back[0] + line[link:]
+    return line
 
 
 def _a_relative_time(words: str) -> bool:
@@ -1970,10 +2014,9 @@ class TaskAgentSpace:
         # restart such an entry waits like any other.
         self._unsettled: dict[tuple[str | None, str], str] = {}
         # Lines of an index that tidying changed an entry for and could not
-        # write, each as the line it was then and the line it is to be, or
-        # None for a missing one, made from the entry as it is when it is
-        # written; put right by a later round (``settle_tidied``).
-        self._relines: dict[tuple[str | None, str], tuple[str, str] | None] = {}
+        # write; put right by a later round, by what the entry is then
+        # (``settle_tidied``).
+        self._relines: dict[tuple[str | None, str], _LineToPut] = {}
 
     # -- plumbing ---------------------------------------------------------
 
@@ -2397,7 +2440,6 @@ class TaskAgentSpace:
         swapped: list[tuple[str, str]] = []
 
         def change(text: str) -> str:
-            swapped.clear()
             lines = text.split("\n") if text else []
             for number, item in enumerate(lines):
                 if _points_at(item, marks):
@@ -2407,7 +2449,11 @@ class TaskAgentSpace:
                         lines[number] = _index_line(title, target, description)
                     else:
                         lines[number] = item[: opening + 1] + plain + item[link:]
-                    swapped.append((item, lines[number]))
+                    # Tried again when something else was saved right after
+                    # it was written, the line it finds may be the one it
+                    # wrote: what it was before is the line it replaced.
+                    if item != lines[number] or not swapped:
+                        swapped[:] = [(item, lines[number])]
                     return "\n".join(lines)
             return text
 
@@ -5189,7 +5235,7 @@ class TaskAgentSpace:
             except _LineNotAdded as exc:
                 into = exc.entry
                 logger.warning("an entry tidying merged into could not be given its line in the index")
-                self._relines[(project, target.id)] = None
+                self._line_to_put(project, target.id).missing = True
         # Its texts are in the other entry: it goes, unless the user saved it
         # since it was read. Its line first: should the file stay (held by
         # another program), it is an entry whose texts are in the other one,
@@ -5219,13 +5265,13 @@ class TaskAgentSpace:
             if as_merged() is None:
                 # Saved as the line was taken out: looked at again right
                 # before what holds the texts goes, and it stays with its line.
-                if source.status == ENTRY_ACTIVE:
-                    self._index_add(index, line or _index_line(source.title, line_of, source.description), line_of)
+                if line is not None:
+                    self._index_add(index, line, line_of)
                 raise _NotMade(f"{target.id} was saved as {source.id} was merged into it; {source.id} stays")
-            if not self._discard_as_read(source_path, before) and source.status == ENTRY_ACTIVE:
+            if not self._discard_as_read(source_path, before) and line is not None:
                 # Saved by the user as its line was taken out: it stays, as
-                # what they saved, and in effect it has its line.
-                self._index_add(index, line or _index_line(source.title, line_of, source.description), line_of)
+                # what they saved, with the line it had.
+                self._index_add(index, line, line_of)
         else:
             logger.warning("an entry tidying merged into another was saved meanwhile; it stays as it is")
         if pending:
@@ -5256,11 +5302,11 @@ class TaskAgentSpace:
 
         def work(allowed: bool) -> int:
             directory = self._paths().memory_dir(project)
-            for (layer, entry_id), swap in list(self._relines.items()):
+            for (layer, entry_id), put in list(self._relines.items()):
                 if layer != project:
                     continue
                 try:
-                    self._put_line_right(project, entry_id, swap)
+                    self._put_line_right(project, entry_id, put)
                 except OSError:
                     logger.warning("a line of the index tidying changed could not be written just now", exc_info=True)
                     continue
@@ -5294,19 +5340,18 @@ class TaskAgentSpace:
 
         return await self._write_judged(work)
 
-    def _put_line_right(self, project: str | None, entry_id: str, swap: tuple[str, str] | None) -> None:
-        """Write a line of an index that tidying could not; see ``settle_tidied``. Raises OSError when it cannot be yet.
+    def _line_to_put(self, project: str | None, entry_id: str) -> _LineToPut:
+        """Return what is left to write into the line of an entry, to be added to; see ``settle_tidied``."""
+        return self._relines.setdefault((project, entry_id), _LineToPut())
 
-        A line that was there is replaced where it is still what it was. A
-        missing one is added while the entry is in effect and none points
-        at it, by what the entry is called and says now: tidying may have
-        given it another title since.
+    def _put_line_right(self, project: str | None, entry_id: str, put: _LineToPut) -> None:
+        """Write into the line of an entry what tidying could not; see ``settle_tidied``. Raises OSError when it cannot be yet.
+
+        By what the entry is called and says now, while it is in effect:
+        tidying or the user may have changed it since. What the user wrote
+        into the line stays (``_line_put_right``); a missing line is added.
         """
         paths = self._paths()
-        index = paths.index(project)
-        if swap is not None:
-            self._index_reline(index, *swap)
-            return
         path = paths.memory_dir(project) / f"{entry_id}.md"
         text = self._read_text(path)
         if text is None:
@@ -5314,9 +5359,23 @@ class TaskAgentSpace:
                 return
             raise OSError(f"{entry_id} cannot be read just now")
         document = _parse_document(text)
-        if _status_of(document) == ENTRY_ACTIVE:
-            target = f"{paths.MEMORY_DIR}/{entry_id}.md"
-            self._index_add(index, _index_line(document.get("name") or entry_id, target, document.get("description")), target)
+        if _status_of(document) != ENTRY_ACTIVE:
+            return
+        title, described = document.get("name") or entry_id, document.get("description")
+        target = f"{paths.MEMORY_DIR}/{entry_id}.md"
+        marks = _index_marks(target)
+
+        def change(index_text: str) -> str:
+            lines = index_text.split("\n") if index_text else []
+            for number, item in enumerate(lines):
+                if _points_at(item, marks):
+                    lines[number] = _line_put_right(item, target, title, described, put)
+                    return "\n".join(lines)
+            if put.missing:
+                return _lines_as_text(_with_line_first(lines, _index_line(title, target, described)))
+            return index_text
+
+        self._edit_text(paths.index(project), change)
 
     def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> bool:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.
@@ -5358,7 +5417,7 @@ class TaskAgentSpace:
         _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
         if unlisted is not None:
             logger.warning("an entry that took effect by tidying could not be given its line in the index")
-            self._relines[(project, entry.id)] = None
+            self._line_to_put(project, entry.id).missing = True
         return True
 
     def _tidy_count_in(
@@ -5523,7 +5582,10 @@ class TaskAgentSpace:
                     self._index_reline(index, now, was)
                 except OSError:
                     logger.warning("the line of an entry that kept its title could not be put back", exc_info=True)
-                    self._relines[(project, entry.id)] = (now, was)
+                    self._line_to_put(project, entry.id).titled[_link_title(now) or name] = (
+                        _link_title(was) or entry.title,
+                        entry.title,
+                    )
             raise
         return "made", {entry.id: written}
 
@@ -5604,7 +5666,7 @@ class TaskAgentSpace:
                 self._index_reline(paths.index(project), was, now)
             except OSError:
                 logger.warning("the line of an entry whose date was put could not be changed", exc_info=True)
-                self._relines[(project, entry.id)] = (was, now)
+                self._line_to_put(project, entry.id).described.add(described)
         return "made", {entry.id: written}
 
     # -- for the console: rules and indexes -------------------------------
