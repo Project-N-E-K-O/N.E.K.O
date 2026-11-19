@@ -215,6 +215,13 @@ def generate_repo_support_files(
         target_dir=target_dir,
         repo_root=repo_root,
     )
+    # Rendered before any write: a missing agent kit raises here instead of
+    # leaving the other support files half-written.
+    agent_kit_files: dict[Path, str] = {}
+    if spec.create_agent_kit:
+        agent_kit_files[Path("AGENTS.md")] = _render_agents_md(spec, layout)
+        agent_kit_files[Path("CLAUDE.md")] = agent_kit.render_claude_md()
+        agent_kit_files.update(agent_kit.skill_files())
     created: list[Path] = []
 
     if spec.create_readme:
@@ -281,6 +288,13 @@ def generate_repo_support_files(
             created=created,
             overwrite=overwrite,
         )
+
+    # Per file, like the other support files: an existing skill snapshot only
+    # gets its missing files unless overwrite is set.
+    for relative, content in agent_kit_files.items():
+        path = target_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_support_file(path, content, created=created, overwrite=overwrite)
 
     return created
 

@@ -15,6 +15,7 @@ from plugin.neko_plugin_cli.commands._resolve import parse_github_repository_rem
 from plugin.neko_plugin_cli.commands.validate_cmd import validate_plugin_dir
 from plugin.neko_plugin_cli.core.toml_utils import load_toml
 from plugin.neko_plugin_cli.paths import CliDefaults
+from plugin.neko_plugin_cli.templates import agent_kit
 from plugin.neko_plugin_cli.templates.generator import (
     PluginSpec,
     generate_plugin,
@@ -1814,6 +1815,51 @@ def test_setup_repo_generates_support_templates_for_explicit_plugin_path(
     assert '"nekoPlugin.repoRoot":' in settings
     assert '"cwd": "${config:nekoPlugin.repoRoot}"' in tasks
     assert "${workspaceFolder}" in tasks
+
+
+def test_setup_repo_adds_agent_kit_and_preserves_existing_files_unless_overwrite(
+    tmp_path: Path,
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "setup_agents")
+    setup_args = [
+        "setup-repo",
+        str(plugin_dir),
+        "--no-readme",
+        "--no-tests",
+        "--no-gitignore",
+        "--no-vscode",
+    ]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    agents_md = plugin_dir / "AGENTS.md"
+    skill_dir = plugin_dir / agent_kit.SKILL_TARGET_DIR
+    skill_entry = skill_dir / "SKILL.md"
+    reference = skill_dir / "references" / "runtime-model.md"
+    snapshot = agent_kit.skill_files()
+    # Same renderer as init, so the explicit-path commands are included.
+    assert "neko-plugin lint ." in agents_md.read_text(encoding="utf-8")
+    assert "neko-plugin precheck ." in agents_md.read_text(encoding="utf-8")
+    assert (plugin_dir / "CLAUDE.md").read_text(encoding="utf-8") == agent_kit.render_claude_md()
+    assert all(
+        (plugin_dir / relative).read_text(encoding="utf-8") == content
+        for relative, content in snapshot.items()
+    )
+
+    agents_md.write_text("# custom guide\n", encoding="utf-8")
+    skill_entry.write_text("# custom skill\n", encoding="utf-8")
+    reference.unlink()
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert agents_md.read_text(encoding="utf-8") == "# custom guide\n"
+    assert skill_entry.read_text(encoding="utf-8") == "# custom skill\n"
+    assert reference.read_text(encoding="utf-8") == snapshot[
+        agent_kit.SKILL_TARGET_DIR / "references" / "runtime-model.md"
+    ]
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "neko-plugin lint ." in agents_md.read_text(encoding="utf-8")
+    assert skill_entry.read_text(encoding="utf-8") == snapshot[
+        agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    ]
 
 
 def test_setup_repo_upgrade_github_actions_adds_only_managed_action_files(
