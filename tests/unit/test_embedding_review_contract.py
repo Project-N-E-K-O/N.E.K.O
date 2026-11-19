@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 
 from memory import embeddings
 from memory._embeddings import spec
+from memory._embeddings.resources import _change_stamp
 from memory.embedding_worker import EmbeddingWarmupWorker, BATCH_SIZE
 
 pytestmark = pytest.mark.unit_fast
@@ -28,8 +30,16 @@ def test_resource_cache_rejects_equal_length_overwrite_with_restored_mtime(tmp_p
     first = service.spec()
     path = Path(service._model_file_path())
     stamp = path.stat()
-    path.write_bytes(b'other synthetic resource')
-    os.utime(path, ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+    # The change stamp comes from a coarse kernel clock; back-to-back writes
+    # can share one tick, so retry until it observably moves.
+    before = _change_stamp(path, stamp)
+    deadline = time.monotonic() + 2
+    while True:
+        path.write_bytes(b'other synthetic resource')
+        os.utime(path, ns=(stamp.st_atime_ns,stamp.st_mtime_ns))
+        if _change_stamp(path, path.stat()) != before or time.monotonic() > deadline:
+            break
+        time.sleep(0.01)
     assert service.spec()['weights_sha256']['model'] != first['weights_sha256']['model']
 
 
