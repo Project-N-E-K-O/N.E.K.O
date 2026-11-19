@@ -1370,6 +1370,7 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
     issues.append(("error", f"plugin source must not contain symbolic links: {shown}{suffix}"))
 
 
+
 # --- Advisory checks -------------------------------------------------------
 #
 # ``neko-plugin check`` (without --release) reports these as "advisory"
@@ -1377,6 +1378,152 @@ def _check_symlink_tree(plugin_dir: Path, issues: list[tuple[str, str]]) -> None
 # ``check --release`` and the Market workflows do not run them. Each matcher
 # covers only the plain spelling plugin code actually uses; aliases and
 # dynamically built calls are deliberately out of scope.
+#
+# Output layout: one language-neutral line per hit (rule code, file:line,
+# AGENTS.md constraint number), then one explanation per rule that has hits,
+# written in all eight N.E.K.O locales.
+
+_ADVISORY_REFERENCE = ".agents/skills/neko-plugin/references/execution-boundary.md"
+_ADVISORY_LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+# rule code -> (AGENTS.md hard constraint number, explanation per locale)
+_ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
+    "host-import": (
+        2,
+        {
+            "en": "Host internals bypass consent disclosure and can change without notice. "
+            "Import from plugin.sdk.plugin (adapters: plugin.sdk.adapter).",
+            "zh-CN": "宿主内部模块绕过了面向用户的授权说明，而且随时可能变动。"
+            "请改从 plugin.sdk.plugin 导入（适配器用 plugin.sdk.adapter）。",
+            "zh-TW": "宿主內部模組會繞過對使用者的授權說明，而且隨時可能變動。"
+            "請改從 plugin.sdk.plugin 匯入（轉接器請用 plugin.sdk.adapter）。",
+            "ja": "ホストの内部モジュールは利用者への同意説明を経由せず、予告なく変わることがあります。"
+            "plugin.sdk.plugin（アダプターは plugin.sdk.adapter）からインポートしてください。",
+            "ko": "호스트 내부 모듈은 사용자 동의 고지를 우회하며 예고 없이 바뀔 수 있습니다. "
+            "plugin.sdk.plugin(어댑터는 plugin.sdk.adapter)에서 가져오세요.",
+            "ru": "Внутренние модули хоста обходят уведомление о согласии и могут меняться без предупреждения. "
+            "Импортируйте из plugin.sdk.plugin (для адаптеров — plugin.sdk.adapter).",
+            "es": "Los módulos internos del host eluden el aviso de consentimiento y pueden cambiar sin previo aviso. "
+            "Importa desde plugin.sdk.plugin (adaptadores: plugin.sdk.adapter).",
+            "pt": "Os módulos internos do host contornam o aviso de consentimento e podem mudar sem aviso prévio. "
+            "Importe de plugin.sdk.plugin (adaptadores: plugin.sdk.adapter).",
+        },
+    ),
+    "print": (
+        4,
+        {
+            "en": "print() output never reaches the plugin log. Use self.logger instead.",
+            "zh-CN": "print() 的输出不会进入插件日志。请改用 self.logger。",
+            "zh-TW": "print() 的輸出不會寫進外掛程式的記錄檔。請改用 self.logger。",
+            "ja": "print() の出力はプラグインのログに残りません。代わりに self.logger を使ってください。",
+            "ko": "print() 출력은 플러그인 로그에 남지 않습니다. 대신 self.logger를 사용하세요.",
+            "ru": "Вывод print() не попадает в журнал плагина. Используйте self.logger.",
+            "es": "La salida de print() no llega al registro del plugin. Usa self.logger en su lugar.",
+            "pt": "A saída de print() não chega ao log do plugin. Use self.logger.",
+        },
+    ),
+    "async-blocking": (
+        7,
+        {
+            "en": "A blocking call inside async def stalls every entry of the plugin, because they share one "
+            "event loop. Use an async library or await asyncio.to_thread(...).",
+            "zh-CN": "在 async def 里做阻塞调用会卡住插件的所有入口，因为它们共用一个事件循环。"
+            "请改用异步库，或 await asyncio.to_thread(...)。",
+            "zh-TW": "在 async def 裡進行阻塞呼叫，會卡住外掛程式的所有進入點，因為它們共用同一個事件迴圈。"
+            "請改用非同步函式庫，或 await asyncio.to_thread(...)。",
+            "ja": "async def 内のブロッキング呼び出しは、同じイベントループを共有するプラグインの全エントリを止めてしまいます。"
+            "非同期ライブラリか await asyncio.to_thread(...) を使ってください。",
+            "ko": "async def 안의 블로킹 호출은 이벤트 루프를 함께 쓰는 플러그인의 모든 엔트리를 멈춥니다. "
+            "비동기 라이브러리나 await asyncio.to_thread(...)를 사용하세요.",
+            "ru": "Блокирующий вызов внутри async def останавливает все точки входа плагина: у них общий цикл событий. "
+            "Используйте асинхронную библиотеку или await asyncio.to_thread(...).",
+            "es": "Una llamada bloqueante dentro de async def detiene todas las entradas del plugin, porque comparten "
+            "un mismo bucle de eventos. Usa una biblioteca asíncrona o await asyncio.to_thread(...).",
+            "pt": "Uma chamada bloqueante dentro de async def trava todas as entradas do plugin, pois elas compartilham "
+            "o mesmo loop de eventos. Use uma biblioteca assíncrona ou await asyncio.to_thread(...).",
+        },
+    ),
+    "eval-exec": (
+        10,
+        {
+            "en": "eval() and exec() run arbitrary code. Parse the input instead (for example json.loads or "
+            "ast.literal_eval), or dispatch through an explicit table of functions.",
+            "zh-CN": "eval() 和 exec() 会执行任意代码。请改为解析输入（例如 json.loads 或 ast.literal_eval），"
+            "或用显式的函数映射表来分派。",
+            "zh-TW": "eval() 與 exec() 會執行任意程式碼。請改為解析輸入（例如 json.loads 或 ast.literal_eval），"
+            "或透過明確的函式對照表來分派。",
+            "ja": "eval() と exec() は任意のコードを実行します。入力は解析して扱うか（json.loads や ast.literal_eval など）、"
+            "明示的な関数テーブルで振り分けてください。",
+            "ko": "eval()과 exec()는 임의의 코드를 실행합니다. 입력을 파싱하거나(json.loads, ast.literal_eval 등) "
+            "명시적인 함수 테이블로 분기하세요.",
+            "ru": "eval() и exec() выполняют произвольный код. Разбирайте входные данные (например, json.loads или "
+            "ast.literal_eval) или выбирайте функцию по явной таблице.",
+            "es": "eval() y exec() ejecutan código arbitrario. Analiza la entrada (por ejemplo, con json.loads o "
+            "ast.literal_eval) o despacha mediante una tabla explícita de funciones.",
+            "pt": "eval() e exec() executam código arbitrário. Interprete a entrada (por exemplo, com json.loads ou "
+            "ast.literal_eval) ou despache por meio de uma tabela explícita de funções.",
+        },
+    ),
+    "pickle": (
+        10,
+        {
+            "en": "Unpickling can run code embedded in the data. Store data as JSON, or use self.store / self.db.",
+            "zh-CN": "pickle 反序列化可能执行数据里夹带的代码。请用 JSON 保存数据，或使用 self.store / self.db。",
+            "zh-TW": "pickle 反序列化可能執行資料中夾帶的程式碼。請改用 JSON 儲存資料，或使用 self.store / self.db。",
+            "ja": "pickle の復元は、データに埋め込まれたコードを実行することがあります。"
+            "データは JSON で保存するか、self.store / self.db を使ってください。",
+            "ko": "pickle 역직렬화는 데이터에 숨은 코드를 실행할 수 있습니다. "
+            "데이터는 JSON으로 저장하거나 self.store / self.db를 사용하세요.",
+            "ru": "При распаковке pickle может выполниться код, встроенный в данные. "
+            "Храните данные в JSON или используйте self.store / self.db.",
+            "es": "Deserializar con pickle puede ejecutar código incrustado en los datos. "
+            "Guarda los datos en JSON o usa self.store / self.db.",
+            "pt": "Desserializar com pickle pode executar código embutido nos dados. "
+            "Guarde os dados em JSON ou use self.store / self.db.",
+        },
+    ),
+    "shell-true": (
+        10,
+        {
+            "en": "shell=True hands the whole command line to a shell, so outside text in it can inject commands. "
+            "Pass the arguments as a list and drop shell=True.",
+            "zh-CN": "shell=True 会把整条命令行交给 shell 执行，混在其中的外部文本可能注入命令。"
+            "请把参数写成列表传入，并去掉 shell=True。",
+            "zh-TW": "shell=True 會把整行指令交給 shell 執行，混在其中的外部文字可能被用來注入指令。"
+            "請將參數以串列傳入，並拿掉 shell=True。",
+            "ja": "shell=True ではコマンドライン全体がシェルに渡されるため、紛れ込んだ外部の文字列でコマンドを注入されるおそれがあります。"
+            "引数はリストで渡し、shell=True は外してください。",
+            "ko": "shell=True는 명령줄 전체를 셸에 넘기므로, 섞여 들어간 외부 문자열로 명령이 주입될 수 있습니다. "
+            "인수를 리스트로 넘기고 shell=True는 빼세요.",
+            "ru": "При shell=True вся командная строка уходит в оболочку, и попавший в неё внешний текст может "
+            "внедрить команды. Передавайте аргументы списком и уберите shell=True.",
+            "es": "Con shell=True toda la línea de comandos pasa por un shell, así que cualquier texto externo que "
+            "contenga puede inyectar órdenes. Pasa los argumentos como lista y quita shell=True.",
+            "pt": "Com shell=True a linha de comando inteira passa por um shell, e qualquer texto externo nela pode "
+            "injetar comandos. Passe os argumentos como lista e remova shell=True.",
+        },
+    ),
+    "verify-false": (
+        10,
+        {
+            "en": "verify=False turns off TLS certificate checks, so the connection can be intercepted. "
+            'Remove it; for a private CA, pass verify="path/to/ca.pem".',
+            "zh-CN": "verify=False 会关闭 TLS 证书校验，连接可能被中间人截获。"
+            '请去掉它；需要信任私有 CA 时，传 verify="CA 证书路径"。',
+            "zh-TW": "verify=False 會關閉 TLS 憑證驗證，連線可能遭到中間人攔截。"
+            '請移除它；需要信任私有 CA 時，請傳入 verify="CA 憑證路徑"。',
+            "ja": "verify=False は TLS 証明書の検証を無効にするため、通信を傍受されるおそれがあります。"
+            '削除してください。独自の CA を使う場合は verify="CA 証明書のパス" を渡してください。',
+            "ko": "verify=False는 TLS 인증서 검증을 꺼 버려서 제3자가 연결을 가로챌 수 있습니다. "
+            '제거하세요. 사설 CA를 신뢰해야 한다면 verify="CA 인증서 경로"를 넘기세요.',
+            "ru": "verify=False отключает проверку TLS-сертификатов, и соединение могут перехватить. "
+            'Уберите его; для собственного центра сертификации передайте verify="путь/к/ca.pem".',
+            "es": "verify=False desactiva la verificación de certificados TLS, así que la conexión puede ser "
+            'interceptada. Quítalo; para una CA privada, pasa verify="ruta/al/ca.pem".',
+            "pt": "verify=False desativa a verificação de certificados TLS, e a conexão pode ser interceptada. "
+            'Remova-o; para uma CA privada, passe verify="caminho/para/ca.pem".',
+        },
+    ),
+}
 
 _ADVISORY_SKIPPED_TOP_DIRS = frozenset({"tests"})
 # Top-level host packages a plugin process can import because the N.E.K.O
@@ -1391,17 +1538,13 @@ _SUBPROCESS_BLOCKING_FUNCS = frozenset({"run", "call", "check_call", "check_outp
 _NESTED_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
-def _tri(english: str, chinese: str, japanese: str) -> str:
-    return f"{english} / {chinese} / {japanese}"
-
-
 def collect_advisory_issues(plugin_dir: Path) -> list[tuple[str, str]]:
     """Non-blocking hints for AGENTS.md hard constraints 2, 4, 7 and 10.
 
     Files that do not parse are skipped: validate_plugin_dir already reports
     them as errors.
     """
-    issues: list[tuple[str, str]] = []
+    hits: dict[str, list[str]] = {code: [] for code in _ADVISORY_RULES}
     for path in _plugin_python_files(plugin_dir):
         relative = path.relative_to(plugin_dir)
         if relative.parts[0] in _ADVISORY_SKIPPED_TOP_DIRS:
@@ -1410,72 +1553,69 @@ def collect_advisory_issues(plugin_dir: Path) -> list[tuple[str, str]]:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (SyntaxError, UnicodeDecodeError, ValueError):
             continue
-        for lineno, message in sorted(_advisory_findings(tree), key=lambda item: item[0]):
-            issues.append(("advisory", f"{relative}:{lineno}: {message}"))
+        for code, lineno, detail in sorted(_advisory_findings(tree), key=lambda item: item[1]):
+            hits[code].append(f"{relative}:{lineno}" + (f" {detail}" if detail else ""))
+
+    issues: list[tuple[str, str]] = []
+    for code, locations in hits.items():
+        if not locations:
+            continue
+        constraint = _ADVISORY_RULES[code][0]
+        issues.extend(("advisory", f"{code}: {location} -> AGENTS.md #{constraint}") for location in locations)
+        issues.append(("advisory", _advisory_explanation(code)))
     return issues
 
 
-def _advisory_findings(tree: ast.Module) -> list[tuple[int, str]]:
-    findings: list[tuple[int, str]] = []
+def _advisory_explanation(code: str) -> str:
+    """One block per rule: reference first, then one line per locale."""
+    constraint, texts = _ADVISORY_RULES[code]
+    lines = [f"{code}: AGENTS.md #{constraint}, {_ADVISORY_REFERENCE}"]
+    lines.extend(f"      {locale}: {texts[locale]}" for locale in _ADVISORY_LOCALES)
+    return "\n".join(lines)
+
+
+def _advisory_findings(tree: ast.Module) -> list[tuple[str, int, str]]:
+    """(rule code, line, language-neutral detail) for each hit."""
+    findings: list[tuple[str, int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            message = _advisory_call_message(node)
-            if message:
-                findings.append((node.lineno, message))
+            found = _advisory_call_rule(node)
+            if found:
+                findings.append((found[0], node.lineno, found[1]))
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             module = _host_internal_import(node)
             if module:
-                findings.append((node.lineno, _advisory_internal_import_message(module)))
+                findings.append(("host-import", node.lineno, module))
         elif isinstance(node, ast.AsyncFunctionDef):
             for call in _calls_in_own_scope(node):
                 blocking = _blocking_call_name(call)
                 if blocking:
-                    findings.append((call.lineno, _advisory_blocking_message(blocking, node.name)))
+                    findings.append(("async-blocking", call.lineno, f"{node.name}(): {blocking}()"))
     return findings
 
 
-def _advisory_call_message(node: ast.Call) -> str:
+def _advisory_call_rule(node: ast.Call) -> tuple[str, str] | None:
     func = node.func
     if isinstance(func, ast.Name):
         if func.id == "print":
-            return _tri(
-                "print() never reaches the plugin log; use self.logger (AGENTS.md constraint 4)",
-                "print() 不会进入插件日志，请用 self.logger（AGENTS.md 硬约束 4）",
-                "print() はプラグインログに残りません。self.logger を使ってください（AGENTS.md 制約 4）",
-            )
+            return "print", ""
         if func.id in {"eval", "exec"}:
-            return _tri(
-                f"{func.id}() runs arbitrary code (AGENTS.md constraint 10)",
-                f"{func.id}() 会执行任意代码（AGENTS.md 硬约束 10）",
-                f"{func.id}() は任意のコードを実行します（AGENTS.md 制約 10）",
-            )
+            return "eval-exec", f"{func.id}()"
     if (
         isinstance(func, ast.Attribute)
         and isinstance(func.value, ast.Name)
         and func.value.id == "pickle"
         and func.attr in _PICKLE_LOAD_FUNCS
     ):
-        return _tri(
-            f"pickle.{func.attr} can run code from the data it reads (AGENTS.md constraint 10)",
-            f"pickle.{func.attr} 可能执行所读数据中的代码（AGENTS.md 硬约束 10）",
-            f"pickle.{func.attr} は読み込むデータ内のコードを実行し得ます（AGENTS.md 制約 10）",
-        )
+        return "pickle", f"pickle.{func.attr}"
     for keyword in node.keywords:
         if not isinstance(keyword.value, ast.Constant):
             continue
         if keyword.arg == "shell" and keyword.value.value is True:
-            return _tri(
-                "shell=True passes the command through a shell; pass an argument list (AGENTS.md constraint 10)",
-                "shell=True 会经由 shell 执行命令，请改传参数列表（AGENTS.md 硬约束 10）",
-                "shell=True はシェル経由でコマンドを実行します。引数リストを渡してください（AGENTS.md 制約 10）",
-            )
+            return "shell-true", ""
         if keyword.arg == "verify" and keyword.value.value is False:
-            return _tri(
-                "verify=False disables TLS certificate checks (AGENTS.md constraint 10)",
-                "verify=False 会关闭 TLS 证书校验（AGENTS.md 硬约束 10）",
-                "verify=False は TLS 証明書の検証を無効にします（AGENTS.md 制約 10）",
-            )
-    return ""
+            return "verify-false", ""
+    return None
 
 
 def _host_internal_import(node: ast.Import | ast.ImportFrom) -> str:
@@ -1497,14 +1637,6 @@ def _host_internal_import(node: ast.Import | ast.ImportFrom) -> str:
         ):
             return module
     return ""
-
-
-def _advisory_internal_import_message(module: str) -> str:
-    return _tri(
-        f"'{module}' is a N.E.K.O host internal; use plugin.sdk.plugin or plugin.sdk.adapter (AGENTS.md constraint 2)",
-        f"'{module}' 是 N.E.K.O 宿主内部模块，请改用 plugin.sdk.plugin 或 plugin.sdk.adapter（AGENTS.md 硬约束 2）",
-        f"'{module}' は N.E.K.O ホストの内部モジュールです。plugin.sdk.plugin または plugin.sdk.adapter を使ってください（AGENTS.md 制約 2）",
-    )
 
 
 def _calls_in_own_scope(function: ast.AsyncFunctionDef) -> list[ast.Call]:
@@ -1534,14 +1666,3 @@ def _blocking_call_name(call: ast.Call) -> str:
     ):
         return f"{owner}.{name}"
     return ""
-
-
-def _advisory_blocking_message(call_name: str, function_name: str) -> str:
-    return _tri(
-        f"{call_name}() blocks the event loop in async def {function_name}; "
-        "use an async library or await asyncio.to_thread(...) (AGENTS.md constraint 7)",
-        f"{call_name}() 会在 async def {function_name} 中阻塞事件循环；"
-        "请用异步库或 await asyncio.to_thread(...)（AGENTS.md 硬约束 7）",
-        f"{call_name}() は async def {function_name} 内でイベントループをブロックします。"
-        "非同期ライブラリか await asyncio.to_thread(...) を使ってください（AGENTS.md 制約 7）",
-    )

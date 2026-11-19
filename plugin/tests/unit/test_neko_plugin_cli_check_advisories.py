@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from plugin.neko_plugin_cli import cli as neko_plugin_cli
-from plugin.neko_plugin_cli.commands.validate_cmd import collect_advisory_issues
+from plugin.neko_plugin_cli.commands.validate_cmd import _ADVISORY_RULES, collect_advisory_issues
 from plugin.neko_plugin_cli.core.lint import RUFF_LINT_SPEC, RuffLintSpec
 
 pytestmark = pytest.mark.plugin_unit
@@ -42,63 +42,74 @@ def _make_plugin(tmp_path: Path, source: str, plugin_id: str = "adv_demo") -> Pa
     return plugin_dir
 
 
-def _advisories(tmp_path: Path, source: str) -> list[str]:
-    plugin_dir = _make_plugin(tmp_path, source)
+LOCALES = ("en", "zh-CN", "zh-TW", "ja", "ko", "ru", "es", "pt")
+
+
+def _issues(plugin_dir: Path) -> list[str]:
     issues = collect_advisory_issues(plugin_dir)
     assert all(level == "advisory" for level, _ in issues)
     return [message for _, message in issues]
 
 
-# (category, hit source, miss source, text unique to the category)
+def _is_explanation(message: str) -> bool:
+    return "\n" in message
+
+
+def _advisories(tmp_path: Path, source: str) -> list[str]:
+    """Hit lines only; the per-rule explanation blocks are dropped."""
+    return [m for m in _issues(_make_plugin(tmp_path, source)) if not _is_explanation(m)]
+
+
+# (rule code, hit source, miss source, AGENTS.md constraint number)
 CASES = [
     (
         "print",
         "def f():\n    print('x')\n",
         "def f(logger):\n    logger.info('x')\n    pprint = 1\n",
-        "print() never reaches the plugin log",
+        4,
     ),
     (
-        "eval",
+        "eval-exec",
         "def f(code):\n    return eval(code)\n",
         "def f(model):\n    return model.eval()\n",
-        "eval() runs arbitrary code",
+        10,
     ),
     (
-        "exec",
+        "eval-exec",
         "def f(code):\n    exec(code)\n",
         "import asyncio\nasync def f():\n    await asyncio.create_subprocess_exec('ls')\n",
-        "exec() runs arbitrary code",
+        10,
     ),
     (
         "pickle",
         "import pickle\ndef f(blob):\n    return pickle.loads(blob)\n",
         "import pickle\ndef f(obj):\n    return pickle.dumps(obj)\n",
-        "can run code from the data it reads",
+        10,
     ),
     (
-        "shell",
+        "shell-true",
         "import subprocess\ndef f(cmd):\n    subprocess.run(cmd, shell=True)\n",
         "import subprocess\ndef f(cmd):\n    subprocess.run(['ls', cmd], shell=False)\n",
-        "shell=True passes the command through a shell",
+        10,
     ),
     (
-        "verify",
+        "verify-false",
         "import requests\ndef f(url):\n    return requests.get(url, verify=False)\n",
         "import requests\ndef f(url):\n    return requests.get(url, verify=True)\n",
-        "verify=False disables TLS certificate checks",
+        10,
     ),
     (
-        "internal_import",
+        "host-import",
         "from utils.config_manager import get_config_manager\nimport plugin.core.host\n",
         "from plugin.sdk.plugin import neko_plugin\n"
         "from plugin.sdk.adapter.gateway_models import GatewayRequest\n"
         "from plugin.sdk import SDK_VERSION\n"
         "from plugin.plugins.adv_demo.helpers import helper\n"
         "from .local import thing\n",
-        "is a N.E.K.O host internal",
+        2,
     ),
     (
-        "blocking_in_async",
+        "async-blocking",
         "import time\nasync def f():\n    time.sleep(1)\n",
         "import asyncio, time, requests\n"
         "def sync_entry():\n    time.sleep(1)\n"
@@ -107,22 +118,26 @@ CASES = [
         "    await asyncio.to_thread(lambda: requests.get(url))\n"
         "    def inner():\n        time.sleep(1)\n"
         "    return inner\n",
-        "blocks the event loop",
+        7,
     ),
 ]
 
 
-@pytest.mark.parametrize(("category", "hit", "miss", "marker"), CASES, ids=[case[0] for case in CASES])
-def test_advisory_category_hits(tmp_path: Path, category: str, hit: str, miss: str, marker: str) -> None:
+CASE_IDS = ["print", "eval", "exec", "pickle", "shell", "verify", "host_import", "async_blocking"]
+
+
+@pytest.mark.parametrize(("code", "hit", "miss", "constraint"), CASES, ids=CASE_IDS)
+def test_advisory_category_hits(tmp_path: Path, code: str, hit: str, miss: str, constraint: int) -> None:
     messages = _advisories(tmp_path, hit)
-    assert messages, category
-    assert all(marker in message for message in messages), messages
-    assert all(message.startswith("worker.py:") for message in messages), messages
+    assert messages, code
+    for message in messages:
+        assert message.startswith(f"{code}: worker.py:"), message
+        assert message.endswith(f"-> AGENTS.md #{constraint}"), message
 
 
-@pytest.mark.parametrize(("category", "hit", "miss", "marker"), CASES, ids=[case[0] for case in CASES])
-def test_advisory_category_misses(tmp_path: Path, category: str, hit: str, miss: str, marker: str) -> None:
-    assert _advisories(tmp_path, miss) == []
+@pytest.mark.parametrize(("code", "hit", "miss", "constraint"), CASES, ids=CASE_IDS)
+def test_advisory_category_misses(tmp_path: Path, code: str, hit: str, miss: str, constraint: int) -> None:
+    assert _issues(_make_plugin(tmp_path, miss)) == []
 
 
 def test_internal_import_reports_each_module(tmp_path: Path) -> None:
@@ -132,8 +147,11 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
         "import plugin.core.host\n"
         "from plugin.sdk.shared.core.router import PluginRouter\n",
     )
-    assert [message.split(":", 2)[1] for message in messages] == ["1", "2", "3"]
-    assert "'plugin.sdk.shared.core.router'" in messages[2]
+    assert messages == [
+        "host-import: worker.py:1 utils.config_manager -> AGENTS.md #2",
+        "host-import: worker.py:2 plugin.core.host -> AGENTS.md #2",
+        "host-import: worker.py:3 plugin.sdk.shared.core.router -> AGENTS.md #2",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -145,17 +163,27 @@ def test_blocking_calls_in_async_def(tmp_path: Path, call: str) -> None:
         tmp_path,
         f"import requests, subprocess, time\nasync def handler(url):\n    {call}\n",
     )
-    assert len(messages) == 1
-    assert messages[0].startswith("worker.py:3: ")
-    assert "async def handler" in messages[0]
+    assert messages == [f"async-blocking: worker.py:3 handler(): {call.split('(')[0]}() -> AGENTS.md #7"]
 
 
-def test_messages_are_trilingual_and_cite_constraint(tmp_path: Path) -> None:
-    (message,) = _advisories(tmp_path, "print('x')\n")
-    english, chinese, japanese = message.split(": ", 1)[1].split(" / ")
-    assert "AGENTS.md constraint 4" in english
-    assert "AGENTS.md 硬约束 4" in chinese
-    assert "AGENTS.md 制約 4" in japanese
+@pytest.mark.parametrize("code", list(_ADVISORY_RULES))
+def test_every_rule_has_all_eight_locales(code: str) -> None:
+    _, texts = _ADVISORY_RULES[code]
+    assert tuple(texts) == LOCALES
+    assert all(text.strip() for text in texts.values())
+    # zh-TW is written separately, not a copy of zh-CN.
+    assert texts["zh-TW"] != texts["zh-CN"]
+
+
+def test_one_eight_locale_explanation_per_rule_with_hits(tmp_path: Path) -> None:
+    messages = _issues(_make_plugin(tmp_path, "print('a')\nprint('b')\n"))
+
+    assert messages[:2] == ["print: worker.py:1 -> AGENTS.md #4", "print: worker.py:2 -> AGENTS.md #4"]
+    assert len(messages) == 3
+    header, *locale_lines = messages[2].split("\n")
+    assert header == "print: AGENTS.md #4, .agents/skills/neko-plugin/references/execution-boundary.md"
+    assert [line.strip().split(":", 1)[0] for line in locale_lines] == list(LOCALES)
+    assert "self.logger" in locale_lines[0]
 
 
 def test_vendor_tests_and_unparsable_files_are_skipped(tmp_path: Path) -> None:
@@ -169,11 +197,10 @@ def test_vendor_tests_and_unparsable_files_are_skipped(tmp_path: Path) -> None:
     nested.parent.mkdir(parents=True)
     nested.write_text("print('x')\n", encoding="utf-8")
 
-    messages = [message for _, message in collect_advisory_issues(plugin_dir)]
+    messages = [m for m in _issues(plugin_dir) if not _is_explanation(m)]
 
     # Only the plugin-root tests/ directory is skipped.
-    assert len(messages) == 1
-    assert messages[0].startswith(f"{Path('sub', 'tests', 'helper.py')}:1: ")
+    assert messages == [f"print: {Path('sub', 'tests', 'helper.py')}:1 -> AGENTS.md #4"]
 
 
 ALL_VIOLATIONS = """\
@@ -215,9 +242,15 @@ def test_check_prints_advisories_without_changing_exit_code(
     captured = capsys.readouterr()
     assert "[OK] adv_demo: check found 0 error(s)" in captured.out
     advisory_lines = [line for line in captured.out.splitlines() if line.startswith("  [ADVISORY] ")]
-    for marker in [case[3] for case in CASES]:
-        assert any(marker in line for line in advisory_lines), marker
-    assert len(advisory_lines) == 10
+    hit_lines = [line for line in advisory_lines if " -> AGENTS.md #" in line]
+    explanation_lines = [line for line in advisory_lines if line not in hit_lines]
+    # 10 hits; one explanation per rule (all 7 fire).
+    assert len(hit_lines) == 10
+    assert len(explanation_lines) == len(_ADVISORY_RULES)
+    for code in _ADVISORY_RULES:
+        assert any(line.startswith(f"  [ADVISORY] {code}: ") for line in hit_lines), code
+    for locale in LOCALES:
+        assert sum(line.startswith(f"      {locale}: ") for line in captured.out.splitlines()) == 7, locale
     assert "[ADVISORY]" not in captured.err
 
 
