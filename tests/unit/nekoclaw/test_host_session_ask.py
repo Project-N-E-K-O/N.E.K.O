@@ -843,3 +843,31 @@ async def test_a_question_whose_asker_is_cancelled_while_the_copy_is_made_is_ans
     assert child.status == "done"
     await wait_until(lambda: any("An answer." in text for text in told), what="the answer reaching the asker")
     release.set()
+
+
+async def test_whether_the_asker_was_stopped_is_asked_again_where_the_ledger_cannot_be_read_at_first(hosts, tmp_path):
+    release, held = _held()
+    scripts = {PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    await _at_rest(host, scripts)
+    asker = await _asker_at_work(host, scripts)
+    child, _created = await host.ledger.create(
+        lanlan_name="Lan", title="part", dispatch_text="part", source="task_agent", route="task_agent",
+        parent_id=asker.id, name="part",
+    )
+    told = _steered_into(host, asker.id)
+    await host.ledger.transition(asker.id, "cancelled", reason="stopped by the user")
+    get, failed = host.ledger.get, []
+
+    async def unreadable_once(commission_id: str) -> Any:
+        if commission_id == asker.id and not failed:
+            failed.append(commission_id)
+            raise OSError("the ledger is locked")
+        return await get(commission_id)
+
+    host.ledger.get = unreadable_once  # type: ignore[method-assign]
+    await host.task_agents._tell_parent(child, "failed", "it went wrong")
+    host.ledger.get = get  # type: ignore[method-assign]
+    # Read again, it is known to be stopped: not told.
+    assert failed == [asker.id] and told == []
+    release.set()

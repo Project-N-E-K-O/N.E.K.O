@@ -4123,10 +4123,14 @@ class TaskAgentManager:
                 nonce,
             )
         try:
-            stands = await self._ledger.get(parent_id)
+            # Asked again a few times where it cannot be read this moment.
+            stands = await self._looked(lambda: self._ledger.get(parent_id))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - handed on as ever where it cannot be told
+            # Not known to be stopped: handed on. Held back, the result of
+            # one that is at work would be lost, which is worse than a turn
+            # of one that was stopped, which the stop's close cuts short.
             stands = None
         if stands is not None and stands.status == "cancelled":
             # Stopped: its session is about to be closed, if it is not yet,
