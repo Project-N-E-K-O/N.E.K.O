@@ -3088,6 +3088,38 @@ async def test_work_refused_after_some_was_taken_is_said_to_have_stopped_partway
     assert report.payload["summary"] == words["run"] + words["error"].format(detail="the session is busy")
 
 
+@pytest.mark.parametrize(("refused", "said"), [("prompt", "start"), ("steer", "run")])
+async def test_a_start_that_fails_once_its_work_went_through_is_said_to_have_stopped_partway(
+    hosts, tmp_path, monkeypatch, refused, said
+):
+    host, runtimes = _recording_host(hosts, tmp_path)
+    commission = await _filed(host, "tidy the desktop", lang="zh")
+    told, steered = RecordingRuntime.prompt, RecordingRuntime.steer
+
+    async def prompt(self: Any, session_id: str, text: str, *, opening: bool = False) -> None:
+        if refused == "prompt":
+            raise RuntimeError("the runtime went away")
+        await told(self, session_id, text, opening=opening)
+        # Passed on while the work was on its way: sent after it.
+        host.task_agents._notes.setdefault(commission.id, []).append("the downloads too")
+
+    async def steer(self: Any, session_id: str, text: str) -> None:
+        if refused == "steer":
+            raise RuntimeError("the runtime went away")
+        await steered(self, session_id, text)
+
+    monkeypatch.setattr(RecordingRuntime, "prompt", prompt)
+    monkeypatch.setattr(RecordingRuntime, "steer", steer)
+    await host.task_agents.submit(commission)
+
+    failed = await wait_status(host, commission.id, "failed")
+    assert failed.status_reason == "the task agent could not be started: the runtime went away"
+    assert [kind for kind, _session, _text in runtimes[0].sent] == (["prompt"] if refused == "steer" else [])
+    words = TASK_AGENT_FAILED_TEXTS["zh"]
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["summary"] == words[said] + words["error"].format(detail="the runtime went away")
+
+
 async def test_a_session_closed_under_a_commission_that_goes_on_ends_its_run_too(hosts, tmp_path):
     host, runtimes = _recording_host(hosts, tmp_path)
     commission, runtime = await _started(host, runtimes)

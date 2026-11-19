@@ -1657,7 +1657,10 @@ class TaskAgentManager:
                 # session looked at, and its status written.
                 await self._leave_cleared(session)
                 self._discard(commission_id)
-            await self._fail(commission_id, f"the task agent could not be started: {exc}", said="start", detail=str(exc))
+            # Its work may have gone through before what came after it was
+            # refused (what was passed on meanwhile): then it was at work.
+            said = "run" if session.sent else "start"
+            await self._fail(commission_id, f"the task agent could not be started: {exc}", said=said, detail=str(exc))
             self._keep_unsent(session)
             return False
 
