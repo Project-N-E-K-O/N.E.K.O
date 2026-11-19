@@ -36,14 +36,18 @@ CLAUDE_TEMPLATE_NAME = "CLAUDE.md.tmpl"
 # editor swap files.
 SKILL_IGNORE_PATTERNS = (".*", "__pycache__", "*.pyc", "*.pyo")
 
-# Written into the snapshot's SKILL.md (Agent Skills ``metadata``) when it is
-# rendered, never into the authored file, so check can flag stale snapshots.
+# Written into the snapshot's SKILL.md when it is rendered, never into the
+# authored file, so check can flag stale snapshots. Preferred form: an Agent
+# Skills ``metadata`` entry; if the frontmatter already has a ``metadata`` key
+# (or there is no frontmatter), a comment line right after it instead, so the
+# YAML is never edited in place.
 SNAPSHOT_VERSION_KEY = "neko-plugin-cli-version"
-_SNAPSHOT_VERSION_RE = re.compile(
-    rf"^\s*(?:<!--\s*)?{SNAPSHOT_VERSION_KEY}:\s*\"?([^\"\s]+?)\"?\s*(?:-->)?\s*$",
-    re.MULTILINE,
-)
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)^---[ \t]*\r?$", re.DOTALL | re.MULTILINE)
+_METADATA_KEY_RE = re.compile(r"^metadata[ \t]*:", re.MULTILINE)
+_METADATA_STAMP_RE = re.compile(
+    rf'^metadata:\r?\n  {SNAPSHOT_VERSION_KEY}: "([^"\r\n]*)"\r?$', re.MULTILINE
+)
+_COMMENT_STAMP_RE = re.compile(rf'<!-- {SNAPSHOT_VERSION_KEY}: "([^"\r\n]*)" -->[ \t]*\r?$', re.MULTILINE)
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 _MISSING_HINT = (
     f"Source checkouts keep it under .agent/skills/{SKILL_NAME}; desktop builds "
@@ -116,19 +120,32 @@ def _stamp_skill_entry(text: str) -> str:
     frontmatter = _FRONTMATTER_RE.match(text)
     if frontmatter is None:
         return f"<!-- {stamp} -->\n{text}"
-    body = frontmatter.group(1)
-    metadata = re.search(r"^metadata:[ \t]*\r?\n", body, re.MULTILINE)
-    if metadata is not None:
-        insert_at = frontmatter.start(1) + metadata.end()
-        return f"{text[:insert_at]}  {stamp}\n{text[insert_at:]}"
-    insert_at = frontmatter.end(1)
-    return f"{text[:insert_at]}metadata:\n  {stamp}\n{text[insert_at:]}"
+    if _METADATA_KEY_RE.search(frontmatter.group(1)) is None:
+        insert_at = frontmatter.end(1)
+        return f"{text[:insert_at]}metadata:\n  {stamp}\n{text[insert_at:]}"
+    insert_at = frontmatter.end()
+    return f"{text[:insert_at]}\n<!-- {stamp} -->{text[insert_at:]}"
 
 
 def snapshot_cli_version(skill_entry: str) -> str | None:
-    """CLI version stamped into a snapshot's SKILL.md, or None if unstamped."""
-    match = _SNAPSHOT_VERSION_RE.search(skill_entry)
-    return match.group(1) if match else None
+    """CLI version stamped into a snapshot's SKILL.md, or None if unstamped.
+
+    Only the two places _stamp_skill_entry writes are read, so the same text
+    elsewhere (a description, the body) is never mistaken for the stamp.
+    """
+    frontmatter = _FRONTMATTER_RE.match(skill_entry)
+    position = 0
+    if frontmatter is not None:
+        stamp = _METADATA_STAMP_RE.search(frontmatter.group(1))
+        if stamp is not None:
+            return stamp.group(1)
+        position = frontmatter.end()
+        for newline in ("\r\n", "\n"):
+            if skill_entry.startswith(newline, position):
+                position += len(newline)
+                break
+    comment = _COMMENT_STAMP_RE.match(skill_entry, position)
+    return comment.group(1) if comment else None
 
 
 def render_claude_md() -> str:

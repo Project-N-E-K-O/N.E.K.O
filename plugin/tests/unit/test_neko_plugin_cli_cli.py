@@ -1895,6 +1895,30 @@ def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
     assert (refresh in out) is warned
 
 
+def test_suggested_refresh_only_rewrites_the_agent_kit(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "refresh_kit")
+    assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
+    skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
+    skill_entry.write_text("# old snapshot\n", encoding="utf-8")
+    readme = plugin_dir / "README.md"
+    readme.write_text("# my readme\n", encoding="utf-8")
+    capsys.readouterr()
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    fix = next(line for line in capsys.readouterr().out.splitlines() if "setup-repo" in line and "--overwrite" in line)
+    refresh = fix.split("fix: neko-plugin ", 1)[1].split(" (", 1)[0]
+    assert neko_plugin_cli.main([arg.strip('"') for arg in refresh.split()]) == 0
+
+    assert readme.read_text(encoding="utf-8") == "# my readme\n"
+    assert agent_kit.snapshot_cli_version(skill_entry.read_text(encoding="utf-8")) == agent_kit.CLI_VERSION
+    capsys.readouterr()
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
 def test_check_does_not_flag_a_freshly_generated_agent_kit(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

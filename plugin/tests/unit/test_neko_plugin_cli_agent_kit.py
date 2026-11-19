@@ -117,11 +117,29 @@ def test_snapshot_skill_entry_is_stamped_with_the_cli_version() -> None:
     assert stamped.replace(f'metadata:\n  neko-plugin-cli-version: "{__version__}"\n', "") == authored
 
 
-def test_stamp_joins_an_existing_frontmatter_metadata_map() -> None:
-    stamped = agent_kit._stamp_skill_entry("---\nname: x\nmetadata:\n  owner: y\n---\nbody\n")
+@pytest.mark.parametrize(
+    "authored",
+    [
+        "# no frontmatter\n",
+        "---\nname: x\nmetadata:\n    owner: y\n---\nbody\n",
+        "---\nname: x\nmetadata: {}\n---\nbody\n",
+        "---\r\nname: x\r\n---\r\nbody\r\n",
+    ],
+)
+def test_stamp_never_edits_an_existing_metadata_map(authored: str) -> None:
+    stamped = agent_kit._stamp_skill_entry(authored)
 
-    assert stamped.count("metadata:") == 1
     assert agent_kit.snapshot_cli_version(stamped) == agent_kit.CLI_VERSION
+    assert stamped.count("metadata") == authored.count("metadata") + (
+        0 if "metadata" in authored or not authored.startswith("---") else 1
+    )
+
+
+def test_stamp_is_read_only_where_it_is_written() -> None:
+    lookalike = "---\nname: x\ndescription: >\n  neko-plugin-cli-version: 0.0.1\n---\nneko-plugin-cli-version: 0.0.1\n"
+
+    assert agent_kit.snapshot_cli_version(lookalike) is None
+    assert agent_kit.snapshot_cli_version(agent_kit._stamp_skill_entry(lookalike)) == agent_kit.CLI_VERSION
 
 
 def test_kit_root_prefers_authored_source_over_staged_copy() -> None:

@@ -17,8 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 PLUGIN_DIR = REPO_ROOT / "plugin"
 SKILL_DIR = REPO_ROOT / ".agent" / "skills" / "neko-plugin"
 GUIDES_DIR = PLUGIN_DIR / "neko_plugin_cli" / "templates" / "agent_guides"
-# Code that emits the texts; tests and built-in plugins only mention them.
-_SKIPPED_SOURCE_DIRS = ("tests", "plugins")
+# Code that emits the texts; tests and built-in plugins only mention them, and
+# third-party trees (vendor/, node_modules/, virtualenvs) are not ours.
+_SKIPPED_TOP_DIRS = ("plugins",)
+_SKIPPED_DIRS = ("tests", "vendor", "node_modules", "site-packages")
 
 # (guide file, quoted error text or code). Add an entry when a guide quotes a
 # new error text for troubleshooting.
@@ -36,11 +38,20 @@ def _file_id(path: Path) -> str:
     return path.relative_to(REPO_ROOT).as_posix()
 
 
+def _is_plugin_source(path: Path) -> bool:
+    parts = path.relative_to(PLUGIN_DIR).parts
+    directories = parts[:-1]
+    return (
+        parts[0] not in _SKIPPED_TOP_DIRS
+        and not any(part in _SKIPPED_DIRS or part.startswith(".") for part in directories)
+    )
+
+
 def _plugin_source() -> str:
     return "\n".join(
-        path.read_text(encoding="utf-8")
+        path.read_text(encoding="utf-8", errors="replace")
         for path in sorted(PLUGIN_DIR.rglob("*.py"))
-        if path.relative_to(PLUGIN_DIR).parts[0] not in _SKIPPED_SOURCE_DIRS
+        if _is_plugin_source(path)
     )
 
 
