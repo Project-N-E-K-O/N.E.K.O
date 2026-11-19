@@ -250,7 +250,12 @@ def _diagnose_repository(plugin_dir: Path, *, defaults: CliDefaults, release: bo
 def _diagnose_agent_kit(plugin_dir: Path) -> list[Issue]:
     """A warning only: a stale or unstamped skill snapshot never fails check."""
     entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / agent_kit.SKILL_ENTRY_NAME
-    if not entry.is_file():
+    try:
+        has_snapshot = entry.is_file()
+    except OSError:
+        # Cannot even look (e.g. permissions): an advisory check stays silent.
+        has_snapshot = False
+    if not has_snapshot:
         # No snapshot (agent kit not generated or removed): nothing to refresh.
         return []
     try:

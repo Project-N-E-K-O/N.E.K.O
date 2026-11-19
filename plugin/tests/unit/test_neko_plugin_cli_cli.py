@@ -1898,6 +1898,25 @@ def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
     assert (refresh in out) is warned
 
 
+def test_check_ignores_an_agent_kit_it_cannot_inspect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path, "locked_kit")
+    real_is_file = Path.is_file
+
+    def denied(path: Path) -> bool:
+        if path.name == "SKILL.md":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", denied)
+
+    assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
+    assert "agent kit snapshot" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("parent", ["repo", "my $HOME (copy)"])
 def test_suggested_refresh_only_rewrites_the_agent_kit(
     tmp_path: Path,
