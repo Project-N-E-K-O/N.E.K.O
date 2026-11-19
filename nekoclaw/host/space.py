@@ -844,6 +844,8 @@ _WEB_ADDRESS = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://\S+")
 # single quotes, which are as often an apostrophe.
 _QUOTED = re.compile(r"`([^`\n]+)`|\"([^\"\n]+)\"|“([^”\n]+)”|「([^」\n]+)」|『([^』\n]+)』")
 _HAS_EXTENSION = re.compile(r"[^./\\]\.[A-Za-z0-9_]{1,8}$")
+# What ends a clause, which a path does not hold.
+_CLAUSE_MARKS = re.compile(r"[,;，；。]")
 # The number of a version, which is written like a file with an extension.
 _A_NUMBER = re.compile(r"[0-9.]+")
 
@@ -865,22 +867,30 @@ def paths_named_in(text: Any) -> list[str]:
 
     # An address of the web is no file, whatever it ends in.
     said = _WEB_ADDRESS.sub(" ", str(text or ""))
-    # What is in quotes is taken whole (``data/old report.csv``). Inside
-    # it the first part with a separator is a path all the same (the file
-    # in ``python src/app.py``). Not a bare name, nor a part after one
-    # with a separator: either may be the end of a path with a space in
-    # it (``D:/My Work/app.py``). The words between spaces are not looked
-    # for there.
     quotes = list(_QUOTED.finditer(said))
-    quoted = [(match.start(), next(group for group in match.groups() if group is not None).strip()) for match in quotes]
+    plain = list(_PLAIN_PATH.finditer(said))
+
+    def after_a_part(at: int) -> bool:
+        # In quotes, right after a part with a separator and no extension
+        # (``data/old``, ``D:/My``), with nothing but white space between:
+        # what stands at ``at`` may be the end of a path with a space in it
+        # (``data/old report.csv``), and is no file named by itself. After
+        # a file (``ruff check a/b.py c/d.py``) or a word (``cat
+        # README.md``) it is one.
+        quote = next((match for match in quotes if match.start() < at < match.end()), None)
+        if quote is None:
+            return False
+        earlier = [run for run in plain if quote.start() < run.start() and run.end() <= at]
+        if not earlier:
+            return False
+        last = earlier[-1]
+        gap = said[last.end() : at]
+        part = last.group(0)
+        return bool(gap) and not gap.strip() and ("/" in part or "\\" in part) and _HAS_EXTENSION.search(part) is None
 
     def whole(run: re.Match[str]) -> bool:
-        part = run.group(0)
-        for match in quotes:
-            if match.start() < run.start() < match.end():
-                before = said[match.start() + 1 : run.start()]
-                if ("/" not in part and "\\" not in part) or "/" in before or "\\" in before:
-                    return False
+        if after_a_part(run.start()):
+            return False
         # Not the end of a path with words of another script in it
         # (``notes/旧report.csv``): what follows the last separator before
         # it is not a file of its own name. That path is a word as white
@@ -892,10 +902,29 @@ def paths_named_in(text: Any) -> list[str]:
             before -= 1
         return before == run.start() or before == 0 or said[before - 1] not in "/\\"
 
+    # What is in quotes and holds a space is also taken whole: a path may
+    # (``data/old report.csv``). Not when it holds the marks that end a
+    # clause: such quotes were paired by mistake (``a 5" screen; ...``).
+    quoted = []
+    for match in quotes:
+        inside = next(group for group in match.groups() if group is not None).strip()
+        if " " in inside and not _CLAUSE_MARKS.search(inside):
+            quoted.append((match.start(), inside))
+
+    # The words as white space and punctuation set them apart, where each begins.
+    words: list[tuple[int, str]] = []
+    at = 0
+    for gap in [*_WORD_BREAKS.finditer(said), None]:
+        stop = gap.start() if gap is not None else len(said)
+        if stop > at:
+            words.append((at, said[at:stop]))
+        if gap is not None:
+            at = gap.end()
+
     found: list[str] = []
-    # In the order they are written.
-    runs = sorted([*quoted, *((run.start(), run.group(0)) for run in _PLAIN_PATH.finditer(said) if whole(run))])
-    for word in [*(item for _at, item in runs), *_WORD_BREAKS.split(_QUOTED.sub(" ", said))]:
+    # The runs (and what is quoted) in the order they are written, then the words.
+    runs = sorted([*quoted, *((run.start(), run.group(0)) for run in plain if whole(run))])
+    for word in [*(item for _at, item in runs), *(item for at, item in words if not after_a_part(at))]:
         word = word.rstrip(".,;:!?…")
         if len(word) < 3 or word in found or _A_NUMBER.fullmatch(word):
             continue

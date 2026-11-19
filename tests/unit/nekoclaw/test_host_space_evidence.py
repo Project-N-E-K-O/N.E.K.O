@@ -626,7 +626,20 @@ def test_a_path_comes_before_the_clause_it_stands_in_and_a_number_is_none():
     # In quotes, a part with a separator is a path all the same; a bare name is not taken by itself.
     assert paths_named_in("Run `python src/app.py` with the extra flag") == ["python src/app.py", "src/app.py"]
     assert paths_named_in("See `notes.md`, then `vim notes.md`.") == ["notes.md", "vim notes.md"]
-    assert paths_named_in("Open `my report.csv` now.") == ["my report.csv"]
+    # After a word with no separator a name is one (``cat README.md``), as here.
+    assert paths_named_in("Open `my report.csv` now.") == ["my report.csv", "report.csv"]
+    # What is in quotes is taken apart as ever: a command with several files, a name, Chinese around it.
+    assert paths_named_in("先跑 `ruff check a/b.py c/d.py`") == ["ruff check a/b.py c/d.py", "a/b.py", "c/d.py"]
+    assert paths_named_in("Run `pytest tests/a.py tests/b.py`") == ["pytest tests/a.py tests/b.py", "tests/a.py", "tests/b.py"]
+    assert paths_named_in("“先改config/app.yaml后要先跑tests/test_app.py”") == [
+        "config/app.yaml",
+        "tests/test_app.py",
+        "先改config/app.yaml后要先跑tests/test_app.py",
+    ]
+    assert paths_named_in("用户说“先读report.csv再改”") == ["report.csv"]
+    assert paths_named_in("Run `cat README.md` first") == ["cat README.md", "README.md"]
+    # Quotes paired by mistake (an inch mark): what they enclose is no path, and what is in it still counts.
+    assert paths_named_in('A 5" screen; see src/a.py, src/b.py and "lib/c.py"') == ["src/a.py", "src/b.py", "lib/c.py"]
     assert paths_named_in("1.2.3 and 10.0 and 2026.11 and .5.") == []
 
 
