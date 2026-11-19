@@ -591,7 +591,10 @@ async def test_question_for_the_user_waits_and_the_answer_goes_back(hosts, tmp_p
     receipt = await _dispatch(host, "sort the photos")
 
     waiting = await wait_status(host, receipt.commission_id, "waiting_user")
-    assert waiting.question() == {"kind": "questions", "questions": questions}
+    question = waiting.question()
+    # (Which question it is: what an answer is read against.)
+    asked_id = question.pop("id")
+    assert asked_id and question == {"kind": "questions", "questions": questions}
     (asked,) = await outbox(host, "question")
     assert asked.payload["task_id"] == receipt.commission_id
     assert asked.payload["question"]["questions"] == questions
@@ -652,7 +655,9 @@ async def test_waiting_report_keeps_the_session_for_the_answer(hosts, tmp_path):
     receipt = await _dispatch(host, "sort the photos")
 
     waiting = await wait_status(host, receipt.commission_id, "waiting_user")
-    assert waiting.question() == {"kind": "report", "question": "Which folder holds the photos?", "details": ""}
+    question = waiting.question()
+    asked_id = question.pop("id")
+    assert asked_id and question == {"kind": "report", "question": "Which folder holds the photos?", "details": ""}
     assert host.task_agents.running == [receipt.commission_id]
     assert len(await outbox(host, "question")) == 1
 
@@ -2214,7 +2219,7 @@ async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hos
     assert sub.lanlan_name == "Lan"
     # The child got its part as its work and may not start task agents itself.
     child_spec = next(spec for spec in specs if not spec.top_level)
-    assert child_spec.disabled_tools == ["subagent", "message_session", "schedule_wake"]
+    assert sorted(child_spec.disabled_tools) == ["message_session", "schedule_wake", "subagent"]
     assert child.requests[0][-1]["content"].startswith("Your part: count the files\nCount the files in the folder.")
     assert "another task agent" in child.requests[0][0]["content"]
     assert "You work for Lan" not in child.requests[0][0]["content"]

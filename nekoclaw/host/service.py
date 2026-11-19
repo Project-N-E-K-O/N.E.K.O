@@ -127,8 +127,19 @@ class NekoClawHost:
         on_builtin_activity: ActivityListener | None = None,
         dsh: Any = None,
         dsh_runtime_factory: Any = None,
+        conversation: Any = None,
     ) -> None:
         self.paths = HostPaths(root)
+        # What she and the user said lately, from which a commission that
+        # opens a new session is handed an excerpt. This process's own
+        # (``conversation.py``), which the agent server feeds, unless
+        # another is given.
+        if conversation is None:
+            from nekoclaw.host.conversation import recent_conversation
+
+            conversation = recent_conversation()
+        self.conversation = conversation
+        self._task_agent_model = task_agent_model
         # Where dsh is, for a user who downloaded it; a page about the
         # runtimes reads and changes it through the methods further down.
         # Only the module that knows where dsh would be is imported here;
@@ -197,6 +208,8 @@ class NekoClawHost:
             space=self.space,
             dsh=self.dsh,
             dsh_runtime_factory=dsh_runtime_factory,
+            conversation=self.conversation,
+            switched_on=enabled,
         )
         # Hands sessions what waits for them: a note another session wrote,
         # a time a task agent set for itself. Started by the first call that
@@ -354,9 +367,11 @@ class NekoClawHost:
         self._first_use()
         return await self.brain.tell(commission_id, text)
 
-    async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
+    async def answer(
+        self, commission_id: str, text: str, *, choice: str | None = None, question_id: str | None = None
+    ) -> bool:
         self._first_use()
-        return await self.brain.answer(commission_id, text, choice=choice)
+        return await self.brain.answer(commission_id, text, choice=choice, question_id=question_id)
 
     async def complete_deferred(self, commission_id: str) -> bool:
         self._first_use()
@@ -397,6 +412,52 @@ class NekoClawHost:
                 logger.warning("dropping the notes written during the stop failed, to be made up for: %s", exc)
             finally:
                 self.wakes.release()
+
+    # -- sessions ---------------------------------------------------------
+    #
+    # For whoever works with sessions as such (a screen that shows what a
+    # commission used; one session asking another something): nothing in
+    # this build calls these yet.
+
+    async def usage(self, commission_id: str) -> dict[str, Any] | None:
+        """Return what a commission has used, what it may, and what its model's sessions are managed for.
+
+        ``TaskAgentManager.usage_of``, with ``window``: what
+        ``ModelCapabilityStore.describe_window`` says of the task agent
+        model as it is configured now (its window, where a conversation is
+        summed up, what was learned of it). None for an unknown commission.
+        """
+        self._first_use()
+        usage = await self.task_agents.usage_of(commission_id)
+        if usage is None:
+            return None
+        window = None
+        try:
+            config = await self._task_agent_model()
+            if config and config.get("model"):
+                window = await self.model_capabilities.describe_window(config.get("base_url"), config.get("model"))
+        except Exception:  # noqa: BLE001 - what was used is told all the same
+            logger.warning("reading the window of the task agent model failed", exc_info=True)
+        return {**usage, "window": window}
+
+    async def fork_session(self, session_id: str, *, name: str | None = None, upto: str | None = None) -> Any:
+        """Make a session from another by copying what was said in it; see ``TaskAgentManager.fork_session``."""
+        self._first_use()
+        return await self.task_agents.fork_session(session_id, name=name, upto=upto)
+
+    async def discard_fork(self, session_id: str) -> bool:
+        """Remove what was said in a session that is a copy of another, now. Returns whether it is gone.
+
+        For a copy that was made to ask something and has answered. Only
+        a session of kind ``fork``; False while a commission is at work
+        in it. Its working directory is the other session's and is not
+        touched.
+        """
+        self._first_use()
+        session = await self.ledger.get_session(session_id)
+        if session is None or session.kind != "fork":
+            return False
+        return await self.space_keeper.clear_session(session_id)
 
     # -- dsh --------------------------------------------------------------
     #
@@ -530,3 +591,11 @@ class NekoClawHost:
             await self.ledger.close()
         except Exception:  # noqa: BLE001 - nothing more can be done for it
             logger.exception("closing the ledger failed")
+        # Copies whose record was still being written: with the ledger
+        # closed that fails, and what was written of them is removed by
+        # tasks of their own. Waited for, for no longer than they try: a
+        # process that ends right after this would cut them off.
+        try:
+            await self.task_agents.forks_settled()
+        except Exception:  # noqa: BLE001 - what is left is left; the host is shut down all the same
+            logger.exception("waiting for the copies that were being put on record failed")

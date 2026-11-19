@@ -1513,6 +1513,17 @@ class DshRuntime:
         # may take its time. The end is announced when it is closed.
         self._close_session(session)
 
+    async def fork(
+        self, session_id: str, *, session_dir: str, source_session_id: str, source_dir: str, upto: str | None = None
+    ) -> None:
+        """Refuse: dsh keeps what was said in its sessions itself and has no command that copies one."""
+        del session_dir, source_session_id, source_dir, upto
+        self._reject(session_id, "fork", "a session that runs in dsh cannot be copied: dsh has no command for it")
+
+    async def compact(self, session_id: str) -> None:
+        """Refuse: dsh sums a conversation up by itself, when it sees fit, and takes no command for it."""
+        self._reject(session_id, "compact", "dsh sums a conversation up by itself and takes no command for it")
+
     def _close_session(self, session: _Session) -> asyncio.Future[None]:
         """Start closing a session, or join the close already under way."""
         if session.closing is None:

@@ -64,8 +64,11 @@ logger = logging.getLogger(__name__)
 _REVIEWED_AT_ONCE = frozenset({"done", "cancelled"})
 _REVIEWABLE = frozenset({"done", "cancelled", "failed"})
 _OUTPUTS_NAME = "outputs"
-# What became of one session that was looked at.
-_REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
+# What became of one session that was looked at. ``_SKIPPED``: left alone
+# because a commission that is worked on in it is still under way (to the
+# scan the same as nothing to remove; to whoever asked for this one session
+# to be cleared, not).
+_REMOVED, _NOTHING, _NOT_REMOVED, _SKIPPED = "removed", "nothing", "not_removed", "skipped"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
 # Reviews that had a model write: the ones a round of tidying makes so many of.
@@ -1148,7 +1151,15 @@ class SpaceKeeper:
             if current is None or current.status == "cleared" or current.last_active_at > until:
                 return _NOTHING
             if await self._ledger.select(session_id=session_id, statuses=ACTIVE_STATUSES, limit=1):
-                return _NOTHING
+                return _SKIPPED
+            # What was copied from it goes with it, and first: a session
+            # made from this one (``fork_session``) holds what was said
+            # here, is of no use once this one starts over from nothing,
+            # and reads what this one kept of long tool output where it
+            # is. While a copy is in use this session stays as it is, and
+            # is looked at again next round.
+            if not await self._clean_copies(current.id):
+                return _NOT_REMOVED
             directory = await asyncio.to_thread(self._session_dir_of, current)
             # A thread cannot be stopped. Cancelled (the host shutting down),
             # this still waits for the removing to finish before the hold
@@ -1165,6 +1176,32 @@ class SpaceKeeper:
         finally:
             if self._release_files is not None:
                 self._release_files(session_id)
+
+    async def _clean_copies(self, session_id: str) -> bool:
+        """Remove what was said in the sessions copied from a session. False while one of them is in use."""
+        for copy in await self._ledger.forks_of(session_id):
+            if copy.status == "cleared":
+                continue
+            # By what became of it just now, not by asking again whether a
+            # commission is under way in it: that may have changed since.
+            if await self._clean_one(copy.id, float("inf")) in (_NOT_REMOVED, _SKIPPED):
+                return False
+        return True
+
+    async def clear_session(self, session_id: str) -> bool:
+        """Remove what was said in a session now, however lately it was in use. Returns whether nothing of it is left.
+
+        For a session whose owner is done with it (a copy that was made to
+        ask something). As when an old session is cleaned: only what the
+        runtime wrote into the session's own directory, never its working
+        directory; not while a commission is at work in it or waits for
+        it; and the session is ``cleared`` afterwards.
+        """
+        if self._session_dir_of is None:
+            return False
+        # Removed, or nothing was there. Not: in use, or left alone for a
+        # commission that is still under way in it.
+        return await self._clean_one(session_id, float("inf")) in (_REMOVED, _NOTHING)
 
     @staticmethod
     def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:

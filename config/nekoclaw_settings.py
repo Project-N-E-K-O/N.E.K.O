@@ -134,16 +134,22 @@ the same tendency."""
 QUERY_LEDGER_ROWS = 8
 """Most commissions one query answer lists."""
 
-QUERY_RESULT_MAX_TOKENS = 400
+QUERY_RESULT_MAX_TOKENS = 520
 """Cap on the text of one query answer."""
 
-QUERY_ROW_MAX_TOKENS = 80
-"""Cap on one commission line in a query answer."""
+QUERY_ROW_MAX_TOKENS = 100
+"""Cap on one commission line in a query answer: its title, where it stands,
+what it used so far (``QUERY_USAGE_MAX_TOKENS``) and what came of it."""
 
-QUERY_PERMISSION_ROW_MAX_TOKENS = 120
+QUERY_PERMISSION_ROW_MAX_TOKENS = 140
 """Cap on the line of a commission that waits for a permission. It names what
 is to be allowed and lists the answers on offer, which in some languages do
 not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length."""
+
+QUERY_USAGE_MAX_TOKENS = 16
+"""Room in a commission line for what the commission used so far (a number
+of tokens, in a few words). The caps above were raised by about this much
+when it was added, so a line says as much of its commission as before."""
 
 QUERY_RECENT_SECONDS = 24 * 3600.0
 """How far back finished commissions are still listed by a query."""
@@ -256,6 +262,104 @@ never sent to a model). Longer runs of output are split into several rows."""
 
 TASK_AGENT_CHILD_RESULT_MAX_TOKENS = 3000
 """Cap on a child task agent's result when it is handed back to its parent."""
+
+# -- the excerpt of the main dialogue a new session is handed ---------------
+
+TASK_AGENT_EXCERPT_MAX_TOKENS = 1000
+"""Cap on the excerpt of the main dialogue in the message that opens a
+commission in a new session: what she and the user said just before, word for
+word, from the newest back. It is in that session's conversation from then
+on, so every request of the session carries it until the conversation is
+summed up. 0 hands no excerpt over."""
+
+TASK_AGENT_EXCERPT_MESSAGE_MAX_TOKENS = 300
+"""Cap on one message within that excerpt: a long one (she read something
+out, the user pasted a text) does not push the others out."""
+
+TASK_AGENT_EXCERPT_MAX_AGE_SECONDS = 1800.0
+"""How old a message may be to be part of an excerpt. What was said longer
+ago is not what a sentence dispatched now refers to."""
+
+TASK_AGENT_EXCERPT_KEPT_MESSAGES = 24
+"""How many messages of the main dialogue the agent process keeps in memory
+for each character to make excerpts from (``nekoclaw/host/conversation.py``).
+More than an excerpt takes: short messages fit by the dozen."""
+
+TASK_AGENT_EXCERPT_KEPT_CHARS = 4000
+"""How much of one message is kept there, in characters: a bound on memory,
+not on what a model is sent (that is the token cap above)."""
+
+# -- what a commission uses, and how much it may -----------------------------
+
+TASK_AGENT_USAGE_LIMIT_TOKENS = 5_000_000
+"""How many tokens the work on one commission may use before the user is
+asked whether it is to go on: what every model request sent and got back,
+input read from a provider's cache included, the requests of the task agents
+it started counted with its own. When that much is used the commission waits
+for the user before its next request; allowed, it gets as much again from
+there, and is asked again when that is used; refused, the task agent is told
+to hand over what it has. A conversation at the length it is summed up from
+(``TASK_AGENT_COMPACT_AT_TOKENS``) gets here in about 29 requests. 0 sets no
+limit. Not applied in dsh, which makes its requests by itself."""
+
+TASK_AGENT_USAGE_WIND_UP_REQUESTS = 4
+"""How many model requests a task agent gets to hand over what it has once
+the user allowed no more: enough to write it down and report. They are
+counted with what the commission used and are not held back for it. When
+they are used and nothing was reported, the commission is put down as stuck,
+with the reason."""
+
+# -- copying a session -------------------------------------------------------
+
+TASK_AGENT_FORK_SECONDS = 60.0
+"""How long the runtime gets to copy a session's record
+(``TaskAgentManager.fork_session``): a record is a file of a few megabytes at
+the most, and the time is mostly a runtime process coming up."""
+
+TASK_AGENT_FORK_WITHHELD_TOOLS = ("write", "edit", "bash", "pwsh", "subagent", "capability_call", "note_lesson")
+"""The tools a session that is a copy of another is opened without. It has
+the working directory of the session it was copied from, which may be at
+work there: one working directory is written by one session at a time. A
+copy reads, searches and answers. ``capability_call`` is among them: what
+it reaches (plugin entries, the keyboard and mouse, the browser) can write
+as well, and the gateway refuses a copy's calls besides; ``note_lesson``
+writes into the task agents' space, which later commissions go by. The tools stay in
+what the model is told of (as in the session they were copied from, so a
+provider's cache of that is used) and answer that they are not available."""
+
+# -- summing up a session nothing is at work in -------------------------------
+
+TASK_AGENT_IDLE_COMPACT_ENABLED = False
+"""Whether the host sums up the conversation of a session that has been idle
+for a while (below), so that the commission that comes next sends a summary
+instead of all of it. Off: it is one more model request for each time, and
+what it saves depends on the provider and on whether anything comes next;
+see the design, section 17."""
+
+TASK_AGENT_IDLE_COMPACT_AFTER_SECONDS = 3600.0
+"""How long after its last commission ended a session is summed up. Longer
+than providers keep the head of a request in their cache: summed up while
+that is kept, the next commission would lose what it could have read from
+the cache for a tenth of the price."""
+
+TASK_AGENT_IDLE_COMPACT_MIN_TOKENS = 100_000
+"""How long a session's conversation has to be, as of its last request, for
+it to be summed up while idle. A shorter one costs more to sum up than its
+next requests save."""
+
+TASK_AGENT_IDLE_COMPACT_MIN_GAP_SECONDS = 6 * 3600.0
+"""Least time between two times the same session is summed up while idle."""
+
+TASK_AGENT_IDLE_COMPACTS_PER_DAY = 6
+"""Most times within 24 hours the host tells an idle session to sum itself
+up, all sessions together: each is one model request of up to the length
+of a whole conversation. Counted when the session is told to, whatever
+becomes of the summary; those on their way to it count as well."""
+
+TASK_AGENT_IDLE_COMPACT_SECONDS = 300.0
+"""How long one such summing up may take, the session being opened for it
+included; cut short after that, and when a commission is to be worked on in
+the session."""
 
 DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""

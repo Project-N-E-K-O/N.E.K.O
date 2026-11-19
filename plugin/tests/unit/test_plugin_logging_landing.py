@@ -1,6 +1,7 @@
 """Public logging contracts across standalone, embedded and forked hosts."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -165,6 +166,171 @@ def test_parent_initialization_then_real_fork_rebinds_both_logger_apis(isolated_
     assert "parent-marker" not in child
     plogging.logger.info("parent-after-fork-marker")
     assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
+
+
+_POSIX_FORK = pytest.mark.skipif(not hasattr(os, "fork") or not hasattr(os, "mkfifo"),
+                                 reason="requires POSIX fork")
+
+
+@contextlib.contextmanager
+def _parked_fifo_stream(path: Path):
+    """Yield (stream, drain) where a parent thread holds the stream's buffer lock.
+
+    A FIFO nobody drains blocks the raw write while BufferedWriter's internal
+    lock is held, which is the state a fork may copy into a child.
+    """
+    import fcntl
+    import select
+    import threading
+
+    os.mkfifo(path)
+    reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    readable = select.poll()  # Unlike select(), poll() has no descriptor-number limit.
+    readable.register(reader, select.POLLIN)
+
+    def drain(timeout_ms=0):
+        """Read one chunk if available, keeping it in drain.received; return its size."""
+        if not readable.poll(timeout_ms):
+            return 0
+        chunk = os.read(reader, 1 << 16)
+        drain.received += chunk
+        return len(chunk)
+
+    drain.received = bytearray()
+
+    writer = stream = None
+    try:
+        stream = open(path, "w", encoding="utf-8")
+        # Exceed the pipe capacity (1 MiB on 64 KiB-page kernels) so the write stays parked.
+        payload = 1 << 20
+        if hasattr(fcntl, "F_GETPIPE_SZ"):
+            payload = max(payload, 2 * fcntl.fcntl(reader, fcntl.F_GETPIPE_SZ))
+        # Bind the FIFO now so a late-starting writer can never hit a restored stream.
+        writer = threading.Thread(target=stream.write, args=("x" * payload,), daemon=True)
+        writer.start()
+        assert readable.poll(10_000), "parent writer never reached the raw write"
+        yield stream, drain
+    finally:
+        try:
+            while writer is not None and writer.is_alive():
+                drain(100)
+        finally:
+            # Without a reader, any write still pending fails with EPIPE instead of blocking.
+            os.close(reader)
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+
+
+def _run_forked(child_main, drain, hang_message):
+    """Run child_main() in a fork; its return value is the exit code. Never hangs."""
+    import signal
+    import time
+
+    child = os.fork()
+    if child == 0:
+        try:
+            os._exit(child_main())
+        except BaseException:  # Nothing may unwind into the parent's pytest session.
+            import traceback
+            traceback.print_exc()
+            os._exit(1)
+    try:
+        deadline = time.monotonic() + 20
+        while True:
+            done, status = os.waitpid(child, os.WNOHANG)
+            if done:
+                child = None
+                return os.waitstatus_to_exitcode(status)
+            if time.monotonic() > deadline:
+                pytest.fail(hang_message)
+            drain(50)  # Child output may share the FIFO; never let it fill.
+    finally:
+        if child is not None:  # Timed out or interrupted: never leave the child behind.
+            with contextlib.suppress(ChildProcessError):  # Already reaped.
+                if os.waitpid(child, os.WNOHANG)[0] == 0:
+                    os.kill(child, signal.SIGKILL)
+                    os.waitpid(child, 0)
+
+
+@_POSIX_FORK
+def test_fork_while_parent_thread_writes_does_not_flush_inherited_file_stream(isolated_log_dir, tmp_path):
+    """A child must not flush a file buffer whose lock a parent thread held at fork."""
+    from plugin.core.host import _setup_plugin_logger
+
+    plogging.setup_plugin_logging("PluginServer", own_root=True)
+    logging.getLogger("runtime-test.before-fork").info("parent-marker")
+    handler = plogging._active_file_handler("PluginServer")
+    assert handler is not None and handler.stream is not None
+    original_stream, original_max_bytes = handler.stream, handler.maxBytes
+
+    def child_main():
+        inherited = handler.stream
+        _setup_plugin_logger("demo", Path(__file__).resolve().parents[3])
+        logging.getLogger("runtime-test.child").info("child-marker")
+        # Reading .closed takes no buffer lock; the child's descriptor is released.
+        return 0 if handler.stream is None and inherited.closed else 2
+
+    with _parked_fifo_stream(tmp_path / "parent-sink.fifo") as (fifo_stream, drain):
+        try:
+            handler.maxBytes = 0  # A FIFO cannot report a rollover position.
+            handler.stream = fifo_stream
+            code = _run_forked(child_main, drain, "child blocked flushing a file stream inherited over fork")
+        finally:
+            handler.stream, handler.maxBytes = original_stream, original_max_bytes
+    assert code == 0
+    assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-marker") == 1
+    plogging.logger.info("parent-after-fork-marker")
+    assert "parent-after-fork-marker" in _read(isolated_log_dir, "PluginServer")
+
+
+@_POSIX_FORK
+def test_fork_while_parent_thread_writes_stdout_gives_child_fresh_std_streams(
+        isolated_log_dir, tmp_path):
+    """stdout shares the inherited-buffer hazard, and the child keeps writing to it."""
+    import sys
+    from plugin.core.host import _setup_plugin_logger
+
+    with _parked_fifo_stream(tmp_path / "stdout.fifo") as (fifo_stream, drain):
+        saved_stdout, sys.stdout = sys.stdout, fifo_stream
+        console = logging.StreamHandler(fifo_stream)
+        library = logging.getLogger("runtime-test.inherited-console")
+        library.addHandler(console)
+        try:
+            def child_main():
+                print("child-print-marker", flush=True)
+                library.warning("child-inherited-console-marker")  # Retargeted handler.
+                _setup_plugin_logger("demo", Path(__file__).resolve().parents[3])
+                logging.getLogger("runtime-test.child").info("child-console-marker")
+                return 0 if sys.stdout is not fifo_stream and console.stream is sys.stdout else 2
+
+            code = _run_forked(child_main, drain, "child blocked writing to stdout inherited over fork")
+            while drain():
+                pass  # Collect child output still queued behind the parent's payload.
+        finally:
+            library.removeHandler(console)
+            sys.stdout = saved_stdout
+    assert code == 0
+    received = bytes(drain.received)
+    for marker in (b"child-print-marker", b"child-inherited-console-marker", b"child-console-marker"):
+        assert received.count(marker) == 1, marker  # Console output reached the real descriptor.
+    assert _read(isolated_log_dir / "plugin", "Plugin_demo").count("child-console-marker") == 1
+
+
+@_POSIX_FORK
+def test_fork_hook_keeps_unbuffered_std_streams():
+    """python -u streams have no buffer lock; reopening them would add buffering."""
+    import io
+    import sys
+    from plugin._logging_runtime import reopen_inherited_std_streams
+
+    def child_main():
+        unbuffered = io.TextIOWrapper(io.FileIO(os.dup(1), "w"), write_through=True)
+        sys.stdout = unbuffered
+        reopen_inherited_std_streams()
+        return 0 if sys.stdout is unbuffered else 2
+
+    assert _run_forked(child_main, lambda timeout_ms=0: None, "fork hook blocked") == 0
 
 
 def test_public_file_logger_and_sdk_helpers_use_host_sink(isolated_log_dir):

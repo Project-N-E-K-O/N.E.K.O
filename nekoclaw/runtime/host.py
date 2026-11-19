@@ -129,6 +129,16 @@ The four ``subagent_*`` callbacks are offered together or not at all;
     str}``: when the session is woken. The host starts it again then.
 
 Each of these four is offered when its callback is there.
+
+``budget``  (no tool)
+    Asked before every model request of a run, between two steps: whether
+    what the session works on may use more. Payload: ``{}``. Result:
+    ``{}`` to go on; ``{"notice": str}`` to go on with that text said to the
+    model in front of the request; ``{"stop": true}`` to end the run without
+    the request. The host answers at once while there is room. When there is
+    none it may ask the user first, and the request waits for as long as
+    that takes. Without this callback nothing is asked. A callback that
+    fails does not hold the request up.
 """
 
 from __future__ import annotations
@@ -162,6 +172,7 @@ HOST_CALLS: tuple[str, ...] = (
     "web_search",
     *SUBAGENT_CALLS,
     *SESSION_CALLS,
+    "budget",
 )
 
 
@@ -197,6 +208,7 @@ class HostCallbacks:
     session_read: HostCallback | None = None
     session_send: HostCallback | None = None
     wake_schedule: HostCallback | None = None
+    budget: HostCallback | None = None
 
     @property
     def capabilities(self) -> frozenset[str]:

@@ -16,6 +16,7 @@ from typing import Any
 import psutil
 import pytest
 
+from config.prompts import prompts_nekoclaw as texts
 from nekoclaw.runtime.core import InProcessRuntime, RuntimeCore
 from nekoclaw.runtime.host import HostCallbacks, NoHost
 from nekoclaw.runtime.model import LLMClientProvider
@@ -370,6 +371,44 @@ async def test_a_start_the_child_never_answered_is_reported_when_it_dies(tmp_pat
         ("runtime_exit", None, None),
     ]
     assert after[1]["message"] == "the runtime process exited before the session started"
+    for event in events.events:
+        parse_event(event)
+
+
+async def test_a_copy_the_child_never_made_is_reported_when_it_dies(tmp_path: Path) -> None:
+    events = Recorder()
+    runtime, pipe, feed = _wired(events)
+
+    for name in ("made", "refused", "pending"):
+        await runtime.fork(
+            name, session_dir=str(tmp_path / name), source_session_id="s1", source_dir=str(tmp_path / "s1"), upto="e3"
+        )
+    await runtime.compact("s1")
+    assert [message["type"] for message in pipe.sent] == ["fork", "fork", "fork", "compact"]
+    sent = pipe.sent[0]
+    assert (sent["session_id"], sent["session_dir"], sent["source_session_id"], sent["source_dir"], sent["upto"]) == (
+        "made", str(tmp_path / "made"), "s1", str(tmp_path / "s1"), "e3",
+    )
+    assert pipe.sent[-1]["session_id"] == "s1"
+    # While the runtime is being shut down nothing is sent to be copied.
+    runtime._shutdowns += 1
+    await runtime.fork("late", session_dir=str(tmp_path / "late"), source_session_id="s1", source_dir=str(tmp_path / "s1"))
+    runtime._shutdowns -= 1
+    assert len(pipe.sent) == 4
+    late = events.of("error")[-1]
+    assert (late["session_id"], late["command"]) == ("late", "fork") and "shutting down" in late["message"]
+    feed({"type": "forked", "session_id": "made", "seq": 1, "source_session_id": "s1", "upto": "e3", "entries": 4})
+    feed({"type": "error", "session_id": "refused", "seq": 1, "command": "fork", "message": "no"})
+    mark = len(events.events)
+    feed(None)  # the pipe closed: the child is gone
+
+    # Whoever waits for the copy that was neither made nor refused is told; the other two were answered.
+    after = events.events[mark:]
+    assert [(e["type"], e.get("session_id"), e.get("command")) for e in after] == [
+        ("error", "pending", "fork"),
+        ("runtime_exit", None, None),
+    ]
+    assert after[0]["message"] == "the runtime process exited before the session was copied"
     for event in events.events:
         parse_event(event)
 
@@ -988,3 +1027,142 @@ async def test_a_text_the_runtime_process_cannot_be_sent_is_refused_under_its_nu
     [rejected] = events.of("error")
     assert (rejected["command"], rejected["serial"]) == ("steer", 4)
     assert parse_event(rejected).serial == 4
+
+
+# ---------------------------------------------------------------------------
+# What a host that keeps count is asked, a copy of a session, and a summary on demand: through the child
+# ---------------------------------------------------------------------------
+
+
+async def test_the_child_asks_before_its_requests_copies_a_session_and_sums_one_up_when_told(
+    tmp_path: Path, local_only: None
+) -> None:
+    asked: list[str] = []
+    answers: list[dict[str, Any]] = []
+
+    async def budget(session_id: str, payload: dict) -> dict | None:
+        assert payload == {}
+        asked.append(session_id)
+        return answers.pop(0) if answers else None
+
+    def respond(body: dict) -> list[dict]:
+        last = body["messages"][-1]
+        if last["role"] == "user" and last["content"] == texts.COMPACTION_INSTRUCTION:
+            return [sse_text("## Current Work\n- the four steps are done"), sse_finish(), sse_usage(2_500, 40)]
+        text = _last_user_text(body)
+        if text.startswith("Do step "):
+            index = text.split()[2].rstrip(".")
+            words = " ".join(f"s{index}w{count}" for count in range(300))
+            return [sse_text(f"Finished step {index}. {words}"), sse_finish()]
+        if text.startswith("No more may be used."):
+            return [sse_text("Handing over: four steps are done."), sse_finish()]
+        if text == "Where were we?":
+            return [sse_text("At step 3."), sse_finish()]
+        return [sse_text("Nothing to say."), sse_finish()]
+
+    def model(server: FakeOpenAIServer) -> ModelConfig:
+        return ModelConfig(
+            model="fake-model", base_url=server.base_url, api_key=API_KEY, max_retries=0,
+            context_window=32_000, max_output_tokens=2_000,
+        )
+
+    def system_of(request: dict[str, Any]) -> str:
+        assert request["messages"][0]["role"] == "system"
+        return str(request["messages"][0]["content"])
+
+    async def run(session_id: str, text: str) -> dict[str, Any]:
+        mark = len(events.events)
+        await runtime.prompt(session_id, text)
+        return await events.wait_ended(session_id, timeout=90, start=mark)
+
+    events = Recorder()
+    runtime = SubprocessRuntime(events, HostCallbacks(budget=budget), idle_exit_seconds=120)
+    with FakeOpenAIServer(respond) as server:
+        try:
+            alpha = make_spec(tmp_path, "alpha", model=model(server))
+            await runtime.start(alpha)
+            await events.wait_for(lambda e: e["type"] == "started" and e["session_id"] == "alpha", timeout=90)
+            first_child = runtime.pid
+
+            # The host, in the parent, is asked before every request the child makes.
+            for index in range(4):
+                assert (await run("alpha", f"Do step {index}."))["reason"] == "completed"
+            assert asked == ["alpha"] * 4 and len(server.requests) == 4
+
+            # What it has to say is said to the model in front of the request.
+            answers.append({"notice": "No more may be used. Hand over what you have."})
+            handed = await run("alpha", "Go on.")
+            assert handed["text"] == "Handing over: four steps are done."
+            assert [m["content"] for m in server.requests[-1]["messages"][-2:]] == [
+                "Go on.",
+                "No more may be used. Hand over what you have.",
+            ]
+            # Told to stop, the run ends without a request.
+            answers.append({"stop": True})
+            stopped = await run("alpha", "Once more.")
+            assert stopped["reason"] == "aborted" and len(server.requests) == 5
+            assert asked == ["alpha"] * 6
+
+            # A copy of the session, which is open in the child.
+            beta_dir = tmp_path / "sessions" / "beta"
+            await runtime.fork("beta", session_dir=str(beta_dir), source_session_id="alpha", source_dir=alpha.session_dir)
+            made = await events.wait_for(lambda e: e["type"] in ("forked", "error"), timeout=30)
+            assert (made["type"], made["session_id"], made["source_session_id"]) == ("forked", "beta", "alpha")
+            assert made["entries"] > 0 and made["upto"]
+            assert runtime._pending_forks == set()
+            assert (beta_dir / "transcript.jsonl").is_file()
+            # The copy goes on from there, and its requests begin as the other's did.
+            mark = len(events.events)
+            await runtime.start(make_spec(tmp_path, "beta", model=model(server)))
+            opened = await events.wait_for(lambda e: e["type"] == "started", timeout=90, start=mark)
+            assert (opened["session_id"], opened["resumed"]) == ("beta", True)
+            assert (await run("beta", "Where were we?"))["text"] == "At step 3."
+            copied = server.requests[-1]
+            assert system_of(copied) == system_of(server.requests[0])
+            said = [str(m["content"]) for m in copied["messages"]]
+            assert "Do step 0." in said and "Handing over: four steps are done." in said
+            assert said[-1] == "Where were we?" and asked[-1] == "beta"
+
+            # A record that is not there: said so, and nothing is waited for.
+            mark = len(events.events)
+            await runtime.fork(
+                "delta", session_dir=str(tmp_path / "sessions" / "delta"), source_session_id="nobody",
+                source_dir=str(tmp_path / "sessions" / "nobody"),
+            )
+            refused = await events.wait_for(lambda e: e["type"] == "error", timeout=30, start=mark)
+            assert (refused["session_id"], refused["command"]) == ("delta", "fork")
+            assert runtime._pending_forks == set()
+
+            # Told to sum its conversation up while nothing is under way in it.
+            requests, questions, mark = len(server.requests), len(asked), len(events.events)
+            await runtime.compact("alpha")
+            summed = await events.wait_ended("alpha", timeout=90, start=mark)
+            assert summed["reason"] == "completed" and not summed.get("error")
+            assert len(server.requests) == requests + 1
+            assert server.requests[-1]["messages"][-1]["content"] == texts.COMPACTION_INSTRUCTION
+            assert system_of(server.requests[-1]) == system_of(server.requests[0])
+            assert [e["count"] for e in events.of("compacted", "alpha")] == [1]
+            told = [(e["summary"], e["input"], e["output"]) for e in events.of("usage", "alpha")]
+            assert told == [(True, 2_500, 40)]
+            # That request is the session's own, of no run: the host is not asked about it.
+            assert len(asked) == questions
+            # A session the child does not have.
+            mark = len(events.events)
+            await runtime.compact("nobody")
+            refused = await events.wait_for(lambda e: e["type"] == "error", timeout=30, start=mark)
+            assert (refused["session_id"], refused["command"]) == ("nobody", "compact")
+
+            # No child runs: one is brought up for a copy.
+            await runtime.shutdown()
+            assert runtime.pid is None
+            mark = len(events.events)
+            gamma_dir = tmp_path / "sessions" / "gamma"
+            await runtime.fork("gamma", session_dir=str(gamma_dir), source_session_id="alpha", source_dir=alpha.session_dir)
+            made = await events.wait_for(lambda e: e["type"] in ("forked", "error"), timeout=90, start=mark)
+            assert (made["type"], made["session_id"], made["source_session_id"]) == ("forked", "gamma", "alpha")
+            assert runtime.pid not in (None, first_child)
+            assert (gamma_dir / "transcript.jsonl").is_file() and runtime._pending_forks == set()
+            for event in events.events:
+                parse_event(event)
+        finally:
+            await runtime.shutdown()
