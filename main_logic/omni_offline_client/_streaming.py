@@ -1180,6 +1180,23 @@ class _StreamingMixin:
             in_flight_messages = self._in_flight_user_messages = {}
         in_flight_messages[asyncio.current_task()] = user_message
         _in_flight_user_messages_owner = in_flight_messages
+
+        def _hold_in_flight_for_resend() -> None:
+            """Register the turn again before a retry / reroll resends it.
+
+            The registration ends at the first chunk; an attempt that fails
+            after it (or a reroll) sends the same message again, so another
+            turn starting during the backoff must not strip its live frames.
+            Released as before: at the next first chunk, or when the call ends.
+            """
+            nonlocal _in_flight_user_messages_owner
+            if _in_flight_user_messages_owner is not None:
+                return
+            registry = getattr(self, "_in_flight_user_messages", None)
+            if registry is None:
+                registry = self._in_flight_user_messages = {}
+            registry[asyncio.current_task()] = user_message
+            _in_flight_user_messages_owner = registry
         if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
             # Consent was revoked while this turn was being assembled: its
             # proactive screenshot must not go out (no await since append).
@@ -2069,6 +2086,8 @@ class _StreamingMixin:
                             guard_attempt += 1
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
+                            if will_retry:
+                                _hold_in_flight_for_resend()
 
                             # Frontend max_attempts reports total attempts,
                             # not rerolls (which exclude initial attempt). Frontend attempt
@@ -2356,6 +2375,9 @@ class _StreamingMixin:
                         break
 
                 except _llm_retry_error_types() as e:
+                    # Synchronously, before any await below: a retry resends
+                    # this turn's message.
+                    _hold_in_flight_for_resend()
                     if not observation_committed:
                         observation_failed = True
                     # A failed stream's text is discarded below, never kept.

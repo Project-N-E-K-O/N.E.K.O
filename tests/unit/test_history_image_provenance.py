@@ -630,3 +630,41 @@ async def test_turn_stops_counting_as_in_flight_once_the_provider_answers():
     ), timeout=5)
     assert at_request == [1]     # registered while the request is on its way
     assert at_first_text == [0]  # released as soon as the provider answered
+
+
+@pytest.mark.asyncio
+async def test_turn_retried_after_its_first_chunk_keeps_its_live_frames():
+    """An attempt failing mid-stream is retried with the same message.
+
+    Another turn starting during the backoff strips answered live frames; it
+    must leave this turn's frames for the retry.
+    """
+    from unittest.mock import patch
+
+    from tests.unit.test_offline_provider_frame_publish import _SLEEP, _connection_error
+
+    client = _client()
+
+    async def fail_mid_stream():
+        raise _connection_error()
+
+    client.script = [
+        [_text("partial"), fail_mid_stream],
+        [_text("ok"), _text("", "stop")],
+    ]
+    held_during_backoff = []
+
+    async def concurrent_turn_during_backoff(_delay):
+        held_during_backoff.append(len(client._in_flight_user_messages))
+        client._strip_answered_live_frames(skip_in_flight=True)
+
+    with patch(_SLEEP, concurrent_turn_during_backoff):
+        await client.stream_text(
+            "what is on screen?", turn_images=(_png_b64(40, 40),),
+            turn_source="screen", turn_source_count=1,
+        )
+
+    assert len(client.requests) == 2
+    assert held_during_backoff == [1]
+    assert len(_urls(client.requests[-1])) == 1  # the retry still carried the frame
+    assert client._in_flight_user_messages == {}
