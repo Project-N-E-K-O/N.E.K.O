@@ -168,7 +168,7 @@ Source: [base.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sd
 - A `Plugins.get(plugin_id, timeout=5.0)`: Gets a plugin descriptor or `None`. Use when you need metadata before calling.
 - A `Plugins.exists(plugin_id, timeout=5.0)`: Checks whether a plugin exists. Use for optional integrations.
 - A `Plugins.require_enabled(plugin_id, timeout=5.0)`: Requires a plugin to exist and be enabled. Use for hard dependencies.
-- A `Plugins.call_entry(entry_ref, params=None, timeout=10.0)`: Calls `<plugin_id>:<entry_id>`. Prefer this for normal plugin entry calls. The effective timeout is capped at 60 s. Do not call your own plugin, or call while holding a lock: nothing detects the cycle and the call waits until it times out.
+- A `Plugins.call_entry(entry_ref, params=None, timeout=10.0)`: Calls `<plugin_id>:<entry_id>`. Prefer this for normal plugin entry calls. The effective timeout is capped at 60 s. Nothing detects a cycle: a call made while holding a lock the callee needs, or two plugins waiting on each other, waits until it times out.
 - A `Plugins.call_event(event_ref, params=None, timeout=10.0)`: Calls `<plugin_id>:<event_type>:<event_id>`. Use for non-entry event types.
 - A `Plugins.call_entry_json(entry_ref, args=None, timeout=10.0)`: Calls an entry and requires object/None payload. Use when downstream code expects a JSON object.
 - A `Plugins.call_event_json(event_ref, args=None, timeout=10.0)`: Calls an event and requires object/None payload. Use for structured event integration.

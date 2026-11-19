@@ -76,9 +76,10 @@ Consequences:
   success. Work inside `asyncio.to_thread` cannot be cancelled and keeps
   running after the timeout; give it its own deadline.
 - Calls to other plugins (`self.plugins.call_entry`) are capped at 60 s.
-  There is no cycle detection between plugins, only a call-depth limit (32),
-  so a plugin calling itself, or calling while holding a lock the callee
-  needs, waits until it times out.
+  There is no cycle detection between plugins, only a call-depth limit (32).
+  A call that can only finish once the caller moves on (calling while holding
+  a lock the callee needs, or two plugins waiting on each other) is not
+  noticed and waits until it times out.
 
 ## Other Threads
 

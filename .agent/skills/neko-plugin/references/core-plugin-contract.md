@@ -237,8 +237,9 @@ class SearchRouter(PluginRouter):
 
     @plugin_entry(id="search")
     async def search(self, query: str, **_):
-        await self.main_plugin.do_search(query)  # plugin-only APIs via main_plugin
-        return Ok({})
+        hits = [query]                          # your search logic
+        self.main_plugin.logger.info("hits=%d", len(hits))  # plugin APIs via main_plugin
+        return Ok({"hits": hits})
 
 
 @neko_plugin
