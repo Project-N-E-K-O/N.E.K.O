@@ -37,7 +37,7 @@ from ._shared import (
     logger,
     router,
 )
-from .crud import _clear_character_recent_history
+from .crud import _clear_character_recent_history, _preempt_recent_history_summary
 
 
 class LanguagePreferenceConflictError(Exception):
@@ -264,6 +264,7 @@ async def _reconcile_after_language_change(
     # Let the startup keep its lifecycle ownership; the durable/live language
     # update above and the guarded recent-history clear below still take effect.
     if manager is not None and not getattr(manager, "is_starting", False):
+        await _preempt_recent_history_summary(getattr(manager, "sync_message_queue", None), name)
         expected_session = (
             getattr(manager, "session", None)
             if getattr(manager, "is_active", False)

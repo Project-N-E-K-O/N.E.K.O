@@ -91,6 +91,8 @@ from ._shared import logger, validate_lanlan_name
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
 from .rows import _has_human_messages
 from memory.recent import (
+    RecentHistoryWriteBlocked,
+    RecentHistoryWriteNotStarted,
     TheaterEpisodeRetracted,
     _positive_metadata_int,
     is_retracted_theater_episode,
@@ -101,6 +103,7 @@ from .runtime import app
 
 class HistoryRequest(BaseModel):
     input_history: str
+    flush_pending: bool = False
     language: str | None = None
     render_language: str | None = None
     # Theater archive request id; /cache accepts it only on a theater episode write.
@@ -1231,6 +1234,10 @@ async def api_restore_legacy_dedup(request: Request, lanlan_name: str):
     return {"ok": True, "restored": restored, "restored_as_new_ids": True}
 
 
+def _recent_history_write_rejection(exc: RecentHistoryWriteBlocked | RecentHistoryWriteNotStarted) -> dict:
+    return {"status": "error", "message": str(exc), "write_started": False}
+
+
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """The "lightweight persistence" endpoint at every turn end: writes recent.json +
@@ -1285,6 +1292,17 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
         gates._touch_activity()
         try:
             input_history = convert_to_messages(json.loads(request.input_history))
+            if request.flush_pending:
+                if input_history or request.idempotency_key:
+                    return {"status": "error", "message": "pending flush needs an empty unkeyed batch"}
+                async with runtime._get_settle_lock(lanlan_name):
+                    try:
+                        persisted = await runtime.recent_history_manager.update_history([], lanlan_name, compress=False)
+                    except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
+                        return _recent_history_write_rejection(exc)
+                if persisted is not True:
+                    return {"status": "error", "message": "pending recent history not persisted"}
+                return {"status": "cached", "count": 0}
             if not input_history:
                 if _KEYED_CACHE_KEY_RE.fullmatch(str(request.idempotency_key or "").strip()) is not None:
                     # Keyed writes cannot use the empty-batch-is-cached shortcut: callers would treat diary writing as complete.
@@ -1325,6 +1343,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] cache: {lanlan_name} +{len(input_history)} 条消息")
             uid = str(uuid4())
             retracted_request = False
+            recent_persisted = None
             theater_index_events = {}
             async with runtime._get_settle_lock(lanlan_name):
                 if theater_episode_batch:
@@ -1356,11 +1375,14 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                             updated_theater_history,
                         )
                 else:
-                    await runtime.recent_history_manager.update_history(
-                        input_history,
-                        lanlan_name,
-                        compress=False,
-                    )
+                    try:
+                        recent_persisted = await runtime.recent_history_manager.update_history(
+                            input_history,
+                            lanlan_name,
+                            compress=False,
+                        )
+                    except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
+                        return _recent_history_write_rejection(exc)
                 if retracted_request:
                     pass
                 elif theater_episode_batch:
@@ -1403,7 +1425,10 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
                 render_language=request.render_language,
                 locale_admission_order=locale_admission_order,
             )
-            return {"status": "cached", "count": len(input_history)}
+            result = {"status": "cached", "count": len(input_history)}
+            if recent_persisted is False:
+                result["recent_persisted"] = False
+            return result
         except Exception as e:
             logger.error(f"[MemoryServer] cache 失败: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
@@ -1938,13 +1963,16 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             logger.info(f"[MemoryServer] 收到 {lanlan_name} 的对话历史处理请求，消息数: {len(input_history)}")
             # Not under the settle lock, but a starting session waits for this request to come
             # back (its memory writes are flushed first), so its summary is preemptible too.
-            with runtime._summary_preemption(lanlan_name) as preempted:
-                await runtime.recent_history_manager.update_history(
-                    input_history,
-                    lanlan_name,
-                    on_compress_done=review._on_compress_done,
-                    preempted=preempted,
-                )
+            try:
+                with runtime._summary_preemption(lanlan_name) as preempted:
+                    await runtime.recent_history_manager.update_history(
+                        input_history,
+                        lanlan_name,
+                        on_compress_done=review._on_compress_done,
+                        preempted=preempted,
+                    )
+            except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
+                return _recent_history_write_rejection(exc)
             await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Asynchronous fact extraction (nonblocking response, silently skip failures).
@@ -2001,14 +2029,17 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
             # Lock first-turn summary, blocking /new_dialog until summary and timestamp persist.
             # A cold-start /new_dialog preempts the summary instead (see runtime._preempting_summaries).
             async with runtime._get_settle_lock(lanlan_name):
-                with runtime._summary_preemption(lanlan_name) as preempted:
-                    await runtime.recent_history_manager.update_history(
-                        input_history,
-                        lanlan_name,
-                        detailed=True,
-                        on_compress_done=review._on_compress_done,
-                        preempted=preempted,
-                    )
+                try:
+                    with runtime._summary_preemption(lanlan_name) as preempted:
+                        await runtime.recent_history_manager.update_history(
+                            input_history,
+                            lanlan_name,
+                            detailed=True,
+                            on_compress_done=review._on_compress_done,
+                            preempted=preempted,
+                        )
+                except (RecentHistoryWriteBlocked, RecentHistoryWriteNotStarted) as exc:
+                    return _recent_history_write_rejection(exc)
                 await runtime.time_manager.astore_conversation(uid, input_history, lanlan_name)
 
             # Run the following outside lock, without blocking /new_dialog.

@@ -452,6 +452,13 @@
             I.clearMessages();
         });
 
+        for (const eventName of ['neko:conversation-settings-hydrated',
+            'neko:core-api-capability-changed', 'neko:independent-asr-preference-changed']) {
+            window.addEventListener(eventName, () => I.renderWindow());
+        }
+        window.addEventListener('storage', event => {
+            if (event.key === 'project_neko_settings') queueMicrotask(() => I.renderWindow());
+        });
         window.addEventListener('chat-avatar-display-updated', I.refreshAssistantAvatarUrls);
         window.addEventListener('chat-avatar-preview-updated', I.refreshAssistantAvatarUrls);
         window.addEventListener('chat-avatar-preview-cleared', I.refreshAssistantAvatarUrls);

@@ -334,8 +334,9 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
             await bridge_start()
 
     with contextlib.ExitStack() as stack:
-        # This storage test does not own optional sync work on its temporary loop.
+        # This storage test does not own background workers on its temporary loop.
         stack.enter_context(patch("services.chat_sync.runtime.schedule_desktop_chat_sync_start"))
+        stack.enter_context(patch("services.chat_audio_history.audio_retirement_recovery.start"))
         stack.enter_context(patch.object(main_server, "_IS_MAIN_PROCESS", True))
         stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
         stack.enter_context(patch.object(main_server, "_preload_task", None))
@@ -437,6 +438,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
 
 _SHUTDOWN_CLEANUP_ORDER = [
     "voice",
+    "drain_memory",
     "cleanup",
     "connectors",
     "integration_workers",
@@ -485,6 +487,7 @@ def _patched_shutdown_steps(cleanup_order: list[str], step_factory):
             )
         )
         for target, name in (
+            ("drain_sync_connector_memory", "drain_memory"),
             ("join_sync_connector_threads", "connectors"),
             ("_stop_neko_servers_integration_workers", "integration_workers"),
             ("_run_cloudsave_manager_action", "cloudsave"),

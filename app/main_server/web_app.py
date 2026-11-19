@@ -389,6 +389,7 @@ from main_routers.jukebox_router import router as jukebox_router  # noqa
 from main_routers.live2d_router import router as live2d_router  # noqa
 from main_routers.memory_router import router as memory_router  # noqa
 from main_routers.chat_sync_router import router as chat_sync_router, close_runtime as close_chat_sync_runtime  # noqa
+from main_routers.chat_audio_router import router as chat_audio_router  # noqa
 from main_routers.mmd_router import router as mmd_router  # noqa
 from main_routers.music_router import router as music_router  # noqa
 from main_routers.pages_router import router as pages_router  # noqa
@@ -845,6 +846,7 @@ app.include_router(widget_mode_router)
 app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(watch_together_router)
+app.include_router(chat_audio_router)
 app.include_router(drawing_guess_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)

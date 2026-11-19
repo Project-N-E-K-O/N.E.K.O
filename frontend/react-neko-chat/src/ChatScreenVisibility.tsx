@@ -3,10 +3,12 @@ import { i18n } from './i18n';
 import { hasVisibleMessageContent, type ChatMessage } from './message-schema';
 
 const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set();
+const EMPTY_AUDIO_CLEAR_TIMES: ReadonlyMap<string, number> = new Map();
 const ChatScreenVisibilityContext = createContext({
   hiddenMessageIds: EMPTY_HIDDEN_IDS,
   isMessageHidden: (_message: ChatMessage): boolean => false,
   canClearScreen: false,
+  audioHistoryPaginationBlocked: false,
   clearScreen: () => {},
 });
 
@@ -25,13 +27,16 @@ const isHiddenMessage = (
   || (message.role === 'assistant' && !!message.turnId && hiddenTurnIds.has(message.turnId)
     && !isRecommendationMessage(message));
 
-export function ChatScreenVisibilityProvider({ messages, children }: {
+export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, oldestRecordingTime, children }: {
   messages: ChatMessage[];
+  audioHistoryTarget?: string;
+  oldestRecordingTime?: number;
   children: ReactNode;
 }) {
   const captionTurnRef = useRef('');
   const [hiddenMessageIds, setHiddenMessageIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
   const [hiddenTurnIds, setHiddenTurnIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
+  const [audioHistoryClearedAt, setAudioHistoryClearedAt] = useState(EMPTY_AUDIO_CLEAR_TIMES);
   useEffect(() => {
     // A real host reset starts a new conversation; a visual clear never emits it.
     const reset = (event: Event) => {
@@ -43,6 +48,7 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
       captionTurnRef.current = '';
       setHiddenMessageIds(EMPTY_HIDDEN_IDS);
       setHiddenTurnIds(EMPTY_HIDDEN_IDS);
+      setAudioHistoryClearedAt(EMPTY_AUDIO_CLEAR_TIMES);
     };
     const rememberCaptionTurn = (event: Event) => {
       const turnId = (event as CustomEvent).detail?.turnId;
@@ -62,16 +68,30 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
     };
   }, []);
   const isMessageHidden = useCallback(
-    (message: ChatMessage) => isHiddenMessage(message, hiddenMessageIds, hiddenTurnIds),
-    [hiddenMessageIds, hiddenTurnIds],
+    (message: ChatMessage) => {
+      if (isHiddenMessage(message, hiddenMessageIds, hiddenTurnIds)) return true;
+      const { createdAt } = message;
+      return typeof createdAt === 'number' && message.blocks.some(block =>
+        block.type === 'audio_message' && createdAt <= (audioHistoryClearedAt.get(block.character) ?? -Infinity));
+    },
+    [audioHistoryClearedAt, hiddenMessageIds, hiddenTurnIds],
   );
+  const clearedAt = audioHistoryTarget ? audioHistoryClearedAt.get(audioHistoryTarget) : undefined;
+  const audioHistoryPaginationBlocked = clearedAt !== undefined
+    && (oldestRecordingTime === undefined || oldestRecordingTime <= clearedAt);
+
   const value = useMemo(() => ({
     hiddenMessageIds,
     isMessageHidden,
+    audioHistoryPaginationBlocked,
     canClearScreen: messages.some(message => !isMessageHidden(message) && hasVisibleMessageContent(message)),
     // Keep host messages intact, including streaming IDs and export metadata.
     clearScreen: () => {
       const captionTurnId = captionTurnRef.current;
+      if (audioHistoryTarget) {
+        const clearedAt = Date.now();
+        setAudioHistoryClearedAt(previous => new Map(previous).set(audioHistoryTarget, clearedAt));
+      }
       setHiddenMessageIds(previous => new Set([
         ...previous,
         ...messages.map(message => message.id),
@@ -83,7 +103,7 @@ export function ChatScreenVisibilityProvider({ messages, children }: {
         ...(captionTurnId ? [captionTurnId] : []),
       ]));
     },
-  }), [hiddenMessageIds, isMessageHidden, messages]);
+  }), [audioHistoryPaginationBlocked, audioHistoryTarget, hiddenMessageIds, isMessageHidden, messages]);
   return <ChatScreenVisibilityContext.Provider value={value}>{children}</ChatScreenVisibilityContext.Provider>;
 }
 

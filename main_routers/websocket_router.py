@@ -1295,6 +1295,26 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
+            elif action == "audio_message":
+                audio_manager = session_manager[lanlan_name]
+                save_local = message.get("save_local") is True
+                if save_local:
+                    from .chat_audio_router import local_audio_history_allowed
+
+                    if not local_audio_history_allowed(websocket):
+                        await websocket.send_json({"type": "audio_message_result",
+                                                   "request_id": message.get("request_id"),
+                                                   "state": "rejected", "code": "storage"})
+                        continue
+                _fire_task(audio_manager.submit_audio_message(
+                    message, websocket,
+                    save_local=save_local,
+                    is_current=lambda manager=audio_manager: (
+                        session_manager.get(lanlan_name) is manager
+                        and session_id.get(lanlan_name) == this_session_id
+                    ),
+                ))
+
             elif action == "stream_data":
                 input_type = message.get("input_type")
                 if (

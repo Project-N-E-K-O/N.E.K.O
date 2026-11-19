@@ -43,10 +43,12 @@ import shutil
 import asyncio
 import copy
 import tempfile
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
+from config import MEMORY_SERVER_PORT
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import (
@@ -59,6 +61,7 @@ from ..shared_state import (
 )
 from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
+from services.chat_audio_history import prepare_character_audio_retirement, retire_character_audio
 from utils.character_memory import (
     asave_characters_with_recent_activation,
     begin_character_recent_transaction,
@@ -97,6 +100,7 @@ from utils.external_route_registry import (
     is_character_lifecycle_locked,
 )
 from utils.recent_file import capture_recent_generation, write_recent_payload
+from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -202,6 +206,25 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
     set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
 
 
+async def _preempt_recent_history_summary(queue, character_name: str) -> None:
+    write_lock = getattr(queue, "deferred_memory_lock", None)
+    if write_lock is None or not write_lock.locked():
+        return
+    # A cache request can hold the local lock while waiting behind a summary
+    # whose caller timed out. The short preemption window also covers summary
+    # requests admitted just after this call, moving their compression to background.
+    try:
+        encoded_name = quote(character_name, safe="")
+        async with asyncio.timeout(1.0):
+            response = await get_internal_http_client().post(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/preempt_summary/{encoded_name}",
+                timeout=1.0,
+            )
+            response.raise_for_status()
+    except Exception:
+        logger.debug("Failed to preempt summary before recent history clear", exc_info=True)
+
+
 async def _clear_character_recent_history(
     config_manager,
     character_name: str,
@@ -211,20 +234,32 @@ async def _clear_character_recent_history(
     recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
     if expected_generation is None:
         expected_generation = capture_recent_generation(recent_path)
-    assert_cloudsave_writable(
-        config_manager,
-        operation="save",
-        target=f"memory/{character_name}/recent.json",
-    )
-    # Use utils.recent_file's per-path lock: merged single-process mode places memory_server writers
-    # in this same process, so bare atomic_write_json_async bypasses exclusion. The underlying atomic writer
-    # creates parents after successful generation checks; stale callbacks must not recreate them early.
-    await asyncio.to_thread(
-        write_recent_payload,
-        recent_path,
-        [],
-        expected_generation=expected_generation,
-    )
+    manager = None
+    with suppress(RuntimeError):
+        manager = (get_session_manager() or {}).get(character_name)
+    queue = getattr(manager, "sync_message_queue", None)
+    retry_lock = getattr(queue, "deferred_memory_lock", None)
+    async def clear_and_invalidate():
+        assert_cloudsave_writable(
+            config_manager,
+            operation="save",
+            target=f"memory/{character_name}/recent.json",
+        )
+        # Use the per-path lock and identity generation in merged and split mode.
+        await asyncio.to_thread(
+            write_recent_payload,
+            recent_path,
+            [],
+            expected_generation=expected_generation,
+        )
+        if retry_lock is not None:
+            queue.recent_context_version += 1
+
+    # Preempt the summary before waiting for the lock. The request still owns
+    # the write order until its append and remaining settlement have finished.
+    await _preempt_recent_history_summary(queue, character_name)
+    async with retry_lock or nullcontext():
+        await await_retirement(clear_and_invalidate())
 
 
 def _normalize_prompt_synced_field_value(value):
@@ -2159,6 +2194,19 @@ async def _cleanup_deleted_chat_avatar(directory, uid):
         return False
 
 
+async def _cleanup_deleted_chat_resources(avatar_directory, uid):
+    avatar_ok, audio_ok = await await_retirement(asyncio.gather(
+        _cleanup_deleted_chat_avatar(avatar_directory, uid),
+        retire_character_audio(avatar_directory.parent, uid),
+    ))
+    failures = {}
+    if not avatar_ok:
+        failures.update(partial_success=True, chat_avatar_cleanup_failed=True)
+    if not audio_ok:
+        failures.update(partial_success=True, chat_audio_cleanup_failed=True)
+    return failures
+
+
 async def _delete_catgirl_by_name_serialized(name: str):
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
@@ -2236,6 +2284,14 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
             exc, numeric_theater_root, "删除角色预检失败",
         )
 
+    try:
+        await prepare_character_audio_retirement(deleted_avatar_directory.parent, deleted_character_uid)
+    except (OSError, ValueError):
+        logger.warning("删除角色前无法登记语音清理，已阻止删除")
+        return JSONResponse(
+            {"success": False, "error_code": "CHAT_AUDIO_RETIREMENT_UNAVAILABLE"}, status_code=409,
+        )
+
     if not safe_path_name:
         logger.warning("正在执行历史非法角色名救援删除，仅移除配置，不触碰角色文件路径: %s", name)
         characters_snapshot = copy.deepcopy(characters)
@@ -2266,9 +2322,9 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
                     raise RuntimeError("notify_memory_server_reload returned False")
             except asyncio.CancelledError:
                 # The old rescue path leaves a published config delete committed
-                # on cancellation. Retire only its UID-owned display resource.
+                # on cancellation. Retire its UID-owned local chat resources.
                 if unsafe_config_deleted:
-                    await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
+                    await _cleanup_deleted_chat_resources(deleted_avatar_directory, deleted_character_uid)
                 raise
             except MaintenanceModeError as exc:
                 rollback_error = await _rollback_character_operation(
@@ -2308,14 +2364,14 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         # characters.json retired and silently drop every later write.
         retire_character_runtime_caches(name)
 
-        avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
+        chat_cleanup = await _cleanup_deleted_chat_resources(deleted_avatar_directory, deleted_character_uid)
         return {
             "success": True,
             "unsafe_name_rescue": True,
             "memory_deleted": False,
             "card_face_deleted": False,
             "memory_server_reloaded": memory_server_reloaded,
-            **({"partial_success": True, "chat_avatar_cleanup_failed": True} if not avatar_cleanup_ok else {}),
+            **chat_cleanup,
         }
 
     characters_snapshot = copy.deepcopy(characters)
@@ -2560,7 +2616,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         finally:
             release_character_recent_transaction(recent_transaction)
             if delete_committed:
-                avatar_cleanup_ok = await _cleanup_deleted_chat_avatar(deleted_avatar_directory, deleted_character_uid)
+                chat_cleanup = await _cleanup_deleted_chat_resources(deleted_avatar_directory, deleted_character_uid)
 
     pending_remove_ok = True
     pending_remove_error = ""
@@ -2571,9 +2627,7 @@ async def _delete_catgirl_transaction(_config_manager, characters, name: str):
         pending_remove_error = str(exc)
         logger.exception("remove new character greeting pending failed: %s", name)
 
-    result = {"success": True, "memory_server_reloaded": memory_server_reloaded}
-    if not avatar_cleanup_ok:
-        result.update({"partial_success": True, "chat_avatar_cleanup_failed": True})
+    result = {"success": True, "memory_server_reloaded": memory_server_reloaded, **chat_cleanup}
     if not pending_remove_ok:
         result["partial_success"] = True
         result["pending_remove_ok"] = False

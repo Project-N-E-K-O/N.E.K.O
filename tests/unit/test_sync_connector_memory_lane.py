@@ -128,7 +128,8 @@ async def test_hot_reset_memory_failure_is_not_shown_to_the_user(connector, fail
 
 @pytest.mark.asyncio
 async def test_rejected_turn_end_cache_is_resent_with_the_next_write(connector):
-    memory = _Memory(results={"cache": [(False, "HTTP 503", {}), (True, "", {})]})
+    rejection = (False, "storage unavailable", {"status": "error", "write_started": False})
+    memory = _Memory(results={"cache": [rejection, (True, "", {})]})
     queue, _ = connector(memory)
 
     for item in _turn("u1", "a1") + _turn("u2", "a2"):
@@ -143,15 +144,25 @@ async def test_rejected_turn_end_cache_is_resent_with_the_next_write(connector):
 
 
 @pytest.mark.asyncio
-async def test_failed_cache_is_carried_into_the_hot_reset(connector):
-    memory = _Memory(results={"cache": httpx.ReadTimeout("busy")})
+@pytest.mark.parametrize(
+    ("failure", "endpoint", "expected_texts"),
+    [
+        (httpx.ConnectTimeout("not sent"), "renew", ["u1", "a1"]),
+        (httpx.ReadTimeout("possibly written"), "settle", []),
+        ((False, "HTTP 503", {}), "settle", []),
+    ],
+)
+async def test_hot_reset_carries_only_cache_writes_known_not_to_have_started(
+    connector, failure, endpoint, expected_texts,
+):
+    memory = _Memory(results={"cache": failure})
     queue, _ = connector(memory)
 
     for item in _turn("u1", "a1"):
         queue.put_nowait(item)
     queue.put_nowait({"type": "system", "data": "renew session"})
-    await _until(lambda: memory.endpoints() == ["cache", "renew"])
-    assert _texts(memory.posts[1][1]) == ["u1", "a1"]
+    await _until(lambda: memory.endpoints() == ["cache", endpoint])
+    assert _texts(memory.posts[1][1]) == expected_texts
 
 
 @pytest.mark.asyncio

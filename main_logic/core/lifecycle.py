@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
-from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import session_reply_in_progress
 from main_logic.provider_failure_signals import (
@@ -2389,6 +2389,8 @@ class LifecycleMixin:
             self._check_start_operation()
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
+                **({'turn_detection_mode': TurnDetectionMode.MANUAL}
+                   if input_mode == 'audio_message' else {}),
                 api_key=realtime_config['api_key'],
                 model=realtime_config['model'],
                 voice=self._resolve_realtime_voice(realtime_config),
@@ -2721,6 +2723,8 @@ class LifecycleMixin:
                 nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),
+                    **({'turn_detection_mode': TurnDetectionMode.MANUAL}
+                       if self.input_mode == 'audio_message' else {}),
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     voice=self._resolve_realtime_voice(realtime_config),

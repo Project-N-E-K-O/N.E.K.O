@@ -790,7 +790,7 @@ class NotifyMixin:
     async def send_session_preparing(
         self, input_mode: str, *, request_id=None, also_notify=None
     ):  # Notify frontend of session preparation/silent period.
-        payload = {"type": "session_preparing", "input_mode": input_mode}
+        payload = {"type": "session_preparing", "input_mode": "text" if input_mode == "audio_message" else input_mode}
         request_id, also_notify, check = self._start_notification_context(request_id, also_notify)
         if request_id:
             payload["request_id"] = request_id
@@ -880,7 +880,7 @@ class NotifyMixin:
         # ack -- the one carrying the re-decided route -- arrives to a flow that
         # has already given up. Tagging the ack lets the frontend ignore acks
         # that are not answering its request.
-        payload = {"type": "session_started", "input_mode": input_mode}
+        payload = {"type": "session_started", "input_mode": "text" if input_mode == "audio_message" else input_mode}
         if request_id:
             payload["request_id"] = request_id
         #
@@ -1038,7 +1038,7 @@ class NotifyMixin:
 
     async def send_session_failed(self, input_mode: str, *, request_id=None, also_notify=None, allow_retired_operation=False):  # Notify frontend session startup failed.
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
-        payload = {"type": "session_failed", "input_mode": input_mode}
+        payload = {"type": "session_failed", "input_mode": "text" if input_mode == "audio_message" else input_mode}
         request_id, also_notify, check = self._start_notification_context(
             request_id, also_notify, enforce_start_guard=not allow_retired_operation,
         )

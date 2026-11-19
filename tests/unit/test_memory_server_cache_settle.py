@@ -18,10 +18,15 @@ the field 46 days later.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from fastapi import FastAPI
 
 
 def _build_history_request_payload(messages: list[dict]) -> str:
@@ -34,6 +39,376 @@ def _build_history_request_payload(messages: list[dict]) -> str:
     for msg in messages:
         payload.append({"type": msg["role"], "data": {"content": msg["content"]}})
     return json.dumps(payload)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "boundary"),
+    [
+        ("startup-rejection", None),
+        ("cloudsave-before-write", None),
+        ("recent-lock-failure", None),
+        ("cloudsave-after-recent", None),
+        ("unconfirmed-write", None),
+        ("cloudsave-before-write", "session end"),
+        ("cloudsave-before-write", "renew session"),
+        ("cloudsave-before-write", "language switch"),
+        ("cloudsave-before-write", "direct context clear"),
+        ("cloudsave-before-write", "direct clear during retry"),
+        ("cloudsave-before-write", "retry waiting for direct clear"),
+        ("cloudsave-before-write", "direct clear during summary"),
+        ("cloudsave-before-write", "direct clear after summary timeout"),
+    ],
+)
+async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatch, tmp_path, failure, boundary):
+    from app.main_server.character_runtime import _SyncMessageQueue
+    from app.memory_server import gates, post_turn, review, routes, runtime
+    from main_logic import cross_server
+    from main_routers.characters_router import crud
+    from memory.recent import CompressedRecentHistoryManager
+    from utils import recent_file
+    from utils.cloudsave_runtime import ROOT_MODE_BOOTSTRAP_IMPORTING, ROOT_MODE_NORMAL, assert_cloudsave_writable
+
+    startup_rejected = failure == "startup-rejection"
+    cloudsave_before = failure == "cloudsave-before-write"
+    cloudsave_after = failure == "cloudsave-after-recent"
+    lock_failure = failure == "recent-lock-failure"
+    rejected_before_write = startup_rejected or cloudsave_before or lock_failure
+    root_mode = ROOT_MODE_BOOTSTRAP_IMPORTING if cloudsave_before else ROOT_MODE_NORMAL
+    language = "en"
+    recent_path = tmp_path / "Neko" / "recent.json"
+    character_data = (None, None, None, None, {}, None, None, None, {"Neko": str(recent_path)})
+    config = SimpleNamespace(
+        memory_dir=tmp_path,
+        load_root_state=lambda: {"mode": root_mode},
+        get_character_data=lambda: character_data,
+        aget_character_data=AsyncMock(return_value=character_data),
+    )
+    monkeypatch.setattr("memory.recent.get_config_manager", lambda: config)
+    monkeypatch.setattr("utils.cloudsave_runtime.fence.is_cloudsave_disabled_due_to_local_state_unavailable", lambda: False)
+    recent = CompressedRecentHistoryManager()
+    summary_started = asyncio.Event()
+    summary_interrupted = asyncio.Event()
+    summary_timeout = boundary == "direct clear after summary timeout"
+    if boundary == "direct clear during summary" or summary_timeout:
+        recent.compress_threshold = 1
+        recent.max_history_length = 2
+        monkeypatch.setattr(runtime, "_summary_preemption_windows", {})
+
+        async def block_summary(*_args):
+            summary_started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                summary_interrupted.set()
+
+        monkeypatch.setattr(recent, "compress_history", block_summary)
+        monkeypatch.setattr(review, "_on_compress_done", AsyncMock())
+
+    async def store_time_index(_uid, _messages, name):
+        nonlocal root_mode
+        if first_request and cloudsave_after:
+            root_mode = ROOT_MODE_BOOTSTRAP_IMPORTING
+        assert_cloudsave_writable(config, operation="save", target=f"memory/{name}/time_indexed.db")
+
+    monkeypatch.setattr(runtime, "_memory_runtime_init_completed", True)
+    monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", startup_rejected)
+    monkeypatch.setattr(runtime, "get_storage_startup_blocking_reason", lambda _config: None)
+    monkeypatch.setattr(runtime, "recent_history_manager", recent)
+    monkeypatch.setattr(runtime, "time_manager", SimpleNamespace(astore_conversation=store_time_index))
+    monkeypatch.setattr(runtime, "_config_manager", SimpleNamespace(aload_characters=AsyncMock(return_value={})))
+    monkeypatch.setattr(runtime, "embedding_warmup_worker", None)
+    monkeypatch.setattr(gates, "_aclear_review_clean", AsyncMock())
+    monkeypatch.setattr(post_turn, "_spawn_outbox_post_turn_signals", AsyncMock())
+    monkeypatch.setattr(review, "maybe_spawn_review", AsyncMock())
+    monkeypatch.setattr(routes, "_resolve_foreground_memory_language", AsyncMock(return_value="en"))
+    monkeypatch.setattr(cross_server, "_try_send_json", AsyncMock(return_value=True))
+    analyze = AsyncMock(return_value=True)
+    monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", analyze)
+
+    app = FastAPI()
+    app.middleware("http")(runtime.storage_limited_mode_guard)
+    app.post("/cache/{lanlan_name}")(routes.cache_conversation)
+    app.post("/process/{lanlan_name}")(routes.process_conversation)
+    app.post("/renew/{lanlan_name}")(routes.process_conversation_for_renew)
+    app.post("/preempt_summary/{lanlan_name}")(routes.preempt_summary)
+    responses = asyncio.Queue()
+    first_request = True
+    retry_started, release_retry, clear_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cache_dispatched = asyncio.Event()
+    detached_renew = None
+    if lock_failure:
+        original_acquire = recent_file._RecentFileLock.acquire
+
+        def acquire(lock, *args, **kwargs):
+            if first_request:
+                raise PermissionError("temporary failure opening the recent history lock file")
+            return original_acquire(lock, *args, **kwargs)
+
+        monkeypatch.setattr(recent_file._RecentFileLock, "acquire", acquire)
+
+    async def post(url, **kwargs):
+        nonlocal first_request, detached_renew
+        endpoint = httpx.URL(url).path.split("/")[1]
+        if summary_timeout and endpoint == "renew":
+            # The connector times out while the remote route is still holding the settle lock.
+            detached_renew = asyncio.create_task(peer.post(url, **kwargs))
+            await summary_started.wait()
+            raise httpx.ReadTimeout("client stopped waiting for the summary")
+        if summary_timeout and endpoint == "cache" and not first_request:
+            cache_dispatched.set()
+        if endpoint == "process" and boundary in ("direct clear during retry", "retry waiting for direct clear"):
+            retry_started.set()
+            if boundary == "direct clear during retry":
+                await release_retry.wait()
+        response = await peer.post(url, **kwargs)
+        if first_request and failure == "unconfirmed-write":
+            assert response.json()["status"] == "cached"
+            response = httpx.Response(409, json={"error_code": "unknown_conflict"})
+        first_request = False
+        payload = kwargs["json"]
+        locales = payload.get("language"), payload.get("render_language")
+        responses.put_nowait((endpoint, locales, response))
+        return response
+
+    queue = _SyncMessageQueue()
+    monkeypatch.setattr(crud, "get_session_manager", lambda: {"Neko": SimpleNamespace(sync_message_queue=queue)})
+
+    class ObservedLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                clear_waiting.set()
+            return await super().acquire()
+
+    queue.deferred_memory_lock = ObservedLock()
+
+    def send_turn(turn):
+        queue.put({"type": "user", "data": {"input_type": "transcript", "data": f"User {turn}"}})
+        queue.put({"type": "json", "data": {
+            "type": "gemini_response", "text": f"Assistant {turn}", "isNewMessage": True, "turn_id": str(turn),
+        }})
+        queue.put({"type": "system", "data": "turn end"})
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as peer:
+        monkeypatch.setattr(crud, "get_internal_http_client", lambda: peer)
+        monkeypatch.setattr(cross_server, "get_internal_http_client", lambda: SimpleNamespace(post=post))
+        connector = asyncio.create_task(cross_server.run_sync_connector(
+            queue, "Neko", config={"monitor": False, "bullet": False},
+            user_language_provider=lambda: language,
+        ))
+        try:
+            send_turn(1)
+            _, _, response = await asyncio.wait_for(responses.get(), 3)
+            if cloudsave_before or cloudsave_after or lock_failure:
+                assert response.status_code == 200
+                error = response.json()
+                assert error["status"] == "error"
+                assert (error.get("write_started") is False) is (cloudsave_before or lock_failure)
+            else:
+                assert response.status_code == 409
+            if startup_rejected:
+                assert response.json()["error_code"] == "storage_startup_blocked"
+            assert recent_path.exists() == (not rejected_before_write)
+            if lock_failure:
+                assert recent._pending_batches("Neko") == []
+                post_turn._spawn_outbox_post_turn_signals.assert_not_awaited()
+
+            if summary_timeout:
+                root_mode = ROOT_MODE_NORMAL
+                queue.put({"type": "system", "data": "renew session"})
+                await asyncio.wait_for(summary_started.wait(), 3)
+                send_turn(2)
+                await asyncio.wait_for(cache_dispatched.wait(), 3)
+                await asyncio.wait_for(crud._clear_character_recent_history(config, "Neko"), 3)
+                assert summary_interrupted.is_set()
+                assert (await detached_renew).json()["status"] == "processed"
+                assert (await asyncio.wait_for(responses.get(), 3))[0] == "cache"
+                assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+                send_turn(3)
+                assert (await asyncio.wait_for(responses.get(), 3))[0] == "cache"
+                persisted = recent_path.read_text(encoding="utf-8")
+                assert "User 1" not in persisted and "User 2" not in persisted
+                assert persisted.count("User 3") == 1
+                return
+            if boundary == "direct clear during summary":
+                language = "ja"
+                root_mode = ROOT_MODE_NORMAL
+                queue.put({"type": "system", "data": "session end"})
+                await asyncio.wait_for(summary_started.wait(), 3)
+                await asyncio.wait_for(crud._clear_character_recent_history(config, "Neko"), 3)
+                assert summary_interrupted.is_set()
+                endpoint, _, processed = await asyncio.wait_for(responses.get(), 3)
+                assert endpoint == "process" and processed.json()["status"] == "processed"
+                assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+            elif boundary == "direct clear during retry":
+                language = "ja"
+                root_mode = ROOT_MODE_NORMAL
+                queue.put({"type": "system", "data": "session end"})
+                await asyncio.wait_for(retry_started.wait(), 3)
+                clear_task = asyncio.create_task(crud._clear_character_recent_history(config, "Neko"))
+                waiting_task = asyncio.create_task(clear_waiting.wait())
+                try:
+                    done, _ = await asyncio.wait({clear_task, waiting_task}, timeout=3, return_when=asyncio.FIRST_COMPLETED)
+                    assert done
+                    release_retry.set()
+                    endpoint, _, processed = await asyncio.wait_for(responses.get(), 3)
+                    assert endpoint == "process" and processed.json()["status"] == "processed"
+                    await asyncio.wait_for(clear_task, 3)
+                    assert "User 1" not in recent_path.read_text(encoding="utf-8")
+                    assert waiting_task in done
+                finally:
+                    release_retry.set()
+                    waiting_task.cancel()
+                    await asyncio.gather(clear_task, waiting_task, return_exceptions=True)
+            elif boundary == "retry waiting for direct clear":
+                language = "ja"
+                root_mode = ROOT_MODE_NORMAL
+                clear_written = asyncio.Event()
+                release_clear = threading.Event()
+                loop = asyncio.get_running_loop()
+                write_recent_payload = crud.write_recent_payload
+
+                def write_then_wait(*args, **kwargs):
+                    write_recent_payload(*args, **kwargs)
+                    loop.call_soon_threadsafe(clear_written.set)
+                    assert release_clear.wait(5)
+
+                monkeypatch.setattr(crud, "write_recent_payload", write_then_wait)
+                clear_task = asyncio.create_task(crud._clear_character_recent_history(config, "Neko"))
+                try:
+                    await asyncio.wait_for(clear_written.wait(), 3)
+                    queue.put({"type": "system", "data": "session end"})
+                    await asyncio.wait_for(clear_waiting.wait(), 3)
+                    assert not retry_started.is_set()
+                finally:
+                    release_clear.set()
+                    await asyncio.wait_for(clear_task, 3)
+            elif boundary is not None:
+                language = "ja"
+                ending = "renew session" if boundary == "renew session" else "session end"
+                queue.put({"type": "system", "data": ending})
+                endpoint, locales, rejection = await asyncio.wait_for(responses.get(), 3)
+                assert endpoint == ("renew" if ending == "renew session" else "process")
+                assert locales == (None, "en")
+                assert rejection.json()["write_started"] is False
+                if boundary == "language switch":
+                    language_switched = asyncio.get_running_loop().create_future()
+                    clear_context = AsyncMock()
+                    queue.put({
+                        "type": "system", "data": "session end",
+                        "_after_memory_settlement": clear_context, "_memory_settlement_done": language_switched,
+                    })
+                    endpoint, locales, rejection = await asyncio.wait_for(responses.get(), 3)
+                    assert (endpoint, locales) == ("cache", (None, "en"))
+                    assert rejection.json()["write_started"] is False
+                    await asyncio.wait_for(language_switched, 3)
+                    clear_context.assert_awaited_once()
+
+            monkeypatch.setattr(runtime, "_memory_storage_blocked_after_init", False)
+            root_mode = ROOT_MODE_NORMAL
+            if boundary == "direct context clear":
+                await crud._clear_character_recent_history(config, "Neko")
+            send_turn(2)
+            if boundary in ("session end", "renew session"):
+                endpoint, locales, recovered = await asyncio.wait_for(responses.get(), 3)
+                assert (endpoint, locales) == ("cache", (None, "en"))
+                assert recovered.json() == {"status": "cached", "count": 2}
+            endpoint, locales, recovered = await asyncio.wait_for(responses.get(), 3)
+            assert (endpoint, locales) == ("cache", (language, None))
+            expected_count = 4 if rejected_before_write and boundary is None else 2
+            assert recovered.json() == {"status": "cached", "count": expected_count}
+            persisted = recent_path.read_text(encoding="utf-8")
+            for text in ("User 1", "Assistant 1"):
+                assert persisted.count(text) == int(boundary not in (
+                    "language switch", "direct context clear", "direct clear during retry",
+                    "retry waiting for direct clear", "direct clear during summary",
+                ))
+            for text in ("User 2", "Assistant 2"):
+                assert persisted.count(text) == 1
+            if boundary is not None:
+                current_analyze = json.dumps(analyze.await_args.kwargs["messages"], ensure_ascii=False)
+                assert "User 2" in current_analyze and "User 1" not in current_analyze
+        finally:
+            if detached_renew is not None and not detached_renew.done():
+                await routes.preempt_summary("Neko")
+                await asyncio.wait_for(detached_renew, 3)
+            connector.cancel()
+            await asyncio.gather(connector, return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_shutdown_flush_writes_pending_recent_history_without_replaying_the_turn(monkeypatch, tmp_path):
+    from app.memory_server import gates, post_turn, routes, runtime
+    from memory.recent import CompressedRecentHistoryManager
+    from utils import recent_file
+    from utils.cloudsave_runtime import ROOT_MODE_NORMAL
+
+    recent_path = tmp_path / "Neko" / "recent.json"
+    character_data = (None, None, None, None, {}, None, None, None, {"Neko": str(recent_path)})
+    config = SimpleNamespace(
+        memory_dir=tmp_path,
+        load_root_state=lambda: {"mode": ROOT_MODE_NORMAL},
+        get_character_data=lambda: character_data,
+        aget_character_data=AsyncMock(return_value=character_data),
+    )
+    monkeypatch.setattr("memory.recent.get_config_manager", lambda: config)
+    monkeypatch.setattr("utils.cloudsave_runtime.fence.is_cloudsave_disabled_due_to_local_state_unavailable", lambda: False)
+    recent = CompressedRecentHistoryManager()
+    time_index, outbox = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(runtime, "recent_history_manager", recent)
+    monkeypatch.setattr(runtime, "time_manager", SimpleNamespace(astore_conversation=time_index))
+    monkeypatch.setattr(gates, "_aclear_review_clean", AsyncMock())
+    monkeypatch.setattr(post_turn, "_spawn_outbox_post_turn_signals", outbox)
+    monkeypatch.setattr(routes, "_resolve_foreground_memory_language", AsyncMock(return_value="en"))
+    batch = routes.HistoryRequest(input_history=_build_history_request_payload([
+        {"role": "human", "content": "pending recording transcript"},
+    ]))
+    flush = routes.HistoryRequest(input_history="[]", flush_pending=True)
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("temporary recent.json write failure")
+
+    with monkeypatch.context() as failed:
+        failed.setattr(recent_file, "write_recent_payload_unlocked", fail_write)
+        assert await routes.cache_conversation(batch, "Neko") == {
+            "status": "cached", "count": 1, "recent_persisted": False,
+        }
+        assert (await routes.cache_conversation(flush, "Neko"))["status"] == "error"
+        assert not recent_path.exists()
+
+    assert (await routes.cache_conversation(flush, "Neko"))["status"] == "cached"
+    assert (await routes.cache_conversation(flush, "Neko"))["status"] == "cached"
+    assert recent_path.read_text(encoding="utf-8").count("pending recording transcript") == 1
+    assert recent._pending_batches("Neko") == []
+    time_index.assert_awaited_once()
+    outbox.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_at_recent", [True, False], ids=["before-write", "after-recent"])
+async def test_process_only_marks_rejection_before_history_write(monkeypatch, blocked_at_recent):
+    from app.memory_server import gates, routes, runtime
+    from memory.recent import RecentHistoryWriteBlocked
+    from utils.cloudsave_runtime import MaintenanceModeError, ROOT_MODE_BOOTSTRAP_IMPORTING
+
+    recent = AsyncMock(side_effect=RecentHistoryWriteBlocked(ROOT_MODE_BOOTSTRAP_IMPORTING) if blocked_at_recent else None)
+    time_index = AsyncMock(side_effect=MaintenanceModeError(ROOT_MODE_BOOTSTRAP_IMPORTING))
+    monkeypatch.setattr(runtime, "recent_history_manager", SimpleNamespace(update_history=recent))
+    monkeypatch.setattr(runtime, "time_manager", SimpleNamespace(astore_conversation=time_index))
+    monkeypatch.setattr(runtime, "embedding_warmup_worker", None)
+    monkeypatch.setattr(runtime, "_config_manager", SimpleNamespace(aload_characters=AsyncMock(return_value={})))
+    monkeypatch.setattr(gates, "_aclear_review_clean", AsyncMock())
+    monkeypatch.setattr(routes, "_resolve_foreground_memory_language", AsyncMock(return_value="en"))
+    request = routes.HistoryRequest(input_history=_build_history_request_payload([{"role": "human", "content": "Hello"}]))
+
+    result = await routes.process_conversation(request, "Neko")
+
+    assert result["status"] == "error"
+    assert (result.get("write_started") is False) is blocked_at_recent
+    assert time_index.await_count == int(not blocked_at_recent)
 
 
 @pytest.mark.unit
