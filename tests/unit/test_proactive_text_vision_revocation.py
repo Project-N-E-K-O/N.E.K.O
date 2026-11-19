@@ -27,6 +27,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from main_logic.core import LLMSessionManager
 from main_logic.omni_offline_client import _streaming
+from utils.image_history import image_receipt
 from utils.llm_client import AIMessage, HumanMessage
 
 from tests.unit.test_offline_provider_frame_publish import (
@@ -128,7 +129,16 @@ def _assert_sent_without_screenshot(captured: list, user_attachment: bool) -> No
     msg = _last_user_message(captured)
     expected = ["data:image/jpeg;base64,USER_FRAME_B64"] if user_attachment else []
     assert _image_urls(msg.content) == expected
-    assert msg.content[-1] == {"type": "text", "text": "这是什么呀"}
+    texts = [
+        part for part in msg.content
+        if isinstance(part, dict) and part.get("type") == "text"
+    ]
+    # A revocation that reached the message through the history strip leaves
+    # a receipt after the user's text; no other text is added.
+    if texts[-1]["text"] != "这是什么呀":
+        assert texts[-1]["text"] == image_receipt(1)
+        texts = texts[:-1]
+    assert texts[-1] == {"type": "text", "text": "这是什么呀"}
 
 
 def test_revocation_before_the_reply_sends_text_only():
@@ -293,6 +303,56 @@ def test_revocation_in_the_transcript_callback_withholds_the_screenshot():
     )
     assert [p.get("type") for p in history_msg.content] == ["image_url", "text"]
     # The frame bus sees what the model saw: the user's frame, labelled as such.
+    assert spy.sources == ["user"]
+    assert spy.images == requests[0]
+
+
+def test_withheld_screenshot_keeps_history_image_kinds_aligned():
+    """The in-turn withhold drops the screenshot's provenance entry with it."""
+    mgr = _consent_mgr()
+    client, _shot, _user_frame, _requests = _snapshotting_client(mgr)
+
+    async def revoke_in_callback(_text):
+        # Only the staged check notices: no session strip runs here.
+        mgr._proactive_vision_enabled = False
+
+    client.on_input_transcript = revoke_in_callback
+    with patch(_PUBLISHER, _Spy()):
+        _run_turn(client.stream_text("这是什么呀"))
+
+    history_msg = next(
+        m for m in reversed(client._conversation_history) if isinstance(m, HumanMessage)
+    )
+    assert [p.get("type") for p in history_msg.content] == ["image_url", "text"]
+    assert history_msg.metadata["image_kinds"] == ["user"]
+
+
+def test_session_strip_then_withhold_keeps_the_users_image():
+    """Revocation strips history first; the withhold must not take the next image.
+
+    With the session wired to the manager, revoking strips the screenshot from
+    the message in history (leaving a receipt) before the attempt's withhold
+    check runs. The first image left is then the user's own frame.
+    """
+    mgr = _consent_mgr()
+    client, _shot, _user_frame, requests = _snapshotting_client(mgr)
+    mgr.session = client
+
+    async def revoke_in_callback(_text):
+        _revoke(mgr)
+
+    client.on_input_transcript = revoke_in_callback
+    spy = _Spy()
+    with patch(_PUBLISHER, spy):
+        _run_turn(client.stream_text("这是什么呀"))
+
+    assert len(requests) == 1 and len(requests[0]) == 1
+    assert _is_red(requests[0][0])  # the user's frame still went out
+    history_msg = next(
+        m for m in reversed(client._conversation_history) if isinstance(m, HumanMessage)
+    )
+    assert history_msg.metadata["image_kinds"] == ["user"]
+    assert history_msg.content[-1] == {"type": "text", "text": image_receipt(1)}
     assert spy.sources == ["user"]
     assert spy.images == requests[0]
 

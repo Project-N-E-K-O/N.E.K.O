@@ -13,10 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import collections
 from dataclasses import replace
 from typing import Sequence
 
-from utils.image_history import replace_history_text
+from utils.image_history import image_count, replace_history_text
 
 from main_logic.agent_event_bus import conversation_reply_observation
 from main_logic.proactive_delivery import (
@@ -69,6 +70,14 @@ from ._media import (
     _FRAME_SOURCE_SCREEN,
     _FRAME_SOURCE_UNKNOWN,
     _FRAME_SOURCE_USER,
+    _HISTORY_IMAGE_KINDS_KEY,
+    _HISTORY_IMAGE_PREFIT_KINDS_KEY,
+    _IMAGE_KIND_AUTO_SCREENSHOT,
+    _IMAGE_KIND_LIVE,
+    _IMAGE_KIND_PLUGIN,
+    _IMAGE_KIND_USER,
+    _IMAGE_KIND_UNKNOWN,
+    _history_image_kinds,
 )
 
 from ._genai_support import (
@@ -724,6 +733,13 @@ class _StreamingMixin:
         # user-dragged attachments after sampled frames (see _media.py ordering explanation); attachments
         # are user-provided and must not inherit this turn's capture channel.
         turn_source_count: Optional[int] = None,
+        # Per channelled turn image: True for a screenshot the user attached that
+        # independent ASR sampled with the live frames. History provenance only.
+        turn_image_user_flags: Sequence[bool] = (),
+        # Consent-revocation epoch (``_auto_capture_discard_epoch``) when the
+        # caller took this turn's frames; None: read on entry. A revocation
+        # since then strips the frames once the message is in history.
+        auto_capture_epoch: Optional[int] = None,
         turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
@@ -857,6 +873,14 @@ class _StreamingMixin:
         # Treat an absent staging slot exactly like an empty slot so the optional
         # proactive-vision feature does not break those legacy construction paths.
         proactive_image = getattr(self, "_proactive_image_to_inject", None)
+        # A revocation during this turn's awaits (vision switch, image fit)
+        # cannot reach a message that does not exist yet; re-checked once the
+        # message is in history.
+        _auto_capture_epoch = (
+            auto_capture_epoch
+            if auto_capture_epoch is not None
+            else getattr(self, "_auto_capture_discard_epoch", 0)
+        )
         _proactive_consent_check = getattr(self, "_proactive_image_consent_check", None)
 
         def _proactive_consent_revoked() -> bool:
@@ -871,10 +895,6 @@ class _StreamingMixin:
         # The screenshot's bytes as attached to this turn's message (the fit
         # may re-encode it); None when it is not part of the message.
         _proactive_attached_b64 = None
-        # Content parts of this turn's multimodal message, shared with the
-        # history entry (``content`` itself is reused for stream chunks below).
-        _user_message_parts = None
-
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
@@ -971,6 +991,13 @@ class _StreamingMixin:
                     else max(0, min(int(turn_source_count), len(own_images)))
                 )
             )
+            # History provenance does not depend on the optional bus channel:
+            # an explicit sampled-frame count marks the live prefix by itself.
+            _live_prefix = (
+                max(0, min(int(turn_source_count), len(own_images)))
+                if turn_source_count is not None
+                else _channelled
+            )
             _own_image_sources = (
                 [turn_source] * _channelled
                 + [_FRAME_SOURCE_USER] * (len(own_images) - _channelled)
@@ -984,6 +1011,23 @@ class _StreamingMixin:
                 # here instead of applying one channel to the entire section.
                 + _own_image_sources
                 + [_FRAME_SOURCE_USER] * len(attachment_images)
+            )
+            # History provenance, same positions. Channelled turn frames are
+            # live screen/camera frames (independent ASR samples them over the
+            # utterance); the frame-bus "screen" label cannot tell them apart
+            # from the proactive screenshot, so this is kept separately.
+            _ordered_kinds = (
+                ([_IMAGE_KIND_AUTO_SCREENSHOT] if proactive_image else [])
+                + [_IMAGE_KIND_PLUGIN] * len(plugin_images)
+                + [_IMAGE_KIND_PLUGIN] * len(prefix_images)
+                + [
+                    _IMAGE_KIND_USER
+                    if index < len(turn_image_user_flags) and turn_image_user_flags[index]
+                    else _IMAGE_KIND_LIVE
+                    for index in range(_live_prefix)
+                ]
+                + [_IMAGE_KIND_USER] * (len(own_images) - _live_prefix)
+                + [_IMAGE_KIND_USER] * len(attachment_images)
             )
             # Each source has separate image-count quotas (cannot spend another's allowance), but all enter
             # one HumanMessage, so the provider sees their sum: exceeding its per-request cap rejects
@@ -1090,8 +1134,13 @@ class _StreamingMixin:
                 "text": _user_text_with_prefix,
             })
 
+            _attached_kinds, _prefit_kinds = _history_image_kinds(
+                _ordered_kinds, len(_attached_images)
+            )
             user_message = HumanMessage(content=content)
-            _user_message_parts = content
+            user_message.metadata[_HISTORY_IMAGE_KINDS_KEY] = _attached_kinds
+            if _prefit_kinds:
+                user_message.metadata[_HISTORY_IMAGE_PREFIT_KINDS_KEY] = _prefit_kinds
             # Report what was ATTACHED, not what was staged. The trim above
             # takes a prefix, and the proactive screenshot is that prefix's
             # first element, so it survives exactly when nothing was dropped.
@@ -1119,7 +1168,46 @@ class _StreamingMixin:
             # Text-only message (already includes system_prefix watermark when present).
             user_message = HumanMessage(content=_user_text_with_prefix)
 
+        # Live frames of earlier turns were answered there; keep only receipts
+        # so a frame of a share that has since ended is not resent every turn.
+        # A concurrent turn still heading to the provider keeps its own frames.
+        self._strip_answered_live_frames(skip_in_flight=True)
         self._conversation_history.append(user_message)
+        # Heading to the provider until this call returns (released by
+        # _tracked_reply_call); a proactive reply meanwhile leaves its frames.
+        in_flight_messages = getattr(self, "_in_flight_user_messages", None)
+        if in_flight_messages is None:
+            in_flight_messages = self._in_flight_user_messages = {}
+        in_flight_messages[asyncio.current_task()] = user_message
+        _in_flight_user_messages_owner = in_flight_messages
+
+        def _hold_in_flight_for_resend() -> None:
+            """Register the turn again before a retry / reroll resends it.
+
+            The registration ends at the first chunk; an attempt that fails
+            after it (or a reroll) sends the same message again, so another
+            turn starting during the backoff must not strip its live frames.
+            Released as before: at the next first chunk, or when the call ends.
+            """
+            nonlocal _in_flight_user_messages_owner
+            if _in_flight_user_messages_owner is not None:
+                return
+            registry = getattr(self, "_in_flight_user_messages", None)
+            if registry is None:
+                registry = self._in_flight_user_messages = {}
+            registry[asyncio.current_task()] = user_message
+            _in_flight_user_messages_owner = registry
+
+        def _release_in_flight() -> None:
+            """This turn's message is not heading to the provider anymore."""
+            nonlocal _in_flight_user_messages_owner
+            if _in_flight_user_messages_owner is not None:
+                _in_flight_user_messages_owner.pop(asyncio.current_task(), None)
+                _in_flight_user_messages_owner = None
+        if getattr(self, "_auto_capture_discard_epoch", 0) != _auto_capture_epoch:
+            # Consent was revoked while this turn was being assembled: its
+            # proactive screenshot must not go out (no await since append).
+            self._strip_auto_captures_missed_by_revocation(user_message)
         # The list this turn's user message went into: a cancelled reply is
         # dropped once history was replaced since (_commit_cancelled_reply).
         turn_history = self._conversation_history
@@ -1149,6 +1237,7 @@ class _StreamingMixin:
             # Store _attached_images: post-fit bytes, not original caller images.
             # Normalization re-encodes almost every turn; bus images must match what the model actually saw.
             _pending_bus_frames = (_attached_images, _attached_sources)
+            _auto_capture_epoch_at_snapshot = getattr(self, "_auto_capture_discard_epoch", 0)
 
         def _withhold_revoked_proactive_image() -> None:
             """Take the proactive screenshot out of this turn once consent is gone.
@@ -1166,19 +1255,39 @@ class _StreamingMixin:
             nonlocal _proactive_attached_b64, _pending_bus_frames
             if _proactive_attached_b64 is None or not _proactive_consent_revoked():
                 return
+            _proactive_attached_b64 = None
+            # The screenshot is the first image of the message, unless the
+            # revocation already stripped it from history
+            # (discard_auto_captured_history_images): the recorded kinds then no
+            # longer lead with it, and the first image is someone else's.
+            parts = user_message.content
+            metadata = user_message.metadata if isinstance(user_message.metadata, dict) else {}
+            kinds = metadata.get(_HISTORY_IMAGE_KINDS_KEY)
+            count = image_count(parts)
+            if not count or (
+                isinstance(kinds, list)
+                and len(kinds) == count
+                and kinds[0] not in (_IMAGE_KIND_AUTO_SCREENSHOT, _IMAGE_KIND_UNKNOWN)
+            ):
+                # Gone already; the frame-bus publish filters by what the
+                # message still carries.
+                if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
+                    self.set_proactive_screenshot(None)
+                return
             logger.info("Proactive screenshot withheld: screen consent revoked")
-            # The screenshot is the first image of the message.
-            for index, part in enumerate(_user_message_parts):
+            for index, part in enumerate(parts):
                 if isinstance(part, dict) and part.get("type") == "image_url":
-                    del _user_message_parts[index]
+                    del parts[index]
                     break
+            if isinstance(kinds, list) and len(kinds) == count:
+                # Keep the recorded kinds aligned with the remaining images.
+                user_message.metadata = {**metadata, _HISTORY_IMAGE_KINDS_KEY: kinds[1:]}
             if _pending_bus_frames is not None:
                 _bus_images, _bus_sources = _pending_bus_frames
                 # Nothing left to publish when the screenshot was the only image.
                 _pending_bus_frames = (
                     (_bus_images[1:], _bus_sources[1:]) if len(_bus_images) > 1 else None
                 )
-            _proactive_attached_b64 = None
             # Leave a screenshot staged by a newer round alone.
             if getattr(self, "_proactive_image_to_inject", None) is proactive_image:
                 self.set_proactive_screenshot(None)
@@ -1441,9 +1550,48 @@ class _StreamingMixin:
                             # blocks survive in subsequent requests of this session.
                             if _resident_entry is not None and not _resident_entry.delivered:
                                 self._settle_resident_context(_resident_entry, delivered=True)
+                            # The provider has this turn's request now: its user
+                            # message is no longer heading there (an interrupted
+                            # reply's cleanup may run long after this point).
+                            _release_in_flight()
                             if _pending_bus_frames is not None:
                                 _bus_images, _bus_sources = _pending_bus_frames
                                 _pending_bus_frames = None
+                                # Only images the message still carries: a consent
+                                # revocation since the snapshot (e.g. while the
+                                # transcript callback ran) stripped them from the
+                                # request, so plugins must not get them either.
+                                # Nothing was stripped since the snapshot in the common
+                                # case: skip building data URLs for every frame.
+                                if (
+                                    getattr(self, "_auto_capture_discard_epoch", 0)
+                                    != _auto_capture_epoch_at_snapshot
+                                    or image_count(user_message.content) != len(_bus_images)
+                                ):
+                                    # Counted, not a set: identical bytes may be both a
+                                    # stripped screenshot and a kept attachment. Other
+                                    # labels claim a carried copy before the screenshot.
+                                    _carried = collections.Counter(
+                                        part.get("image_url", {}).get("url")
+                                        for part in (
+                                            user_message.content
+                                            if isinstance(user_message.content, list)
+                                            else ()
+                                        )
+                                        if isinstance(part, dict) and part.get("type") == "image_url"
+                                    )
+                                    _kept = []
+                                    for _screen_pass in (False, True):
+                                        for index, image in enumerate(_bus_images):
+                                            if (_bus_sources[index] == _FRAME_SOURCE_SCREEN) != _screen_pass:
+                                                continue
+                                            url = f"data:image/jpeg;base64,{image}"
+                                            if _carried[url] > 0:
+                                                _carried[url] -= 1
+                                                _kept.append(index)
+                                    _kept.sort()
+                                    _bus_images = [_bus_images[i] for i in _kept]
+                                    _bus_sources = [_bus_sources[i] for i in _kept]
                                 # Publish without waiting. This hop may cross loops (see
                                 # _fire_bus_task), and this is the user's first response chunk:
                                 # a stalled bridge must not produce a silent turn.
@@ -1988,6 +2136,8 @@ class _StreamingMixin:
                             recovery_text = ""
 
                             if will_retry:
+                                # The reroll resends this turn's message.
+                                _hold_in_flight_for_resend()
                                 # Retry remains: notify will_retry and continue. Frontend receives
                                 # response_discarded(will_retry=True, message=None)
                                 # and takes the retry-toast path.
@@ -2230,6 +2380,21 @@ class _StreamingMixin:
                         break
 
                 except _llm_retry_error_types() as e:
+                    # Synchronously, before any await below: a retry resends
+                    # this turn's message. Not when this error ends the turn
+                    # (last attempt, arrears, rejected key; same tests as below).
+                    _resend_error_lower = str(e).lower()
+                    if (
+                        attempt < max_retries - 1
+                        and '欠费' not in _resend_error_lower
+                        and 'standing' not in _resend_error_lower
+                        and not _is_api_key_rejected_error(e)
+                    ):
+                        _hold_in_flight_for_resend()
+                    else:
+                        # The turn ends here: not in flight during the status
+                        # and completion callbacks below.
+                        _release_in_flight()
                     if not observation_committed:
                         observation_failed = True
                     # A failed stream's text is discarded below, never kept.
@@ -2314,6 +2479,8 @@ class _StreamingMixin:
                             status_reported = True
                         break
                 except Exception as e:
+                    # This path always ends the turn (break below).
+                    _release_in_flight()
                     if not observation_committed:
                         observation_failed = True
                     cut_keeps_shown = False

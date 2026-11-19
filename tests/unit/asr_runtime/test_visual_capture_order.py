@@ -266,3 +266,58 @@ async def test_overlap_prerecord_trims_against_the_pending_turn_onset() -> None:
         "successor-0",
         "successor-1",
     ]
+
+
+@pytest.mark.unit
+async def test_snapshot_carries_each_frame_request_id() -> None:
+    """Offline history keeps user screenshots sampled with live frames as attachments."""
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=93)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    base = runtime._core_multimodal_turns[turn_id].started_at
+    assert runtime._stage_independent_visual_frame(
+        "live-frame", source="screen", request_id=None, captured_at=base + 0.1,
+    )
+    assert runtime._stage_independent_visual_frame(
+        "user-shot", source="screen", request_id="req-7", captured_at=base + 0.2,
+    )
+
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what is that")
+
+    assert turn.images == ("live-frame", "user-shot")
+    assert turn.image_request_ids == (None, "req-7")
+
+
+@pytest.mark.unit
+async def test_stop_notice_before_the_turn_record_keeps_the_user_screenshot() -> None:
+    """Real staging path: a screenshot staged after speech onset but before the
+    turn record exists survives screen_share_stopped and reaches the turn;
+    a live frame staged in the same window does not."""
+    from main_logic.core.streaming import StreamingMixin
+
+    runtime = _Runtime()
+    runtime._asr_route_mode = "independent"
+    runtime.session = None
+    runtime.lanlan_name = "T"
+    now = time.monotonic()
+    runtime._asr_runtime._asr_turn_onset_at = now - 0.5
+    assert runtime._stage_independent_visual_frame(
+        "live-frame", source="screen", request_id=None, captured_at=now - 0.2,
+    )
+    assert runtime._stage_independent_visual_frame(
+        "user-shot", source="screen", request_id="req-9", captured_at=now - 0.1,
+    )
+    assert [f.request_id for f in runtime._prerecord_visual_frames] == [None, "req-9"]
+
+    StreamingMixin.handle_screen_share_stopped(runtime)
+
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=95)
+    turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    runtime._begin_core_multimodal_turn(turn_id, token)
+    turn = runtime._snapshot_core_multimodal_turn(turn_id, "what about this one")
+
+    assert turn is not None
+    assert turn.images == ("user-shot",)
+    assert turn.image_request_ids == ("req-9",)

@@ -1931,6 +1931,7 @@ async def test_independent_asr_live_vision_stays_out_of_provider_queues(
         source=input_type,
         request_id="req-independent-vision",
         captured_at=ANY,
+        consent_epoch=ANY,
     )
     session.stream_image.assert_not_awaited()
     assert session._pending_images == ["existing-user-attachment"]
@@ -5476,3 +5477,50 @@ async def test_a_new_session_starts_with_no_owed_wrap_up():
     except AttributeError:
         pass  # later, unrelated resets need state this harness lacks
     assert mgr._turn_wrap_up_owed is False
+
+
+async def test_independent_live_frame_keeps_its_arrival_consent_epoch(monkeypatch):
+    """A revocation while the frame is being validated must not restamp it."""
+    mgr = _make_manager()
+    session = object.__new__(core_module.OmniOfflineClient)
+    session.stream_image = AsyncMock()
+    session._pending_images = []
+    mgr.session = session
+    mgr.response_backend = "offline_vlm"
+    mgr._asr_route_mode = "independent"
+    mgr._stage_independent_visual_frame = MagicMock(return_value=True)
+    mgr.is_goodbye_silent = Mock(return_value=False)
+    mgr.is_active = True
+    mgr.session_ready = True
+    mgr.input_cache_lock = asyncio.Lock()
+    mgr.pending_input_data = []
+    mgr._pending_input_flush_active = False
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._screen_consent_revocation_epoch = 0
+    validating = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_validation(_data):
+        validating.set()
+        await release.wait()
+        return "img-b64"
+
+    monkeypatch.setattr(core_module, "process_screen_data", slow_validation)
+    # As stamped by the router at arrival.
+    message = {
+        "input_type": "screen",
+        "data": "raw-image",
+        "_visual_input_ingress_time": 1.0,
+        "_visual_input_consent_epoch": mgr._screen_consent_revocation_epoch,
+    }
+    task = asyncio.create_task(
+        core_module.LLMSessionManager._stream_data_now(mgr, message)
+    )
+    await asyncio.wait_for(validating.wait(), timeout=5)
+    mgr._screen_consent_revocation_epoch += 1  # privacy mode on mid-validation
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    mgr._stage_independent_visual_frame.assert_called_once()
+    assert mgr._stage_independent_visual_frame.call_args.kwargs["consent_epoch"] == 0

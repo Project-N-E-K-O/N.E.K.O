@@ -53,6 +53,10 @@ _MEMORY_FLUSH_WAIT_S = 1.5
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})
 _LIVE_VISION_STREAM_INPUT_TYPES = frozenset({"screen", "camera"})
+# Field the frontend sets on continuous screen/camera frames (manual screen
+# share and the voice-time vision heartbeat). Frames without it are one-shot
+# attachments the user chose to send (screenshot button, pasted image).
+_LIVE_SHARE_FRAME_FIELD = "live_share"
 _CONTEXT_APPEND_DEDUP_TTL_SECONDS = 120.0
 _CONTEXT_APPEND_DEDUP_MAX_ENTRIES = 256
 _CONTEXT_APPEND_READY_FLUSH_MAX_PASSES = 8
@@ -94,6 +98,21 @@ _VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
 _VOICE_ECHO_MIN_WINDOW_CHARS = 10
 _VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
 _VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def _is_live_share_frame(message: Any) -> bool:
+    """Whether ``message`` is a continuous share frame rather than a user attachment.
+
+    Only an explicit ``live_share: true`` counts. Untagged screen/camera
+    frames keep the attachment contract: the bundled web/Electron frontend
+    always tags its live frames, and guessing from a missing ``request_id``
+    could silently drop a photo another client attached on purpose.
+    """
+    return (
+        isinstance(message, dict)
+        and message.get("input_type") in _LIVE_VISION_STREAM_INPUT_TYPES
+        and message.get(_LIVE_SHARE_FRAME_FIELD) is True
+    )
 
 
 def _normalize_voice_echo_text(text: str) -> str:

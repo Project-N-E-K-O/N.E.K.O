@@ -1478,6 +1478,37 @@ class _TransportMixin:
             if update_turn_state:
                 self._image_being_analyzed = False
 
+    def discard_live_share_frames(self) -> None:
+        """Forget the cached live frame after the frontend's share has stopped.
+
+        Live share frames carry no ``request_id``; a cached screenshot the user
+        attached to a voice turn (it has one) is left alone. Frames that
+        reached the server before the stop but finish validating after it are
+        dropped by Core before they get here. On providers without native
+        vision the frame's description goes too, and an analysis still running
+        for it cannot write its result back.
+        """
+
+        if getattr(self, "_latest_image_request_id", None) is not None:
+            return
+        # Same fence as a consent revocation (discard_cached_visual_context):
+        # an analysis still running for this frame cannot write back. No
+        # captured-at floor here: later frames, e.g. a user screenshot
+        # already in flight, must still be accepted.
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not getattr(self, "_supports_native_image", True):
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._image_recognized_this_turn = False
+
     def block_raw_visual_delivery(self) -> None:
         """Fail closed for raw frames without changing the microphone route."""
 
