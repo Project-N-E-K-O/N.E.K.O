@@ -98,7 +98,17 @@ Lead with findings ordered by risk, labelled `Boundary`, `Identity`,
 `Manifest`, `SDK`, `UI/Permissions`, `Runtime/Lifecycle`, `Validation`:
 writes stay in the plugin directory; identity fields agree; manifest uses
 minimum permissions; only public SDK imports; UI mode is justified; lifecycle
-and timers follow the runtime model; checks cover the change.
+and timers follow the runtime model; checks cover the change. Also:
+
+- Generated output (`vendor/`, build output) is regenerated, not hand-edited.
+- No check, rule, or baseline was loosened to make it pass.
+- No dead code, commented-out code, or debug output remains.
+- Nothing downloads or executes code at runtime (no remote dynamic import);
+  network access stays in a few modules.
+- Temporary plans and notes sit in a gitignored folder and are deleted after.
+- `ruff.toml` and `.github/workflows/` from `init` or `setup-repo
+  --github-actions` stay unedited (the workflows call the Market's reusable
+  ones); refresh them with `setup-repo --upgrade-github-actions`.
 
 ### Escalate
 
