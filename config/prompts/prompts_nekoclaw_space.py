@@ -185,9 +185,9 @@ SPACE_ARCHIVE_SYSTEM_PROMPT = (
     "entries: at most {max_entries}, and usually none: what was learned here that holds for other "
     "projects as well, and is not in the index of all projects yet. type is lesson, reflection or "
     "reference. content is two or three sentences of 120 words at most. evidence is the paths of up "
-    "to two files the entry is about, and [] when it is about no file. Each entry is kept as a guess "
-    "until a commission finds the same, its files for reference only: the files of one project do not "
-    "show it holds for others.\n"
+    "to two files the entry is about, and [] when it is about no file. Each entry is kept as a guess, its "
+    "files for reference only (the files of one project do not show it holds for others), until "
+    "commissions find the same or a task agent checks it; this summary is no such finding.\n"
     "Write all of it in {language}."
 )
 

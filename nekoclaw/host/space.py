@@ -1464,12 +1464,14 @@ def _keep_known(
         _set_evidence(document, evidence, outside)
         changed = True
     # For reference only: none that it rests on by now (that one says more).
+    # The ones it rests on are left out before the cap, so that a file it
+    # rests on does not push out one it notes and is then dropped itself.
     noted_before = _noted_in(document)
-    noted = [
-        path
-        for path in _joined(noted_before, list(known.noted), SPACE_EVIDENCE_MAX_PATHS)
-        if path not in evidence
-    ]
+    noted = _joined(
+        [path for path in noted_before if path not in evidence],
+        [path for path in known.noted if path not in evidence],
+        SPACE_EVIDENCE_MAX_PATHS,
+    )
     if noted != noted_before:
         _set_noted(document, noted)
         changed = True

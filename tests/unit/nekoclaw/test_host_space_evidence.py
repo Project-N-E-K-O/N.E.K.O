@@ -2210,6 +2210,22 @@ async def _two_texts_waiting_beside_an_entry_that_expired(space: TaskAgentSpace,
     assert waiting["evidence"] == [_where(workdir / "src" / "app.py")]
 
 
+def test_a_file_an_entry_rests_on_does_not_push_out_one_it_notes():
+    from nekoclaw.host import space as module
+
+    noted = [f"D:/work/{name}.py" for name in "abcde"]
+    document = module._parse_document(
+        "---\nname: Use argparse\nevidence: [\"D:/work/p.py\"]\n"
+        f"noted: {json.dumps(noted)}\nconfidence: observed\n---\nGive scripts their options with argparse.\n"
+    )
+
+    # Noted again, though it is what the entry rests on: nothing new is noted, and nothing goes.
+    module._keep_known(document, module._Known(confidence="inferred", noted=("D:/work/p.py",)))
+
+    assert module._noted_in(document) == noted
+    assert module._evidence_in(document) == ["D:/work/p.py"]
+
+
 async def test_both_texts_of_a_pending_entry_go_into_an_entry_that_expired(space, root, workdir):
     await _two_texts_waiting_beside_an_entry_that_expired(space, root, workdir)
 
@@ -2233,8 +2249,10 @@ async def test_a_file_the_first_text_found_gone_is_not_brought_back_by_the_secon
 
     await space.submit(_commission(workdir, id="c3"), _lesson("Entry point", "The app starts in app.py.", "verified"))
 
-    # Checked by hand: in effect again, with both texts; the file is not on its record.
-    assert len(looks) >= 2 and _pending(root) == [] and _in_effect(root) == ["entry-point"]
+    # Checked by hand: in effect again, with its line, and both texts; the file is not on its record.
+    assert len(looks) >= 2 and _pending(root) == [] and _expired(root) == []
+    assert "status" not in _head(_memory(root) / "entry-point.md")
+    assert "(memory/entry-point.md)" in await space.read_index(DEFAULT_PROJECT)
     said = (_memory(root) / "entry-point.md").read_text(encoding="utf-8")
     assert "Videos may have no date." in said and "It reads config.toml first." in said
     assert app not in _rests_on(_memory(root) / "entry-point.md")[0]

@@ -3057,8 +3057,9 @@ def test_the_two_prompts_ask_for_the_file_an_entry_is_about():
     ) in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
     assert (
         "evidence is the paths of up to two files the entry is about, and [] when it is about no file. Each "
-        "entry is kept as a guess until a commission finds the same, its files for reference only: the files "
-        "of one project do not show it holds for others."
+        "entry is kept as a guess, its files for reference only (the files of one project do not show it holds "
+        "for others), until commissions find the same or a task agent checks it; this summary is no such "
+        "finding."
     ) in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
     # Every entry has a place for them in what a model is asked to write; how it is known is the host's to tell.
     for prompt in (texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT, texts.SPACE_ARCHIVE_SYSTEM_PROMPT):
