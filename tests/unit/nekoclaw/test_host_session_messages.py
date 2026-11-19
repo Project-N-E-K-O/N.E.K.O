@@ -6934,3 +6934,132 @@ async def test_that_a_commission_was_opened_is_noted_with_a_later_event_where_it
     host.ledger.append_event = append  # type: ignore[method-assign]
     kinds = [event.type for event in await host.ledger.events(receipt.commission_id)]
     assert tried == ["opened"] and kinds.count("opened") == 1
+
+
+async def test_a_wake_is_not_handed_on_once_nekoclaw_is_switched_off_while_it_was_on_its_way(hosts, tmp_path):
+    # The switch was on when it was looked at first, and goes off while what wakes the
+    # commission is being put on record: nothing is handed on, it stays, and it goes once the
+    # switch is on again.
+    on = [True]
+    llm = ScriptedLLM([_wake(delay=1), [say("Waiting for the deployment."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm, enabled=lambda: on[0])
+    receipt = await _dispatch(host, "deploy the site and tell me when it is up")
+    await wait_until(lambda: _resting(host, receipt.commission_id), what="it resting")
+    await host.wakes.close()
+    requests = len(llm.requests)
+    [wake] = await host.ledger.wakes_pending(commission_id=receipt.commission_id)
+    fire = host.ledger.wakes_fire
+
+    async def switched_off_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        on[0] = False
+        return await fire(*args, **kwargs)
+
+    host.ledger.wakes_fire = switched_off_meanwhile  # type: ignore[method-assign]
+    place = await host.ledger.get_session((await host.ledger.get(receipt.commission_id)).session_id)
+    handed = await host.task_agents.hand_over(place.id, receipt.commission_id, [wake])
+    host.ledger.wakes_fire = fire  # type: ignore[method-assign]
+    assert handed.outcome == "held"
+    assert [item.id for item in await host.ledger.wakes_pending(commission_id=receipt.commission_id)] == [wake.id]
+    assert len(llm.requests) == requests and await _resting(host, receipt.commission_id)
+    on[0] = True
+    assert (await host.task_agents.hand_over(place.id, receipt.commission_id, [wake])).outcome == "handed"
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+
+
+async def test_what_a_wake_brings_takes_nothing_up_with_nekoclaw_switched_off_and_the_rest_does(hosts, tmp_path, monkeypatch):
+    # Switched off while the ledger was read on the way: what a wake brings waits; what else
+    # takes a resting commission up again (what the user said, a result of a task agent) is not
+    # held back by this.
+    from nekoclaw.host.task_agents import _Handed
+
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    on = [True]
+    llm = ScriptedLLM([_wake(), [say("Waiting."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm, enabled=lambda: on[0])
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: _resting(host, receipt.commission_id), what="it resting")
+    await wait_until(lambda: receipt.commission_id not in host.task_agents._sessions, what="its session closing")
+    manager = host.task_agents
+    know = manager._know_session
+
+    async def switched_off_meanwhile(commission_id: str) -> bool:
+        on[0] = False
+        return await know(commission_id)
+
+    monkeypatch.setattr(manager, "_know_session", switched_off_meanwhile)
+    assert await manager._wake_working(receipt.commission_id, _Handed("A wake you set is due.", [1]), reason="x") is False
+    assert (await host.ledger.get(receipt.commission_id)).status == "working" and receipt.commission_id not in manager._queue
+    assert await manager._wake_working(receipt.commission_id, "the user asked again", reason="x") is True
+    on[0] = True
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+
+
+async def test_no_commission_is_filed_for_a_note_once_nekoclaw_is_switched_off_on_the_way(hosts, tmp_path):
+    on = [True]
+    scripts = {
+        _k("build the site"): ScriptedLLM([_report("ready", "built")]),
+        _k("deploy the site"): ScriptedLLM([lambda: _write(target[0], "The build is stale, rebuild it."), _report()]),
+        "The build is stale": ScriptedLLM([_report("ready", "rebuilt")]),
+    }
+    target: list[str] = []
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts), enabled=lambda: on[0])
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    await _let_go(host)
+    target.append(built.session_id)
+    last = host.ledger.last_commission
+    looked: list[bool] = []
+
+    async def switched_off_meanwhile(session_id: str) -> Any:
+        if not looked:
+            looked.append(True)
+            on[0] = False
+        return await last(session_id)
+
+    host.ledger.last_commission = switched_off_meanwhile  # type: ignore[method-assign]
+    await wait_status(host, (await _dispatch(host, "deploy the site")).commission_id, "done")
+    await wait_until(lambda: bool(looked), what="the note being looked at")
+    await asyncio.sleep(0.3)
+    # Nothing was filed, and the note still waits.
+    assert await _filed_for_notes(host) == []
+    assert len(await host.ledger.wakes_pending(session_id=built.session_id)) == 1
+    on[0] = True
+    host.wakes.kick()
+    await wait_until(lambda: _filed_for_notes(host), what="a commission being filed for the note")
+    [filed] = await _filed_for_notes(host)
+    assert (await wait_status(host, filed.id, "done")).result_summary == "rebuilt"
+
+
+async def test_nothing_is_steered_into_an_idle_session_once_nekoclaw_is_switched_off_on_the_way(hosts, tmp_path, monkeypatch):
+    # Its session is open with its run over (it waits for task agents it started, say): what
+    # is handed over starts a turn there. The switch was on when that was looked at, and goes
+    # off while it is put on record: nothing is steered in.
+    monkeypatch.setattr("config.nekoclaw_settings.WAKE_MIN_DELAY_SECONDS", 3600.0)
+    on = [True]
+    release, wait = _gate()
+    llm = ScriptedLLM([_wake(), [wait, say("Waiting."), finish()], _report("ready", "deployed")])
+    host = _host(hosts, tmp_path, llm, enabled=lambda: on[0])
+    receipt = await _dispatch(host, "deploy the site")
+    await wait_until(lambda: len(llm.requests) == 2, what="the second request")
+    await host.wakes.close()
+    session = host.task_agents._sessions[receipt.commission_id]
+    [wake] = await host.ledger.wakes_pending(commission_id=receipt.commission_id)
+    session.idle = True
+    fire = host.ledger.wakes_fire
+
+    async def switched_off_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        on[0] = False
+        return await fire(*args, **kwargs)
+
+    host.ledger.wakes_fire = switched_off_meanwhile  # type: ignore[method-assign]
+    sent = session.sent
+    handed = await host.task_agents.hand_over(session.session_id, receipt.commission_id, [wake])
+    host.ledger.wakes_fire = fire  # type: ignore[method-assign]
+    assert handed.outcome == "held" and session.sent == sent
+    assert [item.id for item in await host.ledger.wakes_pending(commission_id=receipt.commission_id)] == [wake.id]
+    # Switched on again, it goes in.
+    session.idle = False
+    on[0] = True
+    handed = await host.task_agents.hand_over(session.session_id, receipt.commission_id, [wake])
+    assert handed.outcome == "handed" and session.sent == sent + 1
+    release.set()
+    assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
