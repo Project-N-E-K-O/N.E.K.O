@@ -15,13 +15,32 @@ export type {
   AvatarToolStatePayload,
 };
 
+// 宿主回调统一走这里。zod 3 的 .args(...) 隐含 rest(z.unknown())，多传参数（例如 React 事件对象）
+// 不会被拒；zod 4 的 .input([...]) 默认不带 rest，所以在这里统一补上，新增回调时不会漏。
+// 返回值默认钉死为 void；需要把返回值交还宿主的（如截图）显式传 output。
+function makeHostCallback<const Args extends z.core.util.TupleItems, Out extends z.ZodType>(args: Args, output: Out) {
+  return z.function().input(args, z.unknown()).output(output);
+}
+// 重载：不传 output 时类型和运行时都固定为 void；要别的返回值类型必须显式传 output，
+// 避免"泛型写了 Out 却没传 output"时类型与运行时校验不一致。
+function hostCallback<const Args extends z.core.util.TupleItems>(
+  args: Args,
+): ReturnType<typeof makeHostCallback<Args, z.ZodVoid>>;
+function hostCallback<const Args extends z.core.util.TupleItems, Out extends z.ZodType>(
+  args: Args,
+  output: Out,
+): ReturnType<typeof makeHostCallback<Args, Out>>;
+function hostCallback(args: z.core.util.TupleItems, output: z.ZodType = z.void()) {
+  return makeHostCallback(args, output);
+}
+
 const messageActionSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   action: z.string().min(1),
   variant: z.enum(['primary', 'secondary', 'danger']).optional(),
   disabled: z.boolean().optional(),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
 });
 
 const textBlockSchema = z.object({
@@ -67,9 +86,9 @@ export const htmlCardBlockSchema = z.object({
   html: z.string(),
   css: z.string().default(''),
   summary: z.string(),
-  actions: z.record(z.object({
+  actions: z.record(z.string(), z.object({
     entry: z.string().min(1),
-    args: z.record(z.unknown()).optional(),
+    args: z.record(z.string(), z.unknown()).optional(),
   })).default({}),
 });
 export type HtmlCard = z.infer<typeof htmlCardBlockSchema>;
@@ -318,14 +337,8 @@ export const chatWindowPropsSchema = z.object({
   // （CodeRabbit）；host 恒传合法值，约束不会触发拒绝。
   compactMinimizeCancelSeq: z.number().int().nonnegative().optional(),
   compactChatState: compactChatStateSchema.optional(),
-  onCompactChatStateChange: z.function()
-    .args(compactChatStateSchema)
-    .returns(z.void())
-    .optional(),
-  onCompactMinimizeRequest: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
+  onCompactChatStateChange: hostCallback([compactChatStateSchema]).optional(),
+  onCompactMinimizeRequest: hostCallback([]).optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),
@@ -341,88 +354,36 @@ export const chatWindowPropsSchema = z.object({
   compactHistoryOpenRequest: compactHistoryOpenRequestSchema.optional(),
   compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
   compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
-  onMessageAction: z.function()
-    .args(chatMessageSchema, messageActionSchema)
-    .returns(z.void())
-    .optional(),
-  onComposerImportImage: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
-  onComposerScreenshot: z.function()
-    .args()
-    // 宿主的 handleComposerScreenshot 结尾是 return handled（布尔）——PC 主进程按 F4 时
-    // 走 resize-drag-and-api.js 暴露的 triggerComposerScreenshot 读这个返回值，决定要不要
-    // 回落到旧的 Pet 截图路径，所以返回值不能去掉。声明成 z.void() 会让 zod 的校验壳在
-    // 宿主函数跑完之后抛 invalid_return_type，从聊天面板每点一次截图就往 window 抛一个
-    // 未捕获错误（debug-health.js 的全局 error 计数会跟着涨）。
-    .returns(z.unknown())
-    .optional(),
-  onComposerRemoveAttachment: z.function()
-    .args(z.string())
-    .returns(z.void())
-    .optional(),
-  onComposerSubmit: z.function()
-    .args(composerSubmitSchema)
-    .returns(z.void())
-    .optional(),
-  onAvatarInteraction: z.function()
-    .args(avatarInteractionPayloadSchema)
-    .returns(z.void())
-    .optional(),
-  onAvatarToolStateChange: z.function()
-    .args(avatarToolStatePayloadSchema)
-    .returns(z.void())
-    .optional(),
-  onJukeboxClick: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
-  onAvatarGeneratorClick: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
-  onExportConversationClick: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
-  onTranslateToggle: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
-  onGalgameModeToggle: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
-  onGalgameOptionSelect: z.function()
-    .args(galgameOptionSchema)
-    .returns(z.void())
-    .optional(),
-  onTheaterSubmit: z.function()
-    .args(z.string())
-    .returns(z.void())
-    .optional(),
-  onTheaterSuggestedInputSelect: z.function()
-    .args(z.string())
-    .returns(z.void())
-    .optional(),
-  onTheaterEnd: z.function()
-    .args()
-    .returns(z.void())
-    .optional(),
+  onMessageAction: hostCallback([chatMessageSchema, messageActionSchema]).optional(),
+  onComposerImportImage: hostCallback([]).optional(),
+  // 宿主的 handleComposerScreenshot 结尾是 return handled（布尔）——PC 主进程按 F4 时
+  // 走 resize-drag-and-api.js 暴露的 triggerComposerScreenshot 读这个返回值，决定要不要
+  // 回落到旧的 Pet 截图路径，所以返回值不能去掉。声明成 z.void() 会让 zod 的校验壳在
+  // 宿主函数跑完之后报返回值类型错误（zod 4 的 issue code 是 invalid_type），从聊天面板
+  // 每点一次截图就往 window 抛一个未捕获错误（debug-health.js 的全局 error 计数会跟着涨）。
+  onComposerScreenshot: hostCallback([], z.unknown()).optional(),
+  onComposerRemoveAttachment: hostCallback([z.string()]).optional(),
+  onComposerSubmit: hostCallback([composerSubmitSchema]).optional(),
+  onAvatarInteraction: hostCallback([avatarInteractionPayloadSchema]).optional(),
+  onAvatarToolStateChange: hostCallback([avatarToolStatePayloadSchema]).optional(),
+  onJukeboxClick: hostCallback([]).optional(),
+  onAvatarGeneratorClick: hostCallback([]).optional(),
+  onExportConversationClick: hostCallback([]).optional(),
+  onTranslateToggle: hostCallback([]).optional(),
+  onGalgameModeToggle: hostCallback([]).optional(),
+  onGalgameOptionSelect: hostCallback([galgameOptionSchema]).optional(),
+  onTheaterSubmit: hostCallback([z.string()]).optional(),
+  onTheaterSuggestedInputSelect: hostCallback([z.string()]).optional(),
+  onTheaterEnd: hostCallback([]).optional(),
   visitBar: visitBarSchema.optional(),
-  onVisitBarAction: z.function()
-    .args(z.string())
-    .returns(z.void())
-    .optional(),
+  onVisitBarAction: hostCallback([z.string()]).optional(),
   // Generic ChoicePrompt（mini-game invite 等通用三选项框架）
   choicePrompt: choicePromptSchema.optional(),
-  onChoiceSelect: z.function()
+  onChoiceSelect: hostCallback(
     // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
     // 任意 z.string() 会让 zod 验证变松。
-    .args(choiceOptionSchema, choicePromptSourceSchema)
-    .returns(z.void())
-    .optional(),
+    [choiceOptionSchema, choicePromptSourceSchema],
+  ).optional(),
 });
 
 export type ChatMessageRole = z.infer<typeof chatMessageSchema>['role'];
@@ -502,7 +463,7 @@ function stabilizeParsedCallbackIdentities(
       return;
     }
 
-    // z.function() returns a new validating wrapper on every parse. Reuse that
+    // hostCallback / z.function() returns a new validating wrapper on every parse. Reuse that
     // wrapper for the same host callback so ordinary message renders do not
     // look like callback changes to React effects.
     callbackCache.set(rawValue, parsedValue);

@@ -151,6 +151,52 @@ Without `llm_result_fields`, what the AI gets depends on who called the entry; s
 
 ---
 
+## Output contract
+
+`output_schema` declares the shape of what an entry returns, so other plugins and tools can rely on it. It is separate from `llm_result_fields`: that one chooses what a model reads; `output_schema` describes the whole return value.
+
+**Inferred from the return annotation.** If the handler's return annotation is a Pydantic model (or `Model | None`), the output contract is that model. Nothing else to write:
+
+```python
+class SearchReply(BaseModel):
+    summary: str
+    count: int
+
+@plugin_entry(id="search")
+async def search(self, query: str) -> SearchReply:
+    ...
+```
+
+**Declared explicitly.** An entry that returns a plain dict passes a JSON Schema:
+
+```python
+@plugin_entry(
+    id="search",
+    output_schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["summary", "count"],
+    },
+)
+async def search(self, query: str):
+    return Ok({"summary": "...", "count": 3})
+```
+
+An explicit `output_schema` wins over the annotation. An entry with neither has no output contract, and nothing about it changes.
+
+**What is checked, symmetric with inputs.** `params=Model` is validated at runtime while an `input_schema` mapping is only published; outputs work the same way:
+
+- **Pydantic return annotation** (`-> Model` or `-> Model | None`; other annotations such as `list[Model]` are not inferred): after each successful call, and before the automatic state snapshot, the returned data is validated by building the model from it (the same way `params` are), so field and model validators and types such as `HttpUrl` apply. A returned model instance is trusted (it was validated when it was built); with `Model | None`, `None` passes. The data checked is the value inside `Ok(...)`, a bare return value, or the `data` of a `finish()`/`ok()` envelope; an `Err(...)` or a `fail()` envelope is a failure already and is not checked. The published schema is the model's `model_json_schema()`, published the way `params` are.
+- **Explicit `output_schema` mapping**: published only, like `input_schema`. It is not checked at runtime, and `strict_output` has no effect on it.
+- By default a mismatch writes a warning to the plugin log and the result is returned unchanged. The warning lists field paths and error types (for example `$.count (int_parsing)`), never the returned values. The same kind of mismatch of the same entry is logged at most once a minute; the next warning says how many were suppressed.
+- With `strict_output=True` a mismatch fails the call with the error code `PLUGIN_OUTPUT_SCHEMA_VIOLATION`, which a plugin calling it through `call_entry` receives; `/runs` reports plugin failures as `INTERNAL`, as it does today. The field paths are in the plugin log warning. The automatic state snapshot is skipped, but whatever the handler already did is not rolled back. A validator that crashes only logs a warning and never fails the call.
+
+**Return the model, not a serialized dict.** The check builds the model from the returned data, with the model's input rules. Data that the model has already serialized may not read back: `finish(data=model)` emits field names (a field with an alias is then reported missing), and `@field_serializer`, `exclude=True` or differing validation and serialization aliases change the shape too. For such models, return the model instance itself, or turn `strict_output` off.
+
+The contract is listed as `output_schema` (and `strict_output`) in the plugin's entries. `register_dynamic_entry()` and a router's `add_entry()` accept an explicit `output_schema` too (published only); the runtime check comes from a Pydantic return annotation on `@plugin_entry`. `output_schema`/`strict_output` in a `[[plugin.entries]]` table are ignored (`neko-plugin validate` warns). The task agent's capability gateway does not publish it.
+
+---
+
 ## Other entry options
 
 `@plugin_entry` supports these additional options:
@@ -276,4 +322,5 @@ When a task is stopped, the host calls `POST /runs/{run_id}/cancel` on the plugi
 | Return success | `return Ok({...})` |
 | Return failure | `return Err(SdkError("reason"))` |
 | Limit what AI sees | `llm_result_fields=["field1", "field2"]` |
+| Declare what the entry returns | Pydantic return annotation, or `output_schema={...}` |
 | Don't know entries until runtime | `self.register_dynamic_entry(...)` |

@@ -269,6 +269,18 @@ self.register_dynamic_entry(
 )
 ```
 
+### 输出契约
+
+`@plugin_entry` 或 `register_dynamic_entry()` 的 `output_schema` 声明返回值的 JSON Schema。和入参对称：静态入口的返回注解是 Pydantic 模型时会自动推导，运行时由模型校验返回的数据（和 `params` 一样）；显式写的 `output_schema` 字典（动态入口都是这种）只发布、不校验（和 `input_schema` 一样）。默认不符合时只在插件日志里告警（有限流）；`strict_output=True` 时调用失败，错误码 `PLUGIN_OUTPUT_SCHEMA_VIOLATION`。日志和错误里只有字段路径和错误类型。详见[入口与参数](./entries)的「输出契约」一节。
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool-described",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},  # 只发布，不校验
+)
+```
+
 ---
 
 ## Result 类型：Ok / Err

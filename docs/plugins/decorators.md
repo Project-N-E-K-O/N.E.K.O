@@ -39,6 +39,8 @@ Defines an externally callable entry point.
     timeout=30.0,                # Execution timeout in seconds
     llm_result_fields=["text"],  # Fields to extract for LLM consumption
     llm_result_model=MyResult,   # Pydantic model for result schema
+    output_schema={...},         # JSON Schema of the return value (output contract)
+    strict_output=False,         # True: a return value that violates the contract fails the call
     metadata={"category": "data"}  # Additional metadata
 )
 async def process(self, data: str, **_):
@@ -63,6 +65,12 @@ async def process(self, data: str, **_):
 | `llm_result_model` | `type` | `None` | Pydantic model for result schema |
 | `fields` | `type` | `None` | Alias for `params` |
 | `metadata` | `dict` | `None` | Additional metadata |
+| `output_schema` | `dict` | `None` | JSON Schema of the return value. Inferred from a Pydantic return annotation when omitted. See [Output contract](./entries#output-contract) |
+| `strict_output` | `bool` | `False` | When the return value violates the output contract, also fail the call (`PLUGIN_OUTPUT_SCHEMA_VIOLATION`). The default only logs a warning; strict mode logs the warning too. Only contracts inferred from a Pydantic return annotation are checked, so it has no effect on an explicit `output_schema` |
+
+`output_schema` is independent of `llm_result_fields` / `llm_result_model`: those decide what a model reads, `output_schema` describes the whole return value. The two can be combined.
+
+A contract inferred from a Pydantic return annotation is validated at runtime by the model (like `params`); an explicit `output_schema` is published only (like `input_schema`). See [Output contract](./entries#output-contract).
 
 ::: tip
 Use `**_` only when the handler intentionally accepts extra host-supplied fields. The runtime filters unsupported keyword arguments for handlers with explicit signatures, so it is not mandatory.

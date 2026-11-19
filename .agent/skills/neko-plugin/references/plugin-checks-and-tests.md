@@ -35,7 +35,7 @@ What `check` validates:
 - best-effort `@plugin_entry` AST checks:
   - entry id from literal `id` or the function name; invalid characters warn, empty ids error.
   - duplicate `@plugin_entry` ids warn across scanned plugin files.
-  - literal `input_schema` gets shallow shape checks.
+  - literal `input_schema` and `output_schema` get shallow shape checks (`output_schema` is not required to be `type: object`); an explicit `output_schema` also gets a warning that it is published only, not validated at runtime.
   - mutually exclusive keyword groups are checked by keyword presence: `input_schema`/`params`, and `llm_result_fields`/`llm_result_model`/`fields`.
 - UI surface entries exist when declared.
 - UI permission strings are recognized.

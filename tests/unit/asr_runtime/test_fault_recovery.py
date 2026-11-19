@@ -1,7 +1,7 @@
 """Exercise owned fault recovery with the real runtime and lifecycle."""
 
 import asyncio
-import time
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -12,6 +12,7 @@ from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResul
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame, VoiceInputAudioPipeline
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from main_logic.voice_turn.contracts import AsrSubmitStatus
+from tests.fake_clock import patch_module_asyncio
 from tests.unit.asr_runtime._scenarios import _start_runtime_with_callback_candidates
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.runtime]
@@ -33,13 +34,13 @@ async def _started(monkeypatch, *, candidate_count=4):
     return owner, runtime, sessions, provider_callbacks, detector, observers
 
 
-async def _recover(runtime, *, code="ASR_QWEN_READ_DISCONNECTED", source=FailureSource.PROVIDER):
+async def _recover(runtime, *, code="ASR_QWEN_READ_DISCONNECTED", source=FailureSource.PROVIDER, guard=2):
     await runtime._handle_independent_asr_error(
         runtime._asr_session_epoch, "qwen", status_code=code, failure_source=source,
     )
     operation = runtime._asr_recovery
     assert operation is not None
-    await asyncio.wait_for(asyncio.shield(operation.task), 2)
+    await asyncio.wait_for(asyncio.shield(operation.task), guard)
     return operation
 
 
@@ -272,6 +273,13 @@ async def test_real_endpoint_watchdog_and_final_settle_only_one_outcome(monkeypa
 
 
 async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch):
+    from main_logic.asr_client import runtime as asr_runtime_module
+
+    # The old transport's close never returns, and its own cleanup bound is
+    # pushed far past the guard below: the recovery can only end in time if
+    # its 30 ms total deadline covers that close. This replaces timing the
+    # call on the wall clock, which a stalled runner stretched past 0.5 s.
+    monkeypatch.setattr(asr_runtime_module, "_CONNECT_CLEANUP_TIMEOUT_SECONDS", 60.0)
     _, runtime, sessions, callbacks, _, observers = await _started(monkeypatch)
     close_entered, close_release = asyncio.Event(), asyncio.Event()
 
@@ -281,11 +289,30 @@ async def test_total_recovery_deadline_includes_old_transport_close(monkeypatch)
 
     sessions[0].close.side_effect = close
     runtime._asr_recovery_budget.total_seconds = 0.03
+    # Record each timeout scope the runtime opens and whether the old
+    # transport's close was entered inside it, so that a close bounded by
+    # anything but the 30 ms total deadline fails instead of merely finishing
+    # under the hang guard.
+    scopes = []
+    real_timeout = asyncio.timeout
+
+    @asynccontextmanager
+    async def spy_timeout(delay):
+        scope = {"delay": delay, "close_before": close_entered.is_set(), "close_inside": False}
+        scopes.append(scope)
+        try:
+            async with real_timeout(delay):
+                yield
+        finally:
+            scope["close_inside"] = close_entered.is_set() and not scope["close_before"]
+
+    patch_module_asyncio(monkeypatch, asr_runtime_module, timeout=spy_timeout)
     try:
-        started = time.monotonic()
-        await _recover(runtime)
-        assert time.monotonic() - started < 0.5
+        await _recover(runtime, guard=10)
         assert close_entered.is_set()
+        covering = [scope["delay"] for scope in scopes if scope["close_inside"]]
+        # 1 us of slack for float rounding of deadline - now on a coarse clock.
+        assert covering and all(delay <= 0.03 + 1e-6 for delay in covering)
         assert len(callbacks) == 1
         assert runtime._asr_recovery_budget.attempts_used == 0
         observers["on_failure"].assert_awaited_once()

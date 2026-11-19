@@ -13,6 +13,7 @@ from PIL import Image
 
 from main_routers.game_router import vision
 from utils import game_vision as service
+from tests.fake_clock import patch_module_asyncio
 
 
 def jpeg(width=8, height=8):
@@ -207,7 +208,24 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
     if mode == "wrong_generation":
         payload["sdk_route_instance_id"] = "older"
     if mode == "timeout":
-        monkeypatch.setattr(vision, "REQUEST_TIMEOUT", 0.02)
+        # The route reads a frozen clock that only this test moves, so its
+        # 30 s deadline is reached exactly when the test says, after the
+        # analysis is in flight, however slowly the runner gets there.
+        monkeypatch.setattr(vision, "REQUEST_TIMEOUT", 30.0)
+        route_now = [0.0]
+        real_get_running_loop = asyncio.get_running_loop
+
+        class _RouteLoop:
+            def __init__(self, loop):
+                self._loop = loop
+
+            def time(self):
+                return route_now[0]
+
+            def __getattr__(self, name):
+                return getattr(self._loop, name)
+
+        patch_module_asyncio(monkeypatch, vision, get_running_loop=lambda: _RouteLoop(real_get_running_loop()))
     request = Request(payload)
     task = asyncio.create_task(vision.game_sdk_vision_analyze("example-game", request))
     try:
@@ -215,7 +233,16 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
             assert (await task)["reason"] == "route_inactive"
             assert not entered.is_set()
             return
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), 10)  # Hang guards below, not speed checks.
+        if mode == "timeout":
+            # Just short of the configured 30 s the request keeps running; at
+            # 30 s the route has to give up. A deadline other than the
+            # configured one either ends it early here or leaves it hanging
+            # into the guard below.
+            route_now[0] = 29.9
+            await asyncio.sleep(0.25)  # A few 0.1 s polls of the route.
+            assert not task.done()
+            route_now[0] = 30.0
         if mode == "superseded":
             # Same textual identity cannot revive a response from another state object.
             current[0] = dict(state)
@@ -227,8 +254,8 @@ async def test_route_disconnect_and_deadline_cancel_work(monkeypatch, scenario, 
                 await task
         else:
             expected = {"superseded": "route_inactive", "disconnected": "cancelled", "timeout": "timeout"}[mode]
-            assert (await asyncio.wait_for(task, 1))["reason"] == expected
-        await asyncio.wait_for(released.wait(), 1)
+            assert (await asyncio.wait_for(task, 10))["reason"] == expected
+        await asyncio.wait_for(released.wait(), 10)
         await asyncio.sleep(0)
         assert not vision._active_operations
     finally:

@@ -171,7 +171,13 @@ async def test_session_setup_timeout_is_connection_failure_not_backpressure(monk
     first = _FakeWebSocket(on_send=on_send)
     connector = _FakeConnector(first, silent) if successor else _FakeConnector(silent)
     monkeypatch.setattr(qwen.websockets, "connect", connector)
-    monkeypatch.setattr(qwen, "_QWEN_SETUP_TIMEOUT_SECONDS", 0.02)
+    # Only the silent connection is meant to hit the setup timeout. The worker
+    # reports ``ready`` from its receiver before the setup wait itself returns,
+    # so a 20 ms allowance on the answering first connection could expire in
+    # that gap on a stalled runner, tear it down and lose the speech it is
+    # about to carry. It gets a generous allowance; the short one is set only
+    # once it is up, and is read again when the successor connects.
+    monkeypatch.setattr(qwen, "_QWEN_SETUP_TIMEOUT_SECONDS", 30.0 if successor else 0.02)
     monkeypatch.setattr(qwen, "_QWEN_RECONNECT_MAX_ATTEMPTS", 1)
     monkeypatch.setattr(qwen, "_QWEN_LOCAL_FINISH_GRACE_SECONDS", 0)
     requests, responses = _AsrRequestQueue(), asyncio.Queue()
@@ -180,14 +186,17 @@ async def test_session_setup_timeout_is_connection_failure_not_backpressure(monk
     ))
     try:
         if successor:
-            await _next_event(responses, "ready")
+            await _next_event(responses, "ready", timeout=10)
             await first.server_send({"type": "input_audio_buffer.speech_started", "item_id": "old"})
-            await _next_event(responses, "utterance_started")
+            await _next_event(responses, "utterance_started", timeout=10)
+            monkeypatch.setattr(qwen, "_QWEN_SETUP_TIMEOUT_SECONDS", 0.02)
             requests.put_nowait(_AsrWorkerRequest("activity", 0, speech_active=False))
-        error = await _next_event(responses, "error")
+        # Hang guards only: the silent peer never answers, so the error can
+        # come from nothing but the setup timeout.
+        error = await _next_event(responses, "error", timeout=10)
         assert error.error_code == "ASR_QWEN_CONNECTION_FAILED"
         assert "response delivery" not in error.error_message
-        await asyncio.wait_for(worker, 1)
+        await asyncio.wait_for(worker, 10)
     finally:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
@@ -215,11 +224,18 @@ async def test_recovery_capacity_deadline_ignores_loop_clock_origin(monkeypatch,
     original_time = loop.time
     monkeypatch.setattr(loop, "time", lambda: original_time() + offset)
     started = time.monotonic()
+    # The guard is only there so a deadline read on the shifted loop clock
+    # (-100000: about a day away) fails instead of hanging. The other wrong
+    # reading (+100000: already past) gives up at the first 10 ms backpressure
+    # check, which the lower bound catches. The upper bound is far above
+    # anything a stalled runner adds to the expected ~0.06 s, and still
+    # catches a wait that overran the recovery deadline by seconds before
+    # reporting backpressure.
     with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
         await asyncio.wait_for(session._wait_for_audio_queue_capacity(
             _AsrWorkerRequest("audio", 0, audio=b"aa"),
-        ), 0.3)
-    assert 0.04 <= time.monotonic() - started < 0.3
+        ), 10)
+    assert 0.04 <= time.monotonic() - started < 5
 
 
 def _state():

@@ -173,13 +173,19 @@ async def test_required_review_remains_inside_whole_turn_deadline_and_keeps_orig
     async def check(self, **kwargs):
         checks.append(kwargs)
         try:
-            await asyncio.sleep(1)
+            await asyncio.Event().wait()                      # Only the turn deadline can end it.
         except asyncio.CancelledError:
             cancelled.append(True)
             raise
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", options)
-    monkeypatch.setattr(workflow, "NUMERIC_V2_TURN_MODEL_BUDGET_SECONDS", 0.65)
+    # The required review reserves about 0.52 s of the turn. With a 0.65 s turn
+    # that left the stub actor 0.13 s, including everything the workflow does
+    # before generating, and a stalled Windows runner timed the actor out
+    # instead (numeric_v2_actor_timeout). 2 s leaves it about 1.5 s; the check
+    # still never finishes on its own, so it is the whole-turn deadline that
+    # cancels it.
+    monkeypatch.setattr(workflow, "NUMERIC_V2_TURN_MODEL_BUDGET_SECONDS", 2.0)
     monkeypatch.setattr(workflow, "NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS", 0.05)
     monkeypatch.setattr(workflow, "NUMERIC_V2_CONTRACT_CHECK_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "克制。")
@@ -187,8 +193,9 @@ async def test_required_review_remains_inside_whole_turn_deadline_and_keeps_orig
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "verify_contract_boundaries", check)
     with pytest.raises(workflow.NumericV2ActorOutputError, match="contract_check_failed"):
-        await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
-            turn=TurnRequestV2("one", 0, "请检查状态。"), ensure_current_binding=lambda _: _binding())
+        # Hang guard: a check left outside the turn deadline would never return.
+        await asyncio.wait_for(workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2("one", 0, "请检查状态。"), ensure_current_binding=lambda _: _binding()), 30)
     assert len(checks) == 1 and cancelled == [True]
     assert runtime.store._path(current.session.session_id).read_bytes() == before
 

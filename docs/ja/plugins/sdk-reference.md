@@ -256,6 +256,18 @@ self.register_dynamic_entry(
 )
 ```
 
+### 出力契約
+
+`@plugin_entry` または `register_dynamic_entry()` の `output_schema` で戻り値の JSON Schema を宣言します。入力と対称です。静的エントリーで戻り値の型注釈が Pydantic モデルなら自動で推論され、返したデータは実行時にモデルで検証されます（`params` と同じ）。明示した `output_schema` の dict（動的エントリーはすべてこれ）は公開されるだけで、検証されません（`input_schema` と同じ）。デフォルトでは合わない場合にプラグインログへ警告するだけで（頻度制限あり）、`strict_output=True` なら呼び出しは `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗します。ログとエラーに含まれるのはフィールドのパスとエラーの種類だけです。詳しくは[エントリーとパラメーター](./entries)の「出力契約」を参照してください。
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool-described",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},  # 公開のみ、検証しない
+)
+```
+
 ---
 
 ## Result 型: Ok / Err
