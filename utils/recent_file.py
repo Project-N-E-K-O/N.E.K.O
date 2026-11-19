@@ -303,6 +303,12 @@ def _reset_file_locks_after_fork() -> None:
     only if that process imported this module.
     """
     # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
+    global _LOCKS_GUARD, _PENDING_GUARD
+    # Module guards first: one another parent thread held at fork would never be released
+    # here. Replacing them is safe even if the forking thread holds one: its `with` block
+    # releases the object it acquired. Every reader looks the names up at call time.
+    _LOCKS_GUARD = threading.Lock()
+    _PENDING_GUARD = threading.Lock()
     _FORK_RESET_FAILURES.clear()  # A grandchild must not inherit its parent's record.
     for lock in list(_FORK_RESET_LOCKS):
         try:

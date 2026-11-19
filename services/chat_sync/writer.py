@@ -39,6 +39,11 @@ def _reset_file_locks_after_fork():
     only if that process imported this module.
     """
     # CPython only prints an at-fork hook's exception, so one failure must not leave the rest inherited.
+    global _registry_lock
+    # Module guard first: one another parent thread held at fork would never be released
+    # here. Replacing it is safe even if the forking thread holds it: its `with` block
+    # releases the object it acquired. Every reader looks the name up at call time.
+    _registry_lock = threading.RLock()
     _FORK_RESET_FAILURES.clear()  # A grandchild must not inherit its parent's record.
     for writer in list(_FORK_RESET_WRITERS):
         try:

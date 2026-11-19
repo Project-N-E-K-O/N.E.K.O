@@ -9,7 +9,8 @@ mirrored for ``utils.recent_file`` and ``services.chat_sync.writer``:
   and the parent's lock is untouched afterwards;
 - the child still respects a file lock the parent holds;
 - an in-process gate another parent thread held at fork time is fresh in the
-  child, while one the forking thread holds is kept.
+  child, while one the forking thread holds is kept;
+- module-level guards another parent thread held at fork time are fresh in the child.
 """
 
 from __future__ import annotations
@@ -57,10 +58,10 @@ def _isolated_caches(monkeypatch):
     monkeypatch.setattr(chat_sync_writer, '_registry', {})
 
 
-def _run_in_fork_child(target, *args) -> int:
+def _run_in_fork_child(target, *args, timeout=_JOIN_TIMEOUT) -> int:
     process = multiprocessing.get_context('fork').Process(target=target, args=args)
     process.start()
-    process.join(_JOIN_TIMEOUT)
+    process.join(timeout)
     if process.is_alive():
         process.kill()
         process.join()
@@ -175,6 +176,34 @@ def test_recent_file_failed_file_lock_rebuild_still_refreshes_gate(tmp_path, mon
     monkeypatch.setattr(lock, '_new_file_lock', _fail_new_file_lock)
     try:
         assert _run_in_fork_child(_recent_child_gate_is_fresh, lock) == 0
+    finally:
+        release.set()
+        thread.join(_JOIN_TIMEOUT)
+
+
+def _hold_guards_in_other_thread(guards):
+    def enter():
+        for guard in guards:
+            guard.acquire()
+
+    def exit_():
+        for guard in reversed(guards):
+            guard.release()
+
+    return _hold_in_other_thread(enter, exit_)
+
+
+def _recent_child_passes_module_guards(path):
+    recent_file.recent_file_lock(path)
+    recent_file.get_recent_pending_unlocked(path)
+
+
+def test_recent_file_module_guards_held_by_other_thread_are_fresh_in_child(tmp_path):
+    """A guard another parent thread held at fork must not hang the child's first lookup."""
+    path = tmp_path / 'Role' / 'recent.json'
+    thread, release = _hold_guards_in_other_thread([recent_file._LOCKS_GUARD, recent_file._PENDING_GUARD])
+    try:
+        assert _run_in_fork_child(_recent_child_passes_module_guards, path, timeout=10) == 0
     finally:
         release.set()
         thread.join(_JOIN_TIMEOUT)
@@ -399,6 +428,22 @@ def test_chat_sync_writer_failed_file_lock_rebuild_still_drops_trust(tmp_path, m
     monkeypatch.setattr(writer, '_new_file_lock', _fail_new_file_lock)
 
     assert _run_in_fork_child(_writer_child_trust_is_dropped, writer) == 0
+
+
+def _writer_child_passes_module_guard(directory, witness_path):
+    chat_sync_writer.registered_writer(directory)
+    chat_sync_writer.ChatSyncWriter(directory, witness_path)
+
+
+def test_chat_sync_writer_module_guard_held_by_other_thread_is_fresh_in_child(tmp_path):
+    """A guard another parent thread held at fork must not hang the child's first lookup."""
+    directory, witness_path = tmp_path / 'sync', tmp_path / 'installation' / 'writer.json'
+    thread, release = _hold_guards_in_other_thread([chat_sync_writer._registry_lock])
+    try:
+        assert _run_in_fork_child(_writer_child_passes_module_guard, directory, witness_path, timeout=10) == 0
+    finally:
+        release.set()
+        thread.join(_JOIN_TIMEOUT)
 
 
 def test_chat_sync_writer_mutex_held_by_forking_thread_is_kept(tmp_path):
