@@ -1247,6 +1247,15 @@
                 booleanField: Object.freeze({ input: 'easterEgg', output: 'easter_egg' }),
                 roundChoice: false
             }),
+            // 不拿道具直接连点模型（static/avatar/avatar-click-shake.js）
+            tap: Object.freeze({
+                actions: Object.freeze({
+                    poke: Object.freeze(['normal', 'rapid', 'angry'])
+                }),
+                acceptsTouchZone: false,
+                booleanField: null,
+                roundChoice: false
+            }),
             rps: Object.freeze({
                 actions: Object.freeze({}),
                 acceptsTouchZone: false,

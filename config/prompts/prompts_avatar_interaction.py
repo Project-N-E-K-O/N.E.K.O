@@ -16,7 +16,8 @@
 Avatar-interaction prompt templates and payload normalizers.
 
 Used when the frontend reports a tool-based avatar interaction
-(lollipop / fist / hammer / rps) — these helpers validate the payload,
+(lollipop / fist / hammer / rps, plus "tap" for plain clicks on the model)
+— these helpers validate the payload,
 localize event facts, and compose the model instruction + memory note
 that drive the runtime reaction.
 """
@@ -787,6 +788,123 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
     },
 }
 
+# "tap": no tool in hand, the user clicks the model itself several times in a row
+# (static/avatar/avatar-click-shake.js). The frontend hard-codes the expression for each
+# level, and each line states the feeling that matches it so the spoken reply fits the face:
+# normal = 2nd click / happy, rapid = 3rd click / shy and puzzled (surprised),
+# angry = 4th click / annoyed (angry, followed by a 30s no-feedback cooldown).
+# Kept as one table per locale and merged into the two tables above, so all three
+# levels of every language can be read and checked together.
+_AVATAR_TAP_TEXTS = {
+    "zh": {
+        "reaction_focus": {
+            "normal": "{actor}戳了戳你，你有点开心。",
+            "rapid": "{actor}又连着戳了你几下，你有点害羞，也有点疑惑。",
+            "angry": "{actor}一直戳个不停，你被戳烦了。",
+        },
+        "memory": {
+            "poke": "[{master}戳了戳你]",
+            "rapid": "[{master}连着戳了你几下]",
+            "angry": "[{master}戳个不停，把你戳烦了]",
+        },
+    },
+    "zh-TW": {
+        "reaction_focus": {
+            "normal": "{actor}戳了戳你，你有點開心。",
+            "rapid": "{actor}又連著戳了你幾下，你有點害羞，也有點疑惑。",
+            "angry": "{actor}一直戳個不停，你被戳煩了。",
+        },
+        "memory": {
+            "poke": "[{master}戳了戳你]",
+            "rapid": "[{master}連著戳了你幾下]",
+            "angry": "[{master}戳個不停，把你戳煩了]",
+        },
+    },
+    "en": {
+        "reaction_focus": {
+            "normal": "{actor} poked you, and it made you a little happy.",
+            "rapid": "{actor} poked you a few more times, leaving you a bit shy and puzzled.",
+            "angry": "{actor} kept poking you nonstop, and now you're annoyed.",
+        },
+        "memory": {
+            "poke": "[{master} poked you]",
+            "rapid": "[{master} poked you a few times in a row]",
+            "angry": "[{master} kept poking you until you got annoyed]",
+        },
+    },
+    "ja": {
+        "reaction_focus": {
+            "normal": "{actor}がつんつんとつついてきて、少し嬉しい。",
+            "rapid": "{actor}が続けて何度かつついてきて、少し照れくさくて、不思議に思っている。",
+            "angry": "{actor}がしつこくつつき続けてきて、イライラしてきた。",
+        },
+        "memory": {
+            "poke": "[{master}があなたをつついた]",
+            "rapid": "[{master}があなたを何度か続けてつついた]",
+            "angry": "[{master}がしつこくつついてきて、イライラした]",
+        },
+    },
+    "ko": {
+        "reaction_focus": {
+            "normal": "{actor} 너를 콕 찔러서 조금 기분이 좋다.",
+            "rapid": "{actor} 너를 연달아 몇 번 더 찔러서 조금 부끄럽고 의아하다.",
+            "angry": "{actor} 쉬지 않고 계속 찔러 대서 짜증이 났다.",
+        },
+        "memory": {
+            "poke": "[{master}이 너를 콕 찔렀다]",
+            "rapid": "[{master}이 너를 연달아 몇 번 찔렀다]",
+            "angry": "[{master}이 계속 찔러 대서 짜증이 났다]",
+        },
+    },
+    "ru": {
+        "reaction_focus": {
+            "normal": "{actor} ткнул тебя пальцем, и тебе немного приятно.",
+            "rapid": "{actor} ещё несколько раз подряд ткнул тебя, тебе немного неловко и непонятно, в чём дело.",
+            "angry": "{actor} без конца тычет в тебя, и это уже раздражает.",
+        },
+        "memory": {
+            "poke": "[{master} ткнул тебя]",
+            "rapid": "[{master} несколько раз подряд ткнул тебя]",
+            "angry": "[{master} без конца тыкал тебя, и это тебя раздражало]",
+        },
+    },
+    "es": {
+        "reaction_focus": {
+            "normal": "{actor} te dio un toquecito y eso te alegró un poco.",
+            "rapid": "{actor} te dio varios toquecitos seguidos; te da un poco de vergüenza y no entiendes por qué.",
+            "angry": "{actor} no para de picarte y ya te está fastidiando.",
+        },
+        "memory": {
+            "poke": "[{master} te dio un toquecito]",
+            "rapid": "[{master} te dio varios toquecitos seguidos]",
+            "angry": "[{master} te picó sin parar hasta fastidiarte]",
+        },
+    },
+    "pt": {
+        "reaction_focus": {
+            "normal": "{actor} te cutucou, e isso te deixou um pouco feliz.",
+            "rapid": "{actor} te cutucou mais algumas vezes seguidas; você sente um pouco de vergonha e não entende o motivo.",
+            "angry": "{actor} não para de te cutucar, e isso já está te irritando.",
+        },
+        "memory": {
+            "poke": "[{master} te cutucou]",
+            "rapid": "[{master} te cutucou várias vezes seguidas]",
+            "angry": "[{master} te cutucou sem parar até te irritar]",
+        },
+    },
+}
+for _tap_locale, _tap_texts in _AVATAR_TAP_TEXTS.items():
+    _AVATAR_INTERACTION_REACTION_PROFILES.setdefault(_tap_locale, {})["tap"] = {
+        "poke": {
+            intensity: {"reaction_focus": text}
+            for intensity, text in _tap_texts["reaction_focus"].items()
+        },
+    }
+    _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.setdefault(_tap_locale, {})["tap"] = dict(
+        _tap_texts["memory"]
+    )
+del _tap_locale, _tap_texts
+
 # When master_name is missing or empty, fall back to a localized neutral term; never fall back to "主人 / master / ご主人さま /
 # 주인 / Хозяин" or other objectifying forms.
 _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
@@ -1049,6 +1167,18 @@ def _build_avatar_interaction_memory_meta(
             dedupe_rank = 3 if intensity == "burst" else 2
         else:
             memory_note = templates.get("hammer", {}).get("bonk", "")
+            dedupe_rank = 1
+    elif tool_id == "tap":
+        dedupe_key = "avatar_tap"
+        tap_templates = templates.get("tap", {})
+        if intensity == "angry":
+            memory_note = tap_templates.get("angry", tap_templates.get("poke", ""))
+            dedupe_rank = 3
+        elif intensity == "rapid":
+            memory_note = tap_templates.get("rapid", tap_templates.get("poke", ""))
+            dedupe_rank = 2
+        else:
+            memory_note = tap_templates.get("poke", "")
             dedupe_rank = 1
     else:
         memory_note = templates.get(tool_id, {}).get(action_id, "")

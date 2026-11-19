@@ -259,3 +259,207 @@ test('VRM and MMD shake on a left-click or one-finger tap, not on drag, orbit or
         h.interaction.cleanupDragAndZoom();
     }
 });
+
+// ---- 连点规则 ----
+
+function comboHelper(extraWindow = {}) {
+    const h = dom();
+    h.window.window = h.window;
+    let now = 1_000_000;
+    let nextTimer = 1;
+    const timers = new Map();
+    const clock = {
+        advance(ms) {
+            now += ms;
+            for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+                if (timer.at <= now && timers.has(id)) {
+                    timers.delete(id);
+                    timer.fn();
+                }
+            }
+        },
+        pending: () => timers.size
+    };
+    class FakeDate extends Date {
+        static now() { return now; }
+    }
+    const sent = [];
+    const emotions = [];
+    Object.assign(h.window, {
+        appButtons: { sendAvatarInteractionPayload: async payload => { sent.push(payload); return true; } },
+        applyEmotion: emotion => emotions.push(emotion)
+    }, extraWindow);
+    load(h, 'static/avatar/avatar-click-shake.js', {
+        window: h.window,
+        Date: FakeDate,
+        setTimeout: (fn, ms) => { const id = nextTimer++; timers.set(id, { fn, at: now + ms }); return id; },
+        clearTimeout: id => timers.delete(id)
+    });
+    const shake = h.window.NekoAvatarClickShake;
+    return { ...h, shake, clock, sent, emotions, gap: Math.floor(shake.COMBO_WINDOW_MS / 2) };
+}
+
+function peak(animation) {
+    const values = animation.keyframes.map(frame => frame.translate.split(' ').map(parseFloat));
+    return {
+        x: Math.max(...values.map(([x]) => Math.abs(x || 0))),
+        y: Math.max(...values.map(([, y]) => Math.abs(y || 0)))
+    };
+}
+
+test('combo grows the shake 1x -> 1.5x -> 2x with happy then surprised, and the 4th tap shakes up and down and gets angry', () => {
+    const h = comboHelper();
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+        results.push(h.shake.tap(h.canvas));
+        h.clock.advance(h.gap);
+    }
+    assert.deepEqual(results.map(r => r.count), [1, 2, 3, 4]);
+    assert.deepEqual(results.map(r => r.angry), [false, false, false, true]);
+    // 只有第 1 下照常播点击动作/表情，第 2 下起表情归连点管
+    assert.deepEqual(results.map(r => r.allowTouchSet), [true, false, false, false]);
+    assert.deepEqual(h.shakes.map(peak), [
+        { x: 4, y: 0 }, { x: 6, y: 0 }, { x: 8, y: 0 }, { x: 0, y: 10 }
+    ]);
+    assert.ok(h.shakes[3].keyframes.every(f => /^0 -?\d+(\.\d+)?px$/.test(f.translate)));
+    assert.ok(h.shakes[3].options.duration > h.shakes[0].options.duration);
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    // 第 4 下立刻出声，第 2/3 下排着的语音已作废
+    assert.deepEqual(h.sent.map(p => p.intensity), ['angry']);
+    assert.equal(h.sent[0].tool_id, 'tap');
+    assert.equal(h.sent[0].action_id, 'poke');
+    assert.equal(h.sent[0].target, 'avatar');
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.equal(h.sent.length, 1, 'the cancelled 2nd/3rd-tap lines must never be sent afterwards');
+});
+
+test('for 30 seconds after the angry tap, clicks give no feedback at all', () => {
+    const h = comboHelper();
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    const shakesAtAngry = h.shakes.length;
+    for (let i = 0; i < 6; i++) {
+        const result = h.shake.tap(h.canvas);
+        assert.equal(result.allowTouchSet, false);
+        h.clock.advance(h.gap);
+    }
+    h.clock.advance(h.shake.ANGRY_COOLDOWN_MS - 6 * h.gap - 2 * h.gap - 1);
+    assert.equal(h.shake.tap(h.canvas).allowTouchSet, false, 'still inside the cooldown');
+    assert.equal(h.shakes.length, shakesAtAngry, 'no shake during the cooldown');
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    assert.equal(h.sent.length, 1);
+
+    h.clock.advance(h.gap + 1);
+    const fresh = h.shake.tap(h.canvas);
+    assert.deepEqual({ ...fresh }, { count: 1, angry: false, allowTouchSet: true });
+    assert.equal(peak(h.shakes.at(-1)).x, 4);
+});
+
+test('a single tap is silent; the 2nd tap speaks only after the combo ends', () => {
+    const h = comboHelper();
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS * 2);
+    assert.equal(h.sent.length, 0);
+    assert.deepEqual(h.emotions, []);
+
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    assert.equal(h.sent.length, 0, 'voice waits until the clicking stops');
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['normal']);
+    assert.deepEqual(h.emotions, ['happy']);
+});
+
+test('the 3rd tap interrupts the 2nd tap: only one rapid line is sent', () => {
+    const h = comboHelper();
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['rapid']);
+    assert.equal(h.clock.pending(), 0);
+});
+
+test('a pause longer than the combo window starts over from the first tap', () => {
+    const h = comboHelper();
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.gap);
+    h.shake.tap(h.canvas);
+    h.clock.advance(h.shake.COMBO_WINDOW_MS + 1);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['normal']);
+    const next = h.shake.tap(h.canvas);
+    assert.equal(next.count, 1);
+    assert.equal(next.allowTouchSet, true);
+    assert.equal(peak(h.shakes.at(-1)).x, 4);
+});
+
+test('combo still speaks and changes expression when the shake itself is turned off', () => {
+    const h = comboHelper({ modelClickShakeEnabled: false });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    assert.equal(h.shakes.length, 0);
+    assert.deepEqual(h.emotions, ['happy', 'surprised', 'angry']);
+    assert.deepEqual(h.sent.map(p => p.intensity), ['angry']);
+});
+
+test('tutorial and a held avatar tool keep the plain shake without combo voice, expressions or cooldown', () => {
+    const tutorial = comboHelper({ isInTutorial: true });
+    for (let i = 0; i < 6; i++) {
+        const result = tutorial.shake.tap(tutorial.canvas);
+        assert.equal(result.angry, false);
+        assert.equal(result.allowTouchSet, true);
+        tutorial.clock.advance(tutorial.gap);
+    }
+    tutorial.clock.advance(5000);
+    assert.equal(tutorial.sent.length, 0);
+    assert.deepEqual(tutorial.emotions, []);
+    assert.equal(tutorial.shakes.length, 6);
+    assert.ok(tutorial.shakes.every(a => peak(a).x === 4 && peak(a).y === 0));
+
+    const tool = comboHelper();
+    tool.shake.tap(tool.canvas);
+    tool.clock.advance(tool.gap);
+    tool.shake.tap(tool.canvas);
+    tool.window.fire('react-chat-window:avatar-tool-state', { detail: { active: true, toolId: 'hammer' } });
+    tool.clock.advance(5000);
+    assert.equal(tool.sent.length, 0, 'picking up a tool drops the pending combo line');
+    for (let i = 0; i < 4; i++) tool.shake.tap(tool.canvas);
+    assert.deepEqual(tool.emotions, ['happy']);
+    tool.window.fire('neko:deactivate-avatar-tool');
+    for (let i = 0; i < 4; i++) tool.shake.tap(tool.canvas);
+    assert.deepEqual(tool.emotions, ['happy', 'happy', 'surprised', 'angry']);
+});
+
+test('theater keeps the shake but suppresses combo voice and expressions', () => {
+    const h = comboHelper({ nekoTheaterRuntime: { blocksOrdinaryChat: () => true } });
+    for (let i = 0; i < 4; i++) {
+        h.shake.tap(h.canvas);
+        h.clock.advance(h.gap);
+    }
+    h.clock.advance(5000);
+    assert.equal(h.sent.length, 0);
+    assert.deepEqual(h.emotions, []);
+    assert.equal(peak(h.shakes[3]).y, 10);
+});
+
+test('Live2D plays the touch motion only on the first tap of a combo and never during the angry cooldown', async () => {
+    const h = live2d();
+    let touchChecks = 0;
+    h.manager._canTriggerTouchSetArea = () => { touchChecks += 1; return false; };
+    h.window.applyEmotion = () => {};
+    for (let i = 0; i < 6; i++) {
+        h.canvas.fire('pointerdown', pointer(20 + i, 200));
+        h.document.fire('pointerup', pointer(20 + i, 200));
+    }
+    assert.equal(h.shakes.length, 4, 'taps 5 and 6 fall in the cooldown and do not shake');
+    assert.equal(peak(h.shakes[3]).y, 10);
+    await new Promise(resolve => setTimeout(resolve, 360));
+    assert.equal(touchChecks, 1);
+});
