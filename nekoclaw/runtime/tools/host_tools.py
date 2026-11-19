@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tools carried out by the host: questions, reports, lessons and subagents.
+"""Tools carried out by the host: questions, reports, lessons, subagents, other sessions and wakes.
 
 Each tool here is offered only when the host injected the callback it needs
 (see ``nekoclaw.runtime.host``). Result texts of the dsh tools follow dsh
 ``packages/interaction/tool-ask-user`` and ``packages/subagent``.
+
+The five tools that reach other sessions and set a wake (``list_sessions``,
+``read_session``, ``message_session``, ``schedule_wake``, ``ask_session``)
+hand back what the host worded: it is the host that knows the sessions,
+counts what may be sent, and frames what another session left.
 """
 
 from __future__ import annotations
@@ -125,6 +130,12 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 "content": content,
                 "category": str(args["category"]),
                 "scope": str(args.get("scope", "project")),
+                # How it is known (required: a call without it is turned
+                # down before it gets here), and the files that show it.
+                # The host looks for the files and tells from both whether
+                # the lesson takes effect; nothing else is checked here.
+                "confidence": str(args["confidence"]),
+                "evidence": [str(path) for path in args.get("evidence") or [] if str(path).strip()],
             }
             reply = await ask_host("note_lesson", payload, call)
             return f"lesson submitted.{_host_note(reply)}"
@@ -207,5 +218,80 @@ def build_host_tools(ctx: ToolContext, schemas: dict[str, dict[str, Any]]) -> li
                 define_tool(schemas["wait_agent"], wait_agent),
             ]
         )
+
+    def said(reply: dict[str, Any], key: str) -> str:
+        text = reply.get(key)
+        if not isinstance(text, str) or not text.strip():
+            raise ToolError("the host returned nothing")
+        return text
+
+    if "session_list" in capabilities:
+
+        async def list_sessions(args: dict[str, Any], call: ToolCallInfo) -> str:
+            page = int(args.get("page", 1))
+            if page < 1:
+                raise ToolError("page must be 1 or more")
+            payload = {
+                "query": str(args["query"]).strip() if args.get("query") else None,
+                "project": str(args["project"]).strip() if args.get("project") else None,
+                "page": page,
+            }
+            return said(await ask_host("session_list", payload, call), "text")
+
+        tools.append(define_tool(schemas["list_sessions"], list_sessions, parallel=True))
+
+    if "session_read" in capabilities:
+
+        async def read_session(args: dict[str, Any], call: ToolCallInfo) -> str:
+            session = str(args["session"]).strip()
+            if not session:
+                raise ToolError("session must be a non-empty string")
+            what = str(args.get("what", "results"))
+            query = str(args["query"]).strip() if args.get("query") else None
+            if what == "search" and not query:
+                raise ToolError('what="search" needs query: the words to look for')
+            at = args.get("at")
+            if at is not None and int(at) < 1:
+                raise ToolError("at must be a position: 1 or more")
+            payload = {"session": session, "what": what, "query": query, "at": int(at) if at is not None else None}
+            return said(await ask_host("session_read", payload, call), "text")
+
+        tools.append(define_tool(schemas["read_session"], read_session, parallel=True))
+
+    if "session_send" in capabilities:
+
+        async def message_session(args: dict[str, Any], call: ToolCallInfo) -> str:
+            to = str(args["to"]).strip()
+            message = str(args["message"])
+            if not to or not message.strip():
+                raise ToolError("to and message must be non-empty strings")
+            payload = {"to": to, "message": message, "notify_when_done": bool(args.get("notify_when_done", False))}
+            return said(await ask_host("session_send", payload, call), "message")
+
+        tools.append(define_tool(schemas["message_session"], message_session))
+
+    if "wake_schedule" in capabilities:
+
+        async def schedule_wake(args: dict[str, Any], call: ToolCallInfo) -> str:
+            note = str(args["note"]).strip()
+            if not note:
+                raise ToolError("note must say what to look at when you wake")
+            delay = int(args["delay_seconds"])
+            if delay < 1:
+                raise ToolError("delay_seconds must be a positive number of seconds")
+            return said(await ask_host("wake_schedule", {"delay_seconds": delay, "note": note}, call), "message")
+
+        tools.append(define_tool(schemas["schedule_wake"], schedule_wake))
+
+    if "session_ask" in capabilities:
+
+        async def ask_session(args: dict[str, Any], call: ToolCallInfo) -> str:
+            session = str(args["session"]).strip()
+            question = str(args["question"])
+            if not session or not question.strip():
+                raise ToolError("session and question must be non-empty strings")
+            return said(await ask_host("session_ask", {"session": session, "question": question}, call), "message")
+
+        tools.append(define_tool(schemas["ask_session"], ask_session))
 
     return tools

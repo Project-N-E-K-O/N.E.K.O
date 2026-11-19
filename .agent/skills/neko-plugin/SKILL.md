@@ -5,92 +5,123 @@ description: Work on N.E.K.O plugins end to end. Use when the user asks to creat
 
 # N.E.K.O Plugin
 
-Use this as the single entry point for N.E.K.O plugin work. Keep the workflow continuous: understand the plugin contract, edit when needed, validate the result, and self-review before reporting back.
+Single entry point for N.E.K.O plugin work: understand the contract, edit,
+validate, and self-review before reporting back. "The plugin directory" below
+is the folder holding the plugin's `plugin.toml`; it is the only place you
+write.
 
-## Non-Negotiables
+## Hard Constraints
 
-- Read `references/execution-boundary.md` before any plugin edit.
-- Read `references/core-plugin-contract.md` before changing plugin identity, manifest, entry code, SDK imports, UI surfaces, runtime settings, dependencies, or package type.
-- Default writable area is only `plugin/plugins/<plugin_id>/`.
-- Plugin workspaces live under repository-relative `plugin/plugins/<plugin_id>/`; read `references/core-plugin-contract.md` for the canonical file tree.
-- Docs, tests, examples, indexes, and platform source are read context; platform edits require explicit user request or confirmation.
-- Create standard plugin scaffolds with `uv run neko-plugin init ...`; do not hand-create the initial plugin directory, `plugin.toml`, or entry class.
-- Prefer public SDK facades: `plugin.sdk.plugin`, `plugin.sdk.extension`, `plugin.sdk.adapter`. Do not add new `plugin.sdk.shared` imports in plugin workspace code.
-- Runtime-triggered `@plugin_entry` handlers must be `async def`; `plugin_runtime.auto_start=false` is manual-start, not disabled or import-safe.
-- Prefer Hosted TSX for new interactive plugin UI, Markdown for read-only docs, and Static only for legacy standalone pages or unsupported browser/runtime needs.
+One-line reasons are in the plugin's `AGENTS.md`; full reasons and the escalation
+format in `references/execution-boundary.md`.
+
+1. Do not edit N.E.K.O itself
+2. Do not import host internals
+3. Do not call N.E.K.O's local services directly
+4. Do not use `print`
+5. Do not log conversation text, secrets, or tokens
+6. Do not hard-code paths
+7. Do not block the event loop
+8. Do not use `requirements.txt`
+9. Do not commit `vendor/`, binaries, or files over 2 MiB
+10. Do not use `eval`/`exec`/`pickle`/`shell=True`/`verify=False`
 
 ## Package Types
 
-Choose package type from the manifest/SDK contract, not from feature vibes:
+- `plugin`: the default. Entries, lifecycle, timers, message handlers, UI,
+  storage, cross-plugin calls, and ordinary external API/device integrations.
+- `adapter`: only for bridging an external protocol or request stream into
+  N.E.K.O plugin calls. Calling an external service does not make an adapter.
+- `extension` was removed; see the
+  [migration guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md).
 
-- `plugin`: default independent feature. It can include entries, lifecycle/background work, timers, message handlers, UI, storage/settings, cross-plugin calls, and ordinary external API/device integrations.
-- `extension`: adds entries/hooks to an existing host plugin and requires `[plugin.host]`.
-- `adapter`: bridges an external protocol or request stream into N.E.K.O plugin calls. Calling an external service is not enough to make something an adapter.
+## CLI
 
-## Unified Workflow
+From a N.E.K.O source checkout, `uv run neko-plugin <command> <plugin>`, where
+`<plugin>` is an id under the checkout's plugin root or a path. Confirm
+arguments with `--help`. A checkout (Route A) is the recommended way to
+develop. Without one (desktop build, Route B) no `neko-plugin` command runs:
+tell the user rather than guessing. App buttons (Start/Reload, Logs, Build
+package in the Plugin studio) still work; they are not the CLI. To run checks,
+ask the user whether to set up a checkout ("Setting Up Route A" in
+`references/plugin-cli-and-debugging.md`) and wait for their consent.
 
-### Create a Plugin
+| Command | Use |
+|---|---|
+| `init`, `setup-repo`, `create-repo` | create a plugin; add repo support files; create its GitHub repo |
+| `check`, `check -r` | readiness; strict pre-release check (tests, package, hash) |
+| `lint` | the pinned ruff check Market CI runs (`# noqa` is ignored) |
+| `sync --clean` | rebuild `vendor/` from `pyproject.toml` |
+| `precheck` | lint + sync + `check -r`, the Market CI gates |
+| `build`, `analyze`, `publish` | package; bundle analysis; release |
 
-1. Read `references/plugin-creation-workflow.md`.
-2. Ask only unresolved minimum questions: name, purpose, package type, first-version scope, and out of scope.
-3. Derive and show the Identity Lock.
-4. Present a short Plugin Design Brief.
-5. After confirmation, run the standard `uv run neko-plugin init ...` command.
-6. Read the generated files, add `plugin/plugins/<plugin_id>/DESIGN.md`, then implement only inside that workspace.
-7. Validate with the focused checks from `references/plugin-checks-and-tests.md`.
+Validation order: `check` → `lint` → `sync --clean` → `precheck`.
+When the plugin has its own Git repository (outside the checkout's built-in
+plugin folder), `check -r` and `precheck` fail on uncommitted changes. Do not
+commit for the user unasked; report the actual result.
 
-### Modify an Existing Plugin
+## Workflows
 
-1. Identify `plugin_id` and workspace.
-2. Read `DESIGN.md` if present, then `plugin.toml`, entry class, nearby files, and relevant tests/docs.
-3. Check the request against plugin purpose and out-of-scope boundaries.
-4. Make the smallest local change inside `plugin/plugins/<plugin_id>/`.
-5. Run the narrowest plugin-facing check or test that covers the change.
+### Create a Plugin (only when no plugin exists yet)
 
-### Debug a Plugin
+If the current folder already has a `plugin.toml`, skip to Modify.
 
-1. Read `references/plugin-cli-and-debugging.md` and `references/plugin-checks-and-tests.md`.
-2. Identify whether the plugin is running, disabled, manual-start, or load-failed.
-3. Inspect `plugin.toml`, entry class, local tests, logs, and `DESIGN.md`.
-4. Run `uv run neko-plugin check <plugin_id|plugin_path>` first unless the symptom clearly points elsewhere.
-5. For entry/runtime failures, verify runtime-triggered entries are `async def`.
-6. For UI failures, verify mode, surface permissions, running state, context/action exposure, and targeted Hosted TSX checks when relevant.
-7. Fix only inside the plugin workspace unless escalation is confirmed.
+1. Read `references/plugin-creation-workflow.md`. Offer only `plugin` and
+   `adapter` as package types.
+2. Ask only the unresolved minimum: name, purpose, package type, first-version
+   scope, out of scope. Show the Identity Lock and a short design brief.
+3. After confirmation, scaffold with `neko-plugin init`; never hand-write the
+   initial directory, `plugin.toml`, or entry class.
+4. Add `DESIGN.md`, then implement inside the new plugin directory. Read
+   `references/core-plugin-contract.md` before changing the manifest,
+   identity, entries, or UI.
+5. Validate in the order under CLI.
 
-### Review Plugin Work
+### Modify
 
-Review plugin work as an integration contract, not only code style. Lead with findings ordered by risk.
+1. Read `DESIGN.md` if present, then `plugin.toml`, the entry class, nearby
+   files, and tests.
+2. Check the request against the plugin's purpose and out-of-scope list.
+3. Make the smallest change inside the plugin directory, then validate.
 
-Check:
+### Debug
 
-- Boundary: diff stays inside `plugin/plugins/<plugin_id>/` unless escalation was requested.
-- Identity: folder, `[plugin].id`, `[plugin].name`, `[plugin].entry`, and main class express one plugin concept.
-- Manifest: `plugin.toml` follows the contract and uses minimum permissions.
-- SDK: plugin code uses public facades, not new `plugin.sdk.shared` imports.
-- UI/Permissions: surface kind and render mode are separate; Hosted TSX/Markdown/Static choice is justified.
-- Runtime/Lifecycle: entries, imports, startup, shutdown, dependencies, and `auto_start` semantics are safe.
-- Validation: CLI checks, focused tests, or manual trigger paths cover the changed behavior.
+1. Is the plugin running, stopped, manual-start, crashed, or load-failed?
+   Read its log first.
+2. Run `check` unless the symptom clearly points elsewhere.
+3. Match the symptom against `references/runtime-model.md` (startup, loops,
+   timers, reload) and `references/plugin-cli-and-debugging.md`.
 
-Use labels in review output: `Boundary`, `Identity`, `Manifest`, `SDK`, `UI/Permissions`, `Runtime/Lifecycle`, `Validation`.
+### Review
 
-### Escalate Platform Work
+Lead with findings ordered by risk, labelled `Boundary`, `Identity`,
+`Manifest`, `SDK`, `UI/Permissions`, `Runtime/Lifecycle`, `Validation`:
+writes stay in the plugin directory; identity fields agree; manifest uses
+minimum permissions; only public SDK imports; UI mode is justified; lifecycle
+and timers follow the runtime model; checks cover the change.
 
-If a plugin goal cannot be achieved inside `plugin/plugins/<plugin_id>/`, stop before editing platform code and report:
+### Escalate
 
-1. The plugin-level goal.
-2. Why the plugin workspace cannot support it.
-3. The smallest out-of-bound change required.
-4. Compatibility and test impact.
+If the goal needs a host change, stop and follow the escalation section of
+`references/execution-boundary.md`.
 
 ## Reference Map
 
-- `references/core-plugin-contract.md`: identity lock, `plugin.toml`, entry imports, package type, capabilities.
-- `references/execution-boundary.md`: write workspace, read context, and escalation rules.
-- `references/plugin-creation-workflow.md`: minimum questions, design brief, scaffold commands.
-- `references/plugin-system-surface-map.md`: SDK/API capability index; check before inventing abstractions.
-- `references/plugin-cli-and-debugging.md`: CLI usage and runtime/debug workflow.
-- `references/plugin-checks-and-tests.md`: plugin-facing checks and tests.
-- `references/hosted-ui-authoring.md`: Hosted UI manifest, Python context/action, TSX runtime, source limits, and validation workflow.
-- `references/hosted-ui-api.md`: Hosted TSX public component, hook, type, toast, confirm, and bridge API.
+- `references/runtime-model.md`: processes, event loops, startup/shutdown,
+  timers, reload, crash behaviour. Read before any lifecycle or background work.
+- `references/execution-boundary.md`: the hard constraints with reasons;
+  allowed imports; escalation.
+- `references/core-plugin-contract.md`: identity, `plugin.toml`, entries,
+  routers, hooks, i18n, UI modes.
+- `references/plugin-system-surface-map.md`: SDK capability index (paths,
+  `push_message`, config, cross-plugin calls); check it before inventing
+  abstractions.
+- `references/dependencies-and-market.md`: `vendor/`, third-party packages,
+  Market id/tag/size rules, what local checks do not prove.
+- `references/plugin-creation-workflow.md`: questions, design brief, scaffold.
+- `references/plugin-cli-and-debugging.md`, `references/plugin-checks-and-tests.md`:
+  CLI, debugging order, checks and tests.
+- `references/hosted-ui-authoring.md`, `references/hosted-ui-api.md`: Hosted
+  TSX and Markdown surfaces.
 
-Do not answer plugin authoring questions from memory when the references point to repo code. Read the relevant docs, tests, indexes, and source first; keep writes local.
+Do not answer from memory when a reference covers the question.

@@ -290,6 +290,15 @@ test('dual-site report renders the skill contract and evidence-driven action que
         },
         gsc: gsc({
           lowCtrPages: [{ page: 'https://project-neko.cn/', impressions: 100, ctr: 0.01 }],
+          trackedHomepageQueries: {
+            status: 'ok',
+            page: 'https://project-neko.cn/',
+            window: { startDate: '2026-07-19', endDate: '2026-07-25' },
+            rows: [
+              { query: '数字生命', metrics: null },
+              { query: 'AI 数字生命', metrics: { clicks: 5, impressions: 20, ctr: 0.25, position: 9 } },
+            ],
+          },
         }),
         ga4: unavailable('GA4_CN_PROPERTY_ID is not configured'),
         technical: technical('https://project-neko.cn'),
@@ -389,6 +398,14 @@ test('dual-site report renders the skill contract and evidence-driven action que
   assert.match(markdown, /GSC 实际搜索可见频率/)
   assert.match(markdown, /20\.00 次\/日（Δ \+5\.71（\+40\.00%））/)
   assert.match(markdown, /GSC 连续 7 日环比/)
+  assert.match(markdown, /GSC 首页关键词 · \.cn 产品主页/)
+  const homepageHeading = markdown.indexOf('### GSC 首页关键词')
+  for (const summary of ['- 高曝光低 CTR 页面：', '- GSC 新查询：', '- 限制：GSC 的最新完整日']) {
+    const summaryIndex = markdown.indexOf(summary)
+    assert.ok(summaryIndex >= 0 && summaryIndex < homepageHeading, summary)
+  }
+  assert.match(markdown, /\| 数字生命 \| N\/A \| N\/A \| N\/A \| N\/A \|/)
+  assert.match(markdown, /\| AI 数字生命 \| 5 \| 20 \| 25\.00% \| 9\.00 \|/)
   assert.match(markdown, /GEO \/ AI 搜索战况/)
   assert.match(markdown, /DataForSEO AIO 触发频率：1\/2（50\.00%）/)
   assert.match(markdown, /N\.E\.K\.O AIO 引用频率（全部已观察查询）：0\/2（0\.00%）/)

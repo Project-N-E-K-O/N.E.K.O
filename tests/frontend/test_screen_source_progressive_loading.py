@@ -41,6 +41,10 @@ def _install_screen_source_harness(
             });
             window.__storedValues = storedValues;
             window.appState = { selectedScreenSourceId: null };
+            // app-proactive.js is not loaded here; its keep-the-stream rule
+            // follows the appState flag these tests set.
+            window.holdsProactiveVisionStream = () => window.appState.proactiveVisionEnabled === true;
+            window.canProactiveVisionRunDuringSpeech = () => window.appState.proactiveVisionEnabled === true;
             window.appConst = {
                 SCREEN_SOURCE_THUMBNAIL_TIMEOUT: options.thumbnailTimeoutMs,
             };
@@ -6040,6 +6044,8 @@ def test_manual_preflight_adopts_newer_owned_replacement_stream(page: Page) -> N
                 <button id="screenButton"></button><button id="stopButton" disabled></button>
                 <button id="resetSessionButton"></button>
             `);
+            // The replacement stream is proactive vision's: it still holds it.
+            window.appState.proactiveVisionEnabled = true;
             window.appState.isRecording = true;
             window.appState.voiceChatActive = true;
             window.appState.audioPlayerContext = { state: 'running' };

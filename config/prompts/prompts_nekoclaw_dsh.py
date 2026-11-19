@@ -17,9 +17,11 @@
 
 dsh assembles its own system prompt, one paragraph per tool, and lets a
 deployment put a paragraph in front of them and one behind. Both are the
-same for every session of a dsh process, so what belongs to one commission
-(the host's instructions, the language to answer in) goes into the first
-message of its session instead.
+same for every session of a dsh process, so what belongs to one session
+(the host's instructions, and the sentence that says the language to write
+to the user in is named by each commission) goes into the first message of
+the session instead. The language itself is named in the message that opens
+each commission.
 
 The tools the host carries out reach dsh as tools of a service it is handed,
 which dsh names ``mcp__<service>__<tool>``; the text here says them by those
@@ -32,6 +34,8 @@ refuses a name it does not know, so neither may contain two opening braces.
 """
 
 from __future__ import annotations
+
+from config.prompts.prompts_nekoclaw import NOTE_LESSON_GUIDANCE
 
 # The service the host's own tools are served as, and so the prefix dsh gives them.
 HOST_SERVICE = "host"
@@ -53,8 +57,8 @@ DSH_HOST_TOOLS_SECTION = (
     "To ask the user something, report `waiting` with the question as the summary. The turn ends "
     "there, and the answer arrives as your next message.\n"
     "\n"
-    "When the user corrects you, or you learn something that would have saved effort had you "
-    f"known it at the start, submit it with {HOST_TOOL_PREFIX}note_lesson before you finish."
+    # The built-in runtime's own words, with the tool called what dsh calls it.
+    + NOTE_LESSON_GUIDANCE.replace("note_lesson", f"{HOST_TOOL_PREFIX}note_lesson")
 )
 
 # Added to what the host tells a session in its first message (``DSH_FIRST_MESSAGE``)

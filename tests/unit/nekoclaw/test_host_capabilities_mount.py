@@ -592,6 +592,17 @@ def test_agent_startup_and_shutdown_call_the_mount():
                 for inner in ast.walk(node)
                 if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
             ]
+            # Shutdown delegates cleanup to the cancellation-preserving step
+            # helper. Only count a callback actually passed as its first arg.
+            calls[node.name].extend(
+                inner.args[0].id
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == "step"
+                and inner.args
+                and isinstance(inner.args[0], ast.Name)
+            )
 
     assert "mount_nekoclaw_host" in calls["startup"]
     assert "shutdown_nekoclaw_host" in calls["shutdown"]

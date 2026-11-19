@@ -256,6 +256,18 @@ self.register_dynamic_entry(
 )
 ```
 
+### 出力契約
+
+`@plugin_entry` または `register_dynamic_entry()` の `output_schema` で戻り値の JSON Schema を宣言します。入力と対称です。静的エントリーで戻り値の型注釈が Pydantic モデルなら自動で推論され、返したデータは実行時にモデルで検証されます（`params` と同じ）。明示した `output_schema` の dict（動的エントリーはすべてこれ）は公開されるだけで、検証されません（`input_schema` と同じ）。デフォルトでは合わない場合にプラグインログへ警告するだけで（頻度制限あり）、`strict_output=True` なら呼び出しは `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗します。ログとエラーに含まれるのはフィールドのパスとエラーの種類だけです。詳しくは[エントリーとパラメーター](./entries)の「出力契約」を参照してください。
+
+```python
+self.register_dynamic_entry(
+    entry_id="my-tool-described",
+    handler=handler,
+    output_schema={"type": "object", "required": ["summary"]},  # 公開のみ、検証しない
+)
+```
+
 ---
 
 ## Result 型: Ok / Err
@@ -314,6 +326,28 @@ result = await self.plugins.require_enabled("dependency_plugin")
 ```
 
 すべてのメソッドは `Result` 型を返します — `.value` を使用する前に `isinstance(result, Ok)` で確認してください。
+
+### 呼び出し元：`ctx.call_chain`
+
+`self.ctx.call_chain` は、現在の呼び出しがどこから来たかを示す読み取り専用のビューです。ホストが自身の記録から作るもので、プラグインは読むだけです。書き換えてもホストには影響しません。
+
+```python
+chain = self.ctx.call_chain
+chain.callers        # ここまで呼び出してきたプラグイン ID（根が先頭）。ホストが直接呼んだ場合は ()
+chain.origin.kind    # "run"、"chat_tool"、"chat_hook"、"ui_action"、"plugin_self"、"system" のいずれか
+chain.origin.ref     # run ID などの識別子。メッセージ本文は含みません
+chain.hops           # 各ステップの (plugin_id, event_type, event_id)
+chain.rights         # チェーン上のすべてのプラグインがユーザーに承認されている能力
+chain.rights_known   # ホストが示さなかった場合は False（後述）
+chain.allows("memory.read")
+```
+
+- `None` になることはありません。呼び出しの外（タイマー、エントリが戻った後も動いているバックグラウンドタスク）や、ホスト側でポリシーがオフのときは、自分のプラグインだけを含むチェーンになり、`rights_known=False` です。
+- `allows()` は参考情報です。権限が不明なときは常に `False` を返すため、「持っていない」と「わからない」はどちらも `False` になります。区別するには `rights_known` を見てください。各利用の可否はホストが判定します。ここで `False` でもホストが拒否するとは限らず、`True` も呼び出しが配送された時点のスナップショットです。
+- `loop.run_in_executor` や素の `threading.Thread` に渡した処理は呼び出しコンテキストを失い、ホストからはプラグインが自発的に行ったリクエストとして扱われます。`asyncio.to_thread` は保持します。独自のスレッドでは `contextvars.copy_context().run(...)` で処理を包んでください。
+- 旧来の `plugin.sdk.shared.runtime.call_chain`（1 つのプラグインプロセス内の呼び出しだけを追跡）とは別物です。
+
+ホストはプラグイン間呼び出しと能力の利用を監査用に記録します（識別子と能力名のみで、引数・戻り値・メッセージ本文は記録しません）。設計：[`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md)。
 
 ---
 

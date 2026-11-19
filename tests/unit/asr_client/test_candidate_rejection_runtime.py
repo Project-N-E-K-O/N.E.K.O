@@ -21,6 +21,7 @@ from main_logic.asr_client.speaker_shadow.contracts import (
     SpeakerShadowCandidateKey,
 )
 from main_logic.voice_turn.contracts import VoiceTurnToken
+from tests.fake_clock import patch_module_asyncio
 
 
 class _RejectionLease:
@@ -389,8 +390,17 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
     runtime._speaker_verifier_factory = MagicMock(
         side_effect=lambda: SimpleNamespace(close=AsyncMock())
     )
-    loop = asyncio.get_running_loop()
-    started_at = loop.time()
+
+    # Record the limit each runtime step actually waits with, so that one step
+    # on a wrong limit fails even when the others keep the total short.
+    step_timeouts = []
+    real_wait_for = asyncio.wait_for
+
+    def spy_wait_for(awaitable, timeout):
+        step_timeouts.append(timeout)
+        return real_wait_for(awaitable, timeout)
+
+    patch_module_asyncio(monkeypatch, runtime_module, wait_for=spy_wait_for)
 
     outcome = await runtime._reject_speaker_candidate(
         _shadow_candidate(),
@@ -401,8 +411,21 @@ async def test_rejection_watchdog_bounds_stuck_recovery_and_resumes_asr(
         while runtime._asr_candidate_rejection is not None:
             await asyncio.sleep(0)
 
-    await asyncio.wait_for(wait_until_released(), 0.5)
-    assert loop.time() - started_at < 0.2
+    # Every verifier swap below never returns, so the suppression is released
+    # only if each watchdog step gives up at its own 20 ms limit: an unbounded
+    # step hangs into this guard. The guard leaves a stalled runner seconds of
+    # slack but stays under the 3 s that the three steps would take on the
+    # shipped 1 s step limit, so a step that ignored the patched limit fails.
+    await asyncio.wait_for(wait_until_released(), 2.5)
+    # The detach and every reinstall attempt were tried, and each timed out.
+    assert detector.replace_speaker_verifier.await_count == (
+        1 + runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
+    )
+    # Every step waited with the patched limit, and none went unbounded: the
+    # detach, the reset, each reinstall and each shadow close add one entry,
+    # so a step awaited without ``wait_for`` shortens the list.
+    attempts = runtime_module._CANDIDATE_REJECTION_REINSTALL_ATTEMPTS
+    assert step_timeouts == [0.02] * (2 + 2 * attempts)
     assert outcome is CandidateRejectionOutcome.APPLIED_CLEANUP_DEGRADED
     assert runtime._speaker_verifier_degraded
     assert runtime._asr_candidate_rejection is None

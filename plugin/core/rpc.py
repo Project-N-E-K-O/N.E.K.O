@@ -180,9 +180,21 @@ class RpcContext:
     deadline: float
     trace_id: str
     depth: int
+    # Plugin-supplied and untrusted: only a lookup key into the host's own
+    # call registry, scoped by ``from_plugin``. Never a source of identity.
+    parent_request_id: str | None = None
 
     def remaining(self) -> float:
         return max(0.0, self.deadline - time.monotonic())
+
+
+_MAX_PARENT_REQUEST_ID_LENGTH = 128
+
+
+def bounded_parent_request_id(value: object) -> str | None:
+    if isinstance(value, str) and 0 < len(value) <= _MAX_PARENT_REQUEST_ID_LENGTH:
+        return value
+    return None
 
 
 DEFAULT_HANDLER_TIMEOUT_SECONDS = 10.0
@@ -230,6 +242,14 @@ def request_deadline(request: Mapping[str, Any], timeout: float | None) -> float
     ):
         deadline = float(supplied) if deadline is None else min(deadline, supplied)
     return deadline
+
+
+def current_request_id() -> str | None:
+    """The active invocation's request id, as nested requests would report it."""
+    parent = _scope.get()
+    if parent is None or parent.closed:
+        return None
+    return parent.request_id
 
 
 @contextmanager
@@ -702,6 +722,7 @@ class RpcDispatcher:
             deadline=deadline,
             trace_id=trace_id,
             depth=depth,
+            parent_request_id=bounded_parent_request_id(request.get("_rpc_parent_request_id")),
         )
         scope = _CallScope(request_id, trace_id, deadline, depth)
         token = _scope.set(scope)

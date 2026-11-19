@@ -788,6 +788,7 @@
             // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
             // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
             // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
+            var shareWasEngaged = isManualScreenShareEngaged();
             stopScreening();
             if (S.screenCaptureStream) {
                 try {
@@ -806,11 +807,26 @@
             }
             // 旧源已停止推流，所有分享控件也必须回到未分享状态。
             resetScreenSharingControls();
+            if (shareWasEngaged) notifyScreenShareStopped();
         }
         console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
         // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
         // 再做会产生回环/重复 IPC。
     });
+
+    // Speech-time vision may see the screen only when app-proactive's
+    // canProactiveVisionRunDuringSpeech says so; treat a missing gate as "no".
+    function canSpeechVisionSeeScreen() {
+        return typeof window.canProactiveVisionRunDuringSpeech === 'function'
+            && window.canProactiveVisionRunDuringSpeech() === true;
+    }
+
+    // Whether proactive vision still needs the stream; the rule lives in
+    // app-proactive (holdsProactiveVisionStream). A missing rule means "no".
+    function isProactiveVisionHoldingStream() {
+        return typeof window.holdsProactiveVisionStream === 'function'
+            && window.holdsProactiveVisionStream() === true;
+    }
 
     // ======================== scheduleScreenCaptureIdleCheck ========================
     function scheduleScreenCaptureIdleCheck() {
@@ -832,14 +848,18 @@
             if (S.screenCaptureStream && S.screenCaptureStreamLastUsed) {
                 var idleTime = Date.now() - S.screenCaptureStreamLastUsed;
                 if (idleTime >= IDLE_TIMEOUT) {
+                    // A manual share still starting may be about to use this
+                    // stream; releasing it here would cancel that start.
+                    if (isScreenSharingStartPending()) {
+                        scheduleScreenCaptureIdleCheck();
+                        return;
+                    }
                     // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）。
                     // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面，
                     // 不得据设置值保留流。
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-                        S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-                    );
+                    var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
                     var isManualScreenShare = screenButton() && screenButton().classList.contains('active');
                     if (proactiveVisionActive && !isManualScreenShare) {
                         console.log('[屏幕流闲置] 主动视觉活跃中，跳过释放并续约定时器');
@@ -1238,14 +1258,7 @@
                     newStream.getVideoTracks().forEach(function (track) {
                         track.addEventListener('ended', function () {
                             console.log('[acquireStream] 流被终止');
-                            if (S.screenCaptureStream === newStream) {
-                                S.screenCaptureStream = null;
-                                S.screenCaptureStreamLastUsed = null;
-                                if (S.screenCaptureStreamIdleTimer) {
-                                    clearTimeout(S.screenCaptureStreamIdleTimer);
-                                    S.screenCaptureStreamIdleTimer = null;
-                                }
-                            }
+                            handleScreenCaptureTrackEnded(newStream);
                         });
                     });
 
@@ -1299,14 +1312,7 @@
                 displayStream.getVideoTracks().forEach(function (track) {
                     track.addEventListener('ended', function () {
                         console.log('[acquireStream] getDisplayMedia 流被用户终止');
-                        if (S.screenCaptureStream === displayStream) {
-                            S.screenCaptureStream = null;
-                            S.screenCaptureStreamLastUsed = null;
-                            if (S.screenCaptureStreamIdleTimer) {
-                                clearTimeout(S.screenCaptureStreamIdleTimer);
-                                S.screenCaptureStreamIdleTimer = null;
-                            }
-                        }
+                        handleScreenCaptureTrackEnded(displayStream);
                     });
                 });
 
@@ -1549,7 +1555,11 @@
      *        「已确认无法判定」→ 不叠加。省略时按 sourceId / 缓存流推断。
      */
     function buildStreamDataMessage(dataUrl, input_type, sourceId, explicitCaptureType) {
-        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
+        // live_share: a continuous share frame (manual screen share, voice-time
+        // vision heartbeat), not an image the user chose to attach. The backend
+        // keeps these out of a text session's attachment queue and its replay.
+        // User screenshot attachments are sent by app-buttons.js without it.
+        var msg = { action: 'stream_data', data: dataUrl, input_type: input_type, live_share: true };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
             var captureType;
@@ -1841,7 +1851,9 @@
             });
     }
 
-    function releaseActiveScreenCaptureForSourceChange() {
+    // notifyBackend: the share ends here (not restarted right away), so tell the backend.
+    function releaseActiveScreenCaptureForSourceChange(notifyBackend) {
+        var shareWasEngaged = !!notifyBackend && isManualScreenShareEngaged();
         stopScreening();
         if (S.screenCaptureStream) {
             try {
@@ -1859,6 +1871,7 @@
             S.screenCaptureStreamIdleTimer = null;
         }
         resetScreenSharingControls();
+        if (shareWasEngaged) notifyScreenShareStopped();
     }
 
     function isScreenSharingActiveForSourceChange() {
@@ -1881,7 +1894,21 @@
         var shouldRestart = isScreenSharingActiveForSourceChange();
         releaseActiveScreenCaptureForSourceChange();
         if (!shouldRestart) return;
-        Promise.resolve(startScreenSharing()).catch(function (error) {
+        // A stop during the restart (e.g. the user cancels it) already sent the
+        // notice; only a restart that ends without a share and without one sends it.
+        var noticeSeqAtRestart = screenShareStopNoticeSeq;
+        function notifyIfRestartEndedWithoutShare() {
+            if (!isScreenShareRunningOrStarting()
+                && screenShareStopNoticeSeq === noticeSeqAtRestart) {
+                notifyScreenShareStopped();
+            }
+        }
+        Promise.resolve(startScreenSharing()).then(function () {
+            // The restart handles its own failures and resolves without a share;
+            // the old source's frames then need the stop notice it skipped.
+            notifyIfRestartEndedWithoutShare();
+        }, function (error) {
+            notifyIfRestartEndedWithoutShare();
             console.warn('[屏幕源] 标题恢复后重启流捕获失败:', error);
             window.showStatusToast(
                 safeT(
@@ -1895,7 +1922,7 @@
 
     function stopActiveCaptureForRememberedSourceRejection() {
         if (!isScreenSharingActiveForSourceChange() && !S.screenCaptureStream) return;
-        releaseActiveScreenCaptureForSourceChange();
+        releaseActiveScreenCaptureForSourceChange(true);
     }
 
     // ======================== getMobileCameraStream ========================
@@ -1986,6 +2013,7 @@
     // 只临时停发送、分享要继续的调用方（切换麦克风、隐私模式停主动视觉）
     // 仍用 window.stopScreening。
     function teardownScreenSharing() {
+        var wasEngaged = isManualScreenShareEngaged();
         var cancelledStart = sourceSwitchRestart !== null || isScreenSharingStartPending();
         sourceSwitchRestart = null;
         manualScreenShareRunning = false;
@@ -1995,7 +2023,72 @@
         // 所以这里只撤掉「共享中」的样式和停止按钮：不按录音状态重新启用按钮，
         // 也不恢复主动视觉，其余按钮交给调用方自己的收尾。
         if (cancelledStart) clearScreenSharingIndicators();
+        if (wasEngaged) notifyScreenShareStopped();
     }
+
+    // Whether a manual share is in use: running, starting or restarting for a
+    // source switch, holding a native capture source, still sending frames, or
+    // shown as sharing. The voice-time vision heartbeat does not count.
+    function isManualScreenShareEngaged() {
+        var screen = screenButton();
+        return manualScreenShareRunning
+            || isScreenSharingStartPending()
+            || sourceSwitchRestart !== null
+            || activeNativeCaptureSourceId !== null
+            || !!S.videoSenderInterval
+            || !!(screen && screen.classList.contains('active'));
+    }
+
+    // Tell the backend the manual share has ended so it forgets earlier share
+    // frames (the voice session's cached frame, frames still buffered or being
+    // validated). Sent however the share ends; a temporary pause of the sender
+    // (pauseScreenFrameSender) does not send it.
+    var screenShareStopNoticeSeq = 0;
+    function notifyScreenShareStopped() {
+        screenShareStopNoticeSeq += 1;
+        try {
+            if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                S.socket.send(JSON.stringify({ action: 'screen_share_stopped' }));
+            }
+        } catch (e) {
+            console.warn('[ScreenShare] failed to send screen_share_stopped:', e);
+        }
+    }
+    mod.notifyScreenShareStopped = notifyScreenShareStopped;
+
+    // The stream's video track was ended by the browser or the system (the
+    // browser's "stop sharing", the window closing, a display unplugged; our own
+    // track.stop() does not fire it). If a manual share owns the stream, release
+    // it fully (buttons, manualScreenShareRunning, frame sender, stream) and tell
+    // the backend. This does not start the voice-time vision heartbeat; whether it
+    // runs is decided by its own switches. A stream only cached for proactive
+    // vision just leaves the cache.
+    function handleScreenCaptureTrackEnded(stream) {
+        if (S.screenCaptureStream !== stream) {
+            if (stream && typeof stream.getTracks === 'function') {
+                stream.getTracks().forEach(function (track) {
+                    try { track.stop(); } catch (e) { }
+                });
+            }
+            return;
+        }
+        // Native capture (Tauri etc.) does not use this stream; its end does not end that share.
+        // A start still before its sender (e.g. waiting on audio init or the remembered-window
+        // check) has not adopted the stream yet: leave it to acquire a fresh one, as before.
+        var startNotAdopted = isScreenSharingStartPending() && !S.videoSenderInterval;
+        if (isManualScreenShareEngaged() && activeNativeCaptureSourceId === null && !startNotAdopted) {
+            sourceSwitchRestart = null;
+            releaseScreenSharing(true, false, { resumeProactiveVision: false });
+            return;
+        }
+        S.screenCaptureStream = null;
+        S.screenCaptureStreamLastUsed = null;
+        if (S.screenCaptureStreamIdleTimer) {
+            clearTimeout(S.screenCaptureStreamIdleTimer);
+            S.screenCaptureStreamIdleTimer = null;
+        }
+    }
+    mod.handleScreenCaptureTrackEnded = handleScreenCaptureTrackEnded;
 
     // 外部的 stopScreening：只停发送。启动还在进行时（例如原生捕获在等首帧）
     // 不能推进原生代次，否则那次启动会被当成过期丢掉，而切换麦克风这类调用方
@@ -2095,15 +2188,15 @@
             if (screenSharingStartAttempt === attempt) {
                 screenSharingStartAttempt = null;
             }
-            releaseReusedStreamUnderPrivacy(attempt);
+            releaseReusedStreamIfUnheld(attempt);
         }
     }
 
-    // 隐私模式在手动启动进行中打开时不动那次启动复用的主动视觉流
-    // （stopVisionAfterPrivacyEnabled 会跳过）。启动最终没跑起来（失败或被
-    // 取消）时，这条流没人再用，在这里补释放，不用等 idle 检查。
-    function releaseReusedStreamUnderPrivacy(attempt) {
-        if (S.proactiveVisionEnabled !== false) return;
+    // 手动启动进行中打开隐私模式、或关掉「主动搭话」/「屏幕分享」时，不动那次
+    // 启动复用的主动视觉流（释放会被跳过）。启动最终没跑起来（失败或被取消）
+    // 时，若主动视觉也不再需要这条流，在这里补释放，不用等 idle 检查。
+    function releaseReusedStreamIfUnheld(attempt) {
+        if (isProactiveVisionHoldingStream()) return;
         if (manualScreenShareRunning || isScreenSharingStartPending()
             || sourceSwitchRestart !== null) return;
         var stream = attempt.initialStream;
@@ -2200,7 +2293,7 @@
                         || !initialCaptureIsCurrent
                         || !initialStreamStillOwned) {
                         if (initialStreamStillOwned) {
-                            releaseActiveScreenCaptureForSourceChange();
+                            releaseActiveScreenCaptureForSourceChange(true);
                         } else {
                             try {
                                 captureStream.getTracks().forEach(function (track) {
@@ -2648,26 +2741,7 @@
                         return;
                     }
 
-                    stopScreening();
-                    screenButton().classList.remove('active');
-                    manualScreenShareRunning = false;
-                    syncFloatingScreenButtonState(false);
-
-                    if (typeof captureStream.getTracks === 'function') {
-                        captureStream.getTracks().forEach(function (track) {
-                            try { track.stop(); } catch (e) { }
-                        });
-                    }
-
-                    if (S.screenCaptureStream === captureStream) {
-                        S.screenCaptureStream = null;
-                        S.screenCaptureStreamLastUsed = null;
-
-                        if (S.screenCaptureStreamIdleTimer) {
-                            clearTimeout(S.screenCaptureStreamIdleTimer);
-                            S.screenCaptureStreamIdleTimer = null;
-                        }
-                    }
+                    handleScreenCaptureTrackEnded(captureStream);
                 };
             } else {
                 // 连续分享必须保持系统/窗口选择器授予的来源。后端 pyautogui 只能
@@ -2757,7 +2831,11 @@
     // forSourceSwitch：换源重启自己的停止。保留重启令牌，停完接着启动新来源；
     // 界面保持「共享中」，停顿和重新启动期间各个开关都按「停止」处理，与显示
     // 一致；重启没能恢复分享时由 resetControlsIfNotSharing 复位。
-    function releaseScreenSharing(forceRelease, forSourceSwitch) {
+    // options.resumeProactiveVision === false: do not start the voice-time vision
+    // heartbeat while finishing (used when the track was ended externally, which
+    // never started it before either).
+    function releaseScreenSharing(forceRelease, forSourceSwitch, options) {
+        var wasEngaged = isManualScreenShareEngaged();
         manualScreenShareRunning = false;
         cancelPendingScreenSharingStart();
         stopScreening();
@@ -2766,9 +2844,7 @@
         // 不得据设置真值保留流，否则停止分享后屏幕流被无限期扣住）。
         var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
             && window.isNekoHomeTutorialProactiveSuppressed() === true;
-        var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-            S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-        );
+        var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
 
         // 条件释放流
         if (forceRelease || !proactiveVisionActive) {
@@ -2799,19 +2875,26 @@
         }
 
         if (!forSourceSwitch) {
-            finishScreenSharingStopped();
+            finishScreenSharingStopped({
+                notify: wasEngaged,
+                resumeProactiveVision: !(options && options.resumeProactiveVision === false)
+            });
         }
     }
     mod.stopScreenSharing = stopScreenSharing;
 
     // 分享真正停下后的界面与主动视觉收尾。
-    function finishScreenSharingStopped() {
+    // options.notify: the share was in use; tell the backend it has stopped.
+    // options.resumeProactiveVision === false: do not resume the voice-time vision timer.
+    function finishScreenSharingStopped(options) {
         // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
         resetScreenSharingControls();
+        if (options && options.notify) notifyScreenShareStopped();
+        if (options && options.resumeProactiveVision === false) return;
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
-            if (S.proactiveVisionEnabled && S.isRecording) {
+            if (S.isRecording && canSpeechVisionSeeScreen()) {
                 if (window.startProactiveVisionDuringSpeech) {
                     window.startProactiveVisionDuringSpeech();
                 }
@@ -2854,7 +2937,7 @@
         var stop = stopButton();
         var showsSharing = !!(screen && screen.classList.contains('active'))
             || !!(stop && !stop.disabled);
-        if (showsSharing) finishScreenSharingStopped();
+        if (showsSharing) finishScreenSharingStopped({ notify: true });
     }
 
     // ======================== switchMicCapture ========================

@@ -378,8 +378,9 @@ class Live2DManager {
                 this.isInitialized = true;
                 this._lastPIXIContext = { ...requestedInitContext };
                 if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
-                    // 经归一化再写：已存的负数/非法配置不能直接进 PIXI maxFPS
-                    this.pixi_app.ticker.maxFPS = this._resolveConfiguredTargetFps();
+                    // 经归一化再写：已存的负数/非法配置不能直接进 PIXI maxFPS；
+                    // 再过一遍刷新率判定（配置不明显低于刷新率时放宽软件上限，见 _resolveRafCapFps）
+                    this.pixi_app.ticker.maxFPS = this._resolveRafCapFps(this._resolveConfiguredTargetFps());
                 }
                 // 包装 ticker.stop/start：外部代码（app-character / live2d-model 等）直接
                 // 操作 ticker 时先退出空闲低频 tick 模式，避免空闲定时器与外部暂停意图打架。
@@ -809,6 +810,18 @@ class Live2DManager {
         return Number.isFinite(fps) && fps > 0 ? fps : null;
     }
 
+    // rAF 驱动下实际交给 PIXI maxFPS 的上限：配置帧率 ≥ 实测刷新率×0.9（即总闸让它留在 rAF）时放宽到 max(配置, 刷新率×1.5)，
+    // 显示器本身就是上限。PIXI 7 Ticker 节流先把帧间隔截成整数 ms 再和 1000/maxFPS 比，
+    // 60Hz 屏 + maxFPS=60 时 16.6ms 截成 16 < 16.667，整帧被跳、下一帧双倍 delta。
+    // 非 Pet / 刷新率未测出 / 换屏后未重测 / 配置明显低于刷新率：原样返回（由 frame-pacing.js 判定）。
+    _resolveRafCapFps(fps) {
+        const requested = Number(fps);
+        const pacing = window.nekoFramePacing;
+        if (!pacing || typeof pacing.rafCapFps !== 'function') return requested;
+        const capped = Number(pacing.rafCapFps(requested));
+        return Number.isFinite(capped) && capped >= 0 ? capped : requested;
+    }
+
     // Pet 窗口进程里只有一个 Live2DManager，可以安全接管全局 PIXI.Ticker.shared/system
     // 的帧率上限（模型 motion/physics 的 autoUpdate 挂在 shared 上，不接管的话它仍按
     // 显示器刷新率跑）。其它页面（模型管理器/角色卡预览可能多个 manager 共存）不碰。
@@ -823,8 +836,11 @@ class Live2DManager {
     // rAF 驱动下的帧率上限：写到 app.ticker，Pet 窗口还一并写到 shared/system。
     // 定时器驱动模式下三个 ticker 的 maxFPS 必须保持 0（定时器周期本身就是节流器，
     // interval 抖动会被 maxFPS 丢帧、实际帧率减半），此时只更新退出定时器模式时要恢复的值。
+    // 写入前经 _resolveRafCapFps 按刷新率判定；记下判定前的请求值，governor 据此重判。
     _applyRafMaxFps(fps) {
-        const resolved = Number.isFinite(Number(fps)) ? Number(fps) : 0;
+        const requested = Number.isFinite(Number(fps)) ? Number(fps) : 0;
+        this._rafMaxFpsRequested = requested;
+        const resolved = this._resolveRafCapFps(requested);
         const ticker = this.pixi_app && this.pixi_app.ticker;
         if (!ticker) return;
         const globals = this._resolveGlobalTickers();
@@ -1002,17 +1018,66 @@ class Live2DManager {
         if (app && app.ticker && typeof this._idleTickSavedMaxFPS === 'number') {
             app.ticker.maxFPS = this._idleTickSavedMaxFPS;
         }
-        if (restartGlobals) this._releaseGlobalTickers();
+        // The timer has been driving these tickers by hand; resume rAF from the last manual update.
+        // The external ticker.stop() path (restartGlobals: false) stops app.ticker right after this,
+        // so it keeps the plain start and leaves no guard behind.
+        if (restartGlobals) this._releaseGlobalTickers({ keepClock: true });
         if (app && app.ticker && app.ticker.started === false && this._tickerOrigStart) {
-            try { this._tickerOrigStart(); } catch (_) {}
+            try {
+                if (restartGlobals) this._startTickerKeepingClock(app.ticker, this._tickerOrigStart);
+                else this._tickerOrigStart();
+            } catch (_) {}
         }
         this._idleTickSavedMaxFPS = null;
         this._idleTickFps = null;
     }
 
+    /**
+     * Start a ticker without dropping or double-counting time at the timer → rAF switch.
+     * - PIXI v7 Ticker.start() resets lastTime to performance.now() (via _requestIfNeeded), so
+     *   the span between the last manual update() and now would be lost: model physics, breath
+     *   and motions fall behind a few ms on every switch. Restore lastTime to its pre-start
+     *   value (the last manual update) so the first rAF frame's elapsedMS covers that span.
+     * - rAF timestamps are the frame's begin time and can be earlier than that last manual
+     *   update (which used performance.now()). PIXI would then move lastTime backwards and
+     *   count the overlap twice, so timestamps earlier than the ticker's current lastTime are
+     *   clamped to it. The guard removes itself at the first numeric timestamp that is not
+     *   earlier; argument-less update() calls (e.g. `start(); update();` "ensure render" paths)
+     *   pass through and keep it installed, since the next rAF frame can still be earlier.
+     * PIXI's own minFPS cap (_maxElapsedMS) still clamps oversized gaps.
+     * Only for paths where the timer was driving the ticker until now. Resuming after an
+     * external pause keeps PIXI's reset semantics.
+     */
+    _startTickerKeepingClock(ticker, startFn) {
+        const lastTime = ticker.lastTime;
+        startFn();
+        if (!(ticker.started && Number.isFinite(lastTime) && lastTime >= 0 &&
+            Number.isFinite(ticker.lastTime) && lastTime <= ticker.lastTime)) return;
+        ticker.lastTime = lastTime;
+        if (typeof ticker.update !== 'function') return;
+        const hadOwnUpdate = Object.prototype.hasOwnProperty.call(ticker, 'update');
+        const innerUpdate = ticker.update;
+        const guardedUpdate = function (time) {
+            if (typeof time !== 'number') return innerUpdate.call(this, time);
+            const floor = ticker.lastTime;
+            if (Number.isFinite(floor) && time < floor) {
+                return innerUpdate.call(this, floor);
+            }
+            if (ticker.update === guardedUpdate) {
+                if (hadOwnUpdate) ticker.update = innerUpdate;
+                else delete ticker.update;
+            }
+            return innerUpdate.call(this, time);
+        };
+        ticker.update = guardedUpdate;
+    }
+
     // 把定时器模式接管（停掉）的全局 shared/system ticker 拉回来并恢复它们的帧率上限。
     // 幂等：没接管过就什么都不做。
-    _releaseGlobalTickers() {
+    // `keepClock: true` is only for leaving timer mode (the timer kept updating them); the
+    // external ticker.stop() → start() pause path keeps PIXI's lastTime reset.
+    _releaseGlobalTickers(options) {
+        const keepClock = !!(options && options.keepClock === true);
         if (!this._globalTickersHeld) return;
         this._globalTickersHeld = false;
         const PixiTicker = (typeof PIXI !== 'undefined' && PIXI.Ticker) ? PIXI.Ticker : null;
@@ -1020,8 +1085,12 @@ class Live2DManager {
         try {
             if (typeof this._idleTickSavedSharedMaxFPS === 'number') PixiTicker.shared.maxFPS = this._idleTickSavedSharedMaxFPS;
             if (typeof this._idleTickSavedSystemMaxFPS === 'number') PixiTicker.system.maxFPS = this._idleTickSavedSystemMaxFPS;
-            if (this._idleTickSharedWasStarted && !PixiTicker.shared.started) PixiTicker.shared.start();
-            if (this._idleTickSystemWasStarted && !PixiTicker.system.started) PixiTicker.system.start();
+            const restart = (t) => {
+                if (keepClock) this._startTickerKeepingClock(t, () => t.start());
+                else t.start();
+            };
+            if (this._idleTickSharedWasStarted && !PixiTicker.shared.started) restart(PixiTicker.shared);
+            if (this._idleTickSystemWasStarted && !PixiTicker.system.started) restart(PixiTicker.system);
         } catch (_) {}
         this._idleTickSharedWasStarted = false;
         this._idleTickSystemWasStarted = false;
@@ -1075,6 +1144,12 @@ class Live2DManager {
             // 空闲低频 tick 模式下 started 恒为 false（由定时器驱动），但活动探测必须继续，
             // 否则动作/拖拽/口型同步永远无法把帧率拉回来。
             if (!this._idleTickMode && this.pixi_app.ticker.started === false) return;
+            // rAF 驱动期间按最新刷新率重判上限（换屏 / 重测完成后不必等下一次 boost）；
+            // 未变化时 _applyRafMaxFps 不写 ticker。VRM / MMD 每帧重判，这里最多晚一个
+            // 探测周期（300ms），期间上限最多是刷新率×1.5，有界。
+            if (!this._idleTickMode && typeof this._rafMaxFpsRequested === 'number') {
+                this._applyRafMaxFps(this._rafMaxFpsRequested);
+            }
             if (this._hasRenderActivity()) {
                 this.boostInteractiveFPS();
             } else if (!this._idleTickMode && !this._idleFpsRestoreTimer) {

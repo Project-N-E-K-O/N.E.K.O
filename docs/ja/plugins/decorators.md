@@ -39,6 +39,8 @@ class MyPlugin(NekoPluginBase):
     timeout=30.0,                # 実行タイムアウト（秒）
     llm_result_fields=["text"],  # LLM 消費用に抽出するフィールド
     llm_result_model=MyResult,   # 結果スキーマ用 Pydantic モデル
+    output_schema={...},         # 戻り値の JSON Schema（出力契約）
+    strict_output=False,         # True: 戻り値が契約に合わないとき呼び出しを失敗にする
     metadata={"category": "data"}  # 追加メタデータ
 )
 async def process(self, data: str, **_):
@@ -63,6 +65,12 @@ async def process(self, data: str, **_):
 | `llm_result_model` | `type` | `None` | 結果スキーマ用 Pydantic モデル |
 | `fields` | `type` | `None` | `params` のエイリアス |
 | `metadata` | `dict` | `None` | 追加メタデータ |
+| `output_schema` | `dict` | `None` | 戻り値の JSON Schema。省略時、戻り値の型注釈が Pydantic モデルなら自動で推論される。[エントリーとパラメーター](./entries)の「出力契約」を参照 |
+| `strict_output` | `bool` | `False` | 戻り値が出力契約に合わないとき、警告ログに加えて呼び出しを失敗（`PLUGIN_OUTPUT_SCHEMA_VIOLATION`）にする。デフォルトは警告ログのみ。検査されるのは Pydantic の戻り値型注釈から推論した契約だけなので、明示した `output_schema` には効果がない |
+
+`output_schema` は `llm_result_fields` / `llm_result_model` とは独立しています。後者はモデルが読むフィールドを決め、`output_schema` は戻り値全体を記述します。両方を同時に使えます。
+
+Pydantic の戻り値型注釈から推論した契約は実行時にモデルで検証され（`params` と同じ）、明示した `output_schema` は公開されるだけです（`input_schema` と同じ）。[エントリーとパラメーター](./entries)の「出力契約」を参照してください。
 
 ::: tip
 handler が host からの追加 field を意図的に受け取る場合だけ `**_` を使います。明示的な signature では runtime が未対応 keyword を filter するため、必須ではありません。

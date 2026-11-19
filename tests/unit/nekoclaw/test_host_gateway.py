@@ -336,6 +336,39 @@ async def test_capability_call_reaches_an_entry_that_was_not_listed(host, server
     assert [call["entry_id"] for call in server.calls] == ["switch"]
 
 
+async def test_a_token_that_only_reads_finds_capabilities_and_calls_none(host, server):
+    _catalog(server)
+    commission = await _commission(host)
+    token = host.gateway.issue(commission.id, candidate_plugin_ids=("weather",), reads_only=True)
+    grant = host.gateway._grant(token)
+    assert grant.reads_only is True
+
+    # The two tools are told of as to any session, and what there is can be looked for.
+    listed = await _rpc(host, grant, "tools/list")
+    assert [tool["name"] for tool in listed["result"]["tools"]] == [SEARCH_TOOL, CALL_TOOL]
+    found = await _call(host, grant, SEARCH_TOOL, {"query": "lamp"})
+    assert not found["isError"] and "plugin__lamp__switch" in _text(found)
+    # Nothing is called, through the call tool or by its name, and no group of built-in tools is handed over.
+    for name, arguments in (
+        (CALL_TOOL, {"name": "plugin__lamp__switch", "arguments": {}}),
+        ("plugin__weather__today", {"city": "Paris"}),
+        (CALL_TOOL, {"name": "computer", "arguments": {"action": "type", "text": "x"}}),
+        (SEARCH_TOOL, {"group": "computer"}),
+    ):
+        refused = await _call(host, grant, name, arguments)
+        assert refused["isError"] and "only reads and answers" in _text(refused), name
+    assert server.calls == [] and server.run_requests == [] and grant.loaded_groups == set()
+    # Nor is anything ruled on ahead for a call it will not make.
+    await host.gateway.clear_call(commission.id, "plugin__lamp__switch", {})
+    assert grant.cleared == {}
+
+    # The same commission with a token like any calls as before.
+    grant = host.gateway._grant(host.gateway.issue(commission.id, candidate_plugin_ids=("weather",)))
+    assert grant.reads_only is False
+    result = await _call(host, grant, CALL_TOOL, {"name": "plugin__lamp__switch", "arguments": {}})
+    assert _text(result).startswith("lamp is off")
+
+
 async def test_capability_call_needs_a_name(host, server):
     _catalog(server)
     grant = _grant(host, await _commission(host))

@@ -20,6 +20,7 @@ from plugin.core.ui_manifest import (
     static_surface_url,
 )
 from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
+from plugin.core.call_registry import CallLink, Origin, delivery_link
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
@@ -1767,11 +1768,12 @@ class PluginUiQueryService:
                 trigger_context["run_id"] = hosted_run_id
                 trigger_args["_ctx"] = trigger_context
                 try:
-                    result = await host.trigger(
-                        resolved_action_id,
-                        trigger_args,
-                        timeout=entry_timeout,
-                    )
+                    with delivery_link(CallLink(Origin.of("ui_action", hosted_run_id))):
+                        result = await host.trigger(
+                            resolved_action_id,
+                            trigger_args,
+                            timeout=entry_timeout,
+                        )
                 except asyncio.CancelledError:
                     cancel_run = getattr(host, "cancel_run", None)
                     if callable(cancel_run):
