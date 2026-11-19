@@ -2086,8 +2086,6 @@ class _StreamingMixin:
                             guard_attempt += 1
                             reroll_count += 1
                             will_retry = guard_attempt <= self.max_response_rerolls
-                            if will_retry:
-                                _hold_in_flight_for_resend()
 
                             # Frontend max_attempts reports total attempts,
                             # not rerolls (which exclude initial attempt). Frontend attempt
@@ -2133,6 +2131,8 @@ class _StreamingMixin:
                             recovery_text = ""
 
                             if will_retry:
+                                # The reroll resends this turn's message.
+                                _hold_in_flight_for_resend()
                                 # Retry remains: notify will_retry and continue. Frontend receives
                                 # response_discarded(will_retry=True, message=None)
                                 # and takes the retry-toast path.
@@ -2376,8 +2376,16 @@ class _StreamingMixin:
 
                 except _llm_retry_error_types() as e:
                     # Synchronously, before any await below: a retry resends
-                    # this turn's message.
-                    _hold_in_flight_for_resend()
+                    # this turn's message. Not when this error ends the turn
+                    # (last attempt, arrears, rejected key; same tests as below).
+                    _resend_error_lower = str(e).lower()
+                    if (
+                        attempt < max_retries - 1
+                        and '欠费' not in _resend_error_lower
+                        and 'standing' not in _resend_error_lower
+                        and not _is_api_key_rejected_error(e)
+                    ):
+                        _hold_in_flight_for_resend()
                     if not observation_committed:
                         observation_failed = True
                     # A failed stream's text is discarded below, never kept.

@@ -668,3 +668,37 @@ async def test_turn_retried_after_its_first_chunk_keeps_its_live_frames():
     assert held_during_backoff == [1]
     assert len(_urls(client.requests[-1])) == 1  # the retry still carried the frame
     assert client._in_flight_user_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_turn_failing_its_last_attempt_is_not_held_in_flight():
+    """No retry follows the last failed attempt: the turn is not re-registered."""
+    import json
+    from unittest.mock import patch
+
+    from tests.unit.test_offline_provider_frame_publish import _SLEEP, _connection_error
+
+    client = _client()
+
+    async def fail_mid_stream():
+        raise _connection_error()
+
+    client.script = [[_text("partial"), fail_mid_stream]]
+    held_at_status = []
+
+    async def on_status_message(payload):
+        if json.loads(payload).get("code") == "LLM_CONNECTION_EXHAUSTED":
+            held_at_status.append(len(client._in_flight_user_messages))
+
+    async def no_backoff(_delay):
+        return None
+
+    client.on_status_message = on_status_message
+    with patch(_SLEEP, no_backoff):
+        await client.stream_text(
+            "what is on screen?", turn_images=(_png_b64(40, 40),),
+            turn_source="screen", turn_source_count=1,
+        )
+
+    assert len(client.requests) == 3
+    assert held_at_status == [0]
