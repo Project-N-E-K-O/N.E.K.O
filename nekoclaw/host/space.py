@@ -1906,12 +1906,14 @@ def _as_words(words: str) -> re.Pattern[str]:
     "позавчера"). Text that puts no spaces between words (Chinese,
     Japanese) is matched where it stands, but for where it is part of
     a longer one of ``SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS``, which says
-    another time ("昨日" in "一昨日").
+    another time (the Japanese for "yesterday" in that for "the day before
+    yesterday"). A mark that combines with the letter before it (a stress
+    mark over a Russian vowel) is part of that letter's word.
     """
     from config.prompts.prompts_nekoclaw_space import SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS
     from nekoclaw.host.selection import _PAIRED_RANGES
 
-    letter = rf"[^\W{_PAIRED_RANGES}]"
+    letter = rf"(?:[^\W{_PAIRED_RANGES}]|[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f])"
     before = rf"(?<!{letter})" if _spaced_letter(words[:1]) else ""
     after = rf"(?!{letter})" if _spaced_letter(words[-1:]) else ""
     inside = ""
@@ -1958,11 +1960,17 @@ def _line_put_right(line: str, target: str, title: str, described: str, put: _Li
         return line
     if any(line == _index_line(shown, target, item) for item in put.described):
         line = _index_line(shown, target, described)
-    back = put.titled.get(shown)
-    if back is not None and back[1] == title:
-        # Put in by tidying, and the entry is still called what it was.
+    called = shown
+    # Put in by tidying, while the entry is still called what it was; one
+    # title after another, back to the first.
+    for _step in range(len(put.titled)):
+        back = put.titled.get(called)
+        if back is None or back[1] != title:
+            break
+        called = back[0]
+    if called != shown:
         link = line.find("](")
-        line = line[: line.rfind("[", 0, link) + 1] + back[0] + line[link:]
+        line = line[: line.rfind("[", 0, link) + 1] + called + line[link:]
     return line
 
 
@@ -2311,7 +2319,9 @@ class TaskAgentSpace:
             return None
         return stat.st_mtime_ns, stat.st_size
 
-    def _edit_text(self, path: Path, change: Callable[[str], str]) -> bool:
+    def _edit_text(
+        self, path: Path, change: Callable[[str], str], wrote: Callable[[str], None] | None = None
+    ) -> bool:
         """Change a text file by a function of its text. Returns whether it changed.
 
         Read, changed and written back; when the file was written by someone
@@ -2319,7 +2329,8 @@ class TaskAgentSpace:
         so their change is not written over. So it is when the file holds
         something else right after it was replaced: the change is made
         again to what is there then. A file that could not be looked at
-        after it was replaced is read once more, see ``_holds``.
+        after it was replaced is read once more, see ``_holds``. ``wrote``
+        is told each text that was written, of the tries that were.
         """
         written = False
         for _attempt in range(_WRITE_ATTEMPTS):
@@ -2336,7 +2347,11 @@ class TaskAgentSpace:
             except _NotAsWritten:
                 # Something else was saved right after it.
                 written = True
+                if wrote is not None:
+                    wrote(changed)
                 continue
+            if wrote is not None:
+                wrote(changed)
             # Told right here, whichever try this was: the last one too is
             # written when it was replaced and nothing says otherwise.
             if seen or self._holds(path, changed):
@@ -2449,6 +2464,8 @@ class TaskAgentSpace:
         """
         marks = _index_marks(target)
         plain = _one_line(title).replace("[", "(").replace("]", ")")
+        # Of each text a try made, the line it replaced and the line it put.
+        tried: dict[str, tuple[str, str]] = {}
         swapped: list[tuple[str, str]] = []
 
         def change(text: str) -> str:
@@ -2461,16 +2478,15 @@ class TaskAgentSpace:
                         lines[number] = _index_line(title, target, description)
                     else:
                         lines[number] = item[: opening + 1] + plain + item[link:]
-                    # Tried again when something else was saved right after
-                    # it was written, the line it finds may be the one it
-                    # wrote: what it was before is the line it replaced.
-                    if item != lines[number] or not swapped:
-                        swapped[:] = [(item, lines[number])]
-                    return "\n".join(lines)
+                    result = "\n".join(lines)
+                    tried[result] = (item, lines[number])
+                    return result
             return text
 
-        self._edit_text(index, change)
-        return swapped[0] if swapped else None
+        # Only tries that were written count, and of them the last: what it
+        # replaced is the line as it was last saved by anyone else.
+        self._edit_text(index, change, wrote=lambda text: swapped.append(tried[text]))
+        return swapped[-1] if swapped else None
 
     def _index_reline(self, index: Path, was: str, now: str) -> None:
         """Put ``now`` in the place of a line of an index that is ``was`` to the letter; one that says anything else stays."""
@@ -5318,11 +5334,12 @@ class TaskAgentSpace:
                 if layer != project:
                     continue
                 try:
-                    self._put_line_right(project, entry_id, put)
+                    done = self._put_line_right(project, entry_id, put)
                 except OSError:
                     logger.warning("a line of the index tidying changed could not be written just now", exc_info=True)
                     continue
-                del self._relines[(layer, entry_id)]
+                if done:
+                    del self._relines[(layer, entry_id)]
             took = 0
             for (layer, entry_id), mark in list(self._unsettled.items()):
                 if layer != project:
@@ -5356,23 +5373,26 @@ class TaskAgentSpace:
         """Return what is left to write into the line of an entry, to be added to; see ``settle_tidied``."""
         return self._relines.setdefault((project, entry_id), _LineToPut())
 
-    def _put_line_right(self, project: str | None, entry_id: str, put: _LineToPut) -> None:
-        """Write into the line of an entry what tidying could not; see ``settle_tidied``. Raises OSError when it cannot be yet.
+    def _put_line_right(self, project: str | None, entry_id: str, put: _LineToPut) -> bool:
+        """Write into the line of an entry what tidying could not; see ``settle_tidied``. Returns whether nothing is left.
 
         By what the entry is called and says now, while it is in effect:
         tidying or the user may have changed it since. What the user wrote
         into the line stays (``_line_put_right``); a missing line is added.
+        Should the entry say anything else once the line is written (saved
+        meanwhile), what was written is the host's, and is put right again
+        by a later round. Raises OSError when it cannot be yet.
         """
         paths = self._paths()
         path = paths.memory_dir(project) / f"{entry_id}.md"
         text = self._read_text(path)
         if text is None:
             if _gone_for_good(path):
-                return
+                return True
             raise OSError(f"{entry_id} cannot be read just now")
         document = _parse_document(text)
         if _status_of(document) != ENTRY_ACTIVE:
-            return
+            return True
         title, described = document.get("name") or entry_id, document.get("description")
         target = f"{paths.MEMORY_DIR}/{entry_id}.md"
         marks = _index_marks(target)
@@ -5388,6 +5408,12 @@ class TaskAgentSpace:
             return index_text
 
         self._edit_text(paths.index(project), change)
+        if self._read_text(path) == text:
+            return True
+        # A line it wrote now says this, and one it added is there.
+        put.described.add(described)
+        put.missing = False
+        return False
 
     def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> bool:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.

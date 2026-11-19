@@ -1887,15 +1887,24 @@ async def test_an_entry_kept_from_a_merge_gets_no_line_the_user_took_out(world, 
     assert f"memory/{other}.md" not in await world.space.read_index(None)
 
 
-async def test_a_date_is_not_put_inside_a_longer_word_of_another_alphabet(world):
-    # "Вчера" stands in neither: at the end of one word, at the start of another.
-    one = await world.active("Миграция", "Миграция завершилась позавчера, отчёт вчерашний.")
+@pytest.mark.parametrize(
+    "said",
+    [
+        # At the end of a longer word, at the start of one, and before a
+        # stress mark that is part of its last letter.
+        "Миграция завершилась позавчера.",
+        "Отчёт вчерашний готов.",
+        "Отчёт вчера\u0301шний готов.",
+    ],
+)
+async def test_a_date_is_not_put_inside_a_longer_word_of_another_alphabet(world, said):
+    one = await world.active("Миграция", said)
     await world.active("Зеркало", "Зеркало на mirror.local.")
     world.answer(lambda shown: [{"op": "date", "entry": shown["Миграция"], "old": "вчера", "new": "2027-01-14"}])
 
     await world.tidy()
 
-    assert "Миграция завершилась позавчера, отчёт вчерашний." in (world.memory() / f"{one}.md").read_text(encoding="utf-8")
+    assert said in (world.memory() / f"{one}.md").read_text(encoding="utf-8")
 
 
 async def test_a_date_is_put_for_a_word_of_another_alphabet(world):
@@ -1973,3 +1982,159 @@ async def test_a_date_is_put_for_words_of_a_text_with_no_spaces(world):
     await world.tidy()
 
     assert "移行は2027-01-14に完了しました。" in (world.memory() / f"{one}.md").read_text(encoding="utf-8")
+
+
+async def test_titles_left_in_a_line_round_after_round_are_all_taken_out(world, monkeypatch):
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    edit_as_shown = TaskAgentSpace._edit_as_shown
+
+    def held(self: Any, path: Path, *args: Any) -> Any:
+        if path.stem == one:
+            raise OSError("held by another program")
+        return edit_as_shown(self, path, *args)
+
+    def never(self: Any, *args: Any) -> Any:
+        raise OSError("held by another program")
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_as_shown", held)
+    monkeypatch.setattr(TaskAgentSpace, "_index_reline", never)
+    # Nor is the line put right between the two rounds.
+    monkeypatch.setattr(TaskAgentSpace, "_put_line_right", never)
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
+    )
+    await world.tidy()
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests pytest with"}]
+    )
+    await world.tidy()
+    assert f"[Tests pytest with](memory/{one}.md)" in await world.space.read_index(None)
+    monkeypatch.undo()
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    index = await world.space.read_index(None)
+    assert f"[Tests](memory/{one}.md)" in index and "Tests in parallel" not in index and "Tests pytest with" not in index
+
+
+async def test_a_title_the_user_gave_the_line_first_is_not_taken_back(world, monkeypatch):
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    edit_as_shown, index_retitle = TaskAgentSpace._edit_as_shown, TaskAgentSpace._index_retitle
+    text_to_change = TaskAgentSpace._text_to_change
+    retitling: list[bool] = []
+    saved: list[bool] = []
+
+    def held(self: Any, path: Path, *args: Any) -> Any:
+        if path.stem == one:
+            raise OSError("held by another program")
+        return edit_as_shown(self, path, *args)
+
+    def in_retitle(self: Any, *args: Any, **kwargs: Any) -> Any:
+        retitling.append(True)
+        try:
+            return index_retitle(self, *args, **kwargs)
+        finally:
+            retitling.pop()
+
+    def saved_first(path: Path) -> str:
+        text = text_to_change(path)
+        if retitling and not saved:
+            # The user gives the line that title in an editor, before the host writes it.
+            saved.append(True)
+            path.write_text(text.replace(f"[Tests](memory/{one}.md)", f"[Tests in parallel](memory/{one}.md)"), encoding="utf-8")
+        return text
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_as_shown", held)
+    monkeypatch.setattr(TaskAgentSpace, "_index_retitle", in_retitle)
+    monkeypatch.setattr(TaskAgentSpace, "_text_to_change", staticmethod(saved_first))
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
+    )
+
+    await world.tidy()
+
+    assert saved
+    assert f"[Tests in parallel](memory/{one}.md)" in await world.space.read_index(None)
+
+
+async def test_a_line_put_right_as_the_entry_was_saved_is_put_right_again(world, monkeypatch):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    failed = _fails_once(monkeypatch, "_index_reline")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
+    await world.tidy()
+    assert failed
+    path = world.memory() / f"{one}.md"
+    from nekoclaw.host import space as space_module
+
+    line_put_right = space_module._line_put_right
+    saved: list[bool] = []
+
+    def saved_meanwhile(*args: Any) -> str:
+        if not saved:
+            # Saved by the user after the host read it, before the line is written.
+            saved.append(True)
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "description: The staging server was down 2027-01-14.", "description: Down on 2027-01-14; use the mirror."
+                ),
+                encoding="utf-8",
+            )
+        return line_put_right(*args)
+
+    monkeypatch.setattr(space_module, "_line_put_right", saved_meanwhile)
+    world.llm.answer = {"operations": []}
+    await world.tidy()
+    assert saved
+    assert "— The staging server was down 2027-01-14." in await world.space.read_index(None)
+
+    await world.tidy()
+
+    assert f"- [Server down](memory/{one}.md) — Down on 2027-01-14; use the mirror." in await world.space.read_index(None)
+    assert world.space._relines == {}
+
+
+async def test_a_line_added_as_the_entry_was_saved_is_not_added_again_once_the_user_took_it_out(world, monkeypatch):
+    first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    index_add = TaskAgentSpace._index_add
+    failed: list[bool] = []
+
+    def fails_once(self: Any, index: Path, line: str, target: str) -> None:
+        if target == f"memory/{first}.md" and not failed:
+            failed.append(True)
+            raise OSError("held by another program")
+        index_add(self, index, line, target)
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_add", fails_once)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
+    await world.tidy()
+    assert failed
+    path = world.memory() / f"{first}.md"
+    saved: list[bool] = []
+    index_text = TaskAgentSpace._text_to_change
+
+    def saved_meanwhile(index: Path) -> str:
+        text = index_text(index)
+        if index.name == "MEMORY.md" and (None, first) in world.space._relines and not saved:
+            saved.append(True)
+            path.write_text(path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+        return text
+
+    monkeypatch.setattr(TaskAgentSpace, "_text_to_change", staticmethod(saved_meanwhile))
+    world.llm.answer = {"operations": []}
+    await world.tidy()
+    monkeypatch.undo()
+    assert saved
+    assert f"memory/{first}.md" in await world.space.read_index(None)
+    assert (None, first) in world.space._relines
+    _without_line(world, first)
+
+    await world.tidy()
+
+    assert f"memory/{first}.md" not in await world.space.read_index(None)
+
