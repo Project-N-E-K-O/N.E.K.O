@@ -77,7 +77,11 @@ Consequences:
   running after the timeout; give it its own deadline.
 - Calls to other plugins (`self.plugins.call_entry`) are capped at 60 s and
   nest at most 16 deep: each call adds two RPC levels and the host refuses a
-  depth above 32 (`CALL_DEPTH_EXCEEDED`). Nothing detects a cycle: A → B → A
+  depth above 32 (`CALL_DEPTH_EXCEEDED`). The depth only follows calls
+  awaited inside the same invocation: a call made from a timer,
+  `run_in_executor` or a bare thread, or a background task that outlives the
+  entry starts again at depth 0, so recursion that hops through those is not
+  bounded. Nothing detects a cycle: A → B → A
   is delivered like any other call, and a call that can only finish once the
   caller moves on (calling while holding a lock the callee needs, or two
   plugins waiting on each other) is not noticed and waits until it times out.
@@ -85,8 +89,9 @@ Consequences:
   read who called it from `self.ctx.call_chain` (`plugin-system-surface-map.md`,
   Cross-Plugin Calls). `self.ctx.plugin_id in self.ctx.call_chain.callers`
   means the plugin was re-entered, but `callers` is empty in timers, in work
-  handed to `run_in_executor` or a bare thread, and when the host's
-  call-chain policy is off, so treat it as a hint, not a guard.
+  handed to `run_in_executor` or a bare thread, in a background task that
+  outlives the entry, and when the host's call-chain policy is off, so treat
+  it as a hint, not a guard.
 
 ## Other Threads
 
