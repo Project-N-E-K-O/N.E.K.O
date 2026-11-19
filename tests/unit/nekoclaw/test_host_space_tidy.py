@@ -1952,3 +1952,24 @@ async def test_a_date_whose_line_failed_adds_no_line_the_user_took_out_since(wor
 
     assert f"memory/{one}.md" not in await world.space.read_index(None)
     assert world.space._relines == {}
+
+
+async def test_a_date_is_not_put_for_words_that_are_part_of_a_longer_relative_time(world):
+    # "一昨日" is the day before "昨日": the shorter one does not stand in it.
+    one = await world.active("移行", "移行は一昨日に完了しました。")
+    await world.active("ミラー", "ミラーは mirror.local にあります。")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["移行"], "old": "昨日", "new": "2027-01-14"}])
+
+    await world.tidy()
+
+    assert "移行は一昨日に完了しました。" in (world.memory() / f"{one}.md").read_text(encoding="utf-8")
+
+
+async def test_a_date_is_put_for_words_of_a_text_with_no_spaces(world):
+    one = await world.active("移行", "移行は昨日に完了しました。")
+    await world.active("ミラー", "ミラーは mirror.local にあります。")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["移行"], "old": "昨日", "new": "2027-01-14"}])
+
+    await world.tidy()
+
+    assert "移行は2027-01-14に完了しました。" in (world.memory() / f"{one}.md").read_text(encoding="utf-8")

@@ -1904,14 +1904,26 @@ def _as_words(words: str) -> re.Pattern[str]:
     Not inside a longer run of letters and digits of a script that puts
     spaces between words ("today" in "todayTotal", "вчера" in
     "позавчера"). Text that puts no spaces between words (Chinese,
-    Japanese) is matched where it stands.
+    Japanese) is matched where it stands, but for where it is part of
+    a longer one of ``SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS``, which says
+    another time ("昨日" in "一昨日").
     """
+    from config.prompts.prompts_nekoclaw_space import SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS
     from nekoclaw.host.selection import _PAIRED_RANGES
 
     letter = rf"[^\W{_PAIRED_RANGES}]"
     before = rf"(?<!{letter})" if _spaced_letter(words[:1]) else ""
     after = rf"(?!{letter})" if _spaced_letter(words[-1:]) else ""
-    return re.compile(before + re.escape(words) + after)
+    inside = ""
+    for longer in SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS:
+        if len(longer) <= len(words):
+            continue
+        for found in re.finditer(re.escape(words), longer, re.IGNORECASE):
+            ahead, behind = longer[: found.start()], longer[found.end() :]
+            # Not where what stands before and after it makes the longer one.
+            looked_behind = rf"(?<=(?i:{re.escape(ahead)}))" if ahead else ""
+            inside += rf"(?!{looked_behind}(?i:{re.escape(words + behind)}))"
+    return re.compile(before + inside + re.escape(words) + after)
 
 
 @dataclass
