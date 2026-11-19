@@ -1041,6 +1041,7 @@ class EmbeddingService:
         self._session = None
         self._tokenizer = None
         self._loaded_file_identity = None
+        self._loaded_weights_sha256 = None
         self._load_lock = asyncio.Lock()
         self._inference_queue = InferenceQueue(background_duty=_hardware.resolve_background_duty(self._ram_gb))
         self._lifecycle_condition = asyncio.Condition()
@@ -1182,6 +1183,7 @@ class EmbeddingService:
             self._session = None
             self._tokenizer = None
             self._loaded_file_identity = None
+            self._loaded_weights_sha256 = None
             self._state = EmbeddingState.CLOSED
 
     def spec(self) -> dict | None:
@@ -1231,6 +1233,10 @@ class EmbeddingService:
             if not active_idx:
                 return self._embed_result(result, "ok")
             active_texts = [texts[index] for index in active_idx]
+            # timeout_at schedules cancellation on the next loop turn; reject
+            # an already expired request before it can start native inference.
+            if deadline is not None and deadline <= asyncio.get_running_loop().time():
+                return self._embed_result(result, "timeout")
             try:
                 async with asyncio.timeout_at(deadline):
                     vectors = await self._run_inference(active_texts, lane)
@@ -1434,6 +1440,11 @@ class EmbeddingService:
         # library RPCs separately hash these exact resource identities.
         paths = (model_path, external_data_path, tokenizer_path)
         identity = resource_file_identity(paths)
+        from ._embeddings.spec import specification
+
+        load_spec = specification(self, max_length=DEFAULT_VECTORS_MAX_LENGTH)
+        if load_spec is None:
+            raise _DisabledError(_DisableReason.LOAD_ERROR)
         try:
             import onnxruntime as ort  # type: ignore
         except ImportError as e:
@@ -1510,6 +1521,7 @@ class EmbeddingService:
         if loaded_identity != identity:
             raise _DisabledError(_DisableReason.LOAD_ERROR)
         self._loaded_file_identity = identity
+        self._loaded_weights_sha256 = load_spec["weights_sha256"]
 
     def _infer_blocking(self, texts: list[str]) -> list[list[float]]:
         """Tokenize + run ONNX session + L2-normalize + Matryoshka-trunc.

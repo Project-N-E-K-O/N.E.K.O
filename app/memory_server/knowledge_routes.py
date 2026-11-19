@@ -51,6 +51,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, FileResponse
 from starlette.datastructures import UploadFile
+from starlette.requests import ClientDisconnect
 from starlette.formparsers import MultiPartParser, MultiPartException
 
 from knowledge.service import MAX_PENDING_IMPORTS, KnowledgeService, KnowledgeUnavailable
@@ -453,16 +454,26 @@ async def _streamed_pack_import(request: Request, service: KnowledgeService, *, 
     """
     async def owned():
         folder = service.root / ".staging"
-        await service._thread(folder.mkdir, parents=True, exist_ok=True)
         path = folder / (uuid.uuid4().hex + ".upload")
         form = None
         try:
+            await service._thread(folder.mkdir, parents=True, exist_ok=True)
             subscription = None
             if _media_type(request) == "multipart/form-data":
-                form = await MultiPartParser(
+                parser = MultiPartParser(
                     request.headers, capped_body(request, _PACK_BODY_MAX_BYTES),
                     max_files=1, max_fields=8, max_part_size=_JSON_BODY_MAX_BYTES,
-                ).parse()
+                )
+                try:
+                    form = await parser.parse()
+                except BaseException:
+                    # Starlette closes these only for its own parser errors;
+                    # a capped stream/disconnect can abort before FormData exists.
+                    def close_partial_files():
+                        for handle in parser._files_to_close_on_error:
+                            handle.close()
+                    await service._thread(close_partial_files)
+                    raise
                 uploads = [value for value in form.values() if isinstance(value, UploadFile)]
                 upload = form.get("pack") if isinstance(form.get("pack"), UploadFile) else None
                 # Keep the subscription transport's explicit pack field;
@@ -500,7 +511,7 @@ async def _streamed_pack_import(request: Request, service: KnowledgeService, *, 
             return await _call(lambda svc: svc.import_pack(path, subscription=subscription, _options=options))
         except BodyTooLarge:
             return _failure("pack_too_large", 413)
-        except (ValueError, OSError, MultiPartException):
+        except (ValueError, OSError, MultiPartException, ClientDisconnect):
             return _failure("invalid_request", 400)
         finally:
             if form is not None:
@@ -510,7 +521,12 @@ async def _streamed_pack_import(request: Request, service: KnowledgeService, *, 
 
     # A disconnected caller cannot delete the spool while a native parser or
     # admission thread still reads it. Drain the actual owner before cleanup.
-    task = asyncio.create_task(owned())
+    return await _await_file_owner(owned())
+
+
+async def _await_file_owner(operation):
+    """Drain a request's file owner before disconnect can release its scratch."""
+    task = asyncio.create_task(operation)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -642,20 +658,45 @@ async def knowledge_source_preview(request: Request, pack_id: str = "", doc_id: 
         return _failure("invalid_request", 400)
     if not filename:
         return _failure("invalid_request", 400)
-    async with _import_slots:
-        raw = await _read_body(request, max_bytes=SOURCE_BODY_MAX_BYTES)
-        if raw is None:
+    service = _service
+    if service is None:
+        return _failure("knowledge_starting", 503)
+
+    async def owned():
+        folder = service.root / ".staging"
+        path = folder / (uuid.uuid4().hex + ".source")
+        try:
+            await service._thread(folder.mkdir, parents=True, exist_ok=True)
+            handle = await service._thread(path.open, "xb")
+            try:
+                async for block in capped_body(request, SOURCE_BODY_MAX_BYTES):
+                    await service._thread(handle.write, block)
+            finally:
+                await service._thread(handle.close)
+            # The parser receives a bounded spool, not another complete HTTP
+            # bytearray/bytes copy; keep it alive through native parsing.
+            return await _call(lambda svc: svc.preview_source(filename, path, pack_id=pack_id, doc_id=doc_id, name=name))
+        except BodyTooLarge:
             return _failure("document_too_large", 413)
-        return await _call(lambda svc: svc.preview_source(filename, raw, pack_id=pack_id, doc_id=doc_id, name=name))
+        except (ValueError, OSError, ClientDisconnect):
+            return _failure("invalid_request", 400)
+        finally:
+            with contextlib.suppress(OSError):
+                await service._thread(path.unlink, missing_ok=True)
+
+    async with _import_slots:
+        return await _await_file_owner(owned())
 
 
 @router.post("/sources/commit")
 async def knowledge_source_commit(request: Request):
     payload = await _json_object(request)
     if (payload is None or not isinstance(payload.get("preview_id"), str)
-            or not isinstance(payload.get("sha256"), str) or type(payload.get("enabled", False)) is not bool):
+            or not isinstance(payload.get("sha256"), str) or type(payload.get("enabled", False)) is not bool
+            or type(payload.get("enabled_confirmed", False)) is not bool):
         return _failure("invalid_request", 400)
-    return await _call(lambda svc: svc.commit_source(payload["preview_id"], payload["sha256"], enabled=payload.get("enabled", False)))
+    return await _call(lambda svc: svc.commit_source(payload["preview_id"], payload["sha256"], enabled=payload.get("enabled", False),
+                                                       enabled_confirmed=payload.get("enabled_confirmed", False)))
 
 
 @router.post("/sources/remove")

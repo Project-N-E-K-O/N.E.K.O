@@ -14,6 +14,8 @@ export const MAX_KNOWLEDGE_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024
 export const MAX_KNOWLEDGE_SOURCE_FILE_BYTES = 16 * 1024 * 1024
 const KNOWLEDGE_GET_REQUEST_TIMEOUT_MS = 15_000
 const KNOWLEDGE_MUTATION_REQUEST_TIMEOUT_MS = 50_000
+// The plugin bounds the complete publication flow to 240 seconds, including upload.
+const KNOWLEDGE_PUBLICATION_REQUEST_TIMEOUT_MS = 250_000
 
 let bridgeToken = ''
 let bridgeTokenRequest: Promise<string> | null = null
@@ -70,6 +72,7 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'preview_changed',
   'source_not_found',
   'source_version_not_found',
+  'source_confirmation_required',
   'vectors_not_ready',
   'embedding_unavailable',
   'package_artifact_hash_mismatch',
@@ -402,6 +405,7 @@ interface RequestOptions {
   data?: unknown
   headers?: Record<string, string>
   responseType?: 'blob'
+  timeout?: number
   onHeaders?: (headers: Record<string, unknown>) => void
 }
 
@@ -429,9 +433,9 @@ async function executeRequest<T extends KnowledgeEnvelope>(
     data: options.data,
     headers: options.headers,
     ...(options.responseType ? { responseType: options.responseType } : {}),
-    timeout: options.method === 'POST'
+    timeout: options.timeout ?? (options.method === 'POST'
       ? KNOWLEDGE_MUTATION_REQUEST_TIMEOUT_MS
-      : KNOWLEDGE_GET_REQUEST_TIMEOUT_MS,
+      : KNOWLEDGE_GET_REQUEST_TIMEOUT_MS),
   })
   options.onHeaders?.(response.headers || {})
   return response.data
@@ -515,7 +519,9 @@ export const knowledgeApi = {
     if (params.offset !== undefined) cleaned.offset = params.offset
     // Private search text and document-derived titles must never enter access-log URLs.
     return request<KnowledgeEntriesResponse>('entries', {
-      params: cleaned, headers: { 'X-Knowledge-Query': encodeURIComponent(params.query || '') },
+      // Match list_entries' existing 200-character limit before percent encoding;
+      // otherwise a long Unicode query can exceed the HTTP header budget first.
+      params: cleaned, headers: { 'X-Knowledge-Query': encodeURIComponent(Array.from((params.query || '').trim()).slice(0, 200).join('')) },
     })
   },
   entry: (params: { pack_id: string; title: string }) =>
@@ -568,7 +574,7 @@ export const knowledgeApi = {
       },
     })
   },
-  commitSource: (data: { preview_id: string; sha256: string; enabled: boolean }) =>
+  commitSource: (data: { preview_id: string; sha256: string; enabled: boolean; enabled_confirmed: boolean }) =>
     post<KnowledgeImportResponse>('sources/commit', data),
   removeSource: (data: { pack_id: string; doc_id: string }) => post<KnowledgeImportResponse>('sources/remove', data),
   restoreSource: (data: { pack_id: string; doc_id: string; version: number }) =>
@@ -600,7 +606,9 @@ export const knowledgeApi = {
     return { blob, filename }
   },
   publish: (data: { pack_id: string; artifact_id: string; publish_confirmed: true; client_request_id: string; title: string; description: string }) =>
-    post<KnowledgeEnvelope & { share: { id: number } }>('publish', data),
+    request<KnowledgeEnvelope & { share: { id: number } }>('publish', {
+      method: 'POST', data, timeout: KNOWLEDGE_PUBLICATION_REQUEST_TIMEOUT_MS,
+    }),
   cancelPackJob: (data: { job_id: string }) =>
     post<KnowledgeEnvelope & { job_id: string }>('packs/jobs/cancel', data),
   // The server reuses frozen task input; clients never reconstruct its source set.

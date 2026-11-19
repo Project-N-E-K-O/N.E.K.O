@@ -24,7 +24,8 @@ def specification(service, *, max_length: int) -> dict | None:
     try:
         identity = resource_file_identity(paths.values())
         loaded = getattr(service, "_loaded_file_identity", None)
-        if loaded is not None and identity != loaded:
+        loaded_hashes = getattr(service, "_loaded_weights_sha256", None)
+        if loaded is not None and loaded_hashes is None and identity != loaded:
             return None
         with _cache_lock:
             hashes = _fingerprints.get(identity)
@@ -43,6 +44,10 @@ def specification(service, *, max_length: int) -> dict | None:
                     return None
                 _fingerprints.clear()
                 _fingerprints[identity] = hashes
+            # A permission change only invalidates the cheap cache key. Bind
+            # compatibility to the bytes loaded by ONNX, not metadata alone.
+            if loaded_hashes is not None and hashes != loaded_hashes:
+                return None
             return {"model_id": service.model_id(), "profile": service._profile_id,
                     "dimension": service.dim(), "quantization": service.quantization(),
                     "max_length": max_length, "weights_sha256": dict(hashes),
@@ -64,7 +69,13 @@ def count_tokens(service, texts: list[str], *, max_length: int) -> list[int] | N
             if tokenizer is None:
                 from tokenizers import Tokenizer
 
-                tokenizer = Tokenizer.from_file(path)
+                # Read once and parse those same digest-checked bytes. A file
+                # replacement between fingerprinting and native loading must
+                # never publish a tokenizer under another resource's key.
+                raw = Path(path).read_bytes()
+                if hashlib.sha256(raw).hexdigest() != key[1]:
+                    return None
+                tokenizer = Tokenizer.from_str(raw.decode("utf-8"))
                 tokenizer.no_truncation()
                 tokenizer.no_padding()
                 _tokenizers.clear()

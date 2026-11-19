@@ -184,16 +184,47 @@ describe('KnowledgeManager overview', () => {
       { ...job('failed'), reason: 'process_interrupted' },
       { ...job('cancelled'), job_id: 'cancelled-1' },
       { ...job('building'), job_id: 'busy-1', reason: 'knowledge_busy' },
+      { ...job('queued'), job_id: 'queued-1' },
     ] })
     api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-1', state: 'queued' })
     const container = await mount()
     await openTab('packs')
-    const retries = [...container.querySelectorAll<HTMLButtonElement>('button')].filter(button => button.textContent?.trim() === 'Retry task')
-    expect(retries).toHaveLength(2)
-    retries[0]!.click()
+    const retry = (id: string) => [...container.querySelectorAll<HTMLButtonElement>(`[data-job-id="${id}"] button`)]
+      .find(button => button.textContent?.trim() === 'Retry task')
+    expect(retry('job-1')).toBeTruthy()
+    expect(retry('cancelled-1')).toBeTruthy()
+    expect(retry('busy-1')).toBeUndefined()
+    expect(retry('queued-1')).toBeUndefined()
+    retry('job-1')!.click()
     await flush()
     expect(api.retryPackJob).toHaveBeenCalledWith({ job_id: 'job-1' })
     expect(api.retryPackJob).toHaveBeenCalledTimes(1)
+    retry('cancelled-1')!.click()
+    await flush()
+    expect(api.retryPackJob).toHaveBeenLastCalledWith({ job_id: 'cancelled-1' })
+  })
+
+  it('does not revive retry or discard actions from a stale post-retry polling snapshot', async () => {
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-new', state: 'queued' })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    expect(api.retryPackJob).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[data-job-id="job-1"]')).toBeNull()
+    expect(api.discardPackJob).not.toHaveBeenCalled()
+  })
+
+  it('keeps a failed retry available for another attempt', async () => {
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
+    api.retryPackJob.mockRejectedValue(new KnowledgeApiError('knowledge_busy'))
+    const container = await mount()
+    await openTab('packs')
+    const retry = container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!
+    retry.click()
+    await flush()
+    expect(retry.disabled).toBe(false)
   })
 
   it('posts the global switch and reflects the saved value', async () => {
@@ -244,6 +275,16 @@ describe('KnowledgeManager overview', () => {
 })
 
 describe('KnowledgeManager job polling', () => {
+  it.each(['failed', 'cancelled'] as const)('uses export-specific notification for a %s export', async state => {
+    vi.useFakeTimers()
+    api.packJobs.mockResolvedValueOnce({ ok: true, jobs: [{ ...job('building'), kind: 'pack_export' }] })
+      .mockResolvedValue({ ok: true, jobs: [{ ...job(state), kind: 'pack_export', reason: 'knowledge_error' }] })
+    await mount()
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(document.body.textContent).toContain(state === 'failed' ? 'Export of fixture-pack failed:' : 'Export of fixture-pack was cancelled')
+    expect(document.body.textContent).not.toContain(state === 'failed' ? 'failed to import' : 'Import of fixture-pack was cancelled')
+  })
   it('polls while an import is active and stops after unmount', async () => {
     vi.useFakeTimers()
     api.packJobs.mockResolvedValue({ ok: true, jobs: [job('building')] })

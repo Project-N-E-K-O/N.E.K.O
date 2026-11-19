@@ -70,7 +70,7 @@ describe('source import privacy and identity', () => {
     expect(checkbox.checked).toBe(false)
     button('Confirm import').click()
     await flush()
-    expect(api.commitSource).toHaveBeenCalledWith({ preview_id: 'preview-1', sha256: 'digest', enabled: false })
+    expect(api.commitSource).toHaveBeenCalledWith({ preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false })
   })
 
   it('requires explicit acknowledgement before adding data to an enabled pack', async () => {
@@ -84,7 +84,36 @@ describe('source import privacy and identity', () => {
     expect(button('Confirm import').disabled).toBe(false)
     button('Confirm import').click()
     await flush()
-    expect(api.commitSource).toHaveBeenCalledWith({ preview_id: 'preview-1', sha256: 'digest', enabled: true })
+    expect(api.commitSource).toHaveBeenCalledWith({ preview_id: 'preview-1', sha256: 'digest', enabled: true, enabled_confirmed: true })
+  })
+
+  it('invalidates the preview when its selected destination disappears', async () => {
+    const pack = { pack_id: 'imp.existing', enabled: true, origin: 'imported', sources_managed: true, source: { name: 'Existing' } } as KnowledgePack
+    const state = await mount(null, [pack])
+    document.querySelector<HTMLElement>('.el-select__wrapper')!.click()
+    await flush()
+    const option = [...document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')].find(row => row.textContent?.trim() === 'Existing')!
+    option.click()
+    await flush()
+    button('Preview document').click()
+    await flush()
+    expect(document.querySelector('[data-testid="source-preview"]')).not.toBeNull()
+    state.packs = []
+    await flush()
+    expect(document.querySelector('[data-testid="source-preview"]')).toBeNull()
+    expect(button('Preview document').disabled).toBe(true)
+    expect(api.commitSource).not.toHaveBeenCalled()
+  })
+
+  it('records the new-pack enable opt-in independently of the requested switch', async () => {
+    await mount()
+    button('Preview document').click()
+    await flush()
+    document.querySelector<HTMLElement>('[data-testid="source-enable-after-import"]')!.click()
+    await flush()
+    button('Confirm import').click()
+    await flush()
+    expect(api.commitSource).toHaveBeenCalledWith({ preview_id: 'preview-1', sha256: 'digest', enabled: true, enabled_confirmed: true })
   })
 
   it('drops a stale preview when another file is selected', async () => {

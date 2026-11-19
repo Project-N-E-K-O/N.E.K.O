@@ -13,6 +13,16 @@ from ..models import KnowledgePackError, pack_id_is_valid
 from ..registry import utc_now
 from .documents import SourceLimits, parse_source
 
+SIDECAR_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _encoded_record(value: dict) -> bytes:
+    """Use the same bound for writes and reads, without indentation fan-out."""
+    raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(raw) > SIDECAR_MAX_BYTES:
+        raise KnowledgePackError("document_text_too_large")
+    return raw
+
 
 def _id(value: str) -> str:
     """Never accept paths or arbitrary filenames as a sidecar identity."""
@@ -37,15 +47,20 @@ class SourceStore:
         """Cap sidecar reads before decoding; vectors never belong here."""
         try:
             with path.open("rb") as stream:
-                raw = stream.read(8 * 1024 * 1024 + 1)
+                raw = stream.read(SIDECAR_MAX_BYTES + 1)
         except FileNotFoundError as error:
             raise KnowledgePackError("source_not_found") from error
-        if len(raw) > 8 * 1024 * 1024:
+        if len(raw) > SIDECAR_MAX_BYTES:
             raise KnowledgePackError("document_text_too_large")
         return json.loads(raw)
 
-    def preview(self, filename: str, raw: bytes, *, pack_id: str = "", doc_id: str = "", name: str = "") -> dict:
+    def preview(self, filename: str, raw: bytes | Path, *, pack_id: str = "", doc_id: str = "", name: str = "") -> dict:
         """Retain exact retry input and a digest-bound, complete text preview."""
+        if isinstance(raw, Path):
+            # Only internal request spools reach this worker path. Bound the
+            # read before parsing and avoid an event-loop bytearray/bytes copy.
+            with raw.open("rb") as stream:
+                raw = stream.read(SourceLimits().max_document_bytes + 1)
         parsed = parse_source(filename, raw, SourceLimits())
         pack_id = pack_id or "imp." + uuid.uuid4().hex
         doc_id = _id(doc_id) if doc_id else uuid.uuid4().hex
@@ -56,8 +71,9 @@ class SourceStore:
                    "name": parsed["filename"], "pack_name": (name or parsed["filename"])[:200],
                    "sha256": hashlib.sha256(raw).hexdigest(), "content": parsed["content"],
                    "sections": parsed["sections"], "chars": len(parsed["content"]), "created_at": utc_now()}
+        encoded = _encoded_record(preview)
         atomic_write_bytes(folder / (preview_id + ".original"), raw)
-        atomic_write_json(folder / (preview_id + ".json"), preview)
+        atomic_write_bytes(folder / (preview_id + ".json"), encoded)
         return preview
 
     def find_preview(self, preview_id: str) -> dict:
@@ -74,23 +90,46 @@ class SourceStore:
             raise KnowledgePackError("preview_changed")
         folder = self.directory(preview["pack_id"])
         versions = self.versions(preview["pack_id"], preview["doc_id"])
+        # One frozen preview is one immutable version, including retries after
+        # admission failure. Never manufacture a new revision on double-click.
+        for existing in versions:
+            if existing.get("preview_id") == preview_id and existing.get("sha256") == sha256:
+                # A previous attempt may have written the immutable version
+                # but failed before its descriptive manifest was durable.
+                self._retain_manifest(preview)
+                return existing
         version = max((value["version"] for value in versions), default=0) + 1
         original = folder / "previews" / (preview_id + ".original")
         with original.open("rb") as stream:
             raw = stream.read(SourceLimits().max_document_bytes + 1)
         if hashlib.sha256(raw).hexdigest() != sha256:
             raise KnowledgePackError("preview_changed")
+        value = {**preview, "version": version}
+        encoded = _encoded_record(value)
         target = folder / "originals" / preview["doc_id"] / f"v{version}" / "original"
         target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(target, raw)
-        value = {**preview, "version": version}
         output = folder / "versions" / f"{preview['doc_id']}.v{version}.json"
         output.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(output, value)
+        atomic_write_bytes(output, encoded)
         # This is descriptive history only. Active versions are selected by
         # the committed pack's doc:/ver: tags, so a failed job cannot activate it.
-        atomic_write_json(folder / "manifest.json", {"pack_id": preview["pack_id"], "name": preview["pack_name"]})
+        self._retain_manifest(preview)
         return value
+
+    def _retain_manifest(self, preview: dict) -> None:
+        """Keep one preview's history discoverable before queue admission."""
+        manifest_path = self.directory(preview["pack_id"]) / "manifest.json"
+        try:
+            previous = self.read(manifest_path)
+        except KnowledgePackError as error:
+            if error.reason != "source_not_found":
+                raise
+            previous = {}
+        # History visibility changes only with explicit removal/activation,
+        # never merely because a preview was retained before queue admission.
+        retained = previous.get("retained", False) if isinstance(previous, dict) else False
+        atomic_write_json(manifest_path, {"pack_id": preview["pack_id"], "name": preview["pack_name"], "retained": retained})
 
     def versions(self, pack_id: str, doc_id: str) -> list[dict]:
         identity = _id(doc_id)
@@ -131,7 +170,9 @@ class SourceStore:
         for path in self.root.glob("*/manifest.json"):
             try:
                 value = self.read(path)
-                if isinstance(value, dict) and value.get("retained") is True and pack_id_is_valid(value.get("pack_id")):
+                if (isinstance(value, dict) and value.get("retained") is True
+                        and pack_id_is_valid(value.get("pack_id"))
+                        and isinstance(value.get("name"), str) and value["name"].strip()):
                     values.append(value)
             except (KnowledgePackError, ValueError):
                 continue
@@ -145,7 +186,19 @@ class SourceStore:
         except KnowledgePackError as error:
             if error.reason == "source_not_found":
                 return  # Ordinary installed packages have no source sidecar.
+            if not retained:
+                return
             raise
+        except (OSError, ValueError):
+            # Hiding a removed pack must not depend on damaged unrelated
+            # history metadata. Retaining editable history still fails closed.
+            if not retained:
+                return
+            raise
+        if not isinstance(value, dict):
+            if not retained:
+                return
+            raise KnowledgePackError("invalid_request")
         if value.get("retained", False) != retained:
             atomic_write_json(path, {**value, "retained": retained})
 

@@ -11,10 +11,12 @@ import math
 import re
 import stat
 import struct
+import unicodedata
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -152,9 +154,12 @@ def _pack(raw: bytes, manifest: dict, limits: PackageLimits) -> dict:
         if not isinstance(value, dict) or not {"title", "content"} <= set(value) or set(value) - {"title", "terms", "tags", "summary", "content"}:
             raise PackageError("invalid_entry")
         title = _text(value["title"], 500)
-        if title in titles:
+        # Mirror knowledge.text.title_key using only stdlib, so a package
+        # accepted by the vendored market validator is also locally installable.
+        identity = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", title)).strip().casefold()
+        if identity in titles:
             raise PackageError("duplicate_title")
-        titles.add(title)
+        titles.add(identity)
         _text(value["content"], 80000)
         _text(value.get("summary", ""), 4000, empty=True)
         terms, tags = value.get("terms", {}), value.get("tags", [])
@@ -189,6 +194,49 @@ class ValidatedPackage:
                 "package_id": self.manifest["package_id"], "name": self.manifest["name"],
                 "version": self.manifest["version"], "format": PACKAGE_FORMAT, "format_version": FORMAT_VERSION,
                 "embedding_spec": self.manifest["embedding_spec"]}
+
+
+def _spread_positions(positions: int, distance: int, *, backwards: bool = False) -> int:
+    """Expand a bounded position bitset across an inclusive overlap window."""
+    step = 1
+    while distance:
+        width = min(step, distance)
+        positions |= positions >> width if backwards else positions << width
+        distance -= width
+        step *= 2
+    return positions
+
+
+def _source_is_covered(content: str, bodies: Iterable[str]) -> bool:
+    """Keep every contiguous coverage path without exponential backtracking."""
+    @lru_cache(maxsize=16)
+    def matches(body: str) -> int:
+        # The pack bounds content to 80,000 characters. Each candidate cursor
+        # needs one bit; even repetitive text cannot create unbounded path state.
+        positions = bytearray((len(content) + 8) // 8)
+        start = content.find(body)
+        while start >= 0:
+            positions[start // 8] |= 1 << (start % 8)
+            start = content.find(body, start + 1)
+        return int.from_bytes(positions, "little")
+
+    cursors = 1  # Only position zero is initially covered.
+    for body in bodies:
+        if not body:
+            return False
+        size = len(body)
+        occurrences = matches(body)
+        # Advancing matches start at or before a reachable cursor, with at
+        # most 120 already-covered characters. Do not greedily pick one match.
+        advanced = (_spread_positions(cursors, min(size, 120), backwards=True) & occurrences) << size
+        if size < 120:
+            # A short excerpt may lie wholly within that overlap; it confirms
+            # the same cursor instead of moving coverage backwards.
+            advanced |= cursors & _spread_positions(occurrences << size, 120 - size)
+        cursors = advanced
+        if not cursors:
+            return False
+    return bool(cursors & (1 << len(content)))
 
 
 def validate_package(path: Path, *, expected_spec: dict | None = None,
@@ -235,7 +283,7 @@ def validate_package(path: Path, *, expected_spec: dict | None = None,
                 # Sentence reflow may alter whitespace, but every non-whitespace
                 # source character must remain covered, in order, by excerpts.
                 content = "".join(entry["content"].split())
-                cursor = 0
+                bodies = []
                 for row in rows:
                     header = entry["title"]
                     if row["chunk_index"] == 0 and entry.get("summary"):
@@ -244,14 +292,8 @@ def validate_package(path: Path, *, expected_spec: dict | None = None,
                     if not row["embedding_text"].startswith(prefix):
                         raise PackageError("package_source_mismatch")
                     body = "".join(row["embedding_text"][len(prefix):].split())
-                    # Repeated prose can match an earlier covered excerpt.
-                    # Choose the furthest contiguous match, allowing only the
-                    # declared overlap and never skipping an uncovered gap.
-                    start = content.rfind(body, max(0, cursor - 120), cursor + len(body)) if body else -1
-                    if start < 0 or start > cursor:
-                        raise PackageError("package_source_mismatch")
-                    cursor = max(cursor, start + len(body))
-                if cursor != len(content):
+                    bodies.append(body)
+                if not _source_is_covered(content, bodies):
                     raise PackageError("package_source_mismatch")
             dim = manifest["embedding_spec"]["dimension"]
             common = compatible_dimension(expected_spec, manifest["embedding_spec"]) if expected_spec else None

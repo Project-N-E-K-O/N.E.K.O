@@ -842,8 +842,14 @@ async def test_apply_route_refuses_malformed_requests(client, data, file_field, 
     form = _apply_form(raw, _subscription(raw).to_json())
     form["data"].update(data)
     # Subscriptions require the named pack upload; absence is invalid too.
-    form["files"] = {file_field: form["files"]["pack"]} if file_field else {}
+    if file_field:
+        form["files"] = {file_field: form["files"]["pack"]}
+    else:
+        # Force real text-only multipart; files={} becomes urlencoded and
+        # would reject its media type before exercising the missing pack.
+        form["files"] = [(name, (None, value)) for name, value in form.pop("data").items()]
     response = await http.post("/internal/knowledge/subscriptions/apply", **form)
+    assert response.request.headers["Content-Type"].startswith("multipart/form-data;")
     assert response.status_code == 400
     assert response.json()["reason"] == reason
     assert service.list_jobs() == []

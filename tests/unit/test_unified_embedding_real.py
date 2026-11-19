@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -67,7 +68,7 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         pack = (await library.list_packs())[0]
         assert pack["enabled"] is False and not pack["auto_context"]
         assert await library._index_round() == 0
-        with sqlite3.connect(library._store.database_path) as database:
+        with closing(sqlite3.connect(library._store.database_path)) as database:
             assert database.execute("SELECT MAX(attempts) FROM chunks").fetchone()[0] == 0
         assert not calls and encoder._session is None
 
@@ -94,9 +95,13 @@ async def test_real_encoder_cold_import_backfill_and_vector_reuse(tmp_path, monk
         assert await installed._index_round() == 0
         assert len(calls) == before_export  # No re-encoding during either operation.
         await installed.set_pack_enabled(pack["pack_id"], True)
+        query_count = encoder.status_counts().get("ok", 0)
+        native_count = len(calls)
         result = await installed.query(query="lighthouses", budget_ms=5000)
         assert result["result"] == "matched"
-        assert encoder.status_counts().get("ok", 0) > 0
+        assert result["retrieval_mode"] == "hybrid"
+        assert encoder.status_counts().get("ok", 0) == query_count + 1
+        assert len(calls) == native_count + 1
     finally:
         if installed is not None:
             await installed.stop()

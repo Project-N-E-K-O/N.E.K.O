@@ -9,7 +9,7 @@
             <el-option v-for="row in importedPacks" :key="row.pack_id" :value="row.pack_id" :label="row.source.name || row.pack_id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="!targetPack" :label="t('knowledge.sourcePackName')">
+        <el-form-item v-if="!targetId" :label="t('knowledge.sourcePackName')">
           <el-input v-model="packName" maxlength="160" />
         </el-form-item>
       </el-form>
@@ -27,7 +27,7 @@
     </template>
     <template #footer>
       <el-button :disabled="saving" @click="close">{{ t('common.cancel') }}</el-button>
-      <el-button v-if="!preview" type="primary" :loading="loading" :disabled="!file" @click="prepare">{{ t('knowledge.previewDocument') }}</el-button>
+      <el-button v-if="!preview" type="primary" :loading="loading" :disabled="!file || targetMissing" @click="prepare">{{ t('knowledge.previewDocument') }}</el-button>
       <el-button v-else type="primary" :loading="saving" :disabled="requiresAcknowledgment && !acknowledged" @click="commit">{{ t('knowledge.sourceCommit') }}</el-button>
     </template>
   </el-dialog>
@@ -53,6 +53,7 @@ let generation = 0
 // A finished offline pack has no originals to append to, even when its origin is imported.
 const importedPacks = computed(() => (props.packs ?? []).filter(row => row.sources_managed === true && !row.broken && !row.retained))
 const targetPack = computed(() => props.pack ?? importedPacks.value.find(row => row.pack_id === targetId.value))
+const targetMissing = computed(() => Boolean(targetId.value && !targetPack.value))
 const requiresAcknowledgment = computed(() => Boolean(targetPack.value && targetPack.value.enabled !== false))
 
 watch([() => props.modelValue, () => props.file, () => props.pack?.pack_id, () => props.docId], () => {
@@ -76,6 +77,16 @@ watch([targetId, packName], () => {
   acknowledged.value = false
 })
 
+watch(() => targetPack.value?.pack_id, () => {
+  // A missing destination invalidates the server-frozen identity, not just its label.
+  // Ordinary polling updates of the same pack keep the preview intact.
+  generation += 1
+  preview.value = null
+  loading.value = false
+  acknowledged.value = false
+})
+watch(requiresAcknowledgment, () => { acknowledged.value = false })
+
 function close() {
   if (saving.value) return
   generation += 1
@@ -83,7 +94,7 @@ function close() {
 }
 
 async function prepare() {
-  if (!props.file || loading.value) return
+  if (!props.file || loading.value || targetMissing.value) return
   const request = ++generation
   loading.value = true
   try {
@@ -109,6 +120,8 @@ async function commit() {
     await knowledgeApi.commitSource({
       preview_id: preview.value.preview_id, sha256: preview.value.sha256,
       enabled: targetPack.value ? targetPack.value.enabled !== false : enableAfterImport.value,
+      // This is consent for this document, distinct from the pack's mutable switch.
+      enabled_confirmed: targetPack.value ? requiresAcknowledgment.value && acknowledged.value : enableAfterImport.value,
     })
     ElMessage.success(t('knowledge.sourceQueued'))
     emit('committed')

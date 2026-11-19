@@ -221,5 +221,6 @@ def test_docx_preserves_repeated_paragraphs_and_reports_real_positions():
     ("wrong.pdf", b"123", SourceLimits(), "invalid_pdf"),
 ])
 def test_document_failures_never_report_partial_success(filename, data, limits, reason):
-    with pytest.raises(SourceError, match=reason):
+    with pytest.raises(SourceError) as error:
         parse_source(filename, data, limits)
+    assert error.value.reason == reason

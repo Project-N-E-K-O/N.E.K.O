@@ -1,0 +1,225 @@
+"""Keep refused inputs, terminal vector buffers and per-pack failures isolated."""
+
+import asyncio
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from knowledge import service as module
+from knowledge.models import KnowledgePackError
+from knowledge.service import ImportJob, KnowledgeService
+from tests.unit.test_knowledge_archive_v2 import make_archive, specification
+from tests.unit.test_knowledge_subsystem import FakeEmbedder, _import, _pack
+from tests.unit.test_knowledge_unified_core import _finished
+
+
+pytestmark = pytest.mark.unit
+
+
+async def _stop_automatic_indexer(service):
+    """Let each fixture explicitly schedule the index round it is observing."""
+    indexer = next(task for task in service._tasks if task.get_name() == "knowledge-indexer")
+    indexer.cancel()
+    await asyncio.gather(indexer, return_exceptions=True)
+
+
+@pytest.mark.parametrize("owner", ["none", "preexisting", "memory_task", "disk_task"])
+async def test_refused_archive_only_cleans_its_new_unreferenced_copy(tmp_path, monkeypatch, owner):
+    """Admission may refuse after validation without reclaiming another owner's file."""
+    source = make_archive(tmp_path / "upload.zip")
+    raw = source.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    root = tmp_path / "library"
+    service = KnowledgeService(root)
+    await service.start()
+    try:
+        artifact = root / "artifacts" / (digest + ".neko-knowledge.zip")
+        artifact.parent.mkdir(exist_ok=True)
+        unrelated = artifact.parent / ("f" * 64 + ".neko-knowledge.zip")
+        unrelated.write_bytes(b"unrelated retained export")
+        if owner == "preexisting":
+            artifact.write_bytes(raw)
+        elif owner == "memory_task":
+            reference = ImportJob("1" * 32, "imp.previous", "failed", "", "", archive_sha256=digest)
+            service._remember_job(reference)
+            await service._persist_job(reference)
+        elif owner == "disk_task":
+            # Evicted terminal tasks still own their retained retry input.
+            reference = ImportJob("2" * 32, "imp.previous", "failed", "", "", archive_sha256=digest)
+            (root / "jobs").mkdir(exist_ok=True)
+            (root / "jobs" / (reference.job_id + ".json")).write_text(json.dumps(service._job_record(reference)))
+        monkeypatch.setattr(module, "MAX_PACKS", 0)
+        result = await service.import_pack(source)
+        assert result == {"ok": False, "reason": "capacity_packs"}
+        assert artifact.exists() == (owner != "none")
+        if artifact.exists():
+            assert artifact.read_bytes() == raw
+        assert source.read_bytes() == raw
+        assert unrelated.read_bytes() == b"unrelated retained export"
+        assert not service._registry.packs
+    finally:
+        await service.stop()
+
+
+async def test_refused_archive_cleanup_failure_does_not_replace_the_refusal(tmp_path, monkeypatch):
+    source = make_archive(tmp_path / "upload.zip")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    service = KnowledgeService(tmp_path / "library")
+    await service.start()
+    original_unlink = Path.unlink
+    artifact = service.root / "artifacts" / (digest + ".neko-knowledge.zip")
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path == artifact:
+            raise OSError("synthetic cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    try:
+        monkeypatch.setattr(module, "MAX_PACKS", 0)
+        monkeypatch.setattr(Path, "unlink", fail_cleanup)
+        assert await service.import_pack(source) == {"ok": False, "reason": "capacity_packs"}
+        assert artifact.is_file()
+    finally:
+        await service.stop()
+
+
+@pytest.mark.parametrize("outcome", ["active", "failed", "cancelled"])
+async def test_terminal_archive_job_releases_its_transient_seed_vectors(tmp_path, monkeypatch, outcome):
+    """Every terminal worker path releases RAM while keeping exact archive recovery."""
+    class CompatibleArchiveProvider:
+        def state(self):
+            return "disabled"
+
+        def model_id(self):
+            return None
+
+        def spec(self):
+            return specification()
+
+    source = make_archive(tmp_path / "upload.zip")
+    service = KnowledgeService(tmp_path / "library", embedder=CompatibleArchiveProvider())
+    await service.start()
+    entered, release = asyncio.Event(), asyncio.Event()
+    commit = service._commit_job
+
+    async def paused(job):
+        entered.set()
+        await release.wait()
+        if outcome == "failed":
+            raise KnowledgePackError("capacity_chunks")
+        await commit(job)
+
+    try:
+        monkeypatch.setattr(service, "_commit_job", paused)
+        result = await service.import_pack(source)
+        assert await asyncio.wait_for(entered.wait(), 2)
+        job = service._jobs[result["job_id"]]
+        assert job.seed_vectors
+        archive_id = job.archive_sha256
+        if outcome == "cancelled":
+            assert await service.cancel_job(job.job_id)
+        release.set()
+        finished = await _finished(service, result)
+        assert finished["state"] == outcome
+        assert job.seed_vectors == []
+        assert service.artifact_path(archive_id).read_bytes() == source.read_bytes()
+    finally:
+        release.set()
+        await service.stop()
+
+
+@pytest.mark.parametrize("changed", ["manifest", "version", "directory"])
+async def test_source_capability_cache_hits_and_invalidates_on_local_changes(tmp_path, monkeypatch, changed):
+    """Listing avoids reparsing unchanged histories but never trusts stale provenance."""
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        preview = (await service.preview_source("notes.txt", b"The original complete reference."))["preview"]
+        result = await service.commit_source(preview["preview_id"], preview["sha256"])
+        assert (await _finished(service, result))["state"] == "active"
+        pack_id = result["pack_id"]
+        calls = []
+        verify = service._sources_managed
+
+        def counted(pack_id):
+            calls.append(pack_id)
+            return verify(pack_id)
+
+        monkeypatch.setattr(service, "_sources_managed", counted)
+        assert (await service.list_packs())[0]["sources_managed"] is True
+        assert (await service.list_packs())[0]["sources_managed"] is True
+        assert calls == [pack_id]
+        folder = tmp_path / "sources" / pack_id
+        if changed == "manifest":
+            manifest = folder / "manifest.json"
+            manifest.write_text(manifest.read_text() + "\n")
+        elif changed == "version":
+            version, = (folder / "versions").glob("*.json")
+            value = json.loads(version.read_text())
+            value["content"] = "A different source must not authorize this installed pack."
+            version.write_text(json.dumps(value))
+        else:
+            (folder / "versions" / "pending.tmp").write_bytes(b"new directory entry")
+        assert (await service.list_packs())[0]["sources_managed"] is (changed != "version")
+        assert calls == [pack_id, pack_id]
+        assert (await service.list_packs())[0]["sources_managed"] is (changed != "version")
+        assert calls == [pack_id, pack_id]
+    finally:
+        await service.stop()
+
+
+async def test_one_overcapacity_replan_does_not_starve_a_normal_pack(tmp_path, monkeypatch):
+    """Only rows owned by the oversized pack are deferred for this index round."""
+    class TokenProvider(FakeEmbedder):
+        def __init__(self):
+            super().__init__(model_id=specification()["model_id"])
+            self.texts = []
+
+        def spec(self):
+            return specification()
+
+        def count_tokens(self, texts):
+            return [len(text) * 8 for text in texts]
+
+        async def embed_batch(self, texts):
+            self.texts.extend(texts)
+            return [[1.0] + [0.0] * 63 for _ in texts]
+
+        embed_documents = embed_batch
+
+    service = KnowledgeService(tmp_path)
+    await service.start()
+    try:
+        await _stop_automatic_indexer(service)
+        assert (await _import(service, _pack("imp.oversized", entries=[{"title": "Oversized", "content": "a" * 2500}])))["state"] == "active"
+        assert (await _import(service, _pack("imp.normal", entries=[{"title": "Normal", "content": "Short searchable reference."}])))["state"] == "active"
+        provider = TokenProvider()
+        service.embedder = provider
+        monkeypatch.setattr(module, "MAX_CHUNKS_PER_PACK", 3)
+        monkeypatch.setattr(module, "INDEX_BATCH_PAUSE_SECONDS", 0.0)
+        replanned, mapped = [], []
+        replan = service._replan_vector_inputs
+        owners = service._store.chunk_pack_ids
+
+        async def observed_replan(pack_ids):
+            replanned.append(pack_ids)
+            return await replan(pack_ids)
+
+        def observed_owners(chunk_ids):
+            result = owners(chunk_ids)
+            mapped.append(set(result.values()))
+            return result
+
+        monkeypatch.setattr(service, "_replan_vector_inputs", observed_replan)
+        monkeypatch.setattr(service._store, "chunk_pack_ids", observed_owners)
+        assert await service._index_round() == 1
+        assert replanned == [["imp.oversized"]]
+        assert mapped == [{"imp.oversized"}]
+        assert len(provider.texts) == 1 and provider.texts[0].startswith("Normal\n")
+        stats = service._store.chunk_stats(provider.model_id(), specification=provider.spec())
+        assert stats["imp.normal"]["ready"] == 1
+        assert stats["imp.oversized"]["ready"] == stats["imp.oversized"]["failed"] == 0
+    finally:
+        await service.stop()

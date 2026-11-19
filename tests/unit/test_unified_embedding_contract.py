@@ -157,12 +157,27 @@ async def test_timeout_is_observable_without_disabling_the_model(monkeypatch):
 async def test_background_cooldown_wakes_without_any_foreground_completion():
     """A lone queued build progresses when its own cooling deadline expires."""
     queue = InferenceQueue(background_duty=0.25)
-    async with queue.slot("background"):
-        await asyncio.sleep(0.01)
-    assert queue._background_ready_at > asyncio.get_running_loop().time()
-    async with asyncio.timeout(1):
+    queue._background_ready_at = asyncio.get_running_loop().time() + 60
+    entered = asyncio.Event()
+
+    async def wait_for_cooldown():
         async with queue.slot("background"):
             assert asyncio.get_running_loop().time() >= queue._background_ready_at
+            entered.set()
+
+    waiter = asyncio.create_task(wait_for_cooldown())
+    try:
+        async with asyncio.timeout(1):
+            while not queue._waiting["background"]:
+                await asyncio.sleep(0)
+            assert not entered.is_set()
+            async with queue._condition:
+                queue._background_ready_at = asyncio.get_running_loop().time() + 0.01
+                queue._condition.notify_all()
+            await waiter  # No foreground completion or further notifications.
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
 
 
 async def test_backfill_busy_is_delayed_without_failure_logging(monkeypatch):
@@ -205,16 +220,20 @@ async def test_shared_knowledge_documents_use_background_and_keep_deferral(monke
     assert seen == [(["source"], False)]
 
 
-def test_resource_identity_ignores_permission_metadata(tmp_path):
-    from memory._embeddings.resources import resource_file_identity
-
-    path = tmp_path / "resource"
-    path.write_bytes(b"fixed trusted model resource")
-    before = resource_file_identity([path])
+def test_resource_spec_ignores_permission_metadata(tmp_path, monkeypatch):
+    service = _service(monkeypatch, ready=False)
+    service._model_dir = str(tmp_path)
+    paths = [Path(service._model_file_path()), Path(service._model_file_path() + "_data"), Path(service._tokenizer_file_path())]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixed trusted model resource")
+    before = service.spec()
+    service._loaded_weights_sha256 = before["weights_sha256"]
+    path = paths[0]
     original_mode = path.stat().st_mode
     try:
         path.chmod(0o600)
-        assert resource_file_identity([path]) == before
+        assert service.spec() == before
     finally:
         path.chmod(original_mode)
 

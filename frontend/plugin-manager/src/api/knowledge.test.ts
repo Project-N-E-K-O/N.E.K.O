@@ -77,6 +77,23 @@ describe('knowledge API client', () => {
     expect(axiosMocks.request.mock.calls[1]![0].params).not.toHaveProperty('title')
   })
 
+  it('bounds the management search header to the server Unicode character limit', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.entries({ query: '  ' + '😺'.repeat(201) + '  ' })
+    expect(axiosMocks.request.mock.calls[0]![0].headers['X-Knowledge-Query']).toBe(encodeURIComponent('😺'.repeat(200)))
+  })
+
+  it('waits longer than the bounded complete publication flow without changing normal mutations', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { ok: true } })
+    const { knowledgeApi } = await loadKnowledgeApi()
+    await knowledgeApi.publish({ pack_id: 'p', artifact_id: 'a'.repeat(64), publish_confirmed: true,
+      client_request_id: 'request', title: 'Title', description: '' })
+    expect(axiosMocks.request.mock.calls[0]![0].timeout).toBe(250000)
+    await knowledgeApi.removePack({ pack_id: 'p' })
+    expect(axiosMocks.request.mock.calls[1]![0].timeout).toBe(50000)
+  })
+
   it('reads the failure reason from a non-2xx reply body', async () => {
     axiosMocks.request.mockRejectedValue(httpError(503, { ok: false, reason: 'knowledge_starting' }))
     const { KnowledgeApiError, knowledgeApi } = await loadKnowledgeApi()
@@ -266,7 +283,7 @@ describe('knowledge API client', () => {
   it.each([
     ['setEnabled', [false], 'settings', { enabled: false }],
     ['setPackEnabled', [{ pack_id: 'p1', enabled: false }], 'packs/enabled', { pack_id: 'p1', enabled: false }],
-    ['commitSource', [{ preview_id: 'preview-1', sha256: 'digest', enabled: false }], 'sources/commit', { preview_id: 'preview-1', sha256: 'digest', enabled: false }],
+    ['commitSource', [{ preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false }], 'sources/commit', { preview_id: 'preview-1', sha256: 'digest', enabled: false, enabled_confirmed: false }],
     ['removeSource', [{ pack_id: 'p1', doc_id: 'doc-1' }], 'sources/remove', { pack_id: 'p1', doc_id: 'doc-1' }],
     ['restoreSource', [{ pack_id: 'p1', doc_id: 'doc-1', version: 1 }], 'sources/restore', { pack_id: 'p1', doc_id: 'doc-1', version: 1 }],
     ['exportPack', [{ pack_id: 'p1' }], 'packs/export', { pack_id: 'p1', format_version: 2 }],
@@ -289,7 +306,7 @@ describe('knowledge API client', () => {
       url: `/market/knowledge/${path}`,
       method: 'POST',
       data: body,
-      timeout: 50000,
+      timeout: method === 'publish' ? 250000 : 50000,
     })
   })
 

@@ -54,6 +54,14 @@ import logging
 import sys
 from utils.embedding_contract import EmbedDeferred
 
+
+class _PartialEmbedDeferred(EmbedDeferred):
+    """Carry already computed vectors through scheduling deferral, never logs."""
+
+    def __init__(self, deferred, vectors):
+        super().__init__(deferred.retry_after_ms)
+        self.vectors = vectors
+
 try:
     from memory.embeddings import (
         clear_embedding_fields,
@@ -318,14 +326,23 @@ class EmbeddingWarmupWorker:
         texts = list(dict.fromkeys(
             text for _name, _kind, wanted in plan for text in wanted
         ))
-        vectors = await self._embed_texts(texts)
+        deferred = None
+        try:
+            vectors = await self._embed_texts(texts)
+        except _PartialEmbedDeferred as error:
+            # Completed batches still pass the current model/text/write guards
+            # below before the remaining work yields to its retry deadline.
+            vectors, deferred = error.vectors, error
         if self._service.model_id() != model_id:
             # The service flipped (disabled / reloaded) while embedding;
             # these vectors belong to a model id that no longer applies.
             return 0
-        return await self._under_sweep_barrier(
+        processed = await self._under_sweep_barrier(
             lambda: self._apply_sweep_plan(plan, vectors, model_id),
         )
+        if deferred is not None:
+            raise deferred
+        return processed
 
     async def _under_sweep_barrier(self, step):
         """Run ``step`` while the caller keeps component generation stable."""
@@ -618,6 +635,11 @@ class EmbeddingWarmupWorker:
             background = getattr(self._service, "embed_documents", None)
             # Legacy disabled/fake services retain their small compatibility
             # surface; production always exposes the explicit background lane.
-            values = await background(chunk, sticky_failure=True) if callable(background) else await self._service.embed_batch(chunk)
+            try:
+                values = await background(chunk, sticky_failure=True) if callable(background) else await self._service.embed_batch(chunk)
+            except EmbedDeferred as deferred:
+                if vectors:
+                    raise _PartialEmbedDeferred(deferred, vectors) from deferred
+                raise
             vectors.update(zip(chunk, values))
         return vectors

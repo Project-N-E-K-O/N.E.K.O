@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, markRaw, nextTick } from 'vue'
+import { createApp, h, markRaw, nextTick, reactive } from 'vue'
 import { createI18n } from 'vue-i18n'
 import ElementPlus, { ElMessageBox } from 'element-plus'
 import enUS from '@/i18n/locales/en-US'
 import { KnowledgeApiError, type KnowledgePack, type KnowledgePackJob } from '@/api/knowledge'
 
-const api = vi.hoisted(() => ({ sources: vi.fn(), sourceVersions: vi.fn(), restoreSource: vi.fn(), exportPack: vi.fn(), deleteExport: vi.fn(), artifact: vi.fn(), publish: vi.fn() }))
+const api = vi.hoisted(() => ({ sources: vi.fn(), sourceVersions: vi.fn(), restoreSource: vi.fn(), removeSource: vi.fn(), exportPack: vi.fn(), deleteExport: vi.fn(), artifact: vi.fn(), publish: vi.fn() }))
 vi.mock('@/api/knowledge', async (original) => ({ ...(await original<typeof import('@/api/knowledge')>()), knowledgeApi: api }))
 import KnowledgePackDrawer from './KnowledgePackDrawer.vue'
 
@@ -22,12 +22,14 @@ async function mount(jobs: KnowledgePackJob[] = [], extra: Partial<KnowledgePack
   document.body.append(root)
   const pack = { pack_id: 'imp.test', source: { name: 'Notes', homepage: '', license: '' }, enabled: false,
     origin: 'imported', sources_managed: true, chunks_ready: 2, chunks_total: 2, vector_state: 'complete', ...extra } as KnowledgePack
-  const app = createApp(KnowledgePackDrawer, { modelValue: true, pack, jobs })
+  const state = reactive({ modelValue: true, pack: pack as KnowledgePack | null, jobs })
+  const app = createApp({ render: () => h(KnowledgePackDrawer, state) })
   app.use(ElementPlus)
   app.use(createI18n({ legacy: false, locale: 'en-US', messages: { 'en-US': enUS } }))
   app.mount(root)
   cleanup = () => { app.unmount(); root.remove() }
   await flush()
+  return state
 }
 
 beforeEach(() => {
@@ -41,6 +43,7 @@ beforeEach(() => {
     { version: 2, name: 'Notes.txt', chars: 30, sha256: 'new', created_at: '', current: true },
   ] })
   api.restoreSource.mockResolvedValue({ ok: true, state: 'queued' })
+  api.removeSource.mockResolvedValue({ ok: true })
   api.exportPack.mockResolvedValue({ ok: true, state: 'queued' })
   api.deleteExport.mockResolvedValue({ ok: true, artifact_retained: false })
   api.publish.mockResolvedValue({ ok: true, share: { id: 10 } })
@@ -48,6 +51,65 @@ beforeEach(() => {
 afterEach(() => { cleanup?.(); cleanup = undefined; document.body.innerHTML = ''; vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('pack documents, versions and publication', () => {
+  it.each([null, { pack_id: 'imp.other', source: { name: 'Other' }, sources_managed: true } as KnowledgePack])('does not delete a document after the confirmation target changes (%s)', async nextPack => {
+    let confirm!: (value: Awaited<ReturnType<typeof ElMessageBox.confirm>>) => void
+    vi.spyOn(ElMessageBox, 'confirm').mockReturnValue(new Promise(resolve => { confirm = resolve }))
+    const state = await mount()
+    buttons('Remove')[0]!.click()
+    await flush()
+    state.pack = nextPack
+    await flush()
+    confirm(confirmAction)
+    await flush()
+    expect(api.removeSource).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain(enUS.knowledge.reasons.not_found)
+  })
+
+  it('keeps a frozen publication request when switching between artifacts', async () => {
+    api.publish.mockRejectedValue(new KnowledgeApiError('knowledge_timeout'))
+    await mount(['a', 'b'].map(id => ({ job_id: `export-${id}`, pack_id: 'imp.test', kind: 'pack_export', state: 'active',
+      result: { artifact_id: id.repeat(64), format_version: 2, name: `Artifact ${id}` } } as KnowledgePackJob)))
+    buttons('Publish to market')[0]!.click()
+    await flush()
+    const title = document.querySelector<HTMLInputElement>('.el-dialog input')!
+    title.value = 'Frozen A'
+    title.dispatchEvent(new Event('input', { bubbles: true }))
+    const description = document.querySelector<HTMLTextAreaElement>('.el-dialog textarea')!
+    description.value = 'Original description'
+    description.dispatchEvent(new Event('input', { bubbles: true }))
+    document.querySelector<HTMLElement>('[data-testid="knowledge-publish-confirm"]')!.click()
+    await flush()
+    buttons('Publish to market').at(-1)!.click()
+    await flush()
+    const original = api.publish.mock.calls[0]![0]
+    buttons('Cancel').at(-1)!.click()
+    await flush()
+    buttons('Publish to market')[1]!.click()
+    await flush()
+    buttons('Cancel').at(-1)!.click()
+    await flush()
+    buttons('Publish to market')[0]!.click()
+    await flush()
+    expect(document.querySelector<HTMLInputElement>('.el-dialog input')!.value).toBe('Frozen A')
+    expect(document.querySelector<HTMLTextAreaElement>('.el-dialog textarea')!.value).toBe('Original description')
+    expect(document.querySelector<HTMLInputElement>('.el-dialog input')!.disabled).toBe(true)
+    expect(buttons('Publish to market').at(-1)!.disabled).toBe(true)
+    document.querySelector<HTMLElement>('[data-testid="knowledge-publish-confirm"]')!.click()
+    await flush()
+    buttons('Publish to market').at(-1)!.click()
+    await flush()
+    expect(api.publish.mock.calls[1]![0]).toEqual(original)
+  })
+
+  it('keeps the Unicode boundary of a default publication title', async () => {
+    await mount([{ job_id: 'emoji', pack_id: 'imp.test', kind: 'pack_export', state: 'active',
+      result: { artifact_id: 'a'.repeat(64), format_version: 2, name: 'a'.repeat(119) + '😺suffix' } } as KnowledgePackJob])
+    buttons('Publish to market')[0]!.click()
+    await flush()
+    const title = document.querySelector<HTMLInputElement>('.el-dialog input')!.value
+    expect(title).toBe('a'.repeat(119) + '😺')
+    expect(() => encodeURIComponent(title)).not.toThrow()
+  })
   it.each(['builtin', 'market', 'imported'] as const)('opens %s pack exports without requesting absent source provenance', async origin => {
     await mount([], { origin, sources_managed: false })
     expect(api.sources).not.toHaveBeenCalled()

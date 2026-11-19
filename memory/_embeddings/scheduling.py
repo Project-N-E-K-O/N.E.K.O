@@ -80,7 +80,11 @@ class InferenceQueue:
                         # Condition.wait releases the lock, and no native slot
                         # is owned while the background duty budget cools.
                         try:
-                            await asyncio.wait_for(self._condition.wait(), delay)
+                            # The timeout belongs to this task, so external
+                            # cancellation cannot be swallowed by a child
+                            # wait_for task completing in the same loop turn.
+                            async with asyncio.timeout(delay):
+                                await self._condition.wait()
                         except TimeoutError:
                             pass
                     else:

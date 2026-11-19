@@ -25,6 +25,15 @@ class SourceLimits:
 
 _PDF_PARSE_THREADS: dict[int, int] = {}
 _PDF_LOG_LOCK = threading.Lock()
+_PDF_RECORD_FACTORY = None
+
+
+def _private_pdf_record(*args, **kwargs):
+    """Redact every pypdf child emitter before any handler formats its record."""
+    record = _PDF_RECORD_FACTORY(*args, **kwargs)
+    if record.name == "pypdf" or record.name.startswith("pypdf."):
+        _redact_pdf_diagnostic(record)
+    return record
 
 
 def _paragraphs(text: str, location: dict) -> list[dict]:
@@ -67,14 +76,15 @@ def _redact_pdf_diagnostic(record):
 
 @contextmanager
 def _private_pdf_diagnostics():
-    """Redact this parse's known pypdf page emitter, without silencing other threads."""
+    """Redact all private pypdf emitters, without changing other threads' logs."""
+    global _PDF_RECORD_FACTORY
     thread_id = threading.get_ident()
-    logger = logging.getLogger("pypdf._page")
     with _PDF_LOG_LOCK:
-        # Share one filter while any private parser is active: removing a
-        # per-call filter could skip a sibling filter during list iteration.
+        # Logger filters do not cover child loggers during propagation. One
+        # shared record factory covers even dynamically created pypdf emitters.
         if not _PDF_PARSE_THREADS:
-            logger.addFilter(_redact_pdf_diagnostic)
+            _PDF_RECORD_FACTORY = logging.getLogRecordFactory()
+            logging.setLogRecordFactory(_private_pdf_record)
         _PDF_PARSE_THREADS[thread_id] = _PDF_PARSE_THREADS.get(thread_id, 0) + 1
     try:
         yield
@@ -84,7 +94,10 @@ def _private_pdf_diagnostics():
             if not _PDF_PARSE_THREADS[thread_id]:
                 del _PDF_PARSE_THREADS[thread_id]
             if not _PDF_PARSE_THREADS:
-                logger.removeFilter(_redact_pdf_diagnostic)
+                if logging.getLogRecordFactory() is _private_pdf_record:
+                    logging.setLogRecordFactory(_PDF_RECORD_FACTORY)
+                # An unrelated logging thread may already be inside the old
+                # factory wrapper; keep its delegate valid after uninstall.
 
 
 def parse_source(filename: str, data: bytes, limits: SourceLimits) -> dict:
@@ -95,16 +108,23 @@ def parse_source(filename: str, data: bytes, limits: SourceLimits) -> dict:
         raise SourceError("document_too_large")
     # Both separator styles are stripped for display, never used as a storage path.
     name = PurePosixPath(str(filename).replace("\\", "/")).name
-    name = re.sub(r"[\x00-\x1f\x7f]", "", name)[:160]
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
     extension = name.rsplit(".", 1)[-1].lower()
     if extension not in {"txt", "md", "markdown", "docx", "pdf"}:
         raise SourceError("unsupported_document")
+    # Recognize the complete suffix before bounding the display name.
+    suffix = "." + extension
+    name = name[:160 - len(suffix)] + suffix if len(name) > 160 else name
     parser_limits = office.DocumentLimits(max_document_bytes=limits.max_document_bytes,
                                           max_extracted_chars=limits.max_document_chars,
                                           max_pdf_pages=limits.max_pdf_pages)
     try:
         if extension in {"txt", "md", "markdown"}:
-            sections = _paragraphs(_decode(data), {})
+            text = _decode(data)
+            # Reject guaranteed oversize text before allocating paragraph/location records.
+            if len(text) > limits.max_document_chars:
+                raise SourceError("document_text_too_large")
+            sections = _paragraphs(text, {})
         elif extension == "docx":
             sections = office.parse_document_sections(name, data, limits=parser_limits)
         else:

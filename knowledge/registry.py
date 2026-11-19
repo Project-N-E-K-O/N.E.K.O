@@ -187,7 +187,8 @@ def _parse_record(pack_id: str, raw: object) -> PackRecord:
             raise KnowledgeRegistryError("invalid_pack_record")
     origin = raw.get("origin", "market" if subscription is not None else "builtin")
     archive_sha256 = raw.get("archive_sha256", "")
-    if origin not in {"builtin", "market", "imported"} or not isinstance(archive_sha256, str):
+    # Check the wire type before set membership so damaged JSON stays a domain error.
+    if not isinstance(origin, str) or origin not in {"builtin", "market", "imported"} or not isinstance(archive_sha256, str):
         raise KnowledgeRegistryError("invalid_pack_record")
     if archive_sha256 and (len(archive_sha256) != 64 or not set(archive_sha256) <= _SHA_HEX):
         raise KnowledgeRegistryError("invalid_pack_record")

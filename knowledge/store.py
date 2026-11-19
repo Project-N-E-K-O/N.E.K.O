@@ -950,15 +950,30 @@ class KnowledgeStore:
                 cursor = conn.execute("UPDATE chunks SET attempts=0 WHERE attempts > 0")
             return cursor.rowcount
 
-    def chunk_stats(self, model_id: str | None) -> dict[str, dict[str, int]]:
-        """Per pack: total chunks, chunks ready for ``model_id``, failed chunks."""
+    def chunk_pack_ids(self, chunk_ids: Sequence[int]) -> dict[int, str]:
+        """Resolve batch ownership without exposing SQLite to the index runner."""
+        if not chunk_ids:
+            return {}
+        # A single JSON parameter avoids SQLite's variable-count limit for large batches.
+        with self._read() as conn:
+            return {int(row[0]): str(row[1]) for row in conn.execute(
+                "SELECT id, pack_id FROM chunks WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(chunk_ids)),),
+            )}
+
+    def chunk_stats(self, model_id: str | None, *, specification: Mapping | None = None) -> dict[str, dict[str, int]]:
+        """Per pack: total, resource-compatible ready chunks, and failed chunks."""
+        # Legacy callers know only the profile; verified callers must also bind
+        # readiness to the exact resources, just like pending_chunks/load_vectors.
+        spec_clause = " AND spec_sha256=?" if specification is not None else ""
+        spec_args = (self._spec_hash(specification),) if specification is not None else ()
         with self._read() as conn:
             rows = conn.execute(
                 "SELECT pack_id, COUNT(*),"
-                " SUM(CASE WHEN vector IS NOT NULL AND model_id IS ? THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN vector IS NOT NULL AND model_id IS ?" + spec_clause + " THEN 1 ELSE 0 END),"
                 " SUM(CASE WHEN attempts >= ? THEN 1 ELSE 0 END)"
                 " FROM chunks GROUP BY pack_id",
-                (model_id, MAX_EMBED_ATTEMPTS),
+                (model_id, *spec_args, MAX_EMBED_ATTEMPTS),
             )
             return {
                 str(row[0]): {

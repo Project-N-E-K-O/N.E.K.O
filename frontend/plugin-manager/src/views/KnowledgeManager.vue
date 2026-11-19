@@ -234,7 +234,7 @@
             <el-tag type="primary" effect="plain" size="small">{{ activeJobs.length }}</el-tag>
           </div>
           <p class="job-panel__hint">{{ t('knowledge.activeJobsHint') }}</p>
-          <div v-for="job in activeJobs" :key="job.job_id" class="job-row">
+          <div v-for="job in activeJobs" :key="job.job_id" class="job-row" :data-job-id="job.job_id">
             <div class="job-row__identity">
               <strong>{{ job.pack_id || job.job_id }}</strong>
               <span>{{ t('knowledge.jobMeta', { entries: job.entries_total ?? 0, chunks: job.chunks_total ?? 0 }) }}</span>
@@ -257,7 +257,7 @@
             <strong>{{ t('knowledge.failedJobs') }}</strong>
             <el-tag type="warning" effect="plain" size="small">{{ finishedFailedJobs.length }}</el-tag>
           </div>
-          <div v-for="job in finishedFailedJobs" :key="job.job_id" class="job-row">
+          <div v-for="job in finishedFailedJobs" :key="job.job_id" class="job-row" :data-job-id="job.job_id">
             <div class="job-row__identity">
               <strong>{{ job.pack_id || job.job_id }}</strong>
               <span>{{ jobStateLabel(job.state) }}<template v-if="job.reason"> · {{ reasonMessage(job.reason) }}</template></span>
@@ -639,6 +639,8 @@ const packsLoading = ref(false)
 const pendingPacks = reactive(new Set<string>())
 const packJobs = ref<KnowledgePackJob[]>([])
 const pendingJobs = reactive(new Set<string>())
+// A successful handoff consumes this row locally; a stale poll cannot reoffer it.
+const retriedJobs = reactive(new Set<string>())
 const importing = ref(false)
 const marketOpening = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -740,7 +742,7 @@ const pageRangeLabel = computed(() => {
 
 const activeJobs = computed(() => packJobs.value.filter(isActiveKnowledgeJob))
 const finishedFailedJobs = computed(() =>
-  packJobs.value.filter((job) => job.state === 'failed' || job.state === 'cancelled'),
+  packJobs.value.filter((job) => (job.state === 'failed' || job.state === 'cancelled') && !retriedJobs.has(job.job_id)),
 )
 
 const visibleQueries = computed(() => visibleDiagnosticQueries(queries.value, showMisses.value))
@@ -916,9 +918,9 @@ function applyJobs(jobs: KnowledgePackJob[]) {
     if (outcome === 'active') {
       ElMessage.success(t(job.kind === 'pack_export' ? 'knowledge.exportReady' : 'knowledge.importDone', { name }))
     } else if (outcome === 'failed') {
-      ElMessage.error(t('knowledge.importFailed', { name, reason: reasonMessage(job.reason) }))
+      ElMessage.error(t(job.kind === 'pack_export' ? 'knowledge.exportFailed' : 'knowledge.importFailed', { name, reason: reasonMessage(job.reason) }))
     } else {
-      ElMessage.info(t('knowledge.importCancelled', { name }))
+      ElMessage.info(t(job.kind === 'pack_export' ? 'knowledge.exportCancelled' : 'knowledge.importCancelled', { name }))
     }
   }
   lastJobStates = jobStateSnapshot(jobs)
@@ -1194,7 +1196,7 @@ async function cancelJob(job: KnowledgePackJob) {
 }
 
 async function discardJob(job: KnowledgePackJob) {
-  if (pendingJobs.has(job.job_id)) return
+  if (pendingJobs.has(job.job_id) || retriedJobs.has(job.job_id)) return
   pendingJobs.add(job.job_id)
   try {
     await knowledgeApi.discardPackJob({ job_id: job.job_id })
@@ -1209,11 +1211,19 @@ async function discardJob(job: KnowledgePackJob) {
 }
 
 async function retryJob(job: KnowledgePackJob) {
-  if (pendingJobs.has(job.job_id) || !['failed', 'cancelled'].includes(job.state)) return
+  if (pendingJobs.has(job.job_id) || retriedJobs.has(job.job_id) || !['failed', 'cancelled'].includes(job.state)) return
   pendingJobs.add(job.job_id)
   try {
     // Only terminal tasks reach this action; busy work stays in its original queue.
-    await knowledgeApi.retryPackJob({ job_id: job.job_id })
+    const response = await knowledgeApi.retryPackJob({ job_id: job.job_id })
+    retriedJobs.add(job.job_id)
+    jobsGate.invalidate()
+    // Show the admitted retry immediately, before the follow-up list is available.
+    if (response.job_id && !packJobs.value.some(item => item.job_id === response.job_id)) {
+      const retry = { ...job, ...response, job_id: response.job_id, reason: '' }
+      lastJobStates.set(retry.job_id, retry.state)
+      packJobs.value = [retry, ...packJobs.value]
+    }
     refreshAfterMutation()
   } catch (error) {
     ElMessage.error(errorMessage(error))

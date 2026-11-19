@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+from collections import deque
 from dataclasses import dataclass
 
 from .models import KnowledgeEntry
@@ -121,22 +122,35 @@ def _bodies(content: str) -> list[str]:
     return bodies
 
 
+def _fit_prefix_length(text: str, fit) -> int:
+    """Keep the fast prefix search, but never infer failure from monotonicity."""
+    low, high, accepted = 1, len(text), 0
+    tested = set()
+    while low <= high:
+        length = (low + high) // 2
+        tested.add(length)
+        if fit(text[:length]):
+            accepted, low = length, length + 1
+        else:
+            high = length - 1
+    if not accepted:
+        # Token counts need not grow monotonically as characters are added.
+        # Exhaust untested candidates only on the would-be rejection path.
+        accepted = next((length for length in range(len(text), 0, -1)
+                         if length not in tested and fit(text[:length])), 0)
+    if not accepted:
+        raise ValueError("embedding_input_too_large")
+    return accepted
+
+
 def _fit_windows(text: str, fit) -> list[str]:
     """Split exact substrings until every complete embedding input fits."""
     parts = []
-    start = 0
-    while start < len(text):
-        low, high, accepted = 1, len(text) - start, 0
-        while low <= high:
-            length = (low + high) // 2
-            if fit(text[start:start + length]):
-                accepted, low = length, length + 1
-            else:
-                high = length - 1
-        if not accepted:
-            raise ValueError("embedding_input_too_large")
-        parts.append(text[start:start + accepted])
-        start += accepted
+    while text:
+        length = _fit_prefix_length(text, fit)
+        part, text = text[:length], text[length:]
+        if part.strip():
+            parts.append(part)
     return parts
 
 
@@ -154,9 +168,11 @@ def derive_chunks(entry: KnowledgeEntry, *, fit=None) -> tuple[KnowledgeChunk, .
     body. Token-aware callers run it off-loop and enforce their global capacity.
     """
     chunks: list[KnowledgeChunk] = []
-    pending = list(chunk_bodies(entry.content) if fit is None else _bodies(entry.content))
+    pending = deque(chunk_bodies(entry.content) if fit is None else _bodies(entry.content))
     while pending:
-        body = pending.pop(0)
+        body = pending.popleft()
+        if not body.strip():
+            continue
         header = entry.title
         if not chunks and entry.summary:
             header = f"{entry.title}\n{entry.summary}"
@@ -165,8 +181,14 @@ def derive_chunks(entry: KnowledgeEntry, *, fit=None) -> tuple[KnowledgeChunk, .
             def fits(value):
                 return len(prefix + value) <= MAX_EMBED_CHARS and fit(prefix + value)
 
-            parts = _fit_windows(body, fits)
-            body, pending = parts[0], parts[1:] + pending
+            # Fit one current prefix only: subsequent chunks can use the
+            # larger budget freed when the first-chunk summary disappears.
+            length = _fit_prefix_length(body, fits)
+            if length < len(body):
+                pending.appendleft(body[length:])
+            body = body[:length]
+            if not body.strip():
+                continue
             embed_text = prefix + body
         else:
             # Existing v1 packs retain their exact cache identity. Imported or

@@ -773,8 +773,12 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     from utils.http.knowledge_proxy import BodyTooLarge, is_body_too_large
 
     try:
+        # Publication owns a 240-second download/validation/upload deadline.
+        # This exact hop must wait for that result; other Market calls retain
+        # their existing short request budget.
+        market_timeout = 245.0 if request.method == "POST" and path == "knowledge/publish" else 30.0
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False
+            timeout=httpx.Timeout(market_timeout, connect=3.0), proxy=None, trust_env=False
         ) as client:
             upstream = await client.request(
                 request.method,

@@ -107,7 +107,8 @@ async def test_local_zip_defaults_disabled_without_fabricating_original_history(
     sources = (await http.get("/internal/knowledge/sources", params={"pack_id": record["pack_id"]})).json()
     assert sources["ok"] and sources["sources"] == []
     appended = await http.post("/internal/knowledge/sources/preview", params={"pack_id": record["pack_id"]},
-                               content=b"Never replace a completed package.", headers={"X-Knowledge-Filename": "notes.txt"})
+                               content=b"Never replace a completed package.",
+                               headers={"X-Knowledge-Filename": "notes.txt", "Content-Type": "application/octet-stream"})
     assert appended.json()["ok"] is False and appended.json()["reason"] == "invalid_request"
 
 
@@ -125,6 +126,11 @@ async def test_management_reads_and_writes(client):
     assert toggled["auto_context"] is True
     disabled = (await http.post("/internal/knowledge/entry/disabled", json={"pack_id": "route-pack", "title": "Kotatsu", "disabled": True})).json()
     assert disabled["ok"] is True and disabled["tool_available"] is False
+    # Availability is already false for a default-disabled pack; read the
+    # entry itself to establish that the management write actually landed.
+    persisted = (await http.get("/internal/knowledge/entry", params={"pack_id": "route-pack"},
+                                headers={"X-Knowledge-Title": "Kotatsu"})).json()
+    assert persisted["entry"]["disabled"] is True
     removed = (await http.post("/internal/knowledge/packs/remove", json={"pack_id": "route-pack"})).json()
     assert removed["ok"] is True
     missing = (await http.post("/internal/knowledge/packs/remove", json={"pack_id": "route-pack"})).json()

@@ -311,7 +311,12 @@ async def storage_limited_mode_guard(request: Request, call_next):
 
 # Global inbound-body guard (issue #1586): mirror main_server; memory_server endpoints
 # (chat cache / reflections, etc.) use small JSON, so apply the same consistent guard.
-app.add_middleware(InboundBodySizeLimitMiddleware)
+# Raw package ZIPs have a larger bounded transport contract; other memory
+# endpoints retain the global 16 MiB request guard.
+from utils.http.knowledge_proxy import PACK_BODY_MAX_BYTES
+app.add_middleware(InboundBodySizeLimitMiddleware, json_path_limits={
+    "/internal/knowledge/packs/import": PACK_BODY_MAX_BYTES,
+})
 from utils.instance_access import InstanceAccessMiddleware
 app.add_middleware(InstanceAccessMiddleware)
 app.add_middleware(HostOriginGuardMiddleware)

@@ -143,6 +143,8 @@ const publicationConfirmed = ref(false)
 const publicationStarted = ref(false)
 const publishing = ref(false)
 let publicationId = ''
+// Keep uncertain requests per immutable artifact, even after opening another form.
+const publicationRequests = new Map<string, { id: string; title: string; description: string }>()
 let generation = 0
 let historyGeneration = 0
 // Retain old tasks on disk without exposing a retired JSON artifact's download.
@@ -218,10 +220,20 @@ async function showVersions(row: KnowledgeDocument) {
 
 async function removeSource(row: KnowledgeDocument) {
   if (!props.pack || mutating.value) return
-  try { await ElMessageBox.confirm(t('knowledge.removeSourceConfirm', { name: row.name }), t('common.warning'), { type: 'warning' }) }
-  catch { return }
+  const packId = props.pack.pack_id
+  const docId = row.doc_id
   mutating.value = true
-  try { await knowledgeApi.removeSource({ pack_id: props.pack.pack_id, doc_id: row.doc_id }); sourceCommitted() }
+  try {
+    try { await ElMessageBox.confirm(t('knowledge.removeSourceConfirm', { name: row.name }), t('common.warning'), { type: 'warning' }) }
+    catch { return }
+    // Polling or navigation must not retarget an already visible confirmation.
+    if (!props.modelValue || props.pack?.pack_id !== packId) {
+      ElMessage.error(t('knowledge.reasons.not_found'))
+      return
+    }
+    await knowledgeApi.removeSource({ pack_id: packId, doc_id: docId })
+    sourceCommitted()
+  }
   catch (error) { failure(error) }
   finally { mutating.value = false }
 }
@@ -291,14 +303,13 @@ async function deleteExport(job: KnowledgePackJob) {
 
 function preparePublication(job: KnowledgePackJob) {
   if (!job.result || deleting.value === job.job_id) return
-  if (publicationJob.value?.result?.artifact_id !== job.result.artifact_id) {
-    publicationJob.value = job
-    publicationId = createKnowledgePublicationId()
-    // The market title limit is narrower than the local source display name.
-    publicationTitle.value = (job.result.name || props.pack?.source.name || job.pack_id).slice(0, 120)
-    publicationDescription.value = ''
-    publicationStarted.value = false
-  }
+  const frozen = publicationRequests.get(job.result.artifact_id)
+  publicationJob.value = job
+  publicationId = frozen?.id ?? createKnowledgePublicationId()
+  // Count Unicode code points like the market contract, preserving surrogate pairs.
+  publicationTitle.value = frozen?.title ?? Array.from(job.result.name || props.pack?.source.name || job.pack_id).slice(0, 120).join('')
+  publicationDescription.value = frozen?.description ?? ''
+  publicationStarted.value = Boolean(frozen)
   publicationConfirmed.value = false
   publicationOpen.value = true
 }
@@ -308,12 +319,16 @@ async function publish() {
   if (!job?.result || !publicationConfirmed.value || publishing.value || !publicationTitle.value.trim()) return
   publishing.value = true
   publicationStarted.value = true
+  const frozen = publicationRequests.get(job.result.artifact_id) ?? {
+    id: publicationId, title: publicationTitle.value.trim(), description: publicationDescription.value,
+  }
+  publicationRequests.set(job.result.artifact_id, frozen)
   try {
     // A retry reuses the frozen artifact, payload and UUID after a response loss.
     // Credentials remain in the existing plugin bridge, never in this form.
     await knowledgeApi.publish({
       pack_id: job.pack_id, artifact_id: job.result.artifact_id, publish_confirmed: true,
-      client_request_id: publicationId, title: publicationTitle.value.trim(), description: publicationDescription.value,
+      client_request_id: frozen.id, title: frozen.title, description: frozen.description,
     })
     ElMessage.success(t('knowledge.publishSucceeded'))
     publicationOpen.value = false

@@ -688,10 +688,60 @@ async def test_market_download_uses_oauth_only_on_the_configured_exact_route(mon
     assert seen == [("market.test", "Bearer isolated-market-token"), ("github.com", None)]
 
 
+async def test_loopback_bearer_download_bypasses_environment_proxies(monkeypatch):
+    monkeypatch.setattr(km, "MARKET_API_URL", "http://127.0.0.1:49199")
+    options = []
+    async def token(**_kwargs):
+        return {"access_token": "isolated-loopback-token"}
+    real_client = httpx.AsyncClient
+    def make_client(**kwargs):
+        options.append(kwargs)
+        return real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=ARTIFACT)), **kwargs)
+    class Fake:
+        AsyncClient = staticmethod(make_client)
+        Timeout = httpx.Timeout
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    assert await km._download("http://127.0.0.1:49199/api/v1/shares/42/download", Fake) == ARTIFACT
+    assert options and options[-1].get("trust_env") is False
+
+
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_artifact_refresh_has_its_own_budget_and_transient_errors_remain_retryable(monkeypatch, refresh_fails):
+    monkeypatch.setattr(km, "MARKET_API_URL", "https://market.test")
+    refreshed = False
+    async def token(**kwargs):
+        nonlocal refreshed
+        if kwargs.get("force_refresh"):
+            if refresh_fails:
+                raise HTTPException(503, "synthetic unavailable Auth")
+            refreshed = True
+        return {"access_token": "fresh" if refreshed else "stale"}
+    requests = []
+    def handler(request):
+        requests.append(request)
+        hop = int(request.url.params.get("hop", "0"))
+        if hop < 5:
+            return httpx.Response(302, headers={"location": f"/api/v1/shares/42/download?hop={hop + 1}"})
+        return httpx.Response(200, content=ARTIFACT) if refreshed else httpx.Response(401)
+    real_client = httpx.AsyncClient
+    class Fake:
+        AsyncClient = staticmethod(lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+        Timeout = httpx.Timeout
+    monkeypatch.setattr(km, "_ensure_valid_oauth_token", token)
+    if refresh_fails:
+        with pytest.raises(km._TaskError) as error:
+            await km._download("https://market.test/api/v1/shares/42/download", Fake)
+        assert error.value.retryable and error.value.code == "download_failed"
+    else:
+        assert await km._download("https://market.test/api/v1/shares/42/download", Fake) == ARTIFACT
+        assert len(requests) == 7
+
+
 def test_old_protocol_cannot_be_misread_as_a_unified_zip_descriptor():
     """An ignored optional field must never upgrade a protocol-v1 descriptor."""
     raw = _descriptor().model_dump(mode="json")
     raw["protocol_version"] = 1
+    raw["artifacts"]["index_manifest"] = {"url": "https://github.com/x.json", "sha256": SHA, "bytes": 1}
     with pytest.raises(ValueError):
         km.KnowledgeVersionDescriptor.model_validate(raw)
 

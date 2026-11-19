@@ -49,6 +49,7 @@ and write goes through Main's proxy, with Main's CSRF token.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import hashlib
 import json
 import re
@@ -828,13 +829,25 @@ async def _download(url: str, httpx: Any) -> bytes:
     """GET ``url``, following only redirects to allowlisted hosts, at most the size cap."""
     current = url
     refreshed = False
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False
-    ) as client:
-        for _redirect in range(_MAX_ARTIFACT_REDIRECTS + 1):
+    redirects = 0
+    async with AsyncExitStack() as stack:
+        clients = {}
+        while True:
+            # A loopback HTTP bearer must never reach an environment proxy.
+            # Select per hop so normal HTTPS mirrors retain proxy support even
+            # when a redirect crosses between the two transport policies.
+            private = _market_artifact_url(current) and urlparse(current).scheme == "http"
+            if private not in clients:
+                clients[private] = await stack.enter_async_context(httpx.AsyncClient(
+                    timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False, trust_env=not private,
+                ))
+            client = clients[private]
             headers = {"Accept": "*/*", "Accept-Encoding": "identity"}
             if _market_artifact_url(current):
-                credentials = await _ensure_valid_oauth_token()
+                try:
+                    credentials = await _ensure_valid_oauth_token()
+                except HTTPException as error:
+                    raise _TaskError("download_failed", "download_failed", retryable=True) from error
                 if not credentials or not credentials.get("access_token"):
                     raise _TaskError("market_auth_required", "market_auth_required", retryable=True)
                 headers["Authorization"] = "Bearer " + credentials["access_token"]
@@ -842,12 +855,18 @@ async def _download(url: str, httpx: Any) -> bytes:
                 "GET", current, headers=headers,
             ) as response:
                 if response.status_code == 401 and _market_artifact_url(current) and not refreshed:
-                    await _ensure_valid_oauth_token(
-                        force_refresh=True, rejected_access_token=headers["Authorization"].removeprefix("Bearer "),
-                    )
+                    try:
+                        await _ensure_valid_oauth_token(
+                            force_refresh=True, rejected_access_token=headers["Authorization"].removeprefix("Bearer "),
+                        )
+                    except HTTPException as error:
+                        raise _TaskError("download_failed", "download_failed", retryable=True) from error
                     refreshed = True
                     continue
                 if response.status_code in _ARTIFACT_REDIRECT_STATUSES:
+                    if redirects >= _MAX_ARTIFACT_REDIRECTS:
+                        raise _TaskError("unsafe_artifact_redirect", "知识包下载重定向次数过多")
+                    redirects += 1
                     location = response.headers.get("location")
                     target = urljoin(str(response.url), location) if location else ""
                     if not target or not _artifact_url_allowed(target, final=False):
@@ -866,7 +885,6 @@ async def _download(url: str, httpx: Any) -> bytes:
                         raise _TaskError("artifact_too_large", "知识包超过大小限制")
                     chunks.append(chunk)
                 return b"".join(chunks)
-    raise _TaskError("unsafe_artifact_redirect", "知识包下载重定向次数过多")
 
 
 async def _report_subscription_best_effort(

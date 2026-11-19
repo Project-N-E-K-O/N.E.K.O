@@ -89,9 +89,9 @@ def parse_document(filename: str, content_type: str, data: bytes, *, limits: Doc
     elif document_type == "docx":
         result = _parse_docx(bytes(data), limits=limits)
     elif document_type == "xlsx":
-        result = _parse_xlsx(bytes(data))
+        result = _parse_xlsx(bytes(data), limits=limits)
     elif document_type == "pptx":
-        result = _parse_pptx(bytes(data))
+        result = _parse_pptx(bytes(data), limits=limits)
     else:
         raise DocumentParseError("unsupported_document")
 
@@ -190,6 +190,18 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
         raise DocumentParseError("document_too_large")
     kind = _detect_document_type(filename, "", data)
     sections = []
+    extracted_chars = 0
+
+    def add_section(text, location):
+        nonlocal extracted_chars
+        text = text.strip()
+        if not text:
+            return
+        # Count joining separators before allocating another located record.
+        extracted_chars += len(text) + (2 if sections else 0)
+        if extracted_chars > limits.max_extracted_chars:
+            raise DocumentParseError("document_text_too_large")
+        sections.append({"text": text, "location": location})
     if kind == "docx":
         with _open_checked_zip(data, "docx") as archive:
             _require_member(archive, "word/document.xml")
@@ -199,12 +211,11 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
             members += [(name, _parse_xml(_read_xml_member(archive, name)))
                         for name in _read_docx_header_footer_names(archive, root)]
             for name, member in members:
-                for index, paragraph in enumerate(member.iter(_WORD_NS + "p"), 1):
+                for index, paragraph in enumerate(_iter_word_paragraphs(member), 1):
                     # Read only this paragraph; nested textbox paragraphs are
                     # visited separately and must not be included twice.
                     text = _extract_word_paragraph_text(paragraph).strip()
-                    if text:
-                        sections.append({"text": text, "location": {"member": name, "paragraph": index}})
+                    add_section(text, {"member": name, "paragraph": index})
             for name, reference, tag in (
                 ("word/footnotes.xml", "footnoteReference", "footnote"),
                 ("word/endnotes.xml", "endnoteReference", "endnote"),
@@ -213,13 +224,14 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
                     continue
                 ids = _collect_word_note_reference_ids(root, _WORD_NS + reference)
                 notes = _parse_xml(_read_xml_member(archive, name))
+                # Locations belong to the entire XML member, not each note.
+                positions = {id(paragraph): index for index, paragraph in enumerate(_iter_word_paragraphs(notes), 1)}
                 for note in notes.findall(_WORD_NS + tag):
                     if note.attrib.get(_WORD_NS + "id", "") not in ids:
                         continue
-                    for index, paragraph in enumerate(note.iter(_WORD_NS + "p"), 1):
+                    for paragraph in _iter_word_paragraphs(note):
                         text = _extract_word_paragraph_text(paragraph).strip()
-                        if text:
-                            sections.append({"text": text, "location": {"member": name, "paragraph": index}})
+                        add_section(text, {"member": name, "paragraph": positions[id(paragraph)]})
     elif kind == "pdf":
         from pypdf import PdfReader
 
@@ -233,11 +245,16 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
             if index > limits.max_pdf_pages:
                 raise DocumentParseError("document_too_many_pages")
             text = page.extract_text() or ""
-            if not text.strip() and page.get("/Resources", {}).get("/XObject"):
+            # Image-only inline streams need not have /Resources/XObject.
+            # Reject nonempty unreadable pages; genuinely blank pages remain valid.
+            contents = page.get_contents()
+            if not text.strip() and (page.get("/Resources", {}).get("/XObject")
+                                     or contents is not None and contents.get_data().strip()):
                 raise DocumentParseError("scan_unsupported")
+            if extracted_chars + len(text) > limits.max_extracted_chars:
+                raise DocumentParseError("document_text_too_large")
             for paragraph, value in enumerate(re.split(r"\n\s*\n", text), 1):
-                if value.strip():
-                    sections.append({"text": value.strip(), "location": {"page": index, "paragraph": paragraph}})
+                add_section(value, {"page": index, "paragraph": paragraph})
     else:
         raise DocumentParseError("unsupported_document")
     content = "\n\n".join(section["text"] for section in sections)
@@ -356,7 +373,7 @@ def _parse_docx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[st
         }
 
 
-def _parse_xlsx(data: bytes) -> dict[str, Any]:
+def _parse_xlsx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
     with _open_checked_zip(data, "xlsx") as archive:
         _require_member(archive, "xl/workbook.xml")
         _reject_macro_members(archive, "xl/")
@@ -364,7 +381,7 @@ def _parse_xlsx(data: bytes) -> dict[str, Any]:
         sheets = _read_xlsx_sheets(archive)
         if not sheets:
             raise DocumentParseError("xlsx_no_sheets")
-        budget = _TextBudget()
+        budget = _TextBudget(limit=(limits or DocumentLimits()).max_extracted_chars)
         parts: list[str] = []
         for sheet_index, sheet in enumerate(sheets[:MAX_XLSX_SHEETS], start=1):
             text, rows_truncated = _extract_xlsx_sheet_text(archive, sheet["path"], shared_strings)
@@ -384,11 +401,11 @@ def _parse_xlsx(data: bytes) -> dict[str, Any]:
         }
 
 
-def _parse_pptx(data: bytes) -> dict[str, Any]:
+def _parse_pptx(data: bytes, *, limits: DocumentLimits | None = None) -> dict[str, Any]:
     with _open_checked_zip(data, "pptx") as archive:
         _require_member(archive, "ppt/presentation.xml")
         _reject_macro_members(archive, "ppt/")
-        budget = _TextBudget()
+        budget = _TextBudget(limit=(limits or DocumentLimits()).max_extracted_chars)
         parts: list[str] = []
         seen_text_keys: set[str] = set()
         slide_names = _read_pptx_slide_names(archive)
@@ -630,6 +647,16 @@ def _extract_word_notes_text(xml_bytes: bytes, note_tag: str, note_ids: set[str]
         if text:
             lines.append(text)
     return "\n".join(lines)
+
+
+def _iter_word_paragraphs(root: ET.Element):
+    """Traverse once while excluding complete compatibility fallback subtrees."""
+    if root.tag == _MC_NS + "Fallback":
+        return
+    if root.tag == _WORD_NS + "p":
+        yield root
+    for child in root:
+        yield from _iter_word_paragraphs(child)
 
 
 def _extract_word_paragraph_text(paragraph: ET.Element) -> str:

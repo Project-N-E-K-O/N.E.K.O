@@ -335,6 +335,9 @@ def test_truncation_failure_aborts_load_with_distinct_reason(tmp_path):
     svc._model_dir = str(tmp_path)
     svc._quantization = "int8"
     svc._dim = 256
+    # Native loading now fingerprints the same real LOADING lifecycle as the
+    # public request_load path before checking tokenizer truncation support.
+    svc._state = embeddings.EmbeddingState.LOADING
 
     # Loading now stats resource identities before invoking the tokenizer.
     # Isolated placeholders keep the intended truncation error decisive.

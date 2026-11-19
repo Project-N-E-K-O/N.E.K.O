@@ -10,6 +10,7 @@ import sys
 import logging
 import threading
 import struct
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,7 @@ async def test_sources_share_existing_pack_search_and_retain_all_versions(tmp_pa
         assert (await service.query(query="lighthouses"))["result"] == "matched"
         changed = await service.preview_source("notes.txt", b"Gardens need sunlight.", pack_id=pack["pack_id"], doc_id=value["doc_id"])
         updated = changed["preview"]
-        assert (await _finished(service, await service.commit_source(updated["preview_id"], updated["sha256"])))["state"] == "active"
+        assert (await _finished(service, await service.commit_source(updated["preview_id"], updated["sha256"], enabled_confirmed=True)))["state"] == "active"
         versions = (await service.source_versions(pack["pack_id"], value["doc_id"]))["versions"]
         assert [row["version"] for row in versions] == [1, 2]
         restored = await service.restore_source(pack["pack_id"], value["doc_id"], 1)
@@ -238,14 +239,23 @@ async def _manual_index(service):
 
 
 async def test_background_busy_defers_without_attempts_or_failure(tmp_path):
+    class BusyEmbedder(_PackageEmbedder):
+        def __init__(self):
+            self.calls = []
+
+        async def embed_documents(self, texts):
+            self.calls.append(list(texts))
+            return await super().embed_documents(texts)
+
     service = KnowledgeService(tmp_path)
     await service.start()
     await _manual_index(service)
     try:
         await _import(service, _pack())
-        service.embedder = _PackageEmbedder()
+        service.embedder = BusyEmbedder()
         assert await service._index_round() == 0
-        with sqlite3.connect(service._store.database_path) as conn:
+        assert len(service.embedder.calls) == 1 and service.embedder.calls[0]
+        with closing(sqlite3.connect(service._store.database_path)) as conn:
             assert conn.execute("SELECT MAX(attempts) FROM chunks").fetchone()[0] == 0
         assert service._embedding_state() == "ready"
         assert service._store.pending_chunks(model_id=service.embedder.model_id(), pack_ids=["demo-memes"], limit=100)
@@ -422,7 +432,7 @@ async def test_export_delete_cannot_be_revived_by_a_late_worker_flush(tmp_path, 
     """Delete after active is visible but before the worker persists its end."""
     service = KnowledgeService(tmp_path)
     await service.start()
-    reached, resume = asyncio.Event(), asyncio.Event()
+    reached, resume, flushed = asyncio.Event(), asyncio.Event(), asyncio.Event()
     original = service._persist_job
 
     async def pause(job):
@@ -430,6 +440,8 @@ async def test_export_delete_cannot_be_revived_by_a_late_worker_flush(tmp_path, 
             reached.set()
             await resume.wait()
         await original(job)
+        if job.kind == "pack_export" and job.state == "active":
+            flushed.set()
 
     try:
         await _import(service, _pack())
@@ -439,6 +451,8 @@ async def test_export_delete_cannot_be_revived_by_a_late_worker_flush(tmp_path, 
         await asyncio.wait_for(reached.wait(), 3)
         await service.delete_export(exported["job_id"])
         resume.set()
+        await asyncio.wait_for(flushed.wait(), 3)
+        assert not (tmp_path / "jobs" / (exported["job_id"] + ".json")).exists()
     finally:
         resume.set()
         await service.stop()
