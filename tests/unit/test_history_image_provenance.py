@@ -252,7 +252,7 @@ async def test_revocation_while_a_voice_turn_waits_for_the_submit_lock():
     assert not submit.done()
     client.discard_auto_captured_history_images()
     lock.release()
-    await submit
+    assert await asyncio.wait_for(submit, timeout=5) is True
 
     # Only the user's screenshot went out; the live frame left a receipt.
     urls = _urls(client.requests[-1])
@@ -394,6 +394,40 @@ async def test_proactive_reply_keeps_live_frames_of_a_turn_still_heading_to_the_
         resume.set()
         await _settle(turn)
     # The user turn's own request still carries its live frame.
+    assert [_dominant_channel(u) for u in _urls(client.requests[-1])] == ["red"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_user_turn_keeps_live_frames_of_a_parked_user_turn():
+    """Turn A is in history but parked on its transcript callback; turn B runs meanwhile."""
+    import asyncio
+
+    client = _client()
+    live = _png_b64(40, 40, (200, 10, 10))
+    parked = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def transcript_callback(_text):
+        parked.set()
+        await resume.wait()
+
+    client.script = [
+        [_text("reply b"), _text("", "stop")],
+        [_text("reply a"), _text("", "stop")],
+    ]
+    turn = asyncio.create_task(client.stream_text(
+        "what is on screen?", turn_images=(live,), turn_source="screen", turn_source_count=1,
+        input_transcript_callback=transcript_callback,
+    ))
+    try:
+        await _until_parked(parked, turn)
+        await client.stream_text("another question")
+        resume.set()
+        await asyncio.wait_for(turn, timeout=5)
+    finally:
+        resume.set()
+        await _settle(turn)
+    # Turn A's own request still carries its live frame.
     assert [_dominant_channel(u) for u in _urls(client.requests[-1])] == ["red"]
 
 

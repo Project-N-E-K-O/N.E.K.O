@@ -1170,7 +1170,8 @@ class _StreamingMixin:
 
         # Live frames of earlier turns were answered there; keep only receipts
         # so a frame of a share that has since ended is not resent every turn.
-        self._strip_answered_live_frames()
+        # A concurrent turn still heading to the provider keeps its own frames.
+        self._strip_answered_live_frames(skip_in_flight=True)
         self._conversation_history.append(user_message)
         # Heading to the provider until this call returns (released by
         # _tracked_reply_call); a proactive reply meanwhile leaves its frames.
