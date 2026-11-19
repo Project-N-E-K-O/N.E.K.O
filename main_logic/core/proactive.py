@@ -114,18 +114,11 @@ class ProactiveMixin:
         self._proactive_vision_enabled = enabled
         if revoked:
             # Independent ASR keeps its own live-frame cache for the next
-            # user turn; live frames captured before the revocation must not
-            # ride it. A screenshot the user attached (request_id) stays, like
-            # the user's images in the text session's history.
-            latest = getattr(self, "_latest_independent_visual_frame", None)
-            if latest is not None and getattr(latest, "request_id", None) is None:
+            # user turn; frames captured before the revocation must not ride it.
+            if hasattr(self, "_latest_independent_visual_frame"):
                 self._latest_independent_visual_frame = None
             if hasattr(self, "_prerecord_visual_frames"):
-                self._prerecord_visual_frames = [
-                    frame
-                    for frame in self._prerecord_visual_frames or []
-                    if getattr(frame, "request_id", None) is not None
-                ]
+                self._prerecord_visual_frames = []
             # The session forgets what it captured automatically: the text
             # session strips those images from its history and drops a staged
             # proactive screenshot (discard_auto_captured_history_images, which
