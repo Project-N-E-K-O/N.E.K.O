@@ -79,15 +79,19 @@ def render_agents_md(
     *,
     command_context: str,
     check_command: str,
-    build_command: str,
+    lint_command: str,
     sync_command: str,
+    precheck_command: str,
+    build_command: str,
 ) -> str:
     values = {
         "plugin_id": plugin_id,
         "command_context": command_context,
         "check_command": check_command,
-        "build_command": build_command,
+        "lint_command": lint_command,
         "sync_command": sync_command,
+        "precheck_command": precheck_command,
+        "build_command": build_command,
     }
     template = _read_guide(AGENTS_TEMPLATE_NAME)
     # One pass over the template: inserted values (e.g. a checkout path that

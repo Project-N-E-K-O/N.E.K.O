@@ -13,8 +13,10 @@ pytestmark = pytest.mark.plugin_unit
 _COMMANDS = {
     "command_context": "From the N.E.K.O repository root:",
     "check_command": "uv run neko-plugin check market_demo",
-    "build_command": "uv run neko-plugin build market_demo",
+    "lint_command": "uv run neko-plugin lint market_demo",
     "sync_command": "uv run neko-plugin sync market_demo --clean",
+    "precheck_command": "uv run neko-plugin precheck market_demo",
+    "build_command": "uv run neko-plugin build market_demo",
 }
 
 
@@ -53,10 +55,22 @@ def test_agents_template_substitutes_every_placeholder() -> None:
     content = agent_kit.render_agents_md("market_demo", **_COMMANDS)
 
     assert "{" not in content
-    assert "uv run neko-plugin check market_demo" in content
-    assert "uv run neko-plugin sync market_demo --clean" in content
+    for command in (value for key, value in _COMMANDS.items() if key.endswith("_command")):
+        assert command in content
     assert ".agents/skills/neko-plugin/" in content
     assert "plugin/plugins/<plugin_id>/" in content
+
+
+def test_agents_template_lists_verify_commands_in_run_order() -> None:
+    content = agent_kit.render_agents_md("market_demo", **_COMMANDS)
+
+    # Agents run the rendered lines as-is; nothing asks them to rewrite one.
+    verify_block = "\n".join(
+        _COMMANDS[key]
+        for key in ("check_command", "lint_command", "sync_command", "precheck_command")
+    )
+    assert f"```bash\n{verify_block}\n```" in content
+    assert "replace only" not in content
 
 
 def test_agents_template_does_not_resubstitute_inserted_values() -> None:

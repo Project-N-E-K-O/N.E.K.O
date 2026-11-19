@@ -14,11 +14,11 @@ from plugin._types.plugin_types import (
 )
 
 from ..core.build_rules import VENDOR_SYNC_GLOBS
+from ..core.lint import RUFF_LINT_SPEC
 from . import agent_kit
 
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
-_PLUGIN_RUFF_VERSION = "0.12.4"
 MARKET_ACTIONS_NEKO_REPOSITORY = "Project-N-E-K-O/N.E.K.O"
 MARKET_ACTIONS_NEKO_REF = "main"
 MARKET_ACTIONS_MANAGED_HEADER = (
@@ -559,9 +559,25 @@ def _render_agents_md(
         spec.plugin_id,
         command_context=context,
         check_command=command("check"),
-        build_command=command("build"),
+        lint_command=command("lint"),
         sync_command=command("sync", " --clean"),
+        precheck_command=command("precheck"),
+        build_command=command("build"),
     )
+
+
+def _render_readme_ruff_instructions(spec: PluginSpec) -> str:
+    # Only projects with the Market workflows get ruff.toml. The version comes
+    # from RUFF_LINT_SPEC, which a unit test pins to the reusable Market
+    # workflows that the generated verify/release workflows call.
+    if not spec.create_github_actions:
+        return ""
+    return f'''From this plugin repository root:
+
+```bash
+uvx ruff=={RUFF_LINT_SPEC.version} check --ignore-noqa --config ruff.toml .
+```
+'''
 
 
 def _render_readme_md(
@@ -569,6 +585,9 @@ def _render_readme_md(
     layout: PluginDevelopmentLayout,
 ) -> str:
     if layout.repo_root_from_workspace is None:
+        ruff_instructions = _render_readme_ruff_instructions(spec)
+        if ruff_instructions:
+            ruff_instructions = "\n" + ruff_instructions
         return f'''# {spec.name or spec.plugin_id}
 
 {spec.description}
@@ -588,7 +607,7 @@ when you are ready to run it. Runtime entries must use `async def`.
 
 Dependencies belong in `pyproject.toml` and the plugin's own `vendor/` directory.
 The standard GitHub workflows verify and build the plugin using N.E.K.O.
-'''
+{ruff_instructions}'''
     name = spec.name or spec.plugin_id
     description = spec.description or "Describe what this plugin does and how to configure it."
     sync_command = layout.readme_plugin_command("sync", suffix=" --clean")
@@ -655,15 +674,9 @@ Python 运行时依赖声明在 `pyproject.toml` 中，并在打包时同步到 
 Python ランタイム依存関係は `pyproject.toml` に宣言し、パッケージ化時に
 `vendor/` へ同期します。生成された `vendor/` はコミットせず、ローカルビルドと
 CI が公開前チェックで再生成します。'''
-    ruff_instructions = ""
-    if spec.create_github_actions:
-        ruff_instructions = f'''From this plugin repository root:
-
-```bash
-uvx ruff=={_PLUGIN_RUFF_VERSION} check --ignore-noqa --config ruff.toml .
-```
-
-'''
+    ruff_instructions = _render_readme_ruff_instructions(spec)
+    if ruff_instructions:
+        ruff_instructions += "\n"
     return f'''# {name}
 
 {description}

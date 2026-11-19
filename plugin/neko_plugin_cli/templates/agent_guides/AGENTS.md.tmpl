@@ -72,22 +72,23 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
 
 ```bash
 {check_command}
+{lint_command}
 {sync_command}
+{precheck_command}
 ```
 
-Run in this order before reporting done: `check` → `lint` → `sync --clean` →
-`precheck`. For `lint` and `precheck`, copy the `check` line and replace only
-the subcommand (the word right after `neko-plugin`); keep every other part.
-`precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
-build), which is what Market CI runs. Ruff is pinned and runs with
-`--ignore-noqa`, so `# noqa` does not silence it: fix the code.
+Run them in this order before reporting done. `precheck` reruns lint, sync,
+and `check -r` (tests in `tests/`, package build), which is what Market CI
+runs. Ruff is pinned and runs with `--ignore-noqa`, so `# noqa` does not
+silence it: fix the code.
 Outside the checkout's built-in plugin folder, `check -r` and `precheck` fail
 on uncommitted changes in this repository. Do not commit for the user
 unasked; report the actual result.
 Build a package with `{build_command}`.
-Route B: none of these commands run. Review the code against the constraints
-above, then ask the user to Start/Reload and report back; packages come from
-Build package in the Plugin studio.
+Route B: none of these `neko-plugin` commands run. If `README.md` shows a
+pinned `uvx ruff==...` line, run it: that lint needs only `uv`. Review the
+code against the constraints above, then ask the user to Start/Reload and
+report back; packages come from Build package in the Plugin studio.
 
 ## When Something Fails
 
