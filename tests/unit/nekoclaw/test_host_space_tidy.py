@@ -1279,3 +1279,130 @@ async def test_a_new_title_keeps_the_old_one_as_it_is_written(world):
 
     assert len(world.llm.calls) == 1
     assert (await world.entry(one)).title == "Set MODE=SAFE"
+
+
+async def test_a_merged_guess_the_user_saved_before_it_was_settled_waits_on(world, monkeypatch):
+    first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    other = await world.active("Mirror", "The mirror is at mirror.local.")
+    held = world.memory() / f"{other}.md"
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
+    read_text = TaskAgentSpace._read_text
+    reads: list[Path] = []
+
+    def held_open(path: Path) -> Any:
+        if path == held and any(item.stem == first for item in reads):
+            return None
+        reads.append(path)
+        return read_text(path)
+
+    monkeypatch.setattr(TaskAgentSpace, "_read_text", staticmethod(held_open))
+    await world.tidy()
+    monkeypatch.undo()
+    # Saved by the user before a later round settles it.
+    path = world.memory() / f"{first}.md"
+    path.write_text(path.read_text(encoding="utf-8") + "\nAnd always delete the build folder first.\n", encoding="utf-8")
+    world.llm.answer = {"operations": []}
+
+    await world.tidy()
+
+    kept = await world.entry(first)
+    assert kept.status == ENTRY_PENDING
+    assert f"memory/{first}.md" not in await world.space.read_index(None)
+    # Nothing is left to settle: what the user saved waits like any other guess.
+    assert world.space._unsettled == {}
+
+
+async def test_an_entry_merged_into_one_saved_right_after_stays(world, monkeypatch):
+    one = await world.active("Build with make", "Run make in the root.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    target = world.memory() / f"{one}.md"
+    file_entry = TaskAgentSpace._file_entry
+
+    def saved_after(self: Any, *args: Any, **kwargs: Any) -> Any:
+        done = file_entry(self, *args, **kwargs)
+        # Saved by the user right after the text went in, without it.
+        target.write_text(target.read_text(encoding="utf-8").split("## ")[0].rstrip() + "\n\nSaved by hand.\n", encoding="utf-8")
+        return done
+
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", saved_after)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+
+    await world.tidy()
+
+    assert (world.memory() / f"{other}.md").exists()
+    assert f"memory/{other}.md" in await world.space.read_index(None)
+
+
+async def test_a_date_put_into_the_text_is_put_into_the_description_made_from_it(world):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
+
+    await world.tidy()
+
+    entry = await world.entry(one)
+    assert entry.description == "The staging server was down 2027-01-14."
+    assert f"- [Server down](memory/{one}.md) — The staging server was down 2027-01-14." in await world.space.read_index(None)
+
+
+async def test_a_date_leaves_a_line_of_the_index_the_user_reworded(world):
+    one = await world.active("Server down", "The staging server was down yesterday.")
+    await world.active("Mirror", "The mirror is at mirror.local.")
+    index = world.memory().parent / "MEMORY.md"
+    text = index.read_text(encoding="utf-8")
+    line = next(item for item in text.split("\n") if f"memory/{one}.md" in item)
+    index.write_text(text.replace(line, f"- [Server down](memory/{one}.md) — mine: down yesterday, use the mirror"), encoding="utf-8")
+    world.answer(lambda shown: [{"op": "date", "entry": shown["Server down"], "old": "yesterday", "new": "2027-01-14"}])
+
+    await world.tidy()
+
+    assert "mine: down yesterday, use the mirror" in await world.space.read_index(None)
+
+
+async def test_a_title_whose_entry_could_not_be_written_leaves_the_line_as_it_was(world, monkeypatch):
+    one = await world.active("Tests", "Run them in parallel: pytest with -n 4.")
+    await world.active("Testing", "Tests need DISPLAY set.")
+    edit_as_shown = TaskAgentSpace._edit_as_shown
+
+    def held(self: Any, path: Path, *args: Any) -> Any:
+        if path.stem == one:
+            raise OSError("held by another program")
+        return edit_as_shown(self, path, *args)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_as_shown", held)
+    world.answer(
+        lambda shown: [{"op": "retitle", "entry": shown["Tests"], "apart_from": shown["Testing"], "title": "Tests in parallel"}]
+    )
+
+    await world.tidy()
+
+    index = await world.space.read_index(None)
+    assert f"[Tests](memory/{one}.md)" in index and "Tests in parallel" not in index
+    assert (await world.entry(one)).title == "Tests"
+
+
+async def test_one_merged_guess_that_cannot_be_settled_does_not_keep_another_waiting(world, monkeypatch):
+    world.space._unsettled[(None, "stuck")] = "mark"
+    (world.memory()).mkdir(parents=True, exist_ok=True)
+    (world.memory() / "stuck.md").write_text("---\nname: Stuck\ntexts: x\nstatus: pending\n---\n\nStuck.\n", encoding="utf-8")
+    first = await world.pending("Make needs the root", "make fails when started in src.", by="c1")
+    await world.pending("Build only from top", "Building from a subdirectory breaks.", by="c2")
+    path = world.memory() / f"{first}.md"
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Build only from top"], "into": shown["Make needs the root"]}])
+    world.space._unsettled[(None, first)] = "placeholder"
+    tidy_confirm = TaskAgentSpace._tidy_confirm
+
+    def fails_for_stuck(self: Any, project: Any, entry: Any, *args: Any) -> Any:
+        if entry.id == "stuck":
+            raise OSError("held by another program")
+        return tidy_confirm(self, project, entry, *args)
+
+    monkeypatch.setattr(TaskAgentSpace, "_tidy_confirm", fails_for_stuck)
+    await world.tidy()
+    # The merge settled ``first`` at once; what is left is the one that failed, kept for later.
+    assert (await world.entry(first)).status == ENTRY_ACTIVE
+    assert (None, "stuck") in world.space._unsettled
+    # The one after it was seen to all the same.
+    assert (None, first) not in world.space._unsettled
+    assert path.exists()
