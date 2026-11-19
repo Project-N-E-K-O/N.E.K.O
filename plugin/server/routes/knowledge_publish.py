@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import aclosing, suppress
 import hashlib
 import json
 from pathlib import Path
@@ -26,6 +26,14 @@ from utils.market_config import get_market_api_url
 router = APIRouter(prefix="/market/knowledge", tags=["knowledge-market"])
 _HASH = re.compile(r"[0-9a-f]{64}")
 _PUBLICATION_TIMEOUT_SECONDS = 240.0
+_publication_owners: set[asyncio.Task] = set()
+
+
+def _publication_finished(task: asyncio.Task) -> None:
+    """Keep timed-out file owners tracked until cleanup ends, consuming errors."""
+    _publication_owners.discard(task)
+    if not task.cancelled():
+        task.exception()
 
 
 async def _drain(task):
@@ -140,34 +148,37 @@ async def publish_knowledge(request: Request, token: str = Query(...)):
     except (ValueError, TypeError, KeyError, RecursionError, BodyTooLarge) as error:
         reason = str(error) if str(error) == "market_publication_not_confirmed" else "invalid_request"
         return _failure(reason, 400)
-    from fastapi import HTTPException
-
-    try:
-        credentials = await account._authenticated_market_token()
-    except HTTPException:
-        return _failure("market_auth_required", 401)
-    base = get_market_api_url().rstrip("/")
-    if not _safe_market_base(base):
-        return _failure("market_not_connected", 503)
-    # The HTTP timeout includes download, validation and upload, rather than
-    # granting every upstream phase an independent full request budget.
-    owner = asyncio.create_task(_publish_owned(data, credentials, base))
+    # Auth refresh shares the operation deadline. A timed-out native validator
+    # keeps its tracked file owner until it drains, without delaying the 503.
+    owner = asyncio.create_task(_publish_owned(data))
+    _publication_owners.add(owner)
+    owner.add_done_callback(_publication_finished)
     try:
         async with asyncio.timeout(_PUBLICATION_TIMEOUT_SECONDS):
             return await asyncio.shield(owner)
-    except (TimeoutError, asyncio.CancelledError) as error:
+    except TimeoutError:
+        owner.cancel()
+        return _failure("market_publication_failed", 503)
+    except asyncio.CancelledError:
         owner.cancel()
         with suppress(Exception, asyncio.CancelledError):
             await _drain(owner)
-        if isinstance(error, asyncio.CancelledError):
-            raise
-        return _failure("market_publication_failed", 503)
+        raise
 
 
-async def _publish_owned(data: dict, credentials: dict, base: str):
+async def _publish_owned(data: dict):
     """One task owns all scratch files until every native operation has ended."""
     directory = None
     try:
+        from fastapi import HTTPException
+
+        base = get_market_api_url().rstrip("/")
+        if not _safe_market_base(base):
+            return _failure("market_not_connected", 503)
+        try:
+            credentials = await account._authenticated_market_token()
+        except HTTPException:
+            return _failure("market_auth_required", 401)
         directory = Path(await _thread(tempfile.mkdtemp, prefix="neko-knowledge-publish-",
                                      _cleanup=lambda folder: shutil.rmtree(folder, ignore_errors=True)))
         async with httpx.AsyncClient(timeout=180.0, follow_redirects=False, trust_env=False) as client:
@@ -198,12 +209,15 @@ async def _publish_owned(data: dict, credentials: dict, base: str):
             headers = {"Authorization": "Bearer " + credentials["access_token"],
                        "Content-Type": f"multipart/form-data; boundary={boundary}",
                        "Content-Length": str(len(prefix) + checked.size + len(suffix))}
-            async with client.stream("POST", base + "/api/v1/shares", content=body(), headers=headers) as response:
-                if response.status_code == 401:
-                    return _failure("market_auth_required", 401)
-                if not response.is_success:
-                    return _failure("market_publication_failed", response.status_code)
-                result = await _json(response)
+            # An early upstream response may leave the body iterator suspended
+            # with an open file. Close it explicitly before reclaiming scratch.
+            async with aclosing(body()) as upload:
+                async with client.stream("POST", base + "/api/v1/shares", content=upload, headers=headers) as response:
+                    if response.status_code == 401:
+                        return _failure("market_auth_required", 401)
+                    if not response.is_success:
+                        return _failure("market_publication_failed", response.status_code)
+                    result = await _json(response)
             if (result.get("kind") != "knowledge" or type(result.get("id")) is not int
                     or result.get("file_sha256") != data["artifact_id"]):
                 return _failure("market_publication_failed", 502)

@@ -85,6 +85,10 @@ async def test_cancelled_bytes_zip_keeps_input_until_retain_owner_finishes(tmp_p
         await asyncio.wait_for(entered.wait(), 2)
         spool, = (service.root / STAGING_DIR).glob("*.upload.zip")
         request.cancel()
+        # Keep the cancellation regression itself bounded so a broken waiter
+        # reaches finally and releases the retained native owner.
+        done, _pending = await asyncio.wait({request}, timeout=2)
+        assert request in done
         with pytest.raises(asyncio.CancelledError):
             await request
         assert spool.is_file() and service._parsing == 1 and service._incoming

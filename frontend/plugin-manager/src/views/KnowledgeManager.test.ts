@@ -205,6 +205,7 @@ describe('KnowledgeManager overview', () => {
   })
 
   it('does not revive retry or discard actions from a stale post-retry polling snapshot', async () => {
+    vi.useFakeTimers()
     api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
     api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-new', state: 'queued' })
     const container = await mount()
@@ -213,7 +214,38 @@ describe('KnowledgeManager overview', () => {
     await flush()
     expect(api.retryPackJob).toHaveBeenCalledTimes(1)
     expect(container.querySelector('[data-job-id="job-1"]')).toBeNull()
+    const newTask = container.querySelector('[data-job-id="retry-new"]')
+    expect(newTask).not.toBeNull()
+    expect(newTask!.textContent).toContain(enUS.knowledge.jobQueued)
+    expect(newTask!.querySelector('button')!.textContent).toContain(enUS.knowledge.cancelJob)
     expect(api.discardPackJob).not.toHaveBeenCalled()
+    const beforePoll = api.packJobs.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(api.packJobs.mock.calls.length).toBeGreaterThan(beforePoll)
+    expect(container.querySelector('[data-job-id="retry-new"]')).not.toBeNull()
+  })
+
+  it('hands a retry over to the server snapshot after polling confirms its identity', async () => {
+    vi.useFakeTimers()
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [job('failed')] })
+    api.retryPackJob.mockResolvedValue({ ok: true, job_id: 'retry-new', state: 'queued' })
+    const container = await mount()
+    await openTab('packs')
+    container.querySelector<HTMLButtonElement>('[data-job-id="job-1"] button')!.click()
+    await flush()
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [{ ...job('building'), job_id: 'retry-new' }] })
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(container.querySelector('[data-job-id="retry-new"]')!.textContent).toContain(enUS.knowledge.jobBuilding)
+    api.packJobs.mockResolvedValue({ ok: true, jobs: [{ ...job('active'), job_id: 'retry-new' }] })
+    await vi.advanceTimersByTimeAsync(2_100)
+    await flush()
+    expect(container.querySelector('[data-job-id="retry-new"]')).toBeNull()
+    const afterCompletion = api.packJobs.mock.calls.length
+    await vi.advanceTimersByTimeAsync(4_200)
+    await flush()
+    expect(api.packJobs.mock.calls.length).toBe(afterCompletion)
   })
 
   it('keeps a failed retry available for another attempt', async () => {

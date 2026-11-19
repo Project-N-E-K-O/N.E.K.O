@@ -3262,7 +3262,16 @@ async def _refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
                 },
             )
             res.raise_for_status()
-            payload = res.json()
+            try:
+                payload = res.json()
+            except (TypeError, ValueError) as exc:
+                # A 2xx HTML/empty gateway reply is an invalid Auth response,
+                # never a raw JSON exception or a diagnostic containing its body.
+                _log_auth_oauth_failure(
+                    "refresh", category="invalid_response", status=res.status_code,
+                    request_id=res.headers.get("x-request-id"), started_at=started_at,
+                )
+                raise HTTPException(status_code=502, detail="Auth refresh token 响应无效") from exc
     except httpx.HTTPStatusError as exc:
         _log_auth_oauth_failure(
             "refresh",

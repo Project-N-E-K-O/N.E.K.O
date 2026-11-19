@@ -55,7 +55,10 @@ class _TextBudget:
         value = _clean_text(text)
         if not value:
             return
-        remaining = self.limit - self.used
+        # The serialized attachment joins accepted nonempty parts with two
+        # newlines; these bytes are part of the same caller-owned character cap.
+        separator = 2 if parts else 0
+        remaining = self.limit - self.used - separator
         if remaining <= 0:
             self.truncated = True
             return
@@ -65,7 +68,7 @@ class _TextBudget:
             self.truncated = True
             return
         parts.append(value)
-        self.used += len(value)
+        self.used += separator + len(value)
 
 
 _WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -245,11 +248,10 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
             if index > limits.max_pdf_pages:
                 raise DocumentParseError("document_too_many_pages")
             text = page.extract_text() or ""
-            # Image-only inline streams need not have /Resources/XObject.
-            # Reject nonempty unreadable pages; genuinely blank pages remain valid.
             contents = page.get_contents()
-            if not text.strip() and (page.get("/Resources", {}).get("/XObject")
-                                     or contents is not None and contents.get_data().strip()):
+            # Graphics state and uninvoked image resources do not make a page
+            # a scan. Inspect executed image operators, including inline images.
+            if not text.strip() and _pdf_uses_images(contents, page.get("/Resources", {}), reader):
                 raise DocumentParseError("scan_unsupported")
             if extracted_chars + len(text) > limits.max_extracted_chars:
                 raise DocumentParseError("document_text_too_large")
@@ -262,6 +264,35 @@ def parse_document_sections(filename: str, data: bytes, *, limits: DocumentLimit
         raise DocumentParseError("document_text_too_large")
     _validate_text_quality(content)
     return sections
+
+
+def _pdf_uses_images(contents, resources, reader, seen=None) -> bool:
+    """Recognize invoked image/form streams without decoding image pixels."""
+    if contents is None:
+        return False
+    from pypdf.generic import ContentStream
+
+    seen = set() if seen is None else seen
+    resources = _resolve_pdf_object(resources)
+    objects = _resolve_pdf_object(resources.get("/XObject", {})) if isinstance(resources, dict) else {}
+    stream = contents if isinstance(contents, ContentStream) else ContentStream(contents, reader)
+    for operands, operator in stream.operations:
+        if operator == b"INLINE IMAGE":
+            return True
+        if operator != b"Do" or not operands or not isinstance(objects, dict):
+            continue
+        target = _resolve_pdf_object(objects.get(operands[0]))
+        if not isinstance(target, dict):
+            continue
+        if target.get("/Subtype") == "/Image":
+            return True
+        # Only an invoked Form may contribute nested images. Memoize visited
+        # objects so cyclic/reused forms cannot cause unbounded recursion.
+        if target.get("/Subtype") == "/Form" and id(target) not in seen:
+            seen.add(id(target))
+            if _pdf_uses_images(target, target.get("/Resources", resources), reader, seen):
+                return True
+    return False
 
 
 def _iter_pdf_pages_until(reader: Any, limit: int) -> Any:
@@ -628,13 +659,20 @@ def _extract_word_text_from_root(root: ET.Element) -> str:
 
 
 def _collect_word_note_reference_ids(root: ET.Element, reference_tag: str) -> set[str]:
-    return {
-        value for value in (
-            element.attrib.get(_WORD_NS + "id", "")
-            for element in root.iter(reference_tag)
-        )
-        if value
-    }
+    references = set()
+
+    def walk(node):
+        # Reference selection must obey the same compatibility visibility as
+        # paragraph extraction; hidden fallback notes are not source content.
+        if node.tag == _MC_NS + "Fallback":
+            return
+        if node.tag == reference_tag and (value := node.attrib.get(_WORD_NS + "id", "")):
+            references.add(value)
+        for child in node:
+            walk(child)
+
+    walk(root)
+    return references
 
 
 def _extract_word_notes_text(xml_bytes: bytes, note_tag: str, note_ids: set[str]) -> str:

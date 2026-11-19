@@ -886,10 +886,12 @@ async def test_cancelled_request_still_finishes_admission(tmp_path, monkeypatch)
             request.cancel()
             (outcome,) = await asyncio.gather(request, return_exceptions=True)
             assert isinstance(outcome, asyncio.CancelledError)
-            for _ in range(100):
-                if service.list_jobs():
-                    break
-                await asyncio.sleep(0.01)
+            # A visible job precedes its first durable flush. Await the real
+            # admission owner rather than racing Windows filesystem latency.
+            owners = tuple(service._detached)
+            assert owners
+            _done, pending = await asyncio.wait(owners, timeout=5)
+            assert not pending
             # The staged file is owned by a job, and the reservation is gone.
             # The runner may already have picked the job up ("building"), but
             # it cannot commit while this test holds the write lock.

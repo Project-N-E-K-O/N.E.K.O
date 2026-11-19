@@ -1336,11 +1336,23 @@ class KnowledgeService:
                     return False
                 job.committed = True
                 return True
-        job.result = await self._thread(export_archive, self.root / "artifacts", payload,
-                                        version=job.export_version, specification=spec,
-                                        vectors=vectors, created_at=job.created_at,
-                                        check_cancelled=check, commit_gate=commit_gate)
-        job.published = True
+        async def publish():
+            # The runner may stop waiting after the publication gate. Keep
+            # one owner for the native result and its durable download record.
+            job.result = await self._thread(export_archive, self.root / "artifacts", payload,
+                                            version=job.export_version, specification=spec,
+                                            vectors=vectors, created_at=job.created_at,
+                                            check_cancelled=check, commit_gate=commit_gate)
+            job.published = True
+            if self._stopping:
+                self._finish_job(job, "active")
+                await self._persist_job(job)
+
+        owner = asyncio.create_task(publish(), name="knowledge-export-publication")
+        self._detached.add(owner)
+        owner.add_done_callback(self._detached.discard)
+        owner.add_done_callback(_consume)
+        await asyncio.shield(owner)
 
     def artifact_path(self, artifact_id: str) -> Path:
         """Resolve only retained SHA identities; never accept an arbitrary path."""
@@ -1680,10 +1692,17 @@ class KnowledgeService:
         try:
             await self._persist_job(job)
         except OSError:
-            # Admission failed before queueing: retained originals/retry bytes
-            # remain, but a phantom queued task must not hold a capacity slot.
+            # An atomic record write can fail after replacement. Preserve its
+            # retry input whenever that record exists; otherwise this new,
+            # unreferenced copy never became retained task history.
             self._jobs.pop(job.job_id, None)
             await self._discard_staging(job.job_id)
+            async with self._job_persist_lock:
+                def discard_unowned_input():
+                    if not (self.root / "jobs" / (job.job_id + ".json")).exists():
+                        (self.root / "jobs" / (job.job_id + ".pack.json")).unlink(missing_ok=True)
+                with contextlib.suppress(OSError):
+                    await self._thread(discard_unowned_input)
             raise
         # A job now: listed as one, no longer as an incoming import.
         self._incoming.pop(arrived_at, None)
@@ -2114,7 +2133,10 @@ class KnowledgeService:
                 installed_at=previous.installed_at if previous else now,
                 updated_at=now,
                 subscription=job.subscription,
-                enabled=previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True),
+                # Ordinary local file replacement introduces new disclosure
+                # scope. Confirmed source-version updates retain their switch.
+                enabled=(False if job.kind == "pack_import" and job.initial_enabled is False
+                         else previous.enabled if previous else (job.initial_enabled if job.initial_enabled is not None else True)),
                 origin=previous.origin if previous else (job.origin or ("market" if job.subscription else "builtin")),
                 archive_sha256=job.archive_sha256,
             )
@@ -2354,6 +2376,9 @@ class KnowledgeService:
         """
         async def run():
             def rebuild():
+                # A previous pack may have committed SQLite before its
+                # registry flush failed. Capacity must use those real counts.
+                self._reconcile_chunk_counts_blocking()
                 fit = self._chunk_fit()
                 if fit is None:
                     return self._registry
@@ -2497,6 +2522,8 @@ class KnowledgeService:
                             # unrelated packs. Exclude it for this round so
                             # re-reading the same rows cannot spin forever.
                             deferred_packs.add(pack_id)
+                            if self._pending_chunk_reconcile:
+                                return processed  # Reconcile before planning or encoding another pack.
                     continue  # Re-read the new complete inputs before inference.
             started = time.monotonic()
             try:
@@ -3322,7 +3349,10 @@ class KnowledgeService:
         # do not grant the document-management capability.
         def source_capabilities():
             self._source_capabilities = {key: value for key, value in self._source_capabilities.items() if key in self._registry.packs}
-            return {key for key in self._registry.packs if self._listed_sources_managed(key)}
+            # Bind each hint to the exact body examined in this worker. The
+            # listing can observe a replacement registry after this returns.
+            records = self._registry.packs
+            return {key: record.pack_sha256 for key, record in records.items() if self._listed_sources_managed(key)}
         managed = await self._thread(source_capabilities)
         packs: list[dict[str, Any]] = []
         for record in sorted(self._registry.packs.values(), key=lambda item: item.pack_id):
@@ -3343,7 +3373,7 @@ class KnowledgeService:
                     "enabled": record.enabled,
                     "origin": record.origin,
                     "retained": False,
-                    "sources_managed": record.pack_id in managed,
+                    "sources_managed": managed.get(record.pack_id) == record.pack_sha256,
                     "disabled_entries": disabled,
                     "auto_context": record.auto_context,
                     "local_embedding": record.local_embedding,

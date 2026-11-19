@@ -5,6 +5,8 @@ import asyncio
 from email import policy
 from email.parser import BytesParser
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -61,8 +63,14 @@ async def setup(tmp_path, monkeypatch):
     monkeypatch.setattr(publish.httpx, "AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(upstream), **kwargs))
     data = {"pack_id": "imp.example", "artifact_id": digest, "publish_confirmed": True,
             "client_request_id": str(uuid4()), "title": "Shared sample", "description": "Synthetic only"}
-    async with client:
-        yield client, data, events, reply
+    try:
+        async with client:
+            yield client, data, events, reply
+    finally:
+        owners = tuple(getattr(publish, "_publication_owners", ()))
+        for owner in owners:
+            owner.cancel()
+        await asyncio.gather(*owners, return_exceptions=True)
 
 
 async def test_publication_streams_the_confirmed_artifact_to_existing_shares(setup):
@@ -115,6 +123,95 @@ async def test_publication_deadline_covers_artifact_download(setup, monkeypatch)
     monkeypatch.setattr(publish, "_PUBLICATION_TIMEOUT_SECONDS", 0.01)
     response = await client.post("/market/knowledge/publish?token=test", json=data)
     assert response.status_code == 503 and response.json()["reason"] == "market_publication_failed"
+
+
+async def test_publication_deadline_also_covers_account_refresh(setup, monkeypatch):
+    client, data, _events, _reply = setup
+    async def held_account():
+        await asyncio.sleep(30)
+    monkeypatch.setattr(publish.account, "_authenticated_market_token", held_account)
+    monkeypatch.setattr(publish, "_PUBLICATION_TIMEOUT_SECONDS", 0.01)
+    response = await asyncio.wait_for(client.post("/market/knowledge/publish?token=test", json=data), 0.5)
+    assert response.status_code == 503 and response.json()["reason"] == "market_publication_failed"
+
+
+async def test_expired_publication_returns_before_its_tracked_validator_finishes(setup, monkeypatch, tmp_path):
+    client, data, _events, _reply = setup
+    started, release = threading.Event(), threading.Event()
+    directory = tmp_path / "deadline-scratch"
+    directory.mkdir()
+    monkeypatch.setattr(publish.tempfile, "mkdtemp", lambda **_kwargs: str(directory))
+    monkeypatch.setattr(publish, "_PUBLICATION_TIMEOUT_SECONDS", 0.2)
+    original = publish.validate_package
+    def held_validator(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(publish, "validate_package", held_validator)
+    task = asyncio.create_task(client.post("/market/knowledge/publish?token=test", json=data))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        response = await asyncio.wait_for(asyncio.shield(task), 1)
+        assert response.status_code == 503 and response.json()["reason"] == "market_publication_failed"
+        assert directory.is_dir() and any(not owner.done() for owner in publish._publication_owners)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*tuple(getattr(publish, "_publication_owners", ())), return_exceptions=True)
+    assert not directory.exists()
+
+
+async def test_early_market_reply_closes_the_upload_generator_before_cleanup(setup, monkeypatch, tmp_path):
+    client, data, _events, _reply = setup
+    raw = (tmp_path / "source.zip").read_bytes()
+    directory = tmp_path / "early-reply-scratch"
+    directory.mkdir()
+    handles, cleanup_closed = [], []
+    original_open, original_rmtree = Path.open, publish.shutil.rmtree
+    original_client = type(client)
+    def record_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        if path.name == "artifact.zip":
+            handles.append(handle)
+        return handle
+    def record_cleanup(path):
+        cleanup_closed.append(bool(handles) and all(handle.closed for handle in handles))
+        original_rmtree(path)
+    class EarlyReply(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            if request.url.host == "127.0.0.1":
+                return httpx.Response(200, content=raw)
+            stream = request.stream.__aiter__()
+            assert await anext(stream)  # multipart metadata
+            assert await anext(stream)  # the first file chunk leaves the file open
+            return httpx.Response(401)
+    monkeypatch.setattr(publish.tempfile, "mkdtemp", lambda **_kwargs: str(directory))
+    monkeypatch.setattr(Path, "open", record_open)
+    monkeypatch.setattr(publish.shutil, "rmtree", record_cleanup)
+    monkeypatch.setattr(publish.httpx, "AsyncClient", lambda **kwargs: original_client(transport=EarlyReply(), **kwargs))
+    try:
+        response = await client.post("/market/knowledge/publish?token=test", json=data)
+        assert response.status_code == 401
+        assert cleanup_closed == [True]
+    finally:
+        for handle in handles:
+            handle.close()
+        original_rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.parametrize("raw", [b"", b"<html>Auth gateway</html>"])
+async def test_refresh_success_with_non_json_body_uses_the_existing_invalid_response_error(monkeypatch, raw):
+    account = publish.account
+    original_client = httpx.AsyncClient
+    async def fake_httpx():
+        return SimpleNamespace(AsyncClient=lambda **kwargs: original_client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=raw)), **kwargs),
+            Timeout=httpx.Timeout, HTTPError=httpx.HTTPError, HTTPStatusError=httpx.HTTPStatusError)
+    monkeypatch.setattr(account, "ensure_httpx", fake_httpx)
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        await account._refresh_oauth_token({"refresh_token": "isolated-refresh-token"})
+    assert error.value.status_code == 502 and "响应无效" in str(error.value.detail)
 
 
 @pytest.mark.parametrize("status,reason", [(401, "market_auth_required"), (502, "market_publication_failed")])

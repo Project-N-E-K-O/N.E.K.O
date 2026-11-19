@@ -124,6 +124,10 @@ def _bodies(content: str) -> list[str]:
 
 def _fit_prefix_length(text: str, fit) -> int:
     """Keep the fast prefix search, but never infer failure from monotonicity."""
+    # A valid complete input needs no split. Tokenization can be nonmonotone,
+    # so accepting a shorter prefix must not hide this full-input solution.
+    if fit(text):
+        return len(text)
     low, high, accepted = 1, len(text), 0
     tested = set()
     while low <= high:

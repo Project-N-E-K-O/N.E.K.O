@@ -641,6 +641,9 @@ const packJobs = ref<KnowledgePackJob[]>([])
 const pendingJobs = reactive(new Set<string>())
 // A successful handoff consumes this row locally; a stale poll cannot reoffer it.
 const retriedJobs = reactive(new Set<string>())
+// Keep newly admitted retries visible until polling acknowledges their IDs.
+// A snapshot captured before admission must not hide the only cancellable row.
+const unconfirmedRetries = new Map<string, KnowledgePackJob>()
 const importing = ref(false)
 const marketOpening = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -912,6 +915,8 @@ async function loadPacks(options: { silent?: boolean } = {}) {
 }
 
 function applyJobs(jobs: KnowledgePackJob[]) {
+  for (const job of jobs) unconfirmedRetries.delete(job.job_id)
+  jobs = [...unconfirmedRetries.values(), ...jobs]
   const transitions = finishedJobTransitions(lastJobStates, jobs)
   for (const { job, outcome } of transitions) {
     const name = job.pack_id || job.job_id
@@ -1221,6 +1226,7 @@ async function retryJob(job: KnowledgePackJob) {
     // Show the admitted retry immediately, before the follow-up list is available.
     if (response.job_id && !packJobs.value.some(item => item.job_id === response.job_id)) {
       const retry = { ...job, ...response, job_id: response.job_id, reason: '' }
+      unconfirmedRetries.set(retry.job_id, retry)
       lastJobStates.set(retry.job_id, retry.state)
       packJobs.value = [retry, ...packJobs.value]
     }

@@ -296,7 +296,10 @@ async def test_cancelled_export_admission_still_finishes_persistence_and_queuein
         await asyncio.wait_for(entered.wait(), 2)
         job = next(job for job in service.list_jobs() if job["kind"] == "pack_export")
         request.cancel()
-        await asyncio.gather(request, return_exceptions=True)
+        # A broken cancellation path must fail and reach finally's release,
+        # instead of waiting forever on the deliberately blocked owner.
+        done, _pending = await asyncio.wait({request}, timeout=2)
+        assert request in done and request.cancelled()
         release.set()
         assert (await _finished(service, job))["state"] == "active"
     finally:

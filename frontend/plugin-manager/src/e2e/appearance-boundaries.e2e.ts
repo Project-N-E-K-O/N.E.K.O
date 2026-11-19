@@ -163,7 +163,8 @@ appearanceTest(
     for (const name of [
       'Dashboard',
       'Plugins',
-      'Knowledge',
+      // The unified knowledge entry uses the product label shared by the manager.
+      'Knowledge base',
       'Plugin API',
       'Runs',
       'Server Logs',

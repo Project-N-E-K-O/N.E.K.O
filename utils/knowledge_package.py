@@ -27,6 +27,10 @@ CHUNKING_VERSION = "neko-pack-chunks-v1"
 PROCESSING_VERSION = "neko-onnx-last-token-truncate-l2-v1"
 _HASH = re.compile(r"[0-9a-f]{64}")
 _PACK_ID = re.compile(r"[a-z0-9][a-z0-9._-]{1,63}")
+_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,99}")
+# Matching source coverage is separately bounded from ZIP/file capacities.
+# Cached occurrence bitsets use <=80,001 bits each (about 1.3 MiB for 128).
+_MAX_COVERAGE_MATCHES = 4_000_000
 _MEMBERS = ("pack.json", "chunks.jsonl", "vectors.f32")
 _MANIFEST_KEYS = {"format", "format_version", "package_id", "name", "version", "source", "chunking_version", "embedding_spec", "counts", "files"}
 
@@ -111,7 +115,10 @@ def _manifest(archive: zipfile.ZipFile, limits: PackageLimits) -> dict:
     if not isinstance(manifest["package_id"], str) or not _PACK_ID.fullmatch(manifest["package_id"]):
         raise PackageError("package_invalid_identity")
     _text(manifest["name"], 500)
-    _text(manifest["version"], 100)
+    # This identity travels in catalog paths and local subscriptions; use the
+    # existing builder/worker ASCII contract, rather than accepting any text.
+    if not isinstance(manifest["version"], str) or not _VERSION.fullmatch(manifest["version"]):
+        raise PackageError("package_invalid_identity")
     for value in _mapping(manifest["source"], {"author", "license", "url"}).values():
         _text(value, 500, empty=True)
     if manifest["chunking_version"] != CHUNKING_VERSION:
@@ -207,15 +214,23 @@ def _spread_positions(positions: int, distance: int, *, backwards: bool = False)
     return positions
 
 
-def _source_is_covered(content: str, bodies: Iterable[str]) -> bool:
+def _source_is_covered(content: str, bodies: Iterable[str], *, remaining_matches: list[int] | None = None) -> bool:
     """Keep every contiguous coverage path without exponential backtracking."""
-    @lru_cache(maxsize=16)
+    remaining_matches = [_MAX_COVERAGE_MATCHES] if remaining_matches is None else remaining_matches
+
+    @lru_cache(maxsize=128)
     def matches(body: str) -> int:
         # The pack bounds content to 80,000 characters. Each candidate cursor
         # needs one bit; even repetitive text cannot create unbounded path state.
         positions = bytearray((len(content) + 8) // 8)
         start = content.find(body)
         while start >= 0:
+            # Many distinct repetitive bodies can churn even a bounded cache.
+            # Charge real occurrence enumeration against the whole-package
+            # work budget, rather than trusting archive byte limits alone.
+            remaining_matches[0] -= 1
+            if remaining_matches[0] < 0:
+                raise PackageError("package_capacity_exceeded")
             positions[start // 8] |= 1 << (start % 8)
             start = content.find(body, start + 1)
         return int.from_bytes(positions, "little")
@@ -275,6 +290,7 @@ def validate_package(path: Path, *, expected_spec: dict | None = None,
                 by_title[row["entry_title"]].append(row)
             if len(chunks) != manifest["counts"]["chunks"] or {row["entry_title"] for row in chunks} != titles:
                 raise PackageError("package_count_mismatch")
+            remaining_matches = [_MAX_COVERAGE_MATCHES]
             for entry in pack["entries"]:
                 rows = sorted(by_title[entry["title"]], key=lambda row: row["chunk_index"])
                 if [row["chunk_index"] for row in rows] != list(range(len(rows))):
@@ -293,7 +309,7 @@ def validate_package(path: Path, *, expected_spec: dict | None = None,
                         raise PackageError("package_source_mismatch")
                     body = "".join(row["embedding_text"][len(prefix):].split())
                     bodies.append(body)
-                if not _source_is_covered(content, bodies):
+                if not _source_is_covered(content, bodies, remaining_matches=remaining_matches):
                     raise PackageError("package_source_mismatch")
             dim = manifest["embedding_spec"]["dimension"]
             common = compatible_dimension(expected_spec, manifest["embedding_spec"]) if expected_spec else None
