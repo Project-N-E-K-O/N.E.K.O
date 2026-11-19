@@ -51,7 +51,8 @@ from main_logic.proactive_delivery import (
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language_full
 from utils.desktop_capture import capture_desktop_screenshot
-from utils.loopback import is_loopback_peer_host
+from utils.deployment import is_remote_backend_deployment
+from utils.loopback import is_direct_loopback_peer
 import main_logic.core as _core_facade
 from uuid import uuid4
 from ._shared import (
@@ -403,9 +404,13 @@ class ProactiveMixin:
         try:
             ws = self.websocket
             if ws and hasattr(ws, 'client') and ws.client:
-                # Same peer check as the local-access routes, so dual-stack
-                # peers such as ::ffff:127.0.0.1 count as local too.
-                is_local = is_loopback_peer_host(ws.client.host)
+                # Same policy as the backend screenshot route: a direct loopback
+                # peer (dual-stack ::ffff:127.0.0.1 included), no proxy-forwarded
+                # connection in proxy mode, and never in remote deployments.
+                is_local = (
+                    is_direct_loopback_peer(ws.client.host, getattr(ws, 'headers', None) or {})
+                    and not is_remote_backend_deployment()
+                )
         except Exception:
             # Introspection failure just means "not local" — keep the False default.
             pass

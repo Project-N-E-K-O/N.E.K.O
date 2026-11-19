@@ -3,8 +3,8 @@
 from fastapi import Request
 
 from main_logic.activity.system_signals import is_remote_backend_deployment
-from utils.deployment import has_forwarding_metadata, is_behind_proxy
-from utils.loopback import is_loopback_peer_host
+from utils.deployment import is_behind_proxy
+from utils.loopback import is_direct_loopback_peer, is_loopback_peer_host
 
 
 def is_loopback_request(request: Request) -> bool:
@@ -36,7 +36,6 @@ def is_direct_loopback_request(request: Request) -> bool:
     local debugging proxies when their processed client address is loopback,
     while external addresses forwarded by a loopback proxy remain remote.
     """
-    if is_behind_proxy():
-        if has_forwarding_metadata(request.headers):
-            return False
-    return is_loopback_request(request)
+    client_host = request.client.host if request.client else ""
+    # Test doubles may omit headers; they are only consulted in proxy mode.
+    return is_direct_loopback_peer(client_host, getattr(request, "headers", None) or {})

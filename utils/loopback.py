@@ -1,9 +1,12 @@
-"""Shared loopback check for socket peer addresses (``client.host``)."""
+"""Shared loopback checks for socket peer addresses (``client.host``)."""
 
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Mapping
 from typing import Any
+
+from utils.deployment import has_forwarding_metadata, is_behind_proxy
 
 
 def is_loopback_peer_host(host: Any) -> bool:
@@ -21,3 +24,15 @@ def is_loopback_peer_host(host: Any) -> bool:
         return False
     mapped = getattr(address, "ipv4_mapped", None)
     return (mapped or address).is_loopback
+
+
+def is_direct_loopback_peer(host: Any, headers: Mapping[str, str]) -> bool:
+    """Loopback peer whose address was not rewritten by a trusted proxy.
+
+    In proxy mode Uvicorn can replace ``client.host`` from X-Forwarded-For, so
+    forwarded connections are rejected. Desktop mode accepts local debugging
+    proxies when their processed peer address is loopback.
+    """
+    if is_behind_proxy() and has_forwarding_metadata(headers):
+        return False
+    return is_loopback_peer_host(host)
