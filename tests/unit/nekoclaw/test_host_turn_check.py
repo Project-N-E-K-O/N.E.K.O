@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
+from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_NOTICE, TASK_AGENT_FAILED_WHY
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish as stop, usage
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -1112,12 +1112,12 @@ async def test_a_session_answer_lasts_while_its_commission_is_blocked(hosts, tmp
 
 
 def _task_agent_host(hosts: list[Any], tmp_path: Any, llm: ScriptedLLM, **kwargs: Any) -> Any:
+    kwargs.setdefault("runtime_factory", scripted_runtime(lambda spec: llm))
     host = make_host(
         tmp_path,
         None,
         task_agent_model=fake_model,
         decision_llm=FakeDecisionLLM(),
-        runtime_factory=scripted_runtime(lambda spec: llm),
         **kwargs,
     )
     hosts.append(host)
@@ -1154,13 +1154,22 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="ja")
     failed = await wait_status(host, receipt.commission_id, "failed")
 
-    # On record as it was; she is told, and the HUD shows, in her dialogue's language.
-    assert failed.status_reason == "the free daily quota of the agent model is used up"
+    assert failed.status_reason == "the task agent's model ran out of quota"
     (report,) = await outbox(host, "task_result")
     assert (report.payload["status"], report.payload["success"]) == ("failed", False)
-    said = TASK_AGENT_FAILED_TEXTS["ja"]["quota"]
-    assert report.payload["summary"] == report.payload["error_message"] == said
+    # She is told in English, as a model is told what happened, whatever her dialogue's
+    # language. Not at once: with her next turn, so she says nothing of her own for it; and
+    # nothing is shown, neither on the HUD nor in the chat (the frontend has its own notice
+    # of the quota).
+    said = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota"])
+    assert report.payload["summary"] == report.payload["error_message"] == report.payload["text"] == said
+    assert (report.payload["delivery_mode"], report.payload["visibility"]) == ("passive", [])
     assert failed.result_summary == said
+    # Neither what she is told nor what she reads when she asks names a period or a price;
+    # what she is told says the task can be dispatched again.
+    for word in ("free", "daily", "day", "today", "tomorrow"):
+        assert word not in said.lower().split() and word not in failed.status_reason.split()
+    assert said.endswith("can be dispatched again later.")
     # Counted before the first prompt: not one request went to the model,
     # and the session started for it is closed.
     assert llm.requests == []
@@ -1168,6 +1177,62 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     # Released on the host once its close comes back, a moment after the
     # runtime has let it go.
     await wait_until(lambda: host.task_agents.running == [], what="the session being released on the host")
+
+
+@pytest.mark.parametrize("quota", [True, False])
+async def test_the_main_server_takes_a_quota_failure_without_waking_her_or_showing_it(
+    hosts, tmp_path, monkeypatch, quota
+):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app import main_server
+    from app.agent_server import nekoclaw_mount
+
+    async def meter(commission_id: str) -> bool:
+        return not quota
+
+    def broken(on_event: Any, callbacks: Any) -> Any:
+        raise RuntimeError("the runtime process could not be created")
+
+    extra = {} if quota else {"runtime_factory": broken}
+    host = _task_agent_host(hosts, tmp_path, ScriptedLLM([_report_ready("done")]), task_agent_meter=meter, **extra)
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="ja")
+    await wait_status(host, receipt.commission_id, "failed")
+    (row,) = await outbox(host, "task_result")
+
+    # As the agent server hands it on, and as the main server takes it.
+    sent: list[dict[str, Any]] = []
+
+    async def hand_on(event: dict[str, Any]) -> bool:
+        sent.append(event)
+        return True
+
+    monkeypatch.setattr(nekoclaw_mount, "_send_main_event", hand_on)
+    assert await nekoclaw_mount.send_report(row)
+    mgr = MagicMock()
+    mgr.render_chat_blocks = AsyncMock(return_value=True)
+    mgr.websocket.send_json = AsyncMock()
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: True)
+    await main_server._handle_agent_event(sent[0])
+
+    shown = [
+        frame.args[0]["text"]
+        for frame in mgr.websocket.send_json.await_args_list
+        if frame.args and isinstance(frame.args[0], dict) and frame.args[0].get("type") == "agent_notification"
+    ]
+    mgr.render_chat_blocks.assert_not_called()
+    if quota:
+        # Kept for her next turn: she is not woken for it, and nothing is shown.
+        ((callback,), _) = mgr.enqueue_agent_callback.call_args
+        assert callback["summary"] == TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota"])
+        mgr.submit_proactive_callback.assert_not_called()
+        assert shown == []
+    else:
+        # Any other failure of the host's: she is told at once, and the HUD shows it in her language.
+        mgr.enqueue_agent_callback.assert_not_called()
+        mgr.submit_proactive_callback.assert_called_once()
+        assert shown == [row.payload["text"]] and row.payload["text"] != row.payload["summary"]
 
 
 async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_request(hosts, tmp_path):
@@ -1183,9 +1248,10 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
     failed = await wait_status(host, receipt.commission_id, "failed")
 
-    assert failed.status_reason == "the free daily quota of the agent model is used up"
+    assert failed.status_reason == "the task agent's model ran out of quota"
     (report,) = await outbox(host, "task_result")
-    assert report.payload["summary"] == TASK_AGENT_FAILED_TEXTS["en"]["quota"]
+    assert report.payload["summary"] == TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota"])
+    assert (report.payload["delivery_mode"], report.payload["visibility"]) == ("passive", [])
     # The first request was paid for before it was sent, the second as its
     # usage came in; the third found nothing left. The request already under
     # way when that was found may still have gone out, and nothing after it.

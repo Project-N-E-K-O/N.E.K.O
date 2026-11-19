@@ -25,7 +25,12 @@ from typing import Any
 import pytest
 
 from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
-from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
+from config.prompts.prompts_nekoclaw_brain import (
+    TASK_AGENT_FAILED_ERROR,
+    TASK_AGENT_FAILED_NOTICE,
+    TASK_AGENT_FAILED_TEXTS,
+    TASK_AGENT_FAILED_WHY,
+)
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish, say
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -257,9 +262,12 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     assert counted == []
     (report,) = await outbox(host, "task_result")
     assert report.payload["status"] == "failed"
-    # She is told, and the HUD shows, in her dialogue's language; the error itself as it came.
-    words = TASK_AGENT_FAILED_TEXTS["zh-TW"]
-    assert report.payload["summary"] == words["start"] + words["error"].format(detail="the runtime process could not be created")
+    # She is told in English, as a model is told what happened, and the HUD shows it in her
+    # dialogue's language; the error itself as it came. She is told at once.
+    told, shown = _failed("start", "zh-TW", "the runtime process could not be created")
+    assert (report.payload["summary"], report.payload["text"]) == (told, shown)
+    assert report.payload["delivery_mode"] == "proactive" and "visibility" not in report.payload
+    assert failed.result_summary == told
 
 
 async def test_without_a_model_no_task_agent_is_available(hosts, tmp_path):
@@ -354,6 +362,17 @@ async def _filed(host: Any, text: str, **values: Any) -> Any:
         lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", **values
     )
     return commission
+
+
+def _failed(said: str, lang: str, detail: str = "") -> tuple[str, str]:
+    """What she is told of a commission that failed for a reason of the host's own, and what the HUD shows."""
+    told = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY[said])
+    words = TASK_AGENT_FAILED_TEXTS[lang]
+    shown = words[said]
+    if detail:
+        told += TASK_AGENT_FAILED_ERROR.format(detail=detail)
+        shown += words["error"].format(detail=detail)
+    return told, shown
 
 
 def _slow_model() -> tuple[asyncio.Event, asyncio.Event, Any]:
@@ -1335,9 +1354,9 @@ async def test_kept_text_survives_the_runtime_going_away_before_the_prompt_was_s
     assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
     # Nothing of the work was taken: she is told it did not start, not that it stopped partway.
     assert (await host.ledger.get(commission.id)).status_reason == "the runtime process exited"
-    words = TASK_AGENT_FAILED_TEXTS["en"]
     report = (await outbox(host, "task_result"))[-1]
-    assert report.payload["summary"] == words["start"] + words["error"].format(detail="the runtime process exited")
+    told, shown = _failed("start", "en", "the runtime process exited")
+    assert (report.payload["summary"], report.payload["text"]) == (told, shown)
 
 
 async def test_what_is_passed_on_while_a_run_that_ended_before_its_prompt_is_failed_comes_after_it(hosts, tmp_path):
@@ -2233,8 +2252,8 @@ async def test_a_child_that_fails_for_the_host_tells_its_parent_the_reason_on_re
     await wait_status(host, receipt.commission_id, "done")
     # What a parent is told is not for the user: the reason as it is on record, untranslated.
     told = json.dumps(parent.requests[-1], ensure_ascii=False).replace("\\n", "\n")
-    assert "[child task agent agent-1 finished: failed]\nthe free daily quota of the agent model is used up" in told
-    assert TASK_AGENT_FAILED_TEXTS["ja"]["quota"] not in told
+    assert "[child task agent agent-1 finished: failed]\nthe task agent's model ran out of quota" in told
+    assert TASK_AGENT_FAILED_WHY["quota"] not in told
     # Only the commission she gave is reported to her.
     assert [report.payload["task_id"] for report in await outbox(host, "task_result")] == [receipt.commission_id]
 
@@ -3064,10 +3083,10 @@ async def test_how_a_run_failed_is_said_in_her_language_and_kept_as_it_was(hosts
 
     failed = await wait_status(host, commission.id, "failed")
     assert failed.status_reason == reason
-    words = TASK_AGENT_FAILED_TEXTS["ja"]
-    expected = words[said] + (words["error"].format(detail=detail) if detail else "")
+    told, shown = _failed(said, "ja", detail)
     (report,) = await outbox(host, "task_result")
-    assert report.payload["summary"] == expected == failed.result_summary
+    assert report.payload["summary"] == told == failed.result_summary
+    assert report.payload["text"] == shown
     # Nothing of the English record reaches her when the error named nothing.
     if not detail:
         assert reason not in report.payload["summary"]
@@ -3083,9 +3102,9 @@ async def test_work_refused_after_some_was_taken_is_said_to_have_stopped_partway
     runtimes[0].say(commission.id, "error", command="prompt", message="the session is busy")
 
     await wait_status(host, commission.id, "failed")
-    words = TASK_AGENT_FAILED_TEXTS["zh"]
+    told, shown = _failed("run", "zh", "the session is busy")
     (report,) = await outbox(host, "task_result")
-    assert report.payload["summary"] == words["run"] + words["error"].format(detail="the session is busy")
+    assert (report.payload["summary"], report.payload["text"]) == (told, shown)
 
 
 @pytest.mark.parametrize(("refused", "said"), [("prompt", "start"), ("steer", "run")])
@@ -3115,9 +3134,9 @@ async def test_a_start_that_fails_once_its_work_went_through_is_said_to_have_sto
     failed = await wait_status(host, commission.id, "failed")
     assert failed.status_reason == "the task agent could not be started: the runtime went away"
     assert [kind for kind, _session, _text in runtimes[0].sent] == (["prompt"] if refused == "steer" else [])
-    words = TASK_AGENT_FAILED_TEXTS["zh"]
+    told, shown = _failed(said, "zh", "the runtime went away")
     (report,) = await outbox(host, "task_result")
-    assert report.payload["summary"] == words[said] + words["error"].format(detail="the runtime went away")
+    assert (report.payload["summary"], report.payload["text"]) == (told, shown)
 
 
 async def test_a_session_closed_under_a_commission_that_goes_on_ends_its_run_too(hosts, tmp_path):
