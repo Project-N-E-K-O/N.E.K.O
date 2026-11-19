@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -626,6 +627,12 @@ def _print_issues(
                 print(f"    fix: {fix}", file=stream)
 
 
+def _shell_quote(value: str) -> str:
+    """Quote one argument of a command the user copies into their shell."""
+    # cmd has no single quotes; POSIX shells expand $ and ` inside double ones.
+    return f'"{value}"' if os.name == "nt" else shlex.quote(value)
+
+
 def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> str:
     label = plugin_id or "<plugin>"
     if message.endswith("is missing"):
@@ -674,7 +681,7 @@ def _suggest_fix(message: str, *, plugin_id: str, plugin_dir: Path | None) -> st
     if message.startswith(_AGENT_KIT_OUTDATED):
         # setup-repo resolves a bare id only under the plugins root; a path
         # works for every plugin. --no-* keeps the other support files.
-        target = f'"{plugin_dir}"' if plugin_dir is not None else label
+        target = _shell_quote(str(plugin_dir)) if plugin_dir is not None else label
         refresh = (
             f"neko-plugin setup-repo {target} --overwrite "
             "--no-readme --no-tests --no-gitignore --no-vscode"

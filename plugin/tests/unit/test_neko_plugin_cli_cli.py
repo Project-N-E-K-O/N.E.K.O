@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import zipfile
@@ -1891,15 +1893,18 @@ def test_check_warns_about_a_stale_agent_kit_without_changing_the_exit_code(
     out = capsys.readouterr().out
     assert exit_code == 0
     assert ("agent kit snapshot is older than this neko-plugin CLI" in out) is warned
-    refresh = f'setup-repo "{plugin_dir}" --overwrite --no-readme --no-tests --no-gitignore --no-vscode'
+    target = release_cmd._shell_quote(str(plugin_dir))
+    refresh = f"setup-repo {target} --overwrite --no-readme --no-tests --no-gitignore --no-vscode"
     assert (refresh in out) is warned
 
 
+@pytest.mark.parametrize("parent", ["repo", "my $HOME (copy)"])
 def test_suggested_refresh_only_rewrites_the_agent_kit(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    parent: str,
 ) -> None:
-    plugin_dir = _make_plugin_dir(tmp_path / "repo", "refresh_kit")
+    plugin_dir = _make_plugin_dir(tmp_path / parent, "refresh_kit")
     assert neko_plugin_cli.main(["setup-repo", str(plugin_dir)]) == 0
     skill_entry = plugin_dir / agent_kit.SKILL_TARGET_DIR / "SKILL.md"
     skill_entry.write_text("# old snapshot\n", encoding="utf-8")
@@ -1909,8 +1914,19 @@ def test_suggested_refresh_only_rewrites_the_agent_kit(
 
     assert neko_plugin_cli.main(["check", str(plugin_dir)]) == 0
     fix = next(line for line in capsys.readouterr().out.splitlines() if "setup-repo" in line and "--overwrite" in line)
-    refresh = fix.split("fix: neko-plugin ", 1)[1].split(" (", 1)[0]
-    assert neko_plugin_cli.main([arg.strip('"') for arg in refresh.split()]) == 0
+    # Parse the command the way the user's shell would; the path may hold
+    # spaces, "$" and parentheses.
+    refresh = fix.split("fix: neko-plugin ", 1)[1].split(" --no-vscode", 1)[0] + " --no-vscode"
+    if os.name == "nt":
+        arguments = [arg.strip('"') for arg in shlex.split(refresh, posix=False)]
+    else:
+        arguments = shlex.split(refresh)
+        # A real shell must not expand anything in the quoted path.
+        target = refresh.removeprefix("setup-repo ").split(" --overwrite", 1)[0]
+        echoed = subprocess.run(["sh", "-c", f"printf %s {target}"], capture_output=True, text=True, check=True)
+        assert echoed.stdout == str(plugin_dir)
+    assert arguments[1] == str(plugin_dir)
+    assert neko_plugin_cli.main(arguments) == 0
 
     assert readme.read_text(encoding="utf-8") == "# my readme\n"
     assert agent_kit.snapshot_cli_version(skill_entry.read_text(encoding="utf-8")) == agent_kit.CLI_VERSION
