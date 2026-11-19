@@ -207,7 +207,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 这样 `countdown` 入口的实际 ID 变成 `time_countdown`。
 
-宿主对 `__routers__` 的静态扫描从 router 类读取入口 ID，不会加上这个前缀，扫描到的 ID（`countdown`）和运行时的 ID（`time_countdown`）就会不一致。对列在 `__routers__` 里的 router（应当是全部 router），不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。大多数情况下不需要前缀——只要确保不同 router 里的入口 ID 不重复就行。
+`__routers__` 里列的是 router 类时（如上面的示例），宿主的静态扫描从类上读取入口 ID，不会加上这个前缀，扫描到的 ID（`countdown`）和运行时的 ID（`time_countdown`）就会不一致。对列在 `__routers__` 里的 router（应当是全部 router），不要用 `prefix`，直接把命名空间写进入口 ID（例如 `id="time_countdown"`）。大多数情况下不需要前缀——只要确保不同 router 里的入口 ID 不重复就行。
 
 ---
 

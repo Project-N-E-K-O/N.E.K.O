@@ -175,8 +175,9 @@ async def on_shutdown(self, **_):
     # 停止自己启动的线程（例如它们监听的 threading.Event）。
     # 不要在这里关闭异步 HTTP client/session：shutdown 运行在独立的事件循环里，
     # 应在入口内按次创建。
-    if self._worker_stop is not None:
-        self._worker_stop.set()
+    stop = getattr(self, "_worker_stop", None)
+    if stop is not None:
+        stop.set()
 
     # 无需刷新 self.store：每次 set() 都会同步提交。
     # 如果是你自己打开的 store，可在此关闭（可选）：

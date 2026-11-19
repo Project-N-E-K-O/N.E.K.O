@@ -208,7 +208,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 この場合、`countdown` エントリーの実際の ID は `time_countdown` になります。
 
-ホストによる `__routers__` の静的スキャンは router クラスからエントリー ID を読み取り、この prefix を付けません。そのため、スキャンされる ID（`countdown`）と実行時の ID（`time_countdown`）が食い違います。`__routers__` に列挙する router（本来はすべての router）では `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。多くの場合、prefix は不要です。router 間でエントリー ID が重複しないようにすれば十分です。
+`__routers__` に router クラスを列挙する場合（上の例のように）、ホストの静的スキャンはクラスからエントリー ID を読み取り、この prefix を付けません。そのため、スキャンされる ID（`countdown`）と実行時の ID（`time_countdown`）が食い違います。`__routers__` に列挙する router（本来はすべての router）では `prefix` を使わず、名前空間をエントリー ID に直接書いてください（例：`id="time_countdown"`）。多くの場合、prefix は不要です。router 間でエントリー ID が重複しないようにすれば十分です。
 
 ---
 

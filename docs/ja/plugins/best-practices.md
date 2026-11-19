@@ -174,8 +174,9 @@ async def on_shutdown(self, **_):
     # 自分で起動したスレッドを止める（例：スレッドが監視する threading.Event）。
     # 非同期 HTTP client/session はここで閉じない：shutdown は独自のイベントループで
     # 動くため、エントリー内で呼び出しごとに作成する。
-    if self._worker_stop is not None:
-        self._worker_stop.set()
+    stop = getattr(self, "_worker_stop", None)
+    if stop is not None:
+        stop.set()
 
     # self.store のフラッシュは不要です：各 set() は同期的にコミットされます。
     # 自分で store を開いた場合は、ここで閉じてください（任意）：

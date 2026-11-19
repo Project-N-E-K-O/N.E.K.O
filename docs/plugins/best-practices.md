@@ -176,8 +176,9 @@ async def on_shutdown(self, **_):
     # Stop threads you started yourself (e.g. a threading.Event they watch).
     # Do not close async HTTP clients/sessions here: shutdown runs in its own
     # event loop, so create them per call inside the entry instead.
-    if self._worker_stop is not None:
-        self._worker_stop.set()
+    stop = getattr(self, "_worker_stop", None)
+    if stop is not None:
+        stop.set()
 
     # No need to flush self.store: each set() commits synchronously.
     # If you opened the store yourself, close it here (optional):

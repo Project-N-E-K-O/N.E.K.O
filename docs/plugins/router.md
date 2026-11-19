@@ -207,7 +207,7 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 Now the `countdown` entry's actual ID becomes `time_countdown`.
 
-The host's static scan of `__routers__` reads entry IDs from the router class and does not apply this prefix, so the scanned ID (`countdown`) and the runtime ID (`time_countdown`) would differ. For routers listed in `__routers__` (which should be all of them), do not use `prefix`: write the namespace into the entry IDs instead (for example `id="time_countdown"`). Most of the time you don't need prefixes — just make sure entry IDs don't collide across routers.
+When `__routers__` lists router classes (as in the examples above), the host's static scan reads entry IDs from the class and does not apply this prefix, so the scanned ID (`countdown`) and the runtime ID (`time_countdown`) would differ. For routers listed in `__routers__` (which should be all of them), do not use `prefix`: write the namespace into the entry IDs instead (for example `id="time_countdown"`). Most of the time you don't need prefixes — just make sure entry IDs don't collide across routers.
 
 ---
 
