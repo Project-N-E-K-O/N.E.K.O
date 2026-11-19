@@ -683,8 +683,10 @@ class TaskAgentSession(SessionInbox):
                     readable=tuple(readable),
                     # Called, these are answered by what stands in for
                     # them, which does nothing: nobody is asked about them.
-                    # (Never one that is there after all.)
-                    withheld=frozenset(spec.disabled_tools) - there,
+                    # Those the session was opened without, and any other
+                    # the model is told of that is not there now. (Never
+                    # one that is there after all.)
+                    withheld=(frozenset(spec.disabled_tools) | {tool.name for tool in self._tools}) - there,
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,

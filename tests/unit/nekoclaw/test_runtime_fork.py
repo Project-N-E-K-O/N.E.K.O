@@ -407,6 +407,42 @@ async def test_a_tool_that_is_there_after_all_is_asked_about_though_it_was_to_be
         await session.close()
 
 
+async def test_nobody_is_asked_about_any_tool_that_is_told_of_and_not_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other was told of a tool this one does not have now, for whatever reason (not one it
+    # was to be opened without): what stands in for it answers, and nobody is asked first.
+    from nekoclaw.runtime import session as session_module
+
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, ScriptedLLM([[say("Done."), finish()]]), HostCallbacks(decide_permission=allow_all()))
+    await _ask(session, events, "Look around.")
+    await session.close()
+    target = _copy_of(spec, tmp_path)
+    fork_record(Path(spec.session_dir), Path(target.session_dir))
+    build = session_module.build_tools
+    monkeypatch.setattr(
+        session_module, "build_tools", lambda ctx, *, disabled=(): [tool for tool in build(ctx, disabled=disabled) if tool.name != "read"]
+    )
+    asks: list[str] = []
+
+    async def decide(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        asks.append(payload["tool"])
+        return {"allow": False, "reason": "not here"}
+
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("x", encoding="utf-8")
+    reader = ScriptedLLM([[call("read", {"file_path": str(outside)}), finish("tool_calls")], [say("No."), finish()]])
+    copy, copy_events = await open_session(target, reader, HostCallbacks(decide_permission=decide))
+    try:
+        await _ask(copy, copy_events, "Read it.")
+        [ended] = copy_events.of("tool_end")
+        assert ended["is_error"] and "read is not available right now" in ended["text"]
+        assert asks == []
+    finally:
+        await copy.close()
+
+
 async def test_a_copy_reads_what_the_other_kept_of_long_tool_output_without_asking(tmp_path: Path) -> None:
     # A long result is cut in the conversation and kept whole in a file of the
     # session; what was said names that file. The copy reads it where it is.

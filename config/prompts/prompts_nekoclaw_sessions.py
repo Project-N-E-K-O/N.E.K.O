@@ -263,6 +263,7 @@ MESSAGE_REFUSALS = {
     "too_deep": "Not sent: this commission was itself started by a note from another session, and so was the one that wrote that. The chain ends here; report what you have instead.",
     "self": "Not sent: that is this session.",
     "child": 'Not sent: "{name}" is a task agent another task agent started for one part of its work; write to the session that started it.',
+    "fork": 'Not sent: "{name}" is a temporary copy of another session, made to answer one question; it takes no notes. Write to the session it was copied from.',
     "from_child": "Not sent: you were started by another task agent for one part of its work. Tell that task agent what the other session should know (send_message to lead); it writes to other sessions.",
     "cleared": 'Not sent: the record of "{name}" was removed, being old; there is nothing there to go on with. Its results can still be read.',
     "unknown": 'No session is called "{name}". list_sessions shows the names.',

@@ -64,9 +64,12 @@ per-session ``seq`` that increases by one:
   session opened again finds it. ``inputs`` says which, counted from 1 in
   the order they were given. A text that was given and is dropped before
   that (an ``abort``, a ``close``, a record that could not be written) is
-  never told of: a driver that needs to know whether the model will ever
-  see what it sent waits for this, not for the next thing the session puts
-  out.
+  never told of: a driver that needs to know whether what it sent stays
+  in the conversation waits for this, not for the next thing the session
+  puts out. It says that much and no more: not that a model request was
+  made with the text (a run that comes to its limit of requests as it
+  takes the text ends without one), only that the text is there for the
+  next request the session makes.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,

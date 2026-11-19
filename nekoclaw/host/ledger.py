@@ -56,6 +56,7 @@ import json
 import os
 import logging
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
@@ -82,6 +83,7 @@ ACTIVE_STATUSES: frozenset[str] = frozenset({"queued", "working", "waiting_user"
 # Statuses in which someone is working on it right now and holds a slot.
 RUNNING_STATUSES: frozenset[str] = frozenset({"working", "waiting_user"})
 ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "blocked"})
+_ENDED_MARKS = ", ".join("?" for _ in ENDED_STATUSES)
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"working", "failed", "cancelled"}),
@@ -755,6 +757,10 @@ class Ledger:
         self._clock = clock
         self._reconcile_report = reconcile_report
         self._listeners: list[Listener] = []
+        # Held while the note of a stop that could not be written, next to
+        # the ledger, is read and written or removed: by the ledger's
+        # thread as it is opened, and by whoever notes or forgets a stop.
+        self._stop_note_lock = threading.Lock()
         # Told that a note was written (``subscribe_notes``).
         self._note_listeners: list[Callable[[], None]] = []
         # Counts the times wake requests were put on record as handed over
@@ -805,11 +811,12 @@ class Ledger:
                 logger.exception("a ledger listener failed")
 
     def subscribe_notes(self, listener: Callable[[], None]) -> None:
-        """Call ``listener()`` on the event loop whenever a note of one session for another is on record.
+        """Call ``listener()`` on the event loop whenever a note of one session for another is on record, or a time a commission set.
 
         Whoever hands the notes over is told by this that there is one to
-        hand over: not by whoever asked for the note, who may have been
-        cancelled while it was written and is not there to say so.
+        hand over, or something due at a time it may not know of: not by
+        whoever asked for it, who may have been cancelled while it was
+        written and is not there to say so.
         """
         self._note_listeners.append(listener)
 
@@ -1026,7 +1033,12 @@ class Ledger:
             raise
         conn.execute("COMMIT")
         if owed is not None:
-            self._forget_stop_owed(path)
+            # Only the note that was made up for here: one of a later stop
+            # written meanwhile (a stop that was cancelled as this was being
+            # opened) is that stop's, and stays for whoever makes up for it.
+            with self._stop_note_lock:
+                if self._stop_owed(path) == owed:
+                    self._forget_stop_owed(path)
         if rows:
             logger.info("ledger: %d unfinished commission(s) of an earlier run marked failed", len(rows))
 
@@ -1058,22 +1070,25 @@ class Ledger:
         # the stop cannot be written into it.
         path = self._where()
         target = self._stop_owed_file(path)
-        noted = self._stop_owed(path)
         # By its number, where that is known: the next process is not to
         # take "all that was there when the ledger was opened" for all
         # that is there by then. (Where the file was never read, that is
         # what stays noted, and the next process, which reads it, drops
         # what is there: this one wrote nothing.)
         upto = self._marked(upto)
-        if noted is not None and _covers(noted[0], upto):
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        beside = target.with_name(target.name + ".tmp")
-        with beside.open("w", encoding="utf-8") as file:
-            file.write(json.dumps({"upto": upto, "reason": str(reason)}))
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(beside, target)
+        # Read, compared and written with nothing else at the note
+        # meanwhile (``_reconcile`` removes the one it made up for).
+        with self._stop_note_lock:
+            noted = self._stop_owed(path)
+            if noted is not None and _covers(noted[0], upto):
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            beside = target.with_name(target.name + ".tmp")
+            with beside.open("w", encoding="utf-8") as file:
+                file.write(json.dumps({"upto": upto, "reason": str(reason)}))
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(beside, target)
 
     def clear_stop_owed(self, upto: int | None = None) -> None:
         """Forget that note: the stop is on record in the ledger. Blocking.
@@ -1083,11 +1098,12 @@ class Ledger:
         that stop's to forget.
         """
         path = self._where()
-        if upto is not None:
-            noted = self._stop_owed(path)
-            if noted is not None and noted[0] > self._marked(upto):
-                return
-        self._forget_stop_owed(path)
+        with self._stop_note_lock:
+            if upto is not None:
+                noted = self._stop_owed(path)
+                if noted is not None and noted[0] > self._marked(upto):
+                    return
+            self._forget_stop_owed(path)
 
     def _where(self) -> Path:
         """Return where the file of the ledger is, whether or not it was opened."""
@@ -1374,6 +1390,10 @@ class Ledger:
                 "WHERE commission_id = ? AND message_id IS NOT NULL)",
                 (COMMISSION_OVER_REASON, commission_id),
             )
+            # (What was handed over and is not on record as taken stays as
+            # it is: the session may have taken it, and say so in a moment.
+            # Where it did not, it is dropped as it would be made pending
+            # again: ``_unfire``.)
         session_id = changes.get("session_id", current.session_id)
         if session_id:
             # A session is as old as the last change of any commission in it,
@@ -2256,7 +2276,20 @@ class Ledger:
             self._event(conn, commission_id, "wake_set", {"wake_id": wake.id, "due_at": wake.due_at, "note": note})
             return wake, ""
 
-        return await self.run(work)
+        def on_record(result: tuple[WakeRequest | None, str]) -> None:
+            # Whoever hands over what is due is told as soon as the time is
+            # on record, as for a note (``message_add``): not by whoever
+            # asked for it, who may have been cancelled meanwhile (a tool
+            # call of dsh that timed out) while the time was written all
+            # the same.
+            if result[0] is not None:
+                try:
+                    loop.call_soon_threadsafe(self._note_written)
+                except RuntimeError:
+                    pass  # The loop is gone: nobody is left to hand anything over.
+
+        loop = asyncio.get_running_loop()
+        return await self.run(work, written=on_record)
 
     async def wakes_next_due(self, *, after: float | None = None) -> float | None:
         """Return when the first pending wake request is due, or None when none is pending.
@@ -2462,6 +2495,23 @@ class Ledger:
                 f"fired_at = NULL, fired_order = NULL, fired_into = NULL WHERE {stopped}",
                 [reason, *ids, upto],
             )
+        # What a commission asked for itself (a time it set, word of a note
+        # it sent), where that commission is over meanwhile: dropped, as
+        # what was still pending was when it ended. Made pending again, it
+        # would be handed to the commission once more should the user take
+        # it up again, as a wake of a round that is over.
+        over = f"{on_its_way} AND commission_id IN (SELECT id FROM commissions WHERE status IN ({_ENDED_MARKS}))"
+        conn.execute(
+            "UPDATE messages SET status = 'void', status_reason = ?, delivered_at = NULL, delivered_to = NULL "
+            "WHERE status = 'delivered' AND kind != 'note' AND id IN "
+            f"(SELECT message_id FROM wake_requests WHERE {over} AND message_id IS NOT NULL)",
+            [COMMISSION_OVER_REASON, *ids, *sorted(ENDED_STATUSES)],
+        )
+        conn.execute(
+            "UPDATE wake_requests SET status = 'void', status_reason = ?, "
+            f"fired_at = NULL, fired_order = NULL, fired_into = NULL WHERE {over}",
+            [COMMISSION_OVER_REASON, *ids, *sorted(ENDED_STATUSES)],
+        )
         conn.execute(
             "UPDATE messages SET status = 'queued', delivered_at = NULL, delivered_to = NULL "
             "WHERE status = 'delivered' AND id IN "

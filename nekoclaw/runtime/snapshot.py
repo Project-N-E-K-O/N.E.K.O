@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_FILE = "system.json"
 # 2: the tools that reach other sessions and set a wake (``list_sessions``,
-# ``read_session``, ``message_session``, ``schedule_wake``). A session that
+# ``read_session``, ``message_session``, ``schedule_wake``, ``ask_session``). A session that
 # is written to is told to answer with one of them, so every session has
 # them from when it is next opened, not from its next summary.
 _VERSION = 2

@@ -308,6 +308,15 @@ async def test_what_cannot_be_asked_is_refused_with_what_to_do_instead(hosts, tm
             await _ask(host, asker, *args, **kwargs)
         return str(raised.value)
 
+    # A task agent another one started asks nobody: the one that started it does.
+    part, _created = await host.ledger.create(
+        lanlan_name="Lan", title="part", dispatch_text="part", source="task_agent", route="task_agent",
+        parent_id=asker.id, name="part",
+    )
+    part, _session = await host.ledger.give_session(part.id, kind="child", name="build/part")
+    with pytest.raises(RuntimeError) as raised:
+        await host.task_agents._cb_session_ask(part.session_id, {"session": "photos", "question": QUESTION})
+    assert str(raised.value) == refusals["from_child"]
     # Itself; nobody of that name; a session with nothing under way.
     assert await refused((await host.ledger.get_session(asker.session_id)).name) == refusals["self"]
     assert "No session is called" in await refused("nobody")
@@ -328,6 +337,10 @@ async def test_what_cannot_be_asked_is_refused_with_what_to_do_instead(hosts, tm
     await host.ledger.update_session(photos.session_id, status="closed")
     await kind_of("fork")
     assert await refused("photos") == refusals["child"].format(name="photos")
+    # Nor is a copy written to: it answers one question and takes no notes.
+    with pytest.raises(RuntimeError) as raised:
+        await host.task_agents._cb_session_send(asker.session_id, {"to": "photos", "message": "hi"})
+    assert str(raised.value) == words.MESSAGE_REFUSALS["fork"].format(name="photos")
     await kind_of("single")
     # A copy that cannot be made: said why.
     async def no_copy(session_id: str, **kwargs: Any) -> Any:
@@ -473,3 +486,27 @@ async def test_a_commission_that_is_over_asks_nothing(ledger):
     assert await _asking(ledger, asker, target) == (None, "over", 0.0)
     rows = await ledger.run(lambda conn: conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
     assert rows == 0
+
+
+async def test_an_asker_stopped_while_the_copy_is_made_has_nothing_started_for_it(hosts, tmp_path, monkeypatch):
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    fork = host.task_agents.fork_session
+
+    async def stopped_meanwhile(session_id: str, **kwargs: Any) -> Any:
+        copy = await fork(session_id, **kwargs)
+        await host.ledger.transition(asker.id, "cancelled", reason="stopped by the user")
+        return copy
+
+    monkeypatch.setattr(host.task_agents, "fork_session", stopped_meanwhile)
+    with pytest.raises(RuntimeError) as raised:
+        await _ask(host, asker)
+    assert str(raised.value) == words.ASK_REFUSALS["over"]
+    [child] = await host.ledger.select(parent_id=asker.id)
+    assert (child.status, child.source) == ("cancelled", "ask")
+    assert child.id not in host.task_agents._sessions and scripts[QUESTION].requests == []
+    release.set()

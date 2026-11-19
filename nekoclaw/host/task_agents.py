@@ -1475,9 +1475,11 @@ class TaskAgentManager:
     def _said_before(self, commission: Commission, *, upto: float | None = None) -> list[Any]:
         """Return what she and the user said in the main dialogue just before now, or before ``upto``; empty for none.
 
-        For her own commissions only (see ``_keep_excerpt``).
+        For her own commissions only (see ``_keep_excerpt``): not for one
+        filed for what another session wrote, which nobody dispatched and
+        which what she and the user said has nothing to do with.
         """
-        if self._conversation is None or commission.parent_id is not None:
+        if self._conversation is None or commission.parent_id is not None or commission.source == "session":
             return []
         try:
             turns = self._conversation.recent(commission.lanlan_name)
@@ -2746,7 +2748,18 @@ class TaskAgentManager:
                 await self._on_usage(session, event)
             return
         if at_work:
-            await self._note_opened(session)
+            try:
+                await self._note_opened(session)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the end of a run is acted on all the same, see below
+                if kind not in ("ended", "error"):
+                    raise
+                # Like the event itself where it cannot be put on record:
+                # an end that is not acted on would leave the senders of
+                # what the run took without word, and the session's place
+                # held. That the commission was opened is noted later.
+                logger.warning("noting that a commission was opened failed; its run's end is acted on all the same", exc_info=True)
         if kind == "text":
             delta = str(event.get("delta") or "")
             session.text.append(delta)
@@ -2794,7 +2807,14 @@ class TaskAgentManager:
         if not session.opening_sent:
             return
         session.opening_sent = False
-        await self._ledger.append_event(session.commission_id, "opened", {"session_id": session.session_id})
+        try:
+            await self._ledger.append_event(session.commission_id, "opened", {"session_id": session.session_id})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Not on record: noted with the next event of the session.
+            session.opening_sent = True
+            raise
 
     def _summary(self, text: str) -> str:
         from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -4090,7 +4110,18 @@ class TaskAgentManager:
         if not await self._know_session(parent_id):
             return False
         session = self._sessions.get(parent_id)
+        woken = isinstance(message, _Handed)
+        if woken and not self._is_switched_on():
+            # What a wake brings starts no work with NekoClaw switched off
+            # (switched off while this was awaited): it waits (``hand_over``).
+            return False
         if session is not None and session.ready and self._runtime_of(session) is not None:
+            if woken and (session.awaiting_prompt or (session.question is not None and not session.question.done())):
+                # It came back while the ledger was read, and came to wait
+                # for its user: what a wake brings waits until that is
+                # settled, as it does in ``hand_over``, and does not set it
+                # to work with its question open.
+                return False
             # It came back, and was given its work, while the ledger was read.
             await self._send_text(self._runtime_of(session), session, "steer", message)
             return True
@@ -5237,6 +5268,11 @@ class TaskAgentManager:
                 or (live.question is not None and not live.question.done())
                 # It refused what it was last handed, a moment ago.
                 or live.refused_until > asyncio.get_running_loop().time()
+                # It hands over what it has, the user having allowed no
+                # more to be used: a note would end with that, and its
+                # sender be told what it stopped with. Once it is over, a
+                # commission of its own is filed for the note.
+                or live.wind_up_left is not None
             )
 
         def way() -> str:
@@ -5288,6 +5324,10 @@ class TaskAgentManager:
             if stopped() or in_the_way() or way() != chosen or self._sessions.get(commission_id) is not session:
                 await self._put_back(fired, kick=False)
                 return Handover("held", _CLOSING_RETRY_SECONDS)
+            if counted and not self._is_switched_on():
+                # Switched off while this was awaited: no turn is started.
+                await self._put_back(fired, kick=False)
+                return Handover("held", WAKE_HELD_RETRY_SECONDS)
             if chosen == "steer" and session is not None and session.idle and not counted:
                 # Its run ended while this was awaited (it waits for task
                 # agents it started, say): steered in now, the text would
@@ -5352,6 +5392,8 @@ class TaskAgentManager:
         from config.nekoclaw_settings import WAKE_HELD_RETRY_SECONDS
 
         mark = key if mark is None else mark
+        if not self._is_switched_on():
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
         available, _reason = await self.available()
         if not available:
             return Handover("held", WAKE_HELD_RETRY_SECONDS)
@@ -5450,6 +5492,10 @@ class TaskAgentManager:
         if target.id in self._clearing:
             # Dropped the next time, should the removal go through.
             return Handover("held", _CLOSING_RETRY_SECONDS)
+        if not self._is_switched_on():
+            # Switched off while this waited: nothing is filed now. (The
+            # request counted for the session stays counted, for then.)
+            return Handover("held", WAKE_HELD_RETRY_SECONDS)
         # Filed and given its notes together, or not at all: a commission
         # without its notes would wait for nobody, and the notes would have
         # another one filed for them.
@@ -5762,6 +5808,8 @@ class TaskAgentManager:
         target = await self._session_named(str(payload.get("to") or ""))
         if target.id == caller.session_id:
             raise RuntimeError(refusals["self"])
+        if target.kind == "fork":
+            raise RuntimeError(refusals["fork"].format(name=target.name))
         if target.kind not in _ADDRESSED_KINDS:
             raise RuntimeError(refusals["child"].format(name=target.name))
         if target.status == "cleared":

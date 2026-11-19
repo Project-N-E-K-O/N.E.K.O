@@ -1022,8 +1022,10 @@ async def test_a_text_the_runtime_process_cannot_be_sent_is_refused_under_its_nu
     assert (pipe.sent[0]["type"], pipe.sent[0]["serial"]) == ("prompt", 3)
     assert parse_command(pipe.sent[0]).serial == 3
     feed({"type": "runtime_idle", "received": 1})
+    written = len(pipe.sent)
     # The child is leaving: nothing more is written to it, and the text is refused here.
     await runtime.steer("s1", "again", serial=4)
+    assert len(pipe.sent) == written
     [rejected] = events.of("error")
     assert (rejected["command"], rejected["serial"]) == ("steer", 4)
     assert parse_event(rejected).serial == 4

@@ -1430,21 +1430,34 @@ async def test_what_was_passed_on_while_a_start_was_set_up_is_kept_when_its_prom
     runtime = host.task_agents._runtime
     start, prompt, steer = runtime.start, runtime.prompt, runtime.steer
     steered: list[str] = []
+    serials: dict[str, Any] = {}
+    sessions: list[Any] = []
 
     async def start_with_a_note(spec: Any) -> None:
         await start(spec)
         await host.task_agents.tell(spec.session_id, "and drive F: too")
 
-    async def refused_later(session_id: str, text: str, **_options: Any) -> None:
+    async def refused_later(session_id: str, text: str, **options: Any) -> None:
+        serials["prompt"] = options["serial"]
+        sessions.append(host.task_agents._sessions[commission.id])
+
         async def later() -> None:
             await asyncio.sleep(0.01)
+            # Refused by the number it was sent under, as a runtime says it.
             await host.task_agents._handle(
-                {"type": "error", "session_id": session_id, "command": "prompt", "message": "a run is under way"}
+                {
+                    "type": "error",
+                    "session_id": session_id,
+                    "command": "prompt",
+                    "message": "a run is under way",
+                    "serial": options["serial"],
+                }
             )
 
         asyncio.get_running_loop().create_task(later())
 
-    async def record_steer(session_id: str, text: str, **_options: Any) -> None:
+    async def record_steer(session_id: str, text: str, **options: Any) -> None:
+        serials["steer"] = options["serial"]
         steered.append(text)
 
     runtime.start, runtime.prompt, runtime.steer = start_with_a_note, refused_later, record_steer
@@ -1454,6 +1467,9 @@ async def test_what_was_passed_on_while_a_start_was_set_up_is_kept_when_its_prom
     runtime.start, runtime.prompt, runtime.steer = start, prompt, steer
 
     assert steered == ["and drive F: too"]
+    # The opening text is out of the count, and the note sent after it is the first now.
+    [session] = sessions
+    assert session.numbered == {serials["steer"]: 1} and session.sent == 1
     assert host.task_agents._carried.get(commission.id) == [
         "the photos are on drive E:",
         "try again",
