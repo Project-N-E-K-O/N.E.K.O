@@ -3689,7 +3689,10 @@
     "moreStories": "더 많은 대본",
     "marketEnter": "입장",
     "marketPreparing": "대본 마켓에 연결 중…",
-    "marketConnectError": "연결할 수 없습니다. NEKO를 열어 둔 채 다시 시도하세요.",
+    "marketConnectError": "현재 대본 마켓에 연결할 수 없습니다. 다시 시도해 주세요.",
+    "marketTitle": "대본 마켓",
+    "marketRetry": "다시 연결",
+    "marketBackToSelector": "대본 선택으로 돌아가기",
     "marketLocalOnly": "NEKO가 실행 중인 컴퓨터에서 대본 마켓을 열어 주세요. LAN 또는 원격 주소에서는 대본을 가져올 수 없습니다."
   },
     "voiceIdentity": {

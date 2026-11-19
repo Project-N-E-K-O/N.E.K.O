@@ -3689,7 +3689,10 @@
     "moreStories": "もっと脚本を見る",
     "marketEnter": "入る",
     "marketPreparing": "脚本マーケットに接続中…",
-    "marketConnectError": "接続できません。NEKO を開いたまま再試行してください。",
+    "marketConnectError": "現在、脚本マーケットに接続できません。もう一度お試しください。",
+    "marketTitle": "脚本マーケット",
+    "marketRetry": "再接続",
+    "marketBackToSelector": "脚本選択に戻る",
     "marketLocalOnly": "NEKO が動作しているパソコンで脚本マーケットを開いてください。LAN・リモートアドレスからの脚本インポートには対応していません。"
   },
     "voiceIdentity": {

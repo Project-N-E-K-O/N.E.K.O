@@ -3689,7 +3689,10 @@
     "moreStories": "Mais roteiros",
     "marketEnter": "Entrar",
     "marketPreparing": "Conectando ao mercado de roteiros…",
-    "marketConnectError": "Não foi possível conectar. Mantenha o NEKO aberto e tente novamente.",
+    "marketConnectError": "Não é possível conectar ao mercado de roteiros no momento. Tente novamente.",
+    "marketTitle": "Mercado de roteiros",
+    "marketRetry": "Reconectar",
+    "marketBackToSelector": "Voltar à seleção de roteiros",
     "marketLocalOnly": "Abra o mercado de roteiros no computador que executa o NEKO. A importação por endereços de rede local ou remotos não é compatível."
   },
     "voiceIdentity": {
