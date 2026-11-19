@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import subprocess
@@ -226,6 +227,43 @@ def test_preparer_falls_back_to_hf_mirror_when_origin_is_unreachable(
     assert prepared.read_bytes() == payload
     mirror = "https://hf-mirror.com" + _HF_SOURCE[len("https://huggingface.co"):]
     assert tried == [_HF_SOURCE] * 3 + [mirror]
+
+
+def test_preparer_falls_back_to_mirror_after_mid_read_disconnects(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    payload = b"reviewed model"
+    _pin_manifest(tmp_path, payload=payload, source=_HF_SOURCE, monkeypatch=monkeypatch)
+    monkeypatch.delenv("HF_ENDPOINTS", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    partial_files: list[bool] = []
+
+    class _Disconnecting(_Response):
+        def read(self, size=-1):
+            if self.tell():
+                partial_files.append((tmp_path / f"{MODEL_FILENAME}.part").exists())
+                raise http.client.IncompleteRead(b"", len(payload) - self.tell())
+            return super().read(min(size, 4))
+
+    tried: list[str] = []
+
+    def urlopen(request, **_kwargs):
+        tried.append(request.full_url)
+        if request.full_url.startswith("https://huggingface.co/"):
+            return _Disconnecting(payload)
+        return _Response(payload)
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _seconds: None)
+
+    prepared = preparer.prepare_speaker_model(tmp_path)
+
+    assert prepared.read_bytes() == payload
+    mirror = "https://hf-mirror.com" + _HF_SOURCE[len("https://huggingface.co"):]
+    assert tried == [_HF_SOURCE] * 3 + [mirror]
+    assert partial_files == [True] * 3
+    assert not (tmp_path / f"{MODEL_FILENAME}.part").exists()
 
 
 def test_preparer_never_shops_mirrors_for_matching_content(
