@@ -1111,7 +1111,9 @@
             // 由抑制释放事件统一补挂，避免教程中途重启屏幕采集）
             const tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                 && window.isNekoHomeTutorialProactiveSuppressed() === true;
-            const shouldRestartProactiveVision = S.proactiveVisionEnabled && S.isRecording && !tutorialHoldsVision;
+            const speechVisionAllowed = typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                && window.canProactiveVisionRunDuringSpeech() === true;
+            const shouldRestartProactiveVision = speechVisionAllowed && S.isRecording && !tutorialHoldsVision;
             const shouldRestartScreening = S.videoSenderInterval !== undefined && S.videoSenderInterval !== null;
 
             // 防止并发切换导致状态混乱
@@ -1207,8 +1209,10 @@
                             }
                         }
                     }
-                    // 重启主动视觉（如果之前已启用）
-                    if (shouldRestartProactiveVision) {
+                    // Restart proactive vision if it was on and was not revoked during the switch.
+                    if (shouldRestartProactiveVision
+                        && typeof window.canProactiveVisionRunDuringSpeech === 'function'
+                        && window.canProactiveVisionRunDuringSpeech() === true) {
                         if (typeof window.acquireProactiveVisionStream === 'function') {
                             await window.acquireProactiveVisionStream();
                         }

@@ -99,6 +99,10 @@ class ProactiveMixin:
         """Apply live browser consent without granting persisted permission."""
         if not isinstance(enabled, bool):
             return
+        # The frontend re-sends consent=false on every settings save, sync and
+        # reconnect. Only an actual allowed -> revoked change clears caches:
+        # afterwards they can only hold manual-share frames, which privacy
+        # mode does not stop and proactive turns no longer use.
         revoked = not enabled and getattr(self, "_proactive_vision_enabled", None) is not False
         if revoked:
             self._proactive_vision_revocation_epoch = (
@@ -109,12 +113,30 @@ class ProactiveMixin:
             )
         self._proactive_vision_enabled = enabled
         if revoked:
-            # Privacy mode promises the character cannot see the screen; screen
-            # images captured automatically before it must not keep riding the
-            # text session's history. Images the user attached stay.
+            # Independent ASR keeps its own live-frame cache for the next
+            # user turn; live frames captured before the revocation must not
+            # ride it. A screenshot the user attached (request_id) stays, like
+            # the user's images in the text session's history.
+            latest = getattr(self, "_latest_independent_visual_frame", None)
+            if latest is not None and getattr(latest, "request_id", None) is None:
+                self._latest_independent_visual_frame = None
+            if hasattr(self, "_prerecord_visual_frames"):
+                self._prerecord_visual_frames = [
+                    frame
+                    for frame in self._prerecord_visual_frames or []
+                    if getattr(frame, "request_id", None) is not None
+                ]
+            # The session forgets what it captured automatically: the text
+            # session strips those images from its history and drops a staged
+            # proactive screenshot (discard_auto_captured_history_images, which
+            # includes discard_cached_visual_context); the realtime session
+            # drops its cached frame (discard_cached_visual_context).
+            session = getattr(self, "session", None)
             discard = getattr(
-                getattr(self, "session", None),
-                "discard_auto_captured_history_images",
+                session, "discard_auto_captured_history_images", None
+            ) or getattr(
+                session,
+                "discard_cached_visual_context",
                 None,
             )
             if callable(discard):
@@ -122,7 +144,7 @@ class ProactiveMixin:
                     discard()
                 except Exception:
                     logger.warning(
-                        "[%s] failed to strip automatically captured images after consent revocation",
+                        "[%s] failed to discard automatically captured images after consent revocation",
                         getattr(self, "lanlan_name", ""),
                         exc_info=True,
                     )
@@ -212,6 +234,7 @@ class ProactiveMixin:
         self,
         *,
         language: str | None = None,
+        allow_vision: bool = True,
     ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
@@ -222,8 +245,17 @@ class ProactiveMixin:
         ``language`` is a request-local rendering override. It intentionally
         does not update the manager's durable or fallback language state.
 
+        ``allow_vision`` is False when the request did not enable the screen
+        source; the cached frame then stays out of this turn. Live consent is
+        re-checked inside ``prompt_ephemeral`` on every visual step.
+
         Returns True if the text turn was sent, False if skipped.
         """
+        # Same rule as the text path's consent checker: a revocation during
+        # this nudge, including while it waits for the lock below, ends its
+        # vision for good, even if consent is granted again before the frame
+        # would be sent.
+        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
         # Share the callback-inject lock so a scheduled nudge cannot register a
         # second no-id fallback while an agent callback inject is unresolved.
         async with self._voice_proactive_inject_lock:
@@ -253,6 +285,11 @@ class ProactiveMixin:
                 language=_lang,
                 user_turn_active=self._independent_asr_user_turn_active,
                 session_owned=lambda: self.is_active and self.session is session,
+                vision_allowed=lambda: (
+                    allow_vision
+                    and getattr(self, "_proactive_vision_enabled", None) is not False
+                    and getattr(self, "_proactive_vision_revocation_epoch", 0) == vision_epoch
+                ),
             )
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)

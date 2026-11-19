@@ -948,11 +948,17 @@ class VRMManager {
             // VMC 启用时使用累计目标时间，避免 144Hz 等非整数倍刷新率
             // 下发送速率退化；关闭时保留原渲染节流行为，隔离功能影响。
             const now = performance.now();
-            // 与定时器路径同一套解析：负数/NaN/Infinity 一律按 60，0 = 不限帧
-            const targetFps = this._resolveConfiguredTargetFps();
+            // 与定时器路径同一套解析：负数/NaN/Infinity 一律按 60，0 = 不限帧；
+            // 配置不明显低于实测刷新率时放宽软件上限（见 _resolveRafCapFps）
+            const configuredFps = this._resolveConfiguredTargetFps();
+            const targetFps = this._resolveRafCapFps(configuredFps);
+            // 放宽后的上限要严格执行（和 Live2D / MMD 的节流一样不超过它）：下面非 VMC 分支
+            // 留了 0.9 的间隔容差，放宽到 90 时实际可到 100fps；改走累计截止时间。
+            // 正常测准的屏上帧间隔远大于放宽后的间隔，仍逐帧渲染。
+            const loosened = targetFps !== configuredFps;
             if (targetFps > 0) {
                 const frameInterval = 1000 / targetFps;
-                if (window.__NEKO_VMC_ACTIVE__ === true) {
+                if (window.__NEKO_VMC_ACTIVE__ === true || loosened) {
                     if (this._nextRenderTime <= 0 || now - this._nextRenderTime > frameInterval * 4) {
                         this._nextRenderTime = now;
                     }
@@ -982,6 +988,17 @@ class VRMManager {
     _resolveConfiguredTargetFps() {
         const raw = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : 60;
         return Number.isFinite(raw) && raw >= 0 ? raw : 60;
+    }
+
+    // rAF 驱动下实际执行的帧率上限：配置帧率 ≥ 实测刷新率×0.9（即总闸让它留在 rAF）时放宽到 max(配置, 刷新率×1.5)，
+    // 显示器本身就是上限。与 live2d-core.js / mmd-core.js 的同名方法对称，判定在 frame-pacing.js；
+    // 非 Pet / 刷新率未测出 / 换屏后未重测 / 配置明显低于刷新率：原样返回。
+    _resolveRafCapFps(fps) {
+        const requested = Number(fps);
+        const pacing = window.nekoFramePacing;
+        if (!pacing || typeof pacing.rafCapFps !== 'function') return requested;
+        const capped = Number(pacing.rafCapFps(requested));
+        return Number.isFinite(capped) && capped >= 0 ? capped : requested;
     }
 
     _resolveIdleFps() {

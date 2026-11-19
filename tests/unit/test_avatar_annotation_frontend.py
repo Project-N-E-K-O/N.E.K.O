@@ -1384,8 +1384,15 @@ const S = {
   selectedScreenSourceId: __SOURCE_ID__
 };
 let proactiveVisionFrameInFlight = false;
+let proactiveVisionFrameRetryAfterInFlight = false;
 let visionEnabled = true;
 const isProactiveVisionEnabledNow = () => visionEnabled;
+// The speech gate and consent follow the same flag here; the switch rules
+// themselves are covered by tests/frontend/proactive_speech_vision_gate.test.cjs.
+const canProactiveVisionRunDuringSpeech = () => visionEnabled;
+const isVisionConsentHeldNow = () => visionEnabled;
+let proactiveVisionRevocationSeq = 0;
+let _speechVisionOffSeq = 0;
 let tutorialSuppressed = false;
 const isHomeTutorialFeatureSuppressed = () => tutorialSuppressed;
 const stopProactiveVisionDuringSpeech = () => { results.stopped += 1; };
@@ -1492,6 +1499,8 @@ def test_proactive_vision_enable_does_not_accept_backend_for_remembered_window()
 const results = { backendCalls: 0, streamCalls: 0 };
 const isHomeTutorialFeatureSuppressed = () => false;
 const releaseProactiveVisionStream = () => {};
+const isVisionConsentHeldNow = () => true;
+const holdsProactiveVisionStream = () => true;
 const window = {
   prepareRememberedWindowCapture: async () => ({
     required: true,

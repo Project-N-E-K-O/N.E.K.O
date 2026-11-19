@@ -1412,15 +1412,7 @@ class _TransportMixin:
         description is delivered in the callback's exact arbiter ticket. They
         must not overwrite or consume the ambient screen/camera snapshot state.
         """
-        # A share stopped meanwhile (discard_live_share_frames): this result
-        # describes a frame that is gone, so it must not become turn state.
-        discard_epoch = getattr(self, "_live_share_discard_epoch", 0)
-
-        def owns_turn_state() -> bool:
-            return update_turn_state and getattr(
-                self, "_live_share_discard_epoch", 0
-            ) == discard_epoch
-
+        discard_epoch = getattr(self, "_visual_context_discard_epoch", 0)
         try:
             # Use the shared visual-analysis helper.
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -1430,8 +1422,17 @@ class _TransportMixin:
                 max_completion_tokens=VISION_ANALYSIS_MAX_TOKENS
             )
 
+            if (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            ):
+                # The frame was discarded (consent revoked) while it was being
+                # analyzed; its description must not come back.
+                logger.info("Image analysis result dropped: visual context was discarded")
+                return ""
+
             if description:
-                if owns_turn_state():
+                if update_turn_state:
                     self._image_description = (
                         f"[实时屏幕截图或相机画面]: {description}"
                     )
@@ -1440,7 +1441,7 @@ class _TransportMixin:
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                if owns_turn_state():
+                if update_turn_state:
                     self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_recognized_this_turn = False
                     self._latest_image_b64 = None
@@ -1449,7 +1450,13 @@ class _TransportMixin:
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            if owns_turn_state():
+            # The frame may have been discarded meanwhile; state may then
+            # already belong to a newer frame, so leave it alone.
+            discarded_meanwhile = (
+                update_turn_state
+                and getattr(self, "_visual_context_discard_epoch", 0) != discard_epoch
+            )
+            if update_turn_state and not discarded_meanwhile:
                 self._image_recognized_this_turn = False
                 self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                 self._latest_image_b64 = None
@@ -1484,8 +1491,12 @@ class _TransportMixin:
 
         if getattr(self, "_latest_image_request_id", None) is not None:
             return
-        self._live_share_discard_epoch = (
-            getattr(self, "_live_share_discard_epoch", 0) + 1
+        # Same fence as a consent revocation (discard_cached_visual_context):
+        # an analysis still running for this frame cannot write back. No
+        # captured-at floor here: later frames, e.g. a user screenshot
+        # already in flight, must still be accepted.
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
         )
         self._latest_image_generation = (
             getattr(self, "_latest_image_generation", 0) + 1
@@ -1541,6 +1552,34 @@ class _TransportMixin:
         ):
             self._raw_visual_delivery_blocked = False
 
+    def discard_cached_visual_context(self) -> None:
+        """Forget the cached frame so no later proactive turn can deliver it.
+
+        Called when the user revokes screen consent. The generation bump
+        fences any in-flight ``prompt_ephemeral`` snapshot: a late visual
+        rejection can no longer re-arm the discarded frame.
+        """
+
+        self._visual_context_discard_epoch = (
+            getattr(self, "_visual_context_discard_epoch", 0) + 1
+        )
+        self._latest_image_generation = (
+            getattr(self, "_latest_image_generation", 0) + 1
+        )
+        self._latest_image_b64 = None
+        # Frames still validating when consent was revoked carry an earlier
+        # ingress time; this floor makes stage_multimodal_frame and
+        # stream_image drop them.
+        self._visual_context_discard_at = time.monotonic()
+        self._latest_image_captured_at = self._visual_context_discard_at
+        self._latest_image_source = "unknown"
+        self._latest_image_request_id = None
+        self._proactive_image_consumed = True
+        if not self._supports_native_image:
+            # A completed Step annotation describes the discarded frame.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+
     def stage_multimodal_frame(
         self,
         image_b64: str,
@@ -1578,10 +1617,12 @@ class _TransportMixin:
         frame_captured_at = (
             float(captured_at) if has_ingress_order else time.monotonic()
         )
-        if has_ingress_order and frame_captured_at <= getattr(
-            self,
-            "_latest_image_captured_at",
-            0.0,
+        # Compare against the last discard too: a visual-route switch resets
+        # the cache ordering time, which must not readmit frames captured
+        # before a consent revocation.
+        if has_ingress_order and frame_captured_at <= max(
+            getattr(self, "_latest_image_captured_at", 0.0),
+            getattr(self, "_visual_context_discard_at", 0.0),
         ):
             return ImageStageResult(
                 accepted=False,
@@ -1835,6 +1876,19 @@ class _TransportMixin:
                     mode=delivery_mode.value,
                     generation=getattr(self, "_latest_image_generation", 0),
                     rejection_reason="raw_visual_delivery_blocked",
+                )
+            if (
+                cache_latest
+                and isinstance(captured_at, (int, float))
+                and float(captured_at)
+                <= getattr(self, "_visual_context_discard_at", 0.0)
+            ):
+                # Captured before the last consent revocation, delivered late.
+                return ImageStageResult(
+                    accepted=False,
+                    mode=delivery_mode.value,
+                    generation=getattr(self, "_latest_image_generation", 0),
+                    rejection_reason="stale_frame",
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 if proactive_cue_image:

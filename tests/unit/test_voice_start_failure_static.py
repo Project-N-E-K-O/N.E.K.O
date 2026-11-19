@@ -453,7 +453,7 @@ function discardCancelledScreenSharingStart(attempt) {{
   discardCalls += 1;
   return attempt.cancelled;
 }}
-function releaseReusedStreamUnderPrivacy() {{}}
+function releaseReusedStreamIfUnheld() {{}}
 async function startScreenSharingOnce(attempt) {{
   startCalls += 1;
   await new Promise((resolve) => {{ releaseStart = resolve; }});

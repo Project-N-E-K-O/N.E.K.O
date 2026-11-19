@@ -1,45 +1,117 @@
 # AGENTS.md — {plugin_id}
 
-This directory is a N.E.K.O plugin: its own Git repository and its editable
-source. `plugin.toml` declares the plugin identity; `[plugin].entry` points at
-the Python class the host loads.
+This directory is one N.E.K.O plugin: its own Git repository and its editable
+source. `plugin.toml` holds the identity (`[plugin].id`, `[plugin].entry`; never
+rename them). The plugin already exists: do not run `neko-plugin init` again.
+Deeper guides: `.agents/skills/neko-plugin/` (start at `SKILL.md`). Inside a
+N.E.K.O checkout they call the workspace `plugin/plugins/<plugin_id>/`; read
+that as this directory.
 
-## Agent skill
+## Route
 
-The `neko-plugin` skill in `.agents/skills/neko-plugin/` is the entry point for
-creating, modifying, debugging, and reviewing this plugin. Read its `SKILL.md`
-before changing plugin code, and follow the references it points to. The skill
-is a snapshot taken when this plugin was scaffolded; the N.E.K.O repository's
-`.agent/skills/neko-plugin/` is the maintained source.
+- **A, source checkout**: a N.E.K.O checkout (a folder whose `pyproject.toml`
+  says `name = "N.E.K.O"`) is reachable: the Verify commands below already
+  point at it, or this plugin sits inside it. Check with the `check` command
+  below (or `uv run neko-plugin --help` in the checkout).
+- **B, desktop build**: no checkout (the Verify commands still show
+  `<path-to-this-directory>` and no checkout exists). The CLI does not run;
+  say so instead of guessing. The user tests with Start/Reload on the plugin
+  page, pastes errors from its Logs tab, and builds a package with Build
+  package in the Plugin studio (插件制作工作台). Only `precheck` and
+  publishing need a checkout.
 
-## Boundaries
+## Hard Constraints
 
-- Edit only inside this directory. Treat the N.E.K.O checkout (when present)
-  as read context; platform changes need an explicit request.
-- The skill calls the plugin workspace `plugin/plugins/<plugin_id>/` because
-  that is its default location inside a N.E.K.O checkout. For this plugin,
-  read that path as this directory, wherever it lives, and prefer the commands
-  below over the skill's ID-only examples.
-- Runtime-triggered `@plugin_entry` handlers must be `async def` and return
-  `Ok(...)` / `Err(...)`.
-- Keep `plugin.toml`'s `[plugin].id` and `[plugin].entry` stable; they are the
-  plugin's identity.
-- Declare Python dependencies in `pyproject.toml`, then materialize them with
-  `{sync_command}`; never add `requirements.txt`.
+Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
 
-## Commands
+1. **Do not edit N.E.K.O itself**: host changes never reach users of this plugin.
+2. **Do not import host internals** (`utils.*`, `plugin.core`, `plugin.sdk.shared`, ...): they bypass consent disclosure and break without notice; use `plugin.sdk.plugin` (adapters: `plugin.sdk.adapter`).
+3. **Do not call N.E.K.O's local services directly**: ports differ per install and it bypasses permission checks; use the SDK.
+4. **Do not use `print`**: it never reaches the plugin log; use `self.logger`.
+5. **Do not log conversation text, secrets, or tokens**: logs are shared files; log lengths, IDs, error types.
+6. **Do not hard-code paths**: write with `self.data_path()` / `self.cache_path()`; `self.plugin_dir` is read-only.
+7. **Do not block the event loop**: all entries share one loop; use async libraries or `await asyncio.to_thread(...)`.
+8. **Do not use `requirements.txt`**: the host reads `pyproject.toml` `[project].dependencies`, loaded only from `vendor/`.
+9. **Do not commit `vendor/`, binaries, or files over 2 MiB**: `sync` regenerates `vendor/`; the Market rejects binaries and oversized source files.
+10. **Do not use `eval`/`exec`/`pickle`/`shell=True`/`verify=False`**: they run untrusted code or disable TLS checks.
+
+## Code Essentials
+
+- Entries: `@plugin_entry` on `async def`, return `Ok(data)` or `Err(SdkError("..."))`
+  (`Err` reaches the caller as a failed call). Validated input:
+  `params=Model` (Pydantic). `llm_result_fields=[...]` picks what the
+  AI reads. A Pydantic return annotation (`-> Model`) is the output contract,
+  checked at runtime (warning by default, failure with `strict_output=True`);
+  an explicit `output_schema=` mapping is published, not checked.
+- The host injects `_ctx` (run id, character name, timeout); declare a
+  `_ctx` parameter only if you need it.
+- User-visible text (names, descriptions, UI) goes through `[plugin.i18n]`
+  locale files with at least `zh-CN` and `en`.
+- Market: id matches `^[a-z][a-z0-9_]*$` (at most 100 characters); the
+  release tag is `v<version>`; the GitHub repo is conventionally
+  `n.e.k.o_plugin_<id>`. `type = "extension"` was removed
+  ([migration guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md));
+  use `type = "plugin"`.
+
+## Runtime Model
+
+Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
+
+- One process per plugin. `startup`, the entry loop, each timer tick, and
+  `shutdown` run in **separate** event loops.
+- `startup` must return fast (timeout 10 s by default). Tasks it creates are
+  cancelled when it returns; clients/locks it creates belong to a dead loop.
+- Periodic work: `@timer_interval(id=..., seconds=...)`, run in its own thread
+  with a fresh loop per tick.
+- Reload starts a new process (memory is lost; persist with `data_path`). A
+  crashed plugin is not restarted automatically.
+
+## Verify
 
 {command_context}
 
 ```bash
 {check_command}
-{build_command}
+{sync_command}
 ```
 
-In the packaged app, use the plugin workbench (插件制作工作台) in the plugin
-manager: register this directory, then check, reload, and build from its
-detail page. Run the plugin-local tests with:
+Run in this order before reporting done: `check` → `lint` → `sync --clean` →
+`precheck`. For `lint` and `precheck`, copy the `check` line and replace only
+the subcommand (the word right after `neko-plugin`); keep every other part.
+`precheck` reruns lint, sync, and `check -r` (tests in `tests/`, package
+build), which is what Market CI runs. Ruff is pinned and runs with
+`--ignore-noqa`, so `# noqa` does not silence it: fix the code.
+Outside the checkout's built-in plugin folder, `check -r` and `precheck` fail
+on uncommitted changes in this repository. Do not commit for the user
+unasked; report the actual result.
+Build a package with `{build_command}`.
+Route B: none of these commands run. Review the code against the constraints
+above, then ask the user to Start/Reload and report back; packages come from
+Build package in the Plugin studio.
 
-```bash
-uv run python -m pytest tests -q
-```
+## When Something Fails
+
+| Symptom | Cause | Do |
+|---|---|---|
+| `MissingPythonDependencies` | dependency declared but not in `vendor/` | run `sync --clean`, then reload. Route B: tell the user; remove the dependency or switch to Route A |
+| `ImportError` on a third-party package | not declared, or not synced | add it to `pyproject.toml`, `sync --clean` |
+| `ImportError` on `utils`/`plugin.sdk.shared`/... | host internal | use the public SDK (constraint 2) |
+| `neko-plugin`: command not found / unknown command | not in a checkout, or an old CLI | run `uv run neko-plugin --help` from the N.E.K.O root; Route B: no CLI |
+| No N.E.K.O checkout | Route B | say what cannot be verified; do not invent results |
+| startup failed or timed out | exception or slow `startup` | read the plugin log; keep `startup` short |
+| `Entry must be 'async def'` | sync handler | make it `async def` |
+| `Plugin event-loop stall` | blocking call in a handler | async library or `asyncio.to_thread` |
+
+When the user is not a developer: say what cannot be done, why, and what they
+can choose instead. Do not ask them whether N.E.K.O should be changed.
+
+## Which Reference To Read
+
+All under `.agents/skills/neko-plugin/references/`:
+
+- Timers, startup/shutdown, background work, reload: `runtime-model.md`
+- Why a constraint exists, escalating: `execution-boundary.md`
+- `plugin.toml`, entries, routers, hooks, i18n: `core-plugin-contract.md`
+- SDK API lookup: `plugin-system-surface-map.md`
+- Panels and docs UI: `hosted-ui-authoring.md`, `hosted-ui-api.md`
+- Commands and tests: `plugin-cli-and-debugging.md`, `plugin-checks-and-tests.md`

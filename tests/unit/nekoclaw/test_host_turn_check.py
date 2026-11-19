@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw_brain import TASK_AGENT_FAILED_TEXTS
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish as stop, usage
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -1150,13 +1151,16 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     llm = ScriptedLLM([[call("todo_write", {"todos": []}), usage(100), stop("tool_calls")], _report_ready("done")])
     host = _task_agent_host(hosts, tmp_path, llm, task_agent_meter=meter)
 
-    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="ja")
     failed = await wait_status(host, receipt.commission_id, "failed")
 
+    # On record as it was; she is told, and the HUD shows, in her dialogue's language.
     assert failed.status_reason == "the free daily quota of the agent model is used up"
     (report,) = await outbox(host, "task_result")
     assert (report.payload["status"], report.payload["success"]) == ("failed", False)
-    assert report.payload["error_message"] == "the free daily quota of the agent model is used up"
+    said = TASK_AGENT_FAILED_TEXTS["ja"]["quota"]
+    assert report.payload["summary"] == report.payload["error_message"] == said
+    assert failed.result_summary == said
     # Counted before the first prompt: not one request went to the model,
     # and the session started for it is closed.
     assert llm.requests == []
@@ -1180,6 +1184,8 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     failed = await wait_status(host, receipt.commission_id, "failed")
 
     assert failed.status_reason == "the free daily quota of the agent model is used up"
+    (report,) = await outbox(host, "task_result")
+    assert report.payload["summary"] == TASK_AGENT_FAILED_TEXTS["en"]["quota"]
     # The first request was paid for before it was sent, the second as its
     # usage came in; the third found nothing left. The request already under
     # way when that was found may still have gone out, and nothing after it.

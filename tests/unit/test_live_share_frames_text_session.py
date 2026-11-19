@@ -293,7 +293,9 @@ async def test_stop_notice_drops_a_non_native_frame_description(manager, monkeyp
     await asyncio.wait_for(started.wait(), timeout=5)
     manager.handle_screen_share_stopped()
     release.set()
-    assert await task == "the old game screen"
+    # Same fence as a consent revocation: the result of a discarded frame
+    # is dropped.
+    assert await task == ""
     assert client._image_recognized_this_turn is False
     assert "the old game screen" not in client._image_description
 

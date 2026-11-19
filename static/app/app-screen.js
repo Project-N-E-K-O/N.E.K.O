@@ -814,6 +814,20 @@
         // 再做会产生回环/重复 IPC。
     });
 
+    // Speech-time vision may see the screen only when app-proactive's
+    // canProactiveVisionRunDuringSpeech says so; treat a missing gate as "no".
+    function canSpeechVisionSeeScreen() {
+        return typeof window.canProactiveVisionRunDuringSpeech === 'function'
+            && window.canProactiveVisionRunDuringSpeech() === true;
+    }
+
+    // Whether proactive vision still needs the stream; the rule lives in
+    // app-proactive (holdsProactiveVisionStream). A missing rule means "no".
+    function isProactiveVisionHoldingStream() {
+        return typeof window.holdsProactiveVisionStream === 'function'
+            && window.holdsProactiveVisionStream() === true;
+    }
+
     // ======================== scheduleScreenCaptureIdleCheck ========================
     function scheduleScreenCaptureIdleCheck() {
         // 清除现有定时器
@@ -834,14 +848,18 @@
             if (S.screenCaptureStream && S.screenCaptureStreamLastUsed) {
                 var idleTime = Date.now() - S.screenCaptureStreamLastUsed;
                 if (idleTime >= IDLE_TIMEOUT) {
+                    // A manual share still starting may be about to use this
+                    // stream; releasing it here would cancel that start.
+                    if (isScreenSharingStartPending()) {
+                        scheduleScreenCaptureIdleCheck();
+                        return;
+                    }
                     // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）。
                     // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面，
                     // 不得据设置值保留流。
                     var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
                         && window.isNekoHomeTutorialProactiveSuppressed() === true;
-                    var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-                        S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-                    );
+                    var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
                     var isManualScreenShare = screenButton() && screenButton().classList.contains('active');
                     if (proactiveVisionActive && !isManualScreenShare) {
                         console.log('[屏幕流闲置] 主动视觉活跃中，跳过释放并续约定时器');
@@ -2170,15 +2188,15 @@
             if (screenSharingStartAttempt === attempt) {
                 screenSharingStartAttempt = null;
             }
-            releaseReusedStreamUnderPrivacy(attempt);
+            releaseReusedStreamIfUnheld(attempt);
         }
     }
 
-    // 隐私模式在手动启动进行中打开时不动那次启动复用的主动视觉流
-    // （stopVisionAfterPrivacyEnabled 会跳过）。启动最终没跑起来（失败或被
-    // 取消）时，这条流没人再用，在这里补释放，不用等 idle 检查。
-    function releaseReusedStreamUnderPrivacy(attempt) {
-        if (S.proactiveVisionEnabled !== false) return;
+    // 手动启动进行中打开隐私模式、或关掉「主动搭话」/「屏幕分享」时，不动那次
+    // 启动复用的主动视觉流（释放会被跳过）。启动最终没跑起来（失败或被取消）
+    // 时，若主动视觉也不再需要这条流，在这里补释放，不用等 idle 检查。
+    function releaseReusedStreamIfUnheld(attempt) {
+        if (isProactiveVisionHoldingStream()) return;
         if (manualScreenShareRunning || isScreenSharingStartPending()
             || sourceSwitchRestart !== null) return;
         var stream = attempt.initialStream;
@@ -2826,9 +2844,7 @@
         // 不得据设置真值保留流，否则停止分享后屏幕流被无限期扣住）。
         var tutorialHoldsVision = typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
             && window.isNekoHomeTutorialProactiveSuppressed() === true;
-        var proactiveVisionActive = !tutorialHoldsVision && S.proactiveVisionEnabled && (
-            S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
-        );
+        var proactiveVisionActive = !tutorialHoldsVision && isProactiveVisionHoldingStream();
 
         // 条件释放流
         if (forceRelease || !proactiveVisionActive) {
@@ -2878,7 +2894,7 @@
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
-            if (S.proactiveVisionEnabled && S.isRecording) {
+            if (S.isRecording && canSpeechVisionSeeScreen()) {
                 if (window.startProactiveVisionDuringSpeech) {
                     window.startProactiveVisionDuringSpeech();
                 }

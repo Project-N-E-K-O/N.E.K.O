@@ -1024,7 +1024,7 @@ async def test_voice_fast_path_passes_request_locale_without_mutating_manager(
         push_mini_game_invite_resolved=AsyncMock(),
     )
 
-    trigger.assert_awaited_once_with(language=expected_language)
+    trigger.assert_awaited_once_with(language=expected_language, allow_vision=True)
     assert (
         manager.user_language,
         manager._user_language_explicit,

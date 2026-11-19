@@ -579,6 +579,14 @@ class _MediaMixin:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
 
+    def discard_cached_visual_context(self) -> None:
+        """Forget the staged proactive screenshot after screen consent is revoked.
+
+        Same session API as the realtime client. Images the user attached to
+        their own next message (``_pending_images``) are left alone.
+        """
+        self.set_proactive_screenshot(None)
+
     def set_proactive_screenshot(
         self,
         image_b64: str | None,
@@ -640,7 +648,8 @@ class _MediaMixin:
             if skip_in_flight
             else set()
         )
-        for msg in self._conversation_history if only is None else (only,):
+        history = getattr(self, "_conversation_history", None) or []
+        for msg in history if only is None else (only,):
             if not isinstance(msg, HumanMessage) or id(msg) in in_flight:
                 continue
             count = image_count(msg.content)
@@ -690,7 +699,9 @@ class _MediaMixin:
         self._auto_capture_discard_epoch = (
             getattr(self, "_auto_capture_discard_epoch", 0) + 1
         )
-        self.set_proactive_screenshot(None)
+        # The staged proactive screenshot: the same discard a realtime
+        # session runs on revocation.
+        self.discard_cached_visual_context()
         stripped = self._strip_history_images(_is_auto_captured_history_image)
         if stripped:
             logger.info(
