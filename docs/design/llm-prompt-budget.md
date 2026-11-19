@@ -80,12 +80,17 @@ tokens each. Fine selection retains separate `TASK` and `USER_SAID` fields and t
 existing bounded ledger/preferences view. It does not regain the removed analyzer's
 12,000-token conversation buffer or splice a latest-request marker across old turns.
 
-Search queries and other semantic parameters are derived from `TASK` and the entry
-schema. `USER_SAID` is copied verbatim only for fields whose schema calls for the
-user's original wording. `AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS` caps each
+The selection prompt asks the model to derive search queries and other semantic
+parameters from `TASK` and the entry schema, and to copy `USER_SAID` verbatim only
+for fields whose schema calls for the user's original wording. These are prompt
+requirements, not a programmatic guarantee: selection does not compare the generated
+value with `USER_SAID`. `AGENT_PLUGIN_FIELD_DESCRIPTION_MAX_TOKENS` caps each
 projected property description at 80 tokens; the eight-property and twelve-value
-enum limits remain unchanged. The generated arguments still reach the plugin
-unchanged, with the user's wording separately retained in `_ctx.latest_user_request`.
+enum limits remain unchanged. The generated arguments are not rewritten to force
+verbatim text. `PluginRunner` adds the user's wording to `_ctx.latest_user_request`
+only when that key is absent; its existing `setdefault` behavior preserves a value
+already supplied in the generated `_ctx`. Plugins must therefore not treat this
+field as an independently verified copy of the user's original wording.
 
 Coarse screening sends its bounded matching text only in the user message; system
 messages contain the plugin summaries and screening rules, without a second copy.
