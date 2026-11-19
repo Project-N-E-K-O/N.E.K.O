@@ -32,6 +32,8 @@ _HEADING = re.compile(r"^(#+)\s")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 # A command, not prose such as "the neko-plugin skill": inline code or "uv run".
 _SUBCOMMAND = re.compile(r"(?:`|uv run )neko-plugin[ \t]+([a-z][a-z0-9-]*)")
+# Inside a code fence a command may also start the line.
+_FENCED_SUBCOMMAND = re.compile(r"^[ \t]*neko-plugin[ \t]+([a-z][a-z0-9-]*)")
 
 
 def _skill_files() -> list[Path]:
@@ -125,10 +127,21 @@ def _command_table_names(text: str) -> set[str]:
     return names
 
 
+def _fenced_subcommands(text: str) -> set[str]:
+    names: set[str] = set()
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE.match(line):
+            in_fence = not in_fence
+        elif in_fence:
+            names.update(_FENCED_SUBCOMMAND.findall(line))
+    return names
+
+
 @pytest.mark.parametrize("path", _guide_files(), ids=_file_id)
 def test_named_subcommands_are_registered(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    mentioned = set(_SUBCOMMAND.findall(text)) | _command_table_names(text)
+    mentioned = set(_SUBCOMMAND.findall(text)) | _command_table_names(text) | _fenced_subcommands(text)
     unknown = sorted(mentioned - _registered_subcommands())
     assert not unknown, f"neko-plugin subcommands not registered in cli.py: {unknown}"
 
