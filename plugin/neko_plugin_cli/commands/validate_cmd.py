@@ -1527,7 +1527,21 @@ _ADVISORY_RULES: dict[str, tuple[int, dict[str, str]]] = {
 _ADVISORY_SKIPPED_TOP_DIRS = frozenset({"tests"})
 # Top-level host packages a plugin process can import because the N.E.K.O
 # root is on sys.path. ``plugin.*`` is handled separately.
-_HOST_INTERNAL_ROOTS = frozenset({"utils", "config", "main_logic", "main_routers", "memory"})
+_HOST_INTERNAL_ROOTS = frozenset(
+    {
+        "app",
+        "config",
+        "knowledge",
+        "launcher_core",
+        "main_logic",
+        "main_routers",
+        "memory",
+        "nekoclaw",
+        "services",
+        "steamworks",
+        "utils",
+    }
+)
 # Public SDK facades (see plugin/sdk/__init__.py); ``plugin.plugins.*`` is
 # plugin code, not the host.
 _PUBLIC_PLUGIN_MODULE_PREFIXES = ("plugin.sdk.plugin", "plugin.sdk.adapter", "plugin.plugins")
@@ -1627,7 +1641,12 @@ def _host_internal_imports(node: ast.Import | ast.ImportFrom) -> list[str]:
         # exports besides ``sdk`` and ``plugins`` is host runtime; under
         # ``plugin.sdk`` only ``shared`` is internal (SDK_VERSION etc. are public).
         if node.module == "plugin":
-            return [f"plugin.{alias.name}" for alias in node.names if alias.name not in {"sdk", "plugins"}]
+            return [
+                # ``*`` is not a module path; show the statement itself.
+                "from plugin import *" if alias.name == "*" else f"plugin.{alias.name}"
+                for alias in node.names
+                if alias.name not in {"sdk", "plugins"}
+            ]
         if node.module == "plugin.sdk":
             return [f"plugin.sdk.{alias.name}" for alias in node.names if alias.name == "shared"]
         modules = [node.module]

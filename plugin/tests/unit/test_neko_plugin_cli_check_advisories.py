@@ -151,7 +151,9 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
         "from plugin import core\n"
         "from plugin.sdk import SDK_VERSION, shared\n"
         "from plugin import sdk, core, logging_config\n"
-        "import utils.tokenize, plugin.sdk.plugin, config\n",
+        "import utils.tokenize, plugin.sdk.plugin, config\n"
+        "from plugin import *\n"
+        "from plugin.sdk import *\n",
     )
     assert messages == [
         "host-import: worker.py:1 utils.config_manager -> AGENTS.md #2",
@@ -163,6 +165,18 @@ def test_internal_import_reports_each_module(tmp_path: Path) -> None:
         "host-import: worker.py:6 plugin.logging_config -> AGENTS.md #2",
         "host-import: worker.py:7 utils.tokenize -> AGENTS.md #2",
         "host-import: worker.py:7 config -> AGENTS.md #2",
+        "host-import: worker.py:8 from plugin import * -> AGENTS.md #2",
+    ]
+
+
+@pytest.mark.parametrize(
+    "root",
+    ["app", "config", "knowledge", "launcher_core", "main_logic", "main_routers", "memory",
+     "nekoclaw", "services", "steamworks", "utils"],
+)
+def test_every_host_root_package_is_internal(tmp_path: Path, root: str) -> None:
+    assert _advisories(tmp_path, f"from {root}.x import y\n") == [
+        f"host-import: worker.py:1 {root}.x -> AGENTS.md #2"
     ]
 
 
