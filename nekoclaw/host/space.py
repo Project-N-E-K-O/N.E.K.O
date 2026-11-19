@@ -97,6 +97,12 @@ VERIFIED, OBSERVED, INFERRED = CONFIDENCES
 ENTRY_ACTIVE = "active"
 ENTRY_PENDING = "pending"
 ENTRY_EXPIRED = "expired"
+# The lines of the front matter of an entry that tidying found out of date
+# (``TaskAgentSpace.tidy_entries``): why, and the entry that says otherwise.
+# It is expired like one whose files are gone, and does not come back when
+# they are there: only when it is filed again.
+_OUTDATED = "outdated"
+_SUPERSEDED_BY = "superseded_by"
 _NOTES_FILE_VERSION = 1
 PROJECT_ACTIVE = "active"
 PROJECT_ARCHIVED = "archived"
@@ -173,6 +179,9 @@ class Entry:
     # the summary of a project names for a global entry: the files of one
     # project do not show that it holds for every project.
     noted: tuple[str, ...] = ()
+    # For one that tidying found out of date: why. Empty for any other,
+    # one that expired because its files are gone among them.
+    outdated: str = ""
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
@@ -1264,8 +1273,18 @@ def _texts_of(body: str, marks: Iterable[str]) -> list[str] | None:
     that order: the user rewrote something in an editor, and where one
     text ends and the next begins cannot be told any more.
     """
+    dated = _dated_texts_of(body, marks)
+    return None if dated is None else [text for _day, text in dated]
+
+
+def _dated_texts_of(body: str, marks: Iterable[str]) -> list[tuple[str, str]] | None:
+    """Return the texts an entry was given as ``_texts_of`` does, each with the day of the heading it follows.
+
+    Empty for the first text, which follows none.
+    """
     expected = list(marks)
     texts: list[str] = []
+    days: list[str] = [""]
     lines: list[str] = []
 
     def next_text() -> bool:
@@ -1274,13 +1293,28 @@ def _texts_of(body: str, marks: Iterable[str]) -> list[str] | None:
     for line in body.split("\n"):
         if _ADDITION.fullmatch(line.strip()) and next_text():
             texts.append("\n".join(lines).strip())
+            days.append(line.strip()[3:])
             lines = []
         else:
             lines.append(line)
     if not next_text():
         return None
     texts.append("\n".join(lines).strip())
-    return texts if len(texts) == len(expected) else None
+    return list(zip(days, texts, strict=True)) if len(texts) == len(expected) else None
+
+
+def _days_of(document: _Document) -> dict[str, str]:
+    """Return the day each text of an entry was written on, by the text: the first on the day the entry was made.
+
+    For a text that tidying moves into another entry, where it gets a
+    section of its own. An entry whose texts cannot be told apart is one
+    text, of the day it was made.
+    """
+    created = document.get("created")
+    dated = _dated_texts_of(document.body, _listed(document, "texts"))
+    if dated is None:
+        return {document.body.strip(): created} if created else {}
+    return {text: day or created for day, text in dated if day or created}
 
 
 def _notes_of(text: str) -> dict[str, Any]:
@@ -1514,6 +1548,9 @@ def _keep_known(
         document.drop("status")
         document.drop("expired")
         document.drop("notice")
+        # Filed again, one that tidying found out of date holds after all.
+        document.drop(_OUTDATED)
+        document.drop(_SUPERSEDED_BY)
         rested = _evidence_in(document)
         # Asked under the lock on the space's writes, so only for so long;
         # one of which nothing is told stays, like one that cannot be told.
@@ -1808,6 +1845,39 @@ class _LineNotAdded(OSError):
 
 class _LeftAside(OSError):
     """A directory could not be moved to another volume and is not where it was: it has the name it was set aside under."""
+
+
+class _NotMade(SpaceError):
+    """A change tidying asked for is not made; the message says why (``TaskAgentSpace.tidy_entries``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Layer:
+    """The entries of one layer (the space as a whole, or one project), as tidying reads them.
+
+    ``entries`` are all of them with their texts, the user's own among them;
+    ``made`` are the ids of the ones the host made, which keep marks of
+    their texts. ``marks`` tell, by id, all each file said as it was read
+    (``_text_mark``): a change is made only to an entry that still says
+    it. ``said`` tell, by id, what each entry says, its title and
+    description with its text, and nothing of how it stands: tidying asks
+    for a look at a layer again only when one of these changed.
+    """
+
+    project: str | None
+    entries: tuple[Entry, ...]
+    made: frozenset[str]
+    marks: dict[str, str]
+    said: dict[str, str]
+
+
+def _said_mark(document: _Document) -> str:
+    """Return a mark of what an entry says (``Layer.said``): its title, its description and its text."""
+    return _text_mark("\n".join((document.get("name"), document.get("description"), document.body.strip())))
+
+
+# A date as entries are written with: what a time "yesterday" is replaced with must have one.
+_A_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 # ---------------------------------------------------------------------------
@@ -2316,6 +2386,7 @@ class TaskAgentSpace:
             seen_by=tuple(_listed(document, "seen_by")),
             evidence_outside=tuple(_outside_in(document)),
             noted=tuple(_noted_in(document)),
+            outdated=document.get(_OUTDATED) if _status_of(document) == ENTRY_EXPIRED else "",
         )
 
     def _entries(self, directory: Path, project: str | None, *, with_content: bool = False) -> list[Entry]:
@@ -2427,6 +2498,7 @@ class TaskAgentSpace:
         by_files: bool = False,
         told: dict[str, bool | None] | None = None,
         judged_with: _Known | None = None,
+        added_on: str | None = None,
     ) -> tuple[Entry, str]:
         """Keep one entry. Returns it and what became of it: a new file, added to one, or there already.
 
@@ -2462,6 +2534,11 @@ class TaskAgentSpace:
 
         ``by_files``, ``told`` and ``judged_with`` are as for
         ``_keep_known``.
+
+        ``added_on`` is the day a text that is added was written, where
+        that is not today: one that tidying moves from another entry. The
+        section it gets is headed by that day, so that what it says of
+        "yesterday" means what it meant.
 
         ``may_add`` is False for a note whose text was seen to be in
         ``into`` and whose commission has no place left: should the text
@@ -2521,7 +2598,7 @@ class TaskAgentSpace:
                 # was added the first time is still what this filing added.
                 fresh_text[:] = [fresh or bool(fresh_text and fresh_text[0])]
                 if fresh:
-                    addition = f"## {today}\n\n{content}"
+                    addition = f"## {added_on or today}\n\n{content}"
                     document.body = f"{document.body.rstrip()}\n\n{addition}\n"
                 if not document.has_meta:
                     return document.body if fresh else text
@@ -2987,6 +3064,7 @@ class TaskAgentSpace:
         by_text: str | None = None,
         by_files: bool = False,
         told: dict[str, bool | None] | None = None,
+        keep_days: bool = False,
     ) -> tuple[Entry, bool, OSError | None]:
         """Put what a pending entry says into an entry that is not pending, and remove its file.
 
@@ -3010,6 +3088,10 @@ class TaskAgentSpace:
         one found by its text, raises ``_Rewritten`` then: the note was
         judged with what that entry rested on, and is judged anew
         (``_take_note``).
+
+        With ``keep_days`` each text keeps the day it was written on as
+        the heading of its section (``_file_entry``, ``added_on``): for
+        tidying, which moves texts written some time ago.
         """
         path = self._paths().memory_dir(project) / f"{pending.id}.md"
         read = self._pending_as_read(path, project)
@@ -3064,6 +3146,7 @@ class TaskAgentSpace:
         if parts is None:
             logger.warning("a pending entry holds a text longer than a text may be; it is not put into another entry")
             return into, False, None
+        days = _days_of(said) if keep_days else {}
         for part in parts:
             # What the write of this part told of the files. An entry that
             # had expired comes back by this write, by the note: what its
@@ -3085,6 +3168,7 @@ class TaskAgentSpace:
                     by_files=by_files,
                     told=looked,
                     judged_with=known,
+                    added_on=days.get(part),
                 )
             except _LineNotAdded as exc:
                 # In its file all the same; the rest is still filed.
@@ -4439,7 +4523,7 @@ class TaskAgentSpace:
             out = set(apart)
             return tuple(path for path in evidence if allowed or path not in out)
 
-        def read() -> tuple[list[_Rested], list[tuple[str | None, str]], int, int, int]:
+        def read() -> tuple[list[_Rested], list[tuple[str | None, str]], list[tuple[str | None, str]], int, int, int]:
             paths = self._paths()
             scopes: list[str | None] = [None, *(project.name for project in self._active_projects())]
             files: list[tuple[str | None, Path]] = []
@@ -4453,13 +4537,15 @@ class TaskAgentSpace:
                 except (OSError, ValueError):
                     continue
             if not files:
-                return [], [], 0, 0, 0
+                return [], [], [], 0, 0, 0
             start = self._evidence_looked_until % len(files)
             turn = [*files[start:], *files[:start]][:SPACE_EVIDENCE_ENTRIES_PER_UPKEEP]
             # The entries of this turn that rest on files, and the pending
             # ones that have waited long enough.
             rested: list[_Rested] = []
             old: list[tuple[str | None, str]] = []
+            # Out of date by tidying, and still with a line.
+            stale: list[tuple[str | None, str]] = []
             indexes: dict[str | None, str] = {}
             for place, (scope, path) in enumerate(turn):
                 text = self._read_text(path)
@@ -4469,6 +4555,21 @@ class TaskAgentSpace:
                 if _status_of(document) == ENTRY_PENDING:
                     if (document.get("updated") or oldest) < oldest:
                         old.append((scope, path.stem))
+                    continue
+                expired = document.get("status").strip().lower() == ENTRY_EXPIRED
+
+                def still_listed(scope: str | None = scope, name: str = path.stem) -> bool:
+                    if scope not in indexes:
+                        indexes[scope] = self._read_text(paths.index(scope)) or ""
+                    return self._index_line_in(indexes[scope], f"{paths.MEMORY_DIR}/{name}.md") is not None
+
+                if expired and document.get(_OUTDATED) and _listed(document, "texts"):
+                    # Tidying found it out of date (``tidy_entries``): it
+                    # does not come back because its files are there, and
+                    # whether it rests on any is no matter. Only a line it
+                    # still has goes: the index could not be written then.
+                    if still_listed():
+                        stale.append((scope, path.stem))
                     continue
                 evidence = _evidence_in(document)
                 if not evidence or not _listed(document, "texts"):
@@ -4480,22 +4581,19 @@ class TaskAgentSpace:
                     # since the user took back reading outside, it is
                     # looked at.)
                     continue
-                expired = document.get("status").strip().lower() == ENTRY_EXPIRED
                 listed = False
                 if expired:
                     # One that says it expired and still has its line: the
                     # index could not be written when it expired, or it
                     # could not be brought back and the line put there for
                     # it could not be taken out again.
-                    if scope not in indexes:
-                        indexes[scope] = self._read_text(paths.index(scope)) or ""
-                    listed = self._index_line_in(indexes[scope], f"{paths.MEMORY_DIR}/{path.stem}.md") is not None
+                    listed = still_listed()
                 rested.append(
                     _Rested(place, scope, path.stem, tuple(evidence), tuple(apart), expired, listed, _text_mark(text))
                 )
-            return rested, old, start, len(turn), len(files)
+            return rested, old, stale, start, len(turn), len(files)
 
-        rested, old, start, taken, total = await self._read(read)
+        rested, old, stale, start, taken, total = await self._read(read)
         outcome = {"expired": 0, "restored": 0, "dropped": 0}
         for scope, entry_id in old:
             try:
@@ -4503,6 +4601,11 @@ class TaskAgentSpace:
                     outcome["dropped"] += 1
             except (OSError, ValueError):
                 logger.warning("a pending entry that has waited long enough could not be removed", exc_info=True)
+        for scope, entry_id in stale:
+            try:
+                await self._write(self._unlist_expired, scope, entry_id)
+            except (OSError, ValueError):
+                logger.warning("the line of an entry that is out of date could not be taken out", exc_info=True)
 
         # Whether the files of each entry are gone, in the order of
         # ``rested``: added to by the look, read here.
@@ -4739,6 +4842,400 @@ class TaskAgentSpace:
         # the entry was written only as it still said that: the line calls
         # it what it is called.
         return changed
+
+    # -- tidying with a model --------------------------------------------
+
+    async def tidy_layers(self) -> list[str | None]:
+        """Return the layers tidying looks over: the space as a whole (None), then every project in use."""
+        return await self._read(lambda: [None, *(project.name for project in self._active_projects())])
+
+    async def read_layer(self, project: str | None) -> Layer:
+        """Return the entries of a layer as tidying reads them; see ``Layer``."""
+
+        def work() -> Layer:
+            directory = self._paths().memory_dir(project)
+            try:
+                files = sorted(item for item in directory.iterdir() if item.suffix == ".md" and item.is_file())
+            except OSError:
+                files = []
+            entries: list[Entry] = []
+            made: set[str] = set()
+            marks: dict[str, str] = {}
+            said: dict[str, str] = {}
+            for path in files:
+                text = self._read_text(path)
+                if text is None:
+                    continue
+                document = _parse_document(text)
+                try:
+                    modified = path.stat().st_mtime
+                except OSError:
+                    modified = self._clock()
+                entries.append(self._entry_of(document, path.stem, project, modified, with_content=True))
+                marks[path.stem] = _text_mark(text)
+                said[path.stem] = _said_mark(document)
+                if _listed(document, "texts"):
+                    made.add(path.stem)
+            return Layer(project, tuple(entries), frozenset(made), marks, said)
+
+        return await self._read(work)
+
+    async def tidy_entries(
+        self, project: str | None, operation: dict[str, Any], marks: dict[str, str]
+    ) -> tuple[str, dict[str, str | None]]:
+        """Make one change a model asked for when it looked over a layer, if it holds. Returns what became of it.
+
+        ``operation`` names entries by their ids, and is one of:
+
+        * ``{"op": "merge", "from": a, "into": b}``: the texts of ``a`` go
+          into ``b``, each as the section it was, and ``a`` goes. A pending
+          one goes into one in effect whichever way round they are named,
+          and is seen by everyone who saw either. Two pending ones become
+          one, which takes effect when as many commissions as
+          ``SPACE_SEEN_TO_TAKE_EFFECT`` have seen it by then: a guess that
+          another commission filed in other words is found a second time.
+        * ``{"op": "outdated", "entry": a, "by": b, "why": ...}``: ``a`` is
+          expired, for good: it does not come back when the files it rests
+          on are there, only when it is filed again. ``b`` is an entry in
+          effect, written no earlier than ``a``.
+        * ``{"op": "retitle", "entry": a, "apart_from": b, "title": ..., "description": ...}``:
+          ``a`` is called otherwise, by a title no other entry of the
+          layer has.
+        * ``{"op": "date", "entry": a, "old": ..., "new": ...}``: words
+          that stand in ``a`` once are replaced by ones with a date.
+
+        Every change is checked first, under the lock on the space's
+        writes: the entries it names are there, still say all they said
+        when the model was shown them (``marks``, ``Layer.marks``), are the
+        host's own (the user's are never changed), and have not expired.
+        Nothing is removed for good: an entry that goes into another has
+        its texts there, and one that is out of date stays a file. Nothing
+        is remembered as removed by the user either. Returns ``made`` and
+        the new marks of the entries it changed (None for one that went),
+        or why it was not made and nothing.
+        """
+
+        def work(allowed: bool) -> tuple[str, dict[str, str | None]]:
+            kind = operation.get("op")
+            try:
+                if kind == "merge":
+                    return self._tidy_merge(project, str(operation["from"]), str(operation["into"]), marks, allowed)
+                if kind == "outdated":
+                    return self._tidy_outdated(
+                        project, str(operation["entry"]), str(operation["by"]), operation.get("why"), marks
+                    )
+                if kind == "retitle":
+                    return self._tidy_retitle(
+                        project,
+                        str(operation["entry"]),
+                        str(operation["apart_from"]),
+                        operation.get("title"),
+                        operation.get("description"),
+                        marks,
+                    )
+                if kind == "date":
+                    return self._tidy_date(project, str(operation["entry"]), operation.get("old"), operation.get("new"), marks)
+            except (KeyError, ValueError) as exc:
+                return f"not a change that can be made ({type(exc).__name__})", {}
+            except _NotMade as exc:
+                return str(exc), {}
+            return "not a change that can be made", {}
+
+        return await self._write_judged(work)
+
+    def _tidy_read(
+        self, project: str | None, entry_id: str, marks: dict[str, str]
+    ) -> tuple[tuple[int, int] | None, _Document, Entry]:
+        """Read an entry a change names: what the file was, what it says, and what it is. Raises ``_NotMade``.
+
+        When it is not there, says something else than when the model
+        was shown it, or is one the user wrote.
+        """
+        path = self._paths().memory_dir(project) / f"{safe_segment(entry_id)}.md"
+        before = self._signature(path)
+        text = self._read_text(path)
+        if text is None:
+            raise _NotMade(f"{entry_id} is not there")
+        if marks.get(entry_id) != _text_mark(text):
+            raise _NotMade(f"{entry_id} changed since it was looked over")
+        document = _parse_document(text)
+        if not _listed(document, "texts"):
+            raise _NotMade(f"{entry_id} was written by the user")
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            modified = self._clock()
+        return before, document, self._entry_of(document, path.stem, project, modified, with_content=True)
+
+    def _marks_now(self, project: str | None, ids: Iterable[str]) -> dict[str, str | None]:
+        """Return what each of these entries says now (``Layer.marks``); None for one that is not there."""
+        directory = self._paths().memory_dir(project)
+        now: dict[str, str | None] = {}
+        for entry_id in ids:
+            text = self._read_text(directory / f"{entry_id}.md")
+            now[entry_id] = None if text is None else _text_mark(text)
+        return now
+
+    def _tidy_merge(
+        self, project: str | None, source_id: str, target_id: str, marks: dict[str, str], allowed: bool
+    ) -> tuple[str, dict[str, str | None]]:
+        """Put the texts of one entry into another and have the first go; see ``tidy_entries``."""
+        from config.nekoclaw_settings import SPACE_CONSOLIDATE_MERGED_MAX_TOKENS
+        from utils.tokenize import count_tokens
+
+        if source_id == target_id:
+            raise _NotMade("an entry is not merged into itself")
+        paths = self._paths()
+        source_read = self._tidy_read(project, source_id, marks)
+        target_read = self._tidy_read(project, target_id, marks)
+        if ENTRY_EXPIRED in (source_read[2].status, target_read[2].status):
+            raise _NotMade("an entry that expired is not merged")
+        if source_read[2].status == ENTRY_ACTIVE and target_read[2].status == ENTRY_PENDING:
+            # A guess goes into what is in effect, whichever way round they were named.
+            source_read, target_read = target_read, source_read
+        before, said, source = source_read
+        _target_before, holds, target = target_read
+        parts = self._whole_texts(said)
+        if not parts:
+            raise _NotMade(f"what {source.id} says cannot be moved whole")
+        days = _days_of(said)
+        # With the section each text that is new to it gets, as ``_file_entry`` writes it.
+        added = [part for part in parts if not _said_already(holds, part)]
+        size = count_tokens(holds.body.strip()) + sum(
+            count_tokens(f"\n\n## {days.get(part) or source.updated}\n\n{part}") for part in added
+        )
+        if size > SPACE_CONSOLIDATE_MERGED_MAX_TOKENS:
+            raise _NotMade(f"{target.id} would say too much with what {source.id} says")
+        if source.status == ENTRY_PENDING and target.status == ENTRY_ACTIVE:
+            # What a guess that is the same note as an entry in effect does
+            # when it is confirmed: it goes into that entry with all who saw it.
+            _entry, _added, unlisted = self._fold(
+                project, source, target, _Known(confidence=INFERRED), allowed, keep_days=True
+            )
+            if unlisted is not None:
+                logger.warning("an entry tidying merged into could not be given its line in the index")
+            return "made", self._marks_now(project, (source.id, target.id))
+        # Both in effect, or both pending.
+        pending = target.status == ENTRY_PENDING
+        rested, untold = _recorded(source.evidence, source.evidence_outside, allowed)
+        carried = _Known(
+            confidence=source.confidence,
+            evidence=tuple(rested),
+            untold=tuple(untold),
+            outside=source.evidence_outside,
+            # Who saw it, as an entry counts them: one that names nobody
+            # was seen by the commissions it came from, unless it waits.
+            seen_before=source.seen_by if pending else (source.seen_by or source.sources),
+            sources_before=source.sources,
+            noted=source.noted,
+        )
+        into: Entry = target
+        for part in parts:
+            try:
+                into, _how = self._file_entry(
+                    project,
+                    title=target.title,
+                    content=part,
+                    kind=target.type,
+                    into=into,
+                    known=carried,
+                    pending=pending,
+                    # A guess waits from when it was last filed, not from today.
+                    dated=(source.created, source.updated) if pending else None,
+                    allowed=allowed,
+                    added_on=days.get(part),
+                )
+            except _LineNotAdded as exc:
+                into = exc.entry
+                logger.warning("an entry tidying merged into could not be given its line in the index")
+        # Its texts are in the other entry: it goes, unless the user saved it since it was read.
+        source_path = paths.memory_dir(project) / f"{source.id}.md"
+        if self._discard_as_read(source_path, before) and source.status == ENTRY_ACTIVE:
+            self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{source.id}.md")
+        if pending:
+            self._tidy_confirm(project, into, allowed)
+        return "made", self._marks_now(project, (source.id, target.id))
+
+    def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool) -> None:
+        """Have a pending entry take effect when enough commissions have seen it by now, or it was verified.
+
+        As one does when a note is filed (``_judged``): where it is, or in
+        the entry in effect of its title (one title is one entry).
+        """
+        from config.nekoclaw_settings import SPACE_SEEN_TO_TAKE_EFFECT
+
+        if entry.status != ENTRY_PENDING:
+            return
+        if entry.seen < SPACE_SEEN_TO_TAKE_EFFECT and entry.confidence != VERIFIED:
+            return
+        directory = self._paths().memory_dir(project)
+        called = next(
+            (
+                other
+                for other in self._entries(directory, project)
+                if other.id != entry.id and other.status == ENTRY_ACTIVE and _normal(other.title) == _normal(entry.title)
+            ),
+            None,
+        )
+        if called is not None:
+            _into, _added, unlisted = self._fold(
+                project, entry, called, _Known(confidence=INFERRED), allowed, keep_days=True
+            )
+        else:
+            _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed)
+        if unlisted is not None:
+            logger.warning("an entry that took effect by tidying could not be given its line in the index")
+
+    def _tidy_outdated(
+        self, project: str | None, entry_id: str, by_id: str, why: Any, marks: dict[str, str]
+    ) -> tuple[str, dict[str, str | None]]:
+        """Have an entry expire because a newer one says otherwise; see ``tidy_entries``."""
+        from config.nekoclaw_settings import SPACE_CONSOLIDATE_REASON_MAX_TOKENS
+
+        if entry_id == by_id:
+            raise _NotMade("an entry does not make itself out of date")
+        paths = self._paths()
+        _before, _said, entry = self._tidy_read(project, entry_id, marks)
+        _by_before, _by_said, by = self._tidy_read(project, by_id, marks)
+        if entry.status == ENTRY_EXPIRED:
+            raise _NotMade(f"{entry.id} has expired already")
+        if by.status != ENTRY_ACTIVE:
+            raise _NotMade(f"{by.id}, which says otherwise, is not in effect")
+        if by.updated < entry.updated:
+            raise _NotMade(f"{by.id}, which says otherwise, is older than {entry.id}")
+        reason = _cut(_one_line(redact(str(why or ""))), SPACE_CONSOLIDATE_REASON_MAX_TOKENS) or by.title
+        mark = marks[entry_id]
+        today = _date(self._clock())
+
+        def change(text: str) -> str:
+            if _text_mark(text) != mark:
+                # Saved by the user meanwhile: what was looked over is not what it says.
+                return text
+            document = _parse_document(text)
+            document.set("status", ENTRY_EXPIRED)
+            document.set("expired", today)
+            document.drop("notice")
+            document.set(_OUTDATED, reason)
+            document.set(_SUPERSEDED_BY, by.id)
+            return _render_document(document)
+
+        path = paths.memory_dir(project) / f"{entry.id}.md"
+        if not self._edit_text(path, change):
+            raise _NotMade(f"{entry.id} changed since it was looked over")
+        # The file first, as for one whose files are gone: one that says it
+        # expired and still has its line loses it at the next look.
+        if entry.status == ENTRY_ACTIVE:
+            self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{entry.id}.md")
+        return "made", self._marks_now(project, (entry.id,))
+
+    def _tidy_retitle(
+        self,
+        project: str | None,
+        entry_id: str,
+        apart_id: str,
+        title: Any,
+        description: Any,
+        marks: dict[str, str],
+    ) -> tuple[str, dict[str, str | None]]:
+        """Give an entry a title and a description that tell it from another; see ``tidy_entries``."""
+        from config.nekoclaw_settings import SPACE_ENTRY_DESCRIPTION_MAX_TOKENS, SPACE_ENTRY_TITLE_MAX_TOKENS
+
+        if entry_id == apart_id:
+            raise _NotMade("an entry is not told apart from itself")
+        paths = self._paths()
+        directory = paths.memory_dir(project)
+        _before, _said, entry = self._tidy_read(project, entry_id, marks)
+        if entry.status == ENTRY_EXPIRED:
+            raise _NotMade(f"{entry.id} has expired")
+        if not (directory / f"{safe_segment(apart_id)}.md").is_file():
+            raise _NotMade(f"{apart_id}, which it is to be told apart from, is not there")
+        name = _cut(_one_line(redact(str(title or ""))), SPACE_ENTRY_TITLE_MAX_TOKENS)
+        line = _cut(_one_line(redact(str(description or ""))), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS)
+        if not _normal(name):
+            raise _NotMade("no title was given")
+        renamed = _normal(name) != _normal(entry.title)
+        if not renamed and (not line or line == entry.description):
+            raise _NotMade("nothing would change")
+        if renamed:
+            # One title is one entry; and a note of a title the user
+            # removed is not kept, which this one would be called by now.
+            if any(_normal(other.title) == _normal(name) for other in self._entries(directory, project) if other.id != entry.id):
+                raise _NotMade("another entry is called that")
+            if _normal(name) in self._removed_of(paths.notes_file(project))[0]:
+                raise _NotMade("the user removed an entry of that title")
+        mark = marks[entry_id]
+
+        def change(text: str) -> str:
+            if _text_mark(text) != mark:
+                return text
+            document = _parse_document(text)
+            document.set("name", name)
+            if line:
+                document.set("description", line)
+            return _render_document(document)
+
+        path = directory / f"{entry.id}.md"
+        if not self._edit_text(path, change):
+            raise _NotMade(f"{entry.id} changed since it was looked over")
+        if entry.status == ENTRY_ACTIVE:
+            target = f"{paths.MEMORY_DIR}/{entry.id}.md"
+            self._index_set(paths.index(project), _index_line(name, target, line or entry.description), target)
+        return "made", self._marks_now(project, (entry.id,))
+
+    def _tidy_date(
+        self, project: str | None, entry_id: str, old: Any, new: Any, marks: dict[str, str]
+    ) -> tuple[str, dict[str, str | None]]:
+        """Replace words that say a time relative to when they were written by a date; see ``tidy_entries``."""
+        from config.nekoclaw_settings import SPACE_CONSOLIDATE_DATE_MAX_TOKENS
+        from utils.tokenize import count_tokens
+
+        said, put = _plain_lines(str(old or "")).strip(), _one_line(redact(str(new or "")))
+        if not said or "\n" in said or not put or said == put:
+            raise _NotMade("no words to replace, or nothing to replace them with")
+        if max(count_tokens(said), count_tokens(put)) > SPACE_CONSOLIDATE_DATE_MAX_TOKENS:
+            raise _NotMade("the words, or what replaces them, are too long")
+        if not _A_DATE.search(put):
+            raise _NotMade("what replaces the words has no date")
+        _before, document, entry = self._tidy_read(project, entry_id, marks)
+        if entry.status == ENTRY_EXPIRED:
+            raise _NotMade(f"{entry.id} has expired")
+        if document.body.count(said) != 1:
+            raise _NotMade(f"the words do not stand in {entry.id} once")
+        body = document.body.replace(said, put, 1)
+        kept = _listed(document, "texts")
+        texts = _texts_of(document.body, kept)
+        marked: list[str] | None = None
+        if texts is not None:
+            at = [number for number, text in enumerate(texts) if said in text]
+            if len(at) != 1:
+                raise _NotMade(f"the words do not stand in one text of {entry.id}")
+            changed = [*texts]
+            changed[at[0]] = texts[at[0]].replace(said, put, 1)
+            marked = [*kept]
+            marked[at[0]] = _digest(changed[at[0]])
+            if _texts_of(body, marked) != changed:
+                marked = None
+        if marked is None:
+            # Its texts cannot be told apart (rewritten in an editor): as
+            # when the user gives it a new text (``edit_entry``).
+            standing = _standing_marks(body, kept)
+            marked = [item for item in kept if standing is None or item in standing]
+            if _digest(body) not in marked:
+                marked.append(_digest(body))
+        mark = marks[entry_id]
+
+        def change(text: str) -> str:
+            if _text_mark(text) != mark:
+                return text
+            replaced = _parse_document(text)
+            replaced.body = body
+            replaced.set("texts", ", ".join(marked))
+            return _render_document(replaced)
+
+        path = self._paths().memory_dir(project) / f"{entry.id}.md"
+        if not self._edit_text(path, change):
+            raise _NotMade(f"{entry.id} changed since it was looked over")
+        return "made", self._marks_now(project, (entry.id,))
 
     # -- for the console: rules and indexes -------------------------------
 
