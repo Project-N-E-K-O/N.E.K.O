@@ -86,7 +86,8 @@ on uncommitted changes in this repository. Do not commit for the user
 unasked; report the actual result.
 Build a package with `{build_command}`.
 Route B: none of these `neko-plugin` commands run. If `README.md` shows a
-pinned `uvx ruff==...` line, run it: that lint needs only `uv`. Review the
+pinned `uvx ruff==...` line, run it: that lint needs only `uv` (its version
+is fixed when the project is generated and can trail Market CI). Review the
 code against the constraints above, then ask the user to Start/Reload and
 report back; packages come from Build package in the Plugin studio.
 

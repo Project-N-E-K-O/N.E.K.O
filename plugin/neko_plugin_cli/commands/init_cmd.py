@@ -93,7 +93,11 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
             "プレビューのみ（書き込みなし）"
         ),
     )
-    setup_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing support files")
+    setup_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing support files, including AGENTS.md, CLAUDE.md and the skill snapshot",
+    )
     setup_parser.add_argument("--git", action="store_true", help="Initialize a git repository if this plugin directory does not have its own")
     setup_parser.add_argument("--remote", help="Add a git remote named origin after --git initialization")
     setup_parser.add_argument("--no-readme", action="store_true", help="Do not generate README.md")
