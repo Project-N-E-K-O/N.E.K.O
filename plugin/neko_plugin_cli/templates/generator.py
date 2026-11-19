@@ -205,8 +205,13 @@ def generate_repo_support_files(
     *,
     repo_root: Path,
     overwrite: bool = False,
+    skipped_agent_kit: list[Path] | None = None,
 ) -> list[Path]:
-    """Generate repository support files for an existing plugin directory."""
+    """Generate repository support files for an existing plugin directory.
+
+    Agent kit targets kept because they exist (without ``overwrite``) are
+    appended to ``skipped_agent_kit`` as relative paths.
+    """
     if not target_dir.is_dir():
         raise FileNotFoundError(f"plugin directory not found: {target_dir}")
 
@@ -294,8 +299,13 @@ def generate_repo_support_files(
     for relative, content in agent_kit_files.items():
         path = target_dir / relative
         if path.is_symlink():
-            # e.g. CLAUDE.md -> AGENTS.md: writing through it would replace
-            # the link target with the wrong guide.
+            # e.g. CLAUDE.md -> AGENTS.md: writing through it would replace the
+            # link target with the wrong guide. Deliberate, so not reported:
+            # --overwrite keeps it too.
+            continue
+        if path.exists() and not overwrite:
+            if skipped_agent_kit is not None:
+                skipped_agent_kit.append(relative)
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_support_file(path, content, created=created, overwrite=overwrite)

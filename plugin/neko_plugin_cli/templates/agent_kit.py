@@ -36,6 +36,11 @@ CLAUDE_TEMPLATE_NAME = "CLAUDE.md.tmpl"
 # editor swap files.
 SKILL_IGNORE_PATTERNS = (".*", "__pycache__", "*.pyc", "*.pyo")
 
+# Official sources of the kit files, shown when setup-repo keeps a user's
+# existing copy. main, not a tag: the CLI version maps to no repository tag.
+SOURCE_URL_PREFIX = "https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/"
+_GUIDES_SOURCE = "plugin/neko_plugin_cli/templates/agent_guides"
+
 # Written into the snapshot's SKILL.md when it is rendered, never into the
 # authored file, so check can flag stale snapshots. Preferred form: an Agent
 # Skills ``metadata`` entry; if the frontmatter already has a ``metadata`` key
@@ -146,6 +151,17 @@ def snapshot_cli_version(skill_entry: str) -> str | None:
                 break
     comment = _COMMENT_STAMP_RE.match(skill_entry, position)
     return comment.group(1) if comment else None
+
+
+def source_url(relative: Path) -> str | None:
+    """GitHub URL of the authored file behind a kit target path, or None."""
+    guides = {Path("AGENTS.md"): AGENTS_TEMPLATE_NAME, Path("CLAUDE.md"): CLAUDE_TEMPLATE_NAME}
+    if relative in guides:
+        return f"{SOURCE_URL_PREFIX}{_GUIDES_SOURCE}/{guides[relative]}"
+    if relative.parts[: len(SKILL_TARGET_DIR.parts)] == SKILL_TARGET_DIR.parts:
+        authored = Path(".agent") / "skills" / SKILL_NAME / relative.relative_to(SKILL_TARGET_DIR)
+        return f"{SOURCE_URL_PREFIX}{authored.as_posix()}"
+    return None
 
 
 def render_claude_md() -> str:

@@ -1914,7 +1914,53 @@ def test_refresh_hint_never_prints_a_windows_path_cmd_would_expand(
     assert "%K%" not in fix
 
 
-def test_setup_repo_overwrite_leaves_symlinked_guides_alone(tmp_path: Path) -> None:
+def test_setup_repo_points_kept_agent_kit_files_at_their_official_sources(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path / "repo", "kept_kit")
+    setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
+
+    assert neko_plugin_cli.main(setup_args) == 0
+    assert "[SKIPPED]" not in capsys.readouterr().out
+
+    (plugin_dir / "AGENTS.md").write_text("# my guide\n", encoding="utf-8")
+    reference = plugin_dir / agent_kit.SKILL_TARGET_DIR / "references" / "runtime-model.md"
+    reference.unlink()
+    assert neko_plugin_cli.main(setup_args) == 0
+    out = capsys.readouterr().out
+    prefix = agent_kit.SOURCE_URL_PREFIX
+    assert (
+        f"[SKIPPED] AGENTS.md -> {prefix}plugin/neko_plugin_cli/templates/agent_guides/AGENTS.md.tmpl" in out
+    )
+    assert (
+        f"[SKIPPED] .agents/skills/neko-plugin/SKILL.md -> {prefix}.agent/skills/neko-plugin/SKILL.md" in out
+    )
+    # The missing reference was written, so it is not reported as kept.
+    assert "references/runtime-model.md ->" not in out
+    assert out.count("[SKIPPED]") == len(agent_kit.skill_files()) + 1  # + CLAUDE.md
+    assert "--overwrite" in out
+    assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == "# my guide\n"
+
+    assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
+    assert "[SKIPPED]" not in capsys.readouterr().out
+
+
+def test_agent_kit_source_urls_name_files_in_this_repository() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    targets = [Path("AGENTS.md"), Path("CLAUDE.md"), *agent_kit.skill_files()]
+
+    for target in targets:
+        url = agent_kit.source_url(target)
+        assert url is not None and url.startswith(agent_kit.SOURCE_URL_PREFIX), target
+        assert (repo_root / url.removeprefix(agent_kit.SOURCE_URL_PREFIX)).is_file(), url
+    assert agent_kit.source_url(Path("README.md")) is None
+
+
+def test_setup_repo_overwrite_leaves_symlinked_guides_alone(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     plugin_dir = _make_plugin_dir(tmp_path / "repo", "linked_kit")
     setup_args = ["setup-repo", str(plugin_dir), "--no-readme", "--no-tests", "--no-gitignore", "--no-vscode"]
     assert neko_plugin_cli.main(setup_args) == 0
@@ -1928,6 +1974,7 @@ def test_setup_repo_overwrite_leaves_symlinked_guides_alone(tmp_path: Path) -> N
 
     assert neko_plugin_cli.main([*setup_args, "--overwrite"]) == 0
 
+    assert "CLAUDE.md ->" not in capsys.readouterr().out
     assert claude_md.is_symlink()
     assert (plugin_dir / "AGENTS.md").read_text(encoding="utf-8") == agents_md
 
