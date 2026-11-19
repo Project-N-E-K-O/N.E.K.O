@@ -278,7 +278,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         _has_running = _tool_group_in_use
 
         try:
-            probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)
+            probe_result = await asyncio.get_running_loop().run_in_executor(None, _probe)
             # Tolerate legacy bool returns in case some probe implementation
             # hasn't been migrated yet (defense-in-depth: the only real probe
             # — AgentModelProbe.check_connectivity — already returns a tuple).
