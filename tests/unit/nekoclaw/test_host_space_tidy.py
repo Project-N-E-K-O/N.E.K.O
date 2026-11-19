@@ -1225,10 +1225,11 @@ async def test_an_entry_saved_as_its_line_is_taken_out_keeps_its_line(world, mon
     other_path = world.memory() / f"{other}.md"
     index_remove = TaskAgentSpace._index_remove
 
-    def saved_meanwhile(self: Any, index: Path, target: str) -> None:
-        index_remove(self, index, target)
+    def saved_meanwhile(self: Any, index: Path, target: str, **kwargs: Any) -> Any:
+        removed = index_remove(self, index, target, **kwargs)
         if other in target:
             other_path.write_text(other_path.read_text(encoding="utf-8") + "\nSaved by hand.\n", encoding="utf-8")
+        return removed
 
     monkeypatch.setattr(TaskAgentSpace, "_index_remove", saved_meanwhile)
     world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
@@ -1345,11 +1346,12 @@ async def test_an_entry_merged_into_one_saved_as_its_line_was_taken_out_stays(wo
     index_remove = TaskAgentSpace._index_remove
     saved: list[str] = []
 
-    def saved_meanwhile(self: Any, index: Path, line_of: str) -> None:
-        index_remove(self, index, line_of)
+    def saved_meanwhile(self: Any, index: Path, line_of: str, **kwargs: Any) -> Any:
+        removed = index_remove(self, index, line_of, **kwargs)
         if line_of == f"memory/{other}.md":
             saved.append(target.read_text(encoding="utf-8"))
             target.write_text(saved[-1].split("## ")[0].rstrip() + "\n\nSaved by hand.\n", encoding="utf-8")
+        return removed
 
     monkeypatch.setattr(TaskAgentSpace, "_index_remove", saved_meanwhile)
     world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
@@ -1871,11 +1873,12 @@ async def test_an_entry_kept_from_a_merge_gets_no_line_the_user_took_out(world, 
     index_remove = TaskAgentSpace._index_remove
     saved: list[bool] = []
 
-    def saved_meanwhile(self: Any, index: Path, line_of: str) -> None:
-        index_remove(self, index, line_of)
+    def saved_meanwhile(self: Any, index: Path, line_of: str, **kwargs: Any) -> Any:
+        removed = index_remove(self, index, line_of, **kwargs)
         if line_of == f"memory/{other}.md":
             saved.append(True)
             target.write_text(target.read_text(encoding="utf-8").split("## ")[0].rstrip() + "\n\nSaved by hand.\n", encoding="utf-8")
+        return removed
 
     monkeypatch.setattr(TaskAgentSpace, "_index_remove", saved_meanwhile)
     world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
@@ -2212,3 +2215,35 @@ async def test_a_line_added_before_a_try_after_it_failed_is_not_added_again(worl
     await world.space.settle_tidied(None)
 
     assert f"memory/{one}.md" not in await world.space.read_index(None)
+
+
+async def test_a_line_put_back_from_a_merge_is_the_line_as_the_user_last_worded_it(world, monkeypatch):
+    one = await world.active("Build with make", "Run make in the root.")
+    other = await world.active("Make from the root", "make only works from the repository root.")
+    target = world.memory() / f"{one}.md"
+    index = world.memory().parent / "MEMORY.md"
+    mine = f"- [Make from the root](memory/{other}.md) — mine: never from src"
+    index_remove = TaskAgentSpace._index_remove
+    saved: list[bool] = []
+
+    def reworded_then_saved(self: Any, path: Path, line_of: str, **kwargs: Any) -> Any:
+        if line_of == f"memory/{other}.md" and not saved:
+            saved.append(True)
+            # The user rewords the line just before it is taken out...
+            text = index.read_text(encoding="utf-8")
+            line = next(item for item in text.split("\n") if line_of in item)
+            index.write_text(text.replace(line, mine), encoding="utf-8")
+            removed = index_remove(self, path, line_of, **kwargs)
+            # ...and saves the entry it went into, without what went in.
+            target.write_text(target.read_text(encoding="utf-8").split("## ")[0].rstrip() + "\n\nSaved by hand.\n", encoding="utf-8")
+            return removed
+        return index_remove(self, path, line_of, **kwargs)
+
+    monkeypatch.setattr(TaskAgentSpace, "_index_remove", reworded_then_saved)
+    world.answer(lambda shown: [{"op": "merge", "from": shown["Make from the root"], "into": shown["Build with make"]}])
+
+    await world.tidy()
+
+    assert saved
+    assert (world.memory() / f"{other}.md").exists()
+    assert mine in await world.space.read_index(None)

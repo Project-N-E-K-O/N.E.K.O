@@ -2503,16 +2503,35 @@ class TaskAgentSpace:
         marks = _index_marks(target)
         return next((item for item in text.split("\n") if _points_at(item, marks)), None)
 
-    def _index_remove(self, index: Path, target: str) -> None:
+    def _index_remove(self, index: Path, target: str, *, told: bool = False) -> str | None:
+        """Take the lines that point at ``target`` out of an index. Returns the first, as it was when it was taken out, or None.
+
+        Told only when ``told`` is given. As it was in the text the last
+        write that took it out was made from: a line the user reworded
+        meanwhile is returned as they worded it.
+        """
         marks = _index_marks(target)
+        # Of each text a try made, the line it took out.
+        tried: dict[str, str] = {}
+        removed: list[str] = []
 
         def change(text: str) -> str:
             if not text:
                 return text
-            return "\n".join(item for item in text.split("\n") if not _points_at(item, marks))
+            lines = text.split("\n")
+            gone = [item for item in lines if _points_at(item, marks)]
+            result = "\n".join(item for item in lines if not _points_at(item, marks))
+            if gone:
+                tried[result] = gone[0]
+            return result
 
-        if index.exists():
+        if not index.exists():
+            return None
+        if told:
+            self._edit_text(index, change, wrote=lambda text: removed.append(tried[text]))
+        else:
             self._edit_text(index, change)
+        return removed[-1] if removed else None
 
     # -- entries ----------------------------------------------------------
 
@@ -5288,8 +5307,7 @@ class TaskAgentSpace:
             line = None
             if source.status == ENTRY_ACTIVE:
                 # As the user may have worded it, to be put back as it was.
-                line = self._index_line_in(self._read_text(index) or "", line_of)
-                self._index_remove(index, line_of)
+                line = self._index_remove(index, line_of, told=True)
             if as_merged() is None:
                 # Saved as the line was taken out: looked at again right
                 # before what holds the texts goes, and it stays with its line.
