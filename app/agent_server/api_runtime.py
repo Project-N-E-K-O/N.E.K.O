@@ -26,6 +26,8 @@ import math
 import threading
 from collections import OrderedDict
 
+from utils.shutdown_steps import ShutdownCancellationBudget, run_shutdown_step
+
 from .api_shared import (  # noqa: F401
     AgentServerEventBridge,
     Any,
@@ -694,8 +696,13 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
-    from config.nekoclaw_settings import BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, BROWSER_KILL_AT_SHUTDOWN_SECONDS
+    from config.nekoclaw_settings import (
+        BROWSER_CLOSE_AT_SHUTDOWN_SECONDS,
+        BROWSER_KILL_AT_SHUTDOWN_SECONDS,
+        KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS,
+    )
 
+    keys_retry_until = asyncio.get_running_loop().time() + KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS
     # Set first: whatever the steps below take, and whether or not the event
     # loop gets round to them, the browser the tools started does not outlive
     # this process (see ``BROWSER_KILL_AT_SHUTDOWN_SECONDS``). Cancelled once
@@ -718,94 +725,147 @@ async def shutdown():
             logger.debug(f"[loop-stall] watchdog stop failed: {e}")
         _loop_stall_watchdog = None
 
-    try:
-        from utils.token_tracker import TokenTracker
-        TokenTracker.get_instance().save()
-    except Exception:
-        pass
+    cancellation = None
+    # Keep the launcher's last-resort budget: Main/Memory/Agent have 20/12/8
+    # seconds, leaving three seconds of cancellation grace below its 45 s cap.
+    cancellation_budget = ShutdownCancellationBudget(3.0)
+
+    async def step(factory, what):
+        nonlocal cancellation
+        cancellation = await run_shutdown_step(
+            factory,
+            what=what,
+            deadline_monotonic=None,
+            pending_cancellation=cancellation,
+            cancelled_budget_seconds=3.0,
+            cancellation_budget=cancellation_budget,
+            logger=logger,
+        )
 
     # The host first, while the plugin server it cancels runs on and the
     # bridge it reports through are still up. Bounded: see
     # HOST_SHUTDOWN_BUDGET_SECONDS. A no-op when nothing ever built the host.
-    await shutdown_nekoclaw_host()
+    await step(shutdown_nekoclaw_host, "Agent host cleanup")
+    # Keys can only be held by calls the host has just stopped. Release them
+    # now, local and quick, ahead of the steps that may spend the cancellation
+    # budget; like ``aclose``, keys first and the browser afterwards.
+    keys_released = False
+    keys_tried = False
+
+    async def release_held_keys():
+        nonlocal keys_released, keys_tried
+        keys_tried = True
+        keys_released = await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
+
+    await step(release_held_keys, "Agent held keys release")
+    if not keys_tried:
+        # The host's cleanup took all of the cancellation budget, so the step
+        # was skipped. Releasing the keys must not be: it is handed to a
+        # thread of its own and not waited for, like queueing the final save.
+        builtin_provider.release_keys_unwaited()
 
     for t in list(Modules._persistent_tasks):
         if not t.done():
             t.cancel()
 
-    try:
-        await _ensure_plugin_lifecycle_stopped()
-    except Exception as e:
-        logger.warning(f"[Agent] Plugin lifecycle cleanup error: {e}")
-
-    try:
-        await _stop_embedded_user_plugin_server()
-    except Exception as e:
-        logger.warning(f"[Agent] Embedded user plugin server cleanup error: {e}")
+    await step(_ensure_plugin_lifecycle_stopped, "Agent plugin lifecycle cleanup")
+    await step(_stop_embedded_user_plugin_server, "Agent embedded plugin server cleanup")
 
     bridge = Modules.agent_bridge
     if bridge is not None:
-        try:
+        async def stop_bridge():
             await bridge.stop()
             Modules.agent_bridge = None
             logger.debug("[Agent] ✅ ZMQ event bridge cleaned up")
-        except Exception as e:
-            logger.warning("[Agent] ⚠️ ZMQ event bridge cleanup error: %s", e)
+        await step(stop_bridge, "Agent ZMQ event bridge cleanup")
 
     all_tasks = list(Modules._persistent_tasks) + list(Modules._background_tasks)
     tasks_to_await = [t for t in all_tasks if not t.done()]
     for t in tasks_to_await:
         t.cancel()
     if tasks_to_await:
-        try:
+        async def drain_tasks():
             await asyncio.wait_for(
                 asyncio.gather(*tasks_to_await, return_exceptions=True),
                 timeout=5.0,
             )
-        except asyncio.TimeoutError:
-            logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
+        await step(drain_tasks, "Agent background task cleanup")
     Modules._persistent_tasks.clear()
     Modules._background_tasks.clear()
 
-    # The browser the tools started stays open between tasks; it is closed
-    # at service shutdown, along with keys a stopped call left held. The
-    # host's shutdown above has cancelled every call that was under way.
-    # The launcher ends this process a few seconds after it began to shut
-    # down, and a browser that is still closing then would run on with
-    # nobody to close it. It is asked to close within what is left before
-    # the time it is killed at, and killed when it has not; with nothing
-    # left (the steps above took it all) it is not asked at all.
-    left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
-    closed_in_time = False
-    if left > 0:
-        try:
-            await asyncio.wait_for(_close_browser(), timeout=left)
-            closed_in_time = True
-        except asyncio.TimeoutError:
-            pass  # Killed just below, like one there was no time left to ask.
-    if not closed_in_time:
-        logger.warning("[Agent] The browser did not close in time; killing it")
-    elif builtin_provider.browser_unclosed():
-        # It was asked in time and closing it failed. The browser is then
-        # kept to be closed the next time, and at a shutdown there is none.
+    async def close_builtin_tools():
+        # The browser the tools started stays open between tasks; it is closed
+        # at service shutdown. The host's shutdown above has cancelled every
+        # call that was under way.
+        # The launcher ends this process a few seconds after it began to shut
+        # down, and a browser that is still closing then would run on with
+        # nobody to close it. It is asked to close within what is left before
+        # the time it is killed at, and killed when it has not; with nothing
+        # left (the steps above took it all) it is not asked at all.
+        left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
         closed_in_time = False
-        logger.warning("[Agent] The browser could not be closed; killing it")
-    if not closed_in_time:
-        try:
-            await asyncio.to_thread(builtin_provider.kill_browser)
-        except Exception as e:
-            logger.warning(f"[Agent] Killing the browser failed: {e}")
-    browser_last_resort.cancel()
-    # Only the keys now. The browser has been dealt with: asked to close once
-    # more (as ``aclose`` would), a browser that was just killed would be
-    # waited for all over again.
+        if left > 0:
+            try:
+                await asyncio.wait_for(_close_browser(), timeout=left)
+                closed_in_time = True
+            except asyncio.TimeoutError:
+                pass  # Killed just below, like one there was no time left to ask.
+        if not closed_in_time:
+            logger.warning("[Agent] The browser did not close in time; killing it")
+        elif builtin_provider.browser_unclosed():
+            # It was asked in time and closing it failed. The browser is then
+            # kept to be closed the next time, and at a shutdown there is none.
+            closed_in_time = False
+            logger.warning("[Agent] The browser could not be closed; killing it")
+        if not closed_in_time:
+            try:
+                await asyncio.to_thread(builtin_provider.kill_browser)
+            except Exception as e:
+                logger.warning(f"[Agent] Killing the browser failed: {e}")
+        browser_last_resort.cancel()
+        # Keys were released right after the host stopped (see above). Not
+        # ``aclose``: a browser that was just killed would be waited for again.
+
+    await step(close_builtin_tools, "Agent built-in tools cleanup")
+    if not keys_released:
+        # Something was still held (a key that would not come up, or a call
+        # whose thread was still at the keyboard): one more try, within what
+        # is left before ``KEYS_RETRY_UNTIL_SHUTDOWN_SECONDS`` (the shared
+        # budget only starts once the launcher cancels, which is after it has
+        # already given up on this process) and the cancellation budget. Not when the
+        # first one let go of everything. What is left is read in the retry
+        # itself, when it gets to run, not when it is scheduled.
+        async def retry_held_keys():
+            nonlocal keys_released
+            now = asyncio.get_running_loop().time()
+            deadline = min(now + 2.0, keys_retry_until)
+            if deadline <= now:
+                logger.warning("[Agent] Held keys release retry skipped: no time left before the launcher ends the process")
+                return
+            # Awaited in this task (no ``wait_for`` child that could start
+            # after the deadline and still hand the release to a thread).
+            async with asyncio.timeout_at(deadline):
+                keys_released = await builtin_provider.release_keys()
+
+        await step(retry_held_keys, "Agent held keys release retry")
+
     try:
-        await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
-    except Exception as e:
-        logger.warning(f"[Agent] Built-in tools cleanup error: {e}")
+        from utils.token_tracker import TokenTracker
+
+        # Submitting must survive an already exhausted cancellation budget.
+        token_save = TokenTracker.get_instance().submit_save(report_timeout=1.0)
+
+        async def save_stats():
+            await asyncio.shield(asyncio.wrap_future(token_save))
+
+        await step(save_stats, "Agent token usage save")
+    except Exception as exc:
+        logger.warning("[Agent] Token usage save failed during shutdown: %s", exc)
 
     logger.info("[Agent] Shutdown cleanup complete")
-    await _emit_agent_status_update()
+    await step(_emit_agent_status_update, "Agent final status")
+    if cancellation is not None:
+        raise cancellation
 
 
 @app.get("/health")
