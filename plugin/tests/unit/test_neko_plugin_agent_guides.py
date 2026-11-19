@@ -96,9 +96,26 @@ def test_extension_is_only_mentioned_as_removed(path: Path) -> None:
     assert not offenders, f"the extension package type was removed: {offenders}"
 
 
+def _command_table_names(text: str) -> set[str]:
+    """First word of each backticked item in the first cell of a "| Command |" table."""
+    names: set[str] = set()
+    in_table = False
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            in_table = False
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if cells[0] == "Command":
+            in_table = True
+        elif in_table and not set(cells[0]) <= set("-: "):
+            names.update(re.findall(r"`([a-z][a-z0-9-]*)", cells[0]))
+    return names
+
+
 @pytest.mark.parametrize("path", _guide_files(), ids=_file_id)
 def test_named_subcommands_are_registered(path: Path) -> None:
-    mentioned = set(_SUBCOMMAND.findall(path.read_text(encoding="utf-8")))
+    text = path.read_text(encoding="utf-8")
+    mentioned = set(_SUBCOMMAND.findall(text)) | _command_table_names(text)
     unknown = sorted(mentioned - _registered_subcommands())
     assert not unknown, f"neko-plugin subcommands not registered in cli.py: {unknown}"
 

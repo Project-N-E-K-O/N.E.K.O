@@ -8,9 +8,10 @@ how to test is in `plugin-checks-and-tests.md`; creating a plugin is in
 
 The CLI runs only from a N.E.K.O source checkout: `uv run neko-plugin
 <command> <plugin>` from the checkout root, where `<plugin>` is an id under
-the checkout's plugin root or a path to `<plugin_dir>`. A plugin project
-created outside the checkout has the exact lines in its `AGENTS.md` (Verify):
-reuse them and change only the subcommand. Confirm arguments with
+the checkout's plugin root or a path to `<plugin_dir>`. For a plugin project
+created outside the checkout while a checkout is reachable (Route A in
+`AGENTS.md`), its Verify block has the exact lines: reuse them and change only
+the subcommand. Confirm arguments with
 `--help`; help output may be preceded by app start-up log lines, which are
 not a failure unless the command exits non-zero or prints `[FAIL]`.
 

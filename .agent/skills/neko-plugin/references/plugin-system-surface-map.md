@@ -49,7 +49,7 @@ Every path comes from the SDK because the plugin's location and the user's data 
 |---|---|---|
 | S `data_path(*parts)` | persistent plugin data (`<storage_dir>/data/...`) | yes |
 | S `cache_path(*parts)` | disposable cache (`<storage_dir>/cache/...`) | yes; may be cleared |
-| A `runtime_config_path` (property) | the plugin's runtime config file; read and write it through `await self.config...` instead | via `self.config` |
+| A `runtime_config_path` (property) | the plugin's runtime config file | yes; prefer reading and writing it through `await self.config...` |
 | B `storage_dir` (property) | the per-plugin user storage root holding the three above | through the helpers above |
 | S `plugin_dir` (property) | the installed payload: `plugin.toml`, code, shipped assets | **no**: an upgrade replaces it, and in a project it is the Git working tree |
 | C `config_dir` (property) | compatibility alias of `plugin_dir` | **no**; use `plugin_dir` in new code |

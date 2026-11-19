@@ -14,7 +14,10 @@ Source: [validate_cmd.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/p
 - Folder/id mismatch (for plugins in the checkout's built-in plugin folder).
 - The entry module and class exist, the class has `@neko_plugin`, and its base
   matches the type (`NekoPluginBase`, `NekoAdapterPlugin`; a warning).
-- Missing startup/shutdown lifecycle hooks (warnings).
+- Other decorators, from the source text: `@lifecycle` ids must be one of
+  `startup`, `shutdown`, `reload`, `freeze`, `unfreeze`, `config_change`;
+  `@timer_interval` needs an `id` and a literal integer `seconds > 0`;
+  `@message` needs an `id`.
 - Python syntax of the plugin's `.py` files outside `vendor/`, virtualenvs,
   and caches.
 - Best-effort `@plugin_entry` checks from the source text: entry ids
@@ -36,8 +39,8 @@ hash verification; Market-specific rules are in `dependencies-and-market.md`.
 
 - Entries must be `async def` at call time; `check` finds decorated entries
   but does not run them. Run a test that calls the entry.
-- Only `@plugin_entry` is analysed. Lifecycle, timer, message, hook, UI, and
-  adapter decorators are not; do not infer coverage for them.
+- Beyond the ids and literals above, decorators are not analysed: hooks, UI
+  decorators, adapter decorators, and handler bodies get no checks.
 - `input_schema` is checked only as a literal dict, shallowly; runtime input
   validation needs `params=Model`.
 - Mutual exclusion is checked by keyword presence, not by values.

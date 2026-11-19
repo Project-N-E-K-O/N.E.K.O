@@ -27,8 +27,8 @@ code disagree, the code wins.
 - **Pure Python only.** The Market release workflow rebuilds `vendor/` with
   `sync --clean` on a Linux runner
   ([plugin-market-release.yml](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/.github/workflows/plugin-market-release.yml)),
-  so a compiled wheel would ship Linux binaries to Windows and macOS users,
-  and the Market rejects binary files anyway. Prefer a pure-Python library, or
+  so a compiled wheel would ship Linux binaries to Windows and macOS users
+  (and binary files are on the Market's reject list below). Prefer a pure-Python library, or
   call a service over HTTP.
 - **Do not commit `vendor/`.** The generated `.gitignore` excludes it; the
   release workflow and `precheck` regenerate it, so a committed copy only adds
@@ -42,7 +42,7 @@ and the Market workflows
 
 | Item | Rule | Checked by |
 |---|---|---|
-| Plugin id | `^[a-z][a-z0-9_]*$`, at most 100 characters | `check -r` (error); the Market workflows reject it before anything else |
+| Plugin id | `^[a-z][a-z0-9_]*$`, at most 100 characters | `check -r` (error for both); the Market workflows reject an id not matching the pattern before anything else |
 | Version | `[plugin].version`, at most 50 characters | `check -r --market-release` (error) |
 | Release tag | `v<version>` (a leading `v`/`V` is stripped) and equal to `[plugin].version`; the generated release workflow runs only on `v*` tags | the Market workflows fail the release |
 | GitHub repository | conventionally `n.e.k.o_plugin_<id>` | `check -r --market-release` (warning only) |
@@ -53,8 +53,11 @@ Pick it once (see the Identity Lock in `core-plugin-contract.md`).
 
 ## Size and File Limits
 
-The CLI mirrors the Market's limits
-([release_cmd.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/neko_plugin_cli/commands/release_cmd.py)):
+The CLI mirrors the limits of the Market's security scan
+([release_cmd.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/neko_plugin_cli/commands/release_cmd.py)).
+That scan is currently paused on the Market side (it uses its earlier review
+flow), so these limits are not enforced today; it can be switched back on
+without a plugin update, so stay within them:
 
 | Limit | Value |
 |---|---|
