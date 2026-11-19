@@ -139,6 +139,19 @@ async def test_a_session_is_asked_a_question_that_a_copy_of_it_answers_and_it_is
     photos = await _at_rest(host, scripts)
     await host.ledger.update_session(photos.session_id, name="photos")
     before = (Path((await host.ledger.get_session(photos.session_id)).session_dir) / "transcript.jsonl").read_bytes()
+    # What the runtime is handed, and whether as the user's words.
+    runtime = host.task_agents._runtimes.builtin()
+    handed: list[tuple[str, bool]] = []
+    for command in ("prompt", "steer"):
+
+        def noting(original: Any) -> Any:
+            async def send(session_id: str, text: str, **options: Any) -> Any:
+                handed.append((text, options.get("human", True)))
+                return await original(session_id, text, **options)
+
+            return send
+
+        setattr(runtime, command, noting(getattr(runtime, command)))
     requests_before = len(scripts[PHOTOS].requests)
 
     asker = (await _dispatch(host, BUILD)).commission_id
@@ -166,6 +179,11 @@ async def test_a_session_is_asked_a_question_that_a_copy_of_it_answers_and_it_is
     assert answered.startswith('[answer from "photos": completed]')
     assert "\n    2019, 2020 and 2021, under photos/sorted." in answered
     assert "that session itself was not told" in answered
+    # Handed to the asker as no word of the user's: it entitles its run to nothing the user's
+    # words would (setting a goal, say). So is the question handed to the copy.
+    [answer_was_human] = [human for text, human in handed if text.startswith('[answer from "photos"')]
+    [question_was_human] = [human for text, human in handed if text.startswith("Another session asks you a question")]
+    assert answer_was_human is False and question_was_human is False
 
     # The other session is as it was: still resting, nothing said to it, its record untouched.
     assert (await host.ledger.get(photos.id)).resting
@@ -351,6 +369,15 @@ async def test_what_cannot_be_asked_is_refused_with_what_to_do_instead(hosts, tm
     # Switched off.
     monkeypatch.setattr(host.task_agents, "available", lambda: _answer((False, "off")))
     assert await refused("photos") == refusals["switched_off"]
+    monkeypatch.undo()
+    # Nor where the user forbade reading outside the working directory: the copy answers from
+    # the other session's record, which ``read_session`` would not read either.
+    from nekoclaw.host.permissions import DENIED_BY_SETTINGS
+
+    await host.permission_store.set_mode("outside_read", "deny")
+    copies = len(await host.ledger.find_sessions(kind="fork"))
+    assert await refused("photos") == DENIED_BY_SETTINGS
+    assert len(await host.ledger.find_sessions(kind="fork")) == copies
     release.set()
 
 
@@ -510,3 +537,91 @@ async def test_an_asker_stopped_while_the_copy_is_made_has_nothing_started_for_i
     assert (child.status, child.source) == ("cancelled", "ask")
     assert child.id not in host.task_agents._sessions and scripts[QUESTION].requests == []
     release.set()
+
+
+async def test_a_question_whose_asker_is_cancelled_while_it_is_filed_is_answered_all_the_same(hosts, tmp_path):
+    # A tool call of dsh that is given up cancels the callback. The question is filed, given
+    # the copy and handed over all the same: left queued, nobody would start it, and the asker
+    # would wait for its answer for ever.
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    update, entered, go_on = host.ledger.update, asyncio.Event(), asyncio.Event()
+
+    async def slow(commission_id: str, **changes: Any) -> Any:
+        if "session_id" in changes:
+            entered.set()
+            await go_on.wait()
+        return await update(commission_id, **changes)
+
+    host.ledger.update = slow  # type: ignore[method-assign]
+    asking = asyncio.ensure_future(_ask(host, asker))
+    await asyncio.wait_for(entered.wait(), 5)
+    asking.cancel()
+    await asyncio.gather(asking, return_exceptions=True)
+    go_on.set()
+    await wait_until(lambda: _children_of(host, asker.id), what="the question being filed")
+    [child] = await host.ledger.select(parent_id=asker.id)
+    child = await wait_status(host, child.id, "done", "failed", "cancelled", "blocked")
+    assert child.status == "done" and child.session_id
+    host.ledger.update = update  # type: ignore[method-assign]
+    release.set()
+
+
+async def test_a_question_that_cannot_be_handed_over_is_ended_and_not_left_waiting(hosts, tmp_path):
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    update = host.ledger.update
+
+    async def failing(commission_id: str, **changes: Any) -> Any:
+        if "session_id" in changes:
+            raise OSError("the disk is full")
+        return await update(commission_id, **changes)
+
+    host.ledger.update = failing  # type: ignore[method-assign]
+    with pytest.raises(OSError):
+        await _ask(host, asker)
+    host.ledger.update = update  # type: ignore[method-assign]
+    [child] = await host.ledger.select(parent_id=asker.id)
+    assert (child.status, child.status_reason) == (
+        "failed",
+        "the question could not be handed to the copy that was to answer it",
+    )
+    assert scripts[QUESTION].requests == []
+    release.set()
+
+
+async def _children_of(host: Any, commission_id: str) -> bool:
+    return bool(await host.ledger.select(parent_id=commission_id))
+
+
+async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word_of_the_users(hosts, tmp_path):
+    # The asker's session was closed while it waited (an idle runtime closes idle sessions):
+    # the answer takes it up again, and opens its next turn as no word of the user's either.
+    from nekoclaw.host.task_agents import _Unsaid
+
+    scripts = {PHOTOS: _photos()}
+    host = _host(hosts, tmp_path, scripts)
+    photos = await _at_rest(host, scripts)
+    await wait_until(lambda: photos.id not in host.task_agents._sessions, what="its session closing")
+    runtime = host.task_agents._runtimes.builtin()
+    handed: list[tuple[str, bool]] = []
+    prompt = runtime.prompt
+
+    async def noting(session_id: str, text: str, **options: Any) -> Any:
+        handed.append((text, options.get("human", True)))
+        return await prompt(session_id, text, **options)
+
+    runtime.prompt = noting
+    answer = _Unsaid('[answer from "build": completed] It is under dist/.')
+    assert await host.task_agents._wake_working(photos.id, answer, reason="an answer takes it up again") is True
+    await wait_until(lambda: handed, what="it being taken up again")
+    [(text, human)] = handed
+    assert answer in text and human is False

@@ -134,6 +134,7 @@ _SHUT_DOWN_REASON = "the host was shut down"
 _QUOTA_REASON = "the free daily quota of the agent model is used up"
 _STOPPED_MEANWHILE_REASON = "stopped while it was being taken up again"
 _WOKEN_REASON = "it rested; what it waited for takes it up again"
+_ASK_NOT_HANDED_OVER_REASON = "the question could not be handed to the copy that was to answer it"
 # Tools a task agent that another task agent started is not offered: it
 # starts none itself, writes to its own team only (and asks other sessions
 # nothing), and hands its result back when its part is done instead of
@@ -504,6 +505,16 @@ class _Handed(str):
         made = super().__new__(cls, text)
         made.wakes = tuple(wakes)
         return made
+
+
+class _Unsaid(str):
+    """A text nobody said: what a model wrote, which the host hands on (the answer of a copy of another session).
+
+    It goes the way every text for a commission goes, as a ``_Handed``
+    does, and wherever it is sent at last it is sent as no word of the
+    user's (``_send_text``): it carries nobody's permissions, and the run
+    it starts is not one the user spoke in.
+    """
 
 
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
@@ -2075,7 +2086,7 @@ class TaskAgentManager:
             # (A question another session asked, which a copy answers, is
             # what a model wrote.)
             said_first = opens and not opened and commission.source not in ("session", "ask")
-            nobody = not said_first and all(isinstance(piece, _Handed) for piece in session.carried)
+            nobody = not said_first and all(isinstance(piece, (_Handed, _Unsaid)) for piece in session.carried)
             await self._send_text(runtime, session, "prompt", text, opening=opens, wakes=riding, human=not nobody)
             session.ready = True
             # What was passed on while the session was being set up. Like the
@@ -2376,13 +2387,14 @@ class TaskAgentManager:
 
         ``human`` says whether a person wrote the text; left out, a text
         that brings wake requests is taken for one nobody wrote (a note
-        from another session, a time that has come), and every other for
-        the user's. The runtime is told only where it is not: a note
+        from another session, a time that has come), and so is a
+        ``_Unsaid`` (the answer of a copy of another session); every
+        other for the user's. The runtime is told only where it is not: a note
         carries nobody's permissions, and the run it starts is not one
         the user spoke in.
         """
         if human is None:
-            human = not isinstance(text, _Handed)
+            human = not isinstance(text, (_Handed, _Unsaid))
         said = {} if human else {"human": False}
         session.sent += 1
         number = session.sent
@@ -4083,11 +4095,16 @@ class TaskAgentManager:
         # reads as words of the host or of the user.
         nonce = secrets.token_hex(8)
         if commission.source == "ask":
-            # The answer of a copy of another session: named by that session.
-            message = words.frame(
-                words.ASK_ANSWER_FRAME.format(name=await self._asked_name(commission), status=status, nonce=nonce),
-                truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.ASK_ANSWER_NOTHING,
-                nonce,
+            # The answer of a copy of another session: named by that session,
+            # and handed on as no word of the user's, whichever way it goes
+            # (sent at once, kept for when the asker is started, or taking
+            # it up again).
+            message: str = _Unsaid(
+                words.frame(
+                    words.ASK_ANSWER_FRAME.format(name=await self._asked_name(commission), status=status, nonce=nonce),
+                    truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS) or words.ASK_ANSWER_NOTHING,
+                    nonce,
+                )
             )
         else:
             message = words.frame(
@@ -5961,6 +5978,11 @@ class TaskAgentManager:
         caller = await self._caller(session_id)
         if caller.parent_id is not None:
             raise RuntimeError(refusals["from_child"])
+        if await self._permissions.forbidden("outside_read"):
+            # The copy answers from the other session's record, which lies
+            # outside this one's working directory: a user who forbade
+            # reading there has forbidden this too, as for ``read_session``.
+            raise RuntimeError(DENIED_BY_SETTINGS)
         available, _reason = await self.available()
         if not available:
             raise RuntimeError(refusals["switched_off"])
@@ -6003,33 +6025,55 @@ class TaskAgentManager:
         number = 1
         while f"ask-{number}" in taken:
             number += 1
-        child, _created = await self._ledger.create(
-            lanlan_name=caller.lanlan_name,
-            title=_texts(words.SESSION_ASK_TITLE, caller.lang).format(name=target.name),
-            dispatch_text=question,
-            user_text="",
-            source="ask",
-            route="task_agent",
-            parent_id=caller.id,
-            name=f"ask-{number}",
-            project=copy.project,
-            workdir=copy.workdir,
-            conversation_id=caller.conversation_id,
-            lang=caller.lang,
-        )
-        # Worked on in the copy: given it before it is handed over.
-        child = await self._ledger.update(child.id, session_id=copy.id)
-        # As for a task agent it starts (``_cb_subagent_start``): one that
-        # was stopped meanwhile starts nothing.
-        current = await self._ledger.get(caller.id)
-        if current is None or current.status not in ("working", "waiting_user"):
-            await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
-            raise RuntimeError(refusals["over"])
-        await self._ledger.append_event(
-            caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
-        )
-        if not await self.submit(child, wait=False):
-            raise RuntimeError(refusals["no_place"])
+        filed: list[Commission] = []
+
+        async def hand_over() -> str:
+            # Filed, given the copy and handed over in a task of its own,
+            # which whoever asked does not cut short (a tool call of dsh
+            # that is given up is cancelled): a commission left queued
+            # here would be started by nobody, and the one that asked
+            # would wait for its answer for ever. Where a step fails, the
+            # commission that was filed is ended.
+            try:
+                child, _created = await self._ledger.create(
+                    lanlan_name=caller.lanlan_name,
+                    title=_texts(words.SESSION_ASK_TITLE, caller.lang).format(name=target.name),
+                    dispatch_text=question,
+                    user_text="",
+                    source="ask",
+                    route="task_agent",
+                    parent_id=caller.id,
+                    name=f"ask-{number}",
+                    project=copy.project,
+                    workdir=copy.workdir,
+                    conversation_id=caller.conversation_id,
+                    lang=caller.lang,
+                )
+                filed.append(child)
+                # Worked on in the copy: given it before it is handed over.
+                child = await self._ledger.update(child.id, session_id=copy.id)
+                # As for a task agent it starts (``_cb_subagent_start``):
+                # one that was stopped meanwhile starts nothing.
+                current = await self._ledger.get(caller.id)
+                if current is None or current.status not in ("working", "waiting_user"):
+                    await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
+                    return "over"
+                await self._ledger.append_event(
+                    caller.id, "subagent_started", {"name": child.name, "commission_id": child.id, "asks": target.id}
+                )
+                # (One that finds no free place is failed by ``submit``.)
+                return "" if await self.submit(child, wait=False) else "no_place"
+            except BaseException:
+                if filed:
+                    try:
+                        await self._ledger.transition(filed[0].id, "failed", reason=_ASK_NOT_HANDED_OVER_REASON)
+                    except Exception:  # noqa: BLE001 - as much as can be done; the error is raised below
+                        logger.warning("ending a question that could not be handed over failed", exc_info=True)
+                raise
+
+        refusal = await asyncio.shield(self._spawn(hand_over()))
+        if refusal:
+            raise RuntimeError(refusals[refusal])
         return {"message": words.ASK_QUEUED.format(name=target.name)}
 
     async def _asked_name(self, commission: Commission) -> str:
