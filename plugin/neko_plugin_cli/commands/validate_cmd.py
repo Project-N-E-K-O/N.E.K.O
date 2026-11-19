@@ -10,7 +10,11 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from plugin._types.entry_metadata import ENTRY_CONTRACT_FIELDS
+from plugin._types.entry_metadata import (
+    ENTRY_CONTRACT_BOOL_FIELDS,
+    ENTRY_CONTRACT_FIELDS,
+    ENTRY_CONTRACT_MAPPING_FIELDS,
+)
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
@@ -34,7 +38,7 @@ _PLUGIN_ENTRIES_MAX = 1024
 _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 # Fields the registry coerces with bool(), so "false" would read as True.
-_PLUGIN_ENTRY_BOOL_FIELDS = ("auto_start", "enabled", "dynamic", "model_validate", "quick_action")
+_PLUGIN_ENTRY_BOOL_FIELDS = ENTRY_CONTRACT_BOOL_FIELDS
 
 
 def validate_plugin_dir(
@@ -757,7 +761,7 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
                 ))
                 continue
             _warn_unknown_keys(item, allowed, label, issues)
-            _check_entry_field_types(item, label, issues)
+            _check_entry_field_types(item, label, issues, applied=False)
         return
     issues.append((
         "error",
@@ -767,10 +771,42 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
     ))
 
 
-def _check_entry_field_types(item: dict[str, object], label: str, issues: list[tuple[str, str]]) -> None:
+def _check_entry_field_types(
+    item: dict[str, object],
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    applied: bool = True,
+) -> None:
     for key in _PLUGIN_ENTRY_BOOL_FIELDS:
         _check_entry_bool(item.get(key), f"{label}.{key}", issues)
     _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
+    for key in ENTRY_CONTRACT_MAPPING_FIELDS:
+        if key in item and not isinstance(item[key], dict):
+            # Warning, not error: these fields were never checked before.
+            if applied:
+                # The registry coerces a non-table to an empty mapping, silently.
+                message = (
+                    f"{label}.{key} must be a table; the registry replaces any other value with an empty table / "
+                    f"{label}.{key} 必须是表，其他值会被注册表替换为空表 / "
+                    f"{label}.{key} はテーブルである必要があります。それ以外の値は空のテーブルに置き換えられます"
+                )
+            else:
+                message = (
+                    f"{label}.{key} must be a table / {label}.{key} 必须是表 / "
+                    f"{label}.{key} はテーブルである必要があります"
+                )
+            issues.append(("warning", message))
+    # A keyed table is not applied at all (warned separately): no publish hint.
+    for key in ("output_schema", "strict_output") if applied else ():
+        if key in item:
+            # The registry drops it: the output check runs from the decorator.
+            issues.append((
+                "warning",
+                f"{label}.{key} is ignored; declare it on @plugin_entry instead / "
+                f"{label}.{key} 会被忽略，请在 @plugin_entry 上声明 / "
+                f"{label}.{key} は無視されます。@plugin_entry で宣言してください",
+            ))
 
 
 def _check_entry_bool(value: object, label: str, issues: list[tuple[str, str]]) -> None:
@@ -1009,6 +1045,9 @@ def _check_python_decorators(plugin_dir: Path, issues: list[tuple[str, str]]) ->
                     entry_id = _decorator_keyword_string(decorator, "id") or node.name
                     _check_identifier(entry_id, f"@plugin_entry id in {relative}:{node.lineno}", issues)
                     _check_schema_keyword(decorator, "input_schema", f"{relative}:{node.lineno}", issues)
+                    # An entry may return a non-object (a list, a string), so no type='object' hint here.
+                    _check_schema_keyword(decorator, "output_schema", f"{relative}:{node.lineno}", issues, expect_object=False)
+                    _check_output_schema_literal(decorator, f"{relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"input_schema", "params"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     _check_mutually_exclusive(decorator, {"llm_result_fields", "llm_result_model", "fields"}, f"@plugin_entry in {relative}:{node.lineno}", issues)
                     previous = seen_ids.get(entry_id)
@@ -1176,14 +1215,21 @@ def _check_identifier(value: str, label: str, issues: list[tuple[str, str]]) -> 
         issues.append(("warning", f"{label} should contain only A-Z, a-z, 0-9, _, -"))
 
 
-def _check_schema_keyword(decorator: ast.expr, keyword: str, label: str, issues: list[tuple[str, str]]) -> None:
+def _check_schema_keyword(
+    decorator: ast.expr,
+    keyword: str,
+    label: str,
+    issues: list[tuple[str, str]],
+    *,
+    expect_object: bool = True,
+) -> None:
     value = _decorator_keyword_literal(decorator, keyword)
     if value is None:
         return
     if not isinstance(value, dict):
         issues.append(("error", f"{keyword} in {label} must be a dict literal when statically declared"))
         return
-    if value.get("type") != "object":
+    if expect_object and value.get("type") != "object":
         issues.append(("warning", f"{keyword} in {label} should declare type='object'"))
     properties = value.get("properties")
     if properties is not None and not isinstance(properties, dict):
@@ -1191,6 +1237,17 @@ def _check_schema_keyword(decorator: ast.expr, keyword: str, label: str, issues:
     required = value.get("required")
     if required is not None and not isinstance(required, list):
         issues.append(("error", f"{keyword}.required in {label} must be a list"))
+
+
+def _check_output_schema_literal(decorator: ast.expr, label: str, issues: list[tuple[str, str]]) -> None:
+    """An explicit output_schema, like input_schema, is published but not checked at runtime."""
+    if not isinstance(_decorator_keyword_literal(decorator, "output_schema"), dict):
+        return  # not a dict literal: reported by the shape check, or not static
+    issues.append((
+        "warning",
+        f"output_schema in {label} is published only; the runtime does not validate returns against it "
+        f"(annotate the return with a Pydantic model for a runtime check)",
+    ))
 
 
 def _check_mutually_exclusive(decorator: ast.expr, names: set[str], label: str, issues: list[tuple[str, str]]) -> None:

@@ -335,7 +335,7 @@ class SystemSignalCollector:
 
     async def _tick(self) -> None:
         """Read all signals on the executor, then publish one snapshot."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         # Degraded mode: skip the syscalls entirely. On a Windows-remote
         # backend the APIs would happily return data about the *server*,

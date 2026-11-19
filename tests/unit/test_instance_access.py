@@ -1,6 +1,7 @@
 """HTTP/WebSocket regressions for instance ownership and remote OAuth."""
 
 import re
+from html import escape
 
 import pytest
 from fastapi import FastAPI, WebSocket
@@ -10,7 +11,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 import main_routers.card_drop_router as C
 import main_routers.community_oauth as O
-from utils.instance_access import COOKIE, InstanceAccessMiddleware
+from utils.instance_access import COOKIE, InstanceAccessMiddleware, _locale_strings
 
 KEY = "test-only-instance-key-" + "x" * 40
 
@@ -494,6 +495,16 @@ def test_pairing_locale_reads_are_cached(monkeypatch):
         assert reads == ["en.json", "ja.json"]
     finally:
         access._locale_strings.cache_clear()
+
+
+@pytest.mark.parametrize("locale", ["en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"])
+def test_pairing_page_explains_where_to_copy_instance_key(remote_app, locale):
+    page = remote_app.get("/", headers={"Accept": "text/html", "Accept-Language": locale})
+    assert page.status_code == 401
+    hint = escape(_locale_strings(locale)["keyHelp"])
+    assert hint
+    assert f'<p id="instance-access-key-help">{hint}</p>' in page.text
+    assert 'aria-describedby="instance-access-key-help"' in page.text
 
 
 def test_pairing_other_tab_preserves_challenge_and_return_query(remote_app):

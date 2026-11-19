@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from config.prompts.prompts_nekoclaw import REPLY_LANGUAGE_SENTENCE
 from nekoclaw.host.paths import DEFAULT_PROJECT
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
@@ -105,21 +106,30 @@ async def test_an_empty_space_adds_nothing_to_a_task_agents_instructions(hosts, 
 
     system = _system(llm)
     assert SPACE_NOTE not in system and "task_agent_space" not in system
-    # What the host adds is whom the task agent works for and how the gateway is used, word
-    # for word, and says nothing of the commission, which is the message that opens it.
-    assert system.endswith(
-        TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan") + "\n\n" + TASK_AGENT_BRIEF_GATEWAY_NOTE
-    )
-    assert "sort the photos" not in system
-    assert llm.requests[0][-1]["content"].startswith(
+    # What the host adds is how the gateway is used and whom the task agent works for, word
+    # for word, and says nothing of the commission, which is the message that opens it. What
+    # is the session's own (where it works) comes after it, and ends it: the language it
+    # answers in is named in the message that opens the commission.
+    own = TASK_AGENT_BRIEF_GATEWAY_NOTE + "\n\n" + TASK_AGENT_SESSION_FRAME.format(lanlan_name="Lan")
+    assert own + "\n\nWorking directory: " in system
+    assert system.rsplit("\n\n", 1)[-1].startswith("Working directory: ")
+    assert "sort the photos" not in system and "in English" not in system
+    opening = llm.requests[0][-1]["content"]
+    assert opening.startswith(
         f"Commission {receipt.commission_id}\nsort the photos\nWhat the user said: can you sort my photos"
     )
+    assert opening.endswith(REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English"))
 
 
 async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):
     note = _tool(
         "note_lesson",
-        {"title": "Photo dates", "content": "Use the EXIF date, not the file date.", "category": "lesson"},
+        {
+            "title": "Photo dates",
+            "content": "Use the EXIF date, not the file date.",
+            "category": "lesson",
+            "confidence": "verified",
+        },
     )
     first = ScriptedLLM([note, _report()])
     second = ScriptedLLM([_report()])
@@ -152,6 +162,46 @@ async def test_what_was_kept_is_handed_to_the_next_task_agent(hosts, tmp_path):
     assert second.requests[0][-1]["content"].startswith(f"Commission {again.commission_id}\nrename the videos by date\n")
 
 
+async def test_a_lesson_rests_on_the_files_of_the_folder_the_task_agent_works_in(hosts, tmp_path):
+    written = _tool("write", {"file_path": "notes.txt", "content": "sorted by EXIF date\n"}, "w1")
+    seen = _tool(
+        "note_lesson",
+        {
+            "title": "Photo dates",
+            "content": "Use the EXIF date, not the file date.",
+            "category": "lesson",
+            "confidence": "observed",
+            "evidence": ["notes.txt", "missing.txt"],
+        },
+        "n1",
+    )
+    guessed = _tool(
+        "note_lesson",
+        {"title": "Videos", "content": "They may have no date at all.", "category": "lesson", "confidence": "inferred"},
+        "n2",
+    )
+    llm = ScriptedLLM([written, seen, guessed, _report()])
+    host = _host(hosts, tmp_path, llm)
+
+    receipt = await _dispatch(host, "sort the photos")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    # The file is looked for where the task agent works, by the host; the task agent is told what counted.
+    entry, guess = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.confidence, entry.seen_by) == ("photo-dates", "observed", (done.id,))
+    assert entry.evidence == ((Path(done.workdir) / "notes.txt").as_posix(),)
+    assert (
+        "lesson submitted. kept in project _daily as photo-dates.md. Not counted as evidence: missing.txt (not found)."
+    ) in llm.requests[2][-1]["content"]
+    # A guess is kept as a pending entry, in no index, and the task agent is told so.
+    assert (
+        "lesson submitted. not in effect yet: it was filed as inferred. It is kept as videos.md, marked pending "
+        "and in no index."
+    ) in llm.requests[3][-1]["content"]
+    assert (guess.id, guess.status) == ("videos", "pending")
+    assert "Videos" not in await host.space.read_index(DEFAULT_PROJECT)
+
+
 async def test_the_space_and_the_commission_each_keep_within_a_cap_of_their_own(hosts, tmp_path):
     from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS, TASK_AGENT_BRIEF_MAX_TOKENS
     from utils.tokenize import count_tokens
@@ -176,7 +226,7 @@ async def test_the_space_and_the_commission_each_keep_within_a_cap_of_their_own(
     opening = llm.requests[0][-1]["content"]
     said, language = opening.rsplit("\n\n", 1)
     assert said.startswith(f"Commission {receipt.commission_id}\nsort the photos")
-    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language.endswith("in English.")
+    assert count_tokens(said) <= TASK_AGENT_BRIEF_MAX_TOKENS + 2 and language == REPLY_LANGUAGE_SENTENCE.replace("<<LANGUAGE>>", "English")
     assert "Index of project _daily:\n- [Daily 149 d149]" in kept
 
 
@@ -572,9 +622,13 @@ async def test_a_finished_commission_is_reviewed_in_the_background(hosts, tmp_pa
     root = _space_root(tmp_path)
     review = (root / "projects" / DEFAULT_PROJECT / "reviews" / f"{done.id}.md").read_text(encoding="utf-8")
     assert "It looked at the folder three times and sorted the photos." in review
-    assert (root / "projects" / DEFAULT_PROJECT / "memory" / "photo-folders.md").is_file()
+    # What the review made of it names no file of the folder the task agent worked in: it is not in
+    # effect yet, and waits as a pending entry to be found by another commission.
+    assert "Photo folders" not in await host.space.read_index(DEFAULT_PROJECT)
     (event,) = [item for item in await host.ledger.events(done.id) if item.type == "review"]
-    assert event.payload == {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-folders"]}
+    assert event.payload == {"status": "written", "project": DEFAULT_PROJECT, "entries": [], "waiting": 1}
+    (held,) = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (held.title, held.status, held.confidence, held.seen_by) == ("Photo folders", "pending", "inferred", (done.id,))
     # One call of the space's own, counted apart from the decision model's.
     assert [tier for tier, _ in decision_llm.space_calls] == ["review"]
     assert decision_llm.calls == []
@@ -796,3 +850,47 @@ async def test_shutting_down_stands_the_space_down_before_the_task_agents_are_st
     await host.shutdown()
 
     assert stood_down == [True]
+
+
+async def test_the_space_is_told_whether_task_agents_may_read_outside_the_working_directory_unasked(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+
+    # Asked about by default: the space does not look at files out there.
+    assert not await host.space._outside_allowed()
+    await host.permission_store.set_mode("outside_read", "allow")
+    assert await host.space._outside_allowed()
+    # Any other setting is one under which a task agent does not read there unasked.
+    for mode in ("first_ask", "always_ask", "deny"):
+        await host.permission_store.set_mode("outside_read", mode)
+        assert not await host.space._outside_allowed()
+
+
+async def test_a_lesson_may_rest_on_a_file_outside_the_folder_once_reading_there_is_allowed(hosts, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "camera.ini").write_text("drive=E\n", encoding="utf-8")
+    lesson = {
+        "title": "Camera drive",
+        "content": "The camera is drive E, as camera.ini says.",
+        "category": "lesson",
+        "confidence": "observed",
+        "evidence": [str(elsewhere / "camera.ini")],
+    }
+    llm = ScriptedLLM([_tool("note_lesson", lesson, "n1"), _report(), _tool("note_lesson", lesson, "n2"), _report()])
+    host = _host(hosts, tmp_path, llm)
+
+    first = await _dispatch(host, "find the camera")
+    await wait_status(host, first.commission_id, "done")
+
+    # A task agent would have to ask before it reads that file: the host does not look at it either.
+    (guess,) = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (guess.id, guess.status, guess.evidence) == ("camera-drive", "pending", ())
+    assert "(outside the working directory)" in llm.requests[1][-1]["content"]
+
+    await host.permission_store.set_mode("outside_read", "allow")
+    second = await _dispatch(host, "find the camera again")
+    await wait_status(host, second.commission_id, "done")
+
+    (entry,) = await host.space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status, entry.confidence) == ("camera-drive", "active", "observed")
+    assert entry.evidence == entry.evidence_outside == ((elsewhere / "camera.ini").resolve().as_posix(),)

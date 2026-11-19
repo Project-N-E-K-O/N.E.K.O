@@ -167,6 +167,26 @@ def _what_is_old_is_removed_at_once(monkeypatch):
 
 
 @pytest.fixture
+def judged() -> None:
+    """Asked for by a test in which notes are judged as they are in the application; see below."""
+
+
+@pytest.fixture(autouse=True)
+def _what_is_filed_takes_effect_at_once(request, monkeypatch):
+    """Have a note take effect the first time it is seen.
+
+    What a review makes, and what a task agent files, is judged before it
+    becomes an entry (``test_host_space_evidence.py`` is of that): one that
+    names no file that exists waits to be seen a second time. Everything
+    else about reviews and tidying is tested here with entries that are
+    kept at once. The tests under "What a review makes is judged" ask for
+    the rule as it is, with the ``judged`` fixture.
+    """
+    if "judged" not in request.fixturenames:
+        monkeypatch.setattr("config.nekoclaw_settings.SPACE_SEEN_TO_TAKE_EFFECT", 1)
+
+
+@pytest.fixture
 async def world(tmp_path: Path) -> Any:
     made = World(tmp_path, FakeLLM())
     yield made
@@ -655,9 +675,8 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
     system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
     total = count_tokens(system) + count_tokens(user)
     assert total <= TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
-    # What the owner was told: one call per commission, about 4000 tokens in at most; 800
-    # more since what she dispatched and what the user said may be longer (2026-11-18).
-    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 5000
+    # What the owner was told: one call per commission, 7000 tokens in at most.
+    assert TASK_AGENT_REVIEW_INPUT_MAX_TOKENS == 7000
     # The account keeps how it began and how it ended.
     process = user.split("What the task agent did:\n", 1)[1].split("\n\nAlready filed", 1)[0]
     assert count_tokens(process) <= TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS
@@ -716,8 +735,8 @@ def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
 def test_the_review_asks_for_no_more_output_than_was_agreed():
     from config.nekoclaw_settings import SPACE_ARCHIVE_OUTPUT_MAX_TOKENS, TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
 
-    assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 800
-    assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 600
+    assert TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS <= 1500
+    assert SPACE_ARCHIVE_OUTPUT_MAX_TOKENS <= 1800
 
 
 def test_the_two_calls_of_the_space_are_metered_under_their_own_names(monkeypatch):
@@ -747,7 +766,7 @@ def test_the_two_calls_of_the_space_are_metered_under_their_own_names(monkeypatc
     asyncio.run(run())
 
     assert named == ["task_agent_review", "task_agent_archive", "agent"]
-    assert seen[0] == (TIER_REVIEW, 800) and seen[1] == (TIER_ARCHIVE, 600)
+    assert seen[0] == (TIER_REVIEW, 1500) and seen[1] == (TIER_ARCHIVE, 1800)
     # Both run on the summary model, like the fine selection.
     assert {TIER_REVIEW, TIER_ARCHIVE, decision.TIER_FINE} == decision._SUMMARY_TIERS
 
@@ -888,7 +907,7 @@ async def test_what_is_sent_for_a_summary_stays_within_its_cap(world):
 
     system, user = (message["content"] for message in world.llm.last(TIER_ARCHIVE))
     assert count_tokens(system) + count_tokens(user) <= SPACE_ARCHIVE_INPUT_MAX_TOKENS
-    assert SPACE_ARCHIVE_INPUT_MAX_TOKENS == 3000
+    assert SPACE_ARCHIVE_INPUT_MAX_TOKENS == 5000
 
 
 async def test_a_project_with_a_commission_under_way_is_not_archived(world):
@@ -2352,7 +2371,10 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
     def words(tokens: int) -> str:
         return truncate_to_tokens("lesson " * (2 * tokens), tokens)
 
-    assert count_tokens(words(40)) == 40
+    def path(tokens: int) -> str:
+        return truncate_to_tokens("src/module/" * tokens, tokens)
+
+    assert count_tokens(words(40)) == 40 and count_tokens(path(40)) == 40
     answer = {
         "review": words(settings.TASK_AGENT_REVIEW_TEXT_MAX_TOKENS),
         "entries": [
@@ -2362,6 +2384,8 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
                 "type": "reflection",
                 "scope": "project",
                 "content": words(settings.TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
+                "evidence": [path(settings.TASK_AGENT_REVIEW_ENTRY_EVIDENCE_PATH_MAX_TOKENS)]
+                * settings.TASK_AGENT_REVIEW_ENTRY_EVIDENCE_MAX_PATHS,
             }
         ]
         * settings.TASK_AGENT_REVIEW_MAX_ENTRIES,
@@ -2369,7 +2393,20 @@ def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
         "project_description": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
     }
 
-    assert count_tokens(json.dumps(answer)) <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
+    full = count_tokens(json.dumps(answer))
+    # With a fifth to spare, for a provider that counts otherwise than this code does.
+    assert full <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
+    assert 1.2 <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS / full < 1.3
+    # The summary of a project that is archived: the same entries, and a longer text.
+    summary = {
+        "summary": words(settings.SPACE_ARCHIVE_SUMMARY_MAX_TOKENS),
+        "line": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
+        "entries": [{key: value for key, value in answer["entries"][0].items() if key != "scope"}]
+        * settings.SPACE_ARCHIVE_MAX_ENTRIES,
+    }
+    full = count_tokens(json.dumps(summary))
+    assert full <= settings.SPACE_ARCHIVE_OUTPUT_MAX_TOKENS
+    assert 1.2 <= settings.SPACE_ARCHIVE_OUTPUT_MAX_TOKENS / full < 1.3
 
 
 async def test_the_account_of_a_commission_is_made_off_the_event_loop(world, monkeypatch):
@@ -2736,8 +2773,10 @@ def test_two_or_three_sentences_as_the_prompt_asks_for_are_kept_whole():
     from config.prompts import prompts_nekoclaw_space as texts
     from nekoclaw.host.space_keeper import _whole_sentences
 
-    assert "content is self-contained, two or three sentences of 80 words at most in all" in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
-    assert "review: three to six sentences, 150 words at most." in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert "content is self-contained, two or three sentences of 120 words at most in all" in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert "review: three to six sentences, 250 words at most, and no longer than it takes." in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert "content is two or three sentences of 120 words at most." in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
+    assert "At most 300 words, and no longer than it takes." in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
     # Three sentences each, as long as they come; the Chinese one is longer than any the free tier wrote.
     chinese = (
         "当任务明确禁止执行命令时，应完全依赖 write、read 等文件系统工具进行开发，并在写入后逐个读回确认。"
@@ -2802,6 +2841,407 @@ async def test_a_review_names_an_entry_that_is_kept_without_a_line_in_the_index(
         {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
     ]
     assert (await world.space.read_review(commission.id)).entries == ("_daily/photo-dates",)
+
+
+# ---------------------------------------------------------------------------
+# What a review makes is judged
+# ---------------------------------------------------------------------------
+
+
+def _work_folder(tmp_path: Path) -> Path:
+    """Return a folder a commission worked in, with a file in it for an entry to rest on."""
+    folder = tmp_path / "work"
+    (folder / "src").mkdir(parents=True)
+    (folder / "src" / "dates.py").write_text("# dates\n", encoding="utf-8")
+    return folder
+
+
+async def test_an_entry_of_a_review_that_names_a_file_takes_effect_and_rests_on_it(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [{"title": "Photo dates", "content": "The date is read in `src/dates.py`: EXIF first."}],
+        }
+    ]
+
+    commission = await world.finished(workdir=str(folder))
+
+    (entry,) = await world.space.list_entries(DEFAULT_PROJECT)
+    # Seen in the account, not checked by anyone: observed, and resting on the file its words name.
+    assert (entry.id, entry.confidence, entry.seen, entry.seen_by) == ("photo-dates", "observed", 1, (commission.id,))
+    assert entry.evidence == ((folder / "src" / "dates.py").as_posix(),)
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
+    ]
+
+
+async def test_an_entry_of_a_review_that_names_no_file_waits_until_another_review_finds_the_same(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]},
+        {"review": "It sorted more photos.", "entries": [{"title": "photo dates", "content": "The file date is wrong."}]},
+    ]
+
+    first = await world.finished(workdir=str(folder))
+
+    # In no index and not in effect, a pending entry: the review says how many of what it made wait.
+    (held,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (held.id, held.status, held.confidence, held.seen_by) == ("photo-dates", "pending", "inferred", (first.id,))
+    assert "Photo dates" not in await world.space.read_index(DEFAULT_PROJECT)
+    assert await world.reviews(first.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": [], "waiting": 1}
+    ]
+    assert (await world.space.read_review(first.id)).entries == ()
+
+    second = await world.finished("sort the photos in Pictures", workdir=str(folder))
+
+    (entry,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status, entry.seen, entry.sources) == ("photo-dates", "active", 2, (first.id, second.id))
+    assert await world.reviews(second.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
+    ]
+    assert "(memory/photo-dates.md)" in await world.space.read_index(DEFAULT_PROJECT)
+
+
+async def test_what_the_task_agent_filed_and_its_review_repeats_is_seen_once(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]}
+    ]
+    commission = await world.file(workdir=str(folder))
+    await world.work(commission.id)
+    lesson = {"title": "Photo dates", "content": "EXIF dates are right.", "category": "lesson", "confidence": "inferred"}
+    await world.space.submit(await world.ledger.get(commission.id), lesson)
+
+    await world.end(commission.id)
+
+    # The review is of the same commission: it does not confirm what the task agent guessed. What it
+    # says under that title waits in the same pending entry.
+    (held,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (held.id, held.status, held.seen, held.seen_by) == ("photo-dates", "pending", 1, (commission.id,))
+    said = (await world.space.read_entry("photo-dates", DEFAULT_PROJECT)).content
+    assert "EXIF dates are right." in said and "Use the EXIF date." in said
+
+
+async def test_an_entry_of_a_review_rests_on_a_file_of_the_project_too(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", workdir=str(folder))
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It added an export.", "entries": [{"title": "Dates", "content": "Formats are in src/dates.py."}]}
+    ]
+
+    # The commission itself worked somewhere else.
+    elsewhere = tmp_path / "session"
+    elsewhere.mkdir()
+    await world.finished("add an export", project="Budget app", workdir=str(elsewhere))
+
+    (entry,) = await world.space.list_entries("Budget app")
+    assert entry.evidence == ((folder / "src" / "dates.py").as_posix(),)
+
+
+async def test_an_entry_of_a_summary_for_the_archive_is_judged_like_one_of_a_review(world, tmp_path, judged):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", description="tracks spending", workdir=str(folder))
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "An app that tracks spending.",
+            "line": "spending tracker, paused",
+            "entries": [
+                {"title": "Date formats", "type": "lesson", "content": "Keep them in one module, as in src/dates.py."},
+                {"title": "CSV on Windows", "type": "lesson", "content": "Write a BOM so Excel reads UTF-8."},
+            ],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+
+    # Both are global: a file of the project it names is kept with it, and does not have it take
+    # effect. Nobody is named as having seen either.
+    held, other = await world.space.list_entries()
+    assert (held.id, held.title, held.status, held.seen_by) == ("csv-on-windows", "CSV on Windows", "pending", ())
+    assert (other.id, other.status, other.confidence, other.seen_by) == ("date-formats", "pending", "inferred", ())
+    assert (other.evidence, other.noted) == ((), ((folder / "src" / "dates.py").as_posix(),))
+
+
+async def test_a_summary_for_the_archive_that_repeats_a_guess_of_its_project_is_no_second_sighting(world, tmp_path, judged):
+    from types import SimpleNamespace
+
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", description="tracks spending", workdir=str(folder))
+    # A commission of the project guessed something that would hold everywhere: it waits.
+    guess = {"title": "CSV on Windows", "content": "Write a BOM so Excel reads UTF-8.", "category": "lesson", "scope": "global"}
+    commission = SimpleNamespace(id="c1", parent_id=None, project="Budget app", workdir=str(folder))
+    assert (await world.space.submit(commission, {**guess, "confidence": "inferred"})).startswith("not in effect yet")
+    # The summary is made from what the project's commissions did, and says the same again.
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "An app that tracks spending.",
+            "line": "spending tracker, paused",
+            "entries": [{"title": guess["title"], "type": "lesson", "content": guess["content"]}],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+
+    # Seen by one commission still: it goes on waiting.
+    (held,) = await world.space.list_entries()
+    assert (held.title, held.status, held.seen_by) == ("CSV on Windows", "pending", ("c1",))
+
+
+async def test_tidying_has_entries_expire_whose_files_are_gone(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "See src/dates.py."}]}
+    ]
+    await world.finished(workdir=str(folder))
+    assert "(memory/photo-dates.md)" in await world.space.read_index(DEFAULT_PROJECT)
+    (folder / "src" / "dates.py").unlink()
+
+    assert await world.keeper.tidy(force=True)
+
+    (entry,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert entry.status == "expired"
+    assert "(memory/photo-dates.md)" not in await world.space.read_index(DEFAULT_PROJECT)
+    # No model was asked for it.
+    assert world.llm.count(TIER_REVIEW) == 1 and world.llm.count(TIER_ARCHIVE) == 0
+
+
+async def test_tidying_goes_on_when_the_files_of_the_entries_cannot_be_looked_at(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    async def broken() -> dict[str, int]:
+        raise RuntimeError("the disk is gone")
+
+    monkeypatch.setattr(world.space, "check_evidence", broken)
+    await world.space.touch_project("Budget app")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    assert await world.keeper.tidy(force=True)
+
+    assert [item.status for item in await world.space.list_projects() if item.name == "Budget app"] == ["archived"]
+
+
+def test_a_review_keeps_what_the_files_do_not_show_and_not_what_was_done():
+    from config.prompts import prompts_nekoclaw_space as texts
+
+    prompt = texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    # The text: one sentence of what was asked and how it ended, the rest on what cost time.
+    assert "One sentence on what was asked and how it ended; the rest on what went wrong" in prompt
+    assert "not on steps that went as planned" in prompt
+    # The entries: by the same measure as what a task agent submits itself.
+    assert "Keep only what a later commission could not tell from the files and would work differently for knowing" in prompt
+    assert "a way that worked where the obvious one did not" in prompt
+    assert (
+        "Leave out what the files, the repository's own documents or their history show, a fix that is in the "
+        "files now, and an account of what this commission did; when unsure it holds beyond this commission, "
+        "leave it out."
+    ) in prompt
+    # Progress is how the project stands for whoever takes it up next, not what this commission left.
+    assert "progress (how the project stands, as a commission that takes it up next must know and its files do not show" in prompt
+
+
+def test_the_two_prompts_ask_for_the_file_an_entry_is_about():
+    from config.prompts import prompts_nekoclaw_space as texts
+
+    assert (
+        "evidence is the paths of up to two files the entry is about, as the account has them, and [] when "
+        "it is about no file. A global entry, and a project entry with no file that exists, is kept as a "
+        "guess until another commission finds the same."
+    ) in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
+    assert (
+        "evidence is the paths of up to two files the entry is about, and [] when it is about no file. Each "
+        "entry is kept as a guess, its files for reference only (the files of one project do not show it holds "
+        "for others), until commissions find the same or a task agent checks it; this summary is no such "
+        "finding."
+    ) in texts.SPACE_ARCHIVE_SYSTEM_PROMPT
+    # Every entry has a place for them in what a model is asked to write; how it is known is the host's to tell.
+    for prompt in (texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT, texts.SPACE_ARCHIVE_SYSTEM_PROMPT):
+        assert '"content": "...", "evidence": ["..."]}}]' in prompt and '"confidence"' not in prompt
+
+
+async def test_the_files_a_review_gives_for_an_entry_are_what_it_rests_on(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [
+                {"title": "Photo dates", "content": "EXIF first, then the file date.", "evidence": ["src/dates.py"]},
+                {"title": "Videos", "content": "They have no EXIF date.", "evidence": "src/dates.py"},
+            ],
+        }
+    ]
+
+    commission = await world.finished(workdir=str(folder))
+
+    kept, waiting = await world.space.list_entries(DEFAULT_PROJECT)
+    # The words of the first name no file: the one the review gave for it is what it rests on.
+    assert (kept.id, kept.status, kept.confidence) == ("photo-dates", "active", "observed")
+    assert kept.evidence == ((folder / "src" / "dates.py").as_posix(),)
+    # What is no list of paths is not read as one: the second waits like any guess.
+    assert (waiting.id, waiting.status, waiting.confidence, waiting.evidence) == ("videos", "pending", "inferred", ())
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"], "waiting": 1}
+    ]
+
+
+async def test_a_global_entry_of_a_review_waits_whatever_file_it_gives(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    entries = [
+        {"title": "Use argparse", "scope": "global", "content": "Give scripts their options with argparse.", "evidence": ["src/dates.py"]},
+        {"title": "Photo dates", "scope": "project", "content": "EXIF first, then the file date.", "evidence": ["src/dates.py"]},
+    ]
+    world.llm.answers[TIER_REVIEW] = [{"review": "It sorted the photos.", "entries": entries}]
+
+    first = await world.finished(workdir=str(folder))
+
+    # The same file has the project's entry take effect, and not the global one: a file of one
+    # project does not show that it holds for every project. The file is kept with it.
+    (kept,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (kept.id, kept.status, kept.confidence) == ("photo-dates", "active", "observed")
+    (held,) = await world.space.list_entries()
+    assert (held.id, held.status, held.confidence, held.seen_by) == ("use-argparse", "pending", "inferred", (first.id,))
+    assert (held.evidence, held.noted) == ((), ((folder / "src" / "dates.py").as_posix(),))
+    assert "use-argparse" not in await world.space.read_index()
+    assert await world.reviews(first.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"], "waiting": 1}
+    ]
+
+    # Another commission that finds the same has it take effect.
+    world.llm.answers[TIER_REVIEW] = [{"review": "It sorted more photos.", "entries": entries[:1]}]
+    second = await world.finished(workdir=str(folder))
+
+    (entry,) = await world.space.list_entries()
+    assert (entry.id, entry.status, entry.seen_by) == ("use-argparse", "active", (first.id, second.id))
+    assert "(memory/use-argparse.md)" in await world.space.read_index()
+
+
+async def test_a_global_entry_of_a_review_does_not_take_effect_by_files_with_what_a_pending_entry_says(
+    world, tmp_path, judged
+):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [
+                {"title": "Use argparse", "scope": "global", "content": "Give scripts their options with argparse.", "evidence": ["src/dates.py"]}
+            ],
+        }
+    ]
+    commission = await world.file(workdir=str(folder))
+    await world.work(commission.id)
+    # The task agent saw it, and gave no file: it waits.
+    lesson = {
+        "title": "Use argparse",
+        "content": "Give scripts their options with argparse.",
+        "category": "lesson",
+        "scope": "global",
+        "confidence": "observed",
+    }
+    assert (await world.space.submit(await world.ledger.get(commission.id), lesson)).startswith("not in effect yet")
+
+    await world.end(commission.id)
+
+    # The review of the same commission gives a file of the project. Seen as the task agent says, it
+    # is still a file of one project: the entry waits, with the file on record.
+    (held,) = await world.space.list_entries()
+    assert (held.id, held.status, held.seen_by) == ("use-argparse", "pending", (commission.id,))
+    assert (held.evidence, held.noted) == ((), ((folder / "src" / "dates.py").as_posix(),))
+    assert "use-argparse" not in await world.space.read_index()
+
+
+async def test_a_task_agent_that_saw_what_a_summary_noted_does_not_have_it_take_effect_by_the_summary_s_file(
+    world, tmp_path, judged
+):
+    from types import SimpleNamespace
+
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", description="tracks spending", workdir=str(folder))
+    lesson = {"title": "Use argparse", "content": "Give scripts their options with argparse."}
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "An app that tracks spending.",
+            "line": "spending tracker, paused",
+            "entries": [{**lesson, "type": "lesson", "evidence": ["src/dates.py"]}],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    await world.keeper.tidy(force=True)
+    # The summary made it, with a file of the project noted.
+    (held,) = await world.space.list_entries()
+    assert (held.status, held.evidence, held.noted) == ("pending", (), ((folder / "src" / "dates.py").as_posix(),))
+
+    # A task agent of another commission saw it, and names no file: the file the summary noted does
+    # not speak for it. It is a first sighting, and the entry waits.
+    other = SimpleNamespace(id="c9", parent_id=None, project=None, workdir=str(folder))
+    reply = await world.space.submit(other, {**lesson, "category": "lesson", "scope": "global", "confidence": "observed"})
+
+    assert reply.startswith("not in effect yet")
+    (held,) = await world.space.list_entries()
+    assert (held.status, held.seen_by, held.evidence) == ("pending", ("c9",), ())
+    assert "use-argparse" not in await world.space.read_index()
+
+
+async def test_a_file_a_global_entry_of_a_review_noted_does_not_have_it_expire(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    entries = [{"title": "Use argparse", "scope": "global", "content": "Give scripts their options with argparse.", "evidence": ["src/dates.py"]}]
+    world.llm.answers[TIER_REVIEW] = [{"review": "It sorted the photos.", "entries": entries}]
+    await world.finished(workdir=str(folder))
+    world.llm.answers[TIER_REVIEW] = [{"review": "It sorted more photos.", "entries": entries}]
+    await world.finished(workdir=str(folder))
+    (entry,) = await world.space.list_entries()
+    assert entry.status == "active" and entry.noted == ((folder / "src" / "dates.py").as_posix(),)
+
+    # The project's file goes; what holds for every project does not go with it.
+    (folder / "src" / "dates.py").unlink()
+    await world.keeper.tidy(force=True)
+
+    (entry,) = await world.space.list_entries()
+    assert entry.status == "active"
+    assert "(memory/use-argparse.md)" in await world.space.read_index()
+
+
+async def test_an_entry_of_a_summary_for_the_archive_is_cut_and_rests_on_the_files_it_gives(world, tmp_path, judged):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS, TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    folder = _work_folder(tmp_path)
+    await world.space.touch_project("Budget app", description="tracks spending", workdir=str(folder))
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "An app that tracks spending.",
+            "line": "spending tracker, paused",
+            "entries": [
+                {
+                    "title": "Date formats",
+                    "type": "lesson",
+                    "content": "Dates are kept in one module. " * 60,
+                    "evidence": ["src/dates.py"],
+                }
+            ],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+
+    # Its words name no file; the one the summary gave for it is kept with it. It is global, and
+    # waits all the same.
+    (entry,) = await world.space.list_entries()
+    assert (entry.id, entry.status, entry.confidence) == ("date-formats", "pending", "inferred")
+    assert (entry.evidence, entry.noted) == ((), ((folder / "src" / "dates.py").as_posix(),))
+    # As long as an entry of a review may be, and ended where a sentence ends.
+    said = (await world.space.read_entry("date-formats")).content
+    assert count_tokens(said) <= TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+    assert said.endswith("Dates are kept in one module.") and 10 < said.count("Dates are kept in one module.") < 60
 
 
 # ---------------------------------------------------------------------------
@@ -2888,3 +3328,140 @@ async def test_the_system_prompt_a_session_was_opened_with_goes_with_what_was_sa
 
     assert not (directory / SYSTEM_FILE).exists() and not (directory / "transcript.jsonl").exists()
     assert (directory / "work" / "sub" / "result.txt").is_file()
+async def test_how_many_of_what_a_review_made_wait_is_told_as_it_stands_at_the_end(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the photos.",
+            "entries": [
+                # The same note twice: first with nothing that speaks for it, then with a file.
+                {"title": "Photo dates", "content": "EXIF first, then the file date."},
+                {"title": "Photo dates", "content": "EXIF first, then the file date.", "evidence": ["src/dates.py"]},
+            ],
+        }
+    ]
+
+    commission = await world.finished(workdir=str(folder))
+
+    # The second had the pending entry of the first take effect: nothing of this review waits.
+    (entry,) = await world.space.list_entries(DEFAULT_PROJECT)
+    assert (entry.id, entry.status) == ("photo-dates", "active")
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
+    ]
+
+
+async def test_a_guess_of_a_review_that_went_into_an_entry_by_a_later_one_of_the_same_review_is_not_counted_as_waiting(
+    world, tmp_path, judged
+):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It sorted the videos.",
+            "entries": [
+                # Under the title of an entry, in other words, with no file: it waits beside it.
+                {"title": "Photo dates", "content": "Videos have no EXIF date.", "evidence": []},
+                # The same again, with a file this time: it takes effect, and goes into the entry of its title.
+                {"title": "Photo dates", "content": "Videos have no EXIF date.", "evidence": ["src/dates.py"]},
+            ],
+        },
+    ]
+    commission = await world.file("sort the photos in Downloads", workdir=str(folder))
+    # The task agent files a lesson of that title itself: the review of its commission is no second to have seen it.
+    kept = await world.space.submit(
+        commission,
+        {"title": "Photo dates", "content": "EXIF first, then the file date.", "category": "lesson", "confidence": "verified"},
+    )
+    assert kept is not None and kept.startswith("kept in")
+    noted: list[list[str]] = []
+    proposing = world.space.propose_entry
+
+    async def watched(*args: Any, **kwargs: Any) -> Any:
+        waits = kwargs.get("waits")
+        made = await proposing(*args, **kwargs)
+        noted.append(list(waits or ()))
+        return made
+
+    world.space.propose_entry = watched
+    try:
+        await world.work(commission.id, 3)
+        await world.end(commission.id, "done")
+    finally:
+        world.space.propose_entry = proposing
+
+    # The first of the two was noted to wait, as a file of its own; the second took it into the entry.
+    assert noted and noted[0] == ["photo-dates-2"]
+    entries = await world.space.list_entries(DEFAULT_PROJECT)
+    assert [(entry.id, entry.status) for entry in entries] == [("photo-dates", "active")]
+    # Nothing waits any more: the guess is no file by now, and is not counted as one.
+    outcome = (await world.reviews(commission.id))[-1]
+    assert outcome["status"] == "written" and "waiting" not in outcome
+
+
+async def test_a_guess_of_a_review_is_counted_as_waiting_when_its_file_cannot_be_read_just_then(world, tmp_path, judged):
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]},
+    ]
+    proposing, reading = world.space.propose_entry, world.space._read_text
+    held: list[bool] = []
+
+    async def then_held(*args: Any, **kwargs: Any) -> Any:
+        made = await proposing(*args, **kwargs)
+        # Kept, as a file that waits; and held by another program from then on.
+        held.append(True)
+        return made
+
+    def unreadable(path: Any) -> Any:
+        if held and path.name == "photo-dates.md":
+            return None
+        return reading(path)
+
+    world.space.propose_entry = then_held
+    world.space._read_text = unreadable
+    try:
+        first = await world.finished(workdir=str(folder))
+    finally:
+        world.space.propose_entry, world.space._read_text = proposing, reading
+
+    # Not known to have gone anywhere: it is said to wait, as it was noted when it was made.
+    assert (await world.reviews(first.id))[-1].get("waiting") == 1
+    assert [(entry.id, entry.status) for entry in await world.space.list_entries(DEFAULT_PROJECT)] == [
+        ("photo-dates", "pending")
+    ]
+
+
+async def test_a_guess_of_a_review_that_takes_effect_while_the_review_waits_to_be_written_is_not_counted_as_waiting(
+    world, tmp_path, judged
+):
+    from types import SimpleNamespace
+
+    folder = _work_folder(tmp_path)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]},
+    ]
+    writing = world.space.write_review
+
+    async def confirmed_meanwhile(*args: Any, **kwargs: Any) -> Any:
+        # Another commission files the same while the review waits its turn to be written: the guess takes effect.
+        other = SimpleNamespace(
+            id="other", parent_id=None, project=None, title="Sort photos", dispatch_text="", user_text="", status="done",
+            started_at=1.0, ended_at=2.0, workdir=str(folder),
+        )
+        kept = await world.space.submit(
+            other, {"title": "Photo dates", "content": "Use the EXIF date.", "category": "lesson", "confidence": "inferred"}
+        )
+        assert kept is not None and kept.startswith("kept in")
+        return await writing(*args, **kwargs)
+
+    world.space.write_review = confirmed_meanwhile
+    try:
+        first = await world.finished(workdir=str(folder))
+    finally:
+        world.space.write_review = writing
+
+    # As it stands once the review is written: nothing waits.
+    assert "waiting" not in (await world.reviews(first.id))[-1]
+    assert [(entry.id, entry.status) for entry in await world.space.list_entries(DEFAULT_PROJECT)] == [
+        ("photo-dates", "active")
+    ]

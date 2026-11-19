@@ -1921,17 +1921,31 @@ async def test_a_seal_wrapper_left_by_shutdown_is_retired_by_stop_all(tmp_path, 
 
 
 async def test_stop_all_lets_an_outbox_cleanup_started_during_shutdown_finish(tmp_path, monkeypatch):
+    # stop_all waits for a handed-over cleanup at most one step cap
+    # (``_SHUTDOWN_TASK_WAIT_S``, 0.5 s shipped) of what is left of the total
+    # budget, so that cap is what a stalled runner has to fit the real flush
+    # into before the cleanup is cancelled. Raise it to 2 s, with a total
+    # budget large enough to leave stop_all its full cap after the visit's
+    # own wait. The visit's own wait still runs out first: the flush is held
+    # until the handover.
+    monkeypatch.setattr(rtm, "_SHUTDOWN_TASK_WAIT_S", 2.0)
+    monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 10.0)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     real_flush = rt.outbox.flush
 
     async def slow_flush():
-        await asyncio.sleep(0.7)                          # Exceeds this visit's own wait, still within total budget.
+        # Outlast this visit's own wait: hold the flush until shutdown has
+        # given up on it and handed the cleanup to stop_all. A fixed 0.7 s
+        # sleep against the 0.5 s + 0.5 s waits left a stalled runner 0.3 s
+        # before stop_all cancelled the cleanup.
+        while rt.outbox.close_task not in rtm._outbox_cleanups:
+            await asyncio.sleep(0.01)
         await real_flush()
 
     rt.outbox.flush = slow_flush
     try:
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 10)
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 30)  # Hang guard, well past the budget.
         cleanup = rt.outbox.close_task
         assert cleanup is not None and cleanup.done()
         assert not cleanup.cancelled()                    # First await file deletion with a deadline, without immediate cancellation.
@@ -2157,6 +2171,14 @@ async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
     from main_routers.visit_router import session_pool
 
     monkeypatch.setattr(rtm, "VISIT_SHUTDOWN_BUDGET_S", 0.6)
+    # Each step's own cap is made much larger than the total budget, so any
+    # step that waits on its cap instead of on what is left of the budget
+    # adds at least 5 s (measured with that leak in the final cleanup alone:
+    # 5.6 s; with the per-step budget gone: 15 s). A correct shutdown takes
+    # the 0.6 s budget. The 3 s line between them leaves a stalled runner
+    # 2.4 s of slack; with the shipped 0.5 s caps the old 0.95 s line left it
+    # 0.35 s, and a Windows run took 2.3 s.
+    monkeypatch.setattr(rtm, "_SHUTDOWN_TASK_WAIT_S", 5.0)
     host, guest, wire, clock, wall = await bring_up(tmp_path, monkeypatch)
     rt = host.rt
     release = threading.Event()
@@ -2191,9 +2213,9 @@ async def test_shutdown_stays_within_its_total_budget(tmp_path, monkeypatch):
     rtm._keep_detached(lingering)
     try:
         started = asyncio.get_running_loop().time()
-        await asyncio.wait_for(rtm.stop_all("shutdown"), 5)   # Every step blocks.
+        await asyncio.wait_for(rtm.stop_all("shutdown"), 30)  # Every step blocks.
         # Total duration uses one budget, not summed step caps; final background cleanup also uses remaining budget.
-        assert asyncio.get_running_loop().time() - started < 0.95
+        assert asyncio.get_running_loop().time() - started < 3.0
     finally:
         release.set()
         stuck.set()

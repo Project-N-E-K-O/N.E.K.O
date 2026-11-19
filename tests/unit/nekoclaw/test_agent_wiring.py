@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 
+from tests.fake_clock import patch_module_asyncio
 from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, pick_plugin, wait_until
 from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, finish, plugin
 
@@ -587,11 +588,110 @@ async def test_stopping_everything_right_after_a_restart_stops_what_was_left_und
     assert (await wiring.host_mount.peek_host().ledger.get(commission.id)).status == "cancelled"
 
 
+async def test_stopping_everything_right_after_a_restart_hands_nothing_over_while_the_host_is_made_ready(
+    wiring, tmp_path, monkeypatch
+):
+    from nekoclaw.host.ledger import Ledger, MessageLimits
+
+    # An earlier process left a note for a session with nothing under way, and something to stop.
+    commission = await _left_by_an_earlier_process(tmp_path)
+    earlier = Ledger(tmp_path / "nekoclaw" / "ledger.db")
+    made = []
+    for title in ("sender", "target"):
+        row, _created = await earlier.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent"
+        )
+        row, _session = await earlier.give_session(row.id, kind="single", name=title)
+        await earlier.transition(row.id, "working")
+        made.append(row)
+    sender, target = made
+    await earlier.transition(target.id, "done")
+    message, refusal, _wait = await earlier.message_add(
+        from_session=sender.session_id,
+        from_commission=sender.id,
+        to_session=target.session_id,
+        body="rebuild it",
+        depth=1,
+        notify_when_done=False,
+        notice_after=3600.0,
+        limits=MessageLimits(target_interval=0.0, per_hour=10, queue_max=10, dedup_seconds=0.0),
+    )
+    assert refusal == ""
+    await earlier.transition(sender.id, "done")
+    await earlier.close()
+    ready = wiring.mount_module.ready_host
+    held: list[int] = []
+
+    async def looking() -> Any:
+        # Making the host ready starts what waits to be handed to sessions: held before that.
+        held.append(wiring.host_mount.get_host().wakes._holds)
+        return await ready()
+
+    monkeypatch.setattr(wiring.mount_module, "ready_host", looking)
+
+    assert await wiring.mount_module.stop_everything() == 1
+
+    host = wiring.host_mount.peek_host()
+    assert held == [1] and host.wakes._holds == 0
+    assert (await host.ledger.get(commission.id)).status == "cancelled"
+    assert (await host.ledger.message_get(message.id)).status == "void"
+    assert [item for item in await host.ledger.select() if item.source == "session"] == []
+
+
+async def test_a_stop_that_is_cancelled_while_the_host_is_made_ready_lets_go_of_what_it_held(
+    wiring, tmp_path, monkeypatch
+):
+    await _left_by_an_earlier_process(tmp_path)
+    reached = asyncio.Event()
+
+    async def never_ready() -> Any:
+        reached.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(wiring.mount_module, "ready_host", never_ready)
+    stopping = asyncio.ensure_future(wiring.mount_module.stop_everything())
+    await asyncio.wait_for(reached.wait(), 5.0)
+    host = wiring.host_mount.peek_host()
+    assert host.wakes._holds == 1
+
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    # Given up, and not left held: held, nothing would be handed to a session for as long
+    # as the process lasts.
+    assert host.wakes._holds == 0
+
+
+async def test_a_host_built_while_a_stop_looks_for_the_record_hands_nothing_over_until_the_stop_is_through(
+    wiring, tmp_path, monkeypatch
+):
+    await _left_by_an_earlier_process(tmp_path)
+    exists = wiring.mount_module.ledger_exists
+    held: list[int] = []
+
+    async def looking() -> bool:
+        # As a page that asks for the tasks while the stop looks for the record: it builds the
+        # host and starts it. Started as usual, it would hand over what an earlier process left.
+        host = await wiring.mount_module.ready_host()
+        held.append(host.wakes._holds)
+        return await exists()
+
+    monkeypatch.setattr(wiring.mount_module, "ledger_exists", looking)
+
+    assert await wiring.mount_module.stop_everything() == 1
+
+    host = wiring.host_mount.peek_host()
+    assert held == [1] and host.wakes._holds == 0
+    assert wiring.mount_module._stops_on_their_way == 0 and wiring.mount_module._held_for_stops == []
+
+
 async def test_stopping_everything_without_a_record_builds_nothing(wiring, tmp_path):
     assert await wiring.mount_module.stop_everything() == 0
 
     assert wiring.host_mount.peek_host() is None
     assert not (tmp_path / "nekoclaw").exists()
+    assert wiring.mount_module._stops_on_their_way == 0
 
 
 async def test_stopping_everything_starts_every_stop_before_it_waits_for_one(wiring, monkeypatch):
@@ -2041,23 +2141,39 @@ async def test_shutting_the_host_down_is_bounded_and_the_steps_still_finish(wiri
     await wiring.runtime.nekoclaw_dispatch({"text": "查一下上海的天气", "lanlan_name": "Lan"})
     host = wiring.host_mount.peek_host()
     finished = asyncio.Event()
+    release = asyncio.Event()
     real_shutdown = host.shutdown
 
     async def slow_shutdown() -> None:
-        await asyncio.sleep(0.3)
+        # Held until the test lets go, instead of a fixed 0.3 s sleep that a
+        # stalled runner could outlast while the caller was still waiting.
+        await release.wait()
         await real_shutdown()
         finished.set()
 
     monkeypatch.setattr(host, "shutdown", slow_shutdown)
     monkeypatch.setattr(settings, "HOST_SHUTDOWN_BUDGET_SECONDS", 0.05)
     monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
+    # Record the budget the shutdown actually waits with.
+    budgets = []
+    real_wait_for = asyncio.wait_for
 
-    started = time.monotonic()
-    await wiring.mount_module.shutdown_nekoclaw_host()
-    waited = time.monotonic() - started
+    def spy_wait_for(awaitable, timeout):
+        budgets.append(timeout)
+        return real_wait_for(awaitable, timeout)
 
-    assert waited < 0.25
-    assert not finished.is_set()
+    patch_module_asyncio(monkeypatch, wiring.mount_module, wait_for=spy_wait_for)
+
+    # The steps cannot finish before ``release``, so returning at all proves
+    # the caller stopped waiting at its budget; one that waited for the steps
+    # would hang into this guard. Which budget it waited with is checked on
+    # the spy below, so the guard itself can be generous.
+    try:
+        await asyncio.wait_for(wiring.mount_module.shutdown_nekoclaw_host(), 10)
+        assert not finished.is_set()
+        assert budgets == [0.05]
+    finally:
+        release.set()
     # Not cancelled by the caller that stopped waiting: it runs to its end.
     await asyncio.wait_for(finished.wait(), 5)
     assert host.closed is True
@@ -2081,3 +2197,39 @@ def test_the_budget_for_shutting_down_fits_the_time_the_launcher_gives_the_agent
     # The host gets a part of what the process has to stop in, never all of it.
     assert HOST_SHUTDOWN_BUDGET_SECONDS <= merged["Agent"] / 2
     assert HOST_CLOSE_STOP_WAIT_SECONDS < HOST_SHUTDOWN_BUDGET_SECONDS
+
+
+async def test_stopping_everything_drops_the_notes_that_wait_for_sessions(wiring, tmp_path):
+    from nekoclaw.host.ledger import MessageLimits
+
+    host = wiring.host_mount.get_host()
+    ledger = host.ledger
+    made = []
+    for title in ("sender", "target"):
+        commission, _created = await ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch", route="task_agent"
+        )
+        commission, _session = await ledger.give_session(commission.id, kind="single", name=title)
+        await ledger.transition(commission.id, "working")
+        made.append(commission)
+    sender, target = made
+    await ledger.transition(target.id, "done")
+    # Written while its commission was under way, which is done by the time of the stop.
+    message, refusal, _wait = await ledger.message_add(
+        from_session=sender.session_id,
+        from_commission=sender.id,
+        to_session=target.session_id,
+        body="rebuild it",
+        depth=1,
+        notify_when_done=False,
+        notice_after=3600.0,
+        limits=MessageLimits(target_interval=0.0, per_hour=10, queue_max=10, dedup_seconds=0.0),
+    )
+    assert refusal == "" and len(await ledger.wakes_pending(session_id=target.session_id)) == 1
+    await ledger.transition(sender.id, "done")
+
+    await wiring.mount_module.stop_everything()
+
+    # A note handed over after the stop would start a turn: it is dropped with the stop.
+    assert await ledger.wakes_pending(session_id=target.session_id) == []
+    assert (await ledger.message_get(message.id)).status == "void"

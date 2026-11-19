@@ -51,7 +51,16 @@ from nekoclaw.runtime.loop.tools import AgentTool
 logger = logging.getLogger(__name__)
 
 SYSTEM_FILE = "system.json"
-_VERSION = 1
+# 2: the system prompt no longer names the language of the commission the
+# session was opened for, and the report tool no longer says to use the
+# language of the user's request. A session saved before is put together
+# anew once, when it is next opened, as after a summary: it is then told of
+# the tools there are by then, and what it had said is kept as it was.
+# 3: the tools that reach other sessions and set a wake (``list_sessions``,
+# ``read_session``, ``message_session``, ``schedule_wake``, ``ask_session``).
+# A session that is written to is told to answer with one of them, so every
+# session has them from when it is next opened, not from its next summary.
+_VERSION = 3
 
 # Why a snapshot was made.
 REASON_OPENED = "opened"

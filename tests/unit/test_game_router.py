@@ -7982,18 +7982,21 @@ async def test_project_speech_preload_rejects_non_object_manager_result(monkeypa
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_project_speech_preload_has_total_timeout_and_cleans_task(monkeypatch):
+    import inspect
+
     class BlockingPreloadManager(_FakeGameRouteManager):
         def __init__(self):
             super().__init__()
-            self.cancelled = False
+            self.preload = None
 
-        async def preload_game_speech_audio(self, _lines, *, render_language=""):
+        def preload_game_speech_audio(self, _lines, *, render_language=""):
             self.preload_render_languages.append(render_language)
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
+            # Keep the coroutine the route wraps in its task, to see how it ended.
+            self.preload = self._block()
+            return self.preload
+
+        async def _block(self):
+            await asyncio.Event().wait()
 
     mgr = BlockingPreloadManager()
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {"Lan": mgr})
@@ -8007,7 +8010,12 @@ async def test_project_speech_preload_has_total_timeout_and_cleans_task(monkeypa
 
     assert result["ok"] is False
     assert result["reason"] == "timeout"
-    assert mgr.cancelled is True
+    # The preload never finishes on its own, so a closed coroutine means the
+    # route cancelled its task. Checking the coroutine rather than a flag set
+    # in its ``except CancelledError`` also covers a stalled runner where the
+    # 10 ms timeout cancels the task before its first step: then the body
+    # never runs, but the task is still cleaned up.
+    assert inspect.getcoroutinestate(mgr.preload) == inspect.CORO_CLOSED
 
 
 @pytest.mark.unit

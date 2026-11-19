@@ -76,40 +76,20 @@
             <el-empty v-else :description="t('common.noData')" :image-size="72" />
           </el-tab-pane>
           <el-tab-pane :label="t('market.detailComments')" name="comments">
-            <div v-loading="commentsLoading" class="market-plugin-detail__comments-area">
-              <div v-if="comments.length" class="market-plugin-detail__comments">
-                <article v-for="comment in comments" :key="comment.id" class="market-plugin-detail__comment">
-                  <el-avatar :size="30" :src="comment.author.avatar_url || ''">
-                    {{ commentAuthor(comment).slice(0, 1) }}
-                  </el-avatar>
-                  <div class="market-plugin-detail__comment-content">
-                    <div class="market-plugin-detail__comment-meta">
-                      <strong>{{ commentAuthor(comment) }}</strong>
-                      <time>{{ formatDate(comment.created_at) }}</time>
-                    </div>
-                    <p v-if="comment.reply_to" class="market-plugin-detail__comment-reply">
-                      {{ t('market.detailCommentReplyTo', { name: commentAuthor(comment.reply_to) }) }}
-                    </p>
-                    <p class="market-plugin-detail__comment-body">
-                      {{ comment.is_hidden ? t('market.detailCommentHidden') : (comment.body || t('market.detailCommentEmpty')) }}
-                    </p>
-                  </div>
-                </article>
-              </div>
-              <el-alert
-                v-else-if="commentsLoadFailed"
-                :title="t('market.detailLoadFailed')"
-                type="error"
-                :closable="false"
-                show-icon
-              />
-              <el-empty v-else-if="commentsLoaded" :description="t('market.detailCommentsEmpty')" :image-size="72" />
-            </div>
-            <div v-if="commentsNextCursor !== null" class="market-plugin-detail__comments-more">
-              <el-button :loading="commentsLoadingMore" @click="loadMoreComments">
-                {{ t('market.detailCommentsMore') }}
-              </el-button>
-            </div>
+            <MarketPluginComments
+              v-if="visible && openedTabs.comments"
+              :key="plugin.rawId"
+              :plugin-id="plugin.rawId"
+              @feedback-changed="emit('feedback-changed')"
+            />
+          </el-tab-pane>
+          <el-tab-pane :label="t('marketFeedback.issuesTab')" name="issues">
+            <MarketPluginIssues
+              v-if="visible && openedTabs.issues"
+              :key="plugin.rawId"
+              :plugin-id="plugin.rawId"
+              @feedback-changed="emit('feedback-changed')"
+            />
           </el-tab-pane>
         </el-tabs>
 
@@ -153,15 +133,15 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import {
   fetchMarketPlugin,
-  fetchMarketPluginComments,
   fetchMarketPluginReadme,
   fetchMarketPluginVersions,
   type MarketPlugin,
-  type MarketPluginComment,
   type MarketPluginReadme,
   type MarketPluginVersion,
 } from '@/api/market'
 import type { MarketWorkbenchItem } from '@/composables/useMarketWorkbench'
+import MarketPluginComments from './MarketPluginComments.vue'
+import MarketPluginIssues from './MarketPluginIssues.vue'
 import { openExternalUrl } from '@/utils/openExternal'
 import { resolveMarketReadmeLink } from '@/utils/marketReadmeLink'
 import { compareVersion } from '@/utils/version'
@@ -189,22 +169,17 @@ const emit = defineEmits<{
   'update:visible': [value: boolean]
   install: [plugin: MarketWorkbenchItem]
   upgrade: [plugin: MarketWorkbenchItem]
+  'feedback-changed': []
 }>()
 const { t } = useI18n()
 const loading = ref(false)
 const loadFailed = ref(false)
 const detail = ref<MarketPlugin | null>(null)
 const versions = ref<MarketPluginVersion[]>([])
-const comments = ref<MarketPluginComment[]>([])
-const commentsNextCursor = ref<number | null>(null)
-const commentsLoaded = ref(false)
-const commentsLoadFailed = ref(false)
-const commentsLoading = ref(false)
-const commentsLoadingMore = ref(false)
+const openedTabs = ref({ comments: false, issues: false })
 const repositoryReadme = ref<MarketPluginReadme | null>(null)
 const activeTab = ref('readme')
 let detailLoadSeq = 0
-let commentsLoadSeq = 0
 const displayPlugin = computed(() => detail.value || props.plugin)
 const actionablePlugin = computed<MarketWorkbenchItem>(() => ({
   ...props.plugin,
@@ -286,13 +261,7 @@ async function loadDetail() {
   loadFailed.value = false
   detail.value = null
   versions.value = []
-  commentsLoadSeq++
-  comments.value = []
-  commentsNextCursor.value = null
-  commentsLoaded.value = false
-  commentsLoadFailed.value = false
-  commentsLoading.value = false
-  commentsLoadingMore.value = false
+  openedTabs.value = { comments: false, issues: false }
   repositoryReadme.value = null
   activeTab.value = 'readme'
   try {
@@ -324,18 +293,15 @@ watch(
     } else {
       // 让关闭时仍在途的请求无法写回状态；下次打开会拥有新的序号。
       detailLoadSeq++
-      commentsLoadSeq++
       loading.value = false
       loadFailed.value = false
-      commentsLoading.value = false
-      commentsLoadingMore.value = false
     }
   },
   { immediate: true },
 )
 
 watch(activeTab, (tab) => {
-  if (tab === 'comments') void loadComments()
+  if (tab === 'comments' || tab === 'issues') openedTabs.value[tab] = true
 })
 
 function formatCount(value: number): string {
@@ -350,49 +316,6 @@ function formatDate(value?: string): string {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString()
-}
-
-function commentAuthor(comment: Pick<MarketPluginComment, 'author'>): string {
-  return comment.author.display_name || comment.author.username || t('market.unknownAuthor')
-}
-
-async function loadComments(): Promise<void> {
-  if (commentsLoading.value || commentsLoaded.value) return
-
-  const requestSeq = ++commentsLoadSeq
-  commentsLoading.value = true
-  commentsLoadFailed.value = false
-  try {
-    const thread = await fetchMarketPluginComments(props.plugin.rawId)
-    if (requestSeq !== commentsLoadSeq) return
-    if (!thread) {
-      commentsLoadFailed.value = true
-      return
-    }
-    comments.value = thread.messages
-    commentsNextCursor.value = thread.next_cursor
-    commentsLoaded.value = true
-  } finally {
-    if (requestSeq === commentsLoadSeq) commentsLoading.value = false
-  }
-}
-
-async function loadMoreComments(): Promise<void> {
-  const cursor = commentsNextCursor.value
-  if (cursor === null || commentsLoadingMore.value) return
-
-  const requestSeq = commentsLoadSeq
-  commentsLoadingMore.value = true
-  try {
-    const thread = await fetchMarketPluginComments(props.plugin.rawId, cursor)
-    if (!thread || requestSeq !== commentsLoadSeq) return
-    const existingIds = new Set(comments.value.map((comment) => comment.id))
-    comments.value = [...comments.value, ...thread.messages.filter((comment) => !existingIds.has(comment.id))]
-      .sort((left, right) => left.id - right.id)
-    commentsNextCursor.value = thread.next_cursor
-  } finally {
-    if (requestSeq === commentsLoadSeq) commentsLoadingMore.value = false
-  }
 }
 
 function handleReadmeClick(event: MouseEvent) {
@@ -487,16 +410,6 @@ function rewriteReadmeUrls(html: string): string {
 .market-plugin-detail__version > div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .market-plugin-detail__version time { display: block; margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
 .market-plugin-detail__version p { margin: 7px 0 0; white-space: pre-wrap; color: var(--el-text-color-regular); line-height: 1.5; }
-.market-plugin-detail__comments { display: grid; gap: 12px; }
-.market-plugin-detail__comments-area { min-height: 72px; }
-.market-plugin-detail__comments-more { display: flex; justify-content: center; margin-top: 12px; }
-.market-plugin-detail__comment { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
-.market-plugin-detail__comment:last-child { border-bottom: 0; }
-.market-plugin-detail__comment-content { min-width: 0; flex: 1; }
-.market-plugin-detail__comment-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
-.market-plugin-detail__comment-meta time { color: var(--el-text-color-secondary); font-size: 12px; }
-.market-plugin-detail__comment-reply { margin: 4px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
-.market-plugin-detail__comment-body { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--el-text-color-regular); line-height: 1.55; }
 .market-plugin-detail__facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--el-text-color-secondary); }
 @media (max-width: 520px) { .market-plugin-detail__hero { gap: 12px; } .market-plugin-detail__hero :deep(.el-avatar) { width: 48px !important; height: 48px !important; } }
 </style>

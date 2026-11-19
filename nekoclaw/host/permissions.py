@@ -103,6 +103,12 @@ BROWSER_REOPEN = "browser_reopen"
 # Commands the settings forbid stay forbidden.
 SPACE_COMMAND = "space_command"
 
+# Nor is this one: the work on a commission has used as many tokens as one
+# commission may, and the user is asked whether it is to go on with as many
+# again (``TaskAgentManager``). Asked each time that much is used; what is
+# allowed is allowed once.
+USAGE_LIMIT = "usage_limit"
+
 _FILE_VERSION = 1
 # The mode of every category while an existing file cannot be read.
 _UNREADABLE_MODE = "deny"
@@ -135,6 +141,10 @@ class PermissionAsk:
     # The answers offered. "always" and "session" are missing when the
     # category asks every time.
     options: tuple[str, ...] = CHOICES
+    # Done by whoever puts the question to the user the moment the
+    # answer to it is in, before whoever asked gets to go on. Not
+    # part of what the user is asked.
+    at_answer: Callable[[], None] | None = field(default=None, compare=False, repr=False)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -438,18 +448,26 @@ class PermissionGate:
         return await self._store.mode(category, key) == "deny"
 
     async def ask_each_time(
-        self, commission_id: str, category: str, *, detail: dict[str, Any] | None = None
+        self,
+        commission_id: str,
+        category: str,
+        *,
+        detail: dict[str, Any] | None = None,
+        at_answer: Callable[[], None] | None = None,
     ) -> PermissionDecision:
         """Ask the user about something no setting answers, and that no earlier answer covers.
 
         For what is asked about as an event rather than as a kind of action
         (``BROWSER_REOPEN``: the user closed the browser, and a task wants
         it again). The answers on offer are to allow it this once or to
-        refuse; nothing is kept of either.
+        refuse; nothing is kept of either. ``at_answer`` is done the
+        moment the answer to this question is in (``PermissionAsk``).
         """
         if self._asker is None:
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        ask = PermissionAsk(category=category, key=None, detail=dict(detail or {}), options=CHOICES_ALWAYS_ASK)
+        ask = PermissionAsk(
+            category=category, key=None, detail=dict(detail or {}), options=CHOICES_ALWAYS_ASK, at_answer=at_answer
+        )
         try:
             choice = await self._asker(commission_id, ask)
         except asyncio.CancelledError:

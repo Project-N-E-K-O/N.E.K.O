@@ -636,7 +636,7 @@ async def publish_to_workshop(request: Request):
             }, status_code=503)
         
         # Run blocking Steamworks API calls in the thread pool.
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             published_file_id = await loop.run_in_executor(
                 None,

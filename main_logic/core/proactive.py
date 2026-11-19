@@ -99,11 +99,48 @@ class ProactiveMixin:
         """Apply live browser consent without granting persisted permission."""
         if not isinstance(enabled, bool):
             return
-        if not enabled and getattr(self, "_proactive_vision_enabled", None) is not False:
+        # The frontend re-sends consent=false on every settings save, sync and
+        # reconnect. Only an actual allowed -> revoked change clears caches:
+        # afterwards they can only hold manual-share frames, which privacy
+        # mode does not stop and proactive turns no longer use.
+        revoked = not enabled and getattr(self, "_proactive_vision_enabled", None) is not False
+        if revoked:
             self._proactive_vision_revocation_epoch = (
                 getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
             )
+            self._screen_consent_revocation_epoch = (
+                getattr(self, "_screen_consent_revocation_epoch", 0) + 1
+            )
         self._proactive_vision_enabled = enabled
+        if revoked:
+            # Independent ASR keeps its own live-frame cache for the next
+            # user turn; frames captured before the revocation must not ride it.
+            if hasattr(self, "_latest_independent_visual_frame"):
+                self._latest_independent_visual_frame = None
+            if hasattr(self, "_prerecord_visual_frames"):
+                self._prerecord_visual_frames = []
+            # The session forgets what it captured automatically: the text
+            # session strips those images from its history and drops a staged
+            # proactive screenshot (discard_auto_captured_history_images, which
+            # includes discard_cached_visual_context); the realtime session
+            # drops its cached frame (discard_cached_visual_context).
+            session = getattr(self, "session", None)
+            discard = getattr(
+                session, "discard_auto_captured_history_images", None
+            ) or getattr(
+                session,
+                "discard_cached_visual_context",
+                None,
+            )
+            if callable(discard):
+                try:
+                    discard()
+                except Exception:
+                    logger.warning(
+                        "[%s] failed to discard automatically captured images after consent revocation",
+                        getattr(self, "lanlan_name", ""),
+                        exc_info=True,
+                    )
 
     def _proactive_round_owned(self, round_id: str | None) -> bool:
         """Whether ``round_id`` still owns the proactive round; ``None`` opts out.
@@ -190,6 +227,7 @@ class ProactiveMixin:
         self,
         *,
         language: str | None = None,
+        allow_vision: bool = True,
     ) -> bool:
         """Inject a text prompt to nudge the voice model into speaking.
 
@@ -200,8 +238,17 @@ class ProactiveMixin:
         ``language`` is a request-local rendering override. It intentionally
         does not update the manager's durable or fallback language state.
 
+        ``allow_vision`` is False when the request did not enable the screen
+        source; the cached frame then stays out of this turn. Live consent is
+        re-checked inside ``prompt_ephemeral`` on every visual step.
+
         Returns True if the text turn was sent, False if skipped.
         """
+        # Same rule as the text path's consent checker: a revocation during
+        # this nudge, including while it waits for the lock below, ends its
+        # vision for good, even if consent is granted again before the frame
+        # would be sent.
+        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
         # Share the callback-inject lock so a scheduled nudge cannot register a
         # second no-id fallback while an agent callback inject is unresolved.
         async with self._voice_proactive_inject_lock:
@@ -231,6 +278,11 @@ class ProactiveMixin:
                 language=_lang,
                 user_turn_active=self._independent_asr_user_turn_active,
                 session_owned=lambda: self.is_active and self.session is session,
+                vision_allowed=lambda: (
+                    allow_vision
+                    and getattr(self, "_proactive_vision_enabled", None) is not False
+                    and getattr(self, "_proactive_vision_revocation_epoch", 0) == vision_epoch
+                ),
             )
         if delivered:
             logger.info("[%s] voice proactive nudge delivered (%s)", self.lanlan_name, _lang)
@@ -610,6 +662,7 @@ class ProactiveMixin:
         vision_screenshot_b64: str | None = None,
         expected_user_engagement_time: Any = Ellipsis,
         expected_round_id: str | None = None,
+        vision_consent_epoch: int | None = None,
     ) -> bool:
         """Wrap-up after streaming completes: deliver the full text in one shot + record history + TTS/turn end signals.
 
@@ -653,6 +706,12 @@ class ProactiveMixin:
         injection time. Staging happens inside the sid-guard
         below, so a user takeover (sid change → early return) never stages a
         screenshot for an undelivered turn.
+
+        vision_consent_epoch: the screen-consent revocation epoch this round
+        started under. A revocation since then keeps the screenshot out of the
+        slot even if consent was granted again meanwhile; the session re-checks
+        the same rule before the screenshot reaches the model. None binds the
+        epoch current at staging time.
 
         Returns True when genuinely persisted, False when skipped due to a sid
         change. The caller uses this to short-circuit downstream side effects
@@ -807,11 +866,32 @@ class ProactiveMixin:
                 # so user takeover (changed sid ->early return)
                 # never stages screenshots for undelivered rounds.
                 if hasattr(self.session, "set_proactive_screenshot"):
-                    # A live revocation must not leave this round's screen for the
-                    # next user turn; staging None also clears an older screenshot.
-                    if getattr(self, "_proactive_vision_enabled", None) is False:
-                        vision_screenshot_b64 = None
-                    self.session.set_proactive_screenshot(vision_screenshot_b64)
+                    # A revocation since the round started must not leave its
+                    # screen for the next user turn, even after a quick off/on;
+                    # staging None also clears an older screenshot.
+                    consent_epoch = (
+                        getattr(self, "_proactive_vision_revocation_epoch", 0)
+                        if vision_consent_epoch is None
+                        else vision_consent_epoch
+                    )
+
+                    # Same rule as proactive_chat's _proactive_vision_consent_checker
+                    # (core does not import proactive_chat).
+                    def staged_consent_holds() -> bool:
+                        return (
+                            getattr(self, "_proactive_vision_enabled", None) is not False
+                            and getattr(self, "_proactive_vision_revocation_epoch", 0)
+                            == consent_epoch
+                        )
+
+                    if vision_screenshot_b64 and staged_consent_holds():
+                        # The session re-checks before the screenshot is sent.
+                        self.session.set_proactive_screenshot(
+                            vision_screenshot_b64,
+                            consent_check=staged_consent_holds,
+                        )
+                    else:
+                        self.session.set_proactive_screenshot(None)
 
             # Split anti-repeat corpus updates: synchronous memory update **before** ending signals,
             # without await/cancellation points; persistence afterward. Immediate user responses must
