@@ -788,7 +788,7 @@ async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_
     on = [True]
     host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
     runner = host.brain._runner
-    client, call_plugin = runner._client, host.brain._call_plugin
+    create_run, call_plugin = runner._create_run, host.brain._call_plugin
     calling: list[bool] = []
 
     async def chosen(*args: Any, **kwargs: Any) -> None:
@@ -796,20 +796,20 @@ async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_
         calling.append(True)
         await call_plugin(*args, **kwargs)
 
-    def while_nekoclaw_goes_off() -> Any:
+    async def while_nekoclaw_goes_off(*args: Any, **kwargs: Any) -> Any:
         if calling:
-            # In the task that sends the request for the run, as it begins: after everything
-            # that is waited for, and the moment between that task being made and its start.
+            # As the task that sends the request for the run begins: after everything that is
+            # waited for, and the moment between that task being made and its start.
             on[0] = False
-        return client()
+        return await create_run(*args, **kwargs)
 
-    host.brain._call_plugin, runner._client = chosen, while_nekoclaw_goes_off
+    host.brain._call_plugin, runner._create_run = chosen, while_nekoclaw_goes_off
     try:
         receipt = await _dispatch(host, "查一下上海的天气")
         assert receipt.kind == "accepted"
         await host.brain.settle()
     finally:
-        host.brain._call_plugin, runner._client = call_plugin, client
+        host.brain._call_plugin, runner._create_run = call_plugin, create_run
 
     # No request for a run is sent, and the commission is put down as not started because
     # NekoClaw is off: not as a call that failed.
@@ -819,6 +819,41 @@ async def test_nekoclaw_switched_off_after_a_plugin_was_chosen_and_before_it_is_
     (correction,) = await outbox(host, "correction")
     assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
     assert await outbox(host, "task_result") == []
+
+
+async def test_a_call_nobody_wants_any_more_is_told_as_that_though_the_client_could_not_be_made(
+    server, hosts, tmp_path
+):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
+    llm.gate = asyncio.Event()
+    on = [True]
+    host = _host(hosts, tmp_path, server, llm, enabled=lambda: on[0])
+    runner = host.brain._runner
+    client, create_run = runner._client, runner._create_run
+
+    def cannot_be_made() -> Any:
+        raise RuntimeError("the certificate cannot be read")
+
+    async def while_nekoclaw_goes_off(*args: Any, **kwargs: Any) -> Any:
+        on[0] = False
+        return await create_run(*args, **kwargs)
+
+    runner._client, runner._create_run = cannot_be_made, while_nekoclaw_goes_off
+    try:
+        receipt = await _dispatch(host, "查一下上海的天气")
+        llm.gate.set()
+        await host.brain.settle()
+    finally:
+        runner._client, runner._create_run = client, create_run
+
+    # Asked before the client is made: it is put down as not started because NekoClaw is off,
+    # and not as a call that failed.
+    failed = await host.ledger.get(receipt.commission_id)
+    assert failed.status == "failed" and "switched off" in failed.status_reason
+    (correction,) = await outbox(host, "correction")
+    assert (correction.payload["reason"], correction.payload["detail"]) == ("no_capability", "disabled")
+    assert await outbox(host, "task_result") == [] and server.run_requests == []
 
 
 async def _asked(llm: FakeDecisionLLM) -> bool:

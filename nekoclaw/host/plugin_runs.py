@@ -566,8 +566,8 @@ class PluginRunner:
         ``bind_task`` entry): such an entry may be hidden from selection, so
         the entry is looked for among all of the plugin's entries.
 
-        ``still_wanted`` is asked last thing before the request is
-        handed to the HTTP client, in the task that sends it
+        ``still_wanted`` is asked in the task that sends the request,
+        as it begins and before the HTTP client is made
         (``_create_run``): a call that is not wanted any more is not
         made (``not_wanted``). What the client itself waits for before
         the request is on the wire is past that.
@@ -758,18 +758,19 @@ class PluginRunner:
     ) -> tuple[Any, tuple[str, str] | None]:
         """Send ``POST /runs``. Returns ``(answer, None)`` or ``(None, (error, reason))``.
 
-        ``still_wanted`` is asked here, where the request is handed to
-        the client, and not where this is started: this runs as a
-        task of its own, which begins a moment after it is made.
+        ``still_wanted`` is asked here, as this begins, and not where
+        this is started: it runs as a task of its own, which begins a
+        moment after it is made. Before the client is made: a client
+        that cannot be made is a call that failed, and that is not
+        what is told of a call nobody wants any more.
         """
         target = f"{body.get('plugin_id')}.{body.get('entry_id')}"
+        if still_wanted is not None and not still_wanted():
+            # Whoever handed the call over no longer wants it made (NekoClaw
+            # was switched off since it was chosen): nothing is sent.
+            return None, ("the call is not wanted any more", "not_wanted")
         try:
             async with self._client() as client:
-                if still_wanted is not None and not still_wanted():
-                    # Whoever handed the call over no longer wants it made
-                    # (NekoClaw was switched off since it was chosen):
-                    # nothing is sent.
-                    return None, ("the call is not wanted any more", "not_wanted")
                 response = await client.post(f"{self.base_url}/runs", json=body)
             if not 200 <= response.status_code < 300:
                 logger.warning("/runs returned HTTP %s for %s", response.status_code, target)

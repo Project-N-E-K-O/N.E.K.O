@@ -678,7 +678,8 @@ class TaskBrain:
                 # in, nor what the sentence states for good.
                 # (One that repeats something under way begins nothing:
                 # it is withdrawn as that, below, which is what there
-                # is to tell her of it whatever the switch says.)
+                # is to tell her of it whatever the switch says. Of
+                # that one what was chosen is written down as ever.)
                 # (The switch, not ``_is_enabled``: a brain that is being
                 # closed hands it over, and the start ends as failed
                 # because the host shut down, to be taken up again.)
@@ -728,7 +729,7 @@ class TaskBrain:
                     # It took no place, and is nobody's: put down as what
                     # it is, whatever the switch says by now.
                     await self._overturn_switched_off(commission)
-            elif selection.route == "duplicate" and selection.duplicate_of:
+            elif repeats:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
             else:
                 await self._overturn_no_capability(commission, selection.reason)
@@ -840,11 +841,10 @@ class TaskBrain:
                 except Exception:  # noqa: BLE001 - showing progress must not disturb the call
                     logger.debug("a progress listener failed", exc_info=True)
 
-        # Asked last thing before the request for the run is handed to
-        # the HTTP client: what was written down of the choice, the
-        # permissions and the list of plugins are waited for since
-        # NekoClaw was seen to be on, and it may have been switched off
-        # meanwhile.
+        # Asked as the task that sends the request for the run begins:
+        # what was written down of the choice, the permissions and the
+        # list of plugins are waited for since NekoClaw was seen to be
+        # on, and it may have been switched off meanwhile.
         still_on, turned_away = self._asks_whether_on()
         outcome = await self._runner.run_entry(
             commission_id=commission.id,

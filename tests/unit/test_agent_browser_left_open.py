@@ -1300,6 +1300,23 @@ _LEAVES_OR_WAITS = (
 )
 
 
+def _leaves_or_waits(statement: ast.AST) -> bool:
+    """Whether a statement waits for something, or leaves the block it stands in.
+
+    By what it does itself: what a function defined in it would do
+    when it is called is not looked at. A row made by waiting for
+    each of its parts waits as well.
+    """
+    if isinstance(statement, _FUNCTIONS):
+        return False
+    for inner in [statement, *_own_nodes(statement)]:
+        if isinstance(inner, _LEAVES_OR_WAITS):
+            return True
+        if isinstance(inner, ast.comprehension) and inner.is_async:
+            return True
+    return False
+
+
 def _master_switch_offs(function: ast.AST) -> list[bool]:
     """For every place a function puts the master switch off: whether what was kept is dropped right after it.
 
@@ -1322,7 +1339,7 @@ def _master_switch_offs(function: ast.AST) -> list[bool]:
                     if isinstance(later, ast.Expr) and _called(later.value) == "forget_turns_for_task_agents":
                         dropped = True
                         break
-                    if any(isinstance(inner, _LEAVES_OR_WAITS) for inner in ast.walk(later)):
+                    if _leaves_or_waits(later):
                         break
                 found.append((statement.lineno, dropped))
     return [dropped for _line, dropped in sorted(found)]
@@ -1445,13 +1462,24 @@ def test_every_place_that_puts_the_master_switch_off_is_looked_at_by_itself() ->
         "        async with lock:\n"
         "            pass\n"
         "        forget_turns_for_task_agents()\n"
+        "    elif action == 'off_and_read':\n"
+        "        Modules.analyzer_enabled = False\n"
+        "        rows = [row async for row in source()]\n"
+        "        forget_turns_for_task_agents()\n"
+        "    elif action == 'off_with_something_for_later':\n"
+        "        Modules.analyzer_enabled = False\n"
+        "        async def later():\n"
+        "            await stop_everything()\n"
+        "            return {}\n"
+        "        forget_turns_for_task_agents()\n"
         "    else:\n"
         "        Modules.analyzer_enabled = True\n"
     ).body[0]
-    # The first drops what was kept right after it. The second leaves without, and the third
-    # and the fourth wait for something first: none of them is covered by the first, nor by
-    # what comes later.
-    assert _master_switch_offs(function) == [True, False, False, False]
+    # The first drops what was kept right after it. The second leaves without, and the third,
+    # the fourth and the fifth wait for something first: none of them is covered by the first,
+    # nor by what comes later. The last only defines something that would wait when it is
+    # called, which is not waiting.
+    assert _master_switch_offs(function) == [True, False, False, False, False, True]
 
 
 def test_a_capability_switch_is_put_off_in_one_place_which_looks_whether_nekoclaw_is_off_now() -> None:
