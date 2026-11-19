@@ -25,6 +25,10 @@ class _FakePsProcess:
     def memory_info(self) -> SimpleNamespace:
         return SimpleNamespace(rss=64 * 1024 * 1024)
 
+    def memory_full_info(self) -> SimpleNamespace:
+        # USS is smaller than RSS because shared pages are excluded.
+        return SimpleNamespace(rss=64 * 1024 * 1024, uss=32 * 1024 * 1024)
+
     def memory_percent(self) -> float:
         return 1.5
 
@@ -133,6 +137,85 @@ def test_prune_drops_plugins_no_longer_in_hosts(fake_psutil: type[_FakePsProcess
     collector._prune_ps_processes({"keep": object()})
 
     assert set(collector._ps_processes) == {"keep"}
+
+
+@pytest.mark.plugin_unit
+def test_uss_is_reported_next_to_rss(fake_psutil: type[_FakePsProcess]) -> None:
+    collector = module.MetricsCollector()
+
+    result = collector._collect_plugin_metrics_sync("demo", _host(1001))
+
+    assert result is not None
+    assert result.memory_mb == 64.0
+    assert result.memory_uss_mb == 32.0
+    payload = collector._metrics_to_dict(result)
+    assert payload["memory_mb"] == 64.0
+    assert payload["memory_uss_mb"] == 32.0
+
+
+@pytest.mark.plugin_unit
+def test_uss_access_denied_degrades_to_none_and_keeps_rss(
+    fake_psutil: type[_FakePsProcess], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _denied(self: _FakePsProcess) -> SimpleNamespace:
+        raise module.psutil.AccessDenied()
+
+    monkeypatch.setattr(_FakePsProcess, "memory_full_info", _denied)
+    collector = module.MetricsCollector()
+
+    result = collector._collect_plugin_metrics_sync("demo", _host(1001))
+
+    # The extended counters being denied must not void the whole sample.
+    assert result is not None
+    assert result.memory_uss_mb is None
+    assert result.memory_mb == 64.0
+    payload = collector._metrics_to_dict(result)
+    assert payload["memory_uss_mb"] is None
+    assert payload["memory_mb"] == 64.0
+
+
+@pytest.mark.plugin_unit
+def test_uss_missing_from_full_info_is_none(
+    fake_psutil: type[_FakePsProcess], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Platforms without a USS field in the full-info struct (the BSD variants).
+    monkeypatch.setattr(
+        _FakePsProcess, "memory_full_info", lambda self: SimpleNamespace(rss=64 * 1024 * 1024)
+    )
+    collector = module.MetricsCollector()
+
+    result = collector._collect_plugin_metrics_sync("demo", _host(1001))
+
+    assert result is not None
+    assert result.memory_uss_mb is None
+    assert collector._metrics_to_dict(result)["memory_uss_mb"] is None
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.parametrize("error_kind", ["no_such_process", "not_implemented", "missing_attribute"])
+def test_uss_read_errors_degrade_to_none(
+    fake_psutil: type[_FakePsProcess], monkeypatch: pytest.MonkeyPatch, error_kind: str
+) -> None:
+    def _gone(self: _FakePsProcess) -> SimpleNamespace:
+        raise module.psutil.NoSuchProcess()
+
+    def _unsupported(self: _FakePsProcess) -> SimpleNamespace:
+        raise NotImplementedError
+
+    if error_kind == "missing_attribute":
+        # Older/limited platforms may not expose memory_full_info at all.
+        monkeypatch.delattr(_FakePsProcess, "memory_full_info")
+    elif error_kind == "not_implemented":
+        monkeypatch.setattr(_FakePsProcess, "memory_full_info", _unsupported)
+    else:
+        monkeypatch.setattr(_FakePsProcess, "memory_full_info", _gone)
+    collector = module.MetricsCollector()
+
+    result = collector._collect_plugin_metrics_sync("demo", _host(1001))
+
+    assert result is not None
+    assert result.memory_uss_mb is None
+    assert result.memory_mb == 64.0
 
 
 @pytest.mark.plugin_unit
