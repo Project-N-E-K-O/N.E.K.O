@@ -17,7 +17,7 @@
     <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
-    {% set market_entry = request.query_params.get('market') %}
+    {% set market_entry = 'market' in request.query_params %}
     <main class="theater-selector-shell"{% if not market_entry %} data-theater-selector-app{% endif %}>
         <header class="theater-title-bar page-title-bar">
             <div class="theater-title-copy">

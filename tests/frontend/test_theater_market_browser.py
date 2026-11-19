@@ -459,3 +459,20 @@ def test_market_opened_inside_selector_window_returns_in_place(page, running_ser
     expect(selector).to_have_url(running_server + '/theater')
     expect(selector.locator('[data-theater-selector-app]')).to_be_visible()
     assert len(page.context.pages) == 2
+
+
+@pytest.mark.frontend
+def test_market_window_back_ignores_stale_registry_without_selector(page, running_server):
+    """A heartbeat left by a crashed selector must not close the market with nowhere to go."""
+    _selector_api_stubs(page.context)
+    _host_with_window_registry(page, running_server)
+    page.evaluate("""() => localStorage.setItem('neko:named-window:neko_theater',
+        JSON.stringify({url: location.origin + '/theater', timestamp: Date.now() + 60000}))""")
+    with page.expect_popup() as opened_market:
+        page.get_by_role('button', name='Market', exact=True).click()
+    market = opened_market.value
+    expect(market.locator('#theater-market-retry-btn')).to_be_visible()
+    market.get_by_role('link', name='返回选择剧本').click()
+    expect(market).to_have_url(running_server + '/theater')
+    expect(market.locator('[data-theater-selector-app]')).to_be_visible()
+    assert len(page.context.pages) == 2

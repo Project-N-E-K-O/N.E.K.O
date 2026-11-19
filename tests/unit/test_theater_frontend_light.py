@@ -632,7 +632,7 @@ def test_theater_entry_uses_independent_proactive_invites():
         assert "url: '/theater-numeric'" not in source
 
 
-@pytest.mark.parametrize("market", ["browse", "random"])
+@pytest.mark.parametrize("market", ["browse", "random", ""])
 def test_market_connection_keeps_window_controls(market):
     html = Environment(autoescape=True).from_string(_source("templates/theater.html")).render(
         request=SimpleNamespace(query_params={"market": market}), static_asset_version="test",
@@ -642,6 +642,14 @@ def test_market_connection_keeps_window_controls(market):
         assert html.count(f'data-neko-window-control="{control}"') == 1
     assert 'data-theater-selector-app' not in html
     assert 'href="/theater"' in html
+
+
+def test_selector_renders_only_without_market_parameter():
+    html = Environment(autoescape=True).from_string(_source("templates/theater.html")).render(
+        request=SimpleNamespace(query_params={}), static_asset_version="test",
+    )
+    assert "data-theater-selector-app" in html
+    assert "theater-market-connection" not in html
 
 
 def test_selector_title_bar_has_shared_window_controls():

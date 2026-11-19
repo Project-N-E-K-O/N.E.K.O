@@ -10,6 +10,8 @@
     var NAMED_WINDOW_FOCUS_KEY_PREFIX = 'neko:named-window-focus:';
     var NAMED_WINDOW_CHANNEL = 'neko:named-window';
     var NAMED_WINDOW_TTL_MS = 5000;
+    var NAMED_WINDOW_FOCUS_ACK = 'neko:named-window-focus-ack';
+    var NAMED_WINDOW_ACK_TIMEOUT_MS = 800;
     var connecting = false;
     var channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('neko_page_channel') : null;
     function label(key) { return window.t ? window.t('theater.' + key) : key; }
@@ -108,22 +110,42 @@
     }
     // Same shared named-window protocol as common_dialogs.js openOrFocusWindow: a selector
     // opened by another window (e.g. main page while the invite came from /chat) is only
-    // reachable through its registry heartbeat and focus broadcast.
-    function requestRegisteredSelectorFocus() {
+    // reachable through its registry heartbeat and focus broadcast. A heartbeat alone may be
+    // stale, so the handoff only counts once the selector acknowledges the request.
+    function isRegisteredSelectorFresh() {
         try {
             var record = JSON.parse(window.localStorage.getItem(NAMED_WINDOW_KEY_PREFIX + SELECTOR_WINDOW_NAME) || 'null');
-            if (!record || !(Date.now() - Number(record.timestamp) < NAMED_WINDOW_TTL_MS)) return false;
+            return !!record && Date.now() - Number(record.timestamp) < NAMED_WINDOW_TTL_MS;
         } catch (_) {
             return false;
         }
-        var message = {type: 'neko:named-window-focus', windowName: SELECTOR_WINDOW_NAME, payload: null, timestamp: Date.now()};
-        try {
-            var namedChannel = new BroadcastChannel(NAMED_WINDOW_CHANNEL);
-            namedChannel.postMessage(message);
-            namedChannel.close();
-        } catch (_) {}
-        try { window.localStorage.setItem(NAMED_WINDOW_FOCUS_KEY_PREFIX + SELECTOR_WINDOW_NAME, JSON.stringify(message)); } catch (_) {}
-        return true;
+    }
+    function requestRegisteredSelectorFocus() {
+        return new Promise(function (resolve) {
+            if (typeof BroadcastChannel === 'undefined') { resolve(false); return; }
+            var requestId = 'theater_back_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+            var message = {type: 'neko:named-window-focus', windowName: SELECTOR_WINDOW_NAME, payload: null, requestId: requestId, timestamp: Date.now()};
+            var namedChannel = null;
+            var timer = 0;
+            function finish(acknowledged) {
+                window.clearTimeout(timer);
+                try { namedChannel.close(); } catch (_) {}
+                resolve(acknowledged);
+            }
+            try {
+                namedChannel = new BroadcastChannel(NAMED_WINDOW_CHANNEL);
+                namedChannel.onmessage = function (event) {
+                    var data = event && event.data;
+                    if (data && data.type === NAMED_WINDOW_FOCUS_ACK && data.requestId === requestId) finish(true);
+                };
+                timer = window.setTimeout(function () { finish(false); }, NAMED_WINDOW_ACK_TIMEOUT_MS);
+                namedChannel.postMessage(message);
+            } catch (_) {
+                finish(false);
+                return;
+            }
+            try { window.localStorage.setItem(NAMED_WINDOW_FOCUS_KEY_PREFIX + SELECTOR_WINDOW_NAME, JSON.stringify(message)); } catch (_) {}
+        });
     }
     function closeMarketWindow() {
         // If the window refuses to close, still leave the user on a working selector.
@@ -139,12 +161,24 @@
             if (!(result && result.ok)) window.close();
         }, function () { window.close(); });
     }
+    var returning = false;
     function returnToSelector(event) {
         if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         if (window.name !== MARKET_WINDOW_NAME) return;
-        if (!focusExistingSelector() && !requestRegisteredSelectorFocus()) return;
+        if (returning) { event.preventDefault(); return; }
+        if (focusExistingSelector()) {
+            event.preventDefault();
+            returning = true;
+            closeMarketWindow();
+            return;
+        }
+        if (!isRegisteredSelectorFresh()) return;
         event.preventDefault();
-        closeMarketWindow();
+        returning = true;
+        requestRegisteredSelectorFocus().then(function (acknowledged) {
+            if (acknowledged) closeMarketWindow();
+            else window.location.assign('/theater');
+        });
     }
     document.addEventListener('DOMContentLoaded', function () {
         var retry = document.getElementById('theater-market-retry-btn');

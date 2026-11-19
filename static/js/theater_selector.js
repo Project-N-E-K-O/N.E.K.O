@@ -997,6 +997,10 @@
             var api = window.nekoWindowControl;
             if (api && typeof api.restore === 'function') Promise.resolve(api.restore()).catch(function () {});
             try { window.focus(); } catch (_) {}
+            // Let a market window know a live selector took over before it closes itself.
+            if (data.requestId && channel) {
+                try { channel.postMessage({type: 'neko:named-window-focus-ack', windowName: name, requestId: data.requestId}); } catch (_) {}
+            }
         }
         function start() {
             mark();
