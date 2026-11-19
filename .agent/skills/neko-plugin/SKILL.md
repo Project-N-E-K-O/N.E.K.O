@@ -65,8 +65,7 @@ commit for the user unasked; report the actual result.
 If the current folder already has a `plugin.toml`, skip to Modify.
 
 1. Read `references/plugin-creation-workflow.md`. Offer only `plugin` and
-   `adapter` as package types; ignore its `extension` and host-plugin
-   questions (removed).
+   `adapter` as package types.
 2. Ask only the unresolved minimum: name, purpose, package type, first-version
    scope, out of scope. Show the Identity Lock and a short design brief.
 3. After confirmation, scaffold with `neko-plugin init`; never hand-write the
@@ -112,8 +111,11 @@ If the goal needs a host change, stop and follow the escalation section of
   allowed imports; escalation.
 - `references/core-plugin-contract.md`: identity, `plugin.toml`, entries,
   routers, hooks, i18n, UI modes.
-- `references/plugin-system-surface-map.md`: SDK capability index; check it
-  before inventing abstractions.
+- `references/plugin-system-surface-map.md`: SDK capability index (paths,
+  `push_message`, config, cross-plugin calls); check it before inventing
+  abstractions.
+- `references/dependencies-and-market.md`: `vendor/`, third-party packages,
+  Market id/tag/size rules, what local checks do not prove.
 - `references/plugin-creation-workflow.md`: questions, design brief, scaffold.
 - `references/plugin-cli-and-debugging.md`, `references/plugin-checks-and-tests.md`:
   CLI, debugging order, checks and tests.

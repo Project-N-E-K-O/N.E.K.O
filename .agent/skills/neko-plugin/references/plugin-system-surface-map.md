@@ -13,7 +13,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 ## Import Layers
 
 - S `plugin.sdk.plugin`: Standard plugin facade. Import `NekoPluginBase`, decorators, result helpers, config/runtime helpers, i18n, settings, UI helpers, and ordinary plugin APIs from here.
-- A `plugin.sdk.extension`: Extension facade. Use only for packages with `type = "extension"` and `[plugin.host]`.
+- `plugin.sdk.extension` and the extension package type were removed; see the [migration guide](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/migration-v0.9.md).
 - B `plugin.sdk.adapter`: Adapter facade. Use only for protocol gateways that translate external requests into N.E.K.O plugin calls.
 - A `@neko/plugin-ui`: Hosted TSX facade. Use inside `hosted-tsx` surfaces; full component signatures live in `hosted-ui-api.md`.
 - D `plugin.sdk.shared.*`, `plugin.core.*`, `plugin.server.*`: Implementation details. Do not import these from plugin workspace code unless the user explicitly approves platform work.
@@ -37,21 +37,35 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - S `self.logger`, `self.sdk_logger`: Plugin logger. Use for plugin-local logs instead of `print`.
 - S `self.i18n`: Loaded `PluginI18n` instance for the plugin's `[plugin.i18n]` files. Use `tr()` for registered strings and `self.i18n.t(...)` for runtime strings.
 - S `plugin_id`: Stable plugin id property. Use in logs, state keys, and generated messages instead of retyping the id.
-- S `config_dir`: Directory containing the plugin's `plugin.toml`. Use as the base for plugin-local files.
 - S `metadata`: Dict copy of plugin metadata. Use for read-only inspection of manifest-derived data.
 - A `bus`: Read/watch facade over host state. Use for observing host messages/events/memory; do not treat it as a publish bus.
-- B `memory`: `MemoryClient` for memory query/read operations. Use when the plugin explicitly integrates with memory buckets.
 - A `system_info`: `SystemInfo` facade for system/server config and Python environment inspection. Use sparingly and handle `Err`.
+
+### Paths
+
+Every path comes from the SDK because the plugin's location and the user's data directory differ per install (constraint 6 in `execution-boundary.md`). None of these calls creates directories; `mkdir(parents=True, exist_ok=True)` before writing.
+
+| Member | Points at | Writable |
+|---|---|---|
+| S `data_path(*parts)` | persistent plugin data (`<storage_dir>/data/...`) | yes |
+| S `cache_path(*parts)` | disposable cache (`<storage_dir>/cache/...`) | yes; may be cleared |
+| A `runtime_config_path` (property) | the plugin's runtime config file; read and write it through `await self.config...` instead | via `self.config` |
+| B `storage_dir` (property) | the per-plugin user storage root holding the three above | through the helpers above |
+| S `plugin_dir` (property) | the installed payload: `plugin.toml`, code, shipped assets | **no**: an upgrade replaces it, and in a project it is the Git working tree |
+| C `config_dir` (property) | compatibility alias of `plugin_dir` | **no**; use `plugin_dir` in new code |
+| A `shared_path(*parts)` | files this plugin publishes for other plugins (kept when the plugin is removed) | yes |
+| A `shared_path_of(plugin_id, *parts)` | another plugin's published files; that id must be listed in `[plugin.shared] reads`, otherwise `ValidationError` | read only (by agreement, not enforced) |
+
+Source: [base.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sdk/plugin/base.py).
 
 ### `NekoPluginBase` Methods
 
-- S `data_path(*parts)`: Returns the plugin data directory or a child path. Use it for plugin-owned generated files instead of writing beside code.
 - A `refresh_runtime_config(effective_config=None)`: Refreshes store/db/state runtime toggles after config changes. Call from config-change flows when you manage runtime helpers manually.
 - A `get_input_schema()`: Returns class-level `input_schema` if present. Mostly useful for introspection and compatibility.
 - A `run_update(**kwargs)`: Forwards a run update to the host. Use for long-running entry progress when the host expects run status.
 - A `export_push(**kwargs)`: Pushes export artifacts through the host export channel. Prefer structured arguments; treat as async host integration.
 - A `finish(**kwargs)`: Marks the current task complete and sends structured completion data. Use for entry flows that intentionally complete a host task.
-- S `push_message(**kwargs)`: Sends plugin output to the dialog/message channel. Prefer `parts`, `visibility`, and `ai_behavior` over legacy fields.
+- S `push_message(**kwargs)`: Sends plugin output into the conversation. See Push Message below.
 - A `include_router(router, prefix="")`: Mounts a `PluginRouter`. Use only for large or feature-split plugins, usually when the main file grows beyond about 1k lines.
 - C `exclude_router(router_or_name)`: Unmounts a router by object or name. Rarely needed outside dynamic plugin composition.
 - B `get_router(name)`: Looks up a mounted router. Use for diagnostics or dynamic router operations.
@@ -192,7 +206,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - B `iter_handlers()`, `collect_entries()`: Returns router entry handlers. Mostly host/test facing.
 - B `get_plugin_attr(name, default=None)`, `has_plugin_attr(name)`, `get_dependency(name, default=None)`: Accesses main-plugin attributes from a router. Prefer explicit constructor dependencies when possible.
 - B `report_status(status)`: Delegates status reporting to the main plugin. Use for router-local status updates.
-- B `on_mount()`, `on_unmount()`: Lifecycle extension points for router mount/unmount. Override only when the router owns resources.
+- B `on_mount()`, `on_unmount()`: Lifecycle hooks for router mount/unmount. Override only when the router owns resources.
 - B `add_entry(entry_id, handler, ...)`: Adds runtime router entries. Use for dynamic feature modules; static `@plugin_entry` is preferred.
 - B `remove_entry(entry_id)`: Removes runtime router entries. Use when router-owned capabilities disappear.
 - B `list_entries()`: Lists router entry metadata. Use for tests and diagnostics.
@@ -209,8 +223,7 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 
 ### Memory and System Info
 
-- B `MemoryClient.query(bucket_id, query, timeout=5.0)`: Queries a memory bucket. Use for semantic lookup workflows and handle missing capability.
-- B `MemoryClient.get(bucket_id, limit=20, timeout=5.0)`: Reads recent memory records from a bucket. Use for context dashboards or memory-aware behavior.
+- B `MemoryClient(self.ctx)`: read-only memory access; `await search(target=MemoryTarget, query=None, time=None, ...)` and `await get_persona(target=...)` return `Result`. Memory content is the user's private data: never log it (constraint 5).
 - B `SystemInfo.get_system_config(timeout=5.0)`: Reads host system config. Use only when plugin behavior genuinely depends on global config.
 - B `SystemInfo.get_server_settings(timeout=5.0)`: Reads server settings subset. Use for diagnostics and compatibility behavior.
 - B `SystemInfo.get_python_env()`: Returns Python/OS environment info. Use in diagnostics, not normal runtime logic.
@@ -235,36 +248,34 @@ Use this as the source-map for plugin-system APIs before inventing an abstractio
 - A `get_os_activity_snapshot(include_window=True, include_privacy=True, timeout=...)`: Reads OS activity snapshot through system signals. Use for context-aware plugins that need foreground/idle/privacy state.
 - A `OsActivitySnapshot`: Dataclass snapshot returned by activity helpers. Use for typed inspection of activity state.
 
+## Push Message
+
+`self.push_message(...)` is a plain **synchronous** method (do not `await` it). It returns a receipt dict at once: `submitted=True` only means the SDK accepted the payload locally, not that the AI replied or the user saw it. `submitted=False` carries `reason`: `backpressure`, `transport_error`, `transport_unavailable` (retry later is meaningful) or `payload_too_large` (an identical retry fails again; send less).
+
+```python
+result = self.push_message(
+    visibility=["chat"],           # where the user sees the parts verbatim: "chat", "hud", both, or [] (default)
+    ai_behavior="read",            # "respond" (default: AI replies now), "read" (AI sees it, no reply), "blind" (AI ignores it)
+    parts=[                        # ordered; each part has a "type"
+        {"type": "text", "text": "Today's chart"},
+        {"type": "image", "data": png_bytes, "mime": "image/png"},   # inline bytes
+    ],
+)
+if not result["submitted"]:
+    self.logger.warning("push failed: %s", result.get("reason"))   # never log the parts
+```
+
+- Part types: `text` (`text`), `image` / `audio` (`data: bytes` + `mime`, or `url` + `mime`), `video` (`url` + `mime`), `ui_action` (frontend side effects such as `media_play_url`). Audio and video do not reach the model yet.
+- The whole push is capped at 512 KiB after base64 (an inline image of roughly 380 KiB at most). For larger images, `part = await self.ctx.images.upload(image_bytes, mime="image/png")` (async; not available in lifecycle handlers) and put the returned part into `parts`.
+- At most 8 images per push reach the model; the model path does not keep text/image order, so describe pairings in one text part. HUD shows text parts only.
+- Text may use `{MASTER_NAME}` / `{LANLAN_NAME}` placeholders; the host fills in the right names per session.
+- `message_type`, `content`, `binary_data`, `delivery`, `reply`, and other v1 keywords are deprecated (they emit warnings); use `parts`, `visibility`, `ai_behavior`.
+
+Full rules and limits: [Message Delivery](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/plugins/push-message.md); schema: [push_message_schema.py](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sdk/shared/core/push_message_schema.py).
+
 ## Hosted TSX Facade: `@neko/plugin-ui`
 
-Full prop and component signatures live in `hosted-ui-api.md`; this section is the name index.
-
-- S `PluginSurfaceProps`: Props passed to hosted TSX default exports. Contains `plugin`, `surface`, `state`, `actions`, `entries`, `config`, `warnings`, `locale`, `t`, `i18n`, `api`, and `useLocalState`.
-- S `HostedApi.call(actionId, args?, options?)`: Calls a UI-authorized plugin action. Requires `action:call` permission and a running plugin.
-- S `HostedApi.refresh()`: Reloads Hosted UI context. Use after actions that mutate state.
-- S `useI18n()`: Returns `{ t, locale }` backed by plugin i18n messages. Use for visible copy in TSX.
-- S `h`, `Fragment`, `render`: Minimal JSX/runtime primitives. Use implicitly through TSX and imported components.
-- S Layout/display components `Page`, `Card`, `Section`, `Heading`, `Stack`, `Grid`, `Text`, `Divider`, `Toolbar`, `ToolbarGroup`: Build hosted UI layout. Keep UIs practical and data-oriented.
-- S Data/status components `StatusBadge`, `StatCard`, `KeyValue`, `DataTable`, `Progress`, `JsonView`, `CodeBlock`: Present status, tables, key-value data, progress, JSON, and code. Use instead of custom HTML for standard panels.
-- S Feedback components `Alert`, `InlineError`, `ErrorBoundary`, `EmptyState`, `Tip`, `Warning`: Present empty, warning, and error states. Prefer these over handwritten fallback blocks.
-- S Form/control components `Field`, `Input`, `Select`, `Textarea`, `Switch`, `Form`, `Button`, `ButtonGroup`: Build settings and action forms. Use controlled values and explicit validation.
-- S Action components `ActionButton`, `RefreshButton`, `ActionForm`: Call plugin actions from context. Prefer these for common action flows.
-- A Overlay/navigation components `Modal`, `ConfirmDialog`, `List`, `Steps`, `Step`, `Tabs`: Use for complex but bounded UI flows.
-- S State hooks `useState`, `useReducer`, `useEffect`, `useLayoutEffect`, `useMemo`, `useCallback`, `useRef`: React-like local runtime hooks. Keep side effects idempotent because hosted payloads can refresh.
-- S Hosted helpers `useLocalState`, `useDebounce`, `useDebouncedState`, `useForm`, `useAsync`: UI runtime helpers for persisted local widget state, debouncing, forms, and async loading.
-- S Toast/confirm helpers `showToast`, `useToast`, `useConfirm`: User feedback and confirmation helpers. Use for action outcomes and destructive confirmations.
-- A Types `Tone`, `JsonSchema`, `HostedAction`, `HostedI18n`, `DataTableColumn`, `FormState`, `AsyncState`, `RefObject`, `CommonProps`: Type hosted TSX surfaces. Import from `@neko/plugin-ui` rather than duplicating shapes.
-
-## Extension Facade: `plugin.sdk.extension`
-
-- A `NekoExtensionBase`: Base class for extension packages. Use only when extending a host plugin via `[plugin.host]`.
-- A `ExtensionMeta`: Extension metadata model. Use mainly for typing or introspection.
-- A `@extension_entry(id=None, name=None, description="", timeout=None)`: Registers an extension-provided entry. Use when adding entries to a host plugin without modifying the host.
-- B `@extension_hook(target="*", timing="before|after|around|replace", priority=0)`: Registers extension interception. Use only for host-entry interception with narrow targets.
-- A `extension.entry(...)`, `extension.hook(...)`: Namespace aliases for extension decorators. Use for readability in extension classes.
-- B `ExtensionEntryMeta`, `ExtensionHookMeta`, `EXTENSION_ENTRY_META`, `EXTENSION_HOOK_META`: Extension metadata markers. Use in tests/tooling, not normal plugin logic.
-- B `ExtensionRuntime.health()`: Runtime health helper. Use for extension diagnostics.
-- A Extension runtime re-exports `Ok`, `Err`, `Result`, errors, logging helpers, `PluginConfig`, `PluginRouter`, `MessagePlaneTransport`: Same runtime vocabulary as plugin facade. Use only inside extension packages.
+Components, hooks, and types for `hosted-tsx` surfaces are listed in full in `hosted-ui-api.md`; the Python side (`ui.context`, `ui.action`) is above.
 
 ## Adapter Facade: `plugin.sdk.adapter`
 
@@ -322,12 +333,3 @@ Full prop and component signatures live in `hosted-ui-api.md`; this section is t
 - B `DefaultRouteEngine.decide(...)`: Default explicit-target/self routing. Use for simple adapters.
 - B `DefaultResponseSerializer.build_success_response(...)`, `build_error_response(...)`: Default JSON response builder. Use unless the transport needs a custom shape.
 - B `CallablePluginInvoker.invoke(...)`: Adapter invoker around a plain callable. Use in tests or simple adapters.
-
-## Platform and Verification Surfaces
-
-- D `plugin/config/schema.py`, `plugin/config/plugin_toml_semantics.py`: Manifest schema and semantic rules. Read before changing manifest support.
-- D `plugin/core/registry.py`, `plugin/core/host.py`, `plugin/core/entry_points.py`: Runtime registration, child process, and entry import logic. Read to debug platform behavior; do not depend on it from plugins.
-- D `plugin/server/application/plugins/`, `plugin/server/routes/plugin_ui.py`: Server query/UI/action endpoints. Read to understand Plugin Manager behavior.
-- D `plugin/server/infrastructure/config_profiles*.py`, `plugin/server/application/config/*`: Config profile and hot-update implementation. Read when debugging config semantics.
-- D `plugin/tests/unit/server/test_plugin_ui_manifest.py`, `test_plugin_ui_query_service.py`, `test_trigger_service.py`, `test_config_updates.py`: Behavior tests. Search tests before platform edits.
-- D `frontend/plugin-manager/src/components/plugin/hosted/`, `plugin/sdk/hosted-ui/index.d.ts`: Hosted TSX runtime and type source of truth. Edit only when the user explicitly requests platform UI API changes.

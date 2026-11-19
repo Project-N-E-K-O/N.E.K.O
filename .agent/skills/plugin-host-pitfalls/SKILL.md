@@ -45,6 +45,45 @@ description: 改插件宿主和插件框架（`plugin/core`、`plugin/server`、
 - plugin-manager 的 `vite.config.ts` 在 `VITEST === 'true'` 时关掉 Element Plus 组件自动导入。原因：自动导入会把模板里的 `<el-tabs>` 编译成显式 import，绕过测试里用 `app.component()` 注册的全局桩。别在测试环境把它打开。
 - 跑 `check --release --market-release` 的测试必须先清掉 `GITHUB_REPOSITORY`、`GITHUB_REF_NAME`、`GITHUB_REF`，否则本地绿、CI 红。详见 `references/import-and-roots.md`。
 
+## 源码和测试地图
+
+`neko-plugin` skill 会被快照进第三方插件项目，那边没有主仓源码，所以主仓路径的地图放在这里，不放进那边。
+
+源码（改之前先读）：
+
+- manifest 结构和语义规则：`plugin/config/schema.py`、`plugin/config/plugin_toml_semantics.py`
+- 运行时注册、子进程、入口导入：`plugin/core/registry.py`、`plugin/core/host.py`、`plugin/core/entry_points.py`、`plugin/core/entry_executor.py`
+- 触发执行：`plugin/runs/trigger_service.py`
+- 启停和注册表刷新：`plugin/server/application/plugins/lifecycle_service.py`、`registry_service.py`
+- UI 查询和 action：`plugin/server/application/plugins/ui_query_service.py`、`plugin/server/routes/plugin_ui.py`、`plugin/core/ui_manifest.py`
+- 配置 profile 和热更新：`plugin/server/infrastructure/config_profiles*.py`、`plugin/server/application/config/`
+- 运行日志：`plugin/server/routes/logs.py`
+- CLI：`plugin/neko_plugin_cli/cli.py` 注册子命令，各命令在 `commands/` 下；`release_cmd.py`、`validate_cmd.py` 是被 `check`/`publish` 调用的内部实现，不单独注册
+- Hosted TSX 运行时和类型：`frontend/plugin-manager/src/components/plugin/hosted/`、`plugin/sdk/hosted-ui/index.d.ts`
+
+测试（改宿主代码前先搜）：
+
+| 改动面 | 测试 |
+|---|---|
+| CLI 打包流程、仓库内插件打包 | `plugin/tests/integration/test_neko_plugin_cli_workflow.py`、`test_neko_plugin_cli_repo_plugins.py` |
+| CLI 命令契约 | `plugin/tests/unit/test_neko_plugin_cli_cli.py`、`test_neko_plugin_cli_deps.py`、`test_neko_plugin_cli_public.py` |
+| 加载、启动失败 | `plugin/tests/unit/server/test_plugins_lifecycle_service.py` |
+| 注册表 | `plugin/tests/unit/server/test_plugin_registry_service.py` |
+| 触发执行 | `plugin/tests/unit/server/test_trigger_service.py` |
+| 入口参数、超时、SDK、装饰器、router | `plugin/tests/unit/core/`、`plugin/tests/unit/sdk/` |
+| manifest 和配置修改 | `plugin/tests/unit/server/test_config_updates.py`、`test_config_validation.py` |
+| UI manifest 和查询 | `plugin/tests/unit/server/test_plugin_ui_manifest.py`、`test_plugin_ui_query_service.py` |
+| 插件中心的 CLI 路由、源码定位 | `plugin/tests/unit/server/test_plugin_cli_route.py`、`test_plugin_cli_source_resolver.py` |
+| 某个内置插件 | `plugin/tests/unit/plugins/test_<插件名>*.py` |
+| `neko-plugin` skill 和 agent 指引的文字 | `plugin/tests/unit/test_neko_plugin_agent_guides.py`（快照洁净、子命令、硬约束标题）、`test_neko_plugin_cli_agent_kit.py` |
+
+常用命令：
+
+- 整个插件子系统：`uv run pytest plugin/tests -q`；unit + integration：`uv run pytest -c plugin/tests/pytest.ini plugin/tests/unit plugin/tests/integration -q`
+- e2e 要显式打开：`uv run pytest -c plugin/tests/pytest.ini plugin/tests/e2e --run-plugin-e2e -q`（连已启动的实例时加 `PLUGIN_E2E_BASE_URL=http://127.0.0.1:48911/ui`）
+- 对内置插件跑仓库规范脚本时要显式传路径，例如 `uv run python scripts/check_async_blocking.py plugin/plugins/<id>`。很多规范脚本默认排除 `plugin/plugins`，因为那里可能放第三方代码。
+- hosted UI 全套检查目前只针对 MCP Adapter 的夹具：`scripts/check-hosted-ui.sh`。
+
 ## 排查入口
 
 | 症状 | 先看哪里 |

@@ -3,9 +3,9 @@
 This directory is one N.E.K.O plugin: its own Git repository and its editable
 source. `plugin.toml` holds the identity (`[plugin].id`, `[plugin].entry`; never
 rename them). The plugin already exists: do not run `neko-plugin init` again.
-Deeper guides: `.agents/skills/neko-plugin/` (start at `SKILL.md`). Inside a
-N.E.K.O checkout they call the workspace `plugin/plugins/<plugin_id>/`; read
-that as this directory.
+Deeper guides: `.agents/skills/neko-plugin/` (start at `SKILL.md`). They call
+this directory `<plugin_dir>`; inside a N.E.K.O checkout it lives at
+`plugin/plugins/<plugin_id>/`.
 
 ## Route
 
@@ -112,6 +112,7 @@ All under `.agents/skills/neko-plugin/references/`:
 - Timers, startup/shutdown, background work, reload: `runtime-model.md`
 - Why a constraint exists, escalating: `execution-boundary.md`
 - `plugin.toml`, entries, routers, hooks, i18n: `core-plugin-contract.md`
-- SDK API lookup: `plugin-system-surface-map.md`
+- SDK API lookup, paths, `push_message`: `plugin-system-surface-map.md`
+- Dependencies, `vendor/`, Market rules and limits: `dependencies-and-market.md`
 - Panels and docs UI: `hosted-ui-authoring.md`, `hosted-ui-api.md`
 - Commands and tests: `plugin-cli-and-debugging.md`, `plugin-checks-and-tests.md`

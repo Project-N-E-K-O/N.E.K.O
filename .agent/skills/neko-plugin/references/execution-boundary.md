@@ -6,9 +6,9 @@ carry the one-line version of each rule; this page has the full reasons.
 ## Write Workspace
 
 Write only inside the plugin directory: the folder holding `plugin.toml`. In a
-N.E.K.O source checkout that is usually `plugin/plugins/<plugin_id>/`; a
-project created elsewhere (Plugin studio, `init --output`) is the folder you
-are in. Reading anything else for context is fine and encouraged. Outputs the
+N.E.K.O source checkout that is a folder under the checkout's built-in plugin
+root; a project created elsewhere (Plugin studio, `init --output`) is the
+folder you are in. Reading anything else for context is fine and encouraged. Outputs the
 CLI itself produces (packages in the CLI's own `target/` directory from
 `build`, `check -r`, or `precheck`; `vendor/` from `sync`) are expected and
 fine.
@@ -128,7 +128,8 @@ workflow) and is ignored by Git. The Market rejects repositories and packages
 containing binary files (`.so`, `.pyd`, `.dll`, `.exe`, archives, wheels, ...)
 or files over 2 MiB; common media, font, and model assets (images, audio,
 `.onnx`, ...) are exempt from the size limit only. Prefer pure-Python dependencies; a dependency
-that ships compiled extensions cannot be published through the Market.
+that ships compiled modules cannot be published through the Market
+(`dependencies-and-market.md`).
 
 ### 10. Do not use `eval`/`exec`/`pickle`/`shell=True`/`verify=False`
 
