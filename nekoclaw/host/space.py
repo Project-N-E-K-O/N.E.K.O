@@ -1880,6 +1880,66 @@ def _said_mark(document: _Document) -> str:
 _A_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+def _words_of(text: str) -> tuple[set[str], set[str]]:
+    """Return the words of a text, as tidying compares them: the runs of letters and digits, and the wide characters.
+
+    Case and the width of characters are evened out. Chinese and
+    Japanese put no spaces between words: each character is told apart.
+    """
+    words: set[str] = set()
+    wide: set[str] = set()
+    run: list[str] = []
+    for char in unicodedata.normalize("NFKC", text).casefold():
+        if _wide(char):
+            if char.isalnum():
+                wide.add(char)
+        elif char.isalnum():
+            run.append(char)
+            continue
+        if run:
+            words.add("".join(run))
+            run = []
+    if run:
+        words.add("".join(run))
+    return words, wide
+
+
+def _made_of(text: str, source: str) -> bool:
+    """Whether every word of ``text`` is one ``source`` has (``_words_of``): nothing it says is new."""
+    words, wide = _words_of(text)
+    have_words, have_wide = _words_of(source)
+    return words <= have_words and wide <= have_wide
+
+
+def _only_a_date(old: str, new: str) -> bool:
+    """Whether ``new`` is ``old`` with the words that say a relative time (``SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS``) put as a date.
+
+    The rest of ``old`` stands in ``new`` as it was, and ``new`` has
+    besides its dates no more than ``SPACE_CONSOLIDATE_DATE_SPARE_TOKENS``
+    (a word like "on" to fit a date into a sentence). So no change of a
+    date makes an entry say anything else than when.
+    """
+    from config.nekoclaw_settings import SPACE_CONSOLIDATE_DATE_SPARE_TOKENS
+    from config.prompts.prompts_nekoclaw_space import SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS
+    from utils.tokenize import count_tokens
+
+    lowered = old.casefold()
+    found = [word for word in SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS if word.casefold() in lowered]
+    if not found:
+        return False
+    said = re.compile("|".join(re.escape(word) for word in sorted(found, key=len, reverse=True)), re.IGNORECASE)
+    rest = new
+    for piece in said.split(old):
+        piece = piece.strip()
+        if not piece:
+            continue
+        at = rest.find(piece)
+        if at < 0:
+            return False
+        rest = f"{rest[:at]} {rest[at + len(piece):]}"
+    return count_tokens(_A_DATE.sub(" ", rest).strip()) <= SPACE_CONSOLIDATE_DATE_SPARE_TOKENS
+
+
 # ---------------------------------------------------------------------------
 # The space
 # ---------------------------------------------------------------------------
@@ -2673,15 +2733,23 @@ class TaskAgentSpace:
             if as_marked is None:
                 self._edit_text(path, add)
             else:
+                # Moved on only once written: a try that is made again (the
+                # file was touched, or saved over right after) compares with
+                # what was there before it, not with what it did not write.
+                base = as_marked[0]
+                results: list[str] = []
 
                 def add_as_marked(text: str) -> str:
-                    if _text_mark(text) != as_marked[0]:
+                    results.clear()
+                    if _text_mark(text) != base:
                         raise _NotMade(f"{existing.id} changed since it was looked over")
                     result = add(text)
-                    as_marked[0] = _text_mark(result)
+                    results.append(_text_mark(result))
                     return result
 
                 self._edit_text(path, add_as_marked)
+                if results:
+                    as_marked[0] = results[0]
             if told is not None:
                 told.update(at_write)
             how = _ADDED if fresh_text and fresh_text[0] else _THERE
@@ -2990,6 +3058,7 @@ class TaskAgentSpace:
         *,
         by_files: bool = False,
         told: dict[str, bool | None] | None = None,
+        as_marked: list[str] | None = None,
     ) -> tuple[Entry, OSError | None]:
         """Have a pending entry take effect where it is, seen by the commissions of ``known`` as well.
 
@@ -2998,6 +3067,11 @@ class TaskAgentSpace:
         nothing (emptied in the console) has nothing that could take
         effect: it is removed, as it is when there is nothing of it to
         put into another entry (``_fold``).
+
+        ``as_marked`` is for tidying, as for ``_file_entry``: the entry
+        takes effect only while all its file says is what it holds, read
+        in the same read that writes it; once written it holds the mark
+        of what was written.
         """
         paths = self._paths()
         path = paths.memory_dir(project) / f"{pending.id}.md"
@@ -3007,10 +3081,15 @@ class TaskAgentSpace:
         # What was written when it took effect.
         took: list[_Document] = []
 
+        base = as_marked[0] if as_marked is not None else None
+
         def change(text: str) -> str:
             took[:] = []
             # What a look tells is of this attempt (as in ``_file_entry``).
             at_write.clear()
+            if base is not None and _text_mark(text) != base:
+                # Saved since tidying wrote it: not what it confirmed.
+                return text
             document = _parse_document(text)
             # Only as the host made it: one the user took over is theirs.
             # And as it was found: by its title. Given another since, it
@@ -3040,6 +3119,8 @@ class TaskAgentSpace:
         # written: for whoever writes what the note brings to another entry.
         at_write: dict[str, bool | None] = {}
         self._edit_text(path, change)
+        if as_marked is not None and took:
+            as_marked[0] = _text_mark(_render_document(took[0]))
         if told is not None:
             told.update(at_write)
         if empty and empty[0]:
@@ -5067,8 +5148,10 @@ class TaskAgentSpace:
                     into=into,
                     known=carried,
                     pending=pending,
-                    # A guess waits from when it was last filed, not from today.
-                    dated=(source.created, source.updated) if pending else None,
+                    # The days of the two, not today: a guess waits from when
+                    # it was last filed, and an entry in effect is no newer for
+                    # being merged (``outdated`` goes by which one is newer).
+                    dated=(source.created, source.updated),
                     allowed=allowed,
                     added_on=days.get(part),
                     as_marked=as_marked,
@@ -5086,37 +5169,40 @@ class TaskAgentSpace:
             if source.status == ENTRY_ACTIVE:
                 self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{source.id}.md")
             self._discard_as_read(source_path, before)
-        written: dict[str, str | None] = {source.id: None, target.id: as_marked[0]}
-        if pending and self._tidy_confirm(project, into, allowed):
-            # Written again as it took effect: no later change of this round is made to it.
-            written[target.id] = None
-        return "made", written
+        else:
+            logger.warning("an entry tidying merged into another was saved meanwhile; it stays as it is")
+        if pending:
+            self._tidy_confirm(project, into, allowed, as_marked)
+        return "made", {source.id: None, target.id: as_marked[0]}
 
-    def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool) -> bool:
+    def _tidy_confirm(self, project: str | None, entry: Entry, allowed: bool, as_marked: list[str]) -> None:
         """Have a pending entry take effect where it is when enough commissions have seen it by now, or it was verified.
 
-        Returns whether it was written for that.
+        Only while it says all the merge wrote into it (``as_marked``, as
+        for ``_confirm``): saved by the user since, it is not what was
+        merged, and waits on.
         """
         from config.nekoclaw_settings import SPACE_SEEN_TO_TAKE_EFFECT
 
         if entry.status != ENTRY_PENDING:
-            return False
+            return
         if entry.seen < SPACE_SEEN_TO_TAKE_EFFECT and entry.confidence != VERIFIED:
-            return False
+            return
         directory = self._paths().memory_dir(project)
         if any(
-            other.id != entry.id and other.status == ENTRY_ACTIVE and _normal(other.title) == _normal(entry.title)
+            other.id != entry.id and other.status != ENTRY_PENDING and _normal(other.title) == _normal(entry.title)
             for other in self._entries(directory, project)
         ):
             # One title is one entry, and a third entry, which the change did
             # not name, is not changed by it: the guess goes on waiting, and
             # takes effect when a note of its title is filed (``_judged``).
-            logger.info("a guess merged by tidying waits on: an entry in effect has its title")
-            return False
-        _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed)
+            # One that expired as well: filed again, it comes back, and two
+            # entries of one title would be in effect.
+            logger.info("a guess merged by tidying waits on: another entry has its title")
+            return
+        _entry, unlisted = self._confirm(project, entry, _Known(confidence=INFERRED), allowed, as_marked=as_marked)
         if unlisted is not None:
             logger.warning("an entry that took effect by tidying could not be given its line in the index")
-        return True
 
     def _tidy_count_in(
         self, project: str | None, pending: Entry, into: Entry, marks: dict[str, str]
@@ -5133,6 +5219,8 @@ class TaskAgentSpace:
         changed since the model was shown them. Returns the marks of what
         both say then.
         """
+        from config.nekoclaw_settings import SPACE_CONSOLIDATE_REASON_MAX_TOKENS
+
         directory = self._paths().memory_dir(project)
         today = _date(self._clock())
         seen = _Known(confidence="", seen_before=pending.seen_by)
@@ -5145,11 +5233,13 @@ class TaskAgentSpace:
             document.set("status", ENTRY_EXPIRED)
             document.set("expired", today)
             document.drop("notice")
-            document.set(_OUTDATED, _cut(_one_line(f"the same as {into.title}"), 40))
+            document.set(_OUTDATED, _cut(_one_line(f"the same as {into.title}"), SPACE_CONSOLIDATE_REASON_MAX_TOKENS))
             document.set(_SUPERSEDED_BY, into.id)
 
-        entry_mark = self._edit_as_shown(directory / f"{into.id}.md", marks[into.id], count)
+        # The guess first: should the entry not be written then, it has not
+        # counted a sighting the guess still waits for.
         guess_mark = self._edit_as_shown(directory / f"{pending.id}.md", marks[pending.id], expire)
+        entry_mark = self._edit_as_shown(directory / f"{into.id}.md", marks[into.id], count)
         return {pending.id: guess_mark, into.id: entry_mark}
 
     @staticmethod
@@ -5193,7 +5283,14 @@ class TaskAgentSpace:
         reason = _cut(_one_line(redact(str(why or ""))), SPACE_CONSOLIDATE_REASON_MAX_TOKENS) or by.title
         today = _date(self._clock())
 
+        by_path = paths.memory_dir(project) / f"{by.id}.md"
+
         def change(document: _Document) -> None:
+            # What says otherwise, looked at again as this is written: saved
+            # since the model was shown it, it may say something else now.
+            said = self._read_text(by_path)
+            if said is None or _text_mark(said) != marks[by_id]:
+                raise _NotMade(f"{by.id}, which says otherwise, changed since it was looked over")
             document.set("status", ENTRY_EXPIRED)
             document.set("expired", today)
             document.drop("notice")
@@ -5232,6 +5329,11 @@ class TaskAgentSpace:
         line = _cut(_one_line(redact(str(description or ""))), SPACE_ENTRY_DESCRIPTION_MAX_TOKENS)
         if not _normal(name):
             raise _NotMade("no title was given")
+        # Of the entry's own words: the model was shown pending notes, which
+        # anyone's page may have written, and a title and a description go
+        # into an index that task agents are handed.
+        if not _made_of(f"{name} {line}", f"{entry.title} {entry.description} {entry.content}"):
+            raise _NotMade(f"the new title or description says what {entry.id} does not")
         renamed = _normal(name) != _normal(entry.title)
         if not renamed and (not line or line == entry.description):
             raise _NotMade("nothing would change")
@@ -5274,6 +5376,11 @@ class TaskAgentSpace:
                 datetime.strptime(day, "%Y-%m-%d")
             except ValueError:
                 raise _NotMade(f"{day} is no day of the calendar") from None
+        if not _only_a_date(said, put):
+            # The model was shown pending notes, which anyone's page may
+            # have written: it changes what an entry says of when, and
+            # nothing else.
+            raise _NotMade("what replaces the words is more than a date for a relative time")
         _before, document, entry = self._tidy_read(project, entry_id, marks)
         if entry.status == ENTRY_EXPIRED:
             raise _NotMade(f"{entry.id} has expired")

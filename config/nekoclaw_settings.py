@@ -947,6 +947,11 @@ SPACE_CONSOLIDATE_DATE_MAX_TOKENS = 16
 ("yesterday"), and on what they are replaced with; longer ones are not
 replaced."""
 
+SPACE_CONSOLIDATE_DATE_SPARE_TOKENS = 3
+"""Most a date that replaces words saying a relative time may bring besides
+the date: a word like "on" to fit it into the sentence. The rest of those
+words must stand as they were."""
+
 SPACE_CONSOLIDATE_MERGED_MAX_TOKENS = 1500
 """Most an entry may say once the texts of another were put into it by
 tidying; a merge that would make it longer is not made. Two or three texts

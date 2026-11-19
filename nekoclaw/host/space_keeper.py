@@ -268,14 +268,19 @@ def _layer_key(project: str | None) -> str:
 _LIST_LINE_MAX_TOKENS = 100
 
 
-def _consolidate_messages(look: Layer, changed: list[str], now: float) -> tuple[list[dict[str, str]], dict[str, str]]:
-    """Return what the model is sent to look over a layer, and the entries it may name: by ``n1``, ``n2``, ... Blocking.
+def _consolidate_messages(
+    look: Layer, changed: list[str], now: float
+) -> tuple[list[dict[str, str]], dict[str, str], set[str]]:
+    """Return what the model is sent to look over a layer, the entries it may name, and the ones it was shown whole. Blocking.
 
-    Every entry the host made that has not expired is listed, one line
-    each, and the ones the user wrote, which it may not name. When they
-    do not all fit, the new and changed ones go first, then the pending
-    ones, then the newest. The full texts are of the new and changed
-    ones, then of the pending ones, as many as fit.
+    The model names entries by ``n1``, ``n2``, ... Every entry the host
+    made that has not expired is listed, one line each, and the ones the
+    user wrote, which it may not name. When they do not all fit, the new
+    and changed ones go first, then the pending ones, then the newest.
+    The full texts are of the new and changed ones, then of the pending
+    ones, as many as fit. Shown whole is one whose text was given, and
+    one that is listed and no news: a new or changed one whose text did
+    not fit is news to the next round as well.
     """
     from config.nekoclaw_settings import (
         SPACE_CONSOLIDATE_INPUT_MAX_TOKENS,
@@ -325,6 +330,9 @@ def _consolidate_messages(look: Layer, changed: list[str], now: float) -> tuple[
     shown = [entry for entry in hosts if entry.id in lines]
     handle_of = {entry_id: handle for handle, entry_id in handles.items()}
     full: list[str] = []
+    # What the model is shown of each entry as much as there is to see:
+    # its full text, or its line where it is no news.
+    seen = {entry.id for entry in shown if entry.id not in fresh}
     used = 0
     for entry in shown:
         if entry.id not in fresh and entry.status != ENTRY_PENDING:
@@ -338,6 +346,7 @@ def _consolidate_messages(look: Layer, changed: list[str], now: float) -> tuple[
             continue
         used += cost
         full.append(block)
+        seen.add(entry.id)
     system = texts.SPACE_CONSOLIDATE_SYSTEM_PROMPT.format(max_operations=SPACE_CONSOLIDATE_MAX_OPERATIONS)
     layer = (
         texts.SPACE_CONSOLIDATE_LAYER_GLOBAL
@@ -358,7 +367,7 @@ def _consolidate_messages(look: Layer, changed: list[str], now: float) -> tuple[
         {"role": "system", "content": system},
         {"role": "user", "content": truncate_to_tokens(user, max(room, 0))},
     ]
-    return messages, handles
+    return messages, handles, seen
 
 
 def tool_calls(events: list[LedgerEvent]) -> int:
@@ -1310,7 +1319,9 @@ class SpaceKeeper:
         }
         due: list[tuple[float, int, Layer, list[str], dict[str, str]]] = []
         for layer in layers:
-            look = await self._space.read_layer(layer)
+            look = await self._layer_or_none(layer)
+            if look is None:
+                continue
             live = sorted(entry.id for entry in look.entries if entry.id in look.made and entry.status != ENTRY_EXPIRED)
             if len(live) < SPACE_CONSOLIDATE_MIN_ENTRIES:
                 continue
@@ -1330,12 +1341,12 @@ class SpaceKeeper:
                 return
             key = _layer_key(look.project)
             seen = await self._look_over(look, changed, now)
-            if seen is None:
+            after = await self._layer_or_none(look.project) if seen is not None else None
+            if seen is None or after is None:
                 # Asked again by a later round, after the others had their turn.
                 kept[key] = {**kept.get(key, {}), "tried": now}
             else:
                 shown, written = seen
-                after = await self._space.read_layer(look.project)
                 remembered = {**before, **{entry_id: look.said[entry_id] for entry_id in shown if entry_id in look.said}}
                 # What a change wrote, while the file still says just that:
                 # one saved over since is news to the next round.
@@ -1349,8 +1360,9 @@ class SpaceKeeper:
                 for entry_id, mark in written.items():
                     if mark is None:
                         # Merged into another and still there (its file could
-                        # not be removed), or written again: news to the next
-                        # round, which merges it once more.
+                        # not be removed), or named by a change that failed
+                        # half way: news to the next round, which makes the
+                        # change once more.
                         remembered.pop(entry_id, None)
                 kept[key] = {
                     "at": now,
@@ -1361,6 +1373,19 @@ class SpaceKeeper:
                 await self._space.write_state(consolidated=kept)
             except OSError:
                 logger.warning("what tidying looked over could not be kept; it is looked over again", exc_info=True)
+
+    async def _layer_or_none(self, project: str | None) -> Layer | None:
+        """Return a layer as tidying reads it (``TaskAgentSpace.read_layer``); None when it cannot be read.
+
+        One layer that cannot be read (a project directory whose name is
+        no name the space takes) does not keep the others from being
+        looked over.
+        """
+        try:
+            return await self._space.read_layer(project)
+        except (SpaceError, OSError, ValueError) as exc:
+            logger.warning("a layer of the task agent space could not be read for tidying (%s)", type(exc).__name__)
+            return None
 
     async def _look_over(self, look: Layer, changed: list[str], now: float) -> tuple[set[str], dict[str, str | None]] | None:
         """Have the model look over one layer and make the changes it asks for that hold.
@@ -1376,7 +1401,7 @@ class SpaceKeeper:
         from config.nekoclaw_settings import SPACE_CONSOLIDATE_MAX_OPERATIONS
 
         async with self._lock():
-            messages, handles = await asyncio.to_thread(_consolidate_messages, look, changed, now)
+            messages, handles, shown = await asyncio.to_thread(_consolidate_messages, look, changed, now)
             try:
                 raw = await self._llm.complete(TIER_CONSOLIDATE, messages)
             except asyncio.CancelledError:
@@ -1384,7 +1409,6 @@ class SpaceKeeper:
             except Exception as exc:  # noqa: BLE001 - asked again by a later round
                 logger.warning("looking over the entries of the task agent space failed (%s)", type(exc).__name__)
                 return None
-        shown = set(handles.values())
         written: dict[str, str | None] = {}
         changes = _changes_of(raw)
         if changes is None:
@@ -1401,6 +1425,11 @@ class SpaceKeeper:
                 outcome, now_marks = await self._space.tidy_entries(look.project, named, marks)
             except (SpaceError, OSError) as exc:
                 logger.warning("a change tidying was asked for could not be made (%s)", type(exc).__name__)
+                # It may have been made in part (a file could not be written
+                # half way): the entries it names are news to the next round.
+                for field_name in _CHANGES[named["op"]]:
+                    written[named[field_name]] = None
+                    marks.pop(named[field_name], None)
                 continue
             if outcome != "made":
                 logger.info("tidying did not make a change (%s): %s", named["op"], outcome)

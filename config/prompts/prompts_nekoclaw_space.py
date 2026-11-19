@@ -238,10 +238,11 @@ SPACE_CONSOLIDATE_SYSTEM_PROMPT = (
     "Use the ids of the list (n1, n2, ...). merge: the text of from is added to into and from goes; "
     "into should be the note in effect, or the older one. outdated: by is the newer note in effect "
     "that says otherwise; why is one short sentence. retitle: a new title of a few words and a new "
-    "one-line description for entry, so it is not taken for apart_from. date: old is the exact words "
-    "of the text, as they stand, that say the relative time, and new is what replaces them, in the "
-    "language of the text and fitting into its sentence, with the date as YYYY-MM-DD. Notes written by "
-    "the user are listed for you to know them; name none of them "
+    "one-line description for entry, so it is not taken for apart_from, made only of words that entry "
+    "already has in its title, description or text. date: old is the exact words of the text, as they "
+    "stand, that say the relative time (yesterday, last week), and new is the date that replaces them, "
+    "as YYYY-MM-DD, with at most a word to fit it into the sentence, in the language of the text. Notes "
+    "written by the user are listed for you to know them; name none of them "
     "in an operation.\n"
     "At most {max_operations} operations, and only where you are sure. When the notes are in order, "
     'return {{"operations": []}}. Write titles and descriptions in the language the notes are written in.'
@@ -256,6 +257,37 @@ SPACE_CONSOLIDATE_USER_TEMPLATE = (
     "Written by the user (do not name them):\n{user}\n\n"
     "Full texts of the new, changed and pending notes:\n{texts}"
 )
+# Words that say a time relative to when they were written, in the languages
+# her commissions come in (``space_keeper._LANGUAGES``). A ``date`` change
+# replaces such words, and nothing else, with a date: what a model asks for
+# is not taken on its word, since a pending note it was shown may have told
+# it what to ask for. Matched without regard to case.
+SPACE_CONSOLIDATE_RELATIVE_TIME_WORDS: tuple[str, ...] = (
+    # English
+    "yesterday", "today", "tomorrow", "tonight", "this morning", "this afternoon", "this evening",
+    "last night", "last week", "last month", "last year", "this week", "this month", "this year",
+    "next week", "next month", "next year", "days ago", "weeks ago", "months ago", "the other day",
+    # Chinese, simplified and traditional
+    "昨天", "前天", "今天", "明天", "后天", "後天", "今早", "今晚", "昨晚", "上周", "上週", "上星期",
+    "上个月", "上個月", "上月", "去年", "本周", "本週", "这周", "這週", "这个月", "這個月", "本月", "今年",
+    "下周", "下週", "下个月", "下個月", "明年", "天前", "周前", "週前", "个月前", "個月前",
+    # Japanese
+    "昨日", "一昨日", "今日", "明日", "今朝", "今夜", "昨夜", "先週", "先月", "今週", "今月", "来週", "来月",
+    "来年", "日前", "週間前", "か月前", "ヶ月前",
+    # Korean
+    "어제", "그저께", "오늘", "내일", "모레", "지난주", "지난달", "작년", "이번 주", "이번 달", "올해",
+    "다음 주", "다음 달", "내년", "일 전", "주 전", "달 전",
+    # Russian
+    "вчера", "позавчера", "сегодня", "завтра", "на прошлой неделе", "в прошлом месяце",
+    "в прошлом году", "на этой неделе", "в этом месяце", "в этом году", "на следующей неделе", "назад",
+    # Spanish
+    "ayer", "anteayer", "hoy", "mañana", "la semana pasada", "el mes pasado", "el año pasado",
+    "esta semana", "este mes", "este año", "la próxima semana", "hace",
+    # Portuguese
+    "ontem", "anteontem", "hoje", "amanhã", "semana passada", "mês passado", "ano passado",
+    "este mês", "próxima semana", "atrás",
+)
+
 SPACE_CONSOLIDATE_LAYER_GLOBAL = "all projects"
 # Rendered with str.format: project.
 SPACE_CONSOLIDATE_LAYER_PROJECT = "project {project}"
