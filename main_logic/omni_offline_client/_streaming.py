@@ -736,6 +736,10 @@ class _StreamingMixin:
         # Per channelled turn image: True for a screenshot the user attached that
         # independent ASR sampled with the live frames. History provenance only.
         turn_image_user_flags: Sequence[bool] = (),
+        # Consent-revocation epoch (``_auto_capture_discard_epoch``) when the
+        # caller took this turn's frames; None: read on entry. A revocation
+        # since then strips the frames once the message is in history.
+        auto_capture_epoch: Optional[int] = None,
         turn_id: Optional[str] = None,
         on_turn_committed: Optional[Callable[[], None]] = None,
         thinking_on: bool = False,
@@ -872,7 +876,11 @@ class _StreamingMixin:
         # A revocation during this turn's awaits (vision switch, image fit)
         # cannot reach a message that does not exist yet; re-checked once the
         # message is in history.
-        _auto_capture_epoch = getattr(self, "_auto_capture_discard_epoch", 0)
+        _auto_capture_epoch = (
+            auto_capture_epoch
+            if auto_capture_epoch is not None
+            else getattr(self, "_auto_capture_discard_epoch", 0)
+        )
         _proactive_consent_check = getattr(self, "_proactive_image_consent_check", None)
 
         def _proactive_consent_revoked() -> bool:

@@ -116,6 +116,7 @@ class _MediaMixin:
         turn_source: str | None = None,
         turn_source_count: int | None = None,
         turn_image_user_flags: tuple[bool, ...] = (),
+        auto_capture_epoch: int | None = None,
         turn_id: str | None = None,
         on_turn_committed=None,
         turn_context=None,
@@ -138,6 +139,7 @@ class _MediaMixin:
                     turn_source=turn_source,
                     turn_source_count=turn_source_count,
                     turn_image_user_flags=turn_image_user_flags,
+                    auto_capture_epoch=auto_capture_epoch,
                     turn_id=turn_id,
                     on_turn_committed=on_turn_committed,
                     turn_context=turn_context,
@@ -466,6 +468,10 @@ class _MediaMixin:
             )
             staged_images = staged_images[:MAX_MULTIMODAL_TURN_IMAGES]
             frame_user_flags = frame_user_flags[:MAX_MULTIMODAL_TURN_IMAGES]
+        # The frames were captured before the lock wait below (a previous turn
+        # may hold it for a whole reply): a consent revocation meanwhile must
+        # still reach them, so stream_text compares against this epoch.
+        auto_capture_epoch = getattr(self, "_auto_capture_discard_epoch", 0)
         lock = getattr(self, "_multimodal_submit_lock", None)
         if lock is None:
             lock = asyncio.Lock()
@@ -514,6 +520,7 @@ class _MediaMixin:
                     turn_source=source,
                     turn_source_count=len(staged_images) - len(attachments),
                     turn_image_user_flags=frame_user_flags,
+                    auto_capture_epoch=auto_capture_epoch,
                     # Standalone ASR supplies a stable turn_id for this utterance; carry it through to the frame bus
                     # so plugins can group frames sampled from the same utterance. Ordinary text turns have
                     # no such identity; leave it empty (omit turn_id from records).

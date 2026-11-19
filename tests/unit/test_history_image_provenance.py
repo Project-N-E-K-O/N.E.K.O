@@ -232,6 +232,36 @@ async def test_user_screenshot_sampled_with_live_frames_is_kept_as_an_attachment
 
 
 @pytest.mark.asyncio
+async def test_revocation_while_a_voice_turn_waits_for_the_submit_lock():
+    """Frames sampled before the lock wait still meet a revocation during it."""
+    import asyncio
+
+    client = _client()
+    live = _png_b64(40, 40, (200, 10, 10))
+    shot = _png_b64(41, 41, (10, 200, 10))
+    client.script = [[_text("ok"), _text("", "stop")]]
+    lock = asyncio.Lock()
+    client._multimodal_submit_lock = lock
+    await lock.acquire()  # an earlier turn still replying
+    submit = asyncio.create_task(client.submit_multimodal_turn(
+        "what about this screenshot?", (live, shot),
+        turn_id="t1", source="screen", image_request_ids=(None, "req-1"),
+    ))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not submit.done()
+    client.discard_auto_captured_history_images()
+    lock.release()
+    await submit
+
+    # Only the user's screenshot went out; the live frame left a receipt.
+    urls = _urls(client.requests[-1])
+    assert len(urls) == 1
+    message = next(m for m in client._conversation_history if image_count(m.content))
+    assert message.metadata["image_kinds"] == ["user"]
+
+
+@pytest.mark.asyncio
 async def test_declined_proactive_turn_leaves_the_live_turn_untouched(monkeypatch):
     """A callback that declines because another reply is live must not strip that reply's frames."""
     client = _client()
