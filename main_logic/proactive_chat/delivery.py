@@ -225,8 +225,13 @@ async def _commit_proactive_delivery(
     master_name: str,
     log: logging.Logger | None = None,
     round_id: str | None = None,
+    vision_consent_epoch: int | None = None,
 ) -> DeliveryCommit:
-    """Build, feed, and atomically finish one proactive delivery."""
+    """Build, feed, and atomically finish one proactive delivery.
+
+    ``vision_consent_epoch`` is the revocation epoch the round started under;
+    the screenshot is staged for the next user turn only while it still holds.
+    """
     active_logger = log or logger
     # The TTS/commit critical sections recheck round ownership themselves.
     delivery_round = {"expected_round_id": round_id} if round_id is not None else {}
@@ -338,6 +343,7 @@ async def _commit_proactive_delivery(
             action_note=action_note,
             source_tag=delivered_tag,
             vision_screenshot_b64=staged_screenshot,
+            vision_consent_epoch=vision_consent_epoch,
             **delivery_round,
         )
     except Exception as exc:

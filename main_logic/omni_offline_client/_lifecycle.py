@@ -1236,9 +1236,7 @@ class _LifecycleMixin:
             # ephemeral choke point (Codex P2) only after visible text actually appears;
             # aborted/textless attempts retain valid staged screens.
             if content_committed:
-                self._proactive_image_to_inject = None
-                self._proactive_image_staged_at = 0.0
-                self._proactive_image_history_len = 0
+                self.set_proactive_screenshot(None)
             # Empty-completion diagnostics mirror stream_text's fallback warning.
             # Proactive failures silently abandon without status_message, but one INFO
             # finish_reason line permits diagnosis. Previous incidents could not distinguish
@@ -1614,9 +1612,7 @@ class _LifecycleMixin:
         self._cancel_response_generation()
         self._conversation_history = []
         self._pending_images.clear()
-        self._proactive_image_to_inject = None
-        self._proactive_image_staged_at = 0.0
-        self._proactive_image_history_len = 0
+        self.set_proactive_screenshot(None)
         if self.llm:
             try:
                 await self.llm.aclose()

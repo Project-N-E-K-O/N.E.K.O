@@ -153,6 +153,52 @@ async def search(self, query: str):
 
 ---
 
+## 出力契約
+
+`output_schema` はエントリーの戻り値の形を宣言し、他のプラグインやツールがそれに依存できるようにします。`llm_result_fields` とは別物です。あちらは AI が読むフィールドを選び、`output_schema` は戻り値全体を記述します。
+
+**戻り値の型注釈から推論する。** ハンドラーの戻り値の型注釈が Pydantic モデル（または `Model | None`）なら、そのモデルが出力契約になります。追加の記述は不要です。
+
+```python
+class SearchReply(BaseModel):
+    summary: str
+    count: int
+
+@plugin_entry(id="search")
+async def search(self, query: str) -> SearchReply:
+    ...
+```
+
+**明示的に宣言する。** 普通の dict を返すエントリーは JSON Schema を渡します。
+
+```python
+@plugin_entry(
+    id="search",
+    output_schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}, "count": {"type": "integer"}},
+        "required": ["summary", "count"],
+    },
+)
+async def search(self, query: str):
+    return Ok({"summary": "...", "count": 3})
+```
+
+明示した `output_schema` は型注釈より優先されます。どちらもないエントリーには出力契約がなく、動作は以前と変わりません。
+
+**何を検査するか（入力と対称）。** 入力では `params=Model` は実行時に検証され、`input_schema` の dict は公開されるだけです。出力も同じです。
+
+- **戻り値の型注釈が Pydantic モデル**（`-> Model` または `-> Model | None`。`list[Model]` などほかの書き方は推論しません）: 呼び出しが成功するたびに、状態の自動保存より前に、返したデータからモデルを構築して検証します（`params` と同じやり方）。そのため field / model validator や `HttpUrl` などの型が効きます。モデルのインスタンスをそのまま返した場合は検証済みとして扱います（構築時に検証済み）。`Model | None` なら `None` も通ります。検査対象は `Ok(...)` の中の値、そのまま返した値、または `finish()`/`ok()` のエンベロープの `data` です。`Err(...)` と `fail()` のエンベロープはそれ自体が失敗なので検査しません。公開される schema はモデルの `model_json_schema()` で、`params` と同じ方法で公開されます。
+- **明示した `output_schema` の dict**: `input_schema` と同じく公開されるだけで、実行時には検証されません。`strict_output` も効きません。
+- デフォルトでは、合わない場合はプラグインログに警告を書くだけで、戻り値はそのまま返されます。警告にはフィールドのパスとエラーの種類（例: `$.count (int_parsing)`）だけが含まれ、戻り値の内容は記録されません。同じエントリーの同じ種類の不一致は 1 分に 1 回まで記録され、次の警告に抑制された件数が付きます。
+- `strict_output=True` の場合、合わなければ呼び出しはエラーコード `PLUGIN_OUTPUT_SCHEMA_VIOLATION` で失敗します。`call_entry` で呼び出したプラグインはこのコードを受け取ります。`/runs` は現状どおりプラグインの失敗を `INTERNAL` として報告します。フィールドのパスはプラグインログの警告に記録されます。このとき状態の自動保存はスキップされますが、ハンドラーがすでに行った処理は元に戻りません。validator 自体がクラッシュした場合は警告を記録するだけで、呼び出しは失敗しません。
+
+**シリアライズした dict ではなく、モデルそのものを返してください。** 検査は返したデータからモデルの入力ルールでモデルを構築します。すでにシリアライズされたデータは元に戻せないことがあります。`finish(data=model)` はフィールド名を出力するため（エイリアスのあるフィールドは欠落と報告されます）、また `@field_serializer`、`exclude=True`、検証用とシリアライズ用で異なるエイリアスも形を変えます。そのようなモデルはインスタンスをそのまま返すか、`strict_output` を使わないでください。
+
+プラグインのエントリー一覧には `output_schema`（と `strict_output`）が含まれます。`register_dynamic_entry()` と Router の `add_entry()` でも明示的な `output_schema` を宣言できます（公開のみ）。実行時の検査は `@plugin_entry` の Pydantic 戻り値型注釈からだけ行われます。`[[plugin.entries]]` テーブルに書いた `output_schema`/`strict_output` は無視されます（`neko-plugin validate` が警告します）。タスク Agent の capability gateway はこれを公開しません。
+
+---
+
 ## その他のエントリーオプション
 
 `@plugin_entry` には追加オプションがあります。
@@ -278,4 +324,5 @@ plugin entry の権限カテゴリ（ホストの `permissions.json` の `plugin
 | 成功を返す | `return Ok({...})` |
 | 失敗を返す | `return Err(SdkError("reason"))` |
 | AI に見せる戻り値を制限する | `llm_result_fields=["field1", "field2"]` |
+| エントリーの戻り値の形を宣言する | 戻り値の型注釈に Pydantic モデル、または `output_schema={...}` |
 | 実行時までエントリーが分からない | `self.register_dynamic_entry(...)` |

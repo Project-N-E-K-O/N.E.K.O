@@ -377,6 +377,68 @@ def _forward_conversation_turn(event: Dict[str, Any]) -> bool:
         return False
 
 
+def _note_turn_for_task_agents(event: Dict[str, Any]) -> bool:
+    """Keep one message of the main dialogue in memory for the excerpt a new task agent session is handed.
+
+    A commission comes with one dispatched sentence and the user's last
+    words; what they refer to was said a few messages earlier. The NekoClaw
+    host hands a commission that opens a new session the last few messages
+    as background, and takes them from here: this process is told of every
+    message anyway, so a dispatch asks the main server for nothing more.
+
+    Gated on NekoClaw being on, as the plugin stores are gated on user
+    plugins: with it off nothing is dispatched, and a resident copy of what
+    was said would be retention that buys nothing. Memory only (a few
+    messages for each character, ``nekoclaw/host/conversation.py``); a
+    synchronous append, like the hops above. Nothing said is logged.
+    """
+    try:
+        from nekoclaw.host.conversation import recent_conversation
+
+        if not nekoclaw_on():
+            # Nothing is kept while it is off, and what was kept before it
+            # was switched off goes with the first message that comes by:
+            # switched on again, a commission is handed nothing from then.
+            recent_conversation().forget()
+            return False
+        return bool(recent_conversation().note_event(event))
+    except Exception:
+        logger.debug("[NekoClaw] keeping a message for task agents failed")
+        return False
+
+
+def forget_turns_for_task_agents() -> None:
+    """Drop what was kept of the main dialogue for task agents: called when NekoClaw is switched off.
+
+    Without this what was kept would stay until a message comes by
+    while it is off (``_note_turn_for_task_agents``), and switched on
+    again before one did, a commission would be handed what was said
+    before it was switched off.
+    """
+    try:
+        from nekoclaw.host.conversation import recent_conversation
+
+        recent_conversation().forget()
+    except Exception:
+        # Seen: with this failed, what was said before NekoClaw was
+        # switched off is handed to a task agent once it is on again.
+        logger.warning("[NekoClaw] dropping the messages kept for task agents failed", exc_info=True)
+
+
+def forget_turns_if_nekoclaw_is_off() -> None:
+    """Drop what was kept for task agents if NekoClaw is off now: called the moment a capability switch goes off.
+
+    NekoClaw is off with the master switch off, and as much so with
+    the last capability switch off (``nekoclaw_on``). A capability
+    switch goes off by the user's hand and by itself (a model that
+    cannot be reached, a tool that is not there any more); every
+    such place puts it off by ``_shared._put_switch_off``, which
+    calls this before anything is waited for.
+    """
+    if not nekoclaw_on():
+        forget_turns_for_task_agents()
+
+
 def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
     """Forward an observed fact; never run plugin callbacks in this receive path."""
     if not _user_plugins_enabled():
@@ -499,6 +561,7 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
     if event_type == "conversation_turn_observed":
         _forward_user_context(event)
         _forward_conversation_turn(event)
+        _note_turn_for_task_agents(event)
         return
     if event_type == "conversation_fact_observed":
         _forward_conversation_fact(event)

@@ -300,7 +300,7 @@ function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) 
     actionId: oneOfDeclaredValues(facts.actions.map(action => action.actionId), 'actionId'),
     intensity: z.string(),
   };
-  const conditionalShape: z.ZodRawShape = {};
+  const conditionalShape: Record<string, z.ZodType> = {};
   if (facts.touchZones.length > 0) {
     conditionalShape.touchZone = oneOfDeclaredValues(facts.touchZones, 'touchZone');
   }
