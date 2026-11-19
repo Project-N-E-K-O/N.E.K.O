@@ -83,11 +83,8 @@ Notes:
 - `check -r` performs package inspection and payload-hash verification as part
   of the supported release-readiness flow.
 
-Use `install` only with explicit temporary roots unless the user asked to install:
-
-```bash
-uv run neko-plugin install <package.neko-plugin> --plugins-root /tmp/plugins --profiles-root /tmp/profiles --on-conflict fail
-```
+Installing a built package goes through the Plugin Manager's Import (Plugin
+Center); the CLI does not install packages.
 
 ### Bundle analysis
 
@@ -187,7 +184,7 @@ Search before editing platform code:
 These are not the first-line plugin-authoring checks, but they may catch plugin code issues when paths are passed explicitly:
 
 ```bash
-uv run ruff check plugin/plugins/<plugin_id>
+uv run neko-plugin lint <plugin_id|plugin_path>
 uv run python scripts/check_async_blocking.py plugin/plugins/<plugin_id>
 ```
 
