@@ -320,10 +320,15 @@ class ProactiveMixin:
         if not scoped:
             request_id = uuid4().hex
             self._proactive_screenshot_request_id = request_id
+        # A revocation while capturing ends this request for good, even if consent
+        # is granted again before the image would be returned (same rule as the
+        # round-level consent checker).
+        vision_epoch = getattr(self, "_proactive_vision_revocation_epoch", 0)
 
         def still_owned() -> bool:
             return (
                 getattr(self, "_proactive_screenshot_request_id", None) == request_id
+                and getattr(self, "_proactive_vision_revocation_epoch", 0) == vision_epoch
                 and (not scoped or getattr(getattr(self, "state", None), "proactive_round_id", request_id) == request_id)
             )
 

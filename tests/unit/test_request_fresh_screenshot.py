@@ -549,3 +549,48 @@ def _run_fallback(monkeypatch, host, headers=None):
         )
 
     return asyncio.run(run()), capture
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('when', ['backend_capture', 'frontend_reply'])
+def test_revoke_then_regrant_during_capture_declines_the_image(monkeypatch, when):
+    """A quick off/on while capturing must not release an image taken under the revoked consent."""
+    from unittest.mock import AsyncMock, Mock
+    from main_logic import core as core_facade
+    from main_logic.core import proactive
+
+    for key in ('NEKO_BEHIND_PROXY', 'NEKO_ACTIVITY_TRACKER_REMOTE', 'ACTIVITY_TRACKER_REMOTE'):
+        monkeypatch.delenv(key, raising=False)
+    # Live and persisted consent both read as granted again when checked.
+    monkeypatch.setattr(core_facade, 'aload_global_conversation_settings',
+                        AsyncMock(return_value={'proactiveVisionEnabled': True}))
+    fake = SimpleNamespace(_screenshot_future=None, lanlan_name='Repro',
+                           _proactive_vision_enabled=True, _proactive_vision_revocation_epoch=0)
+
+    def revoke_and_regrant():
+        fake._proactive_vision_revocation_epoch += 1
+
+    def capture_side_effect():
+        revoke_and_regrant()
+        return Image.new('RGB', (320, 180), (20, 80, 180))
+
+    capture = Mock(side_effect=capture_side_effect)
+    monkeypatch.setattr(proactive, 'capture_desktop_screenshot', capture)
+
+    async def run():
+        async def send(payload):
+            if when == 'frontend_reply':
+                revoke_and_regrant()
+                LLMSessionManager.resolve_screenshot_request(
+                    fake, _png_b64(320, 180), request_id=payload['request_id'],
+                )
+
+        fake.websocket = SimpleNamespace(send_json=send, client=SimpleNamespace(host='::ffff:127.0.0.1'))
+        return await LLMSessionManager.request_fresh_screenshot(
+            fake, timeout=0.01, allow_backend_fallback=True,
+        )
+
+    fresh = asyncio.run(run())
+    assert fresh.declined is True
+    assert not fresh.b64
+    assert capture.call_count == int(when == 'backend_capture')
