@@ -625,3 +625,51 @@ async def test_an_answer_that_takes_its_asker_up_again_is_handed_over_as_no_word
     await wait_until(lambda: handed, what="it being taken up again")
     [(text, human)] = handed
     assert answer in text and human is False
+
+
+async def test_with_the_clock_set_back_the_wait_is_until_enough_of_the_hour_is_old(ledger):
+    # Written, the clock moved on, written again, and set back: more than the hour allows are
+    # in it. Asked again once the first of them is an hour old, as many as allowed would still
+    # be there: the wait is until enough of them are.
+    from nekoclaw.host.ledger import MessageLimits
+
+    asker, target = await _at_work(ledger, "asker"), await _at_work(ledger, "target")
+    limits = MessageLimits(target_interval=0.0, per_hour=3, queue_max=100, dedup_seconds=0.0)
+
+    async def note(body: str) -> Any:
+        return await ledger.message_add(
+            from_session=asker.session_id, from_commission=asker.id, to_session=target.session_id, body=body,
+            depth=1, notify_when_done=False, notice_after=3600.0, limits=limits,
+        )
+
+    for index in range(3):
+        assert (await note(f"early {index}"))[1] == ""
+    ledger.clock.now = 5000.0
+    for index in range(3):
+        assert (await note(f"late {index}"))[1] == ""
+    ledger.clock.now = 2000.0
+    # Six in the hour around now. Once the three at 1000 are an hour old, the three at 5000
+    # still are: the wait is until the first of those is.
+    message, refusal, wait = await note("again")
+    assert (message, refusal) == (None, "too_many")
+    assert wait == 3600.0  # (5000 + 3600 - 2000, at most an hour)
+    # Exactly as many as allowed: until the first of them is an hour old.
+    ledger.clock.now = 5100.0
+    assert await note("once more") == (None, "too_many", 3500.0)
+
+
+async def test_no_copy_is_made_and_nothing_counted_where_no_place_is_free_for_it(hosts, tmp_path):
+    release, held = _held()
+    scripts = {QUESTION: ScriptedLLM([[say("An answer."), finish()]]), PHOTOS: _photos(), BUILD: held}
+    host = _host(hosts, tmp_path, scripts, max_task_agents=1)
+    photos = await _at_rest(host, scripts)
+    await host.ledger.update_session(photos.session_id, name="photos")
+    asker = await _asker_at_work(host, scripts)
+    # The asker holds the one place there is.
+    with pytest.raises(RuntimeError) as raised:
+        await _ask(host, asker)
+    assert str(raised.value) == words.ASK_REFUSALS["no_place"]
+    assert await host.ledger.find_sessions(kind="fork") == []
+    asked = await host.ledger.run(lambda conn: conn.execute("SELECT COUNT(*) FROM messages WHERE kind = 'ask'").fetchone()[0])
+    assert asked == 0
+    release.set()

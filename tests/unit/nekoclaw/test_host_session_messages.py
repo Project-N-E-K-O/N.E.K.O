@@ -832,10 +832,26 @@ async def test_a_note_reaches_a_session_at_work_before_its_next_step(hosts, tmp_
     await wait_status(host, building.commission_id, "working")
     target.append((await host.ledger.get(building.commission_id)).session_id)
 
-    asked = await _dispatch(host, "deploy the site")
-    await wait_status(host, asked.commission_id, "done")
-    await wait_until(lambda: _delivered(host), what="the note being handed over")
-    release.set()
+    # (Let go once the runtime has the note: on record as handed over is earlier than that,
+    # and a request let go in between would go by without it.)
+    session = host.task_agents._sessions[building.commission_id]
+    steer, steered = session.runtime.steer, asyncio.Event()
+
+    async def steering(session_id: str, text: str, **options: Any) -> Any:
+        try:
+            return await steer(session_id, text, **options)
+        finally:
+            steered.set()
+
+    session.runtime.steer = steering
+    try:
+        asked = await _dispatch(host, "deploy the site")
+        await wait_status(host, asked.commission_id, "done")
+        await wait_until(lambda: _delivered(host), what="the note being handed over")
+        await asyncio.wait_for(steered.wait(), 10.0)
+    finally:
+        session.runtime.steer = steer
+        release.set()
     built = await wait_status(host, building.commission_id, "done")
 
     # The same commission took it, as one more thing said to it; none was filed for it.
@@ -7006,7 +7022,7 @@ async def test_no_commission_is_filed_for_a_note_once_nekoclaw_is_switched_off_o
     built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
     await _let_go(host)
     target.append(built.session_id)
-    last = host.ledger.last_commission
+    last = host.ledger.opened_last
     looked: list[bool] = []
 
     async def switched_off_meanwhile(session_id: str) -> Any:
@@ -7015,7 +7031,7 @@ async def test_no_commission_is_filed_for_a_note_once_nekoclaw_is_switched_off_o
             on[0] = False
         return await last(session_id)
 
-    host.ledger.last_commission = switched_off_meanwhile  # type: ignore[method-assign]
+    host.ledger.opened_last = switched_off_meanwhile  # type: ignore[method-assign]
     await wait_status(host, (await _dispatch(host, "deploy the site")).commission_id, "done")
     await wait_until(lambda: bool(looked), what="the note being looked at")
     await asyncio.sleep(0.3)
@@ -7063,3 +7079,33 @@ async def test_nothing_is_steered_into_an_idle_session_once_nekoclaw_is_switched
     assert handed.outcome == "handed" and session.sent == sent + 1
     release.set()
     assert (await wait_status(host, receipt.commission_id, "done")).result_summary == "deployed"
+
+
+async def test_a_commission_filed_for_a_note_follows_up_the_one_its_session_was_at_last(hosts, tmp_path):
+    # Another commission was filed in the session later, and the one before it was taken up
+    # again after that: the session was at the older one last. A note's commission follows up
+    # that one, with its conversation and language, and not the one filed last.
+    scripts = {
+        _k("build the site"): ScriptedLLM([_report("ready", "built")]),
+        _k("deploy the site"): ScriptedLLM([lambda: _write(target[0], "The build is stale, rebuild it."), _report()]),
+        "The build is stale": ScriptedLLM([_report("ready", "rebuilt")]),
+    }
+    target: list[str] = []
+    host = _host(hosts, tmp_path, scripts_by_commission(scripts))
+    built = await wait_status(host, (await _dispatch(host, "build the site")).commission_id, "done")
+    await _let_go(host)
+    target.append(built.session_id)
+    later, _created = await host.ledger.create(
+        lanlan_name="Lan", title="later", dispatch_text="later", source="dispatch", route="task_agent", lang="ja"
+    )
+    later = await host.ledger.update(later.id, session_id=built.session_id)
+    await host.ledger.transition(later.id, "working")
+    await host.ledger.transition(later.id, "done")
+    assert (await host.ledger.last_commission(built.session_id)).id == later.id
+    assert await host.ledger.opened_last(built.session_id) == built.id
+
+    await _dispatch(host, "deploy the site")
+    await wait_until(lambda: _filed_for_notes(host), what="a commission being filed for the note")
+    [filed] = await _filed_for_notes(host)
+    assert (filed.continues, filed.lang) == (built.id, built.lang)
+    await wait_status(host, filed.id, "done")

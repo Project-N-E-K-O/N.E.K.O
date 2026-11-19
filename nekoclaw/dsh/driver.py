@@ -210,6 +210,10 @@ class _Session:
     # Counts the runs that are over. A call dsh makes belongs to the run
     # under way as it is made, and is handed nothing once that run is over.
     runs: int = 0
+    # Counts the turns (``session/prompt`` requests) that are over, likewise:
+    # a call is handed nothing once the turn it was made in is over, though
+    # the run goes on (what came meanwhile is the next turn's).
+    turns: int = 0
     # False until dsh took the first message, which carries the host's instructions.
     briefed: bool = False
     # Whether it is offered the subagent tool, which its first message then tells of.
@@ -1142,8 +1146,10 @@ class DshRuntime:
 
     async def _take_input(self, session: _Session, seconds: float) -> list[str]:
         """Hand a waiting session the texts queued for it; see ``host_tools.TakeInput``."""
-        # The run the call belongs to: the one under way as it is made.
+        # The run the call belongs to: the one under way as it is made. And
+        # the turn: a call is made while dsh is at one.
         of_run = session.runs if session.run is not None else None
+        of_turn = session.turns
         waited_out = False
         if not session.queue:
             session.arrived.clear()
@@ -1151,11 +1157,20 @@ class DshRuntime:
                 await asyncio.wait_for(session.arrived.wait(), max(0.0, seconds))
             except asyncio.TimeoutError:
                 waited_out = True
-        if of_run is None or session.runs != of_run or session.run is None or session.aborting:
-            # Its run is over, or is being stopped, and dsh has not called
-            # the call off yet. What is queued by now starts the next run,
-            # or is that run's: handed to this call, it would go nowhere,
-            # and the end of that run's turn would tell of it as taken.
+        if (
+            of_run is None
+            or session.runs != of_run
+            or session.turns != of_turn
+            or session.run is None
+            or session.aborting
+        ):
+            # Its run is over, or is being stopped, or the turn it was made
+            # in is (dsh answered the request: what the run does next is
+            # write things down and send the next turn), and dsh has not
+            # called the call off yet. What is queued by now starts the
+            # next run or turn, or is that one's: handed to this call, it
+            # would go nowhere, and the end of that turn would tell of it
+            # as taken.
             return []
         # With nothing in it where the call's time ran out, or where it was
         # woken with nothing left for it (another call of the turn took
@@ -1344,10 +1359,16 @@ class DshRuntime:
                 if first:
                     work = self._first_message(session, work)
                 try:
-                    answer = await process.connection.request(
-                        "session/prompt",
-                        {"sessionId": session.dsh_id, "prompt": [{"type": "text", "text": work}]},
-                    )
+                    try:
+                        answer = await process.connection.request(
+                            "session/prompt",
+                            {"sessionId": session.dsh_id, "prompt": [{"type": "text", "text": work}]},
+                        )
+                    finally:
+                        # The turn is over however it ended: no call of it
+                        # is handed anything from here on. (The answers its
+                        # calls were handed are settled below all the same.)
+                        session.turns += 1
                 except AcpClosed:
                     # The process is gone; that is announced where it was noticed.
                     return

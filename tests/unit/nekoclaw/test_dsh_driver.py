@@ -1806,10 +1806,16 @@ async def test_a_call_of_a_run_that_is_over_is_handed_nothing_of_the_next(tmp_pa
     go = tmp_path / "go"
     second = f"!until {go}\n!say went on"
 
+    let_run = asyncio.Event()
+    runs: list[Any] = []
+
     async def a_moment_later(session: Any) -> None:
         # Which goes on first when a text arrives for a session with no run under way, the
-        # run it starts or a call that was waiting, is up to the loop. Here the call does.
-        await asyncio.sleep(0.05)
+        # run it starts or a call that was waiting, is up to the loop. Here the call does:
+        # the next run waits until what the call was handed has been looked at.
+        runs.append(session)
+        if len(runs) > 1:
+            await let_run.wait()
         await run(session)
 
     runtime._run = a_moment_later  # type: ignore[method-assign]
@@ -1830,11 +1836,13 @@ async def test_a_call_of_a_run_that_is_over_is_handed_nothing_of_the_next(tmp_pa
         # nothing, though it is the first to see it.
         assert await asyncio.wait_for(stale, 5.0) == []
         assert [str(queued) for queued in session.queue] == [second]
+        let_run.set()
         await _until(lambda: len(driver.record("session/prompt")) == 2, "the second run being with dsh")
         await runtime.steer("s1", "a note for the run under way")
         go.write_text("", encoding="utf-8")
         ended = await driver.events.wait_ended("s1", start=position)
     finally:
+        let_run.set()
         stale.cancel()
         go.write_text("", encoding="utf-8")
 
@@ -2484,3 +2492,43 @@ async def test_what_two_calls_were_handed_is_queued_again_in_the_order_it_was_gi
         go.write_text("", encoding="utf-8")
 
     _sent_again(driver, await driver.events.wait_ended("s1"))
+
+
+async def test_a_call_of_a_turn_that_is_over_is_handed_nothing_though_the_run_goes_on(tmp_path: Path, dsh) -> None:
+    # dsh answered the turn's request, and the run is writing things down before it sends the
+    # next turn; a call of the turn that is over, which dsh has not called off, is still
+    # waiting. What arrives meanwhile is the next turn's, and that call is handed nothing.
+    host, _calls = _host()
+    driver = dsh(host)
+    await driver.started(make_spec(tmp_path))
+    runtime = driver.runtime
+    session = runtime._sessions["s1"]
+    go = tmp_path / "go"
+    settled, hold = asyncio.Event(), asyncio.Event()
+    answers_settled = runtime._answers_settled
+
+    async def held_after_the_turn(session: Any) -> None:
+        await answers_settled(session)
+        settled.set()
+        await hold.wait()
+
+    runtime._answers_settled = held_after_the_turn  # type: ignore[method-assign]
+    await runtime.prompt("s1", f"!until {go}\n!say first")
+    await _until(lambda: len(driver.record("session/prompt")) == 1, "the first turn being with dsh")
+    # A call of that turn: it waits for what arrives.
+    stale = asyncio.ensure_future(runtime._take_input(session, 30.0))
+    try:
+        await asyncio.sleep(0)
+        go.write_text("", encoding="utf-8")
+        await asyncio.wait_for(settled.wait(), 10.0)
+        assert not stale.done()
+        await runtime.steer("s1", "a note for the next turn")
+        assert await asyncio.wait_for(stale, 5.0) == []
+        assert [str(queued) for queued in session.queue] == ["a note for the next turn"]
+    finally:
+        hold.set()
+        stale.cancel()
+    ended = await driver.events.wait_ended("s1")
+    prompts = driver.record("session/prompt")
+    assert len(prompts) == 2 and "a note for the next turn" in json.dumps(prompts[1])
+    assert ended["reason"] == "completed" and ended["inputs"] == 2

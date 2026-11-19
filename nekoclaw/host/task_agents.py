@@ -5527,7 +5527,11 @@ class TaskAgentManager:
         # it: where nothing is filed after all (the ledger cannot be read
         # just now, the notes were dropped), the next try does not count
         # a second one.
-        last = await self._ledger.last_commission(target.id)
+        # The one the session was at last, which is the one whose opening
+        # message it took last: not the one filed last, where an older one
+        # was taken up again after it.
+        opened = await self._ledger.opened_last(target.id)
+        last = (await self._ledger.get(opened) if opened else None) or await self._ledger.last_commission(target.id)
         sender = await self._ledger.get_session(notes[0].from_session)
         lang = (last.lang if last is not None else None) or "en"
         title = _texts(SESSION_COMMISSION_TITLE, lang).format(name=sender.name if sender is not None else "?")
@@ -5997,6 +6001,11 @@ class TaskAgentManager:
             raise RuntimeError(refusals["dsh"].format(name=target.name))
         if not await self._ledger.select(session_id=target.id, statuses=_STILL_WORKING, limit=1):
             raise RuntimeError(refusals["not_at_work"].format(name=target.name))
+        if self._closed or len(self._sessions) >= self.limit:
+            # The copy would find no place to answer in: neither copied nor
+            # counted. (A place taken while it is copied fails the question
+            # there; the copy is removed with the other session's in time.)
+            raise RuntimeError(refusals["no_place"])
         question = str(payload.get("question") or "").strip()
         tokens = await acount_tokens(question)
         if tokens > settings.SESSION_MESSAGE_MAX_TOKENS:

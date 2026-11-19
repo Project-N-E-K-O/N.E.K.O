@@ -721,14 +721,18 @@ def _hour_used(conn: sqlite3.Connection, from_session: str, kinds: tuple[str, ..
     set back by a little leaves it, in the hour after (see ``message_add``).
     """
     marks = ", ".join("?" for _ in kinds)
-    sent = conn.execute(
-        f"SELECT COUNT(*) AS n, MIN(created_at) AS first FROM messages "
-        f"WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ?",
-        (from_session, *kinds, now - 3600.0, now + 3600.0),
-    ).fetchone()
+    within = f"FROM messages WHERE from_session = ? AND kind IN ({marks}) AND created_at >= ? AND created_at <= ?"
+    window = (from_session, *kinds, now - 3600.0, now + 3600.0)
+    sent = conn.execute(f"SELECT COUNT(*) AS n {within}", window).fetchone()
     if sent is None or sent["n"] < limit:
         return None
-    return min(3600.0, max(0.0, float(sent["first"]) + 3600.0 - now))
+    # Until so many of them are an hour old that fewer than ``limit`` are
+    # left: the one that leaves ``limit - 1`` once it is. (More than
+    # ``limit`` are in the hour where the clock was set back.)
+    freed = conn.execute(
+        f"SELECT created_at {within} ORDER BY created_at LIMIT 1 OFFSET ?", (*window, int(sent["n"]) - int(limit))
+    ).fetchone()
+    return min(3600.0, max(0.0, float(freed["created_at"]) + 3600.0 - now))
 
 
 def _dump(value: Any) -> str:
