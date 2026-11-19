@@ -8625,15 +8625,6 @@
             void renderCanvas();
         });
         bindViewportNavigation();
-        $('#emote-maker-close')?.addEventListener('click', () => {
-            if (window.opener && !window.opener.closed) {
-                window.close();
-            } else if (window.history.length > 1) {
-                window.history.back();
-            } else {
-                window.location.assign('/');
-            }
-        });
         window.addEventListener('keydown', (event) => {
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
                 event.preventDefault();

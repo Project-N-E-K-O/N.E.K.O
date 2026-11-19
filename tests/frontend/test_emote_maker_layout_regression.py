@@ -78,6 +78,75 @@ def _drag_both_sides_past_the_limit(page: Page) -> None:
     page.wait_for_timeout(120)
 
 
+def test_title_bar_uses_shared_host_window_controls(page: Page, running_server: str) -> None:
+    page.add_init_script("""(() => {
+        let pinned = false;
+        let maximized = false;
+        window.pinToggleCount = 0;
+        window.windowControlCalls = [];
+        window.nekoHost = {
+            closeWindow: async () => {
+                window.windowControlCalls.push('close');
+                return { ok: true };
+            },
+        };
+        window.nekoWindowControl = {
+            getPinState: async () => ({ available: true, pinned }),
+            togglePin: async () => {
+                window.pinToggleCount += 1;
+                pinned = !pinned;
+                return { available: true, pinned };
+            },
+            minimize: async () => { window.windowControlCalls.push('minimize'); },
+            isMaximized: async () => maximized,
+            maximize: async () => {
+                window.windowControlCalls.push('maximize');
+                maximized = !maximized;
+                return { ok: true, isMaximized: maximized };
+            },
+        };
+    })();""")
+    page.goto(f"{running_server}/emote_maker", wait_until="networkidle")
+    pin = page.locator('[data-neko-window-control="pin"]')
+    expect(pin).to_be_visible()
+    expect(pin).to_have_attribute("aria-pressed", "false")
+    minimize = page.locator('[data-neko-window-control="minimize"]')
+    assert pin.bounding_box()["x"] < minimize.bounding_box()["x"]
+
+    controls = page.locator('.neko-window-controls > button')
+    assert controls.evaluate_all("buttons => buttons.map(button => button.dataset.nekoWindowControl)") == [
+        "pin", "minimize", "maximize", "close",
+    ]
+    assert controls.evaluate_all("""buttons => buttons.map(button => {
+        const rect = button.getBoundingClientRect();
+        return [rect.width, rect.height];
+    })""") == [
+        [32, 30], [32, 30], [32, 30], [32, 30],
+    ]
+
+    minimize.click()
+    maximize = page.locator('[data-neko-window-control="maximize"]')
+    maximize.click()
+    expect(page.locator('html')).to_have_class('neko-window-maximized')
+    maximize.click()
+    expect(page.locator('html')).not_to_have_class('neko-window-maximized')
+
+    page.locator('[data-neko-window-control="close"]').click()
+    page.wait_for_function("window.windowControlCalls.includes('close')")
+    assert page.evaluate("window.windowControlCalls") == ["minimize", "maximize", "maximize", "close"]
+    assert page.url == f"{running_server}/emote_maker"
+
+    pin.click()
+    expect(pin).to_have_attribute("aria-pressed", "true")
+    pin.click()
+    expect(pin).to_have_attribute("aria-pressed", "false")
+    assert page.evaluate("window.pinToggleCount") == 2
+
+    page.evaluate("delete window.nekoWindowControl")
+    page.evaluate("window.nekoWindowControls.refresh()")
+    expect(pin).to_be_hidden()
+
+
 def test_desktop_grid_keeps_three_columns(page: Page, running_server: str) -> None:
     _open(page, running_server, 1400)
     box = page.evaluate(GEOMETRY)

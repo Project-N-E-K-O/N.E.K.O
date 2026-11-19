@@ -78,31 +78,6 @@ button {
     letter-spacing: 0.04em;
     text-shadow: 0 1px 0 rgba(8, 100, 164, 0.22);
 }
-.neko-window-controls,
-.page-title-bar button {
-    -webkit-app-region: no-drag;
-}
-.page-title-bar .close-btn {
-    width: 38px;
-    height: 38px;
-    padding: 3px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color 160ms ease, transform 160ms ease;
-}
-.page-title-bar .close-btn:hover {
-    background: rgba(255, 255, 255, 0.2);
-    transform: translateY(-1px);
-}
-.page-title-bar .close-btn img {
-    width: 30px;
-    height: 30px;
-}
 .emote-maker-page {
     min-height: 0;
     flex: 1 1 auto;
