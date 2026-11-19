@@ -20,7 +20,9 @@
 * ``sessions``    - one row per task agent session: a conversation that can
   be gone on with. A commission is given to a session (``session_id``), and
   a session takes several, one after the other: the session of a project
-  takes every commission filed under it. See ``Session``.
+  takes every commission filed under it. See ``Session``. What the model
+  requests of a session used is added up with the session and with the
+  commission worked on in it (``Ledger.add_usage``).
 * ``events``      - what happened to a commission, in order; the commission
   board replays it.
 * ``outbox``      - reports for the main server. A report is written here
@@ -94,14 +96,15 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "cancelled": frozenset(),
 }
 
-SESSION_STATUSES: tuple[str, ...] = ("idle", "running", "waiting", "closed", "cleared")
+SESSION_STATUSES: tuple[str, ...] = ("idle", "running", "waiting", "compacting", "closed", "cleared")
 # Open in a runtime, or kept for an answer: only a host process that runs
 # can have a session so. What an earlier one left so is closed on opening.
-LIVE_SESSION_STATUSES: frozenset[str] = frozenset({"idle", "running", "waiting"})
+LIVE_SESSION_STATUSES: frozenset[str] = frozenset({"idle", "running", "waiting", "compacting"})
 # "project": the one session of a project, for one character. "single": of
 # one commission that belongs to no project, and of what follows it up.
-# "child": of a task agent that another task agent started.
-SESSION_KINDS: tuple[str, ...] = ("project", "single", "child")
+# "child": of a task agent that another task agent started. "fork": made
+# from another session by copying what was said in it (``forked_from``).
+SESSION_KINDS: tuple[str, ...] = ("project", "single", "child", "fork")
 
 SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent")
 ROUTES: tuple[str, ...] = ("plugin", "task_agent")
@@ -109,7 +112,7 @@ ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 # Why a commission left unfinished by an earlier host process failed.
 HOST_ENDED_REASON = "the host process ended before this finished"
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 # The first version in which a commission is worked on in a session that is a
 # row of its own; a ledger of an earlier one has its commissions given theirs.
 _SESSIONS_SINCE_VERSION = 3
@@ -146,7 +149,13 @@ CREATE TABLE IF NOT EXISTS commissions (
     host_instance TEXT,
     session_dir TEXT,
     session_id TEXT,
-    continues TEXT
+    continues TEXT,
+    requests INTEGER NOT NULL DEFAULT 0,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+    tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+    usage_allowed INTEGER
 );
 CREATE INDEX IF NOT EXISTS commissions_by_owner ON commissions (lanlan_name, status);
 CREATE INDEX IF NOT EXISTS commissions_by_parent ON commissions (parent_id);
@@ -164,7 +173,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT NOT NULL,
     created_at REAL NOT NULL,
     last_active_at REAL NOT NULL,
-    compacted_at REAL
+    compacted_at REAL,
+    forked_at TEXT,
+    requests INTEGER NOT NULL DEFAULT 0,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+    tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+    context_tokens INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS sessions_by_name ON sessions (lanlan_name, name);
 CREATE INDEX IF NOT EXISTS sessions_by_project ON sessions (lanlan_name, project, kind);
@@ -255,10 +271,28 @@ class Commission:
     # The commission this one follows up: one that was done or stopped, and
     # is gone on with as a commission of its own in the same session.
     continues: str | None = None
+    # What the model requests made for it used so far, those of the task
+    # agents it started included (``Ledger.add_usage``): how many requests,
+    # and their tokens as the provider counted them. ``tokens_in`` is the
+    # input that was not read from a cache.
+    requests: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_cache_read: int = 0
+    tokens_cache_write: int = 0
+    # Up to how many tokens it may use before the user is asked whether it
+    # is to go on; None for the setting (``TASK_AGENT_USAGE_LIMIT_TOKENS``).
+    # Raised when the user allows more.
+    usage_allowed: int | None = None
 
     @property
     def active(self) -> bool:
         return self.status in ACTIVE_STATUSES
+
+    @property
+    def tokens(self) -> int:
+        """Return the tokens it used: what every request sent and got back, read from a cache or not."""
+        return self.tokens_in + self.tokens_out + self.tokens_cache_read + self.tokens_cache_write
 
     def question(self) -> dict[str, Any] | None:
         """Return the pending question as a dict, or None."""
@@ -279,9 +313,22 @@ _ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
     ("session_dir", "TEXT"),
     ("session_id", "TEXT"),
     ("continues", "TEXT"),
+    ("requests", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_in", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_out", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_cache_read", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_cache_write", "INTEGER NOT NULL DEFAULT 0"),
+    ("usage_allowed", "INTEGER"),
 )
-# Columns ``update`` may write. The status is not among them.
-_UPDATABLE: frozenset[str] = frozenset(_COMMISSION_COLUMNS) - {"id", "status", "created_at", "host_instance"}
+# What is counted of the model requests, with a commission and with a session.
+_USAGE_COLUMNS: tuple[str, ...] = ("requests", "tokens_in", "tokens_out", "tokens_cache_read", "tokens_cache_write")
+# Columns ``update`` may write. The status is not among them, nor is what
+# was used (``add_usage``) and what may be (``allow_usage``).
+_UPDATABLE: frozenset[str] = (
+    frozenset(_COMMISSION_COLUMNS)
+    - {"id", "status", "created_at", "host_instance", "usage_allowed"}
+    - frozenset(_USAGE_COLUMNS)
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +342,10 @@ class Session:
     on in it, ``waiting`` while one waits for the user, ``idle`` while it
     is open in a runtime with no run under way, ``closed`` when no runtime
     has it open (what was said is kept, and it can be gone on with),
-    ``cleared`` once what was said was removed, being old.
+    ``cleared`` once what was said was removed, being old. ``compacting``
+    while the host has it summed up with no commission at work in it
+    (``TaskAgentManager``): it is closed again when that is done, or cut
+    short by a commission that is to be worked on in it.
     """
 
     id: str
@@ -309,18 +359,65 @@ class Session:
     runtime: str | None
     # The session of the task agent that started this one's.
     parent_id: str | None
-    # Kept for sessions made from another by copying what was said.
+    # The session this one was made from by copying what was said in it
+    # (``kind`` ``"fork"``), and the entry of that one's record the copy
+    # ends with (``forked_at``, further down).
     forked_from: str | None
     status: str
     created_at: float
     # When a commission of it last changed its status.
     last_active_at: float
     compacted_at: float | None
+    forked_at: str | None = None
+    # What the model requests made in it used so far, as with a commission.
+    requests: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+    tokens_cache_read: int = 0
+    tokens_cache_write: int = 0
+    # How long its conversation was as of its last request, with what every
+    # request begins with: what the next one sends, about.
+    context_tokens: int = 0
+
+    @property
+    def tokens(self) -> int:
+        """Return the tokens it used: what every request sent and got back, read from a cache or not."""
+        return self.tokens_in + self.tokens_out + self.tokens_cache_read + self.tokens_cache_write
 
 
 _SESSION_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Session))
-# Columns ``update_session`` may write.
-_SESSION_UPDATABLE: frozenset[str] = frozenset(_SESSION_COLUMNS) - {"id", "lanlan_name", "kind", "created_at"}
+# Columns of ``sessions`` that its first schema did not have; see ``_ADDED_COLUMNS``.
+_ADDED_SESSION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("forked_at", "TEXT"),
+    ("requests", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_in", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_out", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_cache_read", "INTEGER NOT NULL DEFAULT 0"),
+    ("tokens_cache_write", "INTEGER NOT NULL DEFAULT 0"),
+    ("context_tokens", "INTEGER NOT NULL DEFAULT 0"),
+)
+# Columns ``update_session`` may write. What was used is written by
+# ``add_usage``, and where a copy was made from when it is made.
+_SESSION_UPDATABLE: frozenset[str] = (
+    frozenset(_SESSION_COLUMNS)
+    - {"id", "lanlan_name", "kind", "created_at", "forked_from", "forked_at", "context_tokens"}
+    - frozenset(_USAGE_COLUMNS)
+)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageStanding:
+    """How much a commission's work has used, and how much it may.
+
+    Of the commission no task agent started (``root``): what the task
+    agents it started use is its own, and it is the one the user allows
+    more for.
+    """
+
+    root: str
+    used: int
+    # None: nothing was allowed beyond the setting yet.
+    allowed: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,11 +593,12 @@ class Ledger:
 
     @staticmethod
     def _add_columns(conn: sqlite3.Connection) -> None:
-        """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``)."""
-        present = {row["name"] for row in conn.execute("PRAGMA table_info(commissions)")}
-        for name, kind in _ADDED_COLUMNS:
-            if name not in present:
-                conn.execute(f"ALTER TABLE commissions ADD COLUMN {name} {kind}")
+        """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``, ``_ADDED_SESSION_COLUMNS``)."""
+        for table, added in (("commissions", _ADDED_COLUMNS), ("sessions", _ADDED_SESSION_COLUMNS)):
+            present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in added:
+                if name not in present:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     def _give_sessions(self, conn: sqlite3.Connection) -> None:
         """Give every task agent commission of an earlier build the session it had.
@@ -661,6 +759,7 @@ class Ledger:
             created_at=now,
             updated_at=now,
             host_instance=self.instance,
+            **{name: 0 for name in _USAGE_COLUMNS},
         )
         row.update(values)
         if row["status"] not in STATUSES:
@@ -903,6 +1002,7 @@ class Ledger:
         now = self._clock()
         row: dict[str, Any] = {name: None for name in _SESSION_COLUMNS}
         row.update(id=new_session_id(), kind="single", status="closed", created_at=now, last_active_at=now)
+        row.update({name: 0 for name in (*_USAGE_COLUMNS, "context_tokens")})
         row.update(values)
         if row["status"] not in SESSION_STATUSES:
             raise ValueError(f"unknown session status {row['status']!r}")
@@ -1096,6 +1196,139 @@ class Ledger:
                 self._event(conn, row["id"], "session_cleaned", {"session_id": session_id})
 
         await self.run(work)
+
+    async def forks_of(self, session_id: str) -> list[Session]:
+        """Return the sessions that were made from a session by copying what was said in it, the oldest first."""
+
+        def work(conn: sqlite3.Connection) -> list[Session]:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE forked_from = ? ORDER BY created_at, rowid", (session_id,)
+            ).fetchall()
+            return [item for item in (_session(row) for row in rows) if item]
+
+        return await self.run(work)
+
+    async def begin_compacting(self, session_id: str) -> bool:
+        """Write a closed session as being summed up by the host; False for one that is not closed.
+
+        Looked at and written together: a session a commission has got to
+        work in since, or one that holds nothing any more, stays as it is.
+        """
+
+        def work(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                "UPDATE sessions SET status = 'compacting' WHERE id = ? AND status = 'closed'", (session_id,)
+            )
+            return cursor.rowcount > 0
+
+        return await self.run(work)
+
+    async def end_compacting(self, session_id: str, *, compacted: bool) -> None:
+        """Write a session the host had summed up as closed again, and when it was summed up if it was.
+
+        Only one that still stands as being summed up: a commission that
+        got to work in it meanwhile has written where it stands, and that
+        is not written over.
+        """
+
+        def work(conn: sqlite3.Connection) -> None:
+            conn.execute("UPDATE sessions SET status = 'closed' WHERE id = ? AND status = 'compacting'", (session_id,))
+            if compacted:
+                conn.execute("UPDATE sessions SET compacted_at = ? WHERE id = ?", (self._clock(), session_id))
+
+        await self.run(work)
+
+    # -- usage ------------------------------------------------------------
+
+    @staticmethod
+    def _root(conn: sqlite3.Connection, commission_id: str) -> sqlite3.Row | None:
+        """Return the commission no task agent started that a commission descends from (itself, if it is one)."""
+        seen: set[str] = set()
+        current: str | None = commission_id
+        row = None
+        while current and current not in seen:
+            seen.add(current)
+            found = conn.execute("SELECT * FROM commissions WHERE id = ?", (current,)).fetchone()
+            if found is None:
+                break
+            row = found
+            current = found["parent_id"]
+        return row
+
+    async def add_usage(
+        self,
+        *,
+        session_id: str | None = None,
+        commission_id: str | None = None,
+        requests: int = 1,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
+        cache_read: int = 0,
+        cache_write: int = 0,
+        context_tokens: int | None = None,
+    ) -> None:
+        """Add what model requests used to a session and to the commission they were made for.
+
+        With the session (``session_id``), and with the commission
+        (``commission_id``) and every commission it descends from: what a
+        task agent started by another uses is that one's as well, up to
+        the commission no task agent started. Either may be left out: a
+        request made for no commission (the host summing up a session
+        nothing is at work in) is the session's alone. ``context_tokens``,
+        when given, is how long the session's conversation was as of the
+        request. Nothing else of a commission changes, and nobody is told.
+        """
+        # The columns that are counted, and no other: in the order of ``_USAGE_COLUMNS``.
+        amounts = (requests, tokens_in, tokens_out, cache_read, cache_write)
+        added = {name: max(0, int(amount)) for name, amount in zip(_USAGE_COLUMNS, amounts, strict=True)}
+        assignments = ", ".join(f"{name} = {name} + ?" for name in added)
+
+        def work(conn: sqlite3.Connection) -> None:
+            if session_id:
+                conn.execute(f"UPDATE sessions SET {assignments} WHERE id = ?", [*added.values(), session_id])
+                if context_tokens is not None and context_tokens > 0:
+                    conn.execute(
+                        "UPDATE sessions SET context_tokens = ? WHERE id = ?", (int(context_tokens), session_id)
+                    )
+            seen: set[str] = set()
+            current = commission_id
+            while current and current not in seen:
+                seen.add(current)
+                conn.execute(f"UPDATE commissions SET {assignments} WHERE id = ?", [*added.values(), current])
+                row = conn.execute("SELECT parent_id FROM commissions WHERE id = ?", (current,)).fetchone()
+                current = row["parent_id"] if row is not None else None
+
+        await self.run(work)
+
+    async def usage_standing(self, commission_id: str) -> UsageStanding | None:
+        """Return how much the work a commission belongs to has used and how much it may; None for an unknown one."""
+
+        def work(conn: sqlite3.Connection) -> UsageStanding | None:
+            root = _commission(self._root(conn, commission_id))
+            if root is None:
+                return None
+            return UsageStanding(root.id, root.tokens, root.usage_allowed)
+
+        return await self.run(work)
+
+    async def allow_usage(self, commission_id: str, tokens: int) -> UsageStanding | None:
+        """Let the work a commission belongs to use ``tokens`` more than it has used by now.
+
+        Written with the commission no task agent started, from what it
+        has used when this is written: what was used while the user was
+        being asked is not taken from what they allowed.
+        """
+
+        def work(conn: sqlite3.Connection) -> UsageStanding | None:
+            root = _commission(self._root(conn, commission_id))
+            if root is None:
+                return None
+            allowed = root.tokens + max(0, int(tokens))
+            conn.execute("UPDATE commissions SET usage_allowed = ? WHERE id = ?", (allowed, root.id))
+            self._event(conn, root.id, "usage_allowed", {"used": root.tokens, "allowed": allowed})
+            return UsageStanding(root.id, root.tokens, allowed)
+
+        return await self.run(work)
 
     # -- events -----------------------------------------------------------
 

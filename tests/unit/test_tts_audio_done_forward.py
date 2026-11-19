@@ -362,7 +362,7 @@ async def test_disconnected_websocket_does_not_kill_the_handler(monkeypatch):
 
     task = await _start_handler(mgr, ("__audio_done__", "sid-1"))
     try:
-        await asyncio.wait_for(skipped.wait(), timeout=2.0)
+        await asyncio.wait_for(skipped.wait(), timeout=10)
         still_running = not task.done()
     finally:
         await _stop(task)

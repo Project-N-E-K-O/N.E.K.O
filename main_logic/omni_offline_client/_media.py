@@ -15,7 +15,7 @@
 
 import asyncio
 from dataclasses import replace
-from typing import Sequence
+from typing import Callable, Sequence
 from uuid import uuid4
 
 from config import MAX_MULTIMODAL_TURN_IMAGES
@@ -530,7 +530,12 @@ class _MediaMixin:
         """
         self.set_proactive_screenshot(None)
 
-    def set_proactive_screenshot(self, image_b64: str | None) -> None:
+    def set_proactive_screenshot(
+        self,
+        image_b64: str | None,
+        *,
+        consent_check: Callable[[], bool] | None = None,
+    ) -> None:
         """Stage (or clear) the proactive-vision screenshot for the user's next reply.
 
         When proactive chat used the screen as its material, the committed
@@ -548,15 +553,21 @@ class _MediaMixin:
         the history-length marker pins the screenshot to the AI turn it was staged
         on, so a later proactive talk delivered through another path (greeting /
         agent callback via ``prompt_ephemeral``) supersedes it.
+
+        ``consent_check`` is the screen consent this screenshot was staged
+        under. ``stream_text`` calls it again before the screenshot goes into a
+        request and drops the screenshot (only it) once it returns False.
         """
         if image_b64:
             self._proactive_image_to_inject = image_b64
             self._proactive_image_staged_at = time.monotonic()
             self._proactive_image_history_len = len(self._conversation_history)
+            self._proactive_image_consent_check = consent_check
         else:
             self._proactive_image_to_inject = None
             self._proactive_image_staged_at = 0.0
             self._proactive_image_history_len = 0
+            self._proactive_image_consent_check = None
 
     def _evict_old_images(self, keep_turns: int = 2) -> None:
         keep_turns = max(0, keep_turns)

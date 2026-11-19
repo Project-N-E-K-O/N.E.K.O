@@ -129,7 +129,20 @@ def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) ->
         # here, so the beginning and the end get the same.
         kept = max(max_tokens - mark_tokens, 0)
         specific = truncate_head_tail_tokens(specific, kept - kept // 2 + mark_tokens, kept // 2, separator=mark)
-    return categories.get(category, categories["other"]).format(detail=specific).strip()
+    # What a question about usage states: how much was used, and how much more is asked for.
+    amounts = {name: str(detail.get(name) or "") for name in ("used", "more")}
+    return categories.get(category, categories["other"]).format(detail=specific, **amounts).strip()
+
+
+def tokens_text(tokens: int) -> str:
+    """Return a number of tokens in a few characters, the same in every language: ``950``, ``12k``, ``1.3M``."""
+    tokens = max(0, int(tokens))
+    if tokens >= 999_500:
+        text = f"{tokens / 1_000_000:.1f}"
+        return (text[:-2] if text.endswith(".0") else text) + "M"
+    if tokens >= 1_000:
+        return f"{round(tokens / 1_000)}k"
+    return str(tokens)
 
 
 def render_question(title: str, question: dict[str, Any], lang: str) -> str:
