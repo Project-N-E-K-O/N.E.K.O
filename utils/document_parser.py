@@ -273,11 +273,51 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
         return False
     from pypdf.generic import ContentStream
 
-    def open_frame(content, inherited):
+    def open_frame(content, inherited, font=None):
         resolved = _resolve_pdf_object(inherited)
         objects = _resolve_pdf_object(resolved.get("/XObject", {})) if isinstance(resolved, dict) else {}
         stream = content if isinstance(content, ContentStream) else ContentStream(content, reader)
-        return {"operations": iter(stream.operations), "objects": objects, "resources": resolved, "path": False}
+        fonts = _resolve_pdf_object(resolved.get("/Font", {})) if isinstance(resolved, dict) else {}
+        return {"operations": iter(stream.operations), "objects": objects, "resources": resolved, "path": False,
+                "fonts": fonts if isinstance(fonts, dict) else {}, "font": font, "saved": []}
+
+    def space_is_blank(font) -> bool:
+        # Only a non-embedded simple font whose encoding keeps code 32 as the
+        # standard space is known to draw nothing for 0x20. Composite, Type3,
+        # embedded (built-in encoding) and remapped fonts stay painting.
+        if not isinstance(font, dict) or font.get("/Subtype") not in {"/Type1", "/MMType1", "/TrueType"}:
+            return False
+        descriptor = _resolve_pdf_object(font.get("/FontDescriptor"))
+        if isinstance(descriptor, dict) and any(key in descriptor for key in ("/FontFile", "/FontFile2", "/FontFile3")):
+            return False
+        encoding = _resolve_pdf_object(font.get("/Encoding"))
+        if encoding is None:
+            return True
+        if not isinstance(encoding, dict):
+            return encoding in {"/StandardEncoding", "/WinAnsiEncoding", "/MacRomanEncoding"}
+        if encoding.get("/BaseEncoding") not in {None, "/StandardEncoding", "/WinAnsiEncoding", "/MacRomanEncoding"}:
+            return False
+        code = None
+        for entry in _resolve_pdf_object(encoding.get("/Differences")) or []:
+            entry = _resolve_pdf_object(entry)
+            if isinstance(entry, int):
+                code = entry
+            elif code is not None:
+                if code == 32 and entry != "/space":
+                    return False
+                code += 1
+        return True
+
+    def shows_only_spaces(values, font) -> bool:
+        # In such fonts byte 0x20 is the space glyph, which has no outline.
+        if not space_is_blank(font):
+            return False
+        for value in values:
+            if isinstance(value, str):
+                value = getattr(value, "original_bytes", value.encode("latin-1", "replace"))
+            if isinstance(value, bytes) and value.strip(b" "):
+                return False
+        return True
 
     frames = [open_frame(contents, resources)]
     seen = set()
@@ -286,7 +326,14 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
         for operands, operator in frame["operations"]:
             if operator in {b"INLINE IMAGE", b"sh"}:
                 return True
-            if operator in {b"l", b"c", b"v", b"y", b"re"}:
+            if operator == b"q":
+                frame["saved"].append(frame["font"])
+            elif operator == b"Q":
+                if frame["saved"]:
+                    frame["font"] = frame["saved"].pop()
+            elif operator == b"Tf" and operands:
+                frame["font"] = _resolve_pdf_object(frame["fonts"].get(operands[0]))
+            elif operator in {b"l", b"c", b"v", b"y", b"re"}:
                 frame["path"] = True
             elif operator == b"n":
                 frame["path"] = False  # Path/clip construction alone paints nothing.
@@ -296,7 +343,8 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
             elif operator in {b"Tj", b"TJ", b"'", b'"'} and operands:
                 shown = operands[-1]
                 values = shown if isinstance(shown, list) else [shown]
-                if any(isinstance(value, (str, bytes)) and value for value in values):
+                if any(isinstance(value, (str, bytes)) and value for value in values) and not shows_only_spaces(
+                        values, frame["font"]):
                     return True  # Glyph drawing without extractable Unicode is also unreadable.
             elif operator == b"Do" and operands and isinstance(frame["objects"], dict):
                 target = _resolve_pdf_object(frame["objects"].get(operands[0]))
@@ -308,10 +356,11 @@ def _pdf_has_unreadable_content(contents, resources, reader) -> bool:
                     inherited = _resolve_pdf_object(target.get("/Resources", frame["resources"]))
                     # A resource-less Form can be invoked in different resource
                     # scopes. Keep those scopes distinct while stopping cycles.
-                    key = (id(target), id(inherited))
+                    # The inherited font decides whether spaces paint, so it is part of the scope.
+                    key = (id(target), id(inherited), id(frame["font"]))
                     if key not in seen:
                         seen.add(key)
-                        frames.append(open_frame(target, inherited))
+                        frames.append(open_frame(target, inherited, frame["font"]))
                         break
         else:
             frames.pop()

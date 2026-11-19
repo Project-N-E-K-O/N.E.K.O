@@ -105,3 +105,114 @@ def test_reused_resource_less_form_is_checked_in_each_inherited_scope():
                                                 (b"BT [100 -20] TJ ET", False), (b"BT [] TJ ET", False)])
 def test_shading_and_glyph_painting_require_nonempty_drawn_content(operations, painted):
     assert document_parser._pdf_has_unreadable_content(_stream(operations), {}, None) is painted
+
+
+def _font_resources(subtype):
+    from pypdf.generic import DictionaryObject, NameObject
+
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject(subtype)})
+    return DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+
+
+def _mixed_pdf_with_font(operations, subtype):
+    from pypdf import PdfReader
+    from pypdf.generic import NameObject
+
+    reader = PdfReader(io.BytesIO(_mixed_pdf(operations)))
+    from pypdf import PdfWriter
+
+    writer = PdfWriter(clone_from=reader)
+    writer.pages[1][NameObject("/Resources")] = _font_resources(subtype)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize("operations", [b"BT /F1 12 Tf ( ) Tj ET", b"BT /F1 12 Tf [(  ) -250 ( )] TJ ET",
+                                         b"BT /F1 12 Tf ( ) ' ET"])
+def test_space_only_page_in_a_simple_font_stays_a_blank_page(operations):
+    parsed = parse_source("spaces.pdf", _mixed_pdf_with_font(operations, "/Type1"), SourceLimits())
+    assert parsed["content"] == "A complete private reference."
+
+
+@pytest.mark.parametrize("subtype", ["/Type0", "/Type3"])
+def test_spaces_in_composite_or_type3_fonts_still_reject(subtype):
+    with pytest.raises(SourceError) as error:
+        parse_source("glyphs.pdf", _mixed_pdf_with_font(b"BT /F1 12 Tf ( ) Tj ET", subtype), SourceLimits())
+    assert error.value.reason == "scan_unsupported"
+
+
+@pytest.mark.parametrize("operations,painted", [(b"BT /F1 12 Tf ( ) Tj ET", False),
+                                                (b"BT /F1 12 Tf [( ) -250 <20>] TJ ET", False),
+                                                (b"BT /F2 12 Tf ( ) Tj ET", True), (b"BT ( ) Tj ET", True),
+                                                (b"BT /F1 12 Tf <01> Tj ET", True),
+                                                (b"BT /F1 12 Tf [( ) -250 (a)] TJ ET", True)])
+def test_only_spaces_in_a_known_simple_font_draw_nothing(operations, painted):
+    assert document_parser._pdf_has_unreadable_content(_stream(operations), _font_resources("/TrueType"), None) is painted
+
+
+def test_restored_graphics_state_brings_back_the_outer_font():
+    from pypdf.generic import DictionaryObject, NameObject
+
+    resources = _font_resources("/Type0")
+    resources[NameObject("/Font")][NameObject("/F2")] = DictionaryObject(
+        {NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1")})
+    assert document_parser._pdf_has_unreadable_content(
+        _stream(b"BT /F1 12 Tf q /F2 12 Tf Q ( ) Tj ET"), resources, None)
+    assert not document_parser._pdf_has_unreadable_content(
+        _stream(b"BT /F1 12 Tf q /F2 12 Tf ( ) Tj Q ET"), resources, None)
+
+
+def _simple_font(**entries):
+    from pypdf.generic import DictionaryObject, NameObject
+
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1")})
+    font.update({NameObject("/" + key): value for key, value in entries.items()})
+    return DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+
+
+def _font_variants():
+    from pypdf.generic import ArrayObject, DictionaryObject, NameObject, NumberObject
+
+    def differences(*values):
+        return DictionaryObject({NameObject("/Differences"): ArrayObject(values)})
+
+    return [
+        ({"Encoding": NameObject("/WinAnsiEncoding")}, False),
+        ({"Encoding": differences(NumberObject(30), NameObject("/a"), NameObject("/b"), NameObject("/space"))}, False),
+        ({"Encoding": differences(NumberObject(32), NameObject("/A"))}, True),
+        ({"Encoding": differences(NumberObject(31), NameObject("/a"), NameObject("/A"))}, True),
+        ({"Encoding": NameObject("/Custom")}, True),
+        ({"Encoding": DictionaryObject({NameObject("/BaseEncoding"): NameObject("/Custom")})}, True),
+        ({"FontDescriptor": DictionaryObject({NameObject("/FontFile2"): NumberObject(0)})}, True),
+        ({"FontDescriptor": DictionaryObject({NameObject("/FontName"): NameObject("/Helvetica")})}, False),
+    ]
+
+
+@pytest.mark.parametrize("index", range(8))
+def test_space_exemption_requires_a_standard_space_in_a_non_embedded_font(index):
+    entries, painted = _font_variants()[index]
+    assert document_parser._pdf_has_unreadable_content(
+        _stream(b"BT /F1 12 Tf ( ) Tj ET"), _simple_font(**entries), None) is painted
+
+
+def test_forms_inherit_the_caller_font_per_scope():
+    from pypdf.generic import NameObject
+
+    resources = _font_resources("/Type1")
+    form = _stream(b"BT ( ) Tj ET", subtype="/Form")
+    resources[NameObject("/XObject")] = _resources(Spaces=form)[NameObject("/XObject")]
+    assert not document_parser._pdf_has_unreadable_content(_stream(b"BT /F1 12 Tf ET /Spaces Do"), resources, None)
+    resources[NameObject("/Font")][NameObject("/F2")] = _font_resources("/Type0")[NameObject("/Font")][NameObject("/F1")]
+    assert document_parser._pdf_has_unreadable_content(
+        _stream(b"BT /F1 12 Tf ET /Spaces Do BT /F2 12 Tf ET /Spaces Do"), resources, None)
+
+
+@pytest.mark.parametrize("operations,fonts", [(b"BT Tf ( ) Tj ET", None), (b"BT 12 Tf ( ) Tj ET", None),
+                                              (b"BT /F1 12 Tf ( ) Tj ET", 7)])
+def test_malformed_font_state_is_treated_as_painting(operations, fonts):
+    from pypdf.generic import DictionaryObject, NameObject, NumberObject
+
+    resources = _font_resources("/Type1") if fonts is None else DictionaryObject(
+        {NameObject("/Font"): NumberObject(fonts)})
+    assert document_parser._pdf_has_unreadable_content(_stream(operations), resources, None)
