@@ -664,22 +664,25 @@ HOST_RESTART_FAILED_TEXT = {
 # turn, in a voice chat into the next session the voice chat swaps to, as
 # background; until then she reads them when she asks how the task went.
 # Nothing is shown for them (the frontend has its own notice of the
-# quota). They say the task can be dispatched again later,
-# so that she goes on dispatching tasks afterwards rather than take this as a
-# reason not to. Partway through, the familiar may have done part of it (moved
+# quota). They say the quota is short for now and the task can be dispatched
+# again once it is refreshed or the user switches the familiar to another API
+# (the quota is only that of the free model), so that she goes on dispatching
+# tasks afterwards rather than take this as a reason not to, and can tell the
+# user what would help. Partway through, the familiar may have done part of it (moved
 # files, sent something): dispatched again, it is to go on from there, not do
 # that part twice.
 TASK_AGENT_FAILED_NOTICE = "This task was not finished: {why}"
 TASK_AGENT_FAILED_WHY = {
     "quota": (
-        "the familiar's model ran out of quota before it started on it. Nothing was wrong with the task "
-        "itself or with how it was dispatched. The quota comes back after a while, so this task can be "
-        "dispatched again later."
+        "the familiar's model is out of quota for now, so it did not start on it. Nothing was wrong with "
+        "the task itself or with how it was dispatched. This task can be dispatched again once the quota "
+        "is refreshed, or once the user switches the familiar to another API."
     ),
     "quota_run": (
-        "the familiar's model ran out of quota partway through, so part of it may already be done. Nothing "
-        "was wrong with the task itself or with how it was dispatched. The quota comes back after a while, "
-        "so this task can be dispatched again later, to go on from where it stopped rather than start over."
+        "the familiar's model is out of quota for now; it ran out partway through, so part of it may "
+        "already be done. Nothing was wrong with the task itself or with how it was dispatched. This task "
+        "can be dispatched again once the quota is refreshed, or once the user switches the familiar to "
+        "another API; it should then go on from where it stopped rather than start over."
     ),
     "start": "the familiar could not start on it.",
     "run": "the familiar stopped on an error partway through.",

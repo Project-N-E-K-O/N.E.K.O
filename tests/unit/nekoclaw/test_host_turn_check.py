@@ -1167,12 +1167,14 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     assert (report.payload["delivery_mode"], report.payload["visibility"]) == ("passive", [])
     assert failed.result_summary == said
     # Neither what she is told nor what she reads when she asks names a period or a price;
-    # what she is told says the task can be dispatched again.
+    # what she is told says the quota is short for now, and what would let the task be
+    # dispatched again.
     for word in ("free", "daily", "day", "today", "tomorrow"):
         assert word not in said.lower().split() and word not in failed.status_reason.split()
-    assert said.endswith("can be dispatched again later.")
+    assert "out of quota for now" in said
+    assert said.endswith("once the quota is refreshed, or once the user switches the familiar to another API.")
     # Not one request went out for it: nothing of it is done.
-    assert "before it started on it" in said and "may already be done" not in said
+    assert "did not start on it" in said and "may already be done" not in said
     # Counted before the first prompt: not one request went to the model,
     # and the session started for it is closed.
     assert llm.requests == []
@@ -1295,7 +1297,8 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     said = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota_run"])
     assert report.payload["summary"] == report.payload["text"] == failed.result_summary == said
     assert "part of it may already be done" in said and said.endswith("rather than start over.")
-    assert "can be dispatched again later" in said
+    assert "out of quota for now" in said
+    assert "once the quota is refreshed, or once the user switches the familiar to another API" in said
     for word in ("free", "daily", "day", "today", "tomorrow"):
         assert word not in said.lower().split() and word not in failed.status_reason.split()
     assert (report.payload["delivery_mode"], report.payload["visibility"]) == ("passive", [])
