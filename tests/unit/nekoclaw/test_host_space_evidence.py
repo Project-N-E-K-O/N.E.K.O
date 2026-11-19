@@ -2226,6 +2226,20 @@ def test_a_file_an_entry_rests_on_does_not_push_out_one_it_notes():
     assert module._evidence_in(document) == ["D:/work/p.py"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="the case of a name tells files apart elsewhere")
+def test_a_file_an_entry_rests_on_is_not_noted_again_in_another_case():
+    from nekoclaw.host import space as module
+
+    document = module._parse_document(
+        "---\nname: Use argparse\nevidence: [\"D:/Work/p.py\"]\nconfidence: observed\n---\nGive scripts their options.\n"
+    )
+
+    module._keep_known(document, module._Known(confidence="inferred", noted=("d:/work/p.py", "D:/work/q.py")))
+
+    # The same file, written with another case: it is what the entry rests on, and is not noted.
+    assert module._noted_in(document) == ["D:/work/q.py"]
+
+
 async def test_both_texts_of_a_pending_entry_go_into_an_entry_that_expired(space, root, workdir):
     await _two_texts_waiting_beside_an_entry_that_expired(space, root, workdir)
 

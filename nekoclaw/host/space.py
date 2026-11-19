@@ -682,6 +682,12 @@ def _seen_in(document: _Document) -> int:
         return 1
 
 
+def _not_among(paths: Iterable[str], among: Iterable[str]) -> list[str]:
+    """Return the files of ``paths`` that are not among ``among``, told apart as ``_joined`` tells them."""
+    there = {os.path.normcase(item) for item in among}
+    return [path for path in paths if os.path.normcase(path) not in there]
+
+
 def _joined(first: Iterable[Any], second: Iterable[Any], most: int) -> list[str]:
     """Return two lists of files as one, each file once, the newest ``most`` of them.
 
@@ -1468,8 +1474,8 @@ def _keep_known(
     # rests on does not push out one it notes and is then dropped itself.
     noted_before = _noted_in(document)
     noted = _joined(
-        [path for path in noted_before if path not in evidence],
-        [path for path in known.noted if path not in evidence],
+        _not_among(noted_before, evidence),
+        _not_among(known.noted, evidence),
         SPACE_EVIDENCE_MAX_PATHS,
     )
     if noted != noted_before:
@@ -2558,8 +2564,8 @@ class TaskAgentSpace:
         if known is not None and known.confidence:
             document.set("confidence", known.confidence)
         _set_evidence(document, evidence, outside)
-        if known is not None:
-            _set_noted(document, [path for path in known.noted if path not in evidence][-SPACE_EVIDENCE_MAX_PATHS:])
+        noted = _joined([], _not_among(known.noted, evidence), SPACE_EVIDENCE_MAX_PATHS) if known is not None else []
+        _set_noted(document, noted)
         if seen_by:
             document.set("seen", str(len(seen_by)))
             document.set("seen_by", ", ".join(seen_by[-SPACE_SEEN_BY_KEPT:]))
@@ -2608,7 +2614,7 @@ class TaskAgentSpace:
                 status=ENTRY_PENDING if pending else ENTRY_ACTIVE,
                 seen_by=tuple(seen_by),
                 evidence_outside=tuple(outside),
-                noted=tuple(path for path in known.noted if path not in evidence) if known is not None else (),
+                noted=tuple(noted),
             )
         if unlisted is not None:
             # The entry is a file by now, and is not taken away again.
@@ -3188,7 +3194,7 @@ class TaskAgentSpace:
             sources_before=note.known.sources_before,
             # What its own pending entry noted stays in that entry's file,
             # and goes along where that goes into another (``_fold``).
-            noted=tuple(path for path in note.known.noted if path not in evidence),
+            noted=tuple(_not_among(note.known.noted, evidence)),
         )
         # A place of the commission is used by what it puts on file: a note
         # that begins to wait, or one that becomes an entry. Not by what is
