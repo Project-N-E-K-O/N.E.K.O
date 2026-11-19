@@ -99,11 +99,16 @@ async def test_round_under_unchanged_consent_stages_its_screenshot():
     )
 
     assert mgr.session._proactive_image_to_inject == "SHOT_B64"
-    assert mgr.session._proactive_image_consent_check() is True
-    # The staged check follows the round's epoch, not just the switch.
+    staged_check = mgr.session._proactive_image_consent_check
+    assert staged_check() is True
     _revoke(mgr)
     _regrant(mgr)
-    assert mgr.session._proactive_image_consent_check() is False
+    # Revocation discards the staged screenshot together with its check.
+    assert mgr.session._proactive_image_to_inject is None
+    assert mgr.session._proactive_image_consent_check is None
+    # The staged check itself follows the round's epoch, not just the switch,
+    # for a copy taken before the discard (e.g. stream_text's local).
+    assert staged_check() is False
 
 
 # ── 2. stream_text re-checks the copy it already holds ───────────────────────

@@ -102,6 +102,12 @@ const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'authoring.title' },
       },
       {
+        path: 'workbench/feedback',
+        name: 'MarketFeedback',
+        component: () => import('@/views/MarketFeedback.vue'),
+        meta: { titleKey: 'marketFeedback.title' },
+      },
+      {
         path: ':pathMatch(.*)*',
         redirect: '/'
       }

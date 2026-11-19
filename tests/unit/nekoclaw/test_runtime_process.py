@@ -175,13 +175,15 @@ async def test_abort_reaches_the_child_and_a_dead_child_fails_its_sessions(tmp_p
 
             # Unknown sessions and duplicate starts come back as error events.
             mark = len(events.events)
-            await runtime.steer("ghost", "hello")
+            await runtime.steer("ghost", "hello", serial=11)
             await runtime.start(_spec(tmp_path, "one", server.base_url))
             errors = [
                 await events.wait_for(lambda e: e["type"] == "error" and e["command"] == "steer", start=mark),
                 await events.wait_for(lambda e: e["type"] == "error" and e["command"] == "start", start=mark),
             ]
             assert 'unknown session "ghost"' in errors[0]["message"]
+            # The child says which text it refused: the number it was sent under.
+            assert errors[0]["serial"] == 11 and errors[1]["serial"] is None
             assert "already exists" in errors[1]["message"]
 
             # The process dies mid-run: its session is reported as failed.
@@ -954,6 +956,79 @@ def test_commands_are_validated_at_the_boundary(tmp_path: Path) -> None:
         parse_command({"type": "explode"})
     with pytest.raises(ValidationError):
         TaskAgentSpec(session_id="../evil", workdir="w", session_dir="s", model=ModelConfig(model="m"))
+
+
+# -- a refused text says which one it was ------------------------------------
+
+
+async def test_a_text_that_is_refused_says_the_number_it_was_sent_under(tmp_path: Path) -> None:
+    from nekoclaw.runtime.session import SessionError
+
+    emitted: list[dict[str, Any]] = []
+    closing, let_close = asyncio.Event(), asyncio.Event()
+
+    class Busy:
+        busy = False
+
+        def prompt(self, text: str, **options: Any) -> None:
+            raise SessionError("a run is in progress")
+
+        def steer(self, text: str, **options: Any) -> None:
+            return None
+
+        async def close(self) -> None:
+            closing.set()
+            await let_close.wait()
+
+    async def open_session(spec, host, emit):  # noqa: ANN001, ANN202
+        del spec, host, emit
+        return Busy()
+
+    core = RuntimeCore(NoHost(), emitted.append, open_session=open_session)
+    await core.start(make_spec(tmp_path, "busy"))
+
+    def refused() -> list[tuple[str, Any]]:
+        return [(event["command"], event["serial"]) for event in emitted if event["type"] == "error"]
+
+    # Refused by the session itself, and for a session that is not there: with the number
+    # the sender gave the text. One it accepts in between says nothing.
+    core.prompt("busy", "more work", serial=4)
+    core.steer("busy", "by the way", serial=5)
+    core.follow_up("ghost", "anyone?", serial=6)
+    # A text sent with no number is refused with none.
+    core.steer("ghost", "hello")
+    assert refused() == [("prompt", 4), ("follow_up", 6), ("steer", None)]
+
+    # Through the runtime that wraps it, as the host sends it.
+    runtime = InProcessRuntime(emitted.append, open_session=open_session)
+    await runtime.steer("ghost", "hello", serial=9)
+    assert refused()[-1] == ("steer", 9)
+    # And while it is shutting down: its session is being closed, and is still there.
+    stopping = asyncio.ensure_future(core.shutdown())
+    await asyncio.wait_for(closing.wait(), 5.0)
+    core.prompt("busy", "one more thing", serial=7)
+    last = [event for event in emitted if event["type"] == "error"][-1]
+    assert (last["command"], last["message"], last["serial"]) == ("prompt", "the runtime is shutting down", 7)
+    let_close.set()
+    await asyncio.wait_for(stopping, 5.0)
+
+
+async def test_a_text_the_runtime_process_cannot_be_sent_is_refused_under_its_number() -> None:
+    events = Recorder()
+    runtime, pipe, feed = _wired(events)
+
+    await runtime.prompt("s1", "hi", serial=3)
+    # It goes to the child with its number, which the child says again where it refuses it.
+    assert (pipe.sent[0]["type"], pipe.sent[0]["serial"]) == ("prompt", 3)
+    assert parse_command(pipe.sent[0]).serial == 3
+    feed({"type": "runtime_idle", "received": 1})
+    written = len(pipe.sent)
+    # The child is leaving: nothing more is written to it, and the text is refused here.
+    await runtime.steer("s1", "again", serial=4)
+    assert len(pipe.sent) == written
+    [rejected] = events.of("error")
+    assert (rejected["command"], rejected["serial"]) == ("steer", 4)
+    assert parse_event(rejected).serial == 4
 
 
 # ---------------------------------------------------------------------------

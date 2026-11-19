@@ -1211,8 +1211,32 @@ class TaskBrain:
             if any(relevance(item) > 0 for item in (*active, *recent)):
                 active = sorted(active, key=relevance, reverse=True)
                 recent = sorted(recent, key=relevance, reverse=True)
+        # One that is in both lists ended between the two readings. It is
+        # listed once: one that is looked at again below, as that look
+        # finds it (what the second list has of it is of an earlier moment
+        # by then: ended there, it may be under way again); any other (one
+        # that a plugin carries out is not looked at again), as the second
+        # list has it, which is the later of the two readings. Sorted out
+        # here, before the lists are cut to size: cut first, a first list
+        # that fills the rows by itself would leave no room for what the
+        # second has of it, and the earlier reading would be the one told.
+        twice = {item.id for item in active}.intersection(item.id for item in recent)
+        again = {item.id for item in active if item.id in twice and self._looked_at_again(item)}
+        active = [item for item in active if item.id not in twice or item.id in again]
+        recent = [item for item in recent if item.id not in again]
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
+        # Each row from one look at its commission: its status, what it
+        # asks and what it waits for are read together, so that a row does
+        # not say "waiting for you" of one that was answered and rests.
+        looked = [await self._waiting_words(item, lang) for item in active]
+        # Sorted by how each stands as of that look. One that ended since
+        # the lists were read is among those that ended, and counts there
+        # as one she was told of.
+        ended = [seen for seen, _said in looked if seen.status not in ACTIVE_STATUSES]
+        active = [seen for seen, _said in looked if seen.status in ACTIVE_STATUSES]
+        waiting = {seen.id: said for seen, said in looked if seen.status in ACTIVE_STATUSES}
+        recent = [*ended, *recent]
 
         def line(commission: Commission) -> str:
             stands = status_word(commission.status, lang)
@@ -1220,10 +1244,21 @@ class TaskBrain:
                 # What it used so far, its task agents' requests counted in:
                 # she can say what a task cost when she is asked.
                 stands = f"{stands} · {words['used'].format(tokens=tokens_text(commission.tokens))}"
-            parts = [f"- {commission.title} ({stands})"]
-            asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
-            if asking:
-                return asking
+            head = bare = f"- {commission.title} ({stands})"
+            if waiting.get(commission.id):
+                # What it waits for by its own asking, and what waits for it:
+                # right after its status, where a cut does not reach it.
+                head += f" [{waiting[commission.id]}]"
+            parts = [head]
+            if commission.status == "waiting_user":
+                # What it asks is told whole before what it waits for
+                # besides: where the two do not fit in the row together,
+                # the note of what waits gives way, and not the end of the
+                # question, which is where the answers on offer are.
+                asking = waiting_row(bare, commission, words["asked"], lang)
+                noted = waiting_row(head, commission, words["asked"], lang) if head != bare else asking
+                if asking:
+                    return noted if noted.endswith(asking[len(bare) :]) else asking
             if commission.result_summary:
                 parts.append(words["result"].format(summary=commission.result_summary))
             elif commission.status_reason and commission.status in ("failed", "blocked"):
@@ -1258,6 +1293,64 @@ class TaskBrain:
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
         )
+
+    @staticmethod
+    def _looked_at_again(commission: Commission) -> bool:
+        """Whether a row of a query's answer is made from a new look at its commission (``_waiting_words``)."""
+        return commission.route == "task_agent" and bool(commission.session_id)
+
+    async def _waiting_words(self, commission: Commission, lang: str) -> tuple[Commission, str]:
+        """Say, for a row of a query's answer, what a commission under way waits for and what waits for it; empty for neither.
+
+        Returned with the commission as it was read for that: the row is
+        made from the one look.
+
+        That it rests and when it goes on; else the times its task agent
+        set for itself that have not come; and the notes other sessions
+        wrote to its session that were not handed over. Read from the
+        ledger; no model is asked.
+        """
+        from datetime import datetime
+
+        from config.prompts.prompts_nekoclaw_sessions import SESSION_QUERY_TEXTS
+
+        if not self._looked_at_again(commission):
+            return commission, ""
+        words = _texts(SESSION_QUERY_TEXTS, lang)
+
+        def at(moment: float) -> str:
+            then, today = datetime.fromtimestamp(moment), datetime.fromtimestamp(now)
+            return then.strftime("%H:%M" if then.date() == today.date() else "%m-%d %H:%M")
+
+        parts: list[str] = []
+        # Whether it rests and what would wake it, as of one look: read
+        # apart, a commission that was woken in between would be said to
+        # rest until the next of its times.
+        seen, own, notes = await self._ledger.waiting_view(commission.id)
+        # What time it is once that is read, and not when the query began:
+        # a time that came while the ledger was asked has come.
+        now = self._ledger._clock()
+        if seen is None:
+            return commission, ""
+        if own and seen.resting:
+            # One whose time has come and that could not be woken yet (the
+            # quota is used up, say) does not go on "at" a time gone by.
+            due = own[0].due_at
+            parts.append(words["due"] if due <= now else words["resting"].format(time=at(due)))
+        else:
+            timers = [wake for wake in own if wake.reason == "timer"]
+            # One whose time has come and that cannot go on yet (the
+            # commission waits for its user's answer, say) is not "the
+            # next": told apart from those that are still to come.
+            due = [wake for wake in timers if wake.due_at <= now]
+            ahead = [wake for wake in timers if wake.due_at > now]
+            if due:
+                parts.append(words["wakes_due"].format(count=len(due)))
+            if ahead:
+                parts.append(words["wakes"].format(count=len(ahead), time=at(ahead[0].due_at)))
+        if notes:
+            parts.append(words["notes"].format(count=notes))
+        return seen, "; ".join(parts)
 
     # -- what a new session is told ---------------------------------------
 

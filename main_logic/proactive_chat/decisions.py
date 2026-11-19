@@ -185,6 +185,21 @@ def _should_use_voice_fast_path(
     return voice_mode and manager_active and realtime_session
 
 
+def _voice_fast_path_allows_vision(
+    *,
+    enabled_modes: Any,
+    enabled_modes_provided: bool,
+) -> bool:
+    """Whether a voice nudge may carry the session's cached screen frame.
+
+    The frontend lists ``vision`` only while the screen source is enabled.
+    A request without the field (older clients) keeps the old behavior.
+    """
+    if not enabled_modes_provided:
+        return True
+    return isinstance(enabled_modes, (list, tuple)) and "vision" in enabled_modes
+
+
 @dataclass(frozen=True, slots=True)
 class ActivityScheduleDecision:
     """Scheduling effects derived from an activity snapshot."""

@@ -649,44 +649,75 @@ HOST_RESTART_FAILED_TEXT = {
     'pt': "O NekoClaw reiniciou no meio disto, então não foi concluído.",
 }
 
-# What she is told, and the HUD shows as it is written, when a commission of
-# hers failed for a reason of the host's own rather than the task agent's
-# report: the free daily quota ran out (``quota``), the task agent could not
-# start on it (``start``), or its run stopped on an error (``run``). When the
-# error itself is known it follows as ``error`` (str.format, detail), as it
-# came, untranslated; ``error`` carries its own leading space where the
-# language puts one between sentences. The ledger keeps the English reason.
+# What she is told of a commission of hers that failed for a reason of the
+# host's own rather than the task agent's report: the familiar's model ran out
+# of quota before the familiar started on it (``quota``) or partway through
+# (``quota_run``), the familiar could not start on it (``start``), or its run
+# stopped on an error (``run``). In English, as the host tells a model what
+# happened; she tells the user in her own words. Rendered with str.format
+# (why); when the error itself is known, TASK_AGENT_FAILED_ERROR follows, the
+# error as it came. What the HUD shows is TASK_AGENT_FAILED_TEXTS.
+#
+# The two for the quota name no period, price or plan: the quota is not hers
+# to look after, and nothing she did used it up. They are not said at once
+# but kept for later (passive): in a text chat they go with the user's next
+# turn, in a voice chat into the next session the voice chat swaps to, as
+# background; until then she reads them when she asks how the task went.
+# Nothing is shown for them (the frontend has its own notice of the
+# quota). They say the quota is short for now and the task can be dispatched
+# again once it is refreshed or the user switches the familiar to another API
+# (the quota is only that of the free model), so that she goes on dispatching
+# tasks afterwards rather than take this as a reason not to, and can tell the
+# user what would help. Partway through, the familiar may have done part of it (moved
+# files, sent something): dispatched again, it is to go on from there, not do
+# that part twice.
+TASK_AGENT_FAILED_NOTICE = "This task was not finished: {why}"
+TASK_AGENT_FAILED_WHY = {
+    "quota": (
+        "the familiar's model is out of quota for now, so it did not start on it. Nothing was wrong with "
+        "the task itself or with how it was dispatched. This task can be dispatched again once the quota "
+        "is refreshed, or once the user switches the familiar to another API."
+    ),
+    "quota_run": (
+        "the familiar's model is out of quota for now; it ran out partway through, so part of it may "
+        "already be done. Nothing was wrong with the task itself or with how it was dispatched. This task "
+        "can be dispatched again once the quota is refreshed, or once the user switches the familiar to "
+        "another API; it should then go on from where it stopped rather than start over."
+    ),
+    "start": "the familiar could not start on it.",
+    "run": "the familiar stopped on an error partway through.",
+}
+TASK_AGENT_FAILED_ERROR = " Error: {detail}"
+
+# What the HUD shows, as it is written, of a commission of hers that could not
+# start (``start``) or stopped on an error (``run``); she is told
+# TASK_AGENT_FAILED_NOTICE instead. When the error itself is known it follows
+# as ``error`` (str.format, detail), as it came, untranslated; ``error``
+# carries its own leading space where the language puts one between
+# sentences. The ledger keeps the English reason.
 TASK_AGENT_FAILED_TEXTS = {
-    'zh': {"quota": "今天使魔模型的免费额度用完了，这件事没有办完。",
-           "start": "使魔没能开工。",
+    'zh': {"start": "使魔没能开工。",
            "run": "使魔办到一半出错停下了。",
            "error": "报错：{detail}"},
-    'zh-TW': {"quota": "今天使魔模型的免費額度用完了，這件事沒有辦完。",
-              "start": "使魔沒能開工。",
+    'zh-TW': {"start": "使魔沒能開工。",
               "run": "使魔辦到一半出錯停下了。",
               "error": "錯誤訊息：{detail}"},
-    'en': {"quota": "The free daily quota of the familiar's model is used up, so this was not finished.",
-           "start": "The familiar could not start on it.",
+    'en': {"start": "The familiar could not start on it.",
            "run": "The familiar stopped on an error partway through.",
            "error": " Error: {detail}"},
-    'ja': {"quota": "今日の使い魔のモデルの無料枠を使い切ったため、この用件は終わっていません。",
-           "start": "使い魔が作業を始められませんでした。",
+    'ja': {"start": "使い魔が作業を始められませんでした。",
            "run": "使い魔が途中でエラーになり止まりました。",
            "error": "エラー：{detail}"},
-    'ko': {"quota": "오늘 사역마 모델의 무료 사용량을 다 써서 이 일은 끝나지 않았습니다.",
-           "start": "사역마가 일을 시작하지 못했습니다.",
+    'ko': {"start": "사역마가 일을 시작하지 못했습니다.",
            "run": "사역마가 도중에 오류로 멈췄습니다.",
            "error": " 오류: {detail}"},
-    'ru': {"quota": "Бесплатный дневной лимит модели фамильяра исчерпан, поэтому задача не завершена.",
-           "start": "Фамильяр не смог начать работу.",
+    'ru': {"start": "Фамильяр не смог начать работу.",
            "run": "Фамильяр остановился на полпути из-за ошибки.",
            "error": " Ошибка: {detail}"},
-    'es': {"quota": "Se agotó la cuota gratuita diaria del modelo del familiar, así que esto no se terminó.",
-           "start": "El familiar no pudo empezar.",
+    'es': {"start": "El familiar no pudo empezar.",
            "run": "El familiar se detuvo a mitad por un error.",
            "error": " Error: {detail}"},
-    'pt': {"quota": "A cota gratuita diária do modelo do familiar acabou, então isto não foi concluído.",
-           "start": "O familiar não conseguiu começar.",
+    'pt': {"start": "O familiar não conseguiu começar.",
            "run": "O familiar parou no meio por um erro.",
            "error": " Erro: {detail}"},
 }
@@ -1298,8 +1329,6 @@ TASK_AGENT_COMMISSION_CANDIDATES_HEADER = (
     "Entries of the host picked for this commission, one per line with its name, what it does and "
     "its arguments. Call one with capability_call, giving its name and arguments that match its schema:"
 )
-
-TASK_AGENT_CHILD_RESULT_TEMPLATE = "[child task agent {name} finished: {status}]\n{text}"
 
 # The excerpt of the main dialogue in the message that opens a commission in
 # a session that holds nothing yet: what she and the user said just before,

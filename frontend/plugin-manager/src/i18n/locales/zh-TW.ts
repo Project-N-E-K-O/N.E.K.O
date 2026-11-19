@@ -1,6 +1,7 @@
 import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
+import { marketFeedbackMessages } from '../market-feedback'
 import { authoringMessages } from '../authoring'
 
 /**
@@ -9,6 +10,7 @@ import { authoringMessages } from '../authoring'
 export default {
   pluginConsent: pluginConsentMessages['zh-TW'],
   authoring: authoringMessages['zh-TW'],
+  marketFeedback: marketFeedbackMessages['zh-TW'],
   modelApi: modelApiMessages['zh-TW'],
   modelBindings: modelBindingsMessages['zh-TW'],
   common: {

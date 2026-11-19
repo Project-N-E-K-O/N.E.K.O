@@ -6,22 +6,29 @@ lives, and what to read before a change (this file, `DESIGN.md`, the module).
 This directory is one N.E.K.O plugin: its own Git repository and its editable
 source. `plugin.toml` holds the identity (`[plugin].id`, `[plugin].entry`; never
 rename them). The plugin already exists: do not run `neko-plugin init` again.
-Deeper guides: `.agents/skills/neko-plugin/` (start at `SKILL.md`). Inside a
-N.E.K.O checkout they call the workspace `plugin/plugins/<plugin_id>/`; read
-that as this directory.
+Deeper guides: `.agents/skills/neko-plugin/` (start at `SKILL.md`). They call
+this directory `<plugin_dir>`; inside a N.E.K.O checkout it lives at
+`plugin/plugins/<plugin_id>/`.
 
 ## Route
 
-- **A, source checkout**: a N.E.K.O checkout (a folder whose `pyproject.toml`
-  says `name = "N.E.K.O"`) is reachable: the Verify commands below already
-  point at it, or this plugin sits inside it. Check with the `check` command
-  below (or `uv run neko-plugin --help` in the checkout).
-- **B, desktop build**: no checkout (the Verify commands still show
-  `<path-to-this-directory>` and no checkout exists). The CLI does not run;
-  say so instead of guessing. The user tests with Start/Reload on the plugin
-  page, pastes errors from its Logs tab, and builds a package with Build
-  package in the Plugin studio (插件制作工作台). Only `precheck` and
-  publishing need a checkout.
+- **A, source checkout (recommended for plugin development)**: a N.E.K.O
+  checkout (a folder whose `pyproject.toml` says `name = "N.E.K.O"`) is
+  reachable: the Verify commands below already point at it, or this plugin
+  sits inside it. Check with the `check` command below (or
+  `uv run neko-plugin --help` in the checkout). Every check runs here.
+- **B, desktop build (fallback)**: no checkout (the Verify commands still show
+  `<path-to-this-directory>` and no checkout exists). The desktop app is for
+  using N.E.K.O; developing here works, but verification is limited: no
+  `neko-plugin` command runs (check, lint, sync, precheck, build), so say so
+  instead of guessing. App buttons still work (they are not the CLI):
+  Start/Reload on the plugin page, its Logs tab, and Build package in the
+  Plugin studio (插件制作工作台).
+- **Moving to A**: when Route B blocks a check, ask the user whether to set up
+  a N.E.K.O source checkout, and change nothing until they agree. It needs
+  git and uv (plus Node.js to run N.E.K.O from source), and the desktop app
+  must be fully quit before the source version starts. Steps: "Setting Up
+  Route A" in `.agents/skills/neko-plugin/references/plugin-cli-and-debugging.md`.
 
 ## Hard Constraints
 
@@ -54,6 +61,19 @@ Full reasons: `.agents/skills/neko-plugin/references/execution-boundary.md`.
   `_ctx` parameter only if you need it.
 - User-visible text (names, descriptions, UI) goes through `[plugin.i18n]`
   locale files with at least `zh-CN` and `en`.
+- Await `self.config`/`plugins`/`store`/`db` calls, `finish`, and
+  `ctx.models`/`ctx.images`. Never await `push_message`: it has already queued
+  the message and then raises `TypeError`, so a retry sends it twice.
+- `self.config` raises on failure; `plugins`/`store`/`db` return `Ok`/`Err`,
+  which are always truthy: test `.is_ok()`. `self.store` stores nothing unless
+  `[plugin.store] enabled = true`, yet `set` still returns `Ok`.
+- `push_message` targets a character only via `target_lanlan=`: keep
+  `_ctx["lanlan_name"]` from the entry (timers and threads have no `_ctx`).
+- Hook decorators (`before_entry`, `hook`, ...) never run today; `@message`
+  handlers get no host messages (only another plugin's `call_event`).
+- Routers: list them in `__routers__` and `include_router` them in `__init__`;
+  `@ui.context` works only on the main class. Hosted TSX: write
+  `props.api.call(...)`, and use `useConfirm()`, not a `confirm` prop.
 - Market: id matches `^[a-z][a-z0-9_]*$` (at most 100 characters); the
   release tag is `v<version>`; the GitHub repo is conventionally
   `n.e.k.o_plugin_<id>`. `type = "extension"` was removed
@@ -70,6 +90,8 @@ Details: `.agents/skills/neko-plugin/references/runtime-model.md`.
   cancelled when it returns; clients/locks it creates belong to a dead loop.
 - Periodic work: `@timer_interval(id=..., seconds=...)`, run in its own thread
   with a fresh loop per tick.
+- Entries time out after 10 s by default (raise `timeout=` for LLM calls);
+  calls to other plugins are capped at 60 s, with no cycle detection.
 - Reload starts a new process (memory is lost; persist with `data_path`). A
   crashed plugin is not restarted automatically.
 
@@ -123,6 +145,7 @@ All under `.agents/skills/neko-plugin/references/`:
 - Timers, startup/shutdown, background work, reload: `runtime-model.md`
 - Why a constraint exists, escalating: `execution-boundary.md`
 - `plugin.toml`, entries, routers, hooks, i18n: `core-plugin-contract.md`
-- SDK API lookup: `plugin-system-surface-map.md`
+- SDK API lookup, paths, `push_message`: `plugin-system-surface-map.md`
+- Dependencies, `vendor/`, Market rules and limits: `dependencies-and-market.md`
 - Panels and docs UI: `hosted-ui-authoring.md`, `hosted-ui-api.md`
 - Commands and tests: `plugin-cli-and-debugging.md`, `plugin-checks-and-tests.md`

@@ -1,215 +1,171 @@
 # Hosted UI API
 
-This is the public Hosted TSX API exposed by `@neko/plugin-ui`. Source of truth: `plugin/sdk/hosted-ui/index.d.ts` and `frontend/plugin-manager/src/components/plugin/hosted/ui-kit/runtime.js`.
-
-## Types
-
-```ts
-type Tone = "primary" | "success" | "warning" | "danger" | "info" | "default"
-```
-
-Use `Tone` for buttons, badges, alerts, dialogs, and action controls.
-
-```ts
-type JsonSchema = {
-  type?: string
-  title?: string
-  description?: string
-  default?: any
-  enum?: any[]
-  properties?: Record<string, JsonSchema>
-  items?: JsonSchema
-  required?: string[]
-}
-```
-
-Used by plugin entries/actions and config/state schemas.
-
-```ts
-type HostedAction = {
-  id: string
-  entry_id?: string
-  label?: string
-  description?: string
-  input_schema?: JsonSchema
-  icon?: string | null
-  tone?: Tone
-  group?: string | null
-  order?: number
-  confirm?: boolean | string
-  refresh_context?: boolean
-}
-```
-
-Action metadata produced by Python `@ui.action` plus `@plugin_entry`.
-
-```ts
-type HostedApi = {
-  call: (actionId: string, args?: Record<string, any>, options?: { timeoutMs?: number }) => Promise<any>
-  refresh: () => Promise<any>
-}
-```
-
-Bridge to the Plugin Manager host. `call` invokes an authorized UI action; `refresh` reloads context and re-renders the surface.
-
-```ts
-type PluginSurfaceProps<State = Record<string, any>> = {
-  plugin: Record<string, any>
-  surface: Record<string, any>
-  state: State
-  stateSchema?: JsonSchema | null
-  actions: HostedAction[]
-  entries: Array<Record<string, any>>
-  config?: { schema: JsonSchema; value: Record<string, any>; readonly?: boolean }
-  warnings: Array<{ path: string; code: string; message: string }>
-  locale: string
-  t: (source: string, params?: Record<string, any>) => string
-  i18n: { locale: string; default_locale?: string; messages?: Record<string, Record<string, string>> }
-  api: HostedApi
-  useLocalState: <T>(key: string, initialValue: T | (() => T)) => [T, (next: T | ((previous: T) => T)) => T]
-}
-```
-
-Default export components receive this object. `config` is present only when the surface has permission to read plugin config; always handle it as optional.
-
-## Layout Components
-
-- `Page({ title?, subtitle?, children?, className? })`: page wrapper with optional header.
-- `Card({ title?, children?, className? })`: section card with optional title and body.
-- `Section({ children?, className? })`: unframed section wrapper.
-- `Heading({ as?, children?, className? })`: heading element, defaults to `h2`.
-- `Stack({ gap?, children?, className? })`: vertical stack. `gap` is pixels.
-- `Grid({ cols?, gap?, children?, className? })`: grid layout. `cols` defaults to 2.
-- `Divider()`: horizontal divider.
-- `Toolbar({ children?, className? })`: toolbar container.
-- `ToolbarGroup({ children?, className? })`: grouped toolbar controls.
-
-## Text And Status
-
-- `Text({ children?, className? })`: paragraph text.
-- `StatusBadge({ tone?, status?, label?, children?, className? })`: small badge. Tone uses `tone` or `status`.
-- `StatCard({ label?, value?, className? })`: metric card.
-- `KeyValue({ data?, items?, children?, className? })`: key/value rows. `items` entries use `{ key?, label?, value? }`.
-- `Alert({ tone?, message?, children?, className? })`: inline alert.
-- `InlineError({ title?, message?, error?, details?, children?, className? })`: formatted error block.
-- `EmptyState({ title?, description?, children?, className? })`: empty placeholder.
-- `Progress({ label?, value?, className? })`: percentage bar clamped to 0-100.
-- `JsonView({ data?, value?, className? })`: JSON pretty printer using `CodeBlock`.
-
-## Data Display
-
-```ts
-type DataTableColumn<T> =
-  | string
-  | { key: keyof T | string; label?: any; render?: (row: T, index: number) => any }
-```
-
-`DataTable<T>({ data?, columns?, rowKey?, selectedKey?, emptyText?, maxRows?, onSelect?, className? })`
-
-- `data` defaults to `[]`.
-- `columns` defaults to object keys from the first row.
-- `rowKey` identifies rows for selection styling.
-- `selectedKey` applies selected styling when it matches the row key.
-- `maxRows` truncates displayed rows.
-- `onSelect(row, index)` fires when a row is clicked.
-- Boolean cells render as `StatusBadge`.
-- `render(row, index)` customizes a cell and is wrapped with runtime error reporting.
-
-`List<T>({ items?, render?, children?, className? })`
-
-- With `children`, renders children directly.
-- Otherwise maps `items`; `render(item, index)` customizes each row.
-
-## Form Controls
-
-- `Field({ label?, help?, error?, required?, children?, className? })`: label/help/error wrapper.
-- `Input({ value?, placeholder?, invalid?, error?, onChange?, className? })`: text input. `onChange(value: string)`.
-- `Textarea({ value?, placeholder?, invalid?, error?, onChange?, className? })`: multiline input. `onChange(value: string)`.
-- `Select({ value?, options?, invalid?, error?, onChange?, className? })`: select input. `options` are strings or `{ value, label? }`.
-- `Switch({ checked?, label?, invalid?, error?, onChange?, children?, className? })`: checkbox-style boolean control.
-- `Form({ onSubmit?, children?, className? })`: prevents default submit and invokes `onSubmit(event)`.
-
-Input and Textarea preserve composition state for IME text entry.
-
-## Buttons And Actions
-
-- `Button({ tone?, variant?, type?, disabled?, onClick?, children?, className? })`: basic button. `variant` aliases `tone`.
-- `ButtonGroup({ children?, className? })`: grouped buttons.
-- `ActionButton({ action?, actionId?, label?, tone?, values?, args?, refresh?, confirm?, onResult?, onError?, children?, className? })`: calls a Hosted UI action.
-  - `action` is a `HostedAction`; otherwise pass `actionId`.
-  - Sends `values` or `args`.
-  - Confirms with `window.confirm` when `confirm` or action `confirm` is set.
-  - Refreshes context unless action `refresh_context === false` or prop `refresh === false`.
-- `RefreshButton({ label?, tone?, onRefresh?, onError?, children?, className? })`: calls `api.refresh()`.
-- `ActionForm({ action?, submitLabel?, successMessage?, onResult?, onError?, children?, className? })`: builds a form from `action.input_schema`.
-  - Supports enum -> `Select`, boolean -> `Switch`, object/array -> `Textarea`, everything else -> `Input`.
-  - Performs shallow required/type/enum validation before call.
-  - Calls `api.call(action.entry_id || action.id, values)`.
-
-## Dialogs, Errors, And Feedback
-
-- `Modal({ open?, title?, footer?, closeOnBackdrop?, onClose?, children?, className? })`: modal dialog. Escape calls `onClose`.
-- `ConfirmDialog({ open?, title?, message?, tone?, confirmLabel?, cancelLabel?, closeOnBackdrop?, onConfirm?, onCancel?, children?, className? })`: modal confirm wrapper.
-- `ErrorBoundary({ fallback?, title?, children? })`: catches render errors in child components.
-  - `fallback` can be a node or `(error, reset) => node`.
-- `showToast(message, options?)`: shows a toast and returns a cleanup function. `options` can be `{ tone?, timeout? }` or a `Tone`.
-- `useToast()`: returns `{ show, info, success, warning, error }`.
-- `useConfirm()`: returns an async confirm function accepting a string or `{ title?, message?, tone?, confirmLabel?, cancelLabel? }`.
-- `AsyncBlock<T>({ load, deps?, fallback?, loadingText?, error?, errorTitle?, children?, className? })`: runs `load()` with `useAsync` semantics and renders loading/error/data states.
-  - `fallback` renders while loading.
-  - `error` can be a node or `(error, reload) => node`.
-  - Use this for small UI-local async reads; prefer Python `@ui.context` for primary plugin state.
-
-## Documentation Helpers
-
-- `CodeBlock({ children?, className? })`: preformatted block.
-- `Tip({ children?, className? })`: informational callout.
-- `Warning({ children?, className? })`: warning callout.
-- `Steps({ children?, className? })`: step list wrapper.
-- `Step({ index?, title?, children?, className? })`: individual step.
-- `Tabs({ id?, activeId?, items?, onChange?, children?, className? })`: tabs.
-  - `items` entries use `{ id?, label?, title?, content? }`.
-  - Active tab is persisted with `useLocalState("tabs:<id>")`.
-  - If `children` is present, children are used as the panel content.
-
-## Hooks
-
-These hooks are implemented by the hosted runtime, not React.
-
-- `useState<T>(initialValue)`: local component state.
-- `useReducer<S, A>(reducer, initialArg, init?)`: reducer state.
-- `useEffect(effect, deps?)`: effect after render; cleanup runs on dependency changes/unmount.
-- `useLayoutEffect(effect, deps?)`: currently aliases `useEffect`; do not depend on React layout timing.
-- `useMemo<T>(factory, deps?)`: memoized value.
-- `useCallback<T>(callback, deps?)`: memoized function.
-- `useRef<T>(initialValue)`: stable `{ current }` object.
-- `useLocalState<T>(key, initialValue)`: iframe-local state keyed by string and retained across context refreshes while the iframe lives.
-- `useDebounce<T>(value, delay?)`: debounced value.
-- `useDebouncedState<T>(initialValue, delay?)`: `[value, setValue, debouncedValue]`.
-- `useForm<T>(initialValues)`: returns `{ values, setValues, setField, field, checkbox, reset }`.
-- `useAsync<T>(loader, deps?)`: returns `{ loading, error, data, reload }`.
-- `useI18n()`: returns `{ t, locale }`.
-
-`useForm` helpers:
-
-- `setField(name, value)` updates one field.
-- `field(name)` returns `{ value, onChange }` for `Input`, `Select`, or `Textarea`.
-- `checkbox(name)` returns `{ checked, onChange }` for `Switch`.
-- `reset(next?)` resets to initial values or the supplied values.
-
-## Low-Level Runtime
-
-- `h(type, props, ...children)`: create a virtual node.
-- `Fragment`: fragment marker.
-- `render(vnode, container)`: render into a DOM element.
-
-Most plugin TSX files should not call these directly; JSX compiles to `h(...)` automatically.
-
-## Import Pattern
+The public Hosted TSX API of the virtual module `@neko/plugin-ui`. Source of
+truth: [index.d.ts](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/plugin/sdk/hosted-ui/index.d.ts)
+(behaviour: [runtime.js](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/frontend/plugin-manager/src/components/plugin/hosted/ui-kit/runtime.js)).
+If a name is not listed in `index.d.ts`, it does not exist: do not guess
+props from React or other UI kits.
 
 ```tsx
 import { Page, Card, Button, useState } from "@neko/plugin-ui"
 import type { PluginSurfaceProps, HostedAction } from "@neko/plugin-ui"
 ```
 
-Avoid importing from runtime implementation files. The virtual module `@neko/plugin-ui` is the stable authoring surface.
+Every component accepts `CommonProps`: `{ key?, className?, children? }`.
+
+## Surface Props
+
+```ts
+type PluginSurfaceProps<State = Record<string, any>> = {
+  plugin: Record<string, any>
+  host?: { origin?: string }
+  surface: Record<string, any>
+  state: State                      // returned by @ui.context
+  stateSchema?: JsonSchema | null
+  actions: HostedAction[]           // entries exposed by @ui.action
+  entries: Array<Record<string, any>>
+  config: { schema: JsonSchema; value: Record<string, any>; readonly?: boolean }
+  warnings: Array<{ path: string; code: string; message: string }>
+  locale: string
+  t: (source: string, params?: Record<string, any>) => string
+  i18n: HostedI18n                  // { locale, default_locale?, messages? }
+  api: HostedApi
+  useLocalState: <T>(key: string, initialValue: T | (() => T)) => [T, LocalStateSetter<T>]
+}
+```
+
+The default export receives this object. Without `config:read`, `config` is
+an empty read-only placeholder; without `action:call`, `actions` is empty.
+
+## Host Bridge: `HostedApi`
+
+```ts
+type HostedApi = {
+  call: (actionId: string, args?: Record<string, any>,
+         options?: { timeoutMs?: number; signal?: AbortSignal; userInitiated?: boolean }) => Promise<any>
+  parseDocument: (file: File, options?: { timeoutMs?: number; signal?: AbortSignal }) => Promise<ParsedHostedDocument>
+  refresh: () => Promise<any>
+  display: PluginDisplayApi
+}
+```
+
+- `call`: runs a `@ui.action` entry. Needs `action:call`, a running plugin.
+  It rejects on failure: 409 when the plugin is not running, 403 when the
+  entry is not a UI action or `action:call` is missing, 404 when the surface
+  or entry is unknown, 500 when the entry failed. The wait is the shorter of
+  `timeoutMs` (default 30 s) and the entry's own timeout. After an `await`
+  the click no longer counts as a user action; pass `userInitiated: true` for
+  a call the user started.
+- `parseDocument`: text and metadata from a user-selected PDF/DOCX
+  (`ParsedHostedDocument`: `name`, `sourceType`, `mime`, `originalSize`,
+  `chars`, `encoding`, `truncated`, `content`, `meta?`). Needs the
+  `document:parse` permission and must be called directly from a user event
+  handler (change, click, drop) or right after a `useConfirm()` the user
+  accepted; `userInitiated` does not apply here, later calls are rejected.
+- `refresh`: reloads `@ui.context` state and re-renders.
+- `display`: `getState()`, `requestMode("focus" | "fullscreen")`, `exit()`,
+  `onStateChange(listener)` (returns an unsubscribe function). Requests
+  resolve to `{ status, state, reason? }` with `status` one of `applied`,
+  `declined`, `unsupported`, `cancelled`, `busy`, `failed`; the host asks the
+  user to confirm.
+
+## Shared Types
+
+```ts
+type Tone = "primary" | "success" | "warning" | "danger" | "info" | "default"
+type JsonSchema = { type?; title?; description?; default?; enum?; properties?; items?; required? }
+type HostedAction = { id: string; entry_id?; label?; description?; input_schema?: JsonSchema;
+                      icon?; tone?: Tone; group?; order?; confirm?: boolean | string; refresh_context?: boolean }
+type UiOption = string | { value: any; label?: any; title?: any; disabled?: boolean }
+type DataTableColumn<T> = string | { key: keyof T | string; label?: any; render?: (row: T, index: number) => any }
+```
+
+Also exported: `HostedI18n`, `RefObject`, `StateSetter`, `LocalStateSetter`,
+`ElementSize`, `ClipboardState`, `AsyncState`, `FormState`, `FormErrors`,
+`FormTouched`, `ToastOptions`, `ToastApi`, `ToastPromiseMessages`,
+`UploadedFileInfo`, `ArtifactType`, `ArtifactView`, `ArtifactLike`,
+`NormalizedArtifact`, `PluginDisplay*`, `ParsedHostedDocument`,
+`CommonProps`. Import them with `import type`.
+
+## Layout
+
+- `Page({ title?, subtitle? })`, `Card({ title? })`, `Section`, `Heading({ as? })` (default `h2`), `Divider()`
+- `Container({ maxWidth?, width?, padding? })`
+- `Stack({ gap? })` (vertical), `Inline({ gap?, align?, justify?, wrap? })` (horizontal)
+- `Grid({ cols?, gap? })` (`cols` defaults to 2), `Columns({ cols? | columns?, minWidth? | minColumnWidth?, gap?, fluid? })`
+- `Split({ ratio?, template?, direction?, gap?, align? })`
+- `ScrollArea({ height?, maxHeight?, minHeight?, padding?, axis?, autoScroll?, deps?, scrollBehavior? })`
+- `Toolbar`, `ToolbarGroup`, `Accordion({ id?, title? | label?, open? })`, `Tooltip({ content? | label? | title?, placement? })`
+- `Tabs({ id?, activeId?, items?, onChange? })`: `items` are `{ id?, label?, title?, content? }`; the active tab persists via `useLocalState("tabs:<id>")`; with `children`, children are the panel content.
+
+## Text and Status
+
+- `Text`, `TextBlock({ text? | value? })`, `CodeBlock`, `Tip`, `Warning`, `Steps`, `Step({ index?, title? })`
+- `Markdown({ source? | text? })`: styled preformatted text; it does **not** parse Markdown into HTML.
+- `StatusBadge({ tone?, status?, label? })`, `StatCard({ label?, value? })`
+- `KeyValue({ data?, items? })` (`items`: `{ key?, label?, value? }`)
+- `Progress({ label?, value?, indeterminate? })` (value clamped to 0-100)
+- `Alert({ tone?, message? })`, `InlineError({ title?, message?, error?, details? })`, `EmptyState({ title?, description? })`
+- `JsonView({ data? | value? })`, `LogViewer({ text? | value?, autoScroll?, deps?, scrollBehavior? })`, `JsonEditorLite({ value? | data?, mode?, onChange? })`
+
+## Data
+
+- `DataTable<T>({ data?, columns?, rowKey?, selectedKey?, emptyText?, maxRows?, onSelect? })`: columns default to the first row's keys; boolean cells render as `StatusBadge`; `render(row, index)` customizes a cell; `onSelect(row, index)` on click.
+- `List<T>({ items?, render? })`: with `children`, renders them directly.
+- `Gallery<T>({ items?, columns? | cols?, emptyText?, onSelect? })`
+
+## Media and Artifacts
+
+- Upload: `ImageUpload`, `AudioUpload`, `VideoUpload` (`{ value?, label?, placeholder?, accept?, maxBytes?, compact?, variant?, onChange?(artifact), onError? }`; `ImageUpload` also `alt?`). They hand you an `ArtifactLike`; send it to Python with an action.
+- Show: `ImagePreview`, `AudioPlayer`, `VideoPlayer` (`{ artifact? | src? | value?, label?, caption?, emptyText? }` plus `alt?` / `controls?`, `preload?`, `poster?`)
+- `FileDownload({ href? | url? | dataUrl? | path?, filename?, label?, copiedLabel?, tone?, target?, openExternal? })`
+- `ArtifactRenderer({ artifact? | item? | value?, render? })`, `ArtifactCard({ ..., label?, renderArtifact? })`, `ArtifactList({ items?, layout?, empty?, emptyText?, cardClassName?, renderArtifact? })`
+- Helpers: `normalizeArtifact(value)`, `detectArtifactType(value)` (`image`, `audio`, `video`, `text`, `json`, `file`, `unknown`)
+
+## Forms and Controls
+
+- `Form({ onSubmit? })` (prevents the default submit), `FormSection({ title?, description? })`, `FormActions({ align? })`
+- `Field({ label?, help?, error?, required? })`
+- `Input({ type?, value?, placeholder?, min?, max?, step?, invalid?, error?, disabled?, onChange?(string) })`, `PasswordInput`, `Textarea` (same shape, string values)
+- `NumberInput({ value?, min?, max?, step?, onChange?(number | string), ... })`, `Slider({ value?, min?, max?, step?, showValue?, onChange?(number) })`
+- `Select({ value?, options?: UiOption[], onChange? })`, `RadioGroup({ name?, value?, options?, onChange? })`, `SegmentedControl({ value?, options?, onChange? })`
+- `Switch({ checked?, label?, onChange?(boolean) })`, `Checkbox({ checked? | value?, label?, onChange?(boolean) })`, `CheckboxGroup({ value?: any[], options?, onChange?(any[]) })`
+
+Inputs keep IME composition state. All controls take `disabled?`; text
+controls also `invalid?` and `error?`.
+
+## Buttons and Actions
+
+- `Button({ tone?, variant?, type?, disabled?, onClick? })` (`variant` aliases `tone`), `ButtonGroup`
+- `ActionButton({ action? | actionId?, label?, tone?, values? | args?, refresh?, confirm?, onResult?, onError? })`: calls an action; when `confirm` or the action's `confirm` is set it asks via `window.confirm`, which the sandbox blocks, so the click silently does nothing (ask with `useConfirm()` instead); refreshes context unless `refresh === false` or the action has `refresh_context: false`.
+- `ActionForm({ action?, submitLabel?, successMessage?, onResult?, onError? })`: a form built from `action.input_schema` (enum → `Select`, boolean → `Switch`, object/array → `Textarea`, else `Input`) with shallow required/type/enum checks.
+- `RefreshButton({ label?, tone?, onRefresh?, onError? })`: calls `api.refresh()`.
+- `AsyncBlock<T>({ load, deps?, fallback?, loadingText?, error?, errorTitle? })`: small UI-local async reads; primary state belongs in `@ui.context`.
+
+## Dialogs and Feedback
+
+- `Modal({ open?, title?, footer?, closeOnBackdrop?, closeOnEscape?, lockScroll?, size?, onClose? })`
+- `ConfirmDialog({ open?, title?, message?, tone?, confirmLabel?, cancelLabel?, closeOnBackdrop?, onConfirm?, onCancel? })`
+- `ErrorBoundary({ fallback?, title? })`: `fallback` is a node or `(error, reset) => node`.
+- `showToast(message, options? | tone)` returns a dismiss function; `showToast.promise(promise, messages?, options?)`.
+- `useToast()`: `{ show, info, success, warning, error, promise }`.
+- `useConfirm()`: `await confirm("text" | { title?, message?, tone?, confirmLabel?, cancelLabel? })` → `boolean`.
+
+## Hooks
+
+Implemented by the hosted runtime, not React.
+
+- `useState`, `useReducer`, `useEffect`, `useMemo`, `useCallback`, `useRef`
+- `useLayoutEffect`: same timing as `useEffect`; do not rely on pre-paint.
+- `useLocalState(key, initial)`: state kept across context refreshes while the iframe lives.
+- `useDebounce(value, delay?)`, `useDebouncedState(initial, delay?)` → `[value, setValue, debounced]`
+- `useAsync(loader, deps?)` → `{ loading, error, data, reload }`
+- `useForm(initialValues, { validate? }?)` → `values`, `setValues`, `setField`, `field(name)` (`{ value, onChange, onBlur, error, touched }`), `checkbox(name)`, `reset`, `touched`, `errors`, `setError`, `clearError`, `dirty`, `submitCount`, `validate`, `handleSubmit(onValid, onInvalid?)`
+- `useElementSize(ref)` → `{ width, height }`; `useScrollIntoView(ref, defaults?)`; `useScrollToBottom(ref, deps?, { enabled?, behavior? }?)`
+- `useClipboard()` → `{ write, read, copied, error }`
+- `useI18n()` → `{ t, locale }`
+
+## Low-Level Runtime
+
+`h(type, props, ...children)`, `Fragment`, `render(vnode, container)`. JSX
+compiles to `h(...)`; plugin code rarely calls these.
