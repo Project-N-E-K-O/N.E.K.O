@@ -4088,8 +4088,10 @@ class TaskAgentManager:
         change, so a crash in between cannot leave a finished commission
         that is never reported. A parent task agent is told after the change.
         ``text`` is what she, or the parent, is told; ``shown``, what the
-        HUD shows instead, when that differs. ``quiet``: she is told with
-        her next turn rather than woken for it, and nothing is shown.
+        HUD shows instead, when that differs. ``quiet``: she is not woken
+        for it but told later (passive: with the user's next turn in a text
+        chat, at the next session swap in a voice chat), and nothing is
+        shown.
         Returns whether the change was made.
 
         ``unless`` is asked once the commission is read, which may take a

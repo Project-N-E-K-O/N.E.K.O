@@ -660,8 +660,11 @@ HOST_RESTART_FAILED_TEXT = {
 #
 # The two for the quota name no period, price or plan: the quota is not hers
 # to look after, and nothing she did used it up. They are not said at once
-# but with her next turn, and nothing is shown for them (the frontend has its
-# own notice of the quota). They say the task can be dispatched again later,
+# but kept for later (passive): in a text chat they go with the user's next
+# turn, in a voice chat into the next session the voice chat swaps to, as
+# background; until then she reads them when she asks how the task went.
+# Nothing is shown for them (the frontend has its own notice of the
+# quota). They say the task can be dispatched again later,
 # so that she goes on dispatching tasks afterwards rather than take this as a
 # reason not to. Partway through, the familiar may have done part of it (moved
 # files, sent something): dispatched again, it is to go on from there, not do

@@ -1158,7 +1158,8 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     (report,) = await outbox(host, "task_result")
     assert (report.payload["status"], report.payload["success"]) == ("failed", False)
     # She is told in English, as a model is told what happened, whatever her dialogue's
-    # language. Not at once: with her next turn, so she says nothing of her own for it; and
+    # language. Not at once but later (passive: the user's next turn in a text chat, the next
+    # session swap in a voice chat), so she says nothing of her own for it; and
     # nothing is shown, neither on the HUD nor in the chat (the frontend has its own notice
     # of the quota).
     said = TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota"])
@@ -1225,7 +1226,7 @@ async def test_the_main_server_takes_a_quota_failure_without_waking_her_or_showi
     ]
     mgr.render_chat_blocks.assert_not_called()
     if quota:
-        # Kept for her next turn: she is not woken for it, and nothing is shown.
+        # Kept for later (passive): she is not woken for it, and nothing is shown.
         ((callback,), _) = mgr.enqueue_agent_callback.call_args
         assert callback["summary"] == TASK_AGENT_FAILED_NOTICE.format(why=TASK_AGENT_FAILED_WHY["quota"])
         mgr.submit_proactive_callback.assert_not_called()
