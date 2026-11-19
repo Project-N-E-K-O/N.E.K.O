@@ -875,3 +875,60 @@ async def test_a_background_task_whose_owner_is_unknown_yet_blocks_lifecycle_cha
         release.set()
         work.set()
         await asyncio.gather(task)
+
+
+# -- _exit_flow cancellation (issue #3792) --
+
+
+def _exit_flow_stub(*, shutdown_started: bool):
+    """Bare object carrying just what ``VisitRuntime._exit_flow`` touches; the exit steps block until cancelled."""
+    from types import SimpleNamespace
+
+    calls: list[str] = []
+    entered = asyncio.Event()
+
+    async def exit_steps(reason):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def finish_files(reason):
+        calls.append("finish_files")
+
+    async def teardown_():
+        calls.append("teardown")
+
+    stub = SimpleNamespace(
+        finalize_reason="route_end",
+        visit_id="abcdef123456",
+        _shutdown_started=shutdown_started,
+        _files_done=False,
+        _handback_started=False,
+        handoff=None,
+        _exit_steps=exit_steps,
+        _finish_files=finish_files,
+        _start_handback=lambda: calls.append("handback"),
+        _teardown=teardown_,
+    )
+    return stub, calls, entered
+
+
+async def test_cancelling_the_exit_flow_during_shutdown_propagates_and_skips_cleanup():
+    stub, calls, entered = _exit_flow_stub(shutdown_started=False)
+    task = asyncio.ensure_future(rtm.VisitRuntime._exit_flow(stub))
+    await asyncio.wait_for(entered.wait(), 1)
+    stub._shutdown_started = True                          # shutdown() sets the flag before cancelling the exit task.
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert calls == []                                     # shutdown() owns the file-first teardown.
+
+
+async def test_cancelling_the_exit_flow_outside_shutdown_still_runs_cleanup():
+    stub, calls, entered = _exit_flow_stub(shutdown_started=False)
+    task = asyncio.ensure_future(rtm.VisitRuntime._exit_flow(stub))
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert calls == ["finish_files", "handback", "teardown"]
