@@ -98,13 +98,13 @@ async def test_note_lesson_and_web_search_go_through_the_host(tmp_path: Path) ->
         tmp_path,
         HostCallbacks(note_lesson=_recording(None, lessons), web_search=_recording(results, searches)),
         [
-            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson"}, "c1", index=0),
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "confidence": "observed", "evidence": ["uv.lock", " "]}, "c1", index=0),
             call("web_search", {"queries": ["python 3.11 taskgroup", "python 3.11 taskgroup"]}, "c2", index=1),
             finish("tool_calls"),
         ],
     )
     assert lessons == [
-        ("s1", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "scope": "project"})
+        ("s1", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson", "scope": "project", "confidence": "observed", "evidence": ["uv.lock"]})
     ]
     assert searches == [("s1", {"queries": ["python 3.11 taskgroup"]})]  # duplicates removed
     lesson_end, search_end = events.of("tool_end")
@@ -349,6 +349,59 @@ async def test_the_web_fetch_tool_reports_failures_to_the_model(tmp_path: Path) 
         await session.close()
 
 
+async def test_a_lesson_whose_way_of_being_known_is_none_of_the_three_is_turned_down(tmp_path: Path) -> None:
+    lessons: list = []
+
+    events, _llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock.", "category": "lesson", "confidence": "certain"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is True and "confidence must be one of" in end["text"] and lessons == []
+
+
+async def test_a_lesson_with_no_title_is_turned_down_as_ever(tmp_path: Path) -> None:
+    lessons: list = []
+
+    events, _llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"content": "Read uv.lock before adding a dependency.", "category": "lesson", "confidence": "verified"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is True and "missing required title" in end["text"] and lessons == []
+
+
+async def test_a_lesson_that_says_nothing_of_how_it_is_known_is_turned_down(tmp_path: Path) -> None:
+    from config.prompts.prompts_nekoclaw_tools import NEKOCLAW_TOOL_SCHEMAS
+
+    # The model is told it is required.
+    assert "confidence" in NEKOCLAW_TOOL_SCHEMAS["note_lesson"]["parameters"]["required"]
+    lessons: list = []
+
+    events, llm = await _run(
+        tmp_path,
+        HostCallbacks(note_lesson=_recording(None, lessons)),
+        [
+            call("note_lesson", {"title": "Check the lock file", "content": "Read uv.lock before adding a dependency.", "category": "lesson"}, "c1"),
+            finish("tool_calls"),
+        ],
+    )
+
+    told = {tool["function"]["name"]: tool["function"]["parameters"] for tool in llm.overrides[0]["tools"]}
+    assert "confidence" in told["note_lesson"]["required"]
+    # And a call that leaves it out is turned down before the host hears of it.
+    end = events.of("tool_end")[0]
+    assert end["is_error"] is True and "missing required confidence" in end["text"] and lessons == []
 # ---------------------------------------------------------------------------
 # Other sessions and wakes
 # ---------------------------------------------------------------------------

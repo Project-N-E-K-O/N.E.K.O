@@ -926,8 +926,10 @@ NEKOCLAW_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             'Submit one lesson worth keeping for future commissions: a correction or approval '
             'from the user, a reusable finding, a reflection on what went wrong, a pointer to a '
             'resource, or project progress. Record only what would change how a later commission '
-            'is carried out; do not record what the files themselves already state. The host '
-            'stores the lesson; this call writes no file itself.'
+            'is carried out; do not record what the files themselves already state. Say how you '
+            'know it and which files show it: a lesson that is inferred, or observed with no '
+            'file that exists, takes effect only once another commission finds the same. The '
+            'host stores the lesson; this call writes no file itself.'
         ),
         'parameters': {
             'type': 'object',
@@ -960,8 +962,26 @@ NEKOCLAW_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
                     ),
                     'enum': ['project', 'global'],
                 },
+                'confidence': {
+                    'type': 'string',
+                    'description': (
+                        'verified (you checked it yourself in this commission) | observed '
+                        '(seen, not checked) | inferred (your own conclusion).'
+                    ),
+                    'enum': ['verified', 'observed', 'inferred'],
+                },
+                'evidence': {
+                    'type': 'array',
+                    'description': (
+                        'Files that show it, as paths relative to the working directory; only '
+                        'files that exist count.'
+                    ),
+                    'items': {
+                        'type': 'string',
+                    },
+                },
             },
-            'required': ['title', 'content', 'category'],
+            'required': ['title', 'content', 'category', 'confidence'],
         },
     },
     'report': {

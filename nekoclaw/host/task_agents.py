@@ -862,6 +862,9 @@ class TaskAgentManager:
         # start with nothing from earlier commissions and lessons stay in
         # the ledger.
         self._space = space
+        # How many looks for the files a repository keeps for agents have
+        # not come back yet (``_repository_documents``).
+        self._document_scans = 0
         # ``nekoclaw.host.leases.BuiltinLeases``: who occupies the desktop and
         # the browser. A commission lets go of them when its run is over.
         self._leases = leases
@@ -1567,7 +1570,15 @@ class TaskAgentManager:
             ]
         )
 
-    async def _opening(self, commission: Commission, *, cleared: bool, back: bool = False, excerpt: str = "") -> str:
+    async def _opening(
+        self,
+        commission: Commission,
+        *,
+        cleared: bool,
+        back: bool = False,
+        excerpt: str = "",
+        documents: str = "",
+    ) -> str:
         """Return the message that opens a commission in its session.
 
         What was dispatched and what the user said; which earlier commission
@@ -1582,6 +1593,11 @@ class TaskAgentManager:
         worked on others since. ``excerpt`` is what was said in the main
         dialogue just before the commission (``_excerpt``), for a session
         that holds nothing to tell what the commission refers to.
+        ``documents`` is the list of the files the repository it works in
+        keeps for agents (``_repository_documents``), empty for none: said
+        with every commission, since what was said in the session before
+        is summed up in time and the message that opens the commission
+        under way is what is kept.
 
         What a task agent hands to one it starts is not cut: it is all that
         one is told of its part, and the task agent that wrote it is told
@@ -1640,6 +1656,8 @@ class TaskAgentManager:
         picked = await self._picked_entries(commission)
         if picked:
             opening += "\n\n" + picked
+        if documents:
+            opening += "\n\n" + documents
         language = _REPLY_LANGUAGES.get(commission.lang or "", None)
         if language:
             # Said here, with every commission, and nowhere else: a session's
@@ -1733,6 +1751,90 @@ class TaskAgentManager:
             raise
         except Exception:  # noqa: BLE001 - it starts without what was kept
             logger.warning("reading the task agent space for a task agent failed", exc_info=True)
+            return ""
+
+    async def _repository_documents(self, workdir: str, session_dir: str | None = None) -> str:
+        """Return the list of the files the repository a task agent works in keeps for agents; empty when it has none.
+
+        A list and nothing more: names and sizes, with a sentence that says
+        they are reference material and not instructions (``repo_docs``).
+        The host reads none of them. Looked for in a worker thread, since
+        it reads the file system; a folder that cannot be looked at does
+        not keep a task agent from starting.
+
+        In a directory of the host's own (the one a commission is given
+        that names none) only that directory is looked at, not what lies
+        above it: see ``repo_docs.listing``. Such a directory is below
+        the folder the host keeps its data in, or among the sessions
+        where this commission's session is kept (``session_dir``): the
+        folder for the data may have been changed since the commission
+        was first taken up, and its session and working directory stayed
+        where they were (``_session_dir_of``). A task agent started by
+        another works inside that one's directory, among the same
+        sessions.
+
+        Waited for no longer than ``REPO_DOCUMENTS_SCAN_SECONDS``: a folder
+        on a network share that does not answer would keep the commission
+        from starting, at work by its status and with nothing done. Past
+        that the task agent starts without the list. The look itself
+        cannot be stopped. It is made in a thread of its own
+        (``run_detached``), which the host does not wait for when it
+        exits and which is none of the threads its other file work is
+        done in; and no more than ``REPO_DOCUMENTS_SCANS_AT_ONCE`` are
+        under way: with that many out, the next task agent starts
+        without the list at once.
+        """
+        from pathlib import Path
+
+        from config.nekoclaw_settings import REPO_DOCUMENTS_SCAN_SECONDS, REPO_DOCUMENTS_SCANS_AT_ONCE
+        from nekoclaw.host import repo_docs
+        from nekoclaw.host.detached import NoThread, run_detached
+        from nekoclaw.runtime.permissions import is_inside
+
+        def look() -> str:
+            places = [self._paths.root()]
+            if session_dir:
+                # ``.../sessions/<commission>``: the sessions of its project.
+                places.append(Path(session_dir).parent)
+            own = False
+            for place in places:
+                try:
+                    own = own or is_inside(Path(workdir), place)
+                except (OSError, ValueError):
+                    continue
+            return repo_docs.listing(workdir, upward=not own)
+
+        if self._document_scans >= REPO_DOCUMENTS_SCANS_AT_ONCE:
+            logger.warning("looks for the files a repository keeps for agents have not come back; none is started")
+            return ""
+
+        def back(done: asyncio.Future[str]) -> None:
+            self._document_scans -= 1
+            if not done.cancelled() and done.exception() is not None:
+                # Told here when nobody waits for it any more.
+                logger.warning(
+                    "listing the files a repository keeps for agents failed (%s)", type(done.exception()).__name__
+                )
+
+        self._document_scans += 1
+        try:
+            scan = run_detached(look, name="nekoclaw-repo-documents")
+        except NoThread:
+            # No thread could be started for it: nothing is under way.
+            self._document_scans -= 1
+            logger.warning("no thread could be started to list the files a repository keeps for agents")
+            return ""
+        scan.add_done_callback(back)
+        try:
+            # Shielded: the look goes on in its thread whoever stops waiting
+            # for it, and is counted until it comes back.
+            return await asyncio.wait_for(asyncio.shield(scan), REPO_DOCUMENTS_SCAN_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("listing the files a repository keeps for agents took too long; it starts without the list")
+            return ""
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it starts without the list
             return ""
 
     async def _use_project(self, commission: Commission) -> None:
@@ -1952,21 +2054,7 @@ class TaskAgentManager:
             # commission, for one that has none there (never begun, removed
             # since, or in the other runtime), and for the first of these
             # when the session was at another commission since.
-            # A session that holds nothing in the runtime that takes the
-            # commission (the second wording) is told, besides, what she
-            # and the user said just before it: a session with something
-            # in it has that to tell what the commission refers to.
-            excerpt_as_of = self._times_dropped(commission)
-            excerpt = self._excerpt(commission)
-            onward = await self._opening(commission, cleared=False)
-            anew = (
-                await self._opening(commission, cleared=True, excerpt=excerpt)
-                if commission.continues or excerpt
-                else onward
-            )
-            back_at_it = await self._opening(commission, cleared=False, back=True) if opened and not at_it else onward
-
-            def first_message(runtime_name: str) -> tuple[str, bool]:
+            def opens_in(runtime_name: str) -> bool:
                 # The commission is opened when it starts, and again when it
                 # is taken up where its opening message is not: it never
                 # reached the session (the start failed before the session
@@ -1978,8 +2066,34 @@ class TaskAgentManager:
                 # keeps this message, not the other one's, through a summary.
                 # Otherwise it goes on from what the session holds, with
                 # what it is told now.
+                return prompt is None or not opened or begun_in != runtime_name or not at_it
+
+            # With each of them, what the repository it works in keeps for
+            # agents: looked for once, where the session works. Not looked
+            # for when none of them will be said, which is known here for
+            # the built-in runtime only: dsh may yet not take the session
+            # up, and the commission is opened after all.
+            unsaid = runtime_name == RUNTIME_BUILTIN and not opens_in(RUNTIME_BUILTIN)
+            documents = "" if unsaid else await self._repository_documents(workdir, session_path)
+
+            async def worded(*, cleared: bool, back: bool = False, excerpt: str = "") -> str:
+                return await self._opening(
+                    commission, cleared=cleared, back=back, excerpt=excerpt, documents=documents
+                )
+
+            # A session that holds nothing in the runtime that takes the
+            # commission (the second wording) is told, besides, what she
+            # and the user said just before it: a session with something
+            # in it has that to tell what the commission refers to.
+            excerpt_as_of = self._times_dropped(commission)
+            excerpt = self._excerpt(commission)
+            onward = await worded(cleared=False)
+            anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
+            back_at_it = await worded(cleared=False, back=True) if opened and not at_it else onward
+
+            def first_message(runtime_name: str) -> tuple[str, bool]:
                 here = begun_in == runtime_name
-                opens = prompt is None or not opened or not here or not at_it
+                opens = opens_in(runtime_name)
                 # Which runtime it is decides the wording, as it decides
                 # whether it is said: a commission that follows another up
                 # in a session that began in dsh and is taken by the
@@ -2090,11 +2204,7 @@ class TaskAgentManager:
                 # whether more was dropped, is looked at once more.
                 excerpt_as_of = self._times_dropped(commission)
                 excerpt = self._excerpt(commission)
-                anew = (
-                    await self._opening(commission, cleared=True, excerpt=excerpt)
-                    if commission.continues or excerpt
-                    else onward
-                )
+                anew = await worded(cleared=True, excerpt=excerpt) if commission.continues or excerpt else onward
                 text, opens = first_message(runtime_name)
             # Whether a person's words are in it: what she dispatched or the
             # user said, told to the session for the first time (the message

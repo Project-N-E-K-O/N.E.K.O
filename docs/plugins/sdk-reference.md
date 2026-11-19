@@ -332,6 +332,28 @@ result = await self.plugins.require_enabled("dependency_plugin")
 
 All methods return `Result` types — check with `isinstance(result, Ok)` before using `.value`.
 
+### Who called you: `ctx.call_chain`
+
+`self.ctx.call_chain` is a read-only view of how the current invocation was reached. The host builds it from its own records; you only read it, and nothing you change in it affects the host.
+
+```python
+chain = self.ctx.call_chain
+chain.callers        # plugin ids that led here, root first; () when the host called you directly
+chain.origin.kind    # "run", "chat_tool", "chat_hook", "ui_action", "plugin_self" or "system"
+chain.origin.ref     # an id such as the run id; never message text
+chain.hops           # each step as (plugin_id, event_type, event_id)
+chain.rights         # capabilities every plugin on the chain has been approved for
+chain.rights_known   # False when the host did not say (see below)
+chain.allows("memory.read")
+```
+
+- It is never `None`. Outside an invocation (a timer, a background task still running after your entry returned) or when the host has the policy off, it is a chain holding only your plugin, with `rights_known=False`.
+- `allows()` is advisory. It answers `False` whenever the rights are unknown, so "not allowed" and "do not know" both read `False`; check `rights_known` to tell them apart. The host decides every use on its own: a `False` here does not mean the host will refuse, and a `True` is a snapshot taken when the call was delivered.
+- Work you hand to `loop.run_in_executor` or a bare `threading.Thread` loses the invocation context, so the host sees those requests as your plugin acting on its own. `asyncio.to_thread` keeps it; for a thread of your own, run the work under `contextvars.copy_context().run(...)`.
+- This is separate from the older in-process helpers in `plugin.sdk.shared.runtime.call_chain`, which only track calls inside one plugin process.
+
+The host records cross-plugin calls and capability use for audit (identifiers and capability names only, never arguments, results or message text). Design: [`docs/design/plugin-call-chain.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/docs/design/plugin-call-chain.md).
+
 ---
 
 ## PluginStore (Persistent Storage)

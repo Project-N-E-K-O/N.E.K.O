@@ -122,6 +122,9 @@ class LLMSessionManager(
         # Live browser consent can arrive before the settings POST is persisted.
         self._proactive_vision_enabled: bool | None = None
         self._proactive_vision_revocation_epoch: int = 0
+        # Bumped only when screen consent goes from allowed to revoked (not on a
+        # declined proactive screenshot); voice-turn live frames are fenced by it.
+        self._screen_consent_revocation_epoch: int = 0
         self._avatar_position: dict | None = None  # Frontend normalized Avatar coordinates {centerX, centerY, width, height}.
         # One-shot handoff slot between request_fresh_screenshot and resolve_screenshot_request.
         # Deliberately separate from _avatar_position, overwritten by every stream_data (screen-share frames,
@@ -416,6 +419,9 @@ class LLMSessionManager(
         # Input buffering prevents loss during session initialization.
         self.session_ready = False  # Whether session is fully ready.
         self.pending_input_data = []  # Pending input data: [message_dict, ...].
+        # Monotonic time of the last frontend ``screen_share_stopped``; live share
+        # frames that reached the router before it are stale.
+        self._live_share_stopped_at = 0.0
         self.pending_context_appends: list[dict] = []
         self._context_append_sequence = 0
         self._context_append_request_ids: OrderedDict[tuple[Any, ...], float] = OrderedDict()

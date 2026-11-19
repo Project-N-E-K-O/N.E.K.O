@@ -108,6 +108,9 @@ class ProactiveMixin:
             self._proactive_vision_revocation_epoch = (
                 getattr(self, "_proactive_vision_revocation_epoch", 0) + 1
             )
+            self._screen_consent_revocation_epoch = (
+                getattr(self, "_screen_consent_revocation_epoch", 0) + 1
+            )
         self._proactive_vision_enabled = enabled
         if revoked:
             # Independent ASR keeps its own live-frame cache for the next
@@ -116,10 +119,16 @@ class ProactiveMixin:
                 self._latest_independent_visual_frame = None
             if hasattr(self, "_prerecord_visual_frames"):
                 self._prerecord_visual_frames = []
-            # A frame cached before the revocation must not reach a later
-            # proactive turn of this session.
+            # The session forgets what it captured automatically: the text
+            # session strips those images from its history and drops a staged
+            # proactive screenshot (discard_auto_captured_history_images, which
+            # includes discard_cached_visual_context); the realtime session
+            # drops its cached frame (discard_cached_visual_context).
+            session = getattr(self, "session", None)
             discard = getattr(
-                getattr(self, "session", None),
+                session, "discard_auto_captured_history_images", None
+            ) or getattr(
+                session,
                 "discard_cached_visual_context",
                 None,
             )
@@ -128,7 +137,7 @@ class ProactiveMixin:
                     discard()
                 except Exception:
                     logger.warning(
-                        "[%s] failed to discard cached visual context after consent revocation",
+                        "[%s] failed to discard automatically captured images after consent revocation",
                         getattr(self, "lanlan_name", ""),
                         exc_info=True,
                     )

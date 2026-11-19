@@ -20,6 +20,7 @@ from .cards import ChatCard, PluginView
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from .call_chain_view import CallChainView
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -170,6 +171,9 @@ class ReplyTailProtocol(Protocol):
 class PluginContextProtocol(Protocol):
     @property
     def images(self) -> PluginImagesProtocol: ...
+
+    @property
+    def call_chain(self) -> "CallChainView": ...
 
     @property
     def models(self) -> PluginModelsProtocol: ...
