@@ -632,7 +632,12 @@ function makePixiV7Ticker(sb, name) {
             this.lastTime = time;
         },
     };
-    t.originalUpdate = t.update;
+    // Real PIXI keeps update() on Ticker.prototype; mirror that so the guard's own-property
+    // bookkeeping is exercised the same way.
+    const proto = { update: t.update };
+    delete t.update;
+    Object.setPrototypeOf(t, proto);
+    t.originalUpdate = proto.update;
     return t;
 }
 
@@ -706,6 +711,7 @@ for (const pet of [false, true]) {
             const drift = t.modelClockMs - wall;
             assert.ok(Math.abs(drift) < 1e-6, `${t.name} 模型时钟漂移 ${drift.toFixed(3)}ms（${switches} 次切换）`);
             assert.equal(t.update, t.originalUpdate, `${t.name}：切回 rAF 的防倒退包装在时间越过后自行撤掉，不随切换次数叠加`);
+            assert.ok(!Object.prototype.hasOwnProperty.call(t, 'update'), `${t.name}：撤掉后不留实例属性`);
         }
     }));
 }
