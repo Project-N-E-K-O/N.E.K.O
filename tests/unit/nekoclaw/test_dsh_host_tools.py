@@ -556,3 +556,141 @@ async def test_stopping_the_listener_drops_every_token_and_it_can_be_started_aga
             f"{listener.model_url}/chat/completions", headers={"Authorization": f"Bearer {process_token}"}, json={}
         )
     assert tools.status_code == 401 and model.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "how, reached",
+    [
+        ("takes the answer", True),
+        ("hangs up while the call is carried out", False),
+        ("hangs up as the answer is ready", False),
+        ("hung up a moment before the answer is written, and the write says nothing", False),
+        ("hangs up while the answer is written, and the write says nothing", False),
+        # What cannot be told: the server knows, the watcher hears of it after the last look.
+        ("hung up in the last turn of the loop before the answer is written, and the write says nothing", True),
+        ("is gone when the answer is written", False),
+    ],
+)
+async def test_whoever_handed_dsh_something_is_told_whether_the_answer_reached_it(
+    endpoint, monkeypatch: pytest.MonkeyPatch, how: str, reached: bool
+) -> None:
+    from nekoclaw.dsh.endpoint import TOOLS_PATH
+    from nekoclaw.dsh.host_tools import ON_ANSWERED
+
+    listener, _calls = endpoint
+    token = listener.issue("s1")
+    told: list[tuple[str, bool]] = []
+    handed, answered, hanging_up = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    steps: Any = None
+    # Whether whoever watches the request had heard that dsh hung up, as an answer was dropped.
+    watcher: list[int] = []
+    heard: list[bool] = []
+    last_turn = "hung up in the last turn of the loop before the answer is written, and the write says nothing"
+
+    async def handle(session_id: str, payload: Any, **options: Any) -> Any:
+        # As two ``wait_agent`` calls of one request, each handing dsh the texts that arrived.
+        nonlocal steps
+        steps = ON_ANSWERED.get()
+        assert steps is not None
+        steps.append(lambda delivered: told.append(("the first", delivered)))
+        steps.append(lambda delivered: told.append(("the second", delivered)))
+        handed.set()
+        if how == "hangs up while the call is carried out":
+            await asyncio.Event().wait()
+        if how == "hung up a moment before the answer is written, and the write says nothing":
+            # The server knows as the work finishes; whoever watches the request hears of
+            # it a turn of the loop after the answer is ready to be written.
+            loop = asyncio.get_running_loop()
+            loop.call_soon(loop.call_soon, hanging_up.set)
+        if how == last_turn:
+            # Later still: neither of the turns of the loop that are waited out before the
+            # answer is written brings it to the watcher.
+            loop = asyncio.get_running_loop()
+            loop.call_soon(loop.call_soon, loop.call_soon, loop.call_soon, hanging_up.set)
+        return {"jsonrpc": "2.0", "id": 1, "result": {"content": []}}
+
+    monkeypatch.setattr(listener._tools, "handle", handle)
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "wait_agent"}}).encode()
+    request: list[dict[str, Any]] = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def receive() -> dict[str, Any]:
+        if request:
+            return request.pop(0)
+        if how == "is gone when the answer is written":
+            await asyncio.Event().wait()
+        if how == "takes the answer":
+            # As a server does: whoever waits for more of the request is told that the
+            # connection is done with once the answer is complete.
+            await answered.wait()
+        elif how.endswith("and the write says nothing"):
+            await hanging_up.wait()
+            watcher.append(1)
+        else:
+            await handed.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if how == "is gone when the answer is written":
+            raise ConnectionError("the connection is closed")
+        if message["type"] == "http.response.body":
+            if how == "hangs up while the answer is written, and the write says nothing":
+                # The server finds the connection gone as it gets to write: it writes
+                # nothing, and returns as if it had.
+                hanging_up.set()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+            if how == last_turn:
+                # The server has found the connection gone, and writes nothing. Whoever
+                # watches the request is told of it apart from that, and a moment later.
+                heard.append(bool(watcher))
+                return
+            answered.set()
+
+    scope = {
+        "type": "http",
+        "path": TOOLS_PATH,
+        "method": "POST",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+    }
+    serving = asyncio.ensure_future(listener._asgi(scope, receive, send))
+    await asyncio.wait({serving}, timeout=5.0)
+    assert serving.done()
+    if how == "is gone when the answer is written":
+        assert isinstance(serving.exception(), ConnectionError)
+    else:
+        assert serving.exception() is None
+        assert answered.is_set() == (how not in ("hangs up while the call is carried out", last_turn))
+    if how == last_turn:
+        # The answer did not get there. The server knew; whoever watches the request had not
+        # heard of it at the last look: this is the moment that is left, and what was handed
+        # over is taken for delivered.
+        assert heard == [False] and hanging_up.is_set()
+
+    # (What the call adds to is not the caller's own to see: the call runs in a task of its own.)
+    assert ON_ANSWERED.get() is None
+    # Both are told, the last to hand over first.
+    assert told == [("the second", reached), ("the first", reached)]
+    # And one that hands something over after that (the work of a call dsh gave up may still
+    # be at it) is told the same on the spot, and is not left without word.
+    steps.append(lambda delivered: told.append(("a late one", delivered)))
+    assert told[-1] == ("a late one", reached)
+
+
+async def test_a_wait_that_cannot_be_answered_takes_nothing(tmp_path: Path) -> None:
+    asked: list[float] = []
+
+    async def take_input(seconds: float) -> list[str]:
+        asked.append(seconds)
+        return ["a note that would go nowhere"]
+
+    tools = HostTools(_callbacks([]))
+    _open(tools, tmp_path, take_input=take_input)
+    wait = {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "wait_agent", "arguments": {}}}
+
+    # Sent with no id: nothing goes back, so nothing is handed over. Alone, or beside one that is answered.
+    assert await tools.handle("s1", wait) is None
+    answers = await tools.handle("s1", [wait, _request("ping", request_id=7)])
+    assert asked == [] and [answer["id"] for answer in answers] == [7]
+    # With an id it is carried out as ever.
+    answered = await tools.handle("s1", {**wait, "id": 8})
+    assert asked == [30.0] and "a note that would go nowhere" in answered["result"]["content"][0]["text"]

@@ -343,16 +343,21 @@ async def test_there_is_no_other_way_to_write_a_status():
 
     source = inspect.getsource(module)
     # A third one gives the commissions of an earlier build their sessions,
-    # and names the one column it writes. So does the one that writes how
-    # much a commission may use. The fifth adds up what was used: its SET
-    # list is built from the columns that are counted, and from nothing else.
-    assert source.count("UPDATE commissions SET") == 5
+    # and names the one column it writes. A fourth notes that a commission
+    # rests, and a fifth takes that back; each names the two it writes. So
+    # does the one that writes how much a commission may use, which names its
+    # one. The seventh adds up what was used: its SET list is built from the
+    # columns that are counted, and from nothing else.
+    assert source.count("UPDATE commissions SET") == 7
     assert source.count("UPDATE commissions SET session_id = ? WHERE id = ?") == 1
+    assert source.count("UPDATE commissions SET resting_since = ?, updated_at = ? WHERE id = ?") == 1
+    assert source.count("UPDATE commissions SET resting_since = NULL, updated_at = ? ") == 1
     assert source.count("UPDATE commissions SET usage_allowed = ? WHERE id = ?") == 1
     assert source.count('f"UPDATE commissions SET {assignments} WHERE id = ?"') == 3
     assert source.count("for name, amount in zip(_USAGE_COLUMNS, amounts, strict=True)") == 1
     assert "status" not in module._UPDATABLE
     assert "host_instance" not in module._UPDATABLE
+    assert "resting_since" not in module._UPDATABLE
     assert not {"status", "host_instance"} & set(module._USAGE_COLUMNS)
     # What was used and what may be are written by their own methods only.
     assert not ({"usage_allowed", *module._USAGE_COLUMNS} & module._UPDATABLE)
@@ -805,7 +810,7 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert columns.count("session_dir") == 1 and version == 4
+    assert columns.count("session_dir") == 1 and version == 5
     # It has every column a new ledger has. A column put into the table and the commission but left out of
     # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
     from nekoclaw.host.ledger import _COMMISSION_COLUMNS
@@ -1225,7 +1230,7 @@ async def test_commissions_of_an_earlier_build_are_given_the_sessions_they_had(t
         before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
-    assert version == 4
+    assert version == 5
     again = Ledger(path)
     try:
         await again.open()
@@ -1426,6 +1431,6 @@ async def test_a_ledger_with_sessions_of_the_build_before_gets_the_new_columns_a
         await second.close()
     conn = sqlite3.connect(path)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
     finally:
         conn.close()

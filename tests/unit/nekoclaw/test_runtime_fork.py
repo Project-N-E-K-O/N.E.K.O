@@ -329,6 +329,120 @@ async def test_a_session_at_work_is_copied_up_to_where_it_is_whole_and_goes_on_u
         await runtime.shutdown()
 
 
+async def test_nobody_is_asked_about_a_call_of_a_tool_the_copy_was_opened_without(tmp_path: Path) -> None:
+    # A copy is opened without the tools that write and run commands, and is told of them as the
+    # other was: a call of one is answered with what stands in for it. Whether it may be done is
+    # not asked first: the host would refuse it for a reason of its own (the working directory
+    # lies in the other session's own directory, say), or put it to the user, for nothing.
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, ScriptedLLM([[say("Done."), finish()]]), HostCallbacks(decide_permission=allow_all()))
+    await _ask(session, events, "Look around.")
+    await session.close()
+    target = _copy_of(spec, tmp_path, disabled_tools=["write", "bash", "pwsh"])
+    fork_record(Path(spec.session_dir), Path(target.session_dir))
+    asks: list[dict[str, Any]] = []
+
+    async def decide(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        asks.append(payload)
+        return {"allow": False, "reason": "this path is another session's"}
+
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("x\n", encoding="utf-8")
+    reader = ScriptedLLM(
+        [
+            [
+                call("write", {"file_path": "notes.txt", "content": "x"}, "call-w"),
+                call("bash", {"command": "echo hi"}, "call-b", index=1),
+                call("pwsh", {"command": "echo hi"}, "call-p", index=2),
+                finish("tool_calls"),
+            ],
+            # A tool it has is asked about as ever.
+            [call("read", {"file_path": str(outside)}, "call-r"), finish("tool_calls")],
+            [say("Seen."), finish()],
+        ]
+    )
+    copy, copy_events = await open_session(target, reader, HostCallbacks(decide_permission=decide))
+    try:
+        await _ask(copy, copy_events, "Write it down.")
+        ended = {event["tool_name"]: event for event in copy_events.of("tool_end")}
+        # (The shell the other was told of is the one of this platform; the other shell is no tool
+        # at all, and is refused for that.)
+        told = {tool["function"]["name"] for tool in reader.overrides[0]["tools"]}
+        assert "write" in told and len({"bash", "pwsh"} & told) == 1
+        for withheld in ("write", "bash", "pwsh"):
+            assert ended[withheld]["is_error"]
+            if withheld in told:
+                assert f"{withheld} is not available right now" in ended[withheld]["text"]
+        assert [ask["tool"] for ask in asks] == ["read"]
+        assert ended["read"]["is_error"] and "another session's" in ended["read"]["text"]
+        assert not (Path(target.workdir) / "notes.txt").exists()
+    finally:
+        await copy.close()
+
+
+async def test_a_tool_that_is_there_after_all_is_asked_about_though_it_was_to_be_withheld(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only what stands in for a tool goes unasked. Should a tool be there though the session
+    # was to be opened without it, a call of it does what the tool does, and is asked about.
+    from nekoclaw.runtime import session as session_module
+
+    build = session_module.build_tools
+    monkeypatch.setattr(session_module, "build_tools", lambda ctx, *, disabled=(): build(ctx))
+    asks: list[str] = []
+
+    async def decide(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        asks.append(payload["tool"])
+        return {"allow": False, "reason": "not here"}
+
+    writer = ScriptedLLM([[call("write", {"file_path": "notes.txt", "content": "x"}), finish("tool_calls")], [say("No."), finish()]])
+    session, events = await open_session(
+        make_spec(tmp_path, disabled_tools=["write"]), writer, HostCallbacks(decide_permission=decide)
+    )
+    try:
+        await _ask(session, events, "Write it down.")
+        assert asks == ["write"]
+        assert not (tmp_path / "work" / "notes.txt").exists()
+    finally:
+        await session.close()
+
+
+async def test_nobody_is_asked_about_any_tool_that_is_told_of_and_not_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The other was told of a tool this one does not have now, for whatever reason (not one it
+    # was to be opened without): what stands in for it answers, and nobody is asked first.
+    from nekoclaw.runtime import session as session_module
+
+    spec = make_spec(tmp_path)
+    session, events = await open_session(spec, ScriptedLLM([[say("Done."), finish()]]), HostCallbacks(decide_permission=allow_all()))
+    await _ask(session, events, "Look around.")
+    await session.close()
+    target = _copy_of(spec, tmp_path)
+    fork_record(Path(spec.session_dir), Path(target.session_dir))
+    build = session_module.build_tools
+    monkeypatch.setattr(
+        session_module, "build_tools", lambda ctx, *, disabled=(): [tool for tool in build(ctx, disabled=disabled) if tool.name != "read"]
+    )
+    asks: list[str] = []
+
+    async def decide(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        asks.append(payload["tool"])
+        return {"allow": False, "reason": "not here"}
+
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("x", encoding="utf-8")
+    reader = ScriptedLLM([[call("read", {"file_path": str(outside)}), finish("tool_calls")], [say("No."), finish()]])
+    copy, copy_events = await open_session(target, reader, HostCallbacks(decide_permission=decide))
+    try:
+        await _ask(copy, copy_events, "Read it.")
+        [ended] = copy_events.of("tool_end")
+        assert ended["is_error"] and "read is not available right now" in ended["text"]
+        assert asks == []
+    finally:
+        await copy.close()
+
+
 async def test_a_copy_reads_what_the_other_kept_of_long_tool_output_without_asking(tmp_path: Path) -> None:
     # A long result is cut in the conversation and kept whole in a file of the
     # session; what was said names that file. The copy reads it where it is.

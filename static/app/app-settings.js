@@ -1194,6 +1194,19 @@
         }
     }
 
+    // Privacy mode, Proactive Chat and its Screen Share option together
+    // decide whether the voice-call heartbeat may look at the screen. Run
+    // after every save and every cross-window sync, like the privacy check.
+    function syncSpeechVisionWithSwitches() {
+        try {
+            if (typeof window.syncProactiveVisionDuringSpeech === 'function') {
+                window.syncProactiveVisionDuringSpeech();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 同步语音主动视觉失败:', error);
+        }
+    }
+
     function stopVisionAfterPrivacyEnabled() {
         // Screenshots taken before a revocation must not ride a later request,
         // even if consent is re-enabled before that request is sent.
@@ -1824,6 +1837,7 @@
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
         stopVisionAfterPrivacyEnabled();
+        syncSpeechVisionWithSwitches();
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
@@ -2918,6 +2932,7 @@
                 ));
             }
             stopVisionAfterPrivacyEnabled();
+            syncSpeechVisionWithSwitches();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
             }
